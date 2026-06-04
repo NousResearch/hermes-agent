@@ -25,7 +25,7 @@ const STORAGE_KEY = 'hermes-desktop-locale'
 
 // --- Auto-discover all locale files ---
 // Vite's import.meta.glob eagerly imports all JSON files in the locales directory.
-// To add a new language, just drop a new {code}.json file — no code changes needed!
+// To add a new language, add {code}.json and register its display label in LANGUAGE_LABELS.
 const localeModules = import.meta.glob<Record<string, string>>('../locales/*.json', { import: 'default', eager: true })
 
 export const SUPPORTED_LOCALES = Object.keys(localeModules)

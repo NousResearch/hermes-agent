@@ -377,6 +377,12 @@ class MemoryStore:
             self._conn.execute(
                 "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
             )
+            # Drop lineage rows referencing this fact (either end) so removal
+            # never leaves dangling supersede references.
+            self._conn.execute(
+                "DELETE FROM fact_supersedes WHERE new_id = ? OR old_id = ?",
+                (fact_id, fact_id),
+            )
             self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
             self._conn.commit()
             self._rebuild_bank(row["category"])

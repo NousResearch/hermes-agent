@@ -346,20 +346,49 @@ export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
 // onboarding flow (OAuth rows, API-key form, model-confirm) instead of
 // duplicating provider UI. Sets manual=true so the overlay shows the picker
 // even though configured===true, and refreshes the provider list.
-export function startManualOnboarding(reason = 'Add or switch inference provider.') {
+export function startManualOnboarding(reason: null | string = 'Add or switch inference provider.') {
   patch({
     manual: true,
     requested: true,
-    reason: reason.trim() || DEFAULT_ONBOARDING_REASON,
+    // `null` opts out of the prompt banner entirely (e.g. when the user already
+    // picked a specific provider and we auto-start its sign-in).
+    reason: reason ? reason.trim() || DEFAULT_ONBOARDING_REASON : null,
     flow: { status: 'idle' }
   })
   void refreshProviders()
+}
+
+// One-shot hand-off used when the dedicated Providers settings page launches a
+// specific provider's sign-in: we open the manual onboarding overlay AND
+// remember which provider to start, so the overlay drives that exact OAuth
+// flow instead of re-showing the picker the user just clicked through.
+// Module-level (not store state) because it's consumed immediately on the next
+// overlay render and never needs to persist or re-render anything itself.
+let pendingProviderOAuthId: null | string = null
+
+export function startManualProviderOAuth(providerId: string, reason: null | string = null) {
+  pendingProviderOAuthId = providerId
+  startManualOnboarding(reason)
+}
+
+// Read the pending provider id without clearing it. The overlay only clears it
+// (via clearPendingProviderOAuth) once it has actually launched that provider,
+// so a transient empty/failed provider fetch doesn't drop the hand-off and the
+// deep-link can still auto-start after the list loads.
+export function peekPendingProviderOAuth(): null | string {
+  return pendingProviderOAuthId
+}
+
+export function clearPendingProviderOAuth() {
+  pendingProviderOAuthId = null
 }
 
 // Dismiss a manually-opened provider selector without touching the existing
 // (working) configuration. Only valid in the manual path — the unconfigured
 // first-run flow has no close affordance because the app can't run yet.
 export function closeManualOnboarding() {
+  pendingProviderOAuthId = null
+
   patch({ manual: false, requested: false, flow: { status: 'idle' } })
 }
 

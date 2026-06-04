@@ -86,6 +86,10 @@ The following `~/.grok/skills/` map well and are worth porting or emulating as f
 
 If you're the human maintainer, consider extracting the best reusable pieces from your `~/.grok/skills/` into this Hermes category so autonomous agents on Grok get the same superpowers.
 
+Example: the `check-work` skill in Grok Build uses subagents for verification. When on Grok in Hermes, you can replicate by delegating "review this change against the plan" tasks.
+
+See the user's local `~/.grok/skills/` for the canonical implementations (many use the spawn_subagent / worktree model that maps to Hermes `delegate_task` + isolation).
+
 ## Verification (for any work done under this skill)
 - [ ] Used fresh subagent(s) via delegate_task where isolation mattered.
 - [ ] At least one explicit review/gate step happened (spec or quality).

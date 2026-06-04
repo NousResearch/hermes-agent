@@ -104,12 +104,12 @@ step "1/6 下载 Linux 二进制"
 
 # --- Node.js ---
 sub "下载 Node.js v${NODE_MAJOR}.x ..."
-NODE_HTML=$(curl -sL "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/" 2>/dev/null || true)
+NODE_HTML=$(curl -sL --connect-timeout 10 --max-time 30 "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/" 2>/dev/null || true)
 NODE_VER=$(echo "$NODE_HTML" | grep -oP "node-v(\d+\.\d+\.\d+)-linux-x64\.tar\.xz" | head -1 | grep -oP '\d+\.\d+\.\d+')
 if [[ -n "$NODE_VER" ]]; then
     NODE_FILE="node-v${NODE_VER}-linux-x64.tar.xz"
     NODE_URL="https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/$NODE_FILE"
-    if curl -fSL --progress-bar -o "$OUTPUT_DIR/binaries/$NODE_FILE" "$NODE_URL"; then
+    if curl -fSL --connect-timeout 15 --max-time 300 --progress-bar -o "$OUTPUT_DIR/binaries/$NODE_FILE" "$NODE_URL"; then
         ok "Node.js v$NODE_VER ($(du -m "$OUTPUT_DIR/binaries/$NODE_FILE" | cut -f1) MB)"
     else
         warn "Node.js 下载失败"
@@ -120,24 +120,19 @@ fi
 
 # --- ripgrep ---
 sub "下载 ripgrep ..."
-RG_TAG=$(curl -sL "https://api.github.com/repos/BurntSushi/ripgrep/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+' || true)
-if [[ -n "$RG_TAG" ]]; then
-    RG_FILE="ripgrep-${RG_TAG}-x86_64-unknown-linux-musl.tar.gz"
-    RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/${RG_TAG}/${RG_FILE}"
-    if curl -fSL --progress-bar -o "$OUTPUT_DIR/binaries/$RG_FILE" "$RG_URL"; then
-        ok "ripgrep $RG_TAG ($(du -m "$OUTPUT_DIR/binaries/$RG_FILE" | cut -f1) MB)"
-    else
-        warn "ripgrep 下载失败"
-    fi
+RG_URL="https://github.com/BurntSushi/ripgrep/releases/latest/download/ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz"
+RG_FILE="ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz"
+if curl -fSL --http1.1 --connect-timeout 15 --max-time 120 --progress-bar -o "$OUTPUT_DIR/binaries/$RG_FILE" "$RG_URL"; then
+    ok "ripgrep 15.1.0 ($(du -m "$OUTPUT_DIR/binaries/$RG_FILE" | cut -f1) MB)"
 else
-    warn "无法获取 ripgrep 版本"
+    warn "ripgrep 下载失败，跳过"
 fi
 
 # --- ffmpeg ---
 sub "下载 ffmpeg (静态构建) ..."
 FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
 FFMPEG_FILE="ffmpeg-release-amd64-static.tar.xz"
-if curl -fSL --progress-bar -o "$OUTPUT_DIR/binaries/$FFMPEG_FILE" "$FFMPEG_URL"; then
+if curl -fSL --connect-timeout 15 --max-time 300 --progress-bar -o "$OUTPUT_DIR/binaries/$FFMPEG_FILE" "$FFMPEG_URL"; then
     ok "ffmpeg ($(du -m "$OUTPUT_DIR/binaries/$FFMPEG_FILE" | cut -f1) MB)"
 else
     warn "ffmpeg 下载失败"
@@ -147,7 +142,7 @@ fi
 sub "下载 uv (Linux 二进制) ..."
 UV_FILE="uv-x86_64-unknown-linux-gnu.tar.gz"
 UV_URL="https://github.com/astral-sh/uv/releases/latest/download/$UV_FILE"
-if curl -fSL --progress-bar -o "$OUTPUT_DIR/binaries/$UV_FILE" "$UV_URL"; then
+if curl -fSL --http1.1 --connect-timeout 15 --max-time 120 --progress-bar -o "$OUTPUT_DIR/binaries/$UV_FILE" "$UV_URL"; then
     ok "uv ($(du -m "$OUTPUT_DIR/binaries/$UV_FILE" | cut -f1) MB)"
 else
     warn "uv 下载失败"

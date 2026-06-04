@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any, Protocol
 
-SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION = 1
+SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION = 2
 
 OPERATIONAL_METADATA_KEYS = frozenset(
     {
@@ -62,11 +62,6 @@ _MEMORY_TAG_RE = re.compile(
     r"<(?:hindsight_memories|relevant_memories)>[\s\S]*?</(?:hindsight_memories|relevant_memories)>",
     re.IGNORECASE,
 )
-_IDENTIFIER_RE = re.compile(r"\b[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)+\b")
-_PROJECT_CUE_RE = re.compile(
-    r"\b(?:project|repo|repository|package|module|app|service|workspace)\s+([A-Za-z][\w.-]{2,})",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True)
@@ -78,7 +73,6 @@ class SessionSummaryBudget:
     max_prompt_inject_chars: int = 1_200
     max_retain_context_chars: int = 1_200
     min_latest_query_reserve_chars: int = 400
-    drop_completed_todos_after_turns: int = 20
 
 
 @dataclass(frozen=True)
@@ -102,7 +96,7 @@ class SessionSummaryRequest:
     session_id: str
     identity_scope: str
     messages: list[dict[str, Any]]
-    previous_summary: dict[str, Any] | None = None
+    previous_summary_text: str | None = None
     latest_query: str = ""
     turn_index: int = 0
     metadata: dict[str, Any] | None = None
@@ -111,8 +105,8 @@ class SessionSummaryRequest:
 
 @dataclass(frozen=True)
 class SessionSummaryResult:
-    summary_json: dict[str, Any]
     summary_text: str
+    summary_json: dict[str, Any] | None = None
     schema_version: int = SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION
     status: str = "ready"
     error: str | None = None
@@ -147,7 +141,7 @@ def sanitize_session_summary_text(text: str, *, max_chars: int | None = None) ->
 def build_session_summary_prompt(request: SessionSummaryRequest) -> str:
     """Build the summary-only prompt used by real generators and smoke tests."""
     trimmed = trim_session_summary_inputs(request, request.budget)
-    prior = json.dumps(trimmed.previous_summary or {}, ensure_ascii=False, sort_keys=True)
+    prior = sanitize_session_summary_text(trimmed.previous_summary_text or "")
     messages = [
         {
             "role": str(msg.get("role", "")),
@@ -156,34 +150,29 @@ def build_session_summary_prompt(request: SessionSummaryRequest) -> str:
         for msg in trimmed.messages
     ]
     return (
-        "Generate a compact Hindsight session summary as JSON only.\n"
+        "Generate a compact Hindsight rolling session summary as plain text only.\n"
         f"Schema version: {SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION}\n"
-        "Rules: use only evidence in user/assistant messages; do not promote "
-        "bank, source, session, sender, profile, provider, tool, document, or "
-        "update-mode metadata into semantic entities; carry forward previous "
-        "anchors only when grounded.\n"
-        f"Previous summary JSON:\n{prior}\n"
+        f"Maximum output length: {trimmed.budget.max_output_chars} characters.\n"
+        "Rules: use only evidence in user/assistant messages; preserve exact entity names, "
+        "proper nouns, project names, file paths, commands, addresses, dates, amounts, "
+        "numbers, URLs, model names, error messages, and user terminology. Do not rename, "
+        "translate, normalize, abbreviate, substitute, or autocorrect proper nouns and identifiers. "
+        "Treat the previous summary as a draft; current messages and explicit corrections override it. "
+        "Do not output JSON, markdown, Semantic Anchors, Exact Identifiers, Decisions, Blockers, "
+        "Open Questions, or Completed Todos categories.\n"
+        f"Previous rolling summary:\n{prior}\n"
         f"Latest query:\n{sanitize_session_summary_text(trimmed.latest_query)}\n"
         f"Messages JSON:\n{json.dumps(messages, ensure_ascii=False)}"
     )
 
 
-def render_session_summary(summary_json: dict[str, Any], *, max_chars: int) -> str:
-    """Render summary JSON to a bounded plain-text context string."""
-    sections = []
-    for key, label in (
-        ("active_projects", "Active projects"),
-        ("semantic_anchors", "Semantic anchors"),
-        ("exact_identifiers", "Exact identifiers"),
-        ("decisions", "Decisions"),
-        ("blockers", "Blockers"),
-        ("open_questions", "Open questions"),
-    ):
-        values = _as_string_list(summary_json.get(key))
-        if values:
-            sections.append(f"{label}: " + "; ".join(values))
-    text = sanitize_session_summary_text("\n".join(sections), max_chars=max_chars)
-    return text
+def render_session_summary(summary_text: str | dict[str, Any], *, max_chars: int) -> str:
+    """Render summary text to a bounded context string."""
+    if isinstance(summary_text, dict):
+        raw = summary_text.get("summary_text") or summary_text.get("summaryText") or ""
+    else:
+        raw = summary_text
+    return sanitize_session_summary_text(str(raw), max_chars=max_chars)
 
 
 def should_update_session_summary(
@@ -246,11 +235,11 @@ def trim_session_summary_inputs(
         max_chars=max(0, budget.min_latest_query_reserve_chars),
     )
     remaining_total = max(0, budget.max_input_chars - len(latest))
-    previous_summary = _trim_previous_summary(
-        request.previous_summary,
-        max_chars=(remaining_total // 4 if request.previous_summary else 0),
+    previous_summary_text = sanitize_session_summary_text(
+        request.previous_summary_text or "",
+        max_chars=(remaining_total // 4 if request.previous_summary_text else 0),
     )
-    remaining = max(0, remaining_total - _json_len(previous_summary))
+    remaining = max(0, remaining_total - len(previous_summary_text))
     kept_reversed: list[dict[str, Any]] = []
     for msg in reversed(request.messages):
         content = sanitize_session_summary_text(str(msg.get("content", "")))
@@ -266,7 +255,7 @@ def trim_session_summary_inputs(
             break
     return replace(
         request,
-        previous_summary=previous_summary,
+        previous_summary_text=previous_summary_text,
         latest_query=latest,
         messages=list(reversed(kept_reversed)),
         budget=budget,
@@ -274,23 +263,23 @@ def trim_session_summary_inputs(
 
 
 def build_session_summary_budgeted_text(
-    summary_json: dict[str, Any],
+    summary_text: str | dict[str, Any],
     budget: SessionSummaryBudget,
 ) -> SessionSummaryBudgetedText:
     """Render summary-derived text variants with independent stage budgets."""
-    output_text = render_session_summary(summary_json, max_chars=budget.max_output_chars)
+    output_text = render_session_summary(summary_text, max_chars=budget.max_output_chars)
     return SessionSummaryBudgetedText(
         output_text=output_text,
         recall_query_text=_render_budgeted_summary_variant(
-            summary_json,
+            output_text,
             max_chars=_effective_recall_query_chars(budget),
         ),
         prompt_inject_text=_render_budgeted_summary_variant(
-            summary_json,
+            output_text,
             max_chars=budget.max_prompt_inject_chars,
         ),
         retain_context_text=_render_budgeted_summary_variant(
-            summary_json,
+            output_text,
             max_chars=budget.max_retain_context_chars,
         ),
     )
@@ -303,34 +292,23 @@ class FakeSessionSummaryGenerator:
         try:
             trimmed = trim_session_summary_inputs(request, request.budget)
             evidence_text = _evidence_text(trimmed.messages)
-            summary_json = {
-                "schema_version": SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION,
-                "active_projects": _active_projects(evidence_text, trimmed.previous_summary),
-                "semantic_anchors": _semantic_anchors(evidence_text),
-                "exact_identifiers": _exact_identifiers(evidence_text),
-                "decisions": _matching_lines(evidence_text, ("decided", "decision", "use ", "chosen")),
-                "blockers": _matching_lines(evidence_text, ("blocked", "failing", "failure", "error", "risk")),
-                "open_questions": _matching_lines(evidence_text, ("?", "open question", "unknown")),
-                "completed_todos": _matching_lines(evidence_text, ("done", "completed", "fixed")),
-            }
-            summary_text = render_session_summary(
-                summary_json,
-                max_chars=trimmed.budget.max_output_chars,
+            summary_text = sanitize_session_summary_text(
+                "\n".join(part for part in (trimmed.previous_summary_text or "", evidence_text) if part)
             )
-            return SessionSummaryResult(summary_json=summary_json, summary_text=summary_text)
-        except Exception as exc:
             return SessionSummaryResult(
+                summary_text=summary_text,
                 summary_json={
                     "schema_version": SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION,
-                    "active_projects": [],
-                    "semantic_anchors": [],
-                    "exact_identifiers": [],
-                    "decisions": [],
-                    "blockers": [],
-                    "open_questions": [],
-                    "completed_todos": [],
+                    "summary_text": summary_text,
                 },
+            )
+        except Exception as exc:
+            return SessionSummaryResult(
                 summary_text="",
+                summary_json={
+                    "schema_version": SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION,
+                    "summary_text": "",
+                },
                 status="error",
                 error=str(exc),
             )
@@ -365,55 +343,6 @@ def _strip_operational_metadata_json_objects(text: str) -> str:
     return re.sub(r"\{[^\{\}]*\}", _replace, text)
 
 
-def _active_projects(evidence_text: str, previous_summary: dict[str, Any] | None) -> list[str]:
-    candidates: list[str] = []
-    lower_evidence = evidence_text.lower()
-    for value in _as_string_list((previous_summary or {}).get("active_projects")):
-        if value.lower() in lower_evidence:
-            candidates.append(value)
-    for match in _PROJECT_CUE_RE.finditer(evidence_text):
-        candidates.append(match.group(1))
-    for line in evidence_text.splitlines():
-        if _looks_like_metadata_assignment(line):
-            continue
-        for ident in _IDENTIFIER_RE.findall(line):
-            if "-" in ident and not _is_operational_identifier(ident):
-                candidates.append(ident)
-    return _dedupe(candidates, limit=8)
-
-
-def _semantic_anchors(evidence_text: str) -> list[str]:
-    anchors = []
-    for line in evidence_text.splitlines():
-        text = line.strip(" -")
-        if len(text) < 8 or _looks_like_metadata_assignment(text):
-            continue
-        anchors.append(text[:180])
-    return _dedupe(anchors, limit=8)
-
-
-def _exact_identifiers(evidence_text: str) -> list[str]:
-    return _dedupe(
-        [
-            ident
-            for line in evidence_text.splitlines()
-            if not _looks_like_metadata_assignment(line)
-            for ident in _IDENTIFIER_RE.findall(line)
-            if not _is_operational_identifier(ident)
-        ],
-        limit=16,
-    )
-
-
-def _matching_lines(evidence_text: str, needles: tuple[str, ...]) -> list[str]:
-    out = []
-    for line in evidence_text.splitlines():
-        lowered = line.lower()
-        if any(needle in lowered for needle in needles) and not _looks_like_metadata_assignment(line):
-            out.append(line.strip()[:180])
-    return _dedupe(out, limit=8)
-
-
 def _looks_like_metadata_assignment(text: str) -> bool:
     stripped = text.strip().strip(",")
     if not stripped:
@@ -443,82 +372,12 @@ def _normalize_metadata_key(value: Any) -> str:
     return re.sub(r"_+", "_", text).strip("_")
 
 
-def _trim_previous_summary(
-    previous_summary: dict[str, Any] | None,
-    *,
-    max_chars: int,
-) -> dict[str, Any] | None:
-    if not isinstance(previous_summary, dict) or max_chars <= 2:
-        return None
-    sanitized: dict[str, Any] = {}
-    schema_version = previous_summary.get("schema_version")
-    if schema_version is not None:
-        candidate = {"schema_version": schema_version}
-        if _json_len(candidate) <= max_chars:
-            sanitized.update(candidate)
-    for key in (
-        "active_projects",
-        "exact_identifiers",
-        "semantic_anchors",
-        "decisions",
-        "blockers",
-        "open_questions",
-        "completed_todos",
-    ):
-        kept: list[str] = []
-        for value in _as_string_list(previous_summary.get(key)):
-            text = sanitize_session_summary_text(value)
-            if not text:
-                continue
-            candidate = {**sanitized, key: [*kept, text]}
-            if _json_len(candidate) > max_chars:
-                break
-            kept.append(text)
-        if kept:
-            sanitized[key] = kept
-    return sanitized or None
-
-
-def _json_len(value: Any) -> int:
-    if value is None:
-        return 0
-    return len(json.dumps(value, ensure_ascii=False, sort_keys=True))
-
-
-def _as_string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _dedupe(values: list[str], *, limit: int) -> list[str]:
-    out = []
-    seen = set()
-    for value in values:
-        text = sanitize_session_summary_text(str(value)).strip(" .,;")
-        key = text.lower()
-        if not text or key in seen:
-            continue
-        seen.add(key)
-        out.append(text)
-        if len(out) >= limit:
-            break
-    return out
-
-
 def _effective_recall_query_chars(budget: SessionSummaryBudget) -> int:
     ratio_limit = int(max(0, budget.max_input_chars) * max(0.0, budget.recall_query_budget_ratio))
     return max(0, min(budget.max_recall_query_chars, ratio_limit))
 
 
-def _render_budgeted_summary_variant(summary_json: dict[str, Any], *, max_chars: int) -> str:
+def _render_budgeted_summary_variant(summary_text: str | dict[str, Any], *, max_chars: int) -> str:
     if max_chars <= 0:
         return ""
-    full = render_session_summary(summary_json, max_chars=max_chars)
-    if len(full) < max_chars:
-        return full
-    anchors = _as_string_list(summary_json.get("semantic_anchors"))
-    if not anchors:
-        return full
-    anchor_only = render_session_summary({"semantic_anchors": anchors}, max_chars=max_chars)
-    return anchor_only or full
+    return render_session_summary(summary_text, max_chars=max_chars)

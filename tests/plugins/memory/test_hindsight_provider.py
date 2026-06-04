@@ -27,6 +27,7 @@ from plugins.memory.hindsight import (
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
+    _sanitize_hindsight_input,
 )
 from plugins.memory.hindsight.session_summary import SessionSummaryWrite
 
@@ -255,6 +256,24 @@ def test_normalize_observation_scopes_list_of_lists():
     ]
 
 
+def test_sanitize_hindsight_input_strips_runtime_identifiers():
+    dirty = """
+Conversation info (untrusted metadata):
+```json
+{"chat_id":"user:ou_cb923a19782fe748cd9fff99454eee31","message_id":"om_x100b6d364e7e60a0c49f20c620fbbc6"}
+```
+[message_id: om_x100b6d364e7e60a0c49f20c620fbbc6]
+open_id: ou_cb923a19782fe748cd9fff99454eee31
+ou_cb923a19782fe748cd9fff99454eee31: 查询 retain 语义
+"""
+    clean = _sanitize_hindsight_input(dirty)
+
+    assert clean == "查询 retain 语义"
+    assert "message_id" not in clean
+    assert "om_x100" not in clean
+    assert "ou_cb" not in clean
+
+
 # ---------------------------------------------------------------------------
 # Schema tests
 # ---------------------------------------------------------------------------
@@ -321,7 +340,6 @@ class TestConfig:
         assert provider._session_summary_budget.max_prompt_inject_chars == 1200
         assert provider._session_summary_budget.max_retain_context_chars == 1200
         assert provider._session_summary_budget.min_latest_query_reserve_chars == 400
-        assert provider._session_summary_budget.drop_completed_todos_after_turns == 20
         assert provider._tags is None
         assert provider._observation_scopes is None
         assert provider._recall_tags is None
@@ -398,7 +416,6 @@ class TestConfig:
             session_summary_max_prompt_inject_chars=222,
             session_summary_max_retain_context_chars=333,
             session_summary_min_latest_query_reserve_chars=111,
-            session_summary_drop_completed_todos_after_turns=5,
         )
         assert p._tags == ["tag1", "tag2"]
         assert p._retain_tags == ["tag1", "tag2"]
@@ -436,7 +453,6 @@ class TestConfig:
         assert p._session_summary_budget.max_prompt_inject_chars == 222
         assert p._session_summary_budget.max_retain_context_chars == 333
         assert p._session_summary_budget.min_latest_query_reserve_chars == 111
-        assert p._session_summary_budget.drop_completed_todos_after_turns == 5
 
     def test_config_from_env_fallback(self, tmp_path, monkeypatch):
         """When no config file exists, falls back to env vars."""
@@ -739,6 +755,20 @@ class TestToolHandlers:
         item = provider._client.aretain_batch.call_args.kwargs["items"][0]
         assert "observation_scopes" not in item
 
+    def test_retain_tool_strips_runtime_identifiers(self, provider):
+        provider.handle_tool_call(
+            "hindsight_retain",
+            {
+                "content": (
+                    "[message_id: om_x100b6d364e7e60a0c49f20c620fbbc6]\n"
+                    "sender: ou_cb923a19782fe748cd9fff99454eee31\n"
+                    "用户喜欢紧凑界面"
+                )
+            },
+        )
+        call_kwargs = provider._client.aretain.call_args.kwargs
+        assert call_kwargs["content"] == "用户喜欢紧凑界面"
+
     def test_retain_missing_content(self, provider):
         result = json.loads(provider.handle_tool_call(
             "hindsight_retain", {}
@@ -771,6 +801,22 @@ class TestToolHandlers:
         call_kwargs = p._client.arecall.call_args.kwargs
         assert call_kwargs["types"] == ["world", "experience"]
 
+    def test_recall_tool_strips_runtime_identifiers(self, provider):
+        provider.handle_tool_call(
+            "hindsight_recall",
+            {
+                "query": (
+                    "Conversation info (untrusted metadata):\n"
+                    "```json\n"
+                    "{\"message_id\":\"om_x100b6d364e7e60a0c49f20c620fbbc6\"}\n"
+                    "```\n"
+                    "ou_cb923a19782fe748cd9fff99454eee31: 查询 retain 语义"
+                )
+            },
+        )
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert call_kwargs["query"] == "查询 retain 语义"
+
     def test_recall_no_results(self, provider):
         provider._client.arecall.return_value = SimpleNamespace(results=[])
         result = json.loads(provider.handle_tool_call(
@@ -789,6 +835,14 @@ class TestToolHandlers:
             "hindsight_reflect", {"query": "summarize"}
         ))
         assert result["result"] == "Synthesized answer"
+
+    def test_reflect_tool_strips_runtime_identifiers(self, provider):
+        provider.handle_tool_call(
+            "hindsight_reflect",
+            {"query": "[open_id: ou_cb923a19782fe748cd9fff99454eee31]\n总结项目状态"},
+        )
+        call_kwargs = provider._client.areflect.call_args.kwargs
+        assert call_kwargs["query"] == "总结项目状态"
 
     def test_reflect_missing_query(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -911,6 +965,23 @@ class TestPrefetch:
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
 
+    def test_queue_prefetch_strips_runtime_identifiers_from_query(self, provider):
+        provider.queue_prefetch(
+            "[message_id: om_x100b6d364e7e60a0c49f20c620fbbc6]\n"
+            "ou_cb923a19782fe748cd9fff99454eee31: 查询 retain 语义"
+        )
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert call_kwargs["query"] == "查询 retain 语义"
+
+    def test_queue_prefetch_skips_empty_query_after_sanitization(self, provider):
+        provider.queue_prefetch("[message_id: om_x100b6d364e7e60a0c49f20c620fbbc6]")
+
+        assert provider._prefetch_thread is None
+        provider._client.arecall.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # sync_turn tests
@@ -1026,8 +1097,12 @@ class TestSyncTurn:
         assert item["metadata"]["turn_index"] == "3"
         assert item["metadata"]["message_count"] == "6"
 
-    def test_sync_turn_retains_only_pending_batch(self, provider_with_config):
+    def test_sync_turn_retains_only_pending_batch(self, provider_with_config, monkeypatch):
         """Each retain sends only turns since the previous retain."""
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_api_supports_update_mode_append",
+            lambda *a, **kw: True,
+        )
         p = provider_with_config(retain_every_n_turns=2)
 
         p.sync_turn("turn1-user", "turn1-asst")
@@ -1051,6 +1126,34 @@ class TestSyncTurn:
         assert "turn3-user" in content
         assert "turn4-user" in content
         assert p._client.aretain_batch.call_args.kwargs["items"][0]["metadata"]["message_count"] == "4"
+
+    def test_legacy_sync_turn_retains_full_document_batches(self, provider_with_config, monkeypatch):
+        """Legacy replace APIs must receive the retained baseline plus pending turns."""
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_api_supports_update_mode_append",
+            lambda *a, **kw: False,
+        )
+        p = provider_with_config(retain_every_n_turns=2)
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+
+        p._client.aretain_batch.reset_mock()
+
+        p.sync_turn("turn3-user", "turn3-asst")
+        p.sync_turn("turn4-user", "turn4-asst")
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        content = item["content"]
+        assert "turn1-user" in content
+        assert "turn2-user" in content
+        assert "turn3-user" in content
+        assert "turn4-user" in content
+        assert "update_mode" not in item
+        assert item["metadata"]["message_count"] == "8"
+        assert p._session_turns == []
 
     def test_sync_turn_strips_runtime_envelopes_from_retain_content(self, provider):
         dirty_user = """
@@ -1081,6 +1184,8 @@ channel: feishu
         assert "真实用户问题" in content
         assert "正常回复" in content
         assert "message_id" not in content
+        assert "ou_cb923a19782fe748cd9fff99454eee31" not in content
+        assert "om_x100b6d364e7e60a0c49f20c620fbbc6" not in content
         assert "ou_cb923a19782fe748cd9fff99454eee31:" not in content
         assert "[context]" not in content
         assert "sender:" not in content
@@ -1201,6 +1306,31 @@ channel: feishu
         provider.sync_turn("hello", "hi")
         provider._retain_queue.join()
 
+    def test_failed_sync_turn_retain_restores_pending_batch(self, provider_with_config, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_api_supports_update_mode_append",
+            lambda *a, **kw: True,
+        )
+        p = provider_with_config(retain_every_n_turns=1)
+        p._client.aretain_batch.side_effect = RuntimeError("network error")
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p._retain_queue.join()
+
+        assert "turn1-user" in "".join(p._session_turns)
+        assert p._retain_inflight is False
+
+        p._client.aretain_batch.side_effect = None
+        p._client.aretain_batch.reset_mock()
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["update_mode"] == "append"
+        assert "turn1-user" in item["content"]
+        assert "turn2-user" in item["content"]
+        assert p._session_turns == []
+
     def test_sync_turn_preserves_unicode(self, provider_with_config):
         """Non-ASCII text (CJK, ZWJ emoji) must survive JSON round-trip intact."""
         p = provider_with_config()
@@ -1275,6 +1405,20 @@ class TestShutdownRace:
         assert client.aretain_batch.call_count == 2
         assert provider._retain_queue.empty()
 
+    def test_shutdown_flushes_partial_retain_buffer(self, provider_with_config):
+        p = provider_with_config(retain_every_n_turns=3)
+        client = p._client
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        client.aretain_batch.assert_not_called()
+
+        p.shutdown()
+
+        client.aretain_batch.assert_called_once()
+        item = client.aretain_batch.call_args.kwargs["items"][0]
+        assert "turn1-user" in item["content"]
+        assert p._retain_queue.empty()
+
     def test_shutdown_is_idempotent(self, provider):
         provider.sync_turn("a", "b")
         provider.shutdown()
@@ -1335,6 +1479,33 @@ class TestSessionSwitchBufferFlush:
         provider._retain_queue.join()
         provider._client.aretain_batch.assert_not_called()
         assert provider._session_id == "new-sid"
+
+    def test_legacy_switch_flush_preserves_retained_baseline(self, provider_with_config, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_api_supports_update_mode_append",
+            lambda *a, **kw: False,
+        )
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+        old_doc = p._document_id
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+        p._client.aretain_batch.reset_mock()
+
+        p.sync_turn("turn3-user", "turn3-asst")
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        p._retain_queue.join()
+
+        kw = p._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == old_doc
+        item = kw["items"][0]
+        assert "update_mode" not in item
+        assert "turn1-user" in item["content"]
+        assert "turn2-user" in item["content"]
+        assert "turn3-user" in item["content"]
+        assert item["metadata"]["message_count"] == "6"
+        assert p._retained_turns == []
 
     def test_prefetch_result_cleared_on_switch(self, provider):
         """Stale recall text from the old session must not leak into the
@@ -1544,12 +1715,10 @@ class TestSessionSummaryIntegration:
                 summary_key=provider._session_summary_key(),
                 identity_scope=provider._session_summary_identity_scope(),
                 summary_json={
-                    "schema_version": 1,
-                    "active_projects": [project],
-                    "semantic_anchors": [f"Continue {project} rollout."],
-                    "exact_identifiers": [project],
+                    "schema_version": 2,
+                    "summary_text": f"Continue {project} rollout.",
                 },
-                summary_text=f"Active projects: {project}",
+                summary_text=f"Continue {project} rollout.",
                 turn=2,
                 turn_hash="turn-hash",
                 last_input_hash=f"input-{project}",
@@ -1567,11 +1736,13 @@ class TestSessionSummaryIntegration:
         )
         self._seed_summary(p, project="active-project")
 
-        p.queue_prefetch("What is next?")
+        p.queue_prefetch("[message_id: om_x100b6d364e7e60a0c49f20c620fbbc6]\nWhat is next?")
         p._prefetch_thread.join(timeout=3.0)
 
         query = p._client.arecall.call_args.kwargs["query"]
         assert query.startswith("What is next?")
+        assert "message_id" not in query
+        assert "om_x100" not in query
         assert "Rolling session summary:" in query
         assert "active-project" in query
         assert len(query) <= p._recall_max_input_chars

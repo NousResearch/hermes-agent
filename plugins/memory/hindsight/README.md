@@ -128,7 +128,6 @@ LLM generator fields are parsed and reserved for a future helper.
 | `session_summary_max_prompt_inject_chars` | `1200` | Budget for future prompt-injected summary context |
 | `session_summary_max_retain_context_chars` | `1200` | Budget for future retain context summary text |
 | `session_summary_min_latest_query_reserve_chars` | `400` | Latest-query reserve when trimming summary inputs |
-| `session_summary_drop_completed_todos_after_turns` | `20` | Age after which completed todos may be dropped from summaries |
 
 Summary inputs are sanitized to user/assistant text only. Tool role logs,
 assistant tool-call payloads, reasoning-only payloads, prompt-injection lines,

@@ -23,7 +23,9 @@
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "dependencies": {
     "@streamdown/math": "^1.0.2",
-    "agent-browser": "^0.26.0"
+    "agent-browser": "^0.26.0",
+    "react-router": "7.16.0",
+    "react-router-dom": "7.16.0"
   },
   "overrides": {
     "lodash": "4.18.1"

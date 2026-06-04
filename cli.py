@@ -13054,8 +13054,11 @@ class HermesCLI:
 
         try:
             from hermes_cli.skin_engine import get_active_skin
+            from hermes_cli.strings import get_welcome as _get_i18n_welcome
             _welcome_skin = get_active_skin()
-            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Hermes Agent! Type your message or /help for commands.")
+            _welcome_text = _get_i18n_welcome()
+            if not _welcome_text or _welcome_text.startswith("cli."):
+                _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Hermes Agent! Type your message or /help for commands.")
             _welcome_color = _welcome_skin.get_color("banner_text", "#FFF8DC")
         except Exception:
             _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."

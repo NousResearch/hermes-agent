@@ -4,11 +4,12 @@ import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { deleteEnvVar, getToolsetConfig, revealEnvVar, selectToolsetProvider, setEnvVar } from '@/hermes'
-import { Check, ExternalLink, Eye, EyeOff, Loader2, Save, Trash2 } from '@/lib/icons'
+import { Check, Loader2, Save } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { ToolEnvVar, ToolProvider, ToolsetConfig } from '@/types/hermes'
 
+import { EnvVarActionsMenu, EnvVarActionsTrigger } from './env-var-actions-menu'
 import { Pill } from './primitives'
 
 interface ToolsetConfigPanelProps {
@@ -108,35 +109,20 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             <p className="mt-0.5 text-[0.7rem] text-muted-foreground">{envVar.prompt}</p>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {envVar.url && (
-            <Button asChild size="xs" title="Open provider docs" variant="ghost">
-              <a href={envVar.url} rel="noreferrer" target="_blank">
-                Docs
-                <ExternalLink className="size-3" />
-              </a>
-            </Button>
-          )}
-          {isSet && (
-            <Button onClick={() => void handleReveal()} size="icon-xs" title="Reveal value" variant="ghost">
-              {revealed !== null ? <EyeOff /> : <Eye />}
-            </Button>
-          )}
-          <Button onClick={() => setEditing(e => !e)} size="xs" variant="textStrong">
-            {isSet ? 'Replace' : 'Set'}
-          </Button>
-          {isSet && (
-            <Button
-              disabled={busy}
-              onClick={() => void handleClear()}
-              size="icon-xs"
-              title="Clear value"
-              variant="ghost"
-            >
-              <Trash2 />
-            </Button>
-          )}
-        </div>
+        {!editing && (
+          <EnvVarActionsMenu
+            clearDisabled={busy}
+            docsUrl={envVar.url}
+            isRevealed={revealed !== null}
+            isSet={isSet}
+            label={envVar.key}
+            onClear={() => void handleClear()}
+            onEdit={() => setEditing(true)}
+            onReveal={() => void handleReveal()}
+          >
+            <EnvVarActionsTrigger label={envVar.key} onClick={event => event.stopPropagation()} />
+          </EnvVarActionsMenu>
+        )}
       </div>
 
       {isSet && revealed !== null && (

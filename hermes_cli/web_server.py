@@ -2833,18 +2833,66 @@ def _channel_managed_env_keys() -> frozenset[str]:
         return frozenset()
 
 
+# Cross-cutting gateway / relay knobs stay on the Keys → Settings tab even though
+# they use the ``messaging`` category in OPTIONAL_ENV_VARS. Platform-scoped vars
+# (``DISCORD_*``, ``MATRIX_*``, …) are owned by the Messaging UI instead.
+_MESSAGING_KEYS_PAGE_KEYS = frozenset({
+    "GATEWAY_ALLOW_ALL_USERS",
+    "GATEWAY_PROXY_KEY",
+    "GATEWAY_PROXY_URL",
+})
+
+
+def _platform_env_prefixes(platform_id: str) -> tuple[str, ...]:
+    """Env-var prefixes owned by a messaging platform card."""
+    aliases: dict[str, tuple[str, ...]] = {
+        "email": ("EMAIL_",),
+        "homeassistant": ("HASS_",),
+        "qqbot": ("QQ_", "QQBOT_"),
+        "sms": ("TWILIO_",),
+        "wecom": ("WECOM_BOT_", "WECOM_SECRET"),
+        "wecom_callback": ("WECOM_CALLBACK_",),
+    }
+    if platform_id in aliases:
+        return aliases[platform_id]
+    return (platform_id.upper().replace("-", "_") + "_",)
+
+
+def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:
+    """All messaging-category env vars for a platform (override + plugin + prefix)."""
+    prefixes = _platform_env_prefixes(platform_id)
+    keys: list[str] = []
+    for name, info in OPTIONAL_ENV_VARS.items():
+        if info.get("category") != "messaging":
+            continue
+        if name in _MESSAGING_KEYS_PAGE_KEYS:
+            continue
+        if not any(name.startswith(prefix) for prefix in prefixes):
+            continue
+        keys.append(name)
+    return tuple(sorted(set(keys)))
+
+
+def _merge_platform_env_vars(
+    platform_id: str,
+    override: dict[str, Any],
+    plugin_entry: Any | None,
+) -> tuple[str, ...]:
+    """Canonical env-var list for a messaging platform card."""
+    discovered = _discover_platform_env_vars(platform_id)
+    if "env_vars" in override:
+        return tuple(dict.fromkeys((*override["env_vars"], *discovered)))
+    if plugin_entry is not None and plugin_entry.required_env:
+        return tuple(dict.fromkeys((*tuple(plugin_entry.required_env), *discovered)))
+    return discovered
+
+
 def _build_catalog_entry(
     platform_id: str, plugin_entry: Any | None = None
 ) -> dict[str, Any]:
     override = _PLATFORM_OVERRIDES.get(platform_id, {})
 
-    if "env_vars" in override:
-        env_vars: tuple[str, ...] = tuple(override["env_vars"])
-    elif plugin_entry is not None and plugin_entry.required_env:
-        env_vars = tuple(plugin_entry.required_env)
-    else:
-        prefix = platform_id.upper() + "_"
-        env_vars = tuple(k for k in OPTIONAL_ENV_VARS if k.startswith(prefix))
+    env_vars = _merge_platform_env_vars(platform_id, override, plugin_entry)
 
     if "required_env" in override:
         required_env = tuple(override["required_env"])
@@ -6663,6 +6711,7 @@ async def get_toolsets():
         _get_effective_configurable_toolsets,
         _get_platform_tools,
         _toolset_has_keys,
+        gui_toolset_label,
     )
     from toolsets import resolve_toolset
 
@@ -6680,7 +6729,9 @@ async def get_toolsets():
             tools = []
         is_enabled = name in enabled_toolsets
         result.append({
-            "name": name, "label": label, "description": desc,
+            "name": name,
+            "label": gui_toolset_label(label),
+            "description": desc,
             "enabled": is_enabled,
             "available": is_enabled,
             "configured": _toolset_has_keys(name, config),

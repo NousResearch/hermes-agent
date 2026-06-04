@@ -432,9 +432,7 @@ export default function SkillsPage() {
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {filteredToolsets.map((ts) => {
                     const TsIcon = toolsetIcon(ts.name);
-                    const labelText =
-                      ts.label.replace(/^[\p{Emoji}\s]+/u, "").trim() ||
-                      ts.name;
+                    const labelText = ts.label.trim() || ts.name;
 
                     return (
                       <Card key={ts.name} className="relative rounded-none">

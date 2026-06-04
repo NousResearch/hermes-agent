@@ -27,6 +27,7 @@ import {
   Palette,
   Plus,
   Settings,
+  Settings2,
   Sun,
   Users,
   Wrench,
@@ -105,7 +106,18 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{ icon: IconComponent; keywords?: strin
     tab: 'providers&pview=keys'
   },
   { icon: Globe, keywords: ['connection', 'messaging'], label: 'Gateway', tab: 'gateway' },
-  { icon: KeyRound, keywords: ['api', 'secrets', 'tokens', 'credentials'], label: 'Tools & Keys', tab: 'keys' },
+  {
+    icon: KeyRound,
+    keywords: ['api', 'secrets', 'tokens', 'credentials', 'browser', 'search'],
+    label: 'Tools & Keys',
+    tab: 'keys&kview=tools'
+  },
+  {
+    icon: Settings2,
+    keywords: ['gateway', 'proxy', 'server', 'webhook', 'env'],
+    label: 'Tools & Keys settings',
+    tab: 'keys&kview=settings'
+  },
   { icon: Wrench, keywords: ['servers', 'tools'], label: 'MCP', tab: 'mcp' },
   { icon: Archive, keywords: ['history', 'archived'], label: 'Archived Chats', tab: 'sessions' },
   { icon: Info, keywords: ['version', 'about'], label: 'About', tab: 'about' }

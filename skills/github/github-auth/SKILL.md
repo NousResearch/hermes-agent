@@ -215,13 +215,33 @@ grep "github.com" ~/.git-credentials 2>/dev/null | head -1 | sed 's|https://[^:]
 Use this pattern at the start of any GitHub workflow:
 
 ```bash
-# Try gh first, fall back to git + curl
+# Try gh first, fall back to git + curl.
+#
+# The agent's .env lives at ${HERMES_HOME}/.env — NOT ~/.hermes/.env. In a
+# tool subprocess HOME is redirected to ${HERMES_HOME}/home (so git/ssh/gh
+# write their configs into the data dir), which means ~ no longer points at
+# ${HERMES_HOME}. Always resolve the .env via $HERMES_HOME, falling back to
+# ~/.hermes only when it isn't set. Token vars are checked in the same
+# precedence the runtime provisions with: GITHUB_PAT > GITHUB_TOKEN > GH_TOKEN.
+HERMES_ENV="${HERMES_HOME:-$HOME/.hermes}/.env"
+# Read the first present token var, in precedence order (not .env line order).
+hermes_env_token() {
+  [ -f "$HERMES_ENV" ] || return 1
+  for _v in GITHUB_PAT GITHUB_TOKEN GH_TOKEN; do
+    _line=$(grep -E "^${_v}=" "$HERMES_ENV" | head -1)
+    if [ -n "$_line" ]; then
+      printf '%s' "$_line" | cut -d= -f2- | tr -d '\n\r' | sed 's/^["'\'']//;s/["'\'']$//'
+      return 0
+    fi
+  done
+  return 1
+}
 if command -v gh &>/dev/null && gh auth status &>/dev/null; then
   echo "AUTH_METHOD=gh"
 elif [ -n "$GITHUB_TOKEN" ]; then
   echo "AUTH_METHOD=curl"
-elif [ -f ~/.hermes/.env ] && grep -q "^GITHUB_TOKEN=" ~/.hermes/.env; then
-  export GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" ~/.hermes/.env | head -1 | cut -d= -f2 | tr -d '\n\r')
+elif _tok=$(hermes_env_token) && [ -n "$_tok" ]; then
+  export GITHUB_TOKEN="$_tok"
   echo "AUTH_METHOD=curl"
 elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
   export GITHUB_TOKEN=$(grep "github.com" ~/.git-credentials | head -1 | sed 's|https://[^:]*:\([^@]*\)@.*|\1|')
@@ -231,6 +251,11 @@ else
   echo "Need to set up authentication first"
 fi
 ```
+
+> **Note:** in a Hermes container the runtime already provisions
+> `${HERMES_HOME}/home/.git-credentials` at boot (the `store` helper reads it
+> automatically), so `git` push/pull/clone over HTTPS works without any of the
+> above. This fallback is for the `curl` API path and for non-container setups.
 
 ---
 

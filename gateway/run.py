@@ -10735,15 +10735,26 @@ class GatewayRunner:
             logger.debug("Failed to write restart dedup marker: %s", e)
 
         active_agents = self._running_agent_count()
-        # When running under a service manager (systemd/launchd) or inside a
-        # Docker/Podman container, use the service restart path: exit with
-        # code 75 so the service manager / container restart policy restarts
-        # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
+        # When running under a service manager (systemd/macOS launchd) or
+        # inside a Docker/Podman container, use the service restart path:
+        # exit with code 75 so the service manager / container restart policy
+        # restarts us.  The detached subprocess approach (setsid + bash)
+        # doesn't work under systemd (KillMode=mixed kills the cgroup) or
+        # Docker (tini exits when the gateway dies, taking the detached
+        # helper with it).  On macOS launchd the 5‑minute gap comes from
+        # the detached helper fighting with launchd's restart semantics;
+        # exiting with non‑zero code 75 matches
+        # KeepAlive.SuccessfulExit=false → immediate restart.
         _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
+        _under_launchd = False
+        if sys.platform == "darwin":
+            try:
+                from hermes_cli.gateway import get_launchd_plist_path
+                _under_launchd = get_launchd_plist_path().exists()
+            except Exception:
+                pass
+        if _under_service or _in_container or _under_launchd:
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)

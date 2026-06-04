@@ -166,6 +166,12 @@ _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
 
+# Sequential (env/context-mutating) cron jobs — workdir/profile jobs that touch
+# process-global runtime state — must run one at a time, but must NOT block the
+# ticker thread.  A persistent single-thread executor preserves ordering across
+# ticks while keeping dispatch fire-and-forget, the same as the parallel pool.
+_sequential_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
+
 
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
     """Return (or create) the persistent parallel pool."""
@@ -181,13 +187,33 @@ def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadP
     return _parallel_pool
 
 
+def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
+    """Return (or create) the persistent single-thread sequential pool.
+
+    A single worker guarantees env/context-mutating jobs never overlap, even
+    across ticks: a job queued by a newer tick waits for the previous tick's
+    sequential jobs to finish rather than corrupting their os.environ /
+    profile state.
+    """
+    global _sequential_pool
+    if _sequential_pool is None:
+        _sequential_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="cron-seq",
+        )
+    return _sequential_pool
+
+
 def _shutdown_parallel_pool() -> None:
-    """Shut down the persistent pool on process exit."""
-    global _parallel_pool, _parallel_pool_max_workers
+    """Shut down the persistent pools on process exit."""
+    global _parallel_pool, _parallel_pool_max_workers, _sequential_pool
     if _parallel_pool is not None:
         _parallel_pool.shutdown(wait=True, cancel_futures=False)
         _parallel_pool = None
         _parallel_pool_max_workers = None
+    if _sequential_pool is not None:
+        _sequential_pool.shutdown(wait=True, cancel_futures=False)
+        _sequential_pool = None
 
 
 atexit.register(_shutdown_parallel_pool)
@@ -2072,11 +2098,47 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         ]
 
         _results: list = []
+        _all_futures: list = []
 
-        # Sequential pass for env/context-mutating jobs.
-        for job in sequential_jobs:
+        def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor):
+            """Submit a job fire-and-forget with the in-flight dedup guard.
+
+            Returns the future, or None if the job was skipped because a prior
+            tick's run of the same job is still in flight.  The running-set
+            membership is released in the worker's finally block.
+            """
+            job_id = job["id"]
+            with _running_lock:
+                if job_id in _running_job_ids:
+                    logger.info("Job '%s' already running — skipping", job.get("name", job_id))
+                    return None
+                _running_job_ids.add(job_id)
             _ctx = contextvars.copy_context()
-            _results.append(_ctx.run(_process_job, job))
+
+            def _run_and_release(j=job, ctx=_ctx):
+                try:
+                    return ctx.run(_process_job, j)
+                finally:
+                    with _running_lock:
+                        _running_job_ids.discard(j["id"])
+
+            return pool.submit(_run_and_release)
+
+        # Sequential pass for env/context-mutating (workdir/profile) jobs.
+        # Queued to a persistent single-thread pool so they run one at a time
+        # WITHOUT blocking the ticker thread — a long workdir/profile job no
+        # longer starves the rest of the schedule (same fix as the parallel
+        # pass, just serialized).  The in-flight guard prevents a still-running
+        # job from being re-queued on the next tick.
+        if sequential_jobs:
+            seq_pool = _get_sequential_pool()
+            for job in sequential_jobs:
+                fut = _submit_with_guard(job, seq_pool)
+                if fut is None:
+                    continue
+                _all_futures.append(fut)
+                if not sync:
+                    _results.append(True)  # optimistically counted
 
         # Parallel pass — persistent pool, non-blocking dispatch.
         # Jobs that are already running (from a previous tick) are skipped.
@@ -2085,46 +2147,54 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         # queue needed.
         if parallel_jobs:
             pool = _get_parallel_pool(_max_workers)
-            _parallel_futures = []
             for job in parallel_jobs:
-                job_id = job["id"]
-                with _running_lock:
-                    if job_id in _running_job_ids:
-                        logger.info("Job '%s' already running — skipping", job.get("name", job_id))
-                        continue
-                    _running_job_ids.add(job_id)
-                _ctx = contextvars.copy_context()
-                # Fire-and-forget: remove from running set when done.
-                def _run_and_release(j=job, ctx=_ctx):
-                    try:
-                        return ctx.run(_process_job, j)
-                    finally:
-                        with _running_lock:
-                            _running_job_ids.discard(j["id"])
-                fut = pool.submit(_run_and_release)
-                if sync:
-                    _parallel_futures.append(fut)
-                else:
+                fut = _submit_with_guard(job, pool)
+                if fut is None:
+                    continue
+                _all_futures.append(fut)
+                if not sync:
                     _results.append(True)  # optimistically counted
-            # In sync mode (tests), wait for all parallel jobs to finish.
-            if sync and _parallel_futures:
-                for f in concurrent.futures.as_completed(_parallel_futures):
-                    try:
-                        _results.append(f.result())
-                    except Exception as exc:
-                        logger.error("Parallel cron job future failed: %s", exc)
-                        _results.append(False)
 
         # Best-effort sweep of MCP stdio subprocesses that survived their
-        # session teardown during this tick.  Runs AFTER every job has
-        # finished so active sessions (including live user chats) are
-        # never touched — only PIDs explicitly detected as orphans in
-        # tools.mcp_tool._run_stdio's finally block are reaped.
-        try:
-            from tools.mcp_tool import _kill_orphaned_mcp_children
-            _kill_orphaned_mcp_children()
-        except Exception as _e:
-            logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
+        # session teardown.  Must run AFTER jobs finish so active sessions
+        # (including live user chats) are never touched — only PIDs explicitly
+        # detected as orphans in tools.mcp_tool._run_stdio's finally block are
+        # reaped.
+        def _sweep_mcp_orphans() -> None:
+            try:
+                from tools.mcp_tool import _kill_orphaned_mcp_children
+                _kill_orphaned_mcp_children()
+            except Exception as _e:
+                logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
+
+        if sync:
+            # Sync mode (tests / manual ticks): wait for all dispatched jobs,
+            # collect results, then sweep once.
+            for f in concurrent.futures.as_completed(_all_futures):
+                try:
+                    _results.append(f.result())
+                except Exception as exc:
+                    logger.error("Cron job future failed: %s", exc)
+                    _results.append(False)
+            _sweep_mcp_orphans()
+            return sum(_results)
+
+        # Async (gateway ticker) mode: don't block.  Sweep orphans via a
+        # done-callback fired after the LAST dispatched job completes, so the
+        # sweep still happens after jobs finish without stalling the tick.
+        if _all_futures:
+            _remaining = [len(_all_futures)]
+
+            def _on_done(_f: concurrent.futures.Future) -> None:
+                _remaining[0] -= 1
+                if _remaining[0] <= 0:
+                    _sweep_mcp_orphans()
+
+            for _f in _all_futures:
+                _f.add_done_callback(_on_done)
+        else:
+            # Nothing dispatched (all skipped / no due jobs) — sweep inline.
+            _sweep_mcp_orphans()
 
         return sum(_results)
     finally:

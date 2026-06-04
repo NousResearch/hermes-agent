@@ -2994,6 +2994,7 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+    # Fast path: if the session is already live, reuse it under the lock.
     with _session_resume_lock:
         live = _find_live_session_by_key(target)
         if live is not None:
@@ -3008,44 +3009,73 @@ def _(rid, params: dict) -> dict:
             payload["resumed"] = target
             return _ok(rid, payload)
 
-        sid = uuid.uuid4().hex[:8]
-        _enable_gateway_prompts()
+    # Build the agent OUTSIDE the lock — _make_agent can block for seconds
+    # (MCP discovery, prompt/skill build, AIAgent construction). Holding
+    # _session_resume_lock across it would stall session.close on the main
+    # dispatch thread (it's not a _LONG_HANDLER), blocking fast-path RPCs.
+    sid = uuid.uuid4().hex[:8]
+    _enable_gateway_prompts()
+    try:
+        db.reopen_session(target)
+        history = db.get_messages_as_conversation(target)
+        display_history = db.get_messages_as_conversation(
+            target, include_ancestors=True
+        )
+        display_history_prefix = display_history[
+            : max(0, len(display_history) - len(history))
+        ]
+        messages = _history_to_messages(display_history)
+        tokens = _set_session_context(target)
         try:
-            db.reopen_session(target)
-            history = db.get_messages_as_conversation(target)
-            display_history = db.get_messages_as_conversation(
-                target, include_ancestors=True
-            )
-            display_history_prefix = display_history[
-                : max(0, len(display_history) - len(history))
-            ]
-            messages = _history_to_messages(display_history)
-            tokens = _set_session_context(target)
+            agent = _make_agent(sid, target, session_id=target)
+        finally:
+            _clear_session_context(tokens)
+    except Exception as e:
+        return _err(rid, 5000, f"resume failed: {e}")
+
+    # Double-checked locking: another concurrent resume may have created the
+    # live session while we were building. Re-check under the lock; if it won,
+    # discard our just-built agent and reuse theirs (no worker/poller wired yet).
+    with _session_resume_lock:
+        live = _find_live_session_by_key(target)
+        if live is not None:
             try:
-                agent = _make_agent(sid, target, session_id=target)
-            finally:
-                _clear_session_context(tokens)
+                if hasattr(agent, "close"):
+                    agent.close()
+            except Exception:
+                pass
+            other_sid, other_session = live
+            payload = _live_session_payload(
+                other_sid,
+                other_session,
+                cols=cols,
+                touch=True,
+                transport=current_transport() or _stdio_transport,
+            )
+            payload["resumed"] = target
+            return _ok(rid, payload)
+        try:
             _init_session(sid, target, agent, history, cols=cols)
             if sid in _sessions:
                 _sessions[sid]["display_history_prefix"] = display_history_prefix
         except Exception as e:
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
-        return _ok(
-            rid,
-            {
-                "session_id": sid,
-                "resumed": target,
-                "message_count": len(messages),
-                "messages": messages,
-                "info": _session_info(agent, session),
-                "inflight": None,
-                "running": False,
-                "session_key": target,
-                "started_at": float(session.get("created_at") or time.time()),
-                "status": "idle",
-            },
-        )
+    return _ok(
+        rid,
+        {
+            "session_id": sid,
+            "resumed": target,
+            "message_count": len(messages),
+            "messages": messages,
+            "info": _session_info(agent, session),
+            "inflight": None,
+            "running": False,
+            "session_key": target,
+            "started_at": float(session.get("created_at") or time.time()),
+            "status": "idle",
+        },
+    )
 
 
 @method("session.cwd.set")

@@ -20993,9 +20993,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # first message that can never be updated, resulting in
                         # duplicate messages (partial + final).
                         _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                        if not _adapter_supports_edit:
+                        # Adapters that can't edit messages but provide a
+                        # native-streaming transport (e.g. WeCom's
+                        # msgtype: "stream" via send_stream_frame) get
+                        # past the gate — the consumer's native branch
+                        # delivers the full turn through that transport.
+                        _adapter_supports_native_stream = bool(getattr(
+                            _adapter, "SUPPORTS_NATIVE_STREAMING", False,
+                        ))
+                        if not _adapter_supports_edit and not _adapter_supports_native_stream:
                             raise RuntimeError("skip streaming for non-editable platform")
                         _effective_cursor = _scfg.cursor
+                        # Native-only platforms render their own typing
+                        # animation while the stream is live; suppress the
+                        # consumer-injected cursor so the user doesn't see
+                        # a stray ▉ alongside the platform's UI.
+                        if not _adapter_supports_edit and _adapter_supports_native_stream:
+                            _effective_cursor = ""
                         # Some Matrix clients render the streaming cursor
                         # as a visible tofu/white-box artifact.  Keep
                         # streaming text on Matrix, but suppress the cursor.

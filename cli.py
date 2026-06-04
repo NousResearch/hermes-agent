@@ -9072,6 +9072,8 @@ class HermesCLI:
             self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
+        elif canonical == "lang":
+            self._handle_lang_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
         elif canonical == "busy":
@@ -9954,6 +9956,41 @@ class HermesCLI:
         print("  Note: banner colors will update on next session start.")
         if self._apply_tui_skin_style():
             print("  Prompt + TUI colors updated.")
+
+    def _handle_lang_command(self, cmd_original: str) -> None:
+        """Handle /lang [language] — show or change the interface language."""
+        from agent.i18n import (
+            get_language, set_language, SUPPORTED_LANGUAGES,
+            get_system_locale, reset_language_cache
+        )
+        from hermes_cli.strings import _clear_cache
+
+        parts = cmd_original.strip().split()
+
+        if len(parts) == 1:
+            # Show current language and available languages
+            current = get_language()
+            system = get_system_locale()
+
+            print(f"  Current language: {current}")
+            print(f"  System language: {system}")
+            print(f"  Available languages: {', '.join(SUPPORTED_LANGUAGES)}")
+            print(f"  Usage: /lang <language>")
+            return
+
+        lang = parts[1].strip().lower()
+
+        if lang not in SUPPORTED_LANGUAGES:
+            print(f"  Error: unsupported language '{lang}'")
+            print(f"  Available languages: {', '.join(SUPPORTED_LANGUAGES)}")
+            return
+
+        # Switch language
+        set_language(lang)
+        _clear_cache()
+
+        print(f"  Language switched to: {lang}")
+        print(f"  Note: some changes may require a CLI restart to take full effect")
 
     def _handle_footer_command(self, cmd_original: str) -> None:
         """Toggle or inspect ``display.runtime_footer.enabled`` from the CLI.

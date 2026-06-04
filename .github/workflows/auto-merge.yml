@@ -9,8 +9,6 @@ on:
     types: [opened, synchronize, reopened, labeled]
   pull_request_review:
     types: [submitted]
-  issue_comment:
-    types: [created]
   # CI-completion triggers: fire once per workflow finish so we get a
   # fresh evaluation the moment the last check goes green.
   # Note: workflow_run only reads from the default branch, so these
@@ -61,14 +59,12 @@ jobs:
     # Skip fork PRs; skip non-'reviewed' label events; prevent self-trigger loop.
     # synchronize/opened/reopened are allowed through so the workflow appears
     # in the PR's checks list; the script short-circuits on those events.
-    # issue_comment fires for all issues — gate to PRs only.
     if: >-
       (github.event_name == 'workflow_run' && github.event.workflow_run.name != 'Auto-merge') ||
       (github.event_name == 'pull_request_review' && github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (github.event.action != 'labeled' || github.event.label.name == 'reviewed')) ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (github.event.action != 'labeled' || github.event.label.name == 'reviewed'))
     # No polling needed for workflow_run — it fires after CI finishes.
-    # For pull_request_review / labeled / issue_comment events a short poll loop waits for CI.
+    # For pull_request_review / labeled events a short poll loop waits for CI.
     timeout-minutes: 30
 
     steps:
@@ -162,8 +158,6 @@ jobs:
                 core.info('workflow_run has no associated same-repo PR — skipping.');
                 return;
               }
-            } else if (context.eventName === 'issue_comment') {
-              prNumber = context.payload.issue.number;
             } else {
               prNumber = context.payload.pull_request.number;
             }
@@ -250,7 +244,7 @@ jobs:
             // ── 4. Wait for all checks to complete ────────────────────────────
             // workflow_run: another suite may still be running — exit and let the
             // next workflow_run completion re-evaluate.
-            // pull_request_review / labeled / issue_comment: poll up to 25 min.
+            // pull_request_review / labeled: poll up to 25 min.
             let pendingRuns = externalRuns.filter(r => r.status !== 'completed');
             if (pendingRuns.length > 0) {
               if (context.eventName === 'workflow_run') {

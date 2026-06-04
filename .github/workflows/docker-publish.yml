@@ -148,6 +148,8 @@ jobs:
   # ---------------------------------------------------------------------------
   build-arm64:
     # See build-amd64 for the fork-friendly guard scheme.
+    # Skip on PRs: arm64 never pushes on PR events, so amd64 smoke test suffices.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     outputs:

@@ -220,6 +220,10 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+const DESKTOP_ZOOM_CONFIG_PATH = path.join(app.getPath('userData'), 'zoom.json')
+const DESKTOP_ZOOM_MIN_LEVEL = -9
+const DESKTOP_ZOOM_MAX_LEVEL = 9
+const DESKTOP_ZOOM_STEP = 0.1
 // Branch we track for self-update. The GUI work has merged to main, so this
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
@@ -1119,6 +1123,57 @@ function writeFileAtomic(targetPath, data, encoding) {
 function writeDesktopUpdateConfig(config) {
   fs.mkdirSync(path.dirname(DESKTOP_UPDATE_CONFIG_PATH), { recursive: true })
   writeFileAtomic(DESKTOP_UPDATE_CONFIG_PATH, JSON.stringify(config, null, 2))
+}
+
+let desktopZoomLevelCache = null
+
+function clampDesktopZoomLevel(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 0
+  return Math.max(DESKTOP_ZOOM_MIN_LEVEL, Math.min(DESKTOP_ZOOM_MAX_LEVEL, numeric))
+}
+
+function readDesktopZoomLevel() {
+  if (desktopZoomLevelCache !== null) return desktopZoomLevelCache
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DESKTOP_ZOOM_CONFIG_PATH, 'utf8'))
+    desktopZoomLevelCache = clampDesktopZoomLevel(parsed?.zoomLevel)
+  } catch {
+    desktopZoomLevelCache = 0
+  }
+  return desktopZoomLevelCache
+}
+
+function persistDesktopZoomLevel(zoomLevel) {
+  const next = clampDesktopZoomLevel(zoomLevel)
+  desktopZoomLevelCache = next
+  try {
+    fs.mkdirSync(path.dirname(DESKTOP_ZOOM_CONFIG_PATH), { recursive: true })
+    writeFileAtomic(DESKTOP_ZOOM_CONFIG_PATH, `${JSON.stringify({ zoomLevel: next }, null, 2)}\n`, 'utf8')
+  } catch {}
+  return next
+}
+
+function applyDesktopZoomLevelToWindow(window, zoomLevel = readDesktopZoomLevel()) {
+  if (!window || window.isDestroyed()) return
+  try {
+    window.webContents.setZoomLevel(clampDesktopZoomLevel(zoomLevel))
+  } catch {}
+}
+
+function applyDesktopZoomLevelToAllWindows(zoomLevel = readDesktopZoomLevel()) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    applyDesktopZoomLevelToWindow(window, zoomLevel)
+  }
+}
+
+function setDesktopZoomLevel(zoomLevel) {
+  const next = persistDesktopZoomLevel(zoomLevel)
+  applyDesktopZoomLevelToAllWindows(next)
+}
+
+function stepDesktopZoomLevel(delta) {
+  setDesktopZoomLevel(readDesktopZoomLevel() + delta)
 }
 
 // Match the backend's source resolution but bias toward a real git checkout.
@@ -2848,27 +2903,17 @@ function buildApplicationMenu() {
       {
         label: 'Actual Size',
         accelerator: 'CommandOrControl+0',
-        click: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setZoomLevel(0) }
+        click: () => setDesktopZoomLevel(0)
       },
       {
         label: 'Zoom In',
         accelerator: 'CommandOrControl+Plus',
-        click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            const next = Math.min(mainWindow.webContents.getZoomLevel() + 0.1, 9)
-            mainWindow.webContents.setZoomLevel(next)
-          }
-        }
+        click: () => stepDesktopZoomLevel(DESKTOP_ZOOM_STEP)
       },
       {
         label: 'Zoom Out',
         accelerator: 'CommandOrControl+-',
-        click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            const next = Math.max(mainWindow.webContents.getZoomLevel() - 0.1, -9)
-            mainWindow.webContents.setZoomLevel(next)
-          }
-        }
+        click: () => stepDesktopZoomLevel(-DESKTOP_ZOOM_STEP)
       },
       { type: 'separator' },
       { role: 'togglefullscreen' }
@@ -2933,7 +2978,6 @@ function installZoomShortcuts(window) {
   // The menu items handle this on macOS (where the menu is always present),
   // but on Linux/Windows the menu is null and Chromium's default handler
   // would use the full 0.2 step, so we intercept here for consistency.
-  const ZOOM_STEP = 0.1
   window.webContents.on('before-input-event', (event, input) => {
     const mod = IS_MAC ? input.meta : input.control
     if (!mod || input.alt || input.shift) return
@@ -2941,17 +2985,27 @@ function installZoomShortcuts(window) {
     const key = input.key
     if (key === '0') {
       event.preventDefault()
-      window.webContents.setZoomLevel(0)
+      setDesktopZoomLevel(0)
     } else if (key === '=' || key === '+') {
       event.preventDefault()
-      const next = Math.min(window.webContents.getZoomLevel() + ZOOM_STEP, 9)
-      window.webContents.setZoomLevel(next)
+      stepDesktopZoomLevel(DESKTOP_ZOOM_STEP)
     } else if (key === '-') {
       event.preventDefault()
-      const next = Math.max(window.webContents.getZoomLevel() - ZOOM_STEP, -9)
-      window.webContents.setZoomLevel(next)
+      stepDesktopZoomLevel(-DESKTOP_ZOOM_STEP)
     }
   })
+}
+
+function installZoomPersistence(window) {
+  const reapply = () => {
+    applyDesktopZoomLevelToWindow(window)
+    setTimeout(() => applyDesktopZoomLevelToWindow(window), 0)
+  }
+  reapply()
+  window.webContents.on('dom-ready', reapply)
+  window.webContents.on('did-finish-load', reapply)
+  window.webContents.on('did-navigate', reapply)
+  window.webContents.on('did-navigate-in-page', reapply)
 }
 
 function installContextMenu(window) {
@@ -3919,6 +3973,7 @@ function createWindow() {
   installPreviewShortcut(mainWindow)
   installDevToolsShortcut(mainWindow)
   installZoomShortcuts(mainWindow)
+  installZoomPersistence(mainWindow)
   installContextMenu(mainWindow)
   mainWindow.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)

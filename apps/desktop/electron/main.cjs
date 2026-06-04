@@ -1333,6 +1333,19 @@ async function applyUpdates(opts = {}) {
       return { ok: true, manual: true, command, hermesRoot: updateRoot }
     }
 
+    // macOS/Linux: prefer in-app update over the Tauri hermes-setup binary.
+    // On Windows, the venv shim file lock prevents `hermes update` from running
+    // while the desktop process holds the lock, so the detached hermes-setup.exe
+    // --update is the only viable path. On macOS/Linux there is no such
+    // constraint, so the in-app path (applyUpdatesPosixInApp) is always better:
+    // it streams progress to the UI via emitUpdateProgress, handles `hermes
+    // update` + `hermes desktop --build-only` + atomic bundle swap + relaunch,
+    // and degrades gracefully with visible error messages instead of silently
+    // closing the app. (#38300)
+    if (!IS_WINDOWS) {
+      return await applyUpdatesPosixInApp(opts)
+    }
+
     emitUpdateProgress({ stage: 'restart', message: 'Handing off to the Hermes updater…', percent: 100 })
 
     const updateRoot = resolveUpdateRoot()

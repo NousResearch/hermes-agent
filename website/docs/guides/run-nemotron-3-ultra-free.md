@@ -12,11 +12,37 @@ Nous Research has been inducted into the **Nemotron Coalition** of leading AI la
 The `nvidia/nemotron-3-ultra:free` tier is available from **June 4th to June 18th**. The `:free` tag is what keeps it on the no-cost plan — pick that exact variant.
 :::
 
-## Before you start
+Pick whichever install fits you. The **desktop app** is the easiest — no terminal required. If you live in a terminal, the **command-line** install is right below it.
 
-You'll need a terminal (macOS, Linux, or Windows via [WSL](https://learn.microsoft.com/en-us/windows/wsl/install)) with `curl` installed. `curl` is preinstalled on most systems.
+## Option A — Desktop app (recommended)
 
-## Steps
+The simplest path: a one-click installer with a guided, point-and-click setup. No terminal needed.
+
+### 1. Download and install
+
+[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) for macOS or Windows, then open it. On first launch it finishes setting itself up (usually under a minute).
+
+### 2. Connect Nous Portal
+
+When the app opens, you'll see a "Let's get you set up" screen. Click **Nous Portal** (marked **Recommended**). Your browser opens — create a [Nous Portal](https://portal.nousresearch.com) account (or sign in), choose the **Free** plan, and authorize Hermes. The app connects automatically.
+
+### 3. Pick the free Nemotron 3 Ultra model
+
+After connecting, the app shows a **Default model** card. Click **Change**, search for **nemotron 3 ultra**, and select the variant tagged **Free tier**:
+
+```
+nvidia/nemotron-3-ultra:free
+```
+
+The `:free` tag is what keeps it on the no-cost tier — pick that variant.
+
+### 4. Start chatting
+
+Click **Start chatting**. That's it — you're talking to Nemotron 3 Ultra, free.
+
+## Option B — Command line
+
+Prefer the terminal? You'll need macOS, Linux, or Windows via [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) with `curl` installed (`curl` is preinstalled on most systems).
 
 ### 1. Install Hermes Agent
 
@@ -70,26 +96,20 @@ That's it — you're talking to Nemotron 3 Ultra, free.
 
 ## Switching to it later
 
-Already set up with another model? Switch any time from inside a session:
+Already set up with another model?
 
-```bash
-/model nvidia/nemotron-3-ultra:free
-```
-
-Or open the picker and choose it from the list:
-
-```bash
-/model
-```
+- **Desktop app:** open the model picker, search for **nemotron 3 ultra**, and select the **Free tier** variant.
+- **CLI / TUI:** switch any time from inside a session with `/model nvidia/nemotron-3-ultra:free`, or run `/model` to open the picker and choose it from the list.
 
 ## Troubleshooting
 
-- **Don't see the model in the list?** Make sure you finished the Nous Portal connection (step 4) and that you're on the **Free** plan. Run `hermes portal info` to confirm you're logged in and routing through Nous.
-- **Picked the wrong variant?** Re-select `nvidia/nemotron-3-ultra:free` with `/model` — the `:free` suffix is required to stay on the no-cost tier.
-- **Browser didn't open / you're on a remote host?** See [OAuth over SSH / Remote Hosts](/guides/oauth-over-ssh) for port-forwarding and manual-paste workarounds.
+- **Don't see the model in the list?** Make sure you finished the Nous Portal connection and that you're on the **Free** plan. In the CLI, `hermes portal info` confirms you're logged in and routing through Nous.
+- **Picked the wrong variant?** Re-select `nvidia/nemotron-3-ultra:free` — the `:free` suffix is required to stay on the no-cost tier.
+- **Browser didn't open / you're on a remote host (CLI)?** See [OAuth over SSH / Remote Hosts](/guides/oauth-over-ssh) for port-forwarding and manual-paste workarounds.
 
 ## See also
 
+- **[Desktop App](/user-guide/desktop)** — The native one-click app (macOS, Windows, Linux)
 - **[Run Hermes Agent with Nous Portal](/guides/run-hermes-with-nous-portal)** — Full Portal walkthrough: models, Tool Gateway, and verification
 - **[Nous Portal integration](/integrations/nous-portal)** — What's in the subscription
 - **[Quickstart](/getting-started/quickstart)** — Install-to-chat in under 5 minutes

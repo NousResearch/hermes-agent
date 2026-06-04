@@ -39,7 +39,7 @@ import type { ToolPart } from './tool-fallback-model'
 // approval at a time, so the single pending row of those tools IS the row that
 // raised it. The command/description text comes from `$approvalRequest` (the
 // event payload), which is the only place that data reliably exists.
-const APPROVAL_TOOLS = new Set(['terminal', 'execute_code'])
+export const APPROVAL_TOOLS = new Set(['terminal', 'execute_code'])
 
 // Canonical gateway choices (ui-tui/src/components/prompts.tsx).
 type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'

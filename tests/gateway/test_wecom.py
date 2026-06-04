@@ -1123,24 +1123,25 @@ class TestSendStreamFrame:
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._send_reply_request = AsyncMock(
-            return_value={"errcode": 0, "errmsg": "ok"},
-        )
+        # Intermediate frames (finish=False) are fire-and-forget via _send_json;
+        # we mock _send_json to capture them and _send_reply_request for finish frames.
+        adapter._send_json = AsyncMock()
+        adapter._ws = MagicMock(closed=False)
+        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
         ok = await adapter.send_stream_frame("hello", chat_id="chat-1")
 
         assert ok is True
-        # Two calls: empty seed + content frame.
-        assert adapter._send_reply_request.await_count == 2
-        seed_call_args = adapter._send_reply_request.await_args_list[0]
-        assert seed_call_args.args[0] == "req-1"
-        assert seed_call_args.args[1]["msgtype"] == "stream"
-        assert seed_call_args.args[1]["stream"]["content"] == ""
-        assert seed_call_args.args[1]["stream"]["finish"] is False
+        # Two fire-and-forget calls via _send_json: empty seed + content.
+        assert adapter._send_json.await_count == 2
+        seed_payload = adapter._send_json.await_args_list[0].args[0]
+        assert seed_payload["body"]["msgtype"] == "stream"
+        assert seed_payload["body"]["stream"]["content"] == ""
+        assert seed_payload["body"]["stream"]["finish"] is False
 
-        content_call_args = adapter._send_reply_request.await_args_list[1]
-        assert content_call_args.args[1]["stream"]["content"] == "hello"
-        assert content_call_args.args[1]["stream"]["finish"] is False
+        content_payload = adapter._send_json.await_args_list[1].args[0]
+        assert content_payload["body"]["stream"]["content"] == "hello"
+        assert content_payload["body"]["stream"]["finish"] is False
 
     @pytest.mark.asyncio
     async def test_first_and_second_call_share_stream_id(self):
@@ -1148,17 +1149,18 @@ class TestSendStreamFrame:
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._send_reply_request = AsyncMock(
-            return_value={"errcode": 0},
-        )
+        adapter._send_json = AsyncMock()
+        adapter._ws = MagicMock(closed=False)
+        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
         await adapter.send_stream_frame("alpha", chat_id="chat-1")
         await adapter.send_stream_frame("alpha beta", chat_id="chat-1")
 
-        assert adapter._send_reply_request.await_count == 3  # seed + alpha + alpha beta
+        # All fire-and-forget: seed + alpha + alpha beta = 3 calls
+        assert adapter._send_json.await_count == 3
         ids = [
-            call.args[1]["stream"]["id"]
-            for call in adapter._send_reply_request.await_args_list
+            call.args[0]["body"]["stream"]["id"]
+            for call in adapter._send_json.await_args_list
         ]
         assert ids[0] == ids[1] == ids[2]
         assert ids[0].startswith("stream_")
@@ -1169,6 +1171,8 @@ class TestSendStreamFrame:
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_json = AsyncMock()
+        adapter._ws = MagicMock(closed=False)
         adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
         await adapter.send_stream_frame("partial", chat_id="chat-1")
@@ -1182,7 +1186,7 @@ class TestSendStreamFrame:
         assert adapter._active_stream_id is None
         assert adapter._active_stream_req_id is None
         assert adapter._active_stream_chat_id is None
-        # Last call must carry finish=true with the full final text.
+        # Finalize goes through _send_reply_request (with ack).
         last_call = adapter._send_reply_request.await_args_list[-1]
         assert last_call.args[1]["stream"]["finish"] is True
         assert last_call.args[1]["stream"]["content"] == "partial final"
@@ -1220,21 +1224,25 @@ class TestSendStreamFrameFailures:
 
     @pytest.mark.asyncio
     async def test_846608_marks_chat_expired_and_returns_false(self):
+        """846608 is only detected on finish=True frames (the only ones that
+        await an ack). Intermediate frames are fire-and-forget."""
         from gateway.platforms.wecom import (
             STREAM_EXPIRED_ERRCODE, WeComAdapter,
         )
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
-        # Seed succeeds; first content frame expires.
+        adapter._send_json = AsyncMock()
+        adapter._ws = MagicMock(closed=False)
+        # The finalize frame (finish=True) returns 846608.
         adapter._send_reply_request = AsyncMock(
-            side_effect=[
-                {"errcode": 0},
-                {"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "stream expired"},
-            ],
+            return_value={"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "stream expired"},
         )
 
-        ok = await adapter.send_stream_frame("hello", chat_id="chat-1")
+        # First call (with seed + content) succeeds (fire-and-forget).
+        await adapter.send_stream_frame("hello", chat_id="chat-1")
+        # Now try to finalize — this hits _send_reply_request and gets 846608.
+        ok = await adapter.send_stream_frame("hello final", chat_id="chat-1", finalize=True)
 
         assert ok is False
         assert "chat-1" in adapter._stream_expired_chats
@@ -1299,19 +1307,18 @@ class TestSendTypingTriggersThinking:
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_json = AsyncMock()
+        adapter._ws = MagicMock(closed=False)
         adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
         await adapter.send_typing("chat-1")
 
-        # Exactly one frame: empty seed. send_stream_frame's empty
-        # path opens the stream with the seed and then would send another
-        # empty content frame; we accept either 1 or 2 calls but the seed
-        # MUST be there with empty content + finish=False.
-        assert adapter._send_reply_request.await_count >= 1
-        first = adapter._send_reply_request.await_args_list[0]
-        assert first.args[1]["msgtype"] == "stream"
-        assert first.args[1]["stream"]["content"] == ""
-        assert first.args[1]["stream"]["finish"] is False
+        # Fire-and-forget seed frame via _send_json.
+        assert adapter._send_json.await_count >= 1
+        first = adapter._send_json.await_args_list[0].args[0]
+        assert first["body"]["msgtype"] == "stream"
+        assert first["body"]["stream"]["content"] == ""
+        assert first["body"]["stream"]["finish"] is False
 
     @pytest.mark.asyncio
     async def test_send_typing_idempotent_when_stream_already_active(self):
@@ -1395,14 +1402,16 @@ class TestSendClosesActiveStream:
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_json = AsyncMock()
+        adapter._ws = MagicMock(closed=False)
         adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
-        # Step 1: send_typing opens a stream (seed frame).
+        # Step 1: send_typing opens a stream (seed frame via _send_json).
         await adapter.send_typing("chat-1")
         assert adapter._active_stream_id is not None
         stream_id = adapter._active_stream_id
 
-        # Step 2: send() delivers the final answer.
+        # Step 2: send() delivers the final answer (finalize via _send_reply_request).
         result = await adapter.send("chat-1", "Hello world!")
 
         assert result.success is True
@@ -1427,6 +1436,8 @@ class TestSendClosesActiveStream:
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
         adapter._last_chat_req_ids["chat-2"] = "req-2"
+        adapter._send_json = AsyncMock()
+        adapter._ws = MagicMock(closed=False)
         adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
         # Open a stream for chat-1.
@@ -1451,18 +1462,17 @@ class TestSendClosesActiveStream:
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
-
-        call_count = [0]
+        adapter._send_json = AsyncMock()
+        adapter._ws = MagicMock(closed=False)
 
         async def fake_send_reply_request(req_id, body, **kwargs):
-            call_count[0] += 1
             if body.get("msgtype") == "stream" and body.get("stream", {}).get("finish"):
                 return {"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "expired"}
             return {"errcode": 0, "headers": {"req_id": req_id}}
 
         adapter._send_reply_request = AsyncMock(side_effect=fake_send_reply_request)
 
-        # Open stream
+        # Open stream (seed goes via _send_json, fire-and-forget)
         await adapter.send_typing("chat-1")
 
         # send() tries to finalize — gets 846608 — falls through to markdown

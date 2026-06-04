@@ -1394,6 +1394,17 @@ class WeComAdapter(BasePlatformAdapter):
           * ``content`` is capped at 20480 bytes server-side — we
             pre-truncate to stay safely below.
 
+        Performance: intermediate frames (finish=False) are fire-and-forget
+        — we send the WS frame and return immediately without waiting for
+        the server ack. This mirrors the official WeCom SDK's
+        ``replyStream`` / ``replyStreamNonBlocking`` behavior where only
+        the finishing frame needs confirmation. Without this optimization
+        each mid-stream frame blocks for ~15s waiting for an ack that
+        WeCom may not send until the stream closes.
+
+        Only the ``finish=True`` frame uses ``_send_reply_request`` (with
+        ack + timeout) so we reliably detect 846608 on the final frame.
+
         Raises :class:`WeComStreamExpiredError` on errcode 846608 so the
         caller can fall back to a proactive markdown send.
         """
@@ -1413,6 +1424,20 @@ class WeComAdapter(BasePlatformAdapter):
                 "content": truncated,
             },
         }
+
+        if not finish:
+            # Fire-and-forget for intermediate frames — don't await ack.
+            # This is the key performance optimization: WeCom server may
+            # not ack intermediate stream frames at all, so awaiting the
+            # correlated response future would block 15s on every frame.
+            if not self._ws or self._ws.closed:
+                raise RuntimeError("WeCom websocket is not connected")
+            await self._send_json(
+                {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": reply_req_id}, "body": body}
+            )
+            return {"errcode": 0, "errmsg": "fire-and-forget"}
+
+        # Finish frame: await ack so we reliably detect 846608.
         response = await self._send_reply_request(reply_req_id, body)
         errcode = response.get("errcode", 0)
         if errcode == STREAM_EXPIRED_ERRCODE:

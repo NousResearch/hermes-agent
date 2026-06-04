@@ -305,3 +305,36 @@ def test_process_command_kanban_still_dispatches(hermes_cli, monkeypatch):
     )
     hermes_cli.process_command("/kanban")
     assert calls == ["/kanban"]
+
+
+# ---------------------------------------------------------------------------
+# packaging: optional `delegation` extra version constraint (M3.5 Task 1)
+# ---------------------------------------------------------------------------
+
+def test_hermes_delegation_version_in_supported_range():
+    """The installed ``hermes-delegation`` must satisfy the pyproject extra.
+
+    The ``delegation`` optional-dependency in hermes-agent's pyproject.toml
+    pins ``hermes-delegation>=0.1.0,<0.2.0``. This test documents and enforces
+    that the editable/installed package actually falls in that range, so a
+    drift (e.g. a 0.2.x release with breaking changes) is caught here rather
+    than at runtime via the /delegation slash command.
+
+    Skips cleanly when the package isn't installed — the module-level
+    ``importorskip`` already guarantees it is by the time we get here, but the
+    explicit metadata lookup is guarded too for robustness.
+    """
+    import importlib.metadata
+
+    from packaging.version import Version
+
+    try:
+        raw = importlib.metadata.version("hermes-delegation")
+    except importlib.metadata.PackageNotFoundError:  # pragma: no cover
+        pytest.skip("hermes-delegation distribution metadata not found")
+
+    version = Version(raw)
+    assert Version("0.1.0") <= version < Version("0.2.0"), (
+        f"installed hermes-delegation {version} is outside the supported "
+        "range [0.1.0, 0.2.0) declared by the `delegation` extra"
+    )

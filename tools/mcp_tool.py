@@ -1764,12 +1764,36 @@ class MCPServerTask:
 
                 retries += 1
                 if retries > _MAX_RECONNECT_RETRIES:
+                    # A server that was healthy at least once (``_ready`` set)
+                    # must NEVER be permanently abandoned. Returning here kills
+                    # the run-loop task forever, so a multi-hour SSE/network
+                    # outage silently drops the server until a full Hermes
+                    # restart — every session started afterwards is missing its
+                    # tools. Observed 2026-06-02: Home Assistant SSE dropped,
+                    # 5 reconnects failed, task returned, HA tools vanished from
+                    # the long-lived gateway process for days.
+                    #
+                    # Instead of giving up, reset the retry counter and keep
+                    # probing at the capped backoff cadence. The moment the
+                    # server comes back, the next loop iteration reconnects and
+                    # re-registers its tools via _discover_tools(). The circuit
+                    # breaker (_CIRCUIT_BREAKER_THRESHOLD) already shields the
+                    # model from hammering tool calls at a still-dead server, so
+                    # a quiet once-per-_MAX_BACKOFF_SECONDS reconnect probe is
+                    # cheap and safe.
                     logger.warning(
-                        "MCP server '%s' failed after %d reconnection attempts, "
+                        "MCP server '%s' still failing after %d reconnection "
+                        "attempts; continuing to retry every %.0fs instead of "
                         "giving up: %s",
-                        self.name, _MAX_RECONNECT_RETRIES, exc,
+                        self.name, _MAX_RECONNECT_RETRIES,
+                        _MAX_BACKOFF_SECONDS, exc,
                     )
-                    return
+                    retries = 0
+                    backoff = _MAX_BACKOFF_SECONDS
+                    await asyncio.sleep(backoff)
+                    if self._shutdown_event.is_set():
+                        return
+                    continue
 
                 logger.warning(
                     "MCP server '%s' connection lost (attempt %d/%d), "

@@ -317,3 +317,130 @@ class TestMCPInitialConnectionRetry:
                 await task
 
         asyncio.get_event_loop().run_until_complete(_run())
+
+
+# ---------------------------------------------------------------------------
+# Fix 5: a once-healthy MCP server is never permanently abandoned
+# ---------------------------------------------------------------------------
+
+class TestMCPReconnectNeverGivesUp:
+    """MCPServerTask.run() keeps reconnecting a previously-healthy server.
+
+    Regression for the failure mode observed 2026-06-02: a Home Assistant
+    SSE connection dropped in a long-lived gateway process, the 5 reconnect
+    attempts failed, and the run-loop ``return``-ed — permanently removing
+    the server's tools from every session started afterwards until a full
+    Hermes restart. A server that has been healthy at least once (``_ready``
+    set) must instead retry indefinitely at the capped backoff cadence and
+    re-register its tools the moment the server comes back.
+    """
+
+    def test_reconnect_exceeds_max_retries_then_recovers(self, monkeypatch):
+        """After > _MAX_RECONNECT_RETRIES failures the loop keeps going and
+        recovers, instead of returning and killing the task."""
+        from tools.mcp_tool import MCPServerTask, _MAX_RECONNECT_RETRIES
+
+        # Don't actually wait out the (capped 60s) backoff sleeps. Capture the
+        # real sleep *before* patching so the shim doesn't recurse into itself.
+        _real_sleep = asyncio.sleep
+
+        async def _fast_sleep(_delay):
+            await _real_sleep(0)
+
+        monkeypatch.setattr("tools.mcp_tool.asyncio.sleep", _fast_sleep)
+
+        # Fail well past the old give-up point (which returned once
+        # retries > _MAX_RECONNECT_RETRIES), then succeed. If the old
+        # ``return`` were still there, the task would exit at
+        # _MAX_RECONNECT_RETRIES + 1 attempts and never reach recovery.
+        recover_on = _MAX_RECONNECT_RETRIES + 4
+        call_count = 0
+
+        async def _run():
+            nonlocal call_count
+            server = MCPServerTask("test-never-give-up")
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    # First connection is healthy: mark ready, then drop.
+                    self_inner._ready.set()
+                    raise ConnectionError("SSE stream dropped")
+                if call_count < recover_on:
+                    # Reconnect attempts keep failing past the old limit.
+                    raise ConnectionError("server still down")
+                # Server is back: stay up until shutdown.
+                self_inner._ready.set()
+                await self_inner._shutdown_event.wait()
+
+            with patch.object(MCPServerTask, "_run_stdio", fake_run_stdio):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+
+                # Wait for the loop to climb past the old give-up point and
+                # reach the recovery attempt.
+                for _ in range(2000):
+                    if call_count >= recover_on:
+                        break
+                    await asyncio.sleep(0)
+
+                assert call_count >= recover_on, (
+                    f"Run-loop gave up early after {call_count} attempts; "
+                    f"expected it to keep retrying past "
+                    f"{_MAX_RECONNECT_RETRIES} and recover on attempt "
+                    f"{recover_on}"
+                )
+                # The task must still be alive (recovered), not finished.
+                assert not task.done(), "Run-loop exited instead of recovering"
+                # No terminal error was latched on a recoverable drop.
+                assert server._error is None
+
+                server._shutdown_event.set()
+                await task
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_reconnect_loop_honors_shutdown_after_max_retries(self, monkeypatch):
+        """Even while retrying indefinitely, a shutdown request still stops
+        the loop (no busy-spin, no leaked task)."""
+        from tools.mcp_tool import MCPServerTask, _MAX_RECONNECT_RETRIES
+
+        _real_sleep = asyncio.sleep
+        sleep_calls = 0
+
+        async def _fast_sleep(_delay):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            await _real_sleep(0)
+
+        monkeypatch.setattr("tools.mcp_tool.asyncio.sleep", _fast_sleep)
+
+        async def _run():
+            server = MCPServerTask("test-shutdown-while-retrying")
+            call_count = 0
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    self_inner._ready.set()
+                # Always fail so the loop is perpetually reconnecting.
+                raise ConnectionError("permanently down")
+
+            with patch.object(MCPServerTask, "_run_stdio", fake_run_stdio):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+
+                # Let it churn past the old give-up threshold.
+                for _ in range(2000):
+                    if call_count > _MAX_RECONNECT_RETRIES + 1:
+                        break
+                    await asyncio.sleep(0)
+
+                assert call_count > _MAX_RECONNECT_RETRIES + 1
+
+                # Request shutdown — the loop must terminate promptly.
+                server._shutdown_event.set()
+                await asyncio.wait_for(task, timeout=5)
+                assert task.done()
+
+        asyncio.get_event_loop().run_until_complete(_run())

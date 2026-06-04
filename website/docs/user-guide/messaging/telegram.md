@@ -242,6 +242,92 @@ The gateway extracts `MEDIA:/path/to/file` tags from agent replies and ships the
 
 Anything on this list delivered as a native attachment on platforms that support it (Telegram, Discord, Signal, Slack, WhatsApp, Feishu, Matrix, etc.); on platforms without native support it falls back to a link or plain-text indicator. The **bold** categories were added in the last few releases — if you were relying on the model saying `here is the file: /path/to/report.docx` instead, swap to `MEDIA:/path/to/report.docx` for native delivery.
 
+## Profile-local callback scripts
+
+Telegram inline buttons can use callback data handled by profile-local scripts. This is useful for project/profile runtimes that need deterministic button actions without adding upstream Python handlers for each workflow.
+
+Create an executable script under:
+
+```bash
+$HERMES_HOME/scripts/telegram-callbacks/<prefix>
+```
+
+When a button sends callback data shaped like `<prefix>:<payload>`, Hermes runs the matching executable script (`<prefix>`, `<prefix>.py`, or `<prefix>.sh`) if the callback caller is authorized for that chat. Built-in Hermes callback prefixes still take precedence.
+
+The script receives:
+
+- argv 1: the full callback data string
+- stdin: a JSON object with `callback_data`, `prefix`, `telegram` metadata, and `hermes.home`
+- a minimal environment with safe process basics (`PATH`, locale/timezone/temp variables, and Windows process basics such as `USERPROFILE`, `SYSTEMROOT`, `COMSPEC`, `PATHEXT`, and `WINDIR`) plus explicit callback metadata: `HERMES_HOME`, `HERMES_TELEGRAM_CALLBACK_DATA`, `HERMES_TELEGRAM_CALLBACK_PREFIX`, `HERMES_TELEGRAM_USER_ID`, `HERMES_TELEGRAM_USER_NAME`, `HERMES_TELEGRAM_CHAT_ID`, `HERMES_TELEGRAM_CHAT_TYPE`, `HERMES_TELEGRAM_MESSAGE_ID`, and `HERMES_TELEGRAM_THREAD_ID`
+
+The script must print JSON to stdout:
+
+```json
+{
+  "ok": true,
+  "answer_text": "Done",
+  "show_alert": false,
+  "edit_message_text": "Optional replacement message text",
+  "remove_keyboard": true
+}
+```
+
+Response fields:
+
+- `ok`: required boolean. `false` shows a safe failure text unless `answer_text` is supplied.
+- `answer_text`: optional Telegram callback notification text. Hermes truncates it to Telegram's 200-character callback-answer limit. By default this appears as a lightweight toast.
+- `show_alert`: optional boolean; when true, Telegram shows `answer_text` as a popup alert instead of a toast.
+- `edit_message_text`: optional replacement text for the original bot message that contained the button.
+- `remove_keyboard`: optional boolean; removes the inline keyboard, either with the edit or by editing only the reply markup. When omitted or `false`, Hermes preserves the existing inline keyboard while editing the message.
+
+These fields can be combined for the desired UX:
+
+```json
+{"ok": true, "answer_text": "Saved"}
+```
+
+Shows a toast only.
+
+```json
+{"ok": true, "answer_text": "Cannot approve this draft", "show_alert": true}
+```
+
+Shows a popup alert only.
+
+```json
+{
+  "ok": true,
+  "answer_text": "draft '1234' accepted",
+  "edit_message_text": "✅ Draft 1234 accepted at 2026-06-04 03:15:00 UTC",
+  "remove_keyboard": true
+}
+```
+
+Shows a toast, edits the original button message, and removes the buttons for a one-shot decision.
+
+```json
+{
+  "ok": true,
+  "answer_text": "Mode changed",
+  "edit_message_text": "Current mode: review",
+  "remove_keyboard": false
+}
+```
+
+Shows a toast, edits the original button message, and keeps the buttons for continued interaction.
+
+Safety behavior:
+
+- Prefixes are limited to letters, numbers, `_`, and `-`, up to 32 characters.
+- Scripts must resolve inside `$HERMES_HOME/scripts/telegram-callbacks` and must be executable regular files; symlink escapes are rejected.
+- Callback authorization uses the same Telegram allowed user/chat/topic checks as built-in callbacks.
+- Scripts do not inherit the full gateway process environment. Arbitrary credential variables such as API keys, tokens, and secrets are not forwarded.
+- Callback data is exposed to the script as argv and environment variables; use opaque IDs or state references, not secrets, in button payloads.
+- Scripts run with argv/stdin, not through a shell, and time out after 10 seconds.
+- A non-zero script exit code fails the callback action even if stdout contains valid response JSON; Hermes does not apply stdout JSON from failed processes.
+- Script stdout and stderr are each capped at 64 KiB; oversized output fails safely.
+- Script stderr and callback payloads are not reflected back to the Telegram user on failure.
+
 ## Webhook Mode
 
 By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.

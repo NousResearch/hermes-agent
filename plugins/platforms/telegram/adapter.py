@@ -8,6 +8,7 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import contextlib
 import dataclasses
 import inspect
 import json
@@ -15,9 +16,12 @@ import logging
 import os
 import html as _html
 import re
+import subprocess
 import threading
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
+
+import psutil
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +244,150 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".webp": "image/webp",
     ".gif": "image/gif",
 }
+
+
+# First-line defense against callback prefix injection: callback prefixes become
+# script basenames, so only allow a short portable filename subset here. The
+# later resolve()+relative_to() check still enforces directory containment for
+# symlinks or filesystem races.
+_CALLBACK_SCRIPT_PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+_CALLBACK_SCRIPT_SUFFIXES = ("", ".py", ".sh")
+_CALLBACK_SCRIPT_TIMEOUT_S = 10.0
+_CALLBACK_SCRIPT_KILL_TIMEOUT_S = 2.0
+_CALLBACK_SCRIPT_MAX_OUTPUT_BYTES = 64 * 1024
+_CALLBACK_SCRIPT_FAILURE_TEXT = "Callback action failed."
+_CALLBACK_SCRIPT_INHERITED_ENV_VARS = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "SYSTEMROOT",
+    "COMSPEC",
+    "PATHEXT",
+    "WINDIR",
+)
+
+
+class _CallbackScriptOutputTooLarge(Exception):
+    """Raised when a Telegram callback script exceeds the response-output cap."""
+
+    def __init__(self, stream_name: str) -> None:
+        super().__init__(f"callback script {stream_name} output exceeded {_CALLBACK_SCRIPT_MAX_OUTPUT_BYTES} bytes")
+        self.stream_name = stream_name
+
+
+async def _read_callback_script_stream_limited(stream, stream_name: str) -> bytes:
+    if stream is None:
+        return b""
+    chunks = []
+    total = 0
+    while True:
+        remaining = _CALLBACK_SCRIPT_MAX_OUTPUT_BYTES + 1 - total
+        chunk = await stream.read(min(8192, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > _CALLBACK_SCRIPT_MAX_OUTPUT_BYTES:
+            raise _CallbackScriptOutputTooLarge(stream_name)
+    return b"".join(chunks)
+
+
+async def _communicate_callback_script_limited(proc, input_bytes: bytes) -> tuple[bytes, bytes]:
+    if proc.stdin is not None:
+        try:
+            proc.stdin.write(input_bytes)
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            proc.stdin.close()
+            wait_closed = getattr(proc.stdin, "wait_closed", None)
+            if callable(wait_closed):
+                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                    await wait_closed()
+
+    wait_task = asyncio.create_task(proc.wait())
+    stdout_task = asyncio.create_task(_read_callback_script_stream_limited(proc.stdout, "stdout"))
+    stderr_task = asyncio.create_task(_read_callback_script_stream_limited(proc.stderr, "stderr"))
+    try:
+        _returncode, stdout_bytes, stderr_bytes = await asyncio.gather(wait_task, stdout_task, stderr_task)
+    except (Exception, asyncio.CancelledError):
+        # If one task fails after another stream already finished, consume that
+        # completed result before cancelling the rest. This avoids turning an
+        # already-complete read into a spurious CancelledError while still
+        # preserving fail-closed semantics for timeouts, oversized output, and
+        # non-zero exits (callers decide whether stdout is applied).
+        for task in (stdout_task, stderr_task):
+            if task.done() and not task.cancelled():
+                with contextlib.suppress(Exception):
+                    task.result()
+        for task in (wait_task, stdout_task, stderr_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(wait_task, stdout_task, stderr_task, return_exceptions=True)
+        raise
+    return stdout_bytes, stderr_bytes
+
+
+async def _kill_callback_script_process_tree(proc) -> None:
+    """Kill a callback script process and any children it spawned."""
+    try:
+        parent = psutil.Process(proc.pid)
+        processes = parent.children(recursive=True)
+        processes.append(parent)
+        for process in processes:
+            with contextlib.suppress(psutil.NoSuchProcess):
+                process.kill()
+    except psutil.NoSuchProcess:
+        pass
+    except Exception:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+
+    await asyncio.wait_for(proc.wait(), timeout=_CALLBACK_SCRIPT_KILL_TIMEOUT_S)
+
+
+def _callback_script_subprocess_kwargs(env: dict[str, str]) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "stdin": asyncio.subprocess.PIPE,
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+        "env": env,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    return kwargs
+
+
+def _normalize_telegram_chat_type(value: Any) -> Optional[str]:
+    """Return a stable Telegram chat type string for enum, string, and test doubles."""
+    if value is None:
+        return None
+
+    candidates = [
+        getattr(value, "value", None),
+        getattr(value, "name", None),
+        value,
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        text = str(candidate).strip()
+        if not text:
+            continue
+        normalized = text.rsplit(".", 1)[-1].lower()
+        if normalized in {"private", "group", "supergroup", "channel"}:
+            return normalized
+    return None
 
 
 def check_telegram_requirements() -> bool:
@@ -5642,42 +5790,369 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         # --- Update prompt callbacks ---
-        if not data.startswith("update_prompt:"):
+        if data.startswith("update_prompt:"):
+            answer = data.split(":", 1)[1]  # "y" or "n"
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to answer update prompts.")
+                return
+            await query.answer(text=f"Sent '{answer}' to the update process.")
+            # Edit the message to show the choice and remove buttons
+            label = "Yes" if answer == "y" else "No"
+            try:
+                await query.edit_message_text(
+                    text=self.format_message(f"⚕ Update prompt answered: *{label}*"),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass  # non-fatal if edit fails
+            # Write the response file
+            try:
+                from hermes_constants import get_hermes_home
+                home = get_hermes_home()
+                response_path = home / ".update_response"
+                tmp = response_path.with_suffix(".tmp")
+                tmp.write_text(answer)
+                tmp.replace(response_path)
+                logger.info("Telegram update prompt answered '%s' by user %s",
+                            answer, getattr(query.from_user, "id", "unknown"))
+            except Exception as exc:
+                logger.error("Failed to write update response from callback: %s", exc)
             return
-        answer = data.split(":", 1)[1]  # "y" or "n"
-        caller_id = str(getattr(query.from_user, "id", ""))
+
+        # --- Generic profile-local callback scripts ---
+        if await self._handle_callback_script_bridge(
+            query,
+            data,
+            query_chat_id=query_chat_id,
+            query_chat_type=query_chat_type,
+            query_thread_id=query_thread_id,
+            query_user_name=query_user_name,
+        ):
+            return
+
+    def _telegram_callback_script_dir(self) -> _Path:
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / "scripts" / "telegram-callbacks"
+
+    def _extract_script_callback_prefix(self, data: str) -> Optional[str]:
+        if ":" not in data:
+            return None
+        prefix = data.split(":", 1)[0]
+        if not _CALLBACK_SCRIPT_PREFIX_RE.fullmatch(prefix):
+            return None
+        return prefix
+
+    def _resolve_callback_script(self, prefix: str) -> Optional[_Path]:
+        base = self._telegram_callback_script_dir()
+        if not base.exists():
+            return None
+        try:
+            resolved_base = base.resolve(strict=True)
+        except OSError:
+            logger.debug("[%s] Telegram callback script directory is unavailable", self.name, exc_info=True)
+            return None
+
+        for suffix in _CALLBACK_SCRIPT_SUFFIXES:
+            candidate = base / f"{prefix}{suffix}"
+            try:
+                resolved = candidate.resolve(strict=True)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                logger.warning("[%s] Unable to resolve Telegram callback script candidate", self.name, exc_info=True)
+                continue
+            try:
+                resolved.relative_to(resolved_base)
+            except ValueError:
+                logger.warning("[%s] Rejected Telegram callback script outside callback directory", self.name)
+                continue
+            if not resolved.is_file():
+                logger.warning("[%s] Rejected Telegram callback script that is not a regular file", self.name)
+                continue
+            if not os.access(resolved, os.X_OK):
+                logger.warning("[%s] Rejected non-executable Telegram callback script", self.name)
+                continue
+            return resolved
+        return None
+
+    @staticmethod
+    def _callback_value(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        return str(value)
+
+    def _build_callback_script_env(
+        self,
+        context_obj: Dict[str, Any],
+        *,
+        data: str,
+        prefix: str,
+    ) -> Dict[str, str]:
+        env = {
+            key: value
+            for key in _CALLBACK_SCRIPT_INHERITED_ENV_VARS
+            if (value := os.environ.get(key)) is not None
+        }
+        env.update({
+            "HERMES_HOME": context_obj["hermes"]["home"],
+            "HERMES_TELEGRAM_CALLBACK_DATA": data,
+            "HERMES_TELEGRAM_CALLBACK_PREFIX": prefix,
+        })
+        telegram_context = context_obj["telegram"]
+        metadata_env = {
+            "HERMES_TELEGRAM_USER_ID": telegram_context.get("user_id"),
+            "HERMES_TELEGRAM_USER_NAME": telegram_context.get("user_name"),
+            "HERMES_TELEGRAM_CHAT_ID": telegram_context.get("chat_id"),
+            "HERMES_TELEGRAM_CHAT_TYPE": telegram_context.get("chat_type"),
+            "HERMES_TELEGRAM_MESSAGE_ID": telegram_context.get("message_id"),
+            "HERMES_TELEGRAM_THREAD_ID": telegram_context.get("message_thread_id"),
+        }
+        for key, value in metadata_env.items():
+            if value is not None:
+                env[key] = str(value)
+        return env
+
+    def _build_callback_script_context(
+        self,
+        query,
+        data: str,
+        *,
+        prefix: str,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> Dict[str, Any]:
+        from hermes_constants import get_hermes_home
+
+        message = getattr(query, "message", None)
+        message_id = getattr(message, "message_id", None)
+        user = getattr(query, "from_user", None)
+        user_id = getattr(user, "id", None)
+        return {
+            "callback_data": data,
+            "prefix": prefix,
+            "telegram": {
+                "user_id": self._callback_value(user_id),
+                "user_name": query_user_name,
+                "chat_id": self._callback_value(query_chat_id),
+                "chat_type": self._callback_value(_normalize_telegram_chat_type(query_chat_type)),
+                "message_id": self._callback_value(message_id),
+                "message_thread_id": self._callback_value(query_thread_id),
+            },
+            "hermes": {
+                "home": str(get_hermes_home()),
+            },
+        }
+
+    def _normalize_callback_script_response(self, raw: Any) -> Dict[str, Any]:
+        if not isinstance(raw, dict):
+            raise ValueError("callback script response must be an object")
+        ok = raw.get("ok")
+        if not isinstance(ok, bool):
+            raise ValueError("callback script response must include boolean ok")
+
+        normalized: Dict[str, Any] = {
+            "ok": ok,
+            "answer_text": "",
+            "show_alert": False,
+            "edit_message_text": None,
+            "remove_keyboard": False,
+        }
+        answer_text = raw.get("answer_text")
+        if answer_text is not None:
+            if not isinstance(answer_text, str):
+                raise ValueError("answer_text must be a string")
+            normalized["answer_text"] = answer_text
+        show_alert = raw.get("show_alert")
+        if show_alert is not None:
+            if not isinstance(show_alert, bool):
+                raise ValueError("show_alert must be a boolean")
+            normalized["show_alert"] = show_alert
+        edit_message_text = raw.get("edit_message_text")
+        if edit_message_text is not None:
+            if not isinstance(edit_message_text, str):
+                raise ValueError("edit_message_text must be a string")
+            normalized["edit_message_text"] = edit_message_text
+        remove_keyboard = raw.get("remove_keyboard")
+        if remove_keyboard is not None:
+            if not isinstance(remove_keyboard, bool):
+                raise ValueError("remove_keyboard must be a boolean")
+            normalized["remove_keyboard"] = remove_keyboard
+        return normalized
+
+    async def _apply_callback_script_response(self, query, response: Dict[str, Any]) -> None:
+        answer_text = str(response.get("answer_text") or "")[:200]
+        show_alert = bool(response.get("show_alert", False))
+        await query.answer(text=answer_text, show_alert=show_alert)
+
+        edit_message_text = response.get("edit_message_text")
+        remove_keyboard = bool(response.get("remove_keyboard", False))
+        if edit_message_text is not None:
+            message = getattr(query, "message", None)
+            kwargs: Dict[str, Any] = {"text": edit_message_text}
+            if remove_keyboard:
+                kwargs["reply_markup"] = None
+            else:
+                # PTB's edit_message_text defaults reply_markup=None, which removes
+                # the inline keyboard. Preserve the existing markup unless the script
+                # explicitly requests removal.
+                reply_markup = getattr(message, "reply_markup", None)
+                if reply_markup is not None:
+                    kwargs["reply_markup"] = reply_markup
+            try:
+                await query.edit_message_text(**kwargs)
+            except Exception:
+                logger.debug("[%s] Telegram callback script message edit failed", self.name, exc_info=True)
+                chat_id = getattr(message, "chat_id", None)
+                if chat_id is None:
+                    chat = getattr(message, "chat", None)
+                    chat_id = getattr(chat, "id", None)
+                message_id = getattr(message, "message_id", None)
+                bot_edit = getattr(getattr(self, "_bot", None), "edit_message_text", None)
+                if callable(bot_edit) and chat_id is not None and message_id is not None:
+                    try:
+                        fallback_result = bot_edit(chat_id=chat_id, message_id=message_id, **kwargs)
+                        if inspect.isawaitable(fallback_result):
+                            await fallback_result
+                    except Exception:
+                        logger.warning(
+                            "[%s] Telegram callback script bot-level message edit fallback failed",
+                            self.name,
+                            exc_info=True,
+                        )
+        elif remove_keyboard:
+            edit_markup = getattr(query, "edit_message_reply_markup", None)
+            if callable(edit_markup):
+                try:
+                    await edit_markup(reply_markup=None)
+                except Exception:
+                    logger.debug(
+                        "[%s] Telegram callback script reply markup edit failed",
+                        self.name,
+                        exc_info=True,
+                    )
+
+    async def _handle_callback_script_bridge(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> bool:
+        prefix = self._extract_script_callback_prefix(data)
+        if prefix is None:
+            return False
+
+        script_path = self._resolve_callback_script(prefix)
+        if script_path is None:
+            return False
+
+        caller_id = str(getattr(getattr(query, "from_user", None), "id", ""))
         if not self._is_callback_user_authorized(
             caller_id,
             chat_id=query_chat_id,
-            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            chat_type=_normalize_telegram_chat_type(query_chat_type),
             thread_id=str(query_thread_id) if query_thread_id is not None else None,
             user_name=query_user_name,
         ):
-            await query.answer(text="⛔ You are not authorized to answer update prompts.")
-            return
-        await query.answer(text=f"Sent '{answer}' to the update process.")
-        # Edit the message to show the choice and remove buttons
-        label = "Yes" if answer == "y" else "No"
+            await query.answer(text="⛔ You are not authorized to run this action.")
+            return True
+
+        context_obj = self._build_callback_script_context(
+            query,
+            data,
+            prefix=prefix,
+            query_chat_id=query_chat_id,
+            query_chat_type=query_chat_type,
+            query_thread_id=query_thread_id,
+            query_user_name=query_user_name,
+        )
+        context_bytes = json.dumps(context_obj, ensure_ascii=False).encode("utf-8")
+
+        env = self._build_callback_script_env(context_obj, data=data, prefix=prefix)
+
+        proc = None
         try:
-            await query.edit_message_text(
-                text=self.format_message(f"⚕ Update prompt answered: *{label}*"),
-                parse_mode=ParseMode.MARKDOWN_V2,
-                reply_markup=None,
+            # Invoke the script directly with create_subprocess_exec: callback
+            # data is argv[1], stdin is JSON context, and no shell is involved.
+            # Do not replace this with shell=True execution; button payloads are
+            # user-controlled Telegram callback data.
+            proc = await asyncio.create_subprocess_exec(
+                str(script_path),
+                data,
+                **_callback_script_subprocess_kwargs(env),
             )
+            stdout_bytes, _stderr_bytes = await asyncio.wait_for(
+                _communicate_callback_script_limited(proc, context_bytes),
+                timeout=_CALLBACK_SCRIPT_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            if proc is not None:
+                try:
+                    await _kill_callback_script_process_tree(proc)
+                except asyncio.TimeoutError:
+                    logger.warning("[%s] Timed out waiting for Telegram callback script kill", self.name)
+                except Exception:
+                    logger.debug("[%s] Telegram callback script timeout cleanup failed", self.name, exc_info=True)
+            logger.warning("[%s] Telegram callback script timed out for prefix %s", self.name, prefix)
+            await query.answer(text=_CALLBACK_SCRIPT_FAILURE_TEXT)
+            return True
+        except _CallbackScriptOutputTooLarge as exc:
+            if proc is not None:
+                try:
+                    await _kill_callback_script_process_tree(proc)
+                except asyncio.TimeoutError:
+                    logger.warning("[%s] Timed out waiting for oversized Telegram callback script kill", self.name)
+                except Exception:
+                    logger.debug("[%s] Telegram callback script oversized-output cleanup failed", self.name, exc_info=True)
+            logger.warning(
+                "[%s] Telegram callback script exceeded %s output cap for prefix %s",
+                self.name,
+                exc.stream_name,
+                prefix,
+            )
+            await query.answer(text=_CALLBACK_SCRIPT_FAILURE_TEXT)
+            return True
         except Exception:
-            pass  # non-fatal if edit fails
-        # Write the response file
+            logger.error("[%s] Telegram callback script execution failed for prefix %s", self.name, prefix, exc_info=True)
+            await query.answer(text=_CALLBACK_SCRIPT_FAILURE_TEXT)
+            return True
+
+        if proc.returncode != 0:
+            logger.warning(
+                "[%s] Telegram callback script failed for prefix %s with exit code %s",
+                self.name,
+                prefix,
+                proc.returncode,
+            )
+            await query.answer(text=_CALLBACK_SCRIPT_FAILURE_TEXT)
+            return True
+
         try:
-            from hermes_constants import get_hermes_home
-            home = get_hermes_home()
-            response_path = home / ".update_response"
-            tmp = response_path.with_suffix(".tmp")
-            tmp.write_text(answer)
-            tmp.replace(response_path)
-            logger.info("Telegram update prompt answered '%s' by user %s",
-                        answer, getattr(query.from_user, "id", "unknown"))
-        except Exception as exc:
-            logger.error("Failed to write update response from callback: %s", exc)
+            raw_response = json.loads(stdout_bytes.decode("utf-8"))
+            response = self._normalize_callback_script_response(raw_response)
+        except Exception:
+            logger.warning("[%s] Telegram callback script returned invalid JSON for prefix %s", self.name, prefix)
+            await query.answer(text=_CALLBACK_SCRIPT_FAILURE_TEXT)
+            return True
+
+        if not response["ok"] and not response.get("answer_text"):
+            response["answer_text"] = _CALLBACK_SCRIPT_FAILURE_TEXT
+        await self._apply_callback_script_response(query, response)
+        return True
 
     # Maps `gt:<verb>` -> (script-name, extra-args, success-label, is_state).
     # Scripts live in ~/.hermes/scripts/gmail-triage/. `arg` from the callback

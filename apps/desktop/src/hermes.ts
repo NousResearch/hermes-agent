@@ -128,6 +128,16 @@ export async function listSessions(
   }
 }
 
+export function autoArchiveOldSessions(
+  preserveIds: string[] = []
+): Promise<{ ok: boolean; archived: number; skipped?: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean; archived: number; skipped?: boolean }>({
+    path: '/api/sessions/auto-archive',
+    method: 'POST',
+    body: { preserve_ids: Array.from(new Set(preserveIds.filter(Boolean))).slice(0, 5000) }
+  })
+}
+
 export function setSessionArchived(id: string, archived: boolean): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     path: `/api/sessions/${encodeURIComponent(id)}`,

@@ -259,7 +259,7 @@ class TestProfileCompletion:
     def test_bash_has_profiles_helper(self):
         out = generate_bash(_make_parser())
         assert "_hermes_profiles()" in out
-        assert 'profiles_dir="$HOME/.hermes/profiles"' in out
+        assert 'profiles_dir="${HERMES_HOME:-$HOME/.hermes}/profiles"' in out
 
     def test_bash_completes_profiles_after_p_flag(self):
         out = generate_bash(_make_parser())
@@ -289,7 +289,7 @@ class TestProfileCompletion:
     def test_zsh_has_profiles_helper(self):
         out = generate_zsh(_make_parser())
         assert "_hermes_profiles()" in out
-        assert "$HOME/.hermes/profiles" in out
+        assert "${HERMES_HOME:-$HOME/.hermes}/profiles" in out
 
     def test_zsh_has_profile_flag_completion(self):
         out = generate_zsh(_make_parser())

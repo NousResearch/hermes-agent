@@ -57,7 +57,7 @@ class TestHandleFunctionCall:
             call(
                 "pre_tool_call",
                 tool_name="web_search",
-                args={"q": "test"},
+                args={"query": "test"},
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
@@ -65,7 +65,7 @@ class TestHandleFunctionCall:
             call(
                 "post_tool_call",
                 tool_name="web_search",
-                args={"q": "test"},
+                args={"query": "test"},
                 result='{"ok":true}',
                 task_id="task-1",
                 session_id="session-1",
@@ -75,7 +75,7 @@ class TestHandleFunctionCall:
             call(
                 "transform_tool_result",
                 tool_name="web_search",
-                args={"q": "test"},
+                args={"query": "test"},
                 result='{"ok":true}',
                 task_id="task-1",
                 session_id="session-1",

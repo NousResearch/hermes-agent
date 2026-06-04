@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -171,7 +172,7 @@ class TestWeComReplyMode:
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
-        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._remember_reply_req_id("msg-1", "req-1", chat_type="dm")
         adapter._send_reply_request = AsyncMock(
             return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
         )
@@ -192,7 +193,7 @@ class TestWeComReplyMode:
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
-        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._remember_reply_req_id("msg-1", "req-1", chat_type="dm")
         adapter._prepare_outbound_media = AsyncMock(
             return_value={
                 "data": b"image-bytes",
@@ -218,6 +219,76 @@ class TestWeComReplyMode:
         args = adapter._send_reply_request.await_args.args
         assert args[0] == "req-1"
         assert args[1] == {"msgtype": "image", "image": {"media_id": "media-1"}}
+
+    @pytest.mark.asyncio
+    async def test_dm_media_ignores_cached_chat_req_id_and_uses_app_cmd_send(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._remember_chat_req_id("dm-1", "inbound-req-42", chat_type="dm")
+        adapter._prepare_outbound_media = AsyncMock(
+            return_value={
+                "data": b"docx-bytes",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "file_name": "demo.docx",
+                "detected_type": "file",
+                "final_type": "file",
+                "rejected": False,
+                "reject_reason": None,
+                "downgraded": False,
+                "downgrade_note": None,
+            }
+        )
+        adapter._upload_media_bytes = AsyncMock(return_value={"media_id": "media-1", "type": "file"})
+        adapter._send_media_message = AsyncMock(
+            return_value={"headers": {"req_id": "new"}, "errcode": 0}
+        )
+        adapter._send_reply_media_message = AsyncMock()
+
+        result = await adapter.send_document("dm-1", "/tmp/demo.docx", reply_to=None)
+
+        assert result.success is True
+        adapter._send_media_message.assert_awaited_once_with("dm-1", "file", "media-1")
+        adapter._send_reply_media_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_dm_expired_reply_to_falls_back_to_app_cmd_send(self):
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = ("req-1", time.monotonic() - 11, "dm")
+        adapter._send_reply_request = AsyncMock()
+        adapter._send_request = AsyncMock(
+            return_value={"headers": {"req_id": "new"}, "errcode": 0}
+        )
+
+        result = await adapter.send("dm-1", "late hello", reply_to="msg-1")
+
+        assert result.success is True
+        adapter._send_reply_request.assert_not_awaited()
+        adapter._send_request.assert_awaited_once()
+        assert adapter._send_request.await_args.args[0] == APP_CMD_SEND
+
+    @pytest.mark.asyncio
+    async def test_reply_timeout_clears_req_id_before_fallback_retry(self):
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._remember_reply_req_id("msg-1", "req-1", chat_type="dm")
+        adapter._send_reply_request = AsyncMock(side_effect=asyncio.TimeoutError)
+        adapter._send_request = AsyncMock(
+            return_value={"headers": {"req_id": "new"}, "errcode": 0}
+        )
+
+        first = await adapter.send("dm-1", "markdown", reply_to="msg-1")
+        second = await adapter.send("dm-1", "plain fallback", reply_to="msg-1")
+
+        assert first.success is False
+        assert first.error == "Timeout sending message to WeCom"
+        assert second.success is True
+        adapter._send_reply_request.assert_awaited_once()
+        adapter._send_request.assert_awaited_once()
+        assert adapter._send_request.await_args.args[0] == APP_CMD_SEND
 
 
 class TestExtractText:
@@ -386,6 +457,72 @@ class TestMediaHelpers:
 
         with pytest.raises(ValueError, match="placeholder was not replaced"):
             await adapter._load_outbound_media("<path>")
+
+    @pytest.mark.asyncio
+    async def test_extract_media_reads_image_and_file_from_mixed_message(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        adapter._cache_media = AsyncMock(
+            side_effect=[
+                ("/tmp/wecom-image.jpg", "image/jpeg"),
+                ("/tmp/contract.docx", docx_mime),
+            ]
+        )
+        body = {
+            "msgtype": "mixed",
+            "mixed": {
+                "msg_item": [
+                    {"msgtype": "text", "text": {"content": "contract"}},
+                    {"msgtype": "image", "image": {"url": "https://example.com/chat.jpg"}},
+                    {
+                        "msgtype": "file",
+                        "file": {
+                            "url": "https://example.com/contract.docx",
+                            "filename": "contract.docx",
+                        },
+                    },
+                ]
+            },
+        }
+
+        media_paths, media_types = await adapter._extract_media(body)
+
+        assert media_paths == ["/tmp/wecom-image.jpg", "/tmp/contract.docx"]
+        assert media_types == ["image/jpeg", docx_mime]
+        assert adapter._cache_media.await_args_list[0].args == ("image", body["mixed"]["msg_item"][1]["image"])
+        assert adapter._cache_media.await_args_list[1].args == ("file", body["mixed"]["msg_item"][2]["file"])
+
+    @pytest.mark.asyncio
+    async def test_extract_media_reads_appmsg_file_from_mixed_message(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        adapter._cache_media = AsyncMock(return_value=("/tmp/contract.docx", docx_mime))
+        body = {
+            "msgtype": "mixed",
+            "mixed": {
+                "msg_item": [
+                    {
+                        "msgtype": "appmsg",
+                        "appmsg": {
+                            "file": {
+                                "url": "https://example.com/contract.docx",
+                                "filename": "contract.docx",
+                            }
+                        },
+                    }
+                ]
+            },
+        }
+
+        media_paths, media_types = await adapter._extract_media(body)
+
+        assert media_paths == ["/tmp/contract.docx"]
+        assert media_types == [docx_mime]
+        assert adapter._cache_media.await_args.args == ("file", body["mixed"]["msg_item"][0]["appmsg"]["file"])
 
 
 class TestMediaUpload:
@@ -618,6 +755,39 @@ class TestInboundMessages:
         assert event.media_types == ["image/png"]
 
     @pytest.mark.asyncio
+    async def test_on_message_marks_document_when_file_media_is_present(self):
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(
+            return_value=(
+                ["/tmp/contract.docx"],
+                ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+            )
+        )
+
+        payload = {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "req-1"},
+            "body": {
+                "msgid": "msg-1",
+                "chatid": "chat-1",
+                "from": {"userid": "user-1"},
+                "msgtype": "mixed",
+                "mixed": {"msg_item": [{"msgtype": "text", "text": {"content": "contract"}}]},
+            },
+        }
+
+        await adapter._on_message(payload)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == ["/tmp/contract.docx"]
+
+    @pytest.mark.asyncio
     async def test_on_message_preserves_quote_context(self):
         from gateway.platforms.wecom import WeComAdapter
 
@@ -768,7 +938,9 @@ class TestWeComZombieSessionFix:
         }
 
         await adapter._on_message(payload)
-        assert adapter._last_chat_req_ids["group-1"] == "req-abc"
+        cached_req_id, _created_at, chat_type = adapter._last_chat_req_ids["group-1"]
+        assert cached_req_id == "req-abc"
+        assert chat_type == "group"
 
     @pytest.mark.asyncio
     async def test_on_message_does_not_cache_blocked_sender_req_id(self):
@@ -806,11 +978,12 @@ class TestWeComZombieSessionFix:
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         for i in range(DEDUP_MAX_SIZE + 50):
-            adapter._remember_chat_req_id(f"chat-{i}", f"req-{i}")
+            adapter._remember_chat_req_id(f"chat-{i}", f"req-{i}", chat_type="group")
         assert len(adapter._last_chat_req_ids) <= DEDUP_MAX_SIZE
         # The most recently remembered chat must still be present.
         latest = f"chat-{DEDUP_MAX_SIZE + 49}"
-        assert adapter._last_chat_req_ids[latest] == f"req-{DEDUP_MAX_SIZE + 49}"
+        assert adapter._last_chat_req_ids[latest][0] == f"req-{DEDUP_MAX_SIZE + 49}"
+        assert adapter._chat_types[latest] == "group"
 
     def test_remember_chat_req_id_ignores_empty_values(self):
         from gateway.platforms.wecom import WeComAdapter
@@ -829,7 +1002,7 @@ class TestWeComZombieSessionFix:
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
-        adapter._last_chat_req_ids["group-1"] = "inbound-req-42"
+        adapter._remember_chat_req_id("group-1", "inbound-req-42", chat_type="group")
         adapter._send_reply_request = AsyncMock(
             return_value={"headers": {"req_id": "inbound-req-42"}, "errcode": 0}
         )
@@ -847,6 +1020,47 @@ class TestWeComZombieSessionFix:
         assert args[0] == "inbound-req-42"
         assert args[1]["msgtype"] == "markdown"
         assert args[1]["markdown"]["content"] == "ping"
+
+    @pytest.mark.asyncio
+    async def test_stale_group_cached_req_id_does_not_use_app_cmd_send(self):
+        """Groups still require a fresh APP_CMD_RESPONSE req_id."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["group-1"] = (
+            "inbound-req-42",
+            time.monotonic() - 11,
+            "group",
+        )
+        adapter._chat_types["group-1"] = "group"
+        adapter._send_reply_request = AsyncMock()
+        adapter._send_request = AsyncMock()
+
+        result = await adapter.send("group-1", "ping", reply_to=None)
+
+        assert result.success is False
+        assert result.error == "No fresh WeCom reply req_id available for group chat"
+        adapter._send_reply_request.assert_not_awaited()
+        adapter._send_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_dm_send_ignores_cached_chat_req_id_and_uses_app_cmd_send(self):
+        """DMs should proactively send unless an explicit fresh reply_to exists."""
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._remember_chat_req_id("dm-1", "inbound-req-42", chat_type="dm")
+        adapter._send_reply_request = AsyncMock()
+        adapter._send_request = AsyncMock(
+            return_value={"headers": {"req_id": "new"}, "errcode": 0}
+        )
+
+        result = await adapter.send("dm-1", "ping", reply_to=None)
+
+        assert result.success is True
+        adapter._send_reply_request.assert_not_awaited()
+        adapter._send_request.assert_awaited_once()
+        assert adapter._send_request.await_args.args[0] == APP_CMD_SEND
 
     @pytest.mark.asyncio
     async def test_proactive_send_without_cached_req_id_uses_app_cmd_send(self):

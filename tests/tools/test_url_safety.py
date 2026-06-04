@@ -178,6 +178,24 @@ class TestIsSafeUrl:
         ]):
             assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is True
 
+    def test_wecom_cos_hostname_allowed_with_benchmark_ip(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.101", 0)),
+        ]):
+            assert is_safe_url("https://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/file") is True
+
+    def test_wecom_cos_hostname_exception_is_exact_match(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.101", 0)),
+        ]):
+            assert is_safe_url("https://evil.ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/file") is False
+
+    def test_wecom_cos_hostname_exception_requires_https(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.101", 0)),
+        ]):
+            assert is_safe_url("http://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/file") is False
+
     def test_qq_multimedia_hostname_exception_is_exact_match(self):
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("198.18.0.23", 0)),

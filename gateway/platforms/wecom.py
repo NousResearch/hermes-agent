@@ -90,10 +90,12 @@ NON_RESPONSE_COMMANDS = CALLBACK_COMMANDS | {APP_CMD_EVENT_CALLBACK}
 MAX_MESSAGE_LENGTH = 4000
 CONNECT_TIMEOUT_SECONDS = 20.0
 REQUEST_TIMEOUT_SECONDS = 15.0
+DEFAULT_REPLY_REQ_ID_TTL_SECONDS = 10.0
 HEARTBEAT_INTERVAL_SECONDS = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 
 DEDUP_MAX_SIZE = 1000
+REPLY_REQUIRED_CHAT_TYPES = {"group", "channel", "forum", "thread"}
 
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
 VIDEO_MAX_BYTES = 10 * 1024 * 1024
@@ -182,7 +184,18 @@ class WeComAdapter(BasePlatformAdapter):
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
-        self._reply_req_ids: Dict[str, str] = {}
+        ttl_raw = (
+            extra.get("reply_req_id_ttl_seconds")
+            or extra.get("replyReqIdTtlSeconds")
+            or os.getenv("WECOM_REPLY_REQ_ID_TTL_SECONDS")
+        )
+        try:
+            self._reply_req_id_ttl_seconds = (
+                float(ttl_raw) if ttl_raw is not None else DEFAULT_REPLY_REQ_ID_TTL_SECONDS
+            )
+        except (TypeError, ValueError):
+            self._reply_req_id_ttl_seconds = DEFAULT_REPLY_REQ_ID_TTL_SECONDS
+        self._reply_req_ids: Dict[str, Tuple[str, float, str]] = {}
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
@@ -191,7 +204,8 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._device_id = uuid.uuid4().hex
-        self._last_chat_req_ids: Dict[str, str] = {}
+        self._last_chat_req_ids: Dict[str, Tuple[str, float, str]] = {}
+        self._chat_types: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -499,7 +513,6 @@ class WeComAdapter(BasePlatformAdapter):
         if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s ignored", self.name, msg_id)
             return
-        self._remember_reply_req_id(msg_id, self._payload_req_id(payload))
 
         sender = body.get("from") if isinstance(body.get("from"), dict) else {}
         sender_id = str(sender.get("userid") or "").strip()
@@ -509,6 +522,7 @@ class WeComAdapter(BasePlatformAdapter):
             return
 
         is_group = str(body.get("chattype") or "").lower() == "group"
+        chat_type = "group" if is_group else "dm"
         if is_group:
             if not self._is_group_allowed(chat_id, sender_id):
                 logger.debug("[%s] Group %s / sender %s blocked by policy", self.name, chat_id, sender_id)
@@ -517,10 +531,12 @@ class WeComAdapter(BasePlatformAdapter):
             logger.debug("[%s] DM sender %s blocked by policy", self.name, sender_id)
             return
 
-        # Cache the inbound req_id after policy checks so proactive sends to
-        # this chat can fall back to APP_CMD_RESPONSE (required for groups —
-        # WeCom AI Bots cannot initiate APP_CMD_SEND in group chats).
-        self._remember_chat_req_id(chat_id, self._payload_req_id(payload))
+        # Cache the inbound req_id after policy checks. Groups require
+        # APP_CMD_RESPONSE, while DMs can fall back to APP_CMD_SEND after the
+        # short callback reply window expires.
+        inbound_req_id = self._payload_req_id(payload)
+        self._remember_reply_req_id(msg_id, inbound_req_id, chat_type=chat_type)
+        self._remember_chat_req_id(chat_id, inbound_req_id, chat_type=chat_type)
 
         text, reply_text = self._extract_text(body)
         # Strip leading @mention in group chats so slash commands like
@@ -717,6 +733,14 @@ class WeComAdapter(BasePlatformAdapter):
                 item_type = str(item.get("msgtype") or "").lower()
                 if item_type == "image" and isinstance(item.get("image"), dict):
                     refs.append(("image", item["image"]))
+                elif item_type == "file" and isinstance(item.get("file"), dict):
+                    refs.append(("file", item["file"]))
+                elif item_type == "appmsg" and isinstance(item.get("appmsg"), dict):
+                    appmsg = item["appmsg"]
+                    if isinstance(appmsg.get("file"), dict):
+                        refs.append(("file", appmsg["file"]))
+                    elif isinstance(appmsg.get("image"), dict):
+                        refs.append(("image", appmsg["image"]))
         else:
             if isinstance(body.get("image"), dict):
                 refs.append(("image", body["image"]))
@@ -891,37 +915,147 @@ class WeComAdapter(BasePlatformAdapter):
         wildcard = self._groups.get("*")
         return wildcard if isinstance(wildcard, dict) else {}
 
-    def _remember_reply_req_id(self, message_id: str, req_id: str) -> None:
+    @staticmethod
+    def _normalize_chat_type(chat_type: str) -> str:
+        return str(chat_type or "").strip().lower()
+
+    @staticmethod
+    def _is_reply_required_chat_type(chat_type: str) -> bool:
+        return WeComAdapter._normalize_chat_type(chat_type) in REPLY_REQUIRED_CHAT_TYPES
+
+    @staticmethod
+    def _req_id_entry_parts(entry: Any) -> Tuple[str, float, str]:
+        if isinstance(entry, (tuple, list)):
+            req_id = str(entry[0] if len(entry) > 0 else "").strip()
+            try:
+                created_at = float(entry[1]) if len(entry) > 1 else time.monotonic()
+            except (TypeError, ValueError):
+                created_at = time.monotonic()
+            chat_type = WeComAdapter._normalize_chat_type(entry[2] if len(entry) > 2 else "")
+            return req_id, created_at, chat_type
+        return str(entry or "").strip(), time.monotonic(), ""
+
+    def _req_id_is_fresh(self, created_at: float) -> bool:
+        ttl_seconds = self._reply_req_id_ttl_seconds
+        return ttl_seconds <= 0 or (time.monotonic() - created_at) <= ttl_seconds
+
+    def _remember_reply_req_id(self, message_id: str, req_id: str, chat_type: str = "") -> None:
         normalized_message_id = str(message_id or "").strip()
         normalized_req_id = str(req_id or "").strip()
         if not normalized_message_id or not normalized_req_id:
             return
-        self._reply_req_ids[normalized_message_id] = normalized_req_id
+        self._reply_req_ids[normalized_message_id] = (
+            normalized_req_id,
+            time.monotonic(),
+            self._normalize_chat_type(chat_type),
+        )
         while len(self._reply_req_ids) > DEDUP_MAX_SIZE:
             self._reply_req_ids.pop(next(iter(self._reply_req_ids)))
 
-    def _remember_chat_req_id(self, chat_id: str, req_id: str) -> None:
+    def _remember_chat_req_id(self, chat_id: str, req_id: str, chat_type: str = "") -> None:
         """Cache the most recent inbound req_id per chat.
 
-        Used as a fallback reply target when we need to send into a group
-        without an explicit ``reply_to`` — WeCom AI Bots are blocked from
-        APP_CMD_SEND in groups and must use APP_CMD_RESPONSE bound to some
-        prior req_id. Bounded like _reply_req_ids so long-running gateways
-        don't leak memory across many chats.
+        Groups use this as a short-lived fallback reply target when we need to
+        send without an explicit ``reply_to`` — WeCom AI Bots are blocked from
+        APP_CMD_SEND in group chats and must use APP_CMD_RESPONSE bound to some
+        prior req_id. DMs keep the metadata only so stale explicit replies can
+        safely fall back to APP_CMD_SEND.
         """
         normalized_chat_id = str(chat_id or "").strip()
         normalized_req_id = str(req_id or "").strip()
         if not normalized_chat_id or not normalized_req_id:
             return
-        self._last_chat_req_ids[normalized_chat_id] = normalized_req_id
+        normalized_chat_type = self._normalize_chat_type(chat_type)
+        self._last_chat_req_ids[normalized_chat_id] = (
+            normalized_req_id,
+            time.monotonic(),
+            normalized_chat_type,
+        )
+        if normalized_chat_type:
+            self._chat_types[normalized_chat_id] = normalized_chat_type
         while len(self._last_chat_req_ids) > DEDUP_MAX_SIZE:
-            self._last_chat_req_ids.pop(next(iter(self._last_chat_req_ids)))
+            evicted_chat_id = next(iter(self._last_chat_req_ids))
+            self._last_chat_req_ids.pop(evicted_chat_id)
+            self._chat_types.pop(evicted_chat_id, None)
 
     def _reply_req_id_for_message(self, reply_to: Optional[str]) -> Optional[str]:
         normalized = str(reply_to or "").strip()
         if not normalized or normalized.startswith("quote:"):
             return None
-        return self._reply_req_ids.get(normalized)
+        entry = self._reply_req_ids.get(normalized)
+        if not entry:
+            return None
+        req_id, created_at, _chat_type = self._req_id_entry_parts(entry)
+        if not req_id or not self._req_id_is_fresh(created_at):
+            self._reply_req_ids.pop(normalized, None)
+            return None
+        return req_id
+
+    def _chat_type_for_chat(self, chat_id: str) -> str:
+        normalized_chat_id = str(chat_id or "").strip()
+        if not normalized_chat_id:
+            return ""
+        chat_type = self._chat_types.get(normalized_chat_id, "")
+        if chat_type:
+            return chat_type
+        entry = self._last_chat_req_ids.get(normalized_chat_id)
+        if not entry:
+            return ""
+        _req_id, _created_at, entry_chat_type = self._req_id_entry_parts(entry)
+        return entry_chat_type
+
+    def _chat_requires_reply(self, chat_id: str) -> bool:
+        return self._is_reply_required_chat_type(self._chat_type_for_chat(chat_id))
+
+    def _chat_reply_req_id_for_send(self, chat_id: str) -> Optional[str]:
+        normalized_chat_id = str(chat_id or "").strip()
+        if not normalized_chat_id or not self._chat_requires_reply(normalized_chat_id):
+            return None
+        entry = self._last_chat_req_ids.get(normalized_chat_id)
+        if not entry:
+            return None
+        req_id, created_at, _chat_type = self._req_id_entry_parts(entry)
+        if not req_id or not self._req_id_is_fresh(created_at):
+            self._last_chat_req_ids.pop(normalized_chat_id, None)
+            return None
+        return req_id
+
+    def _resolve_reply_req_id_for_send(self, chat_id: str, reply_to: Optional[str]) -> Optional[str]:
+        return self._reply_req_id_for_message(reply_to) or self._chat_reply_req_id_for_send(chat_id)
+
+    def _forget_matching_req_id(
+        self,
+        req_id: Optional[str],
+        reply_to: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> None:
+        normalized_req_id = str(req_id or "").strip()
+        if not normalized_req_id:
+            return
+
+        normalized_reply_to = str(reply_to or "").strip()
+        if normalized_reply_to and not normalized_reply_to.startswith("quote:"):
+            entry = self._reply_req_ids.get(normalized_reply_to)
+            stored_req_id, _created_at, _chat_type = self._req_id_entry_parts(entry)
+            if stored_req_id == normalized_req_id:
+                self._reply_req_ids.pop(normalized_reply_to, None)
+        else:
+            for message_id, entry in list(self._reply_req_ids.items()):
+                stored_req_id, _created_at, _chat_type = self._req_id_entry_parts(entry)
+                if stored_req_id == normalized_req_id:
+                    self._reply_req_ids.pop(message_id, None)
+
+        normalized_chat_id = str(chat_id or "").strip()
+        if normalized_chat_id:
+            entry = self._last_chat_req_ids.get(normalized_chat_id)
+            stored_req_id, _created_at, _chat_type = self._req_id_entry_parts(entry)
+            if stored_req_id == normalized_req_id:
+                self._last_chat_req_ids.pop(normalized_chat_id, None)
+        else:
+            for cached_chat_id, entry in list(self._last_chat_req_ids.items()):
+                stored_req_id, _created_at, _chat_type = self._req_id_entry_parts(entry)
+                if stored_req_id == normalized_req_id:
+                    self._last_chat_req_ids.pop(cached_chat_id, None)
 
     # ------------------------------------------------------------------
     # Outbound messaging
@@ -1302,9 +1436,9 @@ class WeComAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=prepared["reject_reason"])
 
-        reply_req_id = self._reply_req_id_for_message(reply_to)
-        if not reply_req_id and chat_id in self._last_chat_req_ids:
-            reply_req_id = self._last_chat_req_ids[chat_id]
+        reply_req_id = self._resolve_reply_req_id_for_send(chat_id, reply_to)
+        if not reply_req_id and self._chat_requires_reply(chat_id):
+            return SendResult(success=False, error="No fresh WeCom reply req_id available for group chat")
 
         try:
             upload_result = await self._upload_media_bytes(
@@ -1325,6 +1459,7 @@ class WeComAdapter(BasePlatformAdapter):
                     upload_result["media_id"],
                 )
         except asyncio.TimeoutError:
+            self._forget_matching_req_id(reply_req_id, reply_to=reply_to, chat_id=chat_id)
             return SendResult(success=False, error="Timeout sending media to WeCom")
         except Exception as exc:
             logger.error("[%s] Failed to send media %s: %s", self.name, media_source, exc)
@@ -1371,11 +1506,11 @@ class WeComAdapter(BasePlatformAdapter):
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
 
+        reply_req_id = None
         try:
-            reply_req_id = self._reply_req_id_for_message(reply_to)
-
-            if not reply_req_id and chat_id in self._last_chat_req_ids:
-                reply_req_id = self._last_chat_req_ids[chat_id]
+            reply_req_id = self._resolve_reply_req_id_for_send(chat_id, reply_to)
+            if not reply_req_id and self._chat_requires_reply(chat_id):
+                return SendResult(success=False, error="No fresh WeCom reply req_id available for group chat")
 
             if reply_req_id:
                 response = await self._send_reply_markdown(reply_req_id, content)
@@ -1389,6 +1524,7 @@ class WeComAdapter(BasePlatformAdapter):
                     },
                 )
         except asyncio.TimeoutError:
+            self._forget_matching_req_id(reply_req_id, reply_to=reply_to, chat_id=chat_id)
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:
             logger.error("[%s] Send failed: %s", self.name, exc)

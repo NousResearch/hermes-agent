@@ -16,6 +16,8 @@ This tutorial uses the `default` board throughout. If you want multiple isolated
 
 Throughout the tutorial, **code blocks labelled `bash` are commands *you* run.** Code blocks labelled `# worker tool calls` are what the spawned worker's model emits as tool calls — shown here so you can see the loop end-to-end, not because you'd ever run them yourself.
 
+If you're running Kanban as part of a dispatcher-style stack, treat the stories below as concrete examples of the same operating doctrine: triage first, build a full context packet, route to the right specialist lane, verify before declaring done, then sync docs and capture reusable learning. For debugging stories, investigate before fix. For infra stories, close with a health check and rollback note.
+
 ## The board at a glance
 
 ![Kanban board overview](/img/kanban-tutorial/01-board-overview.png)
@@ -143,7 +145,7 @@ Two transcribes done, one running, two ready waiting for the next dispatcher tic
 
 ## Story 3 — Role pipeline with retry
 
-This is where Kanban earns its keep over a flat TODO list. A PM writes a spec. An engineer implements it. A reviewer rejects the first attempt. The engineer tries again with changes. The reviewer approves.
+This is where Kanban earns its keep over a flat TODO list. In a dispatcher-oriented setup, the same pattern often maps to stable roles such as `architect` → `coder` → reviewer (or `logic` / `infra`, depending on the task). A PM writes a spec. An engineer implements it. A reviewer rejects the first attempt. The engineer tries again with changes. The reviewer approves.
 
 The dashboard view, filtered by `auth-project`:
 
@@ -226,6 +228,8 @@ The reviewer picks up next. When they open `Review password reset PR`, they see:
 
 The parent link is the completed implementation. When the reviewer's worker spawns on `Review password reset PR` and calls `kanban_show()`, the returned `worker_context` includes the parent's most-recent-completed-run summary + metadata — so the reviewer reads "added zxcvbn strength check, reset tokens are now single-use" and has the list of changed files in hand before looking at a diff.
 
+The doctrinal point is that the reviewer is acting as a verification gate, not just another worker. In dispatcher-style orchestration, don't mark work done just because implementation finished — the closeout artifact should prove the acceptance criteria were actually met.
+
 ## Story 4 — Circuit breaker and crash recovery
 
 Real workers fail. Missing credentials, OOM kills, transient network errors. The dispatcher has two lines of defense: a **circuit breaker** that auto-blocks after N consecutive failures so the board doesn't thrash forever, and **crash detection** that reclaims a task whose worker PID went away before its TTL expired.
@@ -241,6 +245,8 @@ hermes kanban create "Deploy to staging (missing creds)" \
 ```
 
 The dispatcher tries to spawn the worker. Spawn fails (`RuntimeError: AWS_ACCESS_KEY_ID not set`). The dispatcher releases the claim, increments a failure counter, and tries again next tick. Because this example sets `--max-retries 3`, the circuit trips after three consecutive failures: the task goes to `blocked` with outcome `gave_up`. If you omit the flag, Hermes uses `kanban.failure_limit` (default: 2). No more retries until a human unblocks it.
+
+For infra-oriented cards like this, the human/operator follow-up should not stop at "credentials fixed". The normal closeout is: investigate the failure cause, retry the task, run a post-change health check, and record a rollback note in the handoff or comments.
 
 Click the blocked task:
 

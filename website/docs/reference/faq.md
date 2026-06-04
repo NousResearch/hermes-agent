@@ -647,6 +647,8 @@ There is no hard limit. Each profile is just a directory under `~/.hermes/profil
 
 **Solution: Delegation config.** Hermes can route subagents to a different model automatically. Set this in `~/.hermes/config.yaml`:
 
+For production dispatcher setups, this usually applies to the low-level delegation substrate (`delegate_task`) even when the day-to-day operator surface is a stable role router layered on top.
+
 ```yaml
 delegation:
   model: "google/gemini-3-flash-preview"   # subagents use this model

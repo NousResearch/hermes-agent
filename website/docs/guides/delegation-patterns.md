@@ -215,6 +215,32 @@ Restricting toolsets keeps the subagent focused and prevents accidental side eff
 
 ---
 
+## Stable Role Wrappers for Production Orchestrators
+
+`delegate_task` is Hermes' low-level primitive. In larger dispatcher setups, it's often worth wrapping it in a thin policy layer such as `delegate_role_task(role, goal, context)` so routing stays stable while role prompts evolve independently.
+
+A common role split is:
+
+- `architect` — decomposition, risks, acceptance criteria
+- `coder` — implementation, refactors, traceback debugging
+- `infra` — deployment, Docker/systemd/nginx, runtime health
+- `logic` — workflow JSON, webhook payloads, automation expressions
+
+Use raw `delegate_task` examples when teaching the core primitive. Use a role wrapper when documenting a production orchestration pattern.
+
+## Gated Orchestration Pattern
+
+A useful production convention is to wrap delegation in workflow gates:
+
+1. Triage
+2. Context packet assembly
+3. Specialist execution
+4. Verification gate
+5. Documentation sync
+6. Learning capture
+
+For debugging, prefer **investigate before fix**. For infra, require a post-change health check and a rollback note before calling the task done.
+
 ## Constraints
 
 - **Default 3 parallel tasks**: batches default to 3 concurrent subagents (configurable via `delegation.max_concurrent_children` in config.yaml, no hard ceiling, only a floor of 1)

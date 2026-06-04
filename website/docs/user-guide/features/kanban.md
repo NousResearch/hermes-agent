@@ -52,6 +52,18 @@ They look similar; they are not the same primitive.
 
 They coexist: a kanban worker may call `delegate_task` internally during its run.
 
+## Dispatcher-oriented operating pattern
+
+When Kanban is used as part of a dispatcher stack, a good default workflow is:
+
+1. Triage the incoming request
+2. Build a context packet with exact paths, logs, constraints, acceptance criteria, and verification requirements
+3. Route to the right specialist lane / role
+4. Verify the result before marking the work done
+5. Sync docs and capture reusable learning
+
+For infra-oriented cards, close with a health check and rollback note. For debugging cards, investigate before fix instead of patching blind.
+
 ## Core concepts
 
 - **Board** — a standalone queue of tasks with its own SQLite DB, workspaces

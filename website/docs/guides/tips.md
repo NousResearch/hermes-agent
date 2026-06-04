@@ -139,6 +139,10 @@ Long sessions accumulate tokens. When you notice responses slowing down or getti
 
 Need to research three topics at once? Ask the agent to use `delegate_task` with parallel subtasks. Each subagent runs independently with its own context, and only the final summaries come back — massively reducing your main conversation's token usage.
 
+For production-style orchestration, don't stop at raw delegation. A stronger pattern is to route work through stable specialist roles (for example: `architect`, `coder`, `infra`, `logic`) and always include a full context packet: exact paths, logs, errors, constraints, acceptance criteria, and verification steps.
+
+For debugging, prefer **investigate before fix**. For infra changes, require a post-change health check and a rollback note before calling the task done.
+
 ### Use execute_code for Batch Operations
 
 Instead of running terminal commands one at a time, ask the agent to write a script that does everything at once. "Write a Python script to rename all `.jpeg` files to `.jpg` and run it" is cheaper and faster than renaming files individually.

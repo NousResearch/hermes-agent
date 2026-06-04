@@ -88,6 +88,15 @@ When you create profiles for your fleet, choose names that match the *role* you 
 
 A specialisation of the profile lane: an orchestrator is a Hermes profile whose toolset includes `kanban` but excludes `terminal` / `file` / `code` / `web` for implementation. Its job is decomposing a high-level goal into child tasks via `kanban_create` + `kanban_link` and stepping back. The orchestrator skill encodes the anti-temptation rules.
 
+In production dispatcher setups, this usually maps onto a stable role router rather than free-form delegation. A common role split is:
+
+- `architect` — decomposition, risks, acceptance criteria
+- `coder` — implementation and debugging
+- `infra` — deployment and runtime health
+- `logic` — workflow JSON and automation mapping
+
+Whichever names you choose, keep the routing contract stable and pass full context packets to each lane.
+
 ## Adding an external CLI worker lane
 
 Wiring a non-Hermes CLI tool (Codex CLI, Claude Code CLI, OpenCode CLI, a local coding-model runner, etc.) as a kanban worker lane is *not yet a paved path*. The dispatcher's spawn function is pluggable (`spawn_fn` is a parameter on `dispatch_once`), and a plugin could register its own `spawn_fn` for a non-Hermes assignee, but the surrounding integration work — wrapping the CLI's exit code into `kanban_complete` / `kanban_block` calls, mapping the CLI's workspace/sandbox conventions onto the dispatcher's `HERMES_KANBAN_WORKSPACE` env, handling auth and per-CLI policy — is still per-integration design work.

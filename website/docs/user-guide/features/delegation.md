@@ -55,6 +55,19 @@ delegate_task(
 
 The subagent receives a focused system prompt built from your goal and context, instructing it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
 
+## Role-Based Wrappers
+
+`delegate_task` is the core Hermes primitive. If you're building a dispatcher-style workflow, consider wrapping it in a stable router such as `delegate_role_task(role, goal, context)`.
+
+Typical production roles:
+
+- `architect` — decomposition, design, acceptance criteria
+- `coder` — implementation and debugging
+- `infra` — deployment and operational health
+- `logic` — workflow JSON and automation payload mapping
+
+This keeps orchestration docs and prompts stable even when the underlying role instructions evolve.
+
 ## Practical Examples
 
 ### Parallel Research

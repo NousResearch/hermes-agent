@@ -183,6 +183,8 @@ registry.register(
 
 Some tools (`todo`, `memory`, `session_search`, `delegate_task`) need access to per-session agent state. These are intercepted by `run_agent.py` before reaching the registry. The registry still holds their schemas, but `dispatch()` returns a fallback error if the intercept is bypassed.
 
+For doctrine-facing docs, treat `delegate_task` as the low-level primitive. Production dispatcher stacks often add a stable role-routing layer on top instead of exposing raw delegation as the only recommendation.
+
 ## Optional: Setup Wizard Integration
 
 If your tool requires an API key, add it to `hermes_cli/config.py`:

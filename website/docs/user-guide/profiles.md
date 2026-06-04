@@ -34,6 +34,8 @@ Creates a fresh profile with bundled skills seeded. Run `mybot setup` to configu
 
 If you plan to use this profile as a kanban worker (or want the kanban orchestrator to route work to it), pass `--description "<role>"` at create time so the orchestrator knows what it's good at:
 
+In dispatcher-style setups, keep these descriptions crisp and role-like. They become the routing hints used to build stable specialist lanes rather than ad hoc delegation targets.
+
 ```bash
 hermes profile create researcher --description "Reads source code and external docs, writes findings."
 ```

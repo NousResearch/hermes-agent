@@ -81,6 +81,29 @@ hermes doctor       # Diagnose any issues
 
 ---
 
+## Orchestration Model
+
+Hermes exposes a few different orchestration surfaces that complement each other:
+
+- **`delegate_task`** — low-level synchronous subagent spawn for short reasoning work inside the current turn.
+- **Role wrappers** — common in production dispatcher setups; a stable policy layer such as `delegate_role_task(role, goal, context)` routes work to specialist roles like `architect`, `coder`, `infra`, and `logic`.
+- **Kanban** — durable multi-agent coordination when work must survive restarts, involve humans, or move across named workers over time.
+- **Cron** — scheduled autonomous execution.
+
+For production orchestration, a strong default pattern is:
+
+1. Triage
+2. Build a full context packet (paths, logs, errors, constraints, acceptance criteria, verification)
+3. Route to the right specialist role
+4. Verify before declaring done
+5. Sync docs and capture reusable learning
+
+For infra tasks, close with an explicit health check and rollback note. For debugging, investigate before fix.
+
+See the delegation docs, Kanban docs, and `docs/dispatcher-orchestration-stack.md` for the dispatcher-oriented operating model.
+
+---
+
 ## Skip the API-key collection — Nous Portal
 
 Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:

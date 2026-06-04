@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 > **Android / Termux：** 已测试的手动安装路径请参考 [Termux 指南](https://hermes-agent.nousresearch.com/docs/getting-started/termux)。在 Termux 上，Hermes 会安装精选的 `.[termux]` 扩展，因为完整的 `.[all]` 扩展会拉取 Android 不兼容的语音依赖。
 >
-> **Windows：** 原生 Windows 不受支持。请安装 [WSL2](https://learn.microsoft.com/zh-cn/windows/wsl/install) 并运行上述命令。
+> **Windows：** 原生 Windows 目前为**早期 Beta**。可以使用 PowerShell 安装器原生运行；如果你更看重稳定性，仍建议优先使用 [WSL2](https://learn.microsoft.com/zh-cn/windows/wsl/install) 走 Linux 路径。
 
 安装后：
 
@@ -64,6 +64,29 @@ hermes doctor       # 诊断问题
 ```
 
 📖 **[完整文档 →](https://hermes-agent.nousresearch.com/docs/)**
+
+---
+
+## 编排模型
+
+Hermes 提供几种互补的编排层：
+
+- **`delegate_task`** —— 低层同步子代理调用，适合当前轮次内的短时推理任务。
+- **角色路由包装层** —— 在生产型 dispatcher 体系里，常见做法是再包一层稳定接口，例如 `delegate_role_task(role, goal, context)`，把任务路由给 `architect`、`coder`、`infra`、`logic` 等专职角色。
+- **Kanban** —— 持久化多代理协作，适合需要跨重启、跨角色、或需要人工介入的任务流。
+- **Cron** —— 定时自动运行。
+
+更稳的生产编排模式通常是：
+
+1. Triage（分诊）
+2. 组装 context packet（路径、日志、错误、约束、验收标准、验证方式）
+3. 路由到正确 specialist role
+4. 验证通过后再宣布完成
+5. 同步文档 / 沉淀可复用经验
+
+基础设施任务建议以明确的 health check 和 rollback note 收尾；排错类任务建议先 investigate，再 fix。
+
+更偏 dispatcher 的操作约定，可参阅 delegation / kanban 文档，以及仓库内的 `docs/dispatcher-orchestration-stack.md`。
 
 ---
 

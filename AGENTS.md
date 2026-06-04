@@ -66,6 +66,20 @@ hermes-agent/
 `gateway.log` when running the gateway. Profile-aware via `get_hermes_home()`.
 Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
 
+## Dispatcher-Style Role Orchestration
+
+Hermes ships the low-level `delegate_task` primitive. Production dispatcher profiles often wrap it in a **stable role API** (for example, `delegate_role_task(role, goal, context)`) so routing logic stays predictable while the underlying role prompts can evolve independently.
+
+Repo-local convention for GStack-inspired orchestration docs:
+
+- Treat `delegate_task` as the substrate.
+- Prefer **role-based wrappers** in dispatcher-oriented docs (`architect`, `coder`, `infra`, `logic`) instead of ad-hoc raw delegation examples.
+- Every delegation packet should include exact paths, logs/errors, constraints, acceptance criteria, and verification requirements.
+- Infra tasks should end with an explicit health check plus rollback note.
+- Error-fix work should follow investigate-before-fix, not patch-first guessing.
+
+See `docs/dispatcher-orchestration-stack.md` for the current role matrix, workflow gates, and doc-hygiene rules used by dispatcher-style Hermes setups.
+
 ## File Dependency Chain
 
 ```

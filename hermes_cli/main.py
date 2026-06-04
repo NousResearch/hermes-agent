@@ -13320,6 +13320,12 @@ def main():
     register_send_subparser(subparsers)
 
     # =========================================================================
+    # credentials command — Hermes-native secret storage
+    # =========================================================================
+    from hermes_cli.credentials import register_credentials_subparser
+    register_credentials_subparser(subparsers)
+
+    # =========================================================================
     # login command
     # =========================================================================
     login_parser = subparsers.add_parser(

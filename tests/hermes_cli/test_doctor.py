@@ -1488,3 +1488,417 @@ def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path
     assert "build-time tooling" in out
     assert "known npm bug" in out
     assert "lockfile bump" in out
+
+
+# ── Doctor --json and --verbose flags ──
+
+
+class TestDoctorJsonFlag:
+    """Tests for `hermes doctor --json` output."""
+
+    def _run_json_doctor(self, monkeypatch, tmp_path) -> str:
+        """Run `hermes doctor --json` in a minimal hermetic environment."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        # load_config() resolves HERMES_HOME from env, not the module constant
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        # Return empty results so doctor runs to completion (JSON output is at end)
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # Stub auth helpers for hermetic behavior
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False, json=True, verbose=False))
+        return buf.getvalue()
+
+    def test_json_output_is_valid_json(self, monkeypatch, tmp_path):
+        import json as _json
+        out = self._run_json_doctor(monkeypatch, tmp_path)
+        parsed = _json.loads(out)
+        assert isinstance(parsed, dict)
+
+    def test_json_contains_expected_keys(self, monkeypatch, tmp_path):
+        import json as _json
+        out = self._run_json_doctor(monkeypatch, tmp_path)
+        parsed = _json.loads(out)
+        for key in ("hermes_home", "python_version", "checks", "issues",
+                     "manual_issues", "fixable_count", "total_issues", "fixed_count"):
+            assert key in parsed, f"Missing key: {key}"
+
+    def test_json_checks_are_structured(self, monkeypatch, tmp_path):
+        import json as _json
+        out = self._run_json_doctor(monkeypatch, tmp_path)
+        parsed = _json.loads(out)
+        checks = parsed["checks"]
+        assert isinstance(checks, list)
+        assert len(checks) > 0
+        # Each check must have section, status, message keys
+        for check in checks:
+            assert "section" in check
+            assert "status" in check
+            assert "message" in check
+            assert check["status"] in ("ok", "warn", "fail", "info")
+
+    def test_json_mode_suppresses_ansi_escape_codes(self, monkeypatch, tmp_path):
+        out = self._run_json_doctor(monkeypatch, tmp_path)
+        # ANSI escape sequences start with \033 or \x1b
+        assert "\033" not in out
+        assert "\x1b" not in out
+
+    def test_json_mode_produces_no_colored_unicode_glyphs(self, monkeypatch, tmp_path):
+        out = self._run_json_doctor(monkeypatch, tmp_path)
+        # Should not contain the unicode check/cross marks used in terminal output
+        for glyph in ("✓", "✗", "⚠", "🩺", "◆", "┌", "🎉"):
+            assert glyph not in out, f"Found terminal glyph in JSON output: {glyph}"
+
+
+class TestDoctorVerboseFlag:
+    """Tests for `hermes doctor --verbose` output."""
+
+    def _run_verbose_doctor(self, monkeypatch, tmp_path, *, provider="auto",
+                             fallback_chain=None, aux_config=None) -> str:
+        """Run `hermes doctor --verbose` with controlled config."""
+        import yaml
+
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        config = {
+            "model": {
+                "provider": provider,
+                "default": "anthropic/claude-sonnet-4-20250514",
+            },
+            "memory": {},
+        }
+        if fallback_chain:
+            config["fallback_providers"] = fallback_chain
+        if aux_config:
+            config["auxiliary"] = aux_config
+
+        (home / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        # load_config() resolves HERMES_HOME from env, not the module constant
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        # Return empty results so doctor runs to completion
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # Stub auth helpers for hermetic behavior
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False, json=False, verbose=True))
+        return buf.getvalue()
+
+    def test_verbose_shows_route_configuration_section(self, monkeypatch, tmp_path):
+        out = self._run_verbose_doctor(monkeypatch, tmp_path, provider="openrouter")
+        assert "Route Configuration" in out
+        assert "provider: openrouter" in out
+
+    def test_verbose_shows_fallback_chain_section(self, monkeypatch, tmp_path):
+        out = self._run_verbose_doctor(
+            monkeypatch, tmp_path,
+            provider="openrouter",
+            fallback_chain=[
+                {"provider": "nous", "model": "google/gemini-3-flash"},
+                {"provider": "custom", "model": "local-model"},
+            ],
+        )
+        assert "Fallback Chain" in out
+        assert "nous (google/gemini-3-flash)" in out
+        assert "custom (local-model)" in out
+
+    def test_verbose_shows_empty_fallback_when_none_configured(self, monkeypatch, tmp_path):
+        out = self._run_verbose_doctor(monkeypatch, tmp_path)
+        assert "Fallback Chain" in out
+        assert "No fallback providers configured" in out
+
+    def test_verbose_shows_auxiliary_tasks_section(self, monkeypatch, tmp_path):
+        out = self._run_verbose_doctor(
+            monkeypatch, tmp_path,
+            aux_config={
+                "vision": {"provider": "custom", "model": "qwen-vl", "timeout": 60},
+                "compression": {"provider": "auto", "model": "", "timeout": 120},
+            },
+        )
+        assert "Auxiliary Tasks" in out
+        assert "vision:" in out
+        assert "compression:" in out
+
+    def test_verbose_does_not_suppress_standard_sections(self, monkeypatch, tmp_path):
+        out = self._run_verbose_doctor(monkeypatch, tmp_path)
+        # Standard sections must still appear
+        for section in ("Python Environment", "Configuration Files",
+                         "Auth Providers", "Security Advisories"):
+            assert section in out, f"Missing standard section: {section}"
+
+
+class TestDoctorJsonAndVerboseInteraction:
+    """JSON mode takes precedence — verbose sections are suppressed in JSON output."""
+
+    def test_json_with_verbose_still_produces_valid_json(self, monkeypatch, tmp_path):
+        import json as _json
+
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # Stub auth helpers for hermetic behavior
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            # Both flags: JSON wins, verbose sections suppressed
+            doctor_mod.run_doctor(Namespace(fix=False, json=True, verbose=True))
+
+        out = buf.getvalue()
+        parsed = _json.loads(out)
+        assert isinstance(parsed, dict)
+        # Verbose section headers must not appear in JSON output
+        assert "Route Configuration" not in out
+        assert "Fallback Chain" not in out
+        assert "Auxiliary Tasks" not in out
+
+
+class TestDoctorJsonWithFreshAdvisory:
+    """JSON output must remain valid even when a security advisory is active.
+
+    Regression test: the remediation text print() loop was not guarded by
+    _json_mode, so a fresh advisory would print human-readable remediation
+    lines before the JSON document, corrupting the output.
+    """
+
+    def _run_json_doctor_with_advisory(self, monkeypatch, tmp_path) -> str:
+        """Run doctor --json with a fake active advisory hit."""
+        import json as _json
+
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # Stub auth helpers
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        # Inject a fake active advisory hit so the remediation print loop
+        # is exercised during the Security Advisories section.
+        fake_hit = types.SimpleNamespace(
+            advisory=types.SimpleNamespace(
+                id="TEST-2024-0001",
+                title="Test security advisory — vulnerable package",
+            ),
+            package="test-pkg",
+            installed_version="0.1.0",
+        )
+
+        try:
+            import hermes_cli.security_advisories as _sa
+            monkeypatch.setattr(_sa, "detect_compromised", lambda: [fake_hit])
+            monkeypatch.setattr(_sa, "filter_unacked", lambda hits: hits)
+            monkeypatch.setattr(_sa, "get_acked_ids", lambda: set())
+            # full_remediation_text is imported locally inside run_doctor();
+            # mock it on the source module so the local import picks it up.
+            monkeypatch.setattr(
+                _sa,
+                "full_remediation_text",
+                lambda hit: [
+                    "",
+                    "This package contains a known vulnerability.",
+                    "Uninstall immediately and rotate credentials.",
+                    "",
+                ],
+            )
+        except Exception:
+            pass
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False, json=True, verbose=False))
+        return buf.getvalue()
+
+    def test_json_remains_valid_with_fresh_advisory(self, monkeypatch, tmp_path):
+        import json as _json
+        out = self._run_json_doctor_with_advisory(monkeypatch, tmp_path)
+        # Must parse as valid JSON — remediation text must NOT precede it.
+        parsed = _json.loads(out)
+        assert isinstance(parsed, dict)
+        # The check for the advisory must be recorded.
+        checks = parsed["checks"]
+        fail_checks = [c for c in checks if c["status"] == "fail"]
+        assert len(fail_checks) >= 1
+        # The advisory should appear in manual_issues.
+        assert any("TEST-2024-0001" in i for i in parsed.get("manual_issues", []))
+
+
+class TestDoctorVerboseCombinedFallback:
+    """Verbose fallback display must reflect the merged fallback chain.
+
+    Regression test: _show_verbose_fallback_chain used raw if/elif on
+    fallback_providers and fallback_model, missing entries when both
+    keys are configured.  It now uses get_fallback_chain() which merges
+    and deduplicates the two sources.
+    """
+
+    def _run_verbose_with_combined_fallback(self, monkeypatch, tmp_path,
+                                            fallback_providers, fallback_model) -> str:
+        import yaml
+
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        config = {
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet"},
+            "memory": {},
+        }
+        if fallback_providers:
+            config["fallback_providers"] = fallback_providers
+        if fallback_model:
+            config["fallback_model"] = fallback_model
+
+        (home / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False, json=False, verbose=True))
+        return buf.getvalue()
+
+    def test_combined_fallback_keys_both_visible(self, monkeypatch, tmp_path):
+        """When both fallback_providers and fallback_model are set, all
+        unique entries must appear in the verbose output."""
+        out = self._run_verbose_with_combined_fallback(
+            monkeypatch, tmp_path,
+            fallback_providers=[
+                {"provider": "nous", "model": "google/gemini-3-flash"},
+                {"provider": "openrouter", "model": "google/gemini-2.5-pro"},
+            ],
+            fallback_model={
+                "provider": "custom",
+                "model": "local-llama",
+            },
+        )
+        assert "Fallback Chain" in out
+        # All three unique entries must be visible.
+        assert "nous (google/gemini-3-flash)" in out
+        assert "openrouter (google/gemini-2.5-pro)" in out
+        assert "custom (local-llama)" in out
+
+    def test_combined_fallback_deduplicates_identical_routes(self, monkeypatch, tmp_path):
+        """When the same provider/model appears in both keys, it must
+        appear only once."""
+        out = self._run_verbose_with_combined_fallback(
+            monkeypatch, tmp_path,
+            fallback_providers=[
+                {"provider": "nous", "model": "google/gemini-3-flash"},
+            ],
+            fallback_model={
+                "provider": "nous",
+                "model": "google/gemini-3-flash",
+            },
+        )
+        assert "Fallback Chain" in out
+        # Should appear exactly once (get_fallback_chain deduplicates).
+        assert out.count("nous (google/gemini-3-flash)") == 1

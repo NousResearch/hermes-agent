@@ -74,6 +74,99 @@ _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
 _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 
+async def _try_coding_plan_vlm(
+    image_data_url: str,
+    user_prompt: str,
+    cfg: Dict[str, Any],
+    temperature: float = 0.1,
+) -> Optional[str]:
+    """Call MiniMax's private ``/v1/coding_plan/vlm`` VLM endpoint.
+
+    This endpoint is what the official ``minimax-coding-plan-mcp`` package's
+    ``understand_image`` tool wraps — a dedicated multimodal endpoint that
+    does not route through ``/v1/chat/completions`` and is not subject to
+    the same content-safety heuristics that occasionally flag legitimate
+    charts/tables as "image is sensitive" (error 1026).
+
+    Returns the analysis string on success, or ``None`` on any failure so
+    the caller can fall through to the standard chat/completions path.
+
+    Configuration schema (under ``auxiliary.vision_coding_plan``):
+
+    .. code-block:: yaml
+
+        auxiliary:
+          vision_coding_plan:
+            enabled: true               # Default: false. Set true to opt in.
+            api_host: https://api.minimaxi.com
+            api_key: ${MINIMAX_CN_API_KEY}
+            timeout: 60
+            max_tokens: 2000
+            temperature: 0.1
+
+    The ``api_key`` field supports both literal values and ``${ENV_VAR}``
+    placeholders — the latter is resolved by the existing config loader.
+    """
+    api_host = (cfg.get("api_host") or "https://api.minimaxi.com").rstrip("/")
+    api_key = cfg.get("api_key") or os.getenv("MINIMAX_CN_API_KEY")
+    if not api_key:
+        logger.debug("coding_plan/vlm: no api_key configured, skipping")
+        return None
+    # Strip surrounding ${...} if config loader left them literal
+    if isinstance(api_key, str) and api_key.startswith("${") and api_key.endswith("}"):
+        env_name = api_key[2:-1]
+        api_key = os.getenv(env_name) or ""
+        if not api_key:
+            logger.debug("coding_plan/vlm: env var %s not set, skipping", env_name)
+            return None
+
+    timeout = float(cfg.get("timeout", 60))
+    max_tokens = int(cfg.get("max_tokens", 2000))
+
+    payload = {
+        "prompt": user_prompt,
+        "image_url": image_data_url,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "MM-API-Source": "Hermes-Agent",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(
+                f"{api_host}/v1/coding_plan/vlm",
+                json=payload,
+                headers=headers,
+            )
+        if r.status_code != 200:
+            logger.warning(
+                "coding_plan/vlm returned HTTP %s: %s",
+                r.status_code,
+                r.text[:200],
+            )
+            return None
+        data = r.json()
+        base_resp = data.get("base_resp") or {}
+        if base_resp.get("status_code", 0) != 0:
+            logger.warning(
+                "coding_plan/vlm base_resp error: %s",
+                base_resp,
+            )
+            return None
+        content = (data.get("content") or "").strip()
+        if not content:
+            logger.warning("coding_plan/vlm returned empty content")
+            return None
+        return content
+    except httpx.TimeoutException:
+        logger.warning("coding_plan/vlm timed out after %.1fs", timeout)
+        return None
+    except Exception as e:
+        logger.warning("coding_plan/vlm call failed: %s: %s", type(e).__name__, e)
+        return None
+
+
 def _validate_image_url(url: str) -> bool:
     """
     Basic validation of image URL format.
@@ -879,6 +972,60 @@ async def vision_analyze_tool(
                 vision_temperature = float(_vtemp)
         except Exception:
             pass
+        # === coding_plan/vlm fast-path (MiniMax Token Plan) =============
+        # When auxiliary.vision_coding_plan.enabled is true, try the
+        # private /v1/coding_plan/vlm endpoint FIRST. This bypasses the
+        # chat/completions content-safety filter that occasionally flags
+        # legitimate charts/tables as "image is sensitive" (error 1026).
+        # On any failure, fall through to the standard chat/completions
+        # path below — never raise out of the fast-path.
+        _coding_plan_analysis: Optional[str] = None
+        _cp_cfg: Dict[str, Any] = {}
+        try:
+            from hermes_cli.config import cfg_get as _cp_cfg_get, load_config as _cp_load
+            _cp_cfg = _cp_cfg_get(
+                _cp_load(), "auxiliary", "vision_coding_plan", default={}
+            )
+        except Exception:
+            _cp_cfg = {}
+
+        if _cp_cfg.get("enabled"):
+            try:
+                logger.info(
+                    "Attempting coding_plan/vlm fast-path "
+                    "(auxiliary.vision_coding_plan.enabled=true)"
+                )
+                _coding_plan_analysis = await _try_coding_plan_vlm(
+                    image_data_url=image_data_url,
+                    user_prompt=comprehensive_prompt,
+                    cfg=_cp_cfg,
+                    temperature=vision_temperature,
+                )
+            except Exception as _cp_exc:
+                # Defensive: any error in the fast-path must not block vision
+                logger.warning(
+                    "coding_plan/vlm fast-path raised %s; falling back to chat/completions: %s",
+                    type(_cp_exc).__name__, _cp_exc,
+                )
+                _coding_plan_analysis = None
+
+        if _coding_plan_analysis is not None:
+            logger.info(
+                "coding_plan/vlm fast-path succeeded (%d chars); skipping chat/completions",
+                len(_coding_plan_analysis),
+            )
+            analysis = _coding_plan_analysis
+            analysis_length = len(analysis)
+            debug_call_data["success"] = True
+            debug_call_data["backend"] = "coding_plan_vlm"
+            debug_call_data["analysis_length"] = analysis_length
+            _debug.log_call("vision_analyze_tool", debug_call_data)
+            _debug.save()
+            return json.dumps(
+                {"success": True, "analysis": analysis}, ensure_ascii=False
+            )
+        # === end coding_plan/vlm fast-path ================================
+
         call_kwargs = {
             "task": "vision",
             "messages": messages,

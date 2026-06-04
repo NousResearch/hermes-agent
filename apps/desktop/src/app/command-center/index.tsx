@@ -300,7 +300,7 @@ export function CommandCenterView({
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {section === 'sessions' && (
+              {section === 'sessions' && sessions.length > 0 && (
                 <SearchField
                   containerClassName="max-w-[40vw]"
                   onChange={next => setQuery(next)}

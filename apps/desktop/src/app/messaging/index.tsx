@@ -347,6 +347,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     <PageSearchShell
       {...props}
       onSearchChange={setQuery}
+      searchHidden={(platforms?.length ?? 0) === 0}
       searchPlaceholder="Search messaging..."
       searchValue={query}
     >

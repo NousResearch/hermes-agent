@@ -142,6 +142,7 @@ export function ChatBar({
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   const [focusRequestId, setFocusRequestId] = useState(0)
   const dragDepthRef = useRef(0)
+  const composingRef = useRef(false)  // true during IME composition (CJK input)
   const lastSpokenIdRef = useRef<string | null>(null)
 
   const narrow = useMediaQuery('(max-width: 30rem)')
@@ -476,6 +477,13 @@ export function ChatBar({
   }, [trigger])
 
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
+    // During IME composition the DOM contains uncommitted preedit text
+    // mixed with real content.  Skip state writes — compositionend will
+    // deliver the finalized text via a clean input event.
+    if (composingRef.current) {
+      return
+    }
+
     const editor = event.currentTarget
 
     if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
@@ -576,9 +584,11 @@ export function ChatBar({
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // IME composition: Enter confirms composed text, not a message submission.
-    // Without this guard, pressing Enter to finalise a Korean/Japanese/Chinese
-    // IME preedit fires submitDraft() and splits the message mid-word.
-    if (event.nativeEvent.isComposing) {
+    // We check both composingRef (set by compositionstart/compositionend, robust
+    // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
+    // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
+    // preedit fires submitDraft() and splits the message mid-word.
+    if (composingRef.current || event.nativeEvent.isComposing) {
       return
     }
 
@@ -971,7 +981,8 @@ export function ChatBar({
       const submitted = draft
       triggerHaptic('submit')
       clearDraft()
-      void onSubmit(submitted)
+      clearComposerAttachments()
+      void onSubmit(submitted, { attachments })
     }
 
     focusInput()
@@ -1110,6 +1121,12 @@ export function ChatBar({
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBlur={() => window.setTimeout(closeTrigger, 80)}
+        onCompositionEnd={() => {
+          composingRef.current = false
+        }}
+        onCompositionStart={() => {
+          composingRef.current = true
+        }}
         onDragOver={handleInputDragOver}
         onDrop={handleInputDrop}
         onFocus={() => markActiveComposer('main')}
@@ -1158,6 +1175,9 @@ export function ChatBar({
           onDrop={handleDrop}
           onSubmit={e => {
             e.preventDefault()
+            if (composingRef.current) {
+              return
+            }
             submitDraft()
           }}
           ref={composerRef}

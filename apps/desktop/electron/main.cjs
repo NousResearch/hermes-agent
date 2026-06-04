@@ -471,12 +471,14 @@ let bootstrapAbortController = null
 // of re-adopting the install we're repairing. Cleared once a bootstrap runs.
 let forceBootstrapRepair = false
 let connectionConfigCache = null
+let connectionConfigCacheMtime = null
 const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
 let desktopLogBuffer = ''
 let desktopLogFlushTimer = null
 let desktopLogFlushPromise = Promise.resolve()
+let nativeThemeListenerInstalled = false
 let bootProgressState = {
   error: null,
   fakeMode: BOOT_FAKE_MODE,
@@ -1101,9 +1103,17 @@ function readDesktopUpdateConfig() {
   }
 }
 
+// Atomic file write: temp + rename (atomic on all platforms). Prevents
+// partial writes on crash/power loss that corrupt JSON config files.
+function writeFileAtomic(targetPath, data, encoding) {
+  const tmp = targetPath + '.tmp'
+  fs.writeFileSync(tmp, data, encoding)
+  fs.renameSync(tmp, targetPath)
+}
+
 function writeDesktopUpdateConfig(config) {
   fs.mkdirSync(path.dirname(DESKTOP_UPDATE_CONFIG_PATH), { recursive: true })
-  fs.writeFileSync(DESKTOP_UPDATE_CONFIG_PATH, JSON.stringify(config, null, 2))
+  writeFileAtomic(DESKTOP_UPDATE_CONFIG_PATH, JSON.stringify(config, null, 2))
 }
 
 // Match the backend's source resolution but bias toward a real git checkout.
@@ -1628,7 +1638,7 @@ function writeBootstrapMarker(payload) {
     completedAt: new Date().toISOString(),
     desktopVersion: app.getVersion()
   }
-  fs.writeFileSync(BOOTSTRAP_COMPLETE_MARKER, JSON.stringify(merged, null, 2) + '\n', 'utf8')
+  writeFileAtomic(BOOTSTRAP_COMPLETE_MARKER, JSON.stringify(merged, null, 2) + '\n', 'utf8')
   return merged
 }
 
@@ -2094,6 +2104,7 @@ function fetchJson(url, token, options = {}) {
       },
       res => {
         const chunks = []
+        res.on('error', reject)
         res.on('data', chunk => chunks.push(chunk))
         res.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8')
@@ -2433,6 +2444,7 @@ async function resourceBufferFromUrl(rawUrl) {
         return
       }
       const chunks = []
+      res.on('error', reject)
       res.on('data', chunk => chunks.push(chunk))
       res.on('end', () => {
         resolve({
@@ -3135,7 +3147,17 @@ function decryptDesktopSecret(secret) {
 }
 
 function readDesktopConnectionConfig() {
-  if (connectionConfigCache) {
+  // Check if file changed on disk since last read (e.g. modified by another
+  // process or an external tool).  Our own writes update the cache inline
+  // via writeDesktopConnectionConfig, but external changes would be missed.
+  let mtime = null
+  try {
+    mtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
+  } catch {
+    mtime = null
+  }
+
+  if (connectionConfigCache && connectionConfigCacheMtime === mtime) {
     return connectionConfigCache
   }
 
@@ -3156,14 +3178,16 @@ function readDesktopConnectionConfig() {
   }
 
   connectionConfigCache = config
+  connectionConfigCacheMtime = mtime
 
   return config
 }
 
 function writeDesktopConnectionConfig(config) {
   fs.mkdirSync(path.dirname(DESKTOP_CONNECTION_CONFIG_PATH), { recursive: true })
-  fs.writeFileSync(DESKTOP_CONNECTION_CONFIG_PATH, JSON.stringify(config, null, 2))
+  writeFileAtomic(DESKTOP_CONNECTION_CONFIG_PATH, JSON.stringify(config, null, 2))
   connectionConfigCache = config
+  connectionConfigCacheMtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
 }
 
 function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig()) {
@@ -3491,9 +3515,12 @@ function createWindow() {
   }
 
   if (!IS_MAC) {
-    nativeTheme.on('updated', () => {
-      mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
-    })
+    if (!nativeThemeListenerInstalled) {
+      nativeThemeListenerInstalled = true
+      nativeTheme.on('updated', () => {
+        mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
+      })
+    }
   }
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))

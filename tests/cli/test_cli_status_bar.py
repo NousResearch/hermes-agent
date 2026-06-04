@@ -81,6 +81,29 @@ class TestCLIStatusBar:
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
 
+    def test_post_compression_sentinel_does_not_render_negative(self):
+        """Right after a compression, last_prompt_tokens is parked at the -1
+        sentinel until the next API call reports real usage. The status bar
+        must clamp it to 0 instead of rendering "-1/200K" / "-1%".
+        """
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=-1,
+            context_length=200_000,
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["context_tokens"] == 0
+        assert snapshot["context_percent"] == 0
+
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "-1" not in text
+        assert "0/200K" in text
+
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
 

@@ -192,6 +192,63 @@ export async function buildWsAuthParam(): Promise<[string, string]> {
   return ["token", token];
 }
 
+/**
+ * Authenticated ``fetch`` for dashboard ``/api/...`` requests that aren't
+ * plain JSON — file uploads (``FormData``), binary downloads (blobs), etc.
+ * Mirrors ``fetchJSON``'s auth handling but returns the raw ``Response`` so
+ * the caller can read ``.blob()`` / ``.formData()`` / stream it.
+ *
+ * Auth, in both modes, exactly as ``fetchJSON`` does it:
+ *  - loopback / ``--insecure``: attach the ``X-Hermes-Session-Token`` header.
+ *  - gated OAuth: no token header (it's absent by design); the
+ *    ``hermes_session_at`` cookie rides along via ``credentials: 'include'``.
+ *
+ * Unlike ``fetchJSON`` this does NOT parse the body, does NOT throw on
+ * non-2xx (the caller decides — a 404 on a download is meaningful), and
+ * does NOT run the global 401 → /login redirect (binary endpoints aren't
+ * navigation targets). Callers that want the redirect behaviour should use
+ * ``fetchJSON``.
+ */
+export async function authedFetch(
+  url: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  const token = window.__HERMES_SESSION_TOKEN__;
+  if (token) {
+    setSessionHeader(headers, token);
+  }
+  return fetch(`${BASE}${url}`, {
+    ...init,
+    headers,
+    credentials: init?.credentials ?? "include",
+  });
+}
+
+/**
+ * Build an absolute ``ws(s)://`` URL for a dashboard WebSocket endpoint,
+ * with the correct auth query param appended for the active mode (fresh
+ * single-use ``ticket`` in gated mode, ``token`` in loopback). Plugins and
+ * the SPA should use this instead of hand-assembling a WS URL + reading
+ * ``window.__HERMES_SESSION_TOKEN__`` directly, so the gated-mode ticket
+ * path can never be forgotten.
+ *
+ * ``path`` is the dashboard-relative path (e.g.
+ * ``"/api/plugins/kanban/events"``); the base-path prefix and host are
+ * applied here. Extra query params can be supplied via ``params`` and are
+ * merged before the auth param.
+ */
+export async function buildWsUrl(
+  path: string,
+  params?: Record<string, string>,
+): Promise<string> {
+  const [authName, authValue] = await buildWsAuthParam();
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const qs = new URLSearchParams(params ?? {});
+  qs.set(authName, authValue);
+  return `${proto}//${window.location.host}${BASE}${path}?${qs}`;
+}
+
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
@@ -237,6 +294,36 @@ export const api = {
   deleteSession: (id: string) =>
     fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
+    }),
+  getEmptySessionsCount: () =>
+    fetchJSON<{ count: number }>("/api/sessions/empty/count"),
+  deleteEmptySessions: () =>
+    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/empty", {
+      method: "DELETE",
+    }),
+  bulkDeleteSessions: (ids: string[]) =>
+    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/bulk-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    }),
+  renameSession: (id: string, title: string) =>
+    fetchJSON<{ ok: boolean; title: string }>(
+      `/api/sessions/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      },
+    ),
+  getSessionStats: () => fetchJSON<SessionStoreStats>("/api/sessions/stats"),
+  exportSessionUrl: (id: string) =>
+    `/api/sessions/${encodeURIComponent(id)}/export`,
+  pruneSessions: (older_than_days: number, source?: string) =>
+    fetchJSON<{ ok: boolean; removed: number }>("/api/sessions/prune", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ older_than_days, source }),
     }),
   getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
     const qs = new URLSearchParams();
@@ -311,6 +398,19 @@ export const api = {
     }),
   pauseCronJob: (id: string, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+  updateCronJob: (
+    id: string,
+    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string },
+    profile = "default",
+  ) =>
+    fetchJSON<CronJob>(
+      `/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates }),
+      },
+    ),
   resumeCronJob: (id: string, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/resume?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
   triggerCronJob: (id: string, profile = "default") =>
@@ -318,15 +418,58 @@ export const api = {
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
-  // Profiles (minimal)
+  // Profiles
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
-  createProfile: (body: { name: string; clone_from_default: boolean }) =>
-    fetchJSON<{ ok: boolean; name: string; path: string }>("/api/profiles", {
+  getActiveProfile: () =>
+    fetchJSON<ActiveProfileInfo>("/api/profiles/active"),
+  setActiveProfile: (name: string) =>
+    fetchJSON<{ ok: boolean; active: string }>("/api/profiles/active", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  createProfile: (body: {
+    name: string;
+    clone_from_default: boolean;
+    clone_all?: boolean;
+    no_skills?: boolean;
+    description?: string;
+    provider?: string;
+    model?: string;
+  }) =>
+    fetchJSON<{ ok: boolean; name: string; path: string; model_set?: boolean }>("/api/profiles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  updateProfileDescription: (name: string, description: string) =>
+    fetchJSON<{ ok: boolean; description: string; description_auto: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}/description`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description }),
+      },
+    ),
+  describeProfileAuto: (name: string, overwrite = true) =>
+    fetchJSON<ProfileDescribeAutoResult>(
+      `/api/profiles/${encodeURIComponent(name)}/describe-auto`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overwrite }),
+      },
+    ),
+  setProfileModel: (name: string, provider: string, model: string) =>
+    fetchJSON<{ ok: boolean; provider: string; model: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/model`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, model }),
+      },
+    ),
   renameProfile: (name: string, newName: string) =>
     fetchJSON<{ ok: boolean; name: string; path: string }>(
       `/api/profiles/${encodeURIComponent(name)}`,
@@ -429,11 +572,33 @@ export const api = {
     );
   },
 
+  // Messaging platforms (gateway channels)
+  getMessagingPlatforms: () =>
+    fetchJSON<{ platforms: MessagingPlatform[] }>("/api/messaging/platforms"),
+  updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
+    fetchJSON<{ ok: boolean; platform: string }>(
+      `/api/messaging/platforms/${encodeURIComponent(id)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  testMessagingPlatform: (id: string) =>
+    fetchJSON<MessagingPlatformTestResult>(
+      `/api/messaging/platforms/${encodeURIComponent(id)}/test`,
+      { method: "POST" },
+    ),
+
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
   updateHermes: () =>
     fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
+  checkHermesUpdate: (force = false) =>
+    fetchJSON<UpdateCheckResponse>(
+      `/api/hermes/update/check${force ? "?force=true" : ""}`,
+    ),
   getActionStatus: (name: string, lines = 200) =>
     fetchJSON<ActionStatusResponse>(
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
@@ -504,6 +669,224 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     }),
+
+  // ── Admin: MCP servers ──────────────────────────────────────────────
+  getMcpServers: () => fetchJSON<{ servers: McpServer[] }>("/api/mcp/servers"),
+  addMcpServer: (body: McpServerCreate) =>
+    fetchJSON<McpServer>("/api/mcp/servers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  removeMcpServer: (name: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
+  testMcpServer: (name: string) =>
+    fetchJSON<McpTestResult>(
+      `/api/mcp/servers/${encodeURIComponent(name)}/test`,
+      { method: "POST" },
+    ),
+  setMcpServerEnabled: (name: string, enabled: boolean) =>
+    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
+      `/api/mcp/servers/${encodeURIComponent(name)}/enabled`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      },
+    ),
+  getMcpCatalog: () =>
+    fetchJSON<{ entries: McpCatalogEntry[]; diagnostics: McpCatalogDiagnostic[] }>(
+      "/api/mcp/catalog",
+    ),
+  installMcpCatalogEntry: (
+    name: string,
+    env: Record<string, string> = {},
+    enable = true,
+  ) =>
+    fetchJSON<{ ok: boolean; name: string; background: boolean; action?: string }>(
+      "/api/mcp/catalog/install",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, env, enable }),
+      },
+    ),
+
+  // ── Admin: Pairing ──────────────────────────────────────────────────
+  getPairing: () => fetchJSON<PairingResponse>("/api/pairing"),
+  approvePairing: (platform: string, code: string) =>
+    fetchJSON<{ ok: boolean; user: PairingUser }>("/api/pairing/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform, code }),
+    }),
+  revokePairing: (platform: string, user_id: string) =>
+    fetchJSON<{ ok: boolean }>("/api/pairing/revoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform, user_id }),
+    }),
+  clearPendingPairing: () =>
+    fetchJSON<{ ok: boolean; cleared: number }>("/api/pairing/clear-pending", {
+      method: "POST",
+    }),
+
+  // ── Admin: Webhooks ─────────────────────────────────────────────────
+  getWebhooks: () => fetchJSON<WebhooksResponse>("/api/webhooks"),
+  createWebhook: (body: WebhookCreate) =>
+    fetchJSON<WebhookRoute & { secret: string }>("/api/webhooks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  deleteWebhook: (name: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/webhooks/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
+  setWebhookEnabled: (name: string, enabled: boolean) =>
+    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
+      `/api/webhooks/${encodeURIComponent(name)}/enabled`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      },
+    ),
+
+  // ── Admin: Credential pool ──────────────────────────────────────────
+  getCredentialPool: () =>
+    fetchJSON<{ providers: CredentialPoolProvider[] }>("/api/credentials/pool"),
+  addCredentialPoolEntry: (
+    provider: string,
+    api_key: string,
+    label?: string,
+  ) =>
+    fetchJSON<{ ok: boolean; provider: string; count: number }>(
+      "/api/credentials/pool",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, api_key, label }),
+      },
+    ),
+  removeCredentialPoolEntry: (provider: string, index: number) =>
+    fetchJSON<{ ok: boolean; provider: string; count: number }>(
+      `/api/credentials/pool/${encodeURIComponent(provider)}/${index}`,
+      { method: "DELETE" },
+    ),
+
+  // ── Admin: Memory provider ──────────────────────────────────────────
+  getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
+  setMemoryProvider: (provider: string) =>
+    fetchJSON<{ ok: boolean; active: string }>("/api/memory/provider", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider }),
+    }),
+  resetMemory: (target: "all" | "memory" | "user") =>
+    fetchJSON<{ ok: boolean; deleted: string[] }>("/api/memory/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target }),
+    }),
+
+  // ── Admin: Gateway lifecycle ────────────────────────────────────────
+  startGateway: () =>
+    fetchJSON<ActionResponse>("/api/gateway/start", { method: "POST" }),
+  stopGateway: () =>
+    fetchJSON<ActionResponse>("/api/gateway/stop", { method: "POST" }),
+
+  // ── Admin: Operations ───────────────────────────────────────────────
+  runDoctor: () =>
+    fetchJSON<ActionResponse>("/api/ops/doctor", { method: "POST" }),
+  runSecurityAudit: () =>
+    fetchJSON<ActionResponse>("/api/ops/security-audit", { method: "POST" }),
+  runBackup: (output?: string) =>
+    fetchJSON<ActionResponse>("/api/ops/backup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ output }),
+    }),
+  runImport: (archive: string) =>
+    fetchJSON<ActionResponse>("/api/ops/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archive }),
+    }),
+  getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
+  createHook: (body: HookCreate) =>
+    fetchJSON<{ ok: boolean; event: string; command: string; approved: boolean }>(
+      "/api/ops/hooks",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  deleteHook: (event: string, command: string) =>
+    fetchJSON<{ ok: boolean }>("/api/ops/hooks", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event, command }),
+    }),
+  getSystemStats: () => fetchJSON<SystemStats>("/api/system/stats"),
+
+  // ── Admin: Curator ──────────────────────────────────────────────────
+  getCurator: () => fetchJSON<CuratorStatus>("/api/curator"),
+  setCuratorPaused: (paused: boolean) =>
+    fetchJSON<{ ok: boolean; paused: boolean }>("/api/curator/paused", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paused }),
+    }),
+  runCurator: () =>
+    fetchJSON<ActionResponse>("/api/curator/run", { method: "POST" }),
+
+  // ── Admin: Portal ───────────────────────────────────────────────────
+  getPortal: () => fetchJSON<PortalStatus>("/api/portal"),
+
+  // ── Admin: Diagnostics (backgrounded) ───────────────────────────────
+  runPromptSize: () =>
+    fetchJSON<ActionResponse>("/api/ops/prompt-size", { method: "POST" }),
+  runDump: () => fetchJSON<ActionResponse>("/api/ops/dump", { method: "POST" }),
+  runConfigMigrate: () =>
+    fetchJSON<ActionResponse>("/api/ops/config-migrate", { method: "POST" }),
+  runDebugShare: (opts?: { redact?: boolean; lines?: number }) =>
+    fetchJSON<DebugShareResponse>("/api/ops/debug-share", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        redact: opts?.redact ?? true,
+        lines: opts?.lines ?? 200,
+      }),
+    }),
+
+
+  getCheckpoints: () => fetchJSON<CheckpointsResponse>("/api/ops/checkpoints"),
+  pruneCheckpoints: () =>
+    fetchJSON<ActionResponse>("/api/ops/checkpoints/prune", { method: "POST" }),
+
+  // ── Admin: Skills hub ───────────────────────────────────────────────
+  installSkillFromHub: (identifier: string) =>
+    fetchJSON<ActionResponse>("/api/skills/hub/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier }),
+    }),
+  uninstallSkillFromHub: (name: string) =>
+    fetchJSON<ActionResponse>("/api/skills/hub/uninstall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  updateSkillsFromHub: () =>
+    fetchJSON<ActionResponse>("/api/skills/hub/update", { method: "POST" }),
+  searchSkillsHub: (q: string, source = "all", limit = 20) =>
+    fetchJSON<{ results: SkillHubResult[] }>(
+      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}`,
+    ),
 };
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
@@ -526,7 +909,294 @@ export interface AuthMeResponse {
 export interface ActionResponse {
   name: string;
   ok: boolean;
-  pid: number;
+  pid: number | null;
+  error?: string;
+  message?: string;
+  update_command?: string;
+}
+
+export interface DebugShareResponse {
+  ok: boolean;
+  // label -> paste URL, e.g. { Report: "https://paste.rs/abc", "agent.log": "..." }
+  urls: Record<string, string>;
+  // "label: error" strings for optional full-log uploads that failed.
+  failures: string[];
+  redacted: boolean;
+  auto_delete_seconds: number;
+}
+
+export interface SessionStoreStats {
+  total: number;
+  active_store: number;
+  archived: number;
+  messages: number;
+  by_source: Record<string, number>;
+}
+
+export interface SkillHubResult {
+  name: string;
+  description: string;
+  source: string;
+  identifier: string;
+  trust_level: string;
+  repo: string | null;
+  tags: string[];
+}
+
+// ── Admin types ───────────────────────────────────────────────────────
+
+export interface McpServer {
+  name: string;
+  transport: "http" | "stdio" | "unknown";
+  url: string | null;
+  command: string | null;
+  args: string[];
+  env: Record<string, string>;
+  auth: string | null;
+  enabled: boolean;
+  tools: string[] | null;
+}
+
+export interface McpCatalogEntry {
+  name: string;
+  description: string;
+  source: string;
+  transport: "http" | "stdio";
+  auth_type: "api_key" | "oauth" | "none";
+  required_env: Array<{ name: string; prompt: string; required: boolean }>;
+  needs_install: boolean;
+  installed: boolean;
+  enabled: boolean;
+}
+
+export interface McpCatalogDiagnostic {
+  name: string;
+  kind: string;
+  message: string;
+}
+
+
+export interface McpServerCreate {
+  name: string;
+  url?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  auth?: string;
+}
+
+export interface McpTestResult {
+  ok: boolean;
+  error?: string;
+  tools: Array<{ name: string; description: string }>;
+}
+
+export interface MessagingPlatformEnvVar {
+  key: string;
+  required: boolean;
+  is_set: boolean;
+  redacted_value: string | null;
+  description: string;
+  prompt: string;
+  url: string | null;
+  is_password: boolean;
+  advanced: boolean;
+}
+
+export interface MessagingPlatform {
+  id: string;
+  name: string;
+  description: string;
+  docs_url: string;
+  enabled: boolean;
+  configured: boolean;
+  gateway_running: boolean;
+  /**
+   * "connected" | "disabled" | "not_configured" | "pending_restart" |
+   * "gateway_stopped" | "disconnected" | "fatal" | string
+   */
+  state: string;
+  error_code: string | null;
+  error_message: string | null;
+  updated_at: string | null;
+  home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
+  env_vars: MessagingPlatformEnvVar[];
+}
+
+export interface MessagingPlatformUpdate {
+  enabled?: boolean;
+  env?: Record<string, string>;
+  clear_env?: string[];
+}
+
+export interface MessagingPlatformTestResult {
+  ok: boolean;
+  state: string;
+  message: string;
+}
+
+export interface PairingUser {
+  platform: string;
+  user_id: string;
+  user_name?: string;
+  code?: string;
+  age_minutes?: number;
+}
+
+export interface PairingResponse {
+  pending: PairingUser[];
+  approved: PairingUser[];
+}
+
+export interface WebhookRoute {
+  name: string;
+  description: string;
+  events: string[];
+  deliver: string;
+  deliver_only: boolean;
+  prompt: string;
+  skills: string[];
+  created_at: string | null;
+  url: string;
+  secret_set: boolean;
+  enabled: boolean;
+}
+
+export interface WebhooksResponse {
+  enabled: boolean;
+  base_url: string;
+  subscriptions: WebhookRoute[];
+}
+
+export interface WebhookCreate {
+  name: string;
+  description?: string;
+  events?: string[];
+  prompt?: string;
+  skills?: string[];
+  deliver?: string;
+  deliver_only?: boolean;
+  deliver_chat_id?: string;
+}
+
+export interface CredentialPoolEntry {
+  index: number;
+  id: string | null;
+  label: string | null;
+  auth_type: string | null;
+  source: string | null;
+  priority: number;
+  last_status: string | null;
+  request_count: number;
+  token_preview: string;
+  has_refresh: boolean;
+}
+
+export interface CredentialPoolProvider {
+  provider: string;
+  entries: CredentialPoolEntry[];
+}
+
+export interface MemoryProviderInfo {
+  name: string;
+  description: string;
+  configured: boolean;
+}
+
+export interface MemoryStatus {
+  active: string;
+  providers: MemoryProviderInfo[];
+  builtin_files: { memory: number; user: number };
+}
+
+export interface HookEntry {
+  event: string;
+  matcher: string | null;
+  command: string | null;
+  timeout: number | null;
+  allowed: boolean;
+  approved_at?: string | null;
+  executable?: boolean;
+}
+
+export interface HooksResponse {
+  hooks: HookEntry[];
+  valid_events: string[];
+}
+
+export interface HookCreate {
+  event: string;
+  command: string;
+  matcher?: string;
+  timeout?: number;
+  approve?: boolean;
+}
+
+export interface UpdateCheckResponse {
+  install_method: string;
+  current_version: string;
+  // commits behind: >=1 known count, 0 up to date, -1 behind by unknown
+  // count (nix/pypi), or null when the check could not run.
+  behind: number | null;
+  update_available: boolean;
+  can_apply: boolean;
+  update_command: string;
+  message: string | null;
+}
+
+export interface SystemStats {
+  os: string;
+  os_release: string;
+  os_version: string;
+  platform: string;
+  arch: string;
+  hostname: string;
+  python_version: string;
+  python_impl: string;
+  hermes_version: string;
+  cpu_count: number | null;
+  psutil: boolean;
+  cpu_percent?: number;
+  load_avg?: number[];
+  uptime_seconds?: number;
+  memory?: { total: number; available: number; used: number; percent: number };
+  disk?: { total: number; used: number; free: number; percent: number };
+  process?: { pid: number; rss: number; create_time: number; num_threads: number };
+}
+
+export interface CuratorStatus {
+  enabled: boolean;
+  paused: boolean;
+  interval_hours: number | null;
+  last_run_at: string | null;
+  min_idle_hours: number | null;
+  stale_after_days: number | null;
+  archive_after_days: number | null;
+}
+
+export interface PortalFeature {
+  label: string;
+  state: string;
+}
+
+export interface PortalStatus {
+  logged_in: boolean;
+  portal_url: string | null;
+  inference_url: string | null;
+  provider: string;
+  subscription_url: string;
+  features: PortalFeature[];
+}
+
+export interface CheckpointSession {
+  session: string;
+  files: number;
+  bytes: number;
+}
+
+export interface CheckpointsResponse {
+  sessions: CheckpointSession[];
+  total_bytes: number;
 }
 
 /** Per-call overrides for {@link fetchJSON}. */
@@ -619,6 +1289,8 @@ export interface EnvVarInfo {
   is_password: boolean;
   tools: string[];
   advanced: boolean;
+  /** True when this var is a messaging-platform credential owned by the Channels page. */
+  channel_managed?: boolean;
 }
 
 export interface SessionMessage {
@@ -699,6 +1371,18 @@ export interface AnalyticsResponse {
   };
 }
 
+export interface ActiveProfileInfo {
+  active: string;
+  current: string;
+}
+
+export interface ProfileDescribeAutoResult {
+  ok: boolean;
+  reason: string;
+  description: string | null;
+  description_auto: boolean;
+}
+
 export interface ProfileInfo {
   name: string;
   path: string;
@@ -707,6 +1391,13 @@ export interface ProfileInfo {
   provider: string | null;
   has_env: boolean;
   skill_count: number;
+  gateway_running: boolean;
+  description: string;
+  description_auto: boolean;
+  distribution_name: string | null;
+  distribution_version: string | null;
+  distribution_source: string | null;
+  has_alias: boolean;
 }
 
 export interface ModelsAnalyticsModelEntry {

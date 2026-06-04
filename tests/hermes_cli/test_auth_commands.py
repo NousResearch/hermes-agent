@@ -303,9 +303,11 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
 
     payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     entries = payload["credential_pool"]["openai-codex"]
-    entry = next(item for item in entries if item["source"] == "manual:device_code")
+    entry = next(item for item in entries if item["source"] == "device_code")
+    assert payload["active_provider"] == "openai-codex"
+    assert payload["providers"]["openai-codex"]["tokens"]["access_token"] == token
     assert entry["label"] == "codex@example.com"
-    assert entry["source"] == "manual:device_code"
+    assert entry["source"] == "device_code"
     assert entry["refresh_token"] == "refresh-token"
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
 
@@ -1129,10 +1131,6 @@ def test_auth_remove_codex_manual_source_suppresses_reseed(tmp_path, monkeypatch
 def test_auth_add_codex_clears_suppression_marker(tmp_path, monkeypatch):
     """Re-linking codex via `hermes auth add openai-codex` must clear any suppression marker."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setattr(
-        "agent.credential_pool._seed_from_singletons",
-        lambda provider, entries: (False, set()),
-    )
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
 
@@ -1171,7 +1169,8 @@ def test_auth_add_codex_clears_suppression_marker(tmp_path, monkeypatch):
     assert "openai-codex" not in payload.get("suppressed_sources", {})
     # New pool entry must be present
     entries = payload["credential_pool"]["openai-codex"]
-    assert any(e["source"] == "manual:device_code" for e in entries)
+    assert any(e["source"] == "device_code" for e in entries)
+    assert payload["active_provider"] == "openai-codex"
 
 
 def test_seed_from_singletons_respects_codex_suppression(tmp_path, monkeypatch):

@@ -1,7 +1,7 @@
 """Tests for _web_ui_build_needed — staleness check for the web UI dist.
 
-Critical invariant: the Vite build outputs to hermes_cli/web_dist/
-(vite.config.ts: outDir: "../hermes_cli/web_dist"), NOT web/dist/.
+Critical invariant: the dashboard Vite build outputs to hermes_cli/web_dist/
+(vite.config.ts: outDir: "../../hermes_cli/web_dist"), NOT web/dist/.
 The sentinel must be checked in the correct output directory or the
 freshness check is a no-op and the OOM rebuild always runs.
 """
@@ -26,7 +26,7 @@ def _touch(path: Path, offset: float = 0.0) -> None:
 def _make_web_dir(tmp_path: Path) -> tuple[Path, Path]:
     """Return (web_dir, dist_dir) matching real repo layout."""
     web_dir = tmp_path / "web"
-    web_dir.mkdir()
+    web_dir.mkdir(parents=True)
     (web_dir / "package.json").touch()
     dist_dir = tmp_path / "hermes_cli" / "web_dist"
     return web_dir, dist_dir
@@ -69,7 +69,9 @@ class TestWebUIBuildNeeded:
     def test_returns_true_when_package_lock_newer_than_dist(self, tmp_path):
         web_dir, dist_dir = _make_web_dir(tmp_path)
         _touch(dist_dir / ".vite" / "manifest.json", offset=-10)
-        _touch(web_dir / "package-lock.json")
+        # With a single workspace root lockfile, the lockfile lives at the
+        # project root (tmp_path), not inside web_dir.
+        _touch(tmp_path / "package-lock.json")
         assert _web_ui_build_needed(web_dir) is True
 
     def test_returns_true_when_vite_config_newer_than_dist(self, tmp_path):

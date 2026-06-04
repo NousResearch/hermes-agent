@@ -609,7 +609,12 @@ def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch)
 
     providers = _visible_providers(TOOL_CATEGORIES["browser"], config)
 
-    assert providers[0]["name"].startswith("Nous Subscription")
+    # The managed Nous row is listed (not necessarily first — "Local Browser"
+    # sorts first so a fresh-install Enter lands on the free local backend).
+    assert any(p["name"].startswith("Nous Subscription") for p in providers)
+    # "Local Browser" must be the index-0 default so pressing Enter never
+    # walks a user into a paid Nous Portal login.
+    assert providers[0]["name"] == "Local Browser"
 
 
 def test_visible_providers_show_nous_subscription_when_logged_out(monkeypatch):
@@ -685,7 +690,9 @@ def test_visible_providers_force_fresh_shows_nous_subscription_after_upgrade(mon
         force_fresh=True,
     )
 
-    assert providers[0]["name"].startswith("Nous Subscription")
+    # The managed Nous row reappears after the entitlement upgrade. It is no
+    # longer asserted to be first — "Local Browser" sorts first by design.
+    assert any(p["name"].startswith("Nous Subscription") for p in providers)
     assert ("features", True) in calls
 
 
@@ -700,6 +707,33 @@ def test_local_browser_provider_is_saved_explicitly(monkeypatch):
     _configure_provider(local_provider, config)
 
     assert config["browser"]["cloud_provider"] == "local"
+
+
+def test_fresh_install_browser_default_is_free_local_not_paid_nous():
+    """On a fresh install the browser picker must default to the free local
+    backend, never the paid Nous Subscription gateway.
+
+    Regression: the Nous row used to sort first, so the menu cursor defaulted
+    to index 0 (Nous) and pressing Enter walked users straight into a Nous
+    Portal login for a paid offering (Javier's bug, June 2026).
+    """
+    from hermes_cli.tools_config import _detect_active_provider_index
+
+    providers = TOOL_CATEGORIES["browser"]["providers"]
+    assert providers[0]["name"] == "Local Browser"
+    assert providers[0]["browser_provider"] == "local"
+    # Nothing active/configured → cursor defaults to index 0 (the free local row).
+    assert _detect_active_provider_index(providers, {}) == 0
+
+
+def test_fresh_install_tts_default_is_free_edge_not_paid_nous():
+    """TTS picker defaults to the free Edge backend on a fresh install."""
+    from hermes_cli.tools_config import _detect_active_provider_index
+
+    providers = TOOL_CATEGORIES["tts"]["providers"]
+    assert providers[0]["name"] == "Microsoft Edge TTS"
+    assert providers[0]["tts_provider"] == "edge"
+    assert _detect_active_provider_index(providers, {}) == 0
 
 
 def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypatch):
@@ -1400,3 +1434,57 @@ def test_configure_non_managed_provider_skips_portal_gate(monkeypatch):
     assert called["gate"] is False
     assert config["web"]["backend"] == "tavily"
     assert config["web"]["use_gateway"] is False
+
+
+def test_apply_provider_selection_web_sets_backend():
+    """Selecting a web provider persists the backend without prompting for keys."""
+    from hermes_cli.tools_config import apply_provider_selection
+
+    config = {}
+    apply_provider_selection("web", "Firecrawl Self-Hosted", config)
+
+    assert config["web"]["backend"] == "firecrawl"
+    assert config["web"]["use_gateway"] is False
+
+
+def test_apply_provider_selection_tts_sets_provider():
+    """Selecting a TTS provider persists tts.provider."""
+    from hermes_cli.tools_config import apply_provider_selection
+
+    config = {}
+    apply_provider_selection("tts", "Microsoft Edge TTS", config)
+
+    assert config["tts"]["provider"] == "edge"
+    assert config["tts"]["use_gateway"] is False
+
+
+def test_apply_provider_selection_unknown_provider_raises_keyerror():
+    from hermes_cli.tools_config import apply_provider_selection
+
+    with pytest.raises(KeyError):
+        apply_provider_selection("web", "No Such Provider", {})
+
+
+def test_apply_provider_selection_unknown_toolset_raises_keyerror():
+    from hermes_cli.tools_config import apply_provider_selection
+
+    with pytest.raises(KeyError):
+        apply_provider_selection("not_a_toolset", "whatever", {})
+
+
+def test_apply_provider_selection_does_not_prompt_or_post_setup(monkeypatch):
+    """The non-interactive selection must not invoke prompts or post-setup hooks."""
+    from hermes_cli import tools_config
+
+    monkeypatch.setattr(
+        tools_config, "_run_post_setup",
+        lambda *a, **k: pytest.fail("post-setup must not run on provider selection"),
+    )
+    monkeypatch.setattr(
+        tools_config, "_prompt",
+        lambda *a, **k: pytest.fail("env prompting must not run on provider selection"),
+    )
+    config = {}
+    tools_config.apply_provider_selection("tts", "Microsoft Edge TTS", config)
+    assert config["tts"]["provider"] == "edge"
+

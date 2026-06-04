@@ -1827,6 +1827,79 @@ class TestThinkingBlockSignatureManagement:
         assert len(last_thinking) == 1
         assert last_thinking[0]["signature"] == "sig_3"
 
+    def test_orphan_stripped_tool_use_demotes_dead_signed_thinking(self):
+        """Regression: extended-thinking + interrupted parallel tool batch.
+
+        An assistant turn with a signed thinking block fires several parallel
+        tool_use blocks, but the batch is interrupted before every tool_result
+        comes back. On replay, the orphaned tool_use is stripped — which mutates
+        the turn and invalidates the thinking-block signature (it was computed
+        against the original, un-stripped content). Anthropic then rejects the
+        turn with HTTP 400 "thinking blocks in the latest assistant message
+        cannot be modified", a non-retryable error that crash-loops the gateway.
+
+        The signed thinking block on the mutated latest turn must be demoted to
+        a plain text block so the turn replays cleanly.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_kept", "function": {"name": "tool_a", "arguments": "{}"}},
+                    {"id": "tc_orphan", "function": {"name": "tool_b", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Plan: call A and B.", "signature": "sig_dead"},
+                ],
+            },
+            # Only one of the two parallel tool_use blocks got a result back.
+            {"role": "tool", "tool_call_id": "tc_kept", "content": "result A"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in result if m["role"] == "assistant")
+        blocks = assistant["content"]
+
+        # No signed thinking block survives — the signature is dead.
+        assert not any(
+            isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
+            for b in blocks
+        )
+        # The reasoning text is preserved as a text block (not silently lost).
+        text_contents = [b.get("text", "") for b in blocks if b.get("type") == "text"]
+        assert "Plan: call A and B." in text_contents
+        # The orphaned tool_use is gone; the answered one survives.
+        tool_use_ids = [b.get("id") for b in blocks if b.get("type") == "tool_use"]
+        assert tool_use_ids == ["tc_kept"]
+        # Internal bookkeeping flag must never leak into the API payload.
+        assert "_thinking_signature_invalidated" not in assistant
+
+    def test_signed_thinking_preserved_when_no_tool_use_stripped(self):
+        """Control: an intact latest turn keeps its signed thinking verbatim.
+
+        This guards against the orphan-strip fix over-firing — when no tool_use
+        is removed, the signature is still valid and must be replayed as-is.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Valid plan.", "signature": "sig_live"},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result A"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in result if m["role"] == "assistant")
+        thinking = [b for b in assistant["content"] if b.get("type") == "thinking"]
+        assert len(thinking) == 1
+        assert thinking[0]["signature"] == "sig_live"
+        assert "_thinking_signature_invalidated" not in assistant
+
 
 # ---------------------------------------------------------------------------
 # Tool choice

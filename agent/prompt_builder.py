@@ -14,6 +14,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
+from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     extract_skill_conditions,
     extract_skill_description,
@@ -128,9 +129,14 @@ DEFAULT_AGENT_IDENTITY = (
 )
 
 HERMES_AGENT_HELP_GUIDANCE = (
-    "If the user asks about configuring, setting up, or using Hermes Agent "
-    "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
-    "before answering. Docs: https://hermes-agent.nousresearch.com/docs"
+    "You run on Hermes Agent (by Nous Research). When the user needs help with "
+    "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
+    "it — or when you need to understand your own features, tools, or capabilities, "
+    "the documentation at https://hermes-agent.nousresearch.com/docs is your "
+    "authoritative reference and always holds the latest, most up-to-date "
+    "information. Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
+    "for additional guidance and proven workflows, but treat the docs as the source "
+    "of truth when the two differ."
 )
 
 MEMORY_GUIDANCE = (
@@ -802,7 +808,7 @@ def build_environment_hints() -> str:
 
         host_lines.append(f"User home directory: {os.path.expanduser('~')}")
         try:
-            host_lines.append(f"Current working directory: {os.getcwd()}")
+            host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
         except OSError:
             pass
 

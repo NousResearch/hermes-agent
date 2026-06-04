@@ -1115,10 +1115,36 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
+    from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
 
     parts = []
     skipped: list[str] = []
     for skill_name in skill_names:
+        # Cron jobs historically accepted only skill names here, but the CLI/gateway
+        # slash-command path lets bundles shadow skills with the same slug. Mirror
+        # that behavior so `skills: ["my-bundle"]` expands bundle members instead
+        # of being treated as a missing skill.
+        bundle_key = resolve_bundle_command_key(skill_name.lstrip("/"))
+        if bundle_key:
+            bundle_payload = build_bundle_invocation_message(
+                bundle_key,
+                user_instruction="",
+                task_id=str(job.get("id") or "") or None,
+            )
+            if bundle_payload:
+                bundle_message, _loaded_bundle_skills, _missing_bundle_skills = bundle_payload
+                if parts:
+                    parts.append("")
+                parts.append(bundle_message)
+                continue
+            logger.warning(
+                "Cron job '%s': bundle '%s' could not load any skills, skipping",
+                job.get("name", job.get("id")),
+                skill_name,
+            )
+            skipped.append(skill_name)
+            continue
+
         try:
             loaded = json.loads(skill_view(skill_name))
         except (json.JSONDecodeError, TypeError):
@@ -1182,14 +1208,22 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
       markdown — often security docs / runbooks that *describe* attack
       commands in prose. The LOOSER ``_scan_cron_skill_assembled``
       pattern set is used: only unambiguous prompt-injection directives
-      and invisible unicode block, command-shape patterns are dropped
-      to avoid false-positives. Skill bodies are vetted at install time
-      by ``skills_guard.py``.
+      block; command-shape patterns are dropped and invisible unicode is
+      sanitized (stripped + logged) rather than blocked, to avoid
+      false-positives that permanently kill a job. Skill bodies are
+      vetted at install time by ``skills_guard.py``.
     """
     from tools.cronjob_tools import _scan_cron_prompt, _scan_cron_skill_assembled
 
-    scanner = _scan_cron_skill_assembled if has_skills else _scan_cron_prompt
-    scan_error = scanner(assembled)
+    if has_skills:
+        # Skill content is install-time vetted by skills_guard.py. Invisible
+        # unicode is sanitized (not blocked) so a stray zero-width space in a
+        # skill code example can't permanently kill the job; the cleaned
+        # prompt is what actually runs.
+        cleaned, scan_error = _scan_cron_skill_assembled(assembled)
+        assembled = cleaned
+    else:
+        scan_error = _scan_cron_prompt(assembled)
     if scan_error:
         job_label = job.get("name") or job.get("id") or "<unknown>"
         logger.warning(

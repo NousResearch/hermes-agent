@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
@@ -30,6 +31,7 @@ import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
+import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
@@ -200,6 +202,8 @@ export function useMainApp(gw: GatewayClient) {
   const terminalHintsShownRef = useRef(new Set<string>())
   const historyItemsRef = useRef(historyItems)
   const lastUserMsgRef = useRef(lastUserMsg)
+  const recoverSidRef = useRef<null | string>(null)
+  const recoveryAtRef = useRef<number[]>([])
   const msgIdsRef = useRef(new WeakMap<Msg, string>())
   const msgIdSeqRef = useRef(0)
   const heightCachesRef = useRef(new Map<string, Map<string, number>>())
@@ -347,6 +351,14 @@ export function useMainApp(gw: GatewayClient) {
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
+        leadGap: hasLeadGap(
+          prevRenderedMsg(i => virtualRows[i]?.msg, index, {
+            commandOverride: ui.detailsModeCommandOverride,
+            detailsMode: ui.detailsMode,
+            sections: ui.sections
+          }),
+          virtualRows[index]!.msg
+        ),
         thinkingVisible: thinkingDetailsVisible,
         toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
@@ -359,6 +371,9 @@ export function useMainApp(gw: GatewayClient) {
       thinkingDetailsVisible,
       toolsDetailsVisible,
       ui.compact,
+      ui.detailsMode,
+      ui.detailsModeCommandOverride,
+      ui.sections,
       ui.theme.brand.prompt,
       virtualRows
     ]
@@ -694,6 +709,7 @@ export function useMainApp(gw: GatewayClient) {
           STARTUP_RESUME_ID,
           colsRef,
           newSession: session.newSession,
+          recoverSidRef,
           resetSession: session.resetSession,
           resumeById: session.resumeById,
           setCatalog
@@ -734,7 +750,34 @@ export function useMainApp(gw: GatewayClient) {
 
     const exitHandler = () => {
       turnController.reset()
+
+      // A still-owned child dying while the TUI is alive is an *unexpected*
+      // death — a user /quit exits Node before this fires, and a replaced child
+      // is identity-skipped in GatewayClient. Rather than stranding a long
+      // session (the user's complaint), respawn the gateway and resume the
+      // persisted session via the next gateway.ready, so a single crash / OOM /
+      // signal doesn't lose their work. planGatewayRecovery bounds the attempts
+      // so a gateway that crash-loops on startup can't spawn-storm, and falls
+      // back to recoverSidRef when sid was already cleared by a prior exit.
+      const plan = planGatewayRecovery(getUiState().sid, recoverSidRef.current, recoveryAtRef.current, Date.now())
+
+      // Clear sid immediately: while the gateway is down, sid-guarded effects
+      // (session.active_list poll, queue drain) would otherwise fire RPCs at a
+      // dead/respawning gateway. recoverSidRef carries the session forward, and
+      // resumeById restores sid once the fresh gateway is ready.
+      recoveryAtRef.current = plan.attempts
       patchUiState({ busy: false, sid: null, status: 'gateway exited' })
+
+      if (plan.recover && plan.sid) {
+        recoverSidRef.current = plan.sid
+        turnController.pushActivity('gateway exited · recovering session…', 'warn')
+        sys('gateway exited — recovering your session (any in-flight reply was lost)')
+        gw.start()
+
+        return
+      }
+
+      recoverSidRef.current = null
       turnController.pushActivity('gateway exited · /logs to inspect', 'error')
       sys('error: gateway exited')
     }
@@ -957,7 +1000,17 @@ export function useMainApp(gw: GatewayClient) {
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
       onModelSelect,
-      resumeById: session.resumeById,
+      // Resuming a cold session from the overlay CLOSES the current one, so it
+      // must respect the busy guard just like the `/resume` slash path.
+      // (Switching between live sessions and `+ new` keep the current session
+      // running, so those stay unguarded — that's the orchestrator's purpose.)
+      resumeById: (id: string) => {
+        if (session.guardBusySessionSwitch('switch sessions')) {
+          return
+        }
+
+        session.resumeById(id)
+      },
       setStickyPrompt
     }),
     [
@@ -970,6 +1023,7 @@ export function useMainApp(gw: GatewayClient) {
       newPromptSession,
       onModelSelect,
       session.activateLiveSession,
+      session.guardBusySessionSwitch,
       session.newLiveSession,
       session.resumeById
     ]
@@ -1004,7 +1058,10 @@ export function useMainApp(gw: GatewayClient) {
 
   const appStatus = useMemo(
     () => ({
-      cwdLabel: fmtCwdBranch(cwd, gitBranch),
+      // Cap the status-bar cwd/branch label tighter than the shared default so
+      // it doesn't dominate the bar; the status rule reserves the left-side
+      // essentials and truncates this further on narrow terminals.
+      cwdLabel: fmtCwdBranch(cwd, gitBranch, 28),
       goodVibesTick,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,

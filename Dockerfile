@@ -25,7 +25,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # hermes process, the dashboard, and per-profile gateways.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli xz-utils && \
+    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
 # ---------- s6-overlay install ----------
@@ -73,7 +73,17 @@ RUN set -eu; \
     tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz; \
     tar -C / -Jxpf /tmp/s6-overlay-arch.tar.xz; \
     tar -C / -Jxpf /tmp/s6-overlay-symlinks-noarch.tar.xz; \
-    rm /tmp/s6-overlay-*.tar.xz /tmp/s6-overlay.sha256
+    rm /tmp/s6-overlay-*.tar.xz /tmp/s6-overlay.sha256; \
+    # #34192: backward-compat shim for orchestration templates that still\
+    # reference the legacy /usr/bin/tini entrypoint (e.g. Hostinger's\
+    # 'Hermes WebUI' catalog). The image has moved to s6-overlay /init\
+    # as PID 1 (see ENTRYPOINT below + the migration comment at the top\
+    # of this file), but external wrappers pinned to /usr/bin/tini will\
+    # crash with 'tini: No such file or directory' on startup. The shim\
+    # symlinks /usr/bin/tini -> /init so legacy wrappers exec the right\
+    # PID-1 reaper without behavior change for users on the current\
+    # ENTRYPOINT. Safe to drop once the affected catalogs are updated.\
+    ln -sf /init /usr/bin/tini
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
 RUN useradd -u 10000 -m -d /opt/data hermes
@@ -103,8 +113,8 @@ WORKDIR /opt/hermes
 # ui-tui/package.json.  Copying the tree up front lets npm resolve the
 # workspace to real content instead of stopping at a bare package.json.
 COPY package.json package-lock.json ./
-COPY web/package.json web/package-lock.json web/
-COPY ui-tui/package.json ui-tui/package-lock.json ui-tui/
+COPY web/package.json web/
+COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 
 # `npm_config_install_links=false` forces npm to install `file:` deps as
@@ -121,8 +131,6 @@ ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
-    (cd web && npm install --prefer-offline --no-audit) && \
-    (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
 
 # ---------- Layer-cached Python dependency install ----------
@@ -149,10 +157,17 @@ RUN npm install --prefer-offline --no-audit && \
 # so Docker users can use these providers without requiring runtime
 # lazy-install access to PyPI (often blocked in containerized envs).
 #
+# The hindsight memory provider's client (hindsight-client) is baked in
+# for the same reason: it lazy-installs into /opt/hermes/.venv at first
+# use, which lives inside the (immutable) image layer rather than the
+# mounted /opt/data volume, so it is lost on every container recreate /
+# image update and recall/retain then fails with
+# `ModuleNotFoundError: No module named 'hindsight_client'` (#38128).
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
@@ -170,13 +185,16 @@ RUN cd web && npm run build && \
 # hermes_cli/main.py succeeds (see #18800). /opt/hermes/web is build-time
 # only (HERMES_WEB_DIST points at hermes_cli/web_dist) and is intentionally
 # not chowned here.
+# /opt/hermes/gateway is runtime-writable: Python may create __pycache__ and
+# gateway state artifacts beneath the package after services drop privileges,
+# especially when the hermes UID is remapped at boot (#27221).
 # The .venv MUST remain hermes-writable so lazy_deps.py can install
 # remaining optional platform packages and future pin bumps at first use.
 # Without this, `uv pip install` fails with EACCES and adapters silently
 # fail to load.  See tools/lazy_deps.py.
 USER root
 RUN chmod -R a+rX /opt/hermes && \
-    chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/node_modules
+    chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/gateway /opt/hermes/node_modules
 # Start as root so the s6-overlay stage2 hook can usermod/groupmod and chown
 # the data volume. Each supervised service then drops to the hermes user via
 # `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services
@@ -235,6 +253,23 @@ COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-r
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
+# Point the TUI launcher at the prebuilt bundle baked at build time (Layer 8:
+# `ui-tui && npm run build`). This makes _make_tui_argv take the prebuilt-bundle
+# fast path (`node --expose-gc /opt/hermes/ui-tui/dist/entry.js`) and skip the
+# _tui_need_npm_install / runtime `npm install` branch entirely — exactly the
+# nix/packaged-release path the launcher was designed for.
+#
+# Why this is required (not just an optimization): the root package-lock.json
+# describes the WHOLE monorepo workspace set (root + web + ui-tui + apps/*),
+# but the image only installs root/web/ui-tui (apps/* — the desktop app — is
+# never `npm install`ed here). So the actualized node_modules permanently
+# disagrees with the canonical lock, _tui_need_npm_install() returns True on
+# every launch, and the runtime `npm install` it triggers (a) can never
+# converge against the partial monorepo and (b) races itself across concurrent
+# embedded-chat (/api/pty) connections → ENOTEMPTY → the chat tab dies with a
+# 502 / "[session ended]". Pointing at the prebuilt bundle sidesteps the whole
+# check. (A separate launcher hardening is tracked independently.)
+ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
 ENV HERMES_HOME=/opt/data
 
 # `docker exec` privilege-drop shim. When operators run

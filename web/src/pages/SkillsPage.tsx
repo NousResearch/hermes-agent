@@ -14,9 +14,11 @@ import {
   Code,
   Zap,
   Filter,
+  Download,
+  RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { SkillInfo, ToolsetInfo } from "@/lib/api";
+import type { SkillInfo, ToolsetInfo, SkillHubResult } from "@/lib/api";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -98,7 +100,7 @@ export default function SkillsPage() {
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [view, setView] = useState<"skills" | "toolsets">("skills");
+  const [view, setView] = useState<"skills" | "toolsets" | "hub">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
   const { toast, showToast } = useToast();
@@ -284,6 +286,15 @@ export default function SkillsPage() {
                     setSearch("");
                   }}
                 />
+                <PanelItem
+                  icon={Search}
+                  label="Browse hub"
+                  active={view === "hub"}
+                  onClick={() => {
+                    setView("hub");
+                    setSearch("");
+                  }}
+                />
               </div>
 
               {view === "skills" &&
@@ -408,7 +419,7 @@ export default function SkillsPage() {
                 )}
               </CardContent>
             </Card>
-          ) : (
+          ) : view === "toolsets" ? (
             /* Toolsets grid */
             <>
               {filteredToolsets.length === 0 ? (
@@ -484,6 +495,8 @@ export default function SkillsPage() {
                 </div>
               )}
             </>
+          ) : (
+            <HubBrowser showToast={showToast} />
           )}
         </div>
       </div>
@@ -554,4 +567,189 @@ interface SkillRowProps {
   onToggle: () => void;
   skill: SkillInfo;
   toggling: boolean;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Hub browser — search the skill hub, install by identifier         */
+/* ------------------------------------------------------------------ */
+
+function HubBrowser({
+  showToast,
+}: {
+  showToast: (msg: string, kind: "success" | "error") => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<SkillHubResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searched, setSearched] = useState(false);
+  // Live action log for the most recent install/update (tailed via action status).
+  const [action, setAction] = useState<string | null>(null);
+  const [actionLog, setActionLog] = useState<string[]>([]);
+  const [actionRunning, setActionRunning] = useState(false);
+
+  const runSearch = async () => {
+    const q = query.trim();
+    if (!q) return;
+    setSearching(true);
+    setSearched(true);
+    try {
+      const r = await api.searchSkillsHub(q);
+      setResults(r.results);
+    } catch (e) {
+      showToast(`Hub search failed: ${e}`, "error");
+      setResults([]);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // Poll a spawned action's log until it exits.
+  useEffect(() => {
+    if (!action) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const st = await api.getActionStatus(action, 200);
+        if (cancelled) return;
+        setActionLog(st.lines);
+        setActionRunning(st.running);
+        if (st.running) timer = setTimeout(poll, 1200);
+      } catch {
+        if (!cancelled) setActionRunning(false);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [action]);
+
+  const install = async (identifier: string) => {
+    try {
+      const res = await api.installSkillFromHub(identifier);
+      showToast(`Installing ${identifier}…`, "success");
+      setActionLog([]);
+      setActionRunning(true);
+      setAction(res.name);
+    } catch (e) {
+      showToast(`Install failed: ${e}`, "error");
+    }
+  };
+
+  const updateAll = async () => {
+    try {
+      const res = await api.updateSkillsFromHub();
+      showToast("Updating installed skills…", "success");
+      setActionLog([]);
+      setActionRunning(true);
+      setAction(res.name);
+    } catch (e) {
+      showToast(`Update failed: ${e}`, "error");
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Card className="rounded-none">
+        <CardContent className="py-4 flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                className="h-8 pl-8 text-sm"
+                placeholder="Search the skill hub (GitHub, official, community)…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void runSearch();
+                }}
+              />
+            </div>
+            <Button
+              size="sm"
+              onClick={() => void runSearch()}
+              disabled={searching || !query.trim()}
+              prefix={searching ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
+            >
+              Search
+            </Button>
+            <Button
+              size="sm"
+              outlined
+              onClick={() => void updateAll()}
+              prefix={<RefreshCw className="h-3.5 w-3.5" />}
+            >
+              Update all
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Results come from the same sources as <span className="font-mono">hermes skills search</span>.
+            Installs run in the background; the log streams below.
+          </p>
+        </CardContent>
+      </Card>
+
+      {action && (
+        <Card className="rounded-none">
+          <CardContent className="py-3">
+            <div className="flex items-center gap-2 mb-2">
+              <Download className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="font-mono text-xs">{action}</span>
+              {actionRunning ? (
+                <Badge tone="warning">running</Badge>
+              ) : (
+                <Badge tone="success">done</Badge>
+              )}
+            </div>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words bg-background/50 border border-border p-2 text-xs font-mono text-muted-foreground">
+              {actionLog.length ? actionLog.join("\n") : "Starting…"}
+            </pre>
+          </CardContent>
+        </Card>
+      )}
+
+      {searching && (
+        <div className="flex items-center justify-center py-8">
+          <Spinner className="text-xl text-primary" />
+        </div>
+      )}
+
+      {!searching && searched && results.length === 0 && (
+        <Card className="rounded-none">
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            No matching skills found in the hub.
+          </CardContent>
+        </Card>
+      )}
+
+      {results.map((r) => (
+        <Card key={r.identifier} className="rounded-none">
+          <CardContent className="py-3 flex items-start gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className="font-mono-ui text-sm">{r.name}</span>
+                <Badge tone="secondary" className="text-xs">{r.source}</Badge>
+                <Badge tone="outline" className="text-xs">{r.trust_level}</Badge>
+              </div>
+              <p className="text-xs text-text-secondary">{r.description}</p>
+              <p className="text-xs font-mono text-text-tertiary truncate mt-0.5">
+                {r.identifier}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              outlined
+              className="shrink-0"
+              onClick={() => void install(r.identifier)}
+              prefix={<Download className="h-3.5 w-3.5" />}
+            >
+              Install
+            </Button>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
 }

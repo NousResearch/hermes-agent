@@ -400,6 +400,151 @@ class TestExtractMedia:
         )
         assert media == []
 
+    # --- Code block / inline code / blockquote false-positive guards (#35695) ---
+
+    def test_media_in_fenced_code_block_ignored(self):
+        """MEDIA: inside ``` fenced code blocks must not be extracted."""
+        content = "Here is an example:\n```text\nMEDIA:/path/to/example.png\n```\nDone."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "example" in cleaned.lower()
+
+    def test_media_in_inline_code_ignored(self):
+        """MEDIA: inside backtick inline code must not be extracted."""
+        content = "Use `MEDIA:/path/to/file.png` in your response."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:" in cleaned  # preserved as text
+
+    def test_media_in_blockquote_ignored(self):
+        """MEDIA: inside a > blockquote must not be extracted."""
+        content = "> To send an image, include MEDIA:/path/to/image.jpg\nEnd."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "End." in cleaned
+
+    def test_media_outside_code_blocks_still_extracted(self):
+        """Real MEDIA: tags outside protected regions must still work."""
+        content = "MEDIA:/real/file.png\n```code\nMEDIA:/fake/file.png\n```"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/real/file.png"
+
+    def test_media_mixed_code_and_prose(self):
+        """Real MEDIA: in prose + example in code block: only prose extracted,
+        and the code block survives verbatim in the delivered text."""
+        content = (
+            "Here is your file:\n"
+            "MEDIA:/output/report.pdf\n"
+            "Example usage:\n"
+            "```text\nMEDIA:/example/path.pdf\n```\n"
+            "Done."
+        )
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/output/report.pdf"
+        assert "Done." in cleaned
+        # The real tag is stripped from the delivered text...
+        assert "MEDIA:/output/report.pdf" not in cleaned
+        # ...but the fenced code block (incl. its example MEDIA: line) must
+        # survive verbatim — masking is a locator, not a text rewrite.
+        assert "```text\nMEDIA:/example/path.pdf\n```" in cleaned
+
+    def test_inline_code_survives_when_real_media_present(self):
+        """When a real MEDIA: tag is delivered, an inline-code example in the
+        same reply must not be blanked to whitespace."""
+        content = "See MEDIA:/r/a.png and `MEDIA:/ex/b.png` inline"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert [p for p, _ in media] == ["/r/a.png"]
+        assert "`MEDIA:/ex/b.png`" in cleaned
+
+
+class TestMediaInsideSerializedJson:
+    """Regression coverage for #34375 — MEDIA: embedded in serialized JSON
+    string values (e.g. a stored previous reply inside a tool result) must not
+    be re-delivered as a real attachment, while legitimate MEDIA: tags in prose,
+    at line start, indented, or as quoted-path tags keep working.
+    """
+
+    def test_media_in_json_value_not_extracted(self):
+        content = '{"result": "MEDIA:/tmp/stale.png"}'
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"JSON value MEDIA: leaked: {media}"
+
+    def test_media_in_pretty_json_value_not_extracted(self):
+        content = '{\n  "tool_result": "MEDIA:/var/old.jpg"\n}'
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"pretty JSON MEDIA: leaked: {media}"
+
+    def test_media_in_json_array_not_extracted(self):
+        content = '["MEDIA:/a/b.png", "other"]'
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"JSON array MEDIA: leaked: {media}"
+
+    def test_media_in_nested_json_value_not_extracted(self):
+        content = '{"a":{"b":"see MEDIA:/x/y.pdf here"}}'
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"nested JSON MEDIA: leaked: {media}"
+
+    def test_media_in_embedded_serialized_reply_not_extracted(self):
+        """A serialized tool result that embeds a prior reply's MEDIA: tag."""
+        content = (
+            '{"content":"previous reply MEDIA:/Users/ex/.hermes/media/'
+            'generated/stale.png and more text"}'
+        )
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"embedded serialized reply leaked: {media}"
+
+    # --- Legitimate tags must still extract (no regression vs line-start anchor) ---
+
+    def test_media_at_line_start_still_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/real/file.png")
+        assert len(media) == 1 and media[0][0] == "/real/file.png"
+
+    def test_media_after_prose_same_line_still_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media(
+            "Here is your file: MEDIA:/out/report.pdf"
+        )
+        assert len(media) == 1 and media[0][0] == "/out/report.pdf"
+
+    def test_media_indented_still_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media("  MEDIA:/tmp/x.png")
+        assert len(media) == 1 and media[0][0] == "/tmp/x.png"
+
+    def test_quoted_path_media_still_extracted(self):
+        """MEDIA:"..." quoted-path form (a real LLM output) is not JSON-masked."""
+        media, _ = BasePlatformAdapter.extract_media(
+            'MEDIA:"/path/with space/file.png"'
+        )
+        assert len(media) == 1 and media[0][0] == "/path/with space/file.png"
+
+    def test_tts_two_line_still_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media(
+            "[[audio_as_voice]]\nMEDIA:/tmp/v.ogg"
+        )
+        assert len(media) == 1 and media[0][0] == "/tmp/v.ogg"
+        assert media[0][1] is True  # voice flag
+
+    # --- cleaned-text invariants: real tags stripped, JSON data kept verbatim ---
+
+    def test_json_embedded_media_kept_verbatim_in_cleaned_text(self):
+        """A real tag is delivered+stripped; a JSON-embedded MEDIA: stays as
+        literal text (stored data must read back unchanged)."""
+        content = 'MEDIA:/real/r.png\nlog: {"old":"MEDIA:/stale/s.png"}'
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert [p for p, _ in media] == ["/real/r.png"]
+        # The JSON-embedded path must survive verbatim — not blanked to spaces.
+        assert '{"old":"MEDIA:/stale/s.png"}' in cleaned
+
+    def test_cleaned_text_after_directive_not_truncated(self):
+        """Stripping a tag preceded by a [[as_document]] directive must not
+        shift offsets and chop the path or trailing text."""
+        content = "See [[as_document]] MEDIA:/d/report.pdf now"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert [p for p, _ in media] == ["/d/report.pdf"]
+        assert "MEDIA:" not in cleaned          # real tag removed
+        assert cleaned.endswith("now")          # trailing text intact (not chopped)
+
 
 class TestMediaExtensionAllowlistParity:
     """Regression coverage for issue #34517 — the MEDIA: extension black hole.

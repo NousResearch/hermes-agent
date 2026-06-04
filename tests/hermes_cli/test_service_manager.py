@@ -680,7 +680,44 @@ def test_s6_lifecycle_dispatches_to_s6_svc(
     mgr.restart("gateway-coder")
 
     flags = [c[1] for c in fake_subprocess_run if c[0] == "s6-svc"]
-    assert flags == ["-u", "-d", "-t"]
+    assert flags == ["-u", "-d", "-tu"]
+
+
+def test_s6_start_and_restart_clear_stale_down_marker(
+    s6_scandir, fake_subprocess_run,
+) -> None:
+    """Regression: `s6-svc -u` does not remove a service dir's static
+    `down` marker, leaving svstat at "up ... normally down" and making
+    later restarts shut the gateway down. CLI start/restart must clear it.
+    """
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    svc_dir = s6_scandir / "gateway-coder"
+    svc_dir.mkdir()
+    down = svc_dir / "down"
+
+    down.write_text("")
+    assert mgr.is_normally_down("gateway-coder") is True
+    mgr.start("gateway-coder")
+    assert not down.exists()
+    assert mgr.is_normally_down("gateway-coder") is False
+
+    down.write_text("")
+    mgr.restart("gateway-coder")
+    assert not down.exists()
+
+
+def test_s6_stop_preserves_down_marker(
+    s6_scandir, fake_subprocess_run,
+) -> None:
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    svc_dir = s6_scandir / "gateway-coder"
+    svc_dir.mkdir()
+    down = svc_dir / "down"
+    down.write_text("")
+
+    mgr.stop("gateway-coder")
+
+    assert down.exists()
 
 
 # ---------------------------------------------------------------------------

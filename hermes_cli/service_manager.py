@@ -683,6 +683,25 @@ class S6ServiceManager:
 
     # -- lifecycle ---------------------------------------------------------
 
+    def _clear_down_marker(self, service_dir: Path) -> None:
+        """Remove s6's static ``down`` marker before starts/restarts.
+
+        ``s6-svc -u`` flips the live supervise state to "want up", but
+        it does not remove a service directory's persistent ``down`` file.
+        If that marker is left behind, ``s6-svstat`` reports the process as
+        "up ... normally down" and a later restart can terminate the gateway
+        without bringing it back. Clearing the marker keeps CLI start/restart
+        semantics durable across the container lifetime.
+        """
+        try:
+            (service_dir / "down").unlink()
+        except FileNotFoundError:
+            pass
+
+    def is_normally_down(self, name: str) -> bool:
+        """True when the service directory contains s6's ``down`` marker."""
+        return (self.scandir / name / "down").exists()
+
     def _run_svc(self, action_flag: str, action_label: str, name: str) -> None:
         """Shared lifecycle dispatch for start / stop / restart.
 
@@ -715,6 +734,9 @@ class S6ServiceManager:
                 else name
             )
             raise GatewayNotRegisteredError(profile)
+
+        if action_label in {"start", "restart"}:
+            self._clear_down_marker(service_dir)
 
         try:
             subprocess.run(
@@ -749,13 +771,17 @@ class S6ServiceManager:
         self._run_svc("-d", "stop", name)
 
     def restart(self, name: str) -> None:
-        """Restart a registered service (``s6-svc -t`` = SIGTERM).
+        """Restart a registered service (``s6-svc -tu`` = TERM, then want up).
+
+        The explicit ``-u`` matters when the service was previously stopped or
+        still has a stale ``down`` marker: restart should converge to running,
+        not merely signal an already-down supervise slot.
 
         Raises:
             GatewayNotRegisteredError: no service directory for ``name``.
             S6CommandError: s6-svc exited non-zero for any other reason.
         """
-        self._run_svc("-t", "restart", name)
+        self._run_svc("-tu", "restart", name)
 
     def is_running(self, name: str) -> bool:
         """True iff ``s6-svstat`` reports the service as up."""

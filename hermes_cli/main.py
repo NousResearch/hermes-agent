@@ -12530,6 +12530,7 @@ _POST_SUBCOMMAND_TOP_LEVEL_VALUE_FLAGS = frozenset(
 def _hoist_post_subcommand_global_flags(
     argv: list[str],
     known_cmds: set[str] | frozenset[str],
+    subcommand_option_strings: dict[str, set[str]] | None = None,
 ) -> list[str]:
     """Move known top-level launcher flags before the subcommand.
 
@@ -12574,13 +12575,15 @@ def _hoist_post_subcommand_global_flags(
 
     prefix = head[:command_index]
     command_and_args = head[command_index:]
+    command_name = command_and_args[0]
+    native_options = (subcommand_option_strings or {}).get(command_name, set())
     hoisted: list[str] = []
     remainder: list[str] = []
     i = 0
     while i < len(command_and_args):
         token = command_and_args[i]
         if i > 0 and token in _POST_SUBCOMMAND_TOP_LEVEL_BOOL_FLAGS:
-            hoisted.append(token)
+            (remainder if token in native_options else hoisted).append(token)
             i += 1
             continue
 
@@ -12594,12 +12597,14 @@ def _hoist_post_subcommand_global_flags(
                 None,
             )
             if inline_value_match:
-                hoisted.append(token)
+                (remainder if inline_value_match in native_options else hoisted).append(token)
                 i += 1
                 continue
 
             if token in _POST_SUBCOMMAND_TOP_LEVEL_VALUE_FLAGS and i + 1 < len(command_and_args):
-                hoisted.extend([token, command_and_args[i + 1]])
+                (remainder if token in native_options else hoisted).extend(
+                    [token, command_and_args[i + 1]]
+                )
                 i += 2
                 continue
 
@@ -12610,6 +12615,18 @@ def _hoist_post_subcommand_global_flags(
         return argv
 
     return [*prefix, *hoisted, *remainder, *tail]
+
+
+def _subcommand_option_strings(subparsers) -> dict[str, set[str]]:  # noqa: ANN001
+    choices = getattr(subparsers, "choices", {}) or {}
+    return {
+        name: {
+            option
+            for action in getattr(parser, "_actions", [])
+            for option in getattr(action, "option_strings", [])
+        }
+        for name, parser in choices.items()
+    }
 
 
 def _first_positional_argv() -> str | None:
@@ -16051,6 +16068,7 @@ Examples:
     _processed_argv = _hoist_post_subcommand_global_flags(
         _coalesce_session_name_args(sys.argv[1:]),
         _known_cmds,
+        _subcommand_option_strings(subparsers),
     )
     _has_cmd_token = any(
         t in _known_cmds for t in _processed_argv if not t.startswith("-")

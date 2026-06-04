@@ -191,13 +191,14 @@ class TestPostSubcommandGlobalFlagHoisting:
         dashboard.add_argument("--port", type=int, default=9119)
         dashboard.add_argument("--host", default="127.0.0.1")
         dashboard.add_argument("--no-open", action="store_true")
-        return parser, set(subparsers.choices.keys())
+        return parser, subparsers
 
     def test_dashboard_accepts_trailing_tui_flag(self):
-        parser, known_cmds = self._dashboard_parser()
+        parser, subparsers = self._dashboard_parser()
         argv = m._hoist_post_subcommand_global_flags(
             ["dashboard", "--no-open", "--host", "127.0.0.1", "--port", "65535", "--tui"],
-            known_cmds,
+            set(subparsers.choices.keys()),
+            m._subcommand_option_strings(subparsers),
         )
 
         args = parser.parse_args(argv)
@@ -209,10 +210,11 @@ class TestPostSubcommandGlobalFlagHoisting:
         assert args.port == 65535
 
     def test_dashboard_accepts_trailing_skills_and_tui_flags(self):
-        parser, known_cmds = self._dashboard_parser()
+        parser, subparsers = self._dashboard_parser()
         argv = m._hoist_post_subcommand_global_flags(
             ["dashboard", "--no-open", "--skills", "desktop-backend", "--tui"],
-            known_cmds,
+            set(subparsers.choices.keys()),
+            m._subcommand_option_strings(subparsers),
         )
 
         args = parser.parse_args(argv)
@@ -222,11 +224,32 @@ class TestPostSubcommandGlobalFlagHoisting:
         assert args.tui is True
         assert args.no_open is True
 
+    def test_chat_keeps_native_provider_flag_after_subcommand(self):
+        parser, subparsers = self._dashboard_parser()
+        argv = m._hoist_post_subcommand_global_flags(
+            ["chat", "--provider", "gmi"],
+            set(subparsers.choices.keys()),
+            m._subcommand_option_strings(subparsers),
+        )
+
+        args = parser.parse_args(argv)
+
+        assert argv == ["chat", "--provider", "gmi"]
+        assert args.command == "chat"
+        assert args.provider == "gmi"
+
     def test_double_dash_stops_global_flag_hoisting(self):
-        _parser, known_cmds = self._dashboard_parser()
+        _parser, subparsers = self._dashboard_parser()
         argv = ["dashboard", "--", "--tui"]
 
-        assert m._hoist_post_subcommand_global_flags(argv, known_cmds) == argv
+        assert (
+            m._hoist_post_subcommand_global_flags(
+                argv,
+                set(subparsers.choices.keys()),
+                m._subcommand_option_strings(subparsers),
+            )
+            == argv
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,65 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
+def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
+    """Map Codex app-server item starts to Hermes tool-progress events."""
+    if not isinstance(note, dict) or note.get("method") != "item/started":
+        return None
+    params = note.get("params") or {}
+    item = params.get("item") or {}
+    if not isinstance(item, dict):
+        return None
+
+    item_type = item.get("type") or ""
+    if item_type == "commandExecution":
+        args = {
+            "command": item.get("command") or "",
+            "cwd": item.get("cwd") or "",
+        }
+        return "exec_command", args["command"], args
+
+    if item_type == "fileChange":
+        changes = item.get("changes") or []
+        preview = "file changes"
+        if isinstance(changes, list) and changes:
+            paths = [
+                str(change.get("path"))
+                for change in changes
+                if isinstance(change, dict) and change.get("path")
+            ]
+            if paths:
+                preview = ", ".join(paths[:3])
+                if len(paths) > 3:
+                    preview += f", +{len(paths) - 3} more"
+        return "apply_patch", preview, {"changes": changes}
+
+    if item_type == "mcpToolCall":
+        server = item.get("server") or "mcp"
+        tool = item.get("tool") or "unknown"
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        return f"mcp.{server}.{tool}", tool, args
+
+    if item_type == "dynamicToolCall":
+        tool = item.get("tool") or "unknown"
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        return tool, tool, args
+
+    return None
+
+
+def _last_projected_reasoning(projected_messages: list[dict]) -> str | None:
+    for msg in reversed(projected_messages or []):
+        if not isinstance(msg, dict):
+            continue
+        reasoning = msg.get("reasoning") or msg.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning
+    return None
+
 
 def run_codex_app_server_turn(
     agent,
@@ -56,9 +115,29 @@ def run_codex_app_server_turn(
             approval_callback = _get_approval_callback()
         except Exception:
             approval_callback = None
+
+        def _on_codex_event(note: dict) -> None:
+            progress_callback = getattr(agent, "tool_progress_callback", None)
+            if progress_callback is None:
+                return
+            mapped = _codex_note_to_tool_progress(note)
+            if mapped is None:
+                return
+            tool_name, preview, args = mapped
+            try:
+                progress_callback(
+                    "tool.started",
+                    tool_name,
+                    preview,
+                    args,
+                )
+            except Exception:
+                logger.debug("codex tool-progress callback raised", exc_info=True)
+
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            on_event=_on_codex_event,
         )
 
     # NOTE: the user message is ALREADY appended to messages by the
@@ -109,6 +188,7 @@ def run_codex_app_server_turn(
     # is exactly what curator.py / sessions DB expect.
     if turn.projected_messages:
         messages.extend(turn.projected_messages)
+    last_reasoning = _last_projected_reasoning(turn.projected_messages)
 
     # Counter ticks for the agent-improvement loop.
     # _turns_since_memory and _user_turn_count are ALREADY incremented
@@ -170,6 +250,7 @@ def run_codex_app_server_turn(
         "error": turn.error,
         "codex_thread_id": turn.thread_id,
         "codex_turn_id": turn.turn_id,
+        "last_reasoning": last_reasoning,
     }
 
 

@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 import run_agent
+from agent import codex_runtime
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 
 
@@ -83,6 +84,103 @@ class TestRunConversationCodexPath:
         assert result["api_calls"] == 1
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
+        assert result["last_reasoning"] is None
+
+    def test_last_reasoning_is_returned_for_gateway_display(self, monkeypatch):
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[
+                    {"role": "assistant", "content": "done", "reasoning": "planned the work"},
+                ],
+                turn_id="t1",
+                thread_id="th1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th1"
+        )
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+        assert result["last_reasoning"] == "planned the work"
+
+    def test_codex_app_server_wires_tool_progress_callback(self, monkeypatch):
+        captured_init = {}
+        progress_events = []
+
+        def fake_init(self, **kwargs):
+            captured_init.update(kwargs)
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured_init["on_event"]({
+                "method": "item/started",
+                "params": {
+                    "item": {
+                        "type": "commandExecution",
+                        "command": "sed -n '1,5p' README.md",
+                        "cwd": "/repo",
+                    }
+                },
+            })
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="t1",
+                thread_id="th1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th1"
+        )
+
+        agent = _make_codex_agent()
+        agent.tool_progress_callback = lambda *args, **kwargs: progress_events.append((args, kwargs))
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("inspect")
+
+        assert callable(captured_init["on_event"])
+        assert progress_events == [
+            (
+                (
+                    "tool.started",
+                    "exec_command",
+                    "sed -n '1,5p' README.md",
+                    {"command": "sed -n '1,5p' README.md", "cwd": "/repo"},
+                ),
+                {},
+            )
+        ]
+
+    def test_codex_tool_progress_mapper_handles_native_item_types(self):
+        assert codex_runtime._codex_note_to_tool_progress({
+            "method": "item/started",
+            "params": {"item": {"type": "fileChange", "changes": [{"path": "a.py"}]}},
+        }) == ("apply_patch", "a.py", {"changes": [{"path": "a.py"}]})
+        assert codex_runtime._codex_note_to_tool_progress({
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "mcpToolCall",
+                    "server": "hermes-tools",
+                    "tool": "browser_snapshot",
+                    "arguments": {"full": True},
+                }
+            },
+        }) == ("mcp.hermes-tools.browser_snapshot", "browser_snapshot", {"full": True})
+        assert codex_runtime._codex_note_to_tool_progress({
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "dynamicToolCall",
+                    "tool": "todo",
+                    "arguments": {"items": ["one"]},
+                }
+            },
+        }) == ("todo", "todo", {"items": ["one"]})
 
     def test_projected_messages_are_spliced(self, fake_session):
         agent = _make_codex_agent()

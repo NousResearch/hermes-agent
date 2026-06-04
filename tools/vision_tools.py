@@ -74,35 +74,36 @@ _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
 _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 
-def _validate_image_url(url: str) -> bool:
-    """
-    Basic validation of image URL format.
-    
-    Args:
-        url (str): The URL to validate
-        
-    Returns:
-        bool: True if URL appears to be valid, False otherwise
-    """
+def _image_url_shape_ok(url: str) -> bool:
+    """HTTP(S) shape check only (scheme, netloc). No DNS."""
     if not url or not isinstance(url, str):
         return False
-
     # Basic HTTP/HTTPS URL check
     if not url.startswith(("http://", "https://")):
         return False
-
     # Parse to ensure we at least have a network location; still allow URLs
     # without file extensions (e.g. CDN endpoints that redirect to images).
     parsed = urlparse(url)
     if not parsed.netloc:
         return False
+    return True
 
+
+def _validate_image_url(url: str) -> bool:
+    """Validate image URL for sync callers and tests (SSRF via sync DNS check)."""
+    if not _image_url_shape_ok(url):
+        return False
     # Block private/internal addresses to prevent SSRF
     from tools.url_safety import is_safe_url
-    if not is_safe_url(url):
-        return False
+    return is_safe_url(url)
 
-    return True
+
+async def _validate_image_url_async(url: str) -> bool:
+    """Validate remote image URL without blocking the event loop on DNS."""
+    if not _image_url_shape_ok(url):
+        return False
+    from tools.url_safety import async_is_safe_url
+    return await async_is_safe_url(url)
 
 
 def _detect_image_mime_type(image_path: Path) -> Optional[str]:
@@ -181,8 +182,8 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
         """
         if response.is_redirect and response.next_request:
             redirect_url = str(response.next_request.url)
-            from tools.url_safety import is_safe_url
-            if not is_safe_url(redirect_url):
+            from tools.url_safety import async_is_safe_url
+            if not await async_is_safe_url(redirect_url):
                 raise ValueError(
                     f"Blocked redirect to private/internal address: {redirect_url}"
                 )
@@ -716,7 +717,7 @@ async def _vision_analyze_native(
         if local_path.is_file():
             temp_image_path = local_path
             should_cleanup = False
-        elif _validate_image_url(image_url):
+        elif await _validate_image_url_async(image_url):
             blocked = check_website_access(image_url)
             if blocked:
                 return tool_error(blocked["message"], success=False)
@@ -870,7 +871,7 @@ async def vision_analyze_tool(
             logger.info("Using local image file: %s", image_url)
             temp_image_path = local_path
             should_cleanup = False  # Don't delete cached/local files
-        elif _validate_image_url(image_url):
+        elif await _validate_image_url_async(image_url):
             # Remote URL -- download to a temporary location
             blocked = check_website_access(image_url)
             if blocked:
@@ -1265,8 +1266,8 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
     async def _ssrf_redirect_guard(response):
         if response.is_redirect and response.next_request:
             redirect_url = str(response.next_request.url)
-            from tools.url_safety import is_safe_url
-            if not is_safe_url(redirect_url):
+            from tools.url_safety import async_is_safe_url
+            if not await async_is_safe_url(redirect_url):
                 raise ValueError(
                     f"Blocked redirect to private/internal address: {redirect_url}"
                 )
@@ -1372,7 +1373,7 @@ async def video_analyze_tool(
             logger.info("Using local video file: %s", video_url)
             temp_video_path = local_path
             should_cleanup = False
-        elif _validate_image_url(video_url):
+        elif await _validate_image_url_async(video_url):
             blocked = check_website_access(video_url)
             if blocked:
                 raise PermissionError(blocked["message"])

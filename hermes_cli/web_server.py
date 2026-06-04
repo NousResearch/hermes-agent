@@ -214,6 +214,52 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _normalize_dashboard_host(value: str) -> str:
+    """Normalize a host / netloc / allowlist entry for comparison.
+
+    Matching is case-insensitive, strips ports, and understands bracketed
+    IPv6 notation. Bare IPv6 literals are treated as host-only values.
+    """
+    if not value:
+        return ""
+    raw = value.strip()
+    if not raw:
+        return ""
+
+    if "://" in raw:
+        return (urllib.parse.urlsplit(raw).hostname or "").lower()
+
+    if raw.startswith("["):
+        close = raw.find("]")
+        if close != -1:
+            return raw[1:close].strip().lower()
+        return raw.strip("[]").lower()
+
+    if raw.count(":") >= 2:
+        return raw.lower()
+
+    return (urllib.parse.urlsplit(f"//{raw}").hostname or "").lower()
+
+
+def _normalize_allowed_dashboard_hosts(
+    allowed_hosts: list[str] | tuple[str, ...] | set[str] | frozenset[str] | None,
+) -> frozenset[str]:
+    """Return the operator-supplied dashboard Host allowlist.
+
+    This is intentionally a narrow host allowlist, not a broad proxy-trust
+    toggle. It is consulted only for loopback binds.
+    """
+    if not allowed_hosts:
+        return frozenset()
+
+    normalized = {
+        host
+        for host in (_normalize_dashboard_host(value) for value in allowed_hosts)
+        if host
+    }
+    return frozenset(normalized)
+
+
 def should_require_auth(host: str, allow_public: bool) -> bool:
     """Return True iff the dashboard OAuth auth gate must be active.
 
@@ -230,45 +276,37 @@ def should_require_auth(host: str, allow_public: bool) -> bool:
     return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+def _is_accepted_host(
+    host_header: str,
+    bound_host: str,
+    allowed_hosts: list[str] | tuple[str, ...] | set[str] | frozenset[str] | None = None,
+) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
     - Exact bound host (with or without port suffix)
     - Loopback aliases when bound to loopback
+    - Operator-allowed extra hosts when bound to loopback
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
     """
-    if not host_header:
+    host_only = _normalize_dashboard_host(host_header)
+    if not host_only:
         return False
-    # Strip port suffix. IPv6 addresses use bracket notation:
-    #   [::1]         — no port
-    #   [::1]:9119    — with port
-    # Plain hosts/v4:
-    #   localhost:9119
-    #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    bound_lc = _normalize_dashboard_host(bound_host)
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
     # defence can protect that mode; rely on operator network controls.
-    if bound_host in {"0.0.0.0", "::"}:
+    if bound_lc in {"0.0.0.0", "::"}:
         return True
 
-    # Loopback bind: accept the loopback names
-    bound_lc = bound_host.lower()
+    # Loopback bind: accept the loopback names plus the operator-supplied
+    # allowlist for trusted loopback reverse proxies such as Tailscale Serve.
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        accepted_hosts = set(_LOOPBACK_HOST_VALUES)
+        accepted_hosts.update(_normalize_allowed_dashboard_hosts(allowed_hosts))
+        return host_only in accepted_hosts
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc
@@ -291,13 +329,15 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        allowed_hosts = getattr(app.state, "allowed_hosts", frozenset())
+        if not _is_accepted_host(host_header, bound_host, allowed_hosts):
             return JSONResponse(
                 status_code=400,
                 content={
                     "detail": (
                         "Invalid Host header. Dashboard requests must use "
-                        "the hostname the server was bound to."
+                        "the hostname the server was bound to or an "
+                        "operator-allowed host."
                     ),
                 },
             )
@@ -7092,7 +7132,8 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return None
 
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    allowed_hosts = getattr(app.state, "allowed_hosts", frozenset())
+    if not _is_accepted_host(host_header, bound_host, allowed_hosts):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
@@ -7109,7 +7150,7 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(parsed.netloc, bound_host, allowed_hosts):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
@@ -7124,7 +7165,6 @@ def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
     same bound dashboard host.
     """
     return _ws_host_origin_reason(ws) is None
-
 
 def _ws_request_reason(ws: "WebSocket") -> Optional[str]:
     """First Host/Origin or peer-IP rejection reason, or None when allowed."""
@@ -8681,6 +8721,8 @@ def start_server(
     port: int = 9119,
     open_browser: bool = True,
     allow_public: bool = False,
+    *,
+    allowed_hosts: list[str] | tuple[str, ...] | set[str] | frozenset[str] | None = None,
 ):
     """Start the web UI server."""
     import uvicorn
@@ -8755,6 +8797,12 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    app.state.allowed_hosts = _normalize_allowed_dashboard_hosts(allowed_hosts)
+    if app.state.allowed_hosts and _normalize_dashboard_host(host) in _LOOPBACK_HOST_VALUES:
+        _log.info(
+            "Dashboard loopback Host allowlist enabled for: %s",
+            ", ".join(sorted(app.state.allowed_hosts)),
+        )
 
     if open_browser:
         import webbrowser

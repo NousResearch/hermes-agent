@@ -1531,6 +1531,15 @@ DEFAULT_CONFIG = {
         # falls through to request reconstruction rather than breaking
         # the login flow.
         "public_url": "",
+        # Extra Host headers to trust when the dashboard is bound to loopback.
+        # This is the safe path for trusted loopback reverse proxies such as
+        # Tailscale Serve or a local nginx/Caddy shim: keep ``--host`` on
+        # 127.0.0.1/localhost/::1, then explicitly allow only the proxy-facing
+        # hostname(s). This does NOT disable the DNS-rebinding guard and does
+        # NOT create general proxy trust; it is a narrow operator-supplied
+        # Host allowlist. CLI: ``hermes dashboard --allowed-host <host>``.
+        # Env override: ``HERMES_DASHBOARD_ALLOWED_HOSTS=host1,host2``.
+        "allowed_hosts": [],
     },
 
     # Privacy settings

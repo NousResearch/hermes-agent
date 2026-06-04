@@ -13,6 +13,7 @@ import pytest
 pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
 from fastapi.testclient import TestClient
 
+from hermes_cli import main
 from hermes_cli import web_server
 
 
@@ -132,6 +133,25 @@ def test_start_server_loopback_sets_auth_required_false(monkeypatch):
     assert web_server.app.state.auth_required is False
 
 
+def test_start_server_loopback_normalizes_allowed_hosts(monkeypatch):
+    """Loopback allowlist entries are normalized once at server startup."""
+    _stub_uvicorn_run(monkeypatch)
+    web_server.start_server(
+        host="127.0.0.1",
+        port=9119,
+        open_browser=False,
+        allow_public=False,
+        allowed_hosts=[
+            "Hermes-Agent-VPS.Tail88A68B.TS.Net:443",
+            "[::1]:9119",
+        ],
+    )
+    assert web_server.app.state.allowed_hosts == frozenset({
+        "hermes-agent-vps.tail88a68b.ts.net",
+        "::1",
+    })
+
+
 def test_start_server_insecure_public_sets_auth_required_false(monkeypatch):
     """``--insecure`` (allow_public=True) on a public host: gate stays OFF."""
     _stub_uvicorn_run(monkeypatch)
@@ -141,6 +161,32 @@ def test_start_server_insecure_public_sets_auth_required_false(monkeypatch):
         open_browser=False, allow_public=True,
     )
     assert web_server.app.state.auth_required is False
+
+
+def test_resolve_dashboard_allowed_hosts_prefers_cli_then_env_then_config(monkeypatch):
+    from argparse import Namespace
+    from hermes_cli import config as hermes_config
+
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"dashboard": {"allowed_hosts": ["cfg.example", "cfg2.example:443"]}},
+    )
+    monkeypatch.setenv("HERMES_DASHBOARD_ALLOWED_HOSTS", "env.example,env2.example:443")
+
+    assert main._resolve_dashboard_allowed_hosts(
+        Namespace(allowed_host=["cli.example,cli2.example:443"])
+    ) == ["cli.example", "cli2.example:443"]
+    assert main._resolve_dashboard_allowed_hosts(Namespace(allowed_host=[])) == [
+        "env.example",
+        "env2.example:443",
+    ]
+
+    monkeypatch.delenv("HERMES_DASHBOARD_ALLOWED_HOSTS")
+    assert main._resolve_dashboard_allowed_hosts(Namespace(allowed_host=[])) == [
+        "cfg.example",
+        "cfg2.example:443",
+    ]
 
 
 def test_start_server_public_without_insecure_records_auth_required(monkeypatch):

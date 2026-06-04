@@ -54,6 +54,46 @@ class TestHostHeaderValidator:
                     f"bound={bound} must reject attacker host={attacker!r}"
                 )
 
+    def test_loopback_bind_accepts_explicitly_allowed_hosts(self):
+        from hermes_cli.web_server import _is_accepted_host
+
+        allowed = ["hermes-agent-vps.tail88a68b.ts.net"]
+        assert _is_accepted_host(
+            "hermes-agent-vps.tail88a68b.ts.net",
+            "127.0.0.1",
+            allowed,
+        )
+        assert _is_accepted_host(
+            "hermes-agent-vps.tail88a68b.ts.net:443",
+            "127.0.0.1",
+            allowed,
+        )
+
+    def test_loopback_allowed_host_matching_is_case_insensitive_and_strips_ports(self):
+        from hermes_cli.web_server import _is_accepted_host
+
+        allowed = ["Hermes-Agent-VPS.Tail88A68B.TS.Net:443"]
+        assert _is_accepted_host(
+            "HERMES-AGENT-VPS.TAIL88A68B.TS.NET",
+            "127.0.0.1",
+            allowed,
+        )
+        assert _is_accepted_host(
+            "hermes-agent-vps.tail88a68b.ts.net:9119",
+            "127.0.0.1",
+            allowed,
+        )
+
+    def test_loopback_bind_still_rejects_non_allowlisted_hosts(self):
+        from hermes_cli.web_server import _is_accepted_host
+
+        allowed = ["hermes-agent-vps.tail88a68b.ts.net"]
+        assert not _is_accepted_host(
+            "other.tail88a68b.ts.net",
+            "127.0.0.1",
+            allowed,
+        )
+
     def test_zero_zero_bind_accepts_anything(self):
         """0.0.0.0 means operator explicitly opted into all-interfaces
         (requires --insecure). No Host-layer defence is possible — rely
@@ -94,6 +134,7 @@ class TestHostHeaderMiddleware:
 
         # Simulate start_server having set the bound_host
         app.state.bound_host = "127.0.0.1"
+        app.state.allowed_hosts = frozenset()
         try:
             client = TestClient(app)
             # The TestClient sends Host: testserver by default — which is
@@ -108,12 +149,15 @@ class TestHostHeaderMiddleware:
             # Clean up so other tests don't inherit the bound_host
             if hasattr(app.state, "bound_host"):
                 del app.state.bound_host
+            if hasattr(app.state, "allowed_hosts"):
+                del app.state.allowed_hosts
 
     def test_legit_loopback_request_accepted(self):
         from fastapi.testclient import TestClient
         from hermes_cli.web_server import app
 
         app.state.bound_host = "127.0.0.1"
+        app.state.allowed_hosts = frozenset()
         try:
             client = TestClient(app)
             # /api/status is in _PUBLIC_API_PATHS — passes auth — so the
@@ -130,6 +174,29 @@ class TestHostHeaderMiddleware:
         finally:
             if hasattr(app.state, "bound_host"):
                 del app.state.bound_host
+            if hasattr(app.state, "allowed_hosts"):
+                del app.state.allowed_hosts
+
+    def test_allowlisted_loopback_request_is_accepted(self):
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        app.state.bound_host = "127.0.0.1"
+        app.state.allowed_hosts = frozenset({"hermes-agent-vps.tail88a68b.ts.net"})
+        try:
+            client = TestClient(app)
+            resp = client.get(
+                "/api/status",
+                headers={"Host": "Hermes-Agent-VPS.Tail88A68B.TS.Net:443"},
+            )
+            assert resp.status_code != 400 or (
+                "Invalid Host header" not in resp.json().get("detail", "")
+            )
+        finally:
+            if hasattr(app.state, "bound_host"):
+                del app.state.bound_host
+            if hasattr(app.state, "allowed_hosts"):
+                del app.state.allowed_hosts
 
     def test_no_bound_host_skips_validation(self):
         """If app.state.bound_host isn't set (e.g. running under test
@@ -141,6 +208,8 @@ class TestHostHeaderMiddleware:
         # Make sure bound_host isn't set
         if hasattr(app.state, "bound_host"):
             del app.state.bound_host
+        if hasattr(app.state, "allowed_hosts"):
+            del app.state.allowed_hosts
 
         client = TestClient(app)
         resp = client.get("/api/status")
@@ -158,6 +227,7 @@ class TestWebSocketHostOriginGuard:
         import hermes_cli.web_server as ws
 
         monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "allowed_hosts", frozenset(), raising=False)
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
 
         client = TestClient(ws.app)
@@ -181,6 +251,7 @@ class TestWebSocketHostOriginGuard:
         import hermes_cli.web_server as ws
 
         monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "allowed_hosts", frozenset(), raising=False)
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
 
         client = TestClient(ws.app)
@@ -203,6 +274,7 @@ class TestWebSocketHostOriginGuard:
         import hermes_cli.web_server as ws
 
         monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "allowed_hosts", frozenset(), raising=False)
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
 
         client = TestClient(ws.app)
@@ -212,6 +284,31 @@ class TestWebSocketHostOriginGuard:
             headers={
                 "Host": "localhost:9119",
                 "Origin": "http://localhost:9119",
+            },
+        ):
+            pass
+
+    def test_allowlisted_websocket_host_and_origin_are_accepted(self, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(
+            ws.app.state,
+            "allowed_hosts",
+            frozenset({"hermes-agent-vps.tail88a68b.ts.net"}),
+            raising=False,
+        )
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "Hermes-Agent-VPS.Tail88A68B.TS.Net:443",
+                "Origin": "https://hermes-agent-vps.tail88a68b.ts.net",
             },
         ):
             pass

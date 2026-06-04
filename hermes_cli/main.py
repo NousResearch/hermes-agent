@@ -11937,6 +11937,40 @@ def _report_dashboard_status() -> int:
     return len(pids)
 
 
+def _split_dashboard_allowed_hosts(values) -> list[str]:
+    hosts: list[str] = []
+    for value in values or []:
+        if value is None:
+            continue
+        for chunk in str(value).split(","):
+            host = chunk.strip()
+            if host:
+                hosts.append(host)
+    return hosts
+
+
+def _resolve_dashboard_allowed_hosts(args) -> list[str]:
+    """Resolve dashboard Host allowlist from CLI, env, or config."""
+    from hermes_cli.config import load_config
+
+    cli_hosts = _split_dashboard_allowed_hosts(getattr(args, "allowed_host", None))
+    if cli_hosts:
+        return cli_hosts
+
+    env_hosts = _split_dashboard_allowed_hosts(
+        [os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")]
+    )
+    if env_hosts:
+        return env_hosts
+
+    cfg = load_config() or {}
+    dashboard_cfg = cfg.get("dashboard") or {}
+    configured = dashboard_cfg.get("allowed_hosts") or []
+    if isinstance(configured, str):
+        configured = [configured]
+    return _split_dashboard_allowed_hosts(configured)
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     # --status: report running dashboards and exit, no deps needed.
@@ -12025,11 +12059,13 @@ def cmd_dashboard(args):
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
     # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.
+    allowed_hosts = _resolve_dashboard_allowed_hosts(args)
     start_server(
         host=args.host,
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
+        allowed_hosts=allowed_hosts,
     )
 
 
@@ -15306,6 +15342,18 @@ Examples:
     )
     dashboard_parser.add_argument(
         "--host", default="127.0.0.1", help="Host (default 127.0.0.1)"
+    )
+    dashboard_parser.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        help=(
+            "Extra Host header to trust when bound to loopback. Repeat the flag "
+            "or pass a comma-separated list. Safe for trusted loopback reverse "
+            "proxies like Tailscale Serve; does not disable DNS-rebinding "
+            "protection. Also supports HERMES_DASHBOARD_ALLOWED_HOSTS and "
+            "dashboard.allowed_hosts."
+        ),
     )
     dashboard_parser.add_argument(
         "--no-open", action="store_true", help="Don't open browser automatically"

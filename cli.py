@@ -8659,6 +8659,11 @@ class HermesCLI:
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
 
+    def _handle_sync_command(self, cmd: str):
+        """Handle /sync slash command — delegates to hermes_cli.sync_cmd."""
+        from hermes_cli.sync_cmd import handle_sync_slash
+        handle_sync_slash(cmd)
+
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
@@ -8971,6 +8976,9 @@ class HermesCLI:
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
+        elif canonical == "sync":
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._handle_sync_command(cmd_original)
         elif canonical == "platforms":
             self._show_gateway_status()
         elif canonical == "status":

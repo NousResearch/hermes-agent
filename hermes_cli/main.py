@@ -12438,7 +12438,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
+        "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -12879,6 +12879,102 @@ def main():
         help="Remove all fallback entries",
     )
     fallback_parser.set_defaults(func=cmd_fallback)
+
+    # =========================================================================
+    # sync command — back up / sync the profile to the user's own git repo
+    # =========================================================================
+    from hermes_cli.sync_cmd import cmd_sync
+
+    sync_parser = subparsers.add_parser(
+        "sync",
+        help="Back up and sync your profile (skills, memory, persona) to your own git repo",
+        description=(
+            "Back up a curated subset of your Hermes profile — skills, memory "
+            "(MEMORY.md / USER.md), persona (SOUL.md), and an allow-listed slice "
+            "of config — to a git repository YOU control. Plain git, your repo, "
+            "no Nous portal. A pre-push secret scan refuses to push anything "
+            "secret-shaped (API keys, private keys, tokens)."
+        ),
+    )
+    sync_subparsers = sync_parser.add_subparsers(dest="sync_command")
+
+    sync_init = sync_subparsers.add_parser(
+        "init",
+        help="Initialize profile sync (choose private/public, set up the remote)",
+    )
+    sync_init.add_argument(
+        "--private",
+        dest="visibility",
+        action="store_const",
+        const="private",
+        help="Create/use a PRIVATE repo (this is the default).",
+    )
+    sync_init.add_argument(
+        "--public",
+        dest="visibility",
+        action="store_const",
+        const="public",
+        help="Create/use a PUBLIC repo (world-readable — only for sharing).",
+    )
+    sync_init.add_argument(
+        "--remote",
+        help="Use this existing git remote URL instead of creating a repo via gh.",
+    )
+
+    sync_push = sync_subparsers.add_parser(
+        "push",
+        help="Stage, secret-scan, commit, and push the synced subset",
+    )
+    sync_push.add_argument(
+        "-m", "--message", help="Commit message (default: timestamped)."
+    )
+
+    sync_pull = sync_subparsers.add_parser(
+        "pull",
+        help="Pull from the remote and update the local profile (last-writer-wins)",
+    )
+    sync_pull.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite locally-modified files without confirmation.",
+    )
+
+    sync_subparsers.add_parser(
+        "status",
+        help="Show remote, visibility, last sync, and pending changes (default)",
+    )
+
+    sync_share = sync_subparsers.add_parser(
+        "share",
+        help="Print the install command for skill(s); push to the repo or export as zip",
+        description=(
+            "Share skill(s): print the `npx skills add` command for a "
+            "git-synced repo, push a single skill to the repo, or export "
+            "skill(s) as a self-contained zip with --zip. The zip is the same "
+            "as `hermes skills export` — use whichever command you prefer."
+        ),
+    )
+    sync_share.add_argument(
+        "skill_name", nargs="+",
+        help="Name(s) of the skill(s) to share. Multiple names require --zip.",
+    )
+    sync_share.add_argument(
+        "--push",
+        action="store_true",
+        help="Also stage + push just this skill to the sync repo (single skill).",
+    )
+    sync_share.add_argument(
+        "--zip",
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="PATH",
+        help="Export the skill(s) as a self-contained zip instead of git-sharing. "
+             "Optionally give an output PATH (default: <skill>.zip in the cwd). "
+             "Works without sync init and for private repos — just send the file.",
+    )
+
+    sync_parser.set_defaults(func=cmd_sync)
 
     # =========================================================================
     # secrets command — external secret managers (currently: Bitwarden)
@@ -14307,7 +14403,12 @@ Examples:
     )
 
     skills_publish = skills_subparsers.add_parser(
-        "publish", help="Publish a skill to a registry"
+        "publish", help="Publish a skill to a registry",
+        description=(
+            "Publish a skill to a registry (GitHub/ClawHub) so others can "
+            "`skills install` it. To send the actual files directly instead "
+            "(offline, private, no registry), use `hermes skills export`."
+        ),
     )
     skills_publish.add_argument("skill_path", help="Path to skill directory")
     skills_publish.add_argument(
@@ -14318,7 +14419,13 @@ Examples:
     )
 
     skills_snapshot = skills_subparsers.add_parser(
-        "snapshot", help="Export/import skill configurations"
+        "snapshot", help="Export/import skill configurations",
+        description=(
+            "Export/import a JSON MANIFEST of installed skills (names + sources "
+            "+ config) — the recipient re-downloads each skill from its "
+            "registry on import. To export the actual skill FILES into a "
+            "self-contained zip instead, use `hermes skills export`."
+        ),
     )
     snapshot_subparsers = skills_snapshot.add_subparsers(dest="snapshot_action")
     snap_export = snapshot_subparsers.add_parser(
@@ -14331,6 +14438,33 @@ Examples:
     snap_import.add_argument("input", help="Input JSON file path")
     snap_import.add_argument(
         "--force", action="store_true", help="Force install despite caution verdict"
+    )
+
+    # `skills export` — bundle skill FILES into a self-contained zip (the
+    # content-bearing counterpart to `snapshot`, which only writes a manifest).
+    # Shares its core with `sync share --zip`.
+    skills_export = skills_subparsers.add_parser(
+        "export",
+        help="Export skill(s) as a self-contained zip (files included, works offline)",
+        description=(
+            "Bundle skill FILES into a self-contained zip the recipient unzips "
+            "into ~/.hermes/skills/ — no registry or network needed. "
+            "Related: `skills snapshot` exports a re-downloadable manifest; "
+            "`skills publish` pushes to a registry. Same zip is available as "
+            "`hermes sync share <skill> --zip`."
+        ),
+    )
+    skills_export.add_argument(
+        "skill_name", nargs="*",
+        help="Skill name(s) to export. Omit with --all to export every installed skill.",
+    )
+    skills_export.add_argument(
+        "--all", action="store_true",
+        help="Export every skill under ~/.hermes/skills/.",
+    )
+    skills_export.add_argument(
+        "-o", "--output", "--zip", dest="output", default=None, metavar="PATH",
+        help="Output zip path (default: <skill>.zip, or hermes-skills.zip for a group, in the cwd).",
     )
 
     skills_tap = skills_subparsers.add_parser("tap", help="Manage skill sources")

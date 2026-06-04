@@ -5799,7 +5799,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
-_WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
+_WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap", "sync"})
 
 
 @method("commands.catalog")
@@ -7060,6 +7060,17 @@ def _(rid, params: dict) -> dict:
                 rid,
                 4018,
                 "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore",
+            )
+        # /sync push|pull|init touch the network / a real git remote / gh and
+        # may need an interactive terminal — route them through command.dispatch
+        # (real TTY) rather than the slash worker. status / share --zip are
+        # read-only/file-only and run fine in the worker.
+        if _cmd_base == "sync" and subcommand in {"push", "pull", "init"}:
+            return _err(
+                rid,
+                4018,
+                f"/sync {subcommand} needs a real terminal (git/network/prompts); "
+                f"use command.dispatch for /sync {subcommand}",
             )
 
     try:

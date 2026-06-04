@@ -32,6 +32,7 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/approve')).toBe(false)
     expect(isDesktopSlashSuggestion('/model')).toBe(false)
     expect(isDesktopSlashSuggestion('/skills')).toBe(false)
+    expect(isDesktopSlashSuggestion('/sync')).toBe(false)
     expect(isDesktopSlashSuggestion('/voice')).toBe(false)
     expect(isDesktopSlashSuggestion('/curator')).toBe(false)
   })

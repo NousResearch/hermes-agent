@@ -1441,6 +1441,62 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
         return False, f"Network error creating PR: {e}"
 
 
+def do_skills_export(
+    skill_names: list,
+    output: Optional[str] = None,
+    export_all: bool = False,
+    console: Optional[Console] = None,
+) -> None:
+    """Export skill FILES into a self-contained zip.
+
+    The content-bearing counterpart to ``do_snapshot_export`` (which only writes
+    a JSON manifest of names/sources). Shares its core with ``sync share --zip``
+    via ``hermes_cli.sync_cmd._export_skills_zip`` — one implementation, two
+    entry points (``hermes skills export`` and ``hermes sync share --zip``).
+    """
+    from pathlib import Path
+
+    from hermes_constants import get_hermes_home
+    from hermes_cli.sync_cmd import _export_skills_zip
+
+    c = console or _console
+    home = get_hermes_home()
+    skills_root = home / "skills"
+
+    names = list(skill_names or [])
+    if export_all:
+        if not skills_root.is_dir():
+            c.print("[bold red]No skills directory found.[/]\n")
+            return
+        names = sorted(
+            p.name for p in skills_root.iterdir()
+            if p.is_dir() and not p.name.startswith(".")
+        )
+    if not names:
+        c.print(
+            "[bold red]Usage:[/] hermes skills export <name> [<name> ...] [-o file.zip]\n"
+            "       hermes skills export --all -o my-skills.zip\n"
+        )
+        return
+
+    if output:
+        out_path = Path(output).expanduser()
+        if out_path.is_dir():
+            out_path = out_path / "hermes-skills.zip"
+    else:
+        default = f"{names[0]}.zip" if len(names) == 1 else "hermes-skills.zip"
+        out_path = Path.cwd() / default
+
+    # _export_skills_zip handles the pre-export secret scan + abort and writes
+    # the skills/<name>/ drop-in layout.
+    written = _export_skills_zip(home, names, out_path)
+    size_kb = out_path.stat().st_size / 1024
+    c.print(f"[green]✓ Exported {len(written)} skill(s) → {out_path} ({size_kb:.1f} KB)[/]")
+    c.print(
+        f"\nRecipients unzip into their profile:\n    [bold]unzip {out_path.name} -d ~/.hermes/[/bold]\n"
+    )
+
+
 def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> None:
     """Export current hub skill configuration to a portable JSON file."""
     from tools.skills_hub import HubLockFile, TapsManager
@@ -1586,6 +1642,12 @@ def skills_command(args) -> None:
             do_snapshot_import(args.input, force=getattr(args, "force", False))
         else:
             _console.print("Usage: hermes skills snapshot [export|import]\n")
+    elif action == "export":
+        do_skills_export(
+            getattr(args, "skill_name", None) or [],
+            output=getattr(args, "output", None),
+            export_all=getattr(args, "all", False),
+        )
     elif action == "tap":
         tap_action = getattr(args, "tap_action", None)
         repo = getattr(args, "repo", "") or getattr(args, "name", "")
@@ -1779,6 +1841,24 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
             if a == "--repo" and i + 1 < len(args):
                 repo = args[i + 1]
         do_publish(skill_path, target=target, repo=repo, console=c)
+
+    elif action == "export":
+        # /skills export <name> [<name> ...] [-o file.zip] [--all]
+        names = [a for a in args if not a.startswith("-")]
+        export_all = "--all" in args
+        output = None
+        for i, a in enumerate(args):
+            if a in {"-o", "--output", "--zip"} and i + 1 < len(args):
+                output = args[i + 1]
+                # the value isn't a skill name
+                names = [n for n in names if n != args[i + 1]]
+        if not names and not export_all:
+            c.print("[bold red]Usage:[/] /skills export <name> [<name> ...] [-o file.zip] | /skills export --all\n")
+            return
+        try:
+            do_skills_export(names, output=output, export_all=export_all, console=c)
+        except SystemExit:
+            pass  # secret-abort / missing-skill already printed a message
 
     elif action == "snapshot":
         if not args:

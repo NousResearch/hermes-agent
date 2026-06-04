@@ -2145,7 +2145,11 @@ class BasePlatformAdapter(ABC):
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
-                media.append((os.path.expanduser(path), has_voice_tag))
+                # Models inside the Docker sandbox emit container-internal paths
+                # (e.g. /workspace/outbound/x.xlsx); media delivery runs on the
+                # host, so remap those to the host-visible mount before use.
+                from tools.environments.base import remap_container_path_to_host
+                media.append((remap_container_path_to_host(os.path.expanduser(path)), has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:
@@ -2200,7 +2204,10 @@ class BasePlatformAdapter(ABC):
             if _in_code(match.start()):
                 continue
             raw = match.group(0)
-            expanded = os.path.expanduser(raw)
+            # Bare container paths (e.g. /workspace/outbound/x.png) must be
+            # remapped to the host mount, since delivery runs on the host.
+            from tools.environments.base import remap_container_path_to_host
+            expanded = remap_container_path_to_host(os.path.expanduser(raw))
             if os.path.isfile(expanded):
                 found.append((raw, expanded))
 

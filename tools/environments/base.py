@@ -93,6 +93,48 @@ def get_sandbox_dir() -> Path:
     return p
 
 
+# Container mount points (inside the Docker sandbox) → their sub-path under the
+# persistent host sandbox dir. Mirrors the bind mounts created in
+# tools/environments/docker.py for the default persistent task:
+#   {sandbox}/docker/default/workspace -> /workspace
+#   {sandbox}/docker/default/home      -> /root
+_CONTAINER_HOST_MOUNTS = (
+    ("/workspace/", "workspace"),
+    ("/root/", "home"),
+)
+
+
+def remap_container_path_to_host(path: str) -> str:
+    """Translate a Docker-sandbox container path to its host-visible path.
+
+    Media delivery (``MEDIA:`` tags, ``send_message`` attachments) runs in the
+    gateway process on the host, but models frequently emit the container-internal
+    path they wrote to (e.g. ``/workspace/outbound/report.xlsx``). The default
+    persistent Docker sandbox bind-mounts ``{sandbox}/docker/default/workspace``
+    to ``/workspace`` and ``.../home`` to ``/root``, so those prefixes can be
+    mapped back to the host.
+
+    Conservative by design — returns the input unchanged when:
+      * the path already exists on the host (it's already host-correct),
+      * the backend isn't Docker (``TERMINAL_ENV != docker``),
+      * no known container prefix matches, or
+      * the remapped host file doesn't exist (never invent a path; let the
+        caller's not-found diagnostics fire).
+    """
+    if not path or os.path.exists(path):
+        return path
+    if os.getenv("TERMINAL_ENV", "local").strip().lower() != "docker":
+        return path
+    for container_prefix, host_subdir in _CONTAINER_HOST_MOUNTS:
+        if path.startswith(container_prefix):
+            rel = path[len(container_prefix):]
+            host_path = get_sandbox_dir() / "docker" / "default" / host_subdir / rel
+            if host_path.exists():
+                return str(host_path)
+            break
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Shared constants and utilities
 # ---------------------------------------------------------------------------

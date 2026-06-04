@@ -2587,6 +2587,26 @@ class TestSubagentApprovalCallback(unittest.TestCase):
         )
         self.assertIs(_get_subagent_approval_callback(), _subagent_auto_approve)
 
+    def test_load_config_preserves_spark_model(self):
+        """Persistent delegation config can select Spark for sidecar workers."""
+        from tools import delegate_tool
+
+        with (
+            patch("cli.CLI_CONFIG", {}),
+            patch("hermes_cli.config.load_config", return_value={
+                "delegation": {
+                    "model": "gpt-5.3-codex-spark",
+                    "reasoning_effort": "high",
+                    "subagent_auto_approve": True,
+                }
+            }),
+        ):
+            cfg = delegate_tool._load_config()
+
+        self.assertEqual(cfg["model"], "gpt-5.3-codex-spark")
+        self.assertEqual(cfg["reasoning_effort"], "high")
+        self.assertIs(cfg["subagent_auto_approve"], True)
+
     def test_executor_initializer_installs_callback_in_worker(self):
         """The initializer sets the callback on the worker thread's TLS,
         not the parent's — verifies the fix actually scopes to workers.

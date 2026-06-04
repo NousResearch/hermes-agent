@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
+import { PAGE_INSET_X } from '../layout-constants'
+
 interface OverlaySplitLayoutProps {
   children: ReactNode
   className?: string
@@ -43,7 +45,9 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
   return (
     <aside
       className={cn(
-        'flex min-h-0 flex-col gap-0.5 overflow-y-auto bg-(--ui-sidebar-surface-background) px-2.5 py-3',
+        // pt clears the floating titlebar/header; the bg itself fills from the
+        // card's top edge so there's no surface-colored gap above the sidebar.
+        'flex min-h-0 flex-col gap-0.5 overflow-y-auto bg-(--ui-sidebar-surface-background) px-2.5 pb-3 pt-[calc(var(--titlebar-height)+1rem)]',
         className
       )}
     >
@@ -54,7 +58,15 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
 
 export function OverlayMain({ children, className }: OverlayMainProps) {
   return (
-    <main className={cn('flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent p-3', className)}>{children}</main>
+    <main
+      className={cn(
+        'flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent pb-3 pt-[calc(var(--titlebar-height)+1rem)]',
+        PAGE_INSET_X,
+        className
+      )}
+    >
+      {children}
+    </main>
   )
 }
 

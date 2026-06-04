@@ -1,6 +1,6 @@
-# Hermes Agent - Development Guide
+# eve Agent - Development Guide
 
-Instructions for AI coding assistants and developers working on the hermes-agent codebase.
+Instructions for AI coding assistants and developers working on the eve codebase.
 
 **Never give up on the right solution.**
 
@@ -70,7 +70,7 @@ Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
 
 ## TypeScript Style
 
-Applies to TypeScript across Hermes: desktop, TUI, website, and future TS packages.
+Applies to TypeScript across eve: desktop, TUI, website, and future TS packages.
 
 - Prefer small nanostores over component state when state is shared, reused, or read by distant UI.
 - Let each feature own its atoms. Chat state belongs near chat, shell state near shell, shared state in `src/store`.
@@ -293,7 +293,7 @@ A **separate** chat surface from both the classic CLI and the dashboard's embedd
 - **The renderer curates via `apps/desktop/src/lib/desktop-slash-commands.ts`.** This is the load-bearing file. It holds `DESKTOP_COMMANDS` (the ~19 built-ins shown in the palette) plus block-lists for terminal-only / messaging-only / picker-owned / settings-owned / advanced commands that should NOT clutter the desktop popover.
   - `isDesktopSlashCommand(name)` — gates **execution**. Returns true for built-ins AND for any non-built-in (skill / quick command), so typed extension commands run.
   - `isDesktopSlashSuggestion(name)` — gates **discovery/completion**. Used by BOTH completion paths in `app/chat/composer/hooks/use-slash-completions.ts` (empty-query catalog filter + typed-query `complete.slash` filter) and by `filterDesktopCommandsCatalog`.
-  - `isDesktopSlashExtensionCommand(name)` — true when the command is NOT a known Hermes built-in (i.e. a skill or user quick command). Both suggestion and catalog-filter paths allow extensions through so skill commands surface in the palette. (Added when fixing "skill commands missing from the desktop slash palette" — the curated allow-list was silently dropping every skill/quick command from completions even though they executed fine when typed.)
+  - `isDesktopSlashExtensionCommand(name)` — true when the command is NOT a known eve built-in (i.e. a skill or user quick command). Both suggestion and catalog-filter paths allow extensions through so skill commands surface in the palette. (Added when fixing "skill commands missing from the desktop slash palette" — the curated allow-list was silently dropping every skill/quick command from completions even though they executed fine when typed.)
 - **Dispatch** lives in `app/session/hooks/use-prompt-actions.ts` (`runSlash`): built-ins that the desktop owns (`/skin`, `/help`, `/new`, …) are handled locally or via `commands.catalog`; everything else goes to `slash.exec`, falling back to `command.dispatch` (which the gateway resolves into skill / alias / exec directives). A skill command resolves to `{type: "skill", message}` and is submitted as a normal prompt.
 
 **Rule:** the desktop slash palette's curation is about hiding noise (terminal-only / messaging-only built-ins), NOT about hiding user-activated extensions. Skill commands and `quick_commands` are extensions the backend surfaces — they belong in completions. If you tighten `desktop-slash-commands.ts`, keep `isDesktopSlashExtensionCommand` flowing into both the suggestion and catalog-filter paths. Tests: `apps/desktop/src/lib/desktop-slash-commands.test.ts` (run via the repo-root `vitest`, since `apps/desktop` resolves deps from the root workspace install).
@@ -302,14 +302,14 @@ A **separate** chat surface from both the classic CLI and the dashboard's embedd
 
 ## Adding New Tools
 
-For most custom or local-only tools, do **not** edit Hermes core. Use the plugin
+For most custom or local-only tools, do **not** edit eve core. Use the plugin
 route instead: create `~/.hermes/plugins/<name>/plugin.yaml` and
 `~/.hermes/plugins/<name>/__init__.py`, then register tools with
 `ctx.register_tool(...)`. Plugin toolsets are discovered automatically and can be
 enabled or disabled without touching `tools/` or `toolsets.py`.
 
 Use the built-in route below only when the user is explicitly contributing a new
-core Hermes tool that should ship in the base system.
+core eve tool that should ship in the base system.
 
 Built-in/core tools require changes in **2 files**:
 
@@ -475,7 +475,7 @@ hermes_cli/skin_engine.py    # SkinConfig dataclass, built-in skins, YAML loader
 
 ### Built-in skins
 
-- `default` — Classic Hermes gold/kawaii (the current look)
+- `default` — Classic eve gold/kawaii (the current look)
 - `ares` — Crimson/bronze war-god theme with custom spinner wings
 - `mono` — Clean grayscale monochrome
 - `slate` — Cool blue developer-focused theme
@@ -526,7 +526,7 @@ Activate with `/skin cyberpunk` or `display.skin: cyberpunk` in config.yaml.
 
 ## Plugins
 
-Hermes has two plugin surfaces. Both live under `plugins/` in the repo so
+eve has two plugin surfaces. Both live under `plugins/` in the repo so
 repo-shipped plugins can be discovered alongside user-installed ones in
 `~/.hermes/plugins/` and pip-installed entry points.
 
@@ -673,7 +673,7 @@ violate them.
    assert len(m.group(1)) <= 60, len(m.group(1))
    ```
 
-2. **Tools referenced in SKILL.md prose must be native Hermes tools or
+2. **Tools referenced in SKILL.md prose must be native eve tools or
    MCP servers the skill explicitly expects.** When the skill needs a
    capability, point at the proper tool by name in backticks
    (`` `terminal` ``, `` `web_extract` ``, `` `read_file` ``,
@@ -699,9 +699,9 @@ violate them.
 
 4. **`author` credits the human contributor first.** For external
    contributions, the contributor's real name + GitHub handle goes
-   first; "Hermes Agent" is the secondary collaborator. If the
-   contributor's commit shows "Hermes Agent" as author (because they
-   used Hermes to draft the skill), replace it with their actual name
+   first; "eve Agent" is the secondary collaborator. If the
+   contributor's commit shows "eve Agent" as author (because they
+   used eve to draft the skill), replace it with their actual name
    — credit the human, not the tool.
 
 5. **SKILL.md body uses the modern section order.** `# <Skill> Skill`
@@ -902,7 +902,7 @@ Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 
 ### Prompt Caching Must Not Break
 
-Hermes-Agent ensures caching remains valid throughout a conversation. **Do NOT implement changes that would:**
+eve ensures caching remains valid throughout a conversation. **Do NOT implement changes that would:**
 - Alter past context mid-conversation
 - Change toolsets mid-conversation
 - Reload memories or rebuild system prompts mid-conversation
@@ -930,7 +930,7 @@ in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
 
 ## Profiles: Multi-Instance Support
 
-Hermes supports **profiles** — multiple fully isolated instances, each with its own
+eve supports **profiles** — multiple fully isolated instances, each with its own
 `HERMES_HOME` directory (config, API keys, memory, sessions, skills, gateway, etc.).
 
 The core mechanism: `_apply_profile_override()` in `hermes_cli/main.py` sets
@@ -1049,42 +1049,141 @@ def profile_env(tmp_path, monkeypatch):
 
 ---
 
+## Cross-Platform Compatibility
+
+eve runs on Linux, macOS, and native Windows (plus WSL2). When writing code
+that touches the OS, assume *any* platform can hit your code path.
+
+**Before you PR:** run `python scripts/check-windows-footguns.py` to catch
+common Windows-unsafe patterns in your diff. CI runs it on every PR.
+
+### Critical rules
+
+1. **Never call `os.kill(pid, 0)` for liveness checks.** On Windows, `sig=0`
+   maps to `CTRL_C_EVENT` and broadcasts Ctrl+C to the entire console process
+   group. Use `psutil.pid_exists(pid)` instead (core dependency).
+
+2. **Use `shutil.which()` before shelling out.** `wmic`, `ps`, `kill`, `grep`,
+   `awk`, `fuser`, `lsof` don't exist on Windows. Fall back to PowerShell via
+   `subprocess.run(["powershell", "-NoProfile", "-Command", ...])`.
+
+3. **`termios` and `fcntl` are Unix-only.** Always catch both `ImportError`
+   and `NotImplementedError`.
+
+4. **File encoding.** Windows may save `.env` in `cp1252`. Handle
+   `UnicodeDecodeError`. Config files may have UTF-8 BOM — use
+   `encoding="utf-8-sig"` for files touched by Windows editors.
+
+5. **Process management.** `os.setsid()`, `os.killpg()`, `os.fork()` don't
+   exist on Windows. Guard with `platform.system()` or `hasattr(os, "setsid")`.
+   Use `psutil` for cross-platform process killing.
+
+6. **Signals missing on Windows:** `SIGALRM`, `SIGCHLD`, `SIGHUP`, `SIGUSR1`,
+   `SIGUSR2`, `SIGPIPE`, `SIGQUIT`, `SIGKILL`. Use
+   `getattr(signal, "SIGKILL", signal.SIGTERM)` or gate behind platform check.
+
+7. **Path separators.** Use `pathlib.Path` internally. Convert with `str(path)`
+   at subprocess boundaries.
+
+8. **Symlinks need elevated privileges on Windows** (unless Developer Mode is
+   on). Skip symlink tests on Windows.
+
+9. **POSIX file modes (0o600) are NOT enforced on NTFS.** Skip mode-assertion
+   tests on Windows.
+
+10. **Detached background daemons need `pythonw.exe`** on Windows, not
+    `python.exe`. See `hermes_cli/gateway_windows.py::_spawn_detached`.
+
+11. **`.cmd`/`.bat` shims need `shutil.which` to resolve** on Windows —
+    `CreateProcessW` can't execute extensionless POSIX shebang shims.
+
+12. **Don't use shell shebangs to run Python.** Always invoke explicitly:
+    `[sys.executable, "myscript.py"]`.
+
+13. **Shell commands in installers.** If you change `scripts/install.sh`,
+    make the equivalent change in `scripts/install.ps1`.
+
+14. **OneDrive-redirected paths on Windows:** Desktop, Documents, Pictures,
+    Videos may be at `%USERPROFILE%\OneDrive\*`, not `%USERPROFILE%\*`.
+
+15. **CRLF vs LF in generated scripts.** Windows `cmd.exe` and `schtasks`
+    need `\r\n`. Use `open(path, "w", encoding="utf-8", newline="\r\n")`.
+
+16. **Two different quoting schemes in one command line.** `schtasks` parses
+    `/TR` itself, then `cmd.exe` re-parses it at fire time. Use separate
+    quoting helpers — see `hermes_cli/gateway_windows.py`.
+
+---
+
+## CI Pipeline
+
+Tests run on every push/PR to `main` (`.github/workflows/tests.yml`):
+- **6 parallel slices** — test files are sharded across 6 runners using
+  `test_durations.json` for balanced distribution.
+- **Per-file isolation** — `scripts/run_tests_parallel.py` spawns a fresh
+  subprocess per test file.
+- **Lint** — ruff enforces `PLW1514` (unspecified-encoding); ty runs advisory
+  type checking. Both post diff summaries as PR comments.
+- **Supply-chain audit** — `supply-chain-audit.yml` flags dependency changes.
+- **Windows footguns** — `check-windows-footguns.py` scans for POSIX-only
+  patterns that break on Windows.
+
+---
+
+## Commit Conventions
+
+We use [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>): <description>
+```
+
+| Type | Use for |
+|------|---------|
+| `fix` | Bug fixes |
+| `feat` | New features |
+| `docs` | Documentation |
+| `test` | Tests |
+| `refactor` | Code restructuring (no behavior change) |
+| `chore` | Build, CI, dependency updates |
+
+Scopes: `cli`, `gateway`, `tools`, `skills`, `agent`, `install`, `whatsapp`,
+`security`, etc.
+
+---
+
 ## Testing
 
 **ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
 hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
-`-n auto` xdist workers, in-tree subprocess-isolation plugin). Direct `pytest`
-on a 16+ core developer machine with API keys set diverges from CI in ways
-that have caused multiple "works locally, fails in CI" incidents (and the reverse).
+per-file subprocess isolation). Direct `pytest` on a developer machine with
+API keys set diverges from CI in ways that have caused multiple "works locally,
+fails in CI" incidents (and the reverse).
 
 ```bash
 scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
 scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
-scripts/run_tests.sh --no-isolate tests/foo/          # disable subprocess isolation (faster, for debugging)
+scripts/run_tests.sh -- -k 'pattern'                  # filter tests
+scripts/run_tests.sh -- --lf                          # re-run last failures
 ```
 
-### Subprocess-per-test isolation
+### Per-file subprocess isolation
 
-Every test runs in a freshly-spawned Python subprocess via the in-tree plugin
-at `tests/_isolate_plugin.py`. This means module-level dicts/sets and
-ContextVars from one test cannot leak into the next — the historic
-`_reset_module_state` autouse fixture is gone.
+Every **test file** runs in a freshly-spawned `python -m pytest <file>` subprocess
+via `scripts/run_tests_parallel.py`. No xdist, no shared workers — cross-file
+module-level state leakage is impossible. Intra-file ordering is the test
+author's responsibility.
 
-Implementation notes:
+Why per-file, not per-test: per-test spawn overhead (~250ms × 17k tests) blows
+the budget. Per-file (~250ms × ~850 files) fits while still giving every file
+a clean interpreter.
 
-- The plugin uses `multiprocessing.get_context("spawn")`, which works on
-  Linux, macOS, and Windows alike (POSIX `fork` is not used).
-- Per-test overhead is ~0.5–1.0s (Python startup + pytest collection). xdist
-  parallelism amortizes this across cores; on a 20-core box the full suite
-  finishes in roughly the same wall time as before, but flake-free.
-- `isolate_timeout` (configured in `pyproject.toml`) caps each test at 30s.
-  Hangs are killed and surfaced as a failure report.
-- Pass `--no-isolate` to disable isolation — useful when debugging a single
-  test interactively, or when you specifically want to verify state leakage.
-- The plugin disables itself in child processes (sentinel envvar
-  `HERMES_ISOLATE_CHILD=1`), so there's no fork-bomb risk.
+- `HERMES_TEST_WORKERS` env var overrides parallelism (default: `os.cpu_count()`).
+- Each per-file subprocess has a 30s timeout (`pyproject.toml` `addopts`).
+- `tests/e2e/` and `tests/integration/` are excluded from default discovery —
+  they require real external services and run in dedicated CI jobs.
 
 ### Why the wrapper (and why the old "just call pytest" doesn't work)
 
@@ -1092,11 +1191,11 @@ Five real sources of local-vs-CI drift the script closes:
 
 | | Without wrapper | With wrapper |
 |---|---|---|
-| Provider API keys | Whatever is in your env (auto-detects pool) | All `*_API_KEY`/`*_TOKEN`/etc. unset |
+| Provider API keys | Whatever is in your env | All `*_API_KEY`/`*_TOKEN`/etc. unset |
 | HOME / `~/.hermes/` | Your real config+auth.json | Temp dir per test |
 | Timezone | Local TZ (PDT etc.) | UTC |
 | Locale | Whatever is set | C.UTF-8 |
-| xdist workers | `-n auto` = all cores | `-n auto` (safe — subprocess isolation prevents cross-worker flakes) |
+| Parallelism | Varies | Per-file subprocess isolation |
 
 `tests/conftest.py` also enforces points 1-4 as an autouse fixture so ANY pytest
 invocation (including IDE integrations) gets hermetic behavior — but the wrapper
@@ -1105,9 +1204,7 @@ is belt-and-suspenders.
 ### Running without the wrapper (only if you must)
 
 If you can't use the wrapper (e.g. inside an IDE that shells pytest directly),
-at minimum activate the venv. The isolation plugin loads automatically from
-`addopts` in `pyproject.toml`, so you get the same per-test process isolation
-either way.
+at minimum activate the venv:
 
 ```bash
 source .venv/bin/activate   # or: source venv/bin/activate
@@ -1117,7 +1214,7 @@ python -m pytest tests/ -q
 If you need to bypass isolation for fast feedback while debugging:
 
 ```bash
-python -m pytest tests/agent/test_foo.py -q --no-isolate
+python -m pytest tests/agent/test_foo.py -q
 ```
 
 Always run the full suite before pushing changes.

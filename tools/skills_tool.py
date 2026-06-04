@@ -305,7 +305,13 @@ def _capture_required_environment_variables(
         }
 
     missing_names = [entry["name"] for entry in missing_entries]
-    if _is_gateway_surface():
+    # Most gateway surfaces (messaging platforms) can't prompt for a secret, so
+    # they short-circuit to the "unsupported" hint. Interactive gateway surfaces
+    # — the desktop app / TUI — set HERMES_INTERACTIVE and register a
+    # secret-capture callback that routes to a secure secret.request overlay, so
+    # they fall through and actually prompt. (HERMES_INTERACTIVE is the same flag
+    # tools/approval.py uses to tell an interactive surface from a messaging one.)
+    if _is_gateway_surface() and not env_var_enabled("HERMES_INTERACTIVE"):
         return {
             "missing_names": missing_names,
             "setup_skipped": False,

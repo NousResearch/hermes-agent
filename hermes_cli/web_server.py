@@ -616,6 +616,33 @@ class ModelAssignment(BaseModel):
     base_url: str = ""
 
 
+def _apply_main_model_assignment(
+    model_cfg: "Any", provider: str, model: str, base_url: str = ""
+) -> dict:
+    """Apply a main-slot model assignment to a ``model`` config dict in place.
+
+    Sets ``provider``/``default``, then reconciles ``base_url``: custom/local
+    providers persist the supplied endpoint URL (the runtime resolver reads
+    ``model.base_url`` from config and ignores ``OPENAI_BASE_URL``), while every
+    other provider clears any stale URL so the resolver picks that provider's
+    own default endpoint. The hardcoded ``context_length`` override is always
+    dropped since the new model may have a different context window.
+
+    Returns the same dict (coerced to a fresh dict if the input wasn't one) so
+    callers can assign it straight back onto ``cfg["model"]``.
+    """
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    model_cfg["provider"] = provider
+    model_cfg["default"] = model
+    if provider.strip().lower() == "custom" and base_url.strip():
+        model_cfg["base_url"] = base_url.strip()
+    elif model_cfg.get("base_url"):
+        model_cfg["base_url"] = ""
+    model_cfg.pop("context_length", None)
+    return model_cfg
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -1014,6 +1041,51 @@ async def run_config_migrate():
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed: {exc}")
     return {"ok": True, "pid": proc.pid, "name": "config-migrate"}
+
+
+class DebugShareRequest(BaseModel):
+    # Redaction is ON by default — force-mode scrubs credential-shaped tokens
+    # out of log content before it leaves the machine. The toggle exists so an
+    # operator who knows the logs are clean can opt out for fuller fidelity.
+    redact: bool = True
+    # Recent log lines included in the summary tail (full logs are separate).
+    lines: int = 200
+
+
+@app.post("/api/ops/debug-share")
+async def run_debug_share_endpoint(body: DebugShareRequest | None = None):
+    """Upload a redacted debug report + full logs and return the paste URLs.
+
+    Unlike the other diagnostics actions (doctor, dump, prompt-size) this is
+    *synchronous*: the whole point of ``debug share`` is the set of shareable
+    URLs it produces, so we run the upload in a worker thread and return the
+    structured ``{urls, failures, redacted, ...}`` payload directly. The
+    dashboard renders those as real, copyable links instead of scraping a log
+    tail. Pastes auto-delete after 6 hours (handled inside the share core).
+    """
+    from hermes_cli.debug import build_debug_share
+
+    req = body or DebugShareRequest()
+    try:
+        result = await asyncio.to_thread(
+            build_debug_share,
+            log_lines=max(1, min(int(req.lines), 5000)),
+            redact=bool(req.redact),
+        )
+    except RuntimeError as exc:
+        # Required summary-report upload failed (offline / paste service down).
+        raise HTTPException(status_code=502, detail=f"Upload failed: {exc}")
+    except Exception as exc:
+        _log.exception("debug share failed")
+        raise HTTPException(status_code=500, detail=f"Failed: {exc}")
+
+    return {
+        "ok": True,
+        "urls": result.urls,
+        "failures": result.failures,
+        "redacted": result.redacted,
+        "auto_delete_seconds": result.auto_delete_seconds,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1971,24 +2043,9 @@ async def set_model_assignment(body: ModelAssignment):
         if scope == "main":
             if not provider or not model:
                 raise HTTPException(status_code=400, detail="provider and model required for main")
-            model_cfg = cfg.get("model", {})
-            if not isinstance(model_cfg, dict):
-                model_cfg = {}
-            model_cfg["provider"] = provider
-            model_cfg["default"] = model
-            # Custom/local providers are defined by their endpoint URL, so a
-            # base_url must be persisted here — the runtime resolver reads
-            # model.base_url from config and no longer consults OPENAI_BASE_URL.
-            # For every other provider, clear any stale base_url so the
-            # resolver picks the provider's own default endpoint.
-            if provider.strip().lower() == "custom" and base_url:
-                model_cfg["base_url"] = base_url
-            elif "base_url" in model_cfg and model_cfg.get("base_url"):
-                model_cfg["base_url"] = ""
-            # Also clear hardcoded context_length override — new model may have
-            # a different context window.
-            if "context_length" in model_cfg:
-                model_cfg.pop("context_length", None)
+            model_cfg = _apply_main_model_assignment(
+                cfg.get("model", {}), provider, model, base_url
+            )
             cfg["model"] = model_cfg
 
             # When switching the main provider to Nous, mirror the CLI's
@@ -6236,15 +6293,7 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
     token = set_hermes_home_override(str(profile_dir))
     try:
         cfg = load_config()
-        model_cfg = cfg.get("model", {})
-        if not isinstance(model_cfg, dict):
-            model_cfg = {}
-        model_cfg["provider"] = provider
-        model_cfg["default"] = model
-        if model_cfg.get("base_url"):
-            model_cfg["base_url"] = ""
-        model_cfg.pop("context_length", None)
-        cfg["model"] = model_cfg
+        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), provider, model)
         save_config(cfg)
     finally:
         reset_hermes_home_override(token)

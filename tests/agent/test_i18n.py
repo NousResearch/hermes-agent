@@ -167,3 +167,22 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
 def test_t_unknown_language_uses_english():
     """Unknown lang codes normalize to English, not to a key-path fallback."""
     assert i18n.t("approval.denied", lang="klingon") == i18n.t("approval.denied", lang="en")
+
+
+# ---------------------------------------------------------------------------
+# _locales_dir resolution
+# ---------------------------------------------------------------------------
+
+
+def test_locales_dir_primary_path_exists():
+    """The primary path (parent.parent / 'locales') resolves for git/wheel installs."""
+    result = i18n._locales_dir()
+    assert result.is_dir(), f"Primary locales dir does not exist: {result}"
+    assert (result / "en.yaml").is_file(), "en.yaml missing from locales dir"
+
+
+def test_locales_dir_has_all_supported_languages():
+    """The locales directory contains a YAML file for every supported language."""
+    locales_dir = i18n._locales_dir()
+    for lang in i18n.SUPPORTED_LANGUAGES:
+        assert (locales_dir / f"{lang}.yaml").is_file(), f"missing locales/{lang}.yaml"

@@ -5,5 +5,8 @@ graft optional-skills
 # built from the sdist (e.g. Homebrew, downstream packagers). package-data
 # below covers the wheel; this covers the sdist. See #34034 / #28149.
 recursive-include plugins plugin.yaml plugin.yml
+# Locale catalogs (locales/*.yaml) — required for i18n to work in PyPI installs.
+# package-data in pyproject.toml covers the wheel; this covers the sdist.
+recursive-include locales *.yaml
 global-exclude __pycache__
 global-exclude *.py[cod]

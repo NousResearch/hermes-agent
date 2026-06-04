@@ -87,11 +87,43 @@ _catalog_lock = threading.Lock()
 def _locales_dir() -> Path:
     """Return the directory containing locale YAML files.
 
-    Lives next to the repo root so both the bundled install and editable
-    checkouts find it without PYTHONPATH gymnastics.
+    Search order:
+    1. Sibling of the repo root / site-packages (``<parent>/locales/`` -- works
+       for git clones, editable installs, AND wheels where ``agent/`` and
+       ``locales/`` are sibling packages under the same prefix).
+    2. ``$HERMES_HOME/locales/`` -- works when the user has placed or symlinked
+       locale files under the Hermes data directory.
+    3. ``<agent_package>/locales/`` -- last resort for non-standard layouts
+       where locales were copied inside the ``agent/`` directory.
+
+    Falls back to the original computed path even if it does not exist, so
+    ``_load_catalog`` gets a clean "catalog missing" debug log rather than an
+    opaque crash.
     """
-    # agent/i18n.py -> agent/ -> repo root
-    return Path(__file__).resolve().parent.parent / "locales"
+    # agent/i18n.py -> agent/ -> <prefix>/locales/
+    primary = Path(__file__).resolve().parent.parent / "locales"
+    if primary.is_dir():
+        return primary
+
+    # Fallback: $HERMES_HOME/locales/
+    try:
+        from hermes_constants import get_hermes_home
+
+        hermes_home = get_hermes_home()
+        if isinstance(hermes_home, Path) and hermes_home.name == "locales" and hermes_home.is_dir():
+            return hermes_home
+        fallback = hermes_home / "locales"
+        if fallback.is_dir():
+            return fallback
+    except Exception:
+        pass
+
+    # Fallback: <agent_package>/locales/ (non-standard layout)
+    pkg_sibling = Path(__file__).resolve().parent / "locales"
+    if pkg_sibling.is_dir():
+        return pkg_sibling
+
+    return primary  # let _load_catalog log the "catalog missing" message
 
 
 def _normalize_lang(value: Any) -> str:

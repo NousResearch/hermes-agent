@@ -1354,6 +1354,79 @@ class ContextCompressor(ContextEngine):
         previous = telemetry.get("aux_call_duration_ms") or 0
         telemetry["aux_call_duration_ms"] = previous + max(0, int(duration_ms))
 
+    def _resolve_context_length(self) -> int:
+        """Resolve and cache the model's context length on first access."""
+        if self._resolved_context_length is None:
+            self._resolved_context_length = get_model_context_length(
+                self.model,
+                base_url=self.base_url,
+                api_key=self.api_key,
+                config_context_length=self._config_context_length,
+                provider=self.provider,
+            )
+            # Small-context threshold floor: models under 512K trigger at
+            # >=75% so compaction doesn't fire with half the window still
+            # free. Raise-only; must run AFTER context_length is resolved
+            # and BEFORE threshold_tokens is derived (deferred here from
+            # __init__ along with the resolution itself, #32221).
+            # _base_threshold_percent already has the per-model override
+            # applied, so the floor stacks on top of it.
+            self.threshold_percent = self._effective_threshold_percent(
+                self._resolved_context_length, self._base_threshold_percent,
+            )
+        return self._resolved_context_length
+
+    @property
+    def context_length(self) -> int:
+        return self._resolve_context_length()
+
+    @context_length.setter
+    def context_length(self, value: int) -> None:
+        self._resolved_context_length = value
+        self._threshold_tokens = None
+        self._tail_token_budget = None
+        self._max_summary_tokens = None
+
+    @property
+    def threshold_tokens(self) -> int:
+        if self._threshold_tokens is None:
+            # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even
+            # if the percentage would suggest a lower value (#14690 handles
+            # the degenerate small-window case inside the helper).
+            self._threshold_tokens = self._compute_threshold_tokens(
+                self.context_length, self.threshold_percent, self.max_tokens,
+            )
+            # Apply absolute token cap (compression.threshold_tokens) —
+            # takes the lower of the ratio-based threshold and the cap.
+            self._apply_threshold_tokens_cap()
+        return self._threshold_tokens
+
+    @threshold_tokens.setter
+    def threshold_tokens(self, value: int) -> None:
+        self._threshold_tokens = value
+
+    @property
+    def tail_token_budget(self) -> int:
+        if self._tail_token_budget is None:
+            self._tail_token_budget = int(self.threshold_tokens * self.summary_target_ratio)
+        return self._tail_token_budget
+
+    @tail_token_budget.setter
+    def tail_token_budget(self, value: int) -> None:
+        self._tail_token_budget = value
+
+    @property
+    def max_summary_tokens(self) -> int:
+        if self._max_summary_tokens is None:
+            self._max_summary_tokens = min(
+                int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
+            )
+        return self._max_summary_tokens
+
+    @max_summary_tokens.setter
+    def max_summary_tokens(self, value: int) -> None:
+        self._max_summary_tokens = value
+
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Clear all per-session compaction state at a real session boundary.
 
@@ -1988,45 +2061,22 @@ class ContextCompressor(ContextEngine):
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
 
-        self.context_length = get_model_context_length(
-            model, base_url=base_url, api_key=api_key,
-            config_context_length=config_context_length,
-            provider=provider,
-        )
-        # Small-context threshold floor: models under 512K trigger at >=75%
-        # so compaction doesn't fire with half the window still free (the
-        # incompressible floor makes 50%-triggered compaction thrash on
-        # 128K-262K models). Raise-only; must run AFTER context_length is
-        # resolved and BEFORE threshold_tokens is derived. The pre-floor
-        # value is kept so update_model() can re-derive for a new window
-        # (switching small -> large must drop back to the configured value).
-        # Note: _base_threshold_percent already has the per-model override
-        # applied, so the floor stacks on top of any model-specific threshold.
+        # Defer context-length resolution to first access (#32221):
+        # get_model_context_length() can issue a synchronous /models HTTP
+        # probe, which must not block AIAgent construction. The small-context
+        # threshold floor and the absolute threshold cap both need the
+        # resolved window, so they are applied on first resolution (see
+        # _resolve_context_length / the threshold_tokens property) instead
+        # of here. The pre-floor value is kept so update_model() can
+        # re-derive for a new window (switching small -> large must drop
+        # back to the configured value).
+        self._config_context_length = config_context_length
         self._configured_threshold_percent = self.threshold_percent
-        self.threshold_percent = self._effective_threshold_percent(
-            self.context_length, self._base_threshold_percent,
-        )
-        threshold_percent = self.threshold_percent
-        # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
-        # the percentage would suggest a lower value.  This prevents premature
-        # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum. _compute_threshold_tokens also
-        # guards the degenerate case where the floor would equal/exceed the
-        # window (small models), so auto-compression can still fire (#14690).
-        self.threshold_tokens = self._compute_threshold_tokens(
-            self.context_length, threshold_percent, self.max_tokens,
-        )
-        # Apply absolute token cap (compression.threshold_tokens) — takes
-        # the lower of the ratio-based threshold and the cap.
-        self._apply_threshold_tokens_cap()
+        self._resolved_context_length: int | None = None
+        self._threshold_tokens: int | None = None
+        self._tail_token_budget: int | None = None
+        self._max_summary_tokens: int | None = None
         self.compression_count = 0
-
-        # Derive token budgets: ratio is relative to the threshold, not total context
-        target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
-        self.tail_token_budget = target_tokens
-        self.max_summary_tokens = min(
-            int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
-        )
 
         if not quiet_mode:
             logger.info(

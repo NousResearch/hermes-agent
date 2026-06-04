@@ -977,7 +977,7 @@ def skill_manage(
                     "success": True,
                     "message": f"Skill '{name}' written to team S3 scope.",
                     "scope": "team",
-                    "s3_prefix": f"{identity.team_scope}/skills/{name}",
+                    "s3_prefix": f"hermes-skills/{identity.tenant_slug}/team/{name}",
                 })
             except PermissionError as exc:
                 return json.dumps({"success": False, "error": str(exc)})
@@ -999,7 +999,7 @@ def skill_manage(
                     "success": True,
                     "message": f"Skill '{name}' written to personal S3 scope.",
                     "scope": "personal",
-                    "s3_prefix": f"{identity.personal_scope}/skills/{name}",
+                    "s3_prefix": f"hermes-skills/{identity.tenant_slug}/personal/{name}",
                 })
             except PermissionError as exc:
                 return json.dumps({"success": False, "error": str(exc)})

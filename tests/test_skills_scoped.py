@@ -76,6 +76,16 @@ def _make_client_error(code: str) -> Exception:
     )
 
 
+def _ckey(identity, scope: str, name: str) -> str:
+    """Canonical S3 key for a skill file (matches the Skills Service layout)."""
+    return f"hermes-skills/{identity.tenant_slug}/{scope}/{name}/SKILL.md"
+
+
+def _cprefix(identity, scope: str) -> str:
+    """Canonical S3 list prefix for a (tenant, scope) pair."""
+    return f"hermes-skills/{identity.tenant_slug}/{scope}/"
+
+
 # ---------------------------------------------------------------------------
 # resolve_skill — scope resolution order
 # ---------------------------------------------------------------------------
@@ -98,14 +108,14 @@ class TestResolveSkill:
         # Should have stopped at personal — only one get_object call.
         assert mock_s3.get_object.call_count == 1
         called_key = mock_s3.get_object.call_args[1]["Key"]
-        assert called_key == f"{ALICE.personal_scope}/skills/my-skill/SKILL.md"
+        assert called_key == _ckey(ALICE, "personal", "my-skill")
 
     def test_team_scope_fallback_when_no_personal(self):
         """Missing personal scope falls back to team scope."""
         from tools.skills_scoped import resolve_skill
 
-        personal_key = f"{ALICE.personal_scope}/skills/my-skill/SKILL.md"
-        team_key = f"{ALICE.team_scope}/skills/my-skill/SKILL.md"
+        personal_key = _ckey(ALICE, "personal", "my-skill")
+        team_key = _ckey(ALICE, "team", "my-skill")
 
         def side_effect(Bucket, Key):
             if Key == personal_key:
@@ -128,9 +138,9 @@ class TestResolveSkill:
         """Missing personal + team falls back to global scope."""
         from tools.skills_scoped import resolve_skill
 
-        personal_key = f"{ALICE.personal_scope}/skills/my-skill/SKILL.md"
-        team_key = f"{ALICE.team_scope}/skills/my-skill/SKILL.md"
-        global_key = "global/skills/my-skill/SKILL.md"
+        personal_key = _ckey(ALICE, "personal", "my-skill")
+        team_key = _ckey(ALICE, "team", "my-skill")
+        global_key = _ckey(ALICE, "global", "my-skill")
 
         def side_effect(Bucket, Key):
             if Key in (personal_key, team_key):
@@ -208,7 +218,7 @@ class TestWriteSkill:
 
         mock_s3.put_object.assert_called_once()
         kwargs = mock_s3.put_object.call_args[1]
-        assert kwargs["Key"] == f"{ALICE.personal_scope}/skills/my-skill/SKILL.md"
+        assert kwargs["Key"] == _ckey(ALICE, "personal", "my-skill")
         assert kwargs["Body"] == SKILL_CONTENT.encode("utf-8")
 
     def test_write_to_team_succeeds(self):
@@ -221,7 +231,7 @@ class TestWriteSkill:
             write_skill("my-skill", SKILL_CONTENT, scope="team", identity=ALICE)
 
         kwargs = mock_s3.put_object.call_args[1]
-        assert kwargs["Key"] == f"{ALICE.team_scope}/skills/my-skill/SKILL.md"
+        assert kwargs["Key"] == _ckey(ALICE, "team", "my-skill")
 
     def test_write_to_global_raises_permission_error(self):
         """Global writes are hard-blocked — no S3 call made."""
@@ -249,6 +259,102 @@ class TestWriteSkill:
 
 
 # ---------------------------------------------------------------------------
+# Canonical S3 key layout (Plan 039 A2.5)
+#
+# The agent's saas skill WRITE path must produce keys at the SAME layout the
+# hermes-skills-service READS from:
+#     hermes-skills/{tenant_slug}/{scope}/{name}/SKILL.md
+# where tenant_slug = "{platform}_{team_id}" and scope ∈ {personal, team, global}.
+# For this single-user deploy, "personal" is per-tenant (no user_id segment).
+# ---------------------------------------------------------------------------
+
+class TestCanonicalKeyLayout:
+    """write/resolve/list/promote keys match the service's hermes-skills/ layout."""
+
+    SLACK = make_identity(platform="slack", team_id="T0B16FV0KFF", user_id="U123")
+
+    def test_write_personal_uses_canonical_key(self):
+        from tools.skills_scoped import write_skill
+
+        mock_s3 = MagicMock()
+        with patch("tools.skills_scoped.boto3") as mock_boto3:
+            mock_boto3.client.return_value = mock_s3
+            write_skill("uat-x", SKILL_CONTENT, scope="personal", identity=self.SLACK)
+
+        key = mock_s3.put_object.call_args[1]["Key"]
+        assert key == "hermes-skills/slack_T0B16FV0KFF/personal/uat-x/SKILL.md"
+
+    def test_write_team_uses_canonical_key(self):
+        from tools.skills_scoped import write_skill
+
+        mock_s3 = MagicMock()
+        with patch("tools.skills_scoped.boto3") as mock_boto3:
+            mock_boto3.client.return_value = mock_s3
+            write_skill("uat-x", SKILL_CONTENT, scope="team", identity=self.SLACK)
+
+        key = mock_s3.put_object.call_args[1]["Key"]
+        assert key == "hermes-skills/slack_T0B16FV0KFF/team/uat-x/SKILL.md"
+
+    def test_resolve_walks_canonical_keys(self):
+        from tools.skills_scoped import resolve_skill
+
+        tried = []
+
+        def side_effect(Bucket, Key):
+            tried.append(Key)
+            raise _make_client_error("NoSuchKey")
+
+        mock_s3 = MagicMock()
+        mock_s3.get_object.side_effect = side_effect
+        with patch("tools.skills_scoped.boto3") as mock_boto3:
+            mock_boto3.client.return_value = mock_s3
+            resolve_skill("uat-x", self.SLACK)
+
+        assert tried == [
+            "hermes-skills/slack_T0B16FV0KFF/personal/uat-x/SKILL.md",
+            "hermes-skills/slack_T0B16FV0KFF/team/uat-x/SKILL.md",
+            "hermes-skills/slack_T0B16FV0KFF/global/uat-x/SKILL.md",
+        ]
+
+    def test_list_skills_uses_canonical_prefixes(self):
+        from tools.skills_scoped import list_skills
+
+        prefixes_listed = []
+
+        def paginate_side_effect(Bucket, Prefix, Delimiter):
+            prefixes_listed.append(Prefix)
+            return [{"CommonPrefixes": []}]
+
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.side_effect = paginate_side_effect
+        mock_s3 = MagicMock()
+        mock_s3.get_paginator.return_value = mock_paginator
+        with patch("tools.skills_scoped.boto3") as mock_boto3:
+            mock_boto3.client.return_value = mock_s3
+            list_skills(self.SLACK)
+
+        assert prefixes_listed == [
+            "hermes-skills/slack_T0B16FV0KFF/personal/",
+            "hermes-skills/slack_T0B16FV0KFF/team/",
+            "hermes-skills/slack_T0B16FV0KFF/global/",
+        ]
+
+    def test_promote_uses_canonical_keys(self):
+        from tools.skills_scoped import promote_skill_to_team
+
+        mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = _make_s3_get_response(SKILL_CONTENT)
+        with patch("tools.skills_scoped.boto3") as mock_boto3:
+            mock_boto3.client.return_value = mock_s3
+            promote_skill_to_team("uat-x", self.SLACK)
+
+        get_key = mock_s3.get_object.call_args[1]["Key"]
+        put_key = mock_s3.put_object.call_args[1]["Key"]
+        assert get_key == "hermes-skills/slack_T0B16FV0KFF/personal/uat-x/SKILL.md"
+        assert put_key == "hermes-skills/slack_T0B16FV0KFF/team/uat-x/SKILL.md"
+
+
+# ---------------------------------------------------------------------------
 # list_skills — scope annotation + shadowing
 # ---------------------------------------------------------------------------
 
@@ -267,7 +373,7 @@ class TestListSkills:
         from tools.skills_scoped import list_skills
 
         mock_s3 = MagicMock()
-        personal_prefix = f"{ALICE.personal_scope}/skills/"
+        personal_prefix = _cprefix(ALICE, "personal")
 
         def paginate_side_effect(Bucket, Prefix, Delimiter):
             if Prefix == personal_prefix:
@@ -291,8 +397,8 @@ class TestListSkills:
         from tools.skills_scoped import list_skills
 
         mock_s3 = MagicMock()
-        personal_prefix = f"{ALICE.personal_scope}/skills/"
-        team_prefix = f"{ALICE.team_scope}/skills/"
+        personal_prefix = _cprefix(ALICE, "personal")
+        team_prefix = _cprefix(ALICE, "team")
 
         def paginate_side_effect(Bucket, Prefix, Delimiter):
             if Prefix == personal_prefix:
@@ -319,7 +425,7 @@ class TestListSkills:
         from tools.skills_scoped import list_skills
 
         mock_s3 = MagicMock()
-        team_prefix = f"{ALICE.team_scope}/skills/"
+        team_prefix = _cprefix(ALICE, "team")
 
         def paginate_side_effect(Bucket, Prefix, Delimiter):
             if Prefix == team_prefix:
@@ -343,8 +449,8 @@ class TestListSkills:
         from tools.skills_scoped import list_skills
 
         mock_s3 = MagicMock()
-        team_prefix = f"{ALICE.team_scope}/skills/"
-        global_prefix = "global/skills/"
+        team_prefix = _cprefix(ALICE, "team")
+        global_prefix = _cprefix(ALICE, "global")
 
         def paginate_side_effect(Bucket, Prefix, Delimiter):
             if Prefix == team_prefix:
@@ -384,11 +490,11 @@ class TestPromoteSkillToTeam:
 
         # get_object called for personal key
         get_kwargs = mock_s3.get_object.call_args[1]
-        assert get_kwargs["Key"] == f"{ALICE.personal_scope}/skills/my-skill/SKILL.md"
+        assert get_kwargs["Key"] == _ckey(ALICE, "personal", "my-skill")
 
         # put_object called for team key with same content
         put_kwargs = mock_s3.put_object.call_args[1]
-        assert put_kwargs["Key"] == f"{ALICE.team_scope}/skills/my-skill/SKILL.md"
+        assert put_kwargs["Key"] == _ckey(ALICE, "team", "my-skill")
         assert put_kwargs["Body"] == SKILL_CONTENT.encode("utf-8")
 
     def test_raises_file_not_found_when_personal_skill_absent(self):
@@ -407,28 +513,39 @@ class TestPromoteSkillToTeam:
 
 
 # ---------------------------------------------------------------------------
-# Cross-tenant isolation (regression guard)
+# Tenant isolation (regression guard)
+#
+# Plan 039 A2.5: the canonical key layout matches the Skills Service, which has
+# NO per-user "personal" segment — "personal" is per-TENANT. So same-team users
+# share personal scope (single-user-deploy semantics), but DIFFERENT tenants
+# (different platform/team) remain fully isolated.
 # ---------------------------------------------------------------------------
 
-class TestCrossTenantIsolation:
-    """Personal skills must not be visible to a different user in the same team."""
+OTHER_TENANT = make_identity(team_id="TOTHER99", user_id="UELSE")
 
-    def test_alice_personal_skill_not_visible_to_bob(self):
+
+class TestTenantIsolation:
+    """Skills in one tenant must never appear in another tenant's resolution."""
+
+    def test_personal_is_per_tenant_not_per_user(self):
+        """ALICE and BOB share a tenant_slug, so their personal keys are identical."""
+        assert ALICE.tenant_slug == BOB.tenant_slug
+        assert _ckey(ALICE, "personal", "x") == _ckey(BOB, "personal", "x")
+
+    def test_other_tenant_personal_key_never_tried(self):
         """
-        Alice writes a skill to her personal scope. Bob, in the same team, cannot
-        see it via resolve_skill — his personal scope is different, and the skill
-        does not exist at team or global scope.
+        A skill in one tenant's personal scope is never reached by another
+        tenant's resolution — the tenant_slug prefix differs.
         """
         from tools.skills_scoped import resolve_skill
 
-        alice_personal_key = f"{ALICE.personal_scope}/skills/private-skill/SKILL.md"
-        bob_keys_checked = []
+        alice_personal_key = _ckey(ALICE, "personal", "private-skill")
+        keys_checked = []
 
         def side_effect(Bucket, Key):
-            bob_keys_checked.append(Key)
+            keys_checked.append(Key)
             if Key == alice_personal_key:
-                # This key should never be tried for Bob.
-                pytest.fail(f"Bob's resolve tried Alice's personal key: {Key}")
+                pytest.fail(f"Other tenant tried Alice's personal key: {Key}")
             raise _make_client_error("NoSuchKey")
 
         mock_s3 = MagicMock()
@@ -436,37 +553,30 @@ class TestCrossTenantIsolation:
 
         with patch("tools.skills_scoped.boto3") as mock_boto3:
             mock_boto3.client.return_value = mock_s3
-            result = resolve_skill("private-skill", BOB)
+            result = resolve_skill("private-skill", OTHER_TENANT)
 
         assert result is None
-        # Alice's personal key must never appear in Bob's resolution chain.
-        assert alice_personal_key not in bob_keys_checked
+        assert alice_personal_key not in keys_checked
 
     def test_alice_and_bob_share_team_scope(self):
-        """A team-scoped skill is visible to both Alice and Bob."""
+        """A team-scoped skill is visible to both Alice and Bob (same tenant)."""
         from tools.skills_scoped import resolve_skill
 
-        team_key = f"{ALICE.team_scope}/skills/shared-skill/SKILL.md"
-        # Alice and Bob share the same team — team_scope should be identical.
+        team_key = _ckey(ALICE, "team", "shared-skill")
         assert ALICE.team_scope == BOB.team_scope
 
-        def side_effect_alice(Bucket, Key):
-            if Key == f"{ALICE.personal_scope}/skills/shared-skill/SKILL.md":
+        def make_side_effect(identity):
+            def side_effect(Bucket, Key):
+                if Key == _ckey(identity, "personal", "shared-skill"):
+                    raise _make_client_error("NoSuchKey")
+                if Key == team_key:
+                    return _make_s3_get_response("shared content")
                 raise _make_client_error("NoSuchKey")
-            if Key == team_key:
-                return _make_s3_get_response("shared content")
-            raise _make_client_error("NoSuchKey")
+            return side_effect
 
-        def side_effect_bob(Bucket, Key):
-            if Key == f"{BOB.personal_scope}/skills/shared-skill/SKILL.md":
-                raise _make_client_error("NoSuchKey")
-            if Key == team_key:
-                return _make_s3_get_response("shared content")
-            raise _make_client_error("NoSuchKey")
-
-        for identity, side_effect in [(ALICE, side_effect_alice), (BOB, side_effect_bob)]:
+        for identity in (ALICE, BOB):
             mock_s3 = MagicMock()
-            mock_s3.get_object.side_effect = side_effect
+            mock_s3.get_object.side_effect = make_side_effect(identity)
             with patch("tools.skills_scoped.boto3") as mock_boto3:
                 mock_boto3.client.return_value = mock_s3
                 result = resolve_skill("shared-skill", identity)
@@ -564,4 +674,7 @@ class TestSkillManageHermesModeGate:
         result = json.loads(result_json)
         assert result["success"] is True
         assert result.get("scope") == "personal"
-        assert ALICE.personal_scope in result.get("s3_prefix", "")
+        assert (
+            f"hermes-skills/{ALICE.tenant_slug}/personal/saas-skill"
+            in result.get("s3_prefix", "")
+        )

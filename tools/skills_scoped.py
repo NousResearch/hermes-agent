@@ -1,10 +1,17 @@
 """
 tools/skills_scoped.py — S3-backed scoped skill resolver/writer for SaaS mode.
 
-Scope model (personal wins over team wins over global):
-    personal/{platform}/{team_id}/{user_id}/skills/{name}/SKILL.md
-    team/{platform}/{team_id}/skills/{name}/SKILL.md
-    global/skills/{name}/SKILL.md
+Scope model (personal wins over team wins over global). Keys use the CANONICAL
+layout shared with hermes-skills-service (the service READS these exact keys):
+    hermes-skills/{tenant_slug}/personal/{name}/SKILL.md
+    hermes-skills/{tenant_slug}/team/{name}/SKILL.md
+    hermes-skills/{tenant_slug}/global/{name}/SKILL.md
+where tenant_slug = "{platform}_{team_id}" (e.g. "slack_T0B16FV0KFF") and the
+scope ("personal" | "team" | "global") is a literal path segment.
+
+Single-user deploy note: the service has no per-user segment, so the agent's
+"personal" scope maps to the per-tenant "personal" prefix (the user_id is NOT
+included in the key). This matches the service's read layout exactly.
 
 Resolution:
     resolve_skill()  — walks identity.scope_chain, returns first S3 hit or None.
@@ -65,6 +72,32 @@ def _s3_client():
 
 
 # ---------------------------------------------------------------------------
+# Canonical key layout — MUST match hermes-skills-service s3_source.py
+#   hermes-skills/{tenant_slug}/{scope}/{name}/SKILL.md
+# ---------------------------------------------------------------------------
+
+_KEY_PREFIX = "hermes-skills"
+
+
+def _scope_prefix(identity, scope: str) -> str:
+    """Return the canonical S3 prefix for a (tenant, scope) pair.
+
+    Format: ``hermes-skills/{tenant_slug}/{scope}/`` — the same prefix the
+    Skills Service enumerates with list_objects_v2(Delimiter="/").
+    """
+    return f"{_KEY_PREFIX}/{identity.tenant_slug}/{scope}/"
+
+
+def _skill_key(identity, scope: str, name: str, file_path: str = "SKILL.md") -> str:
+    """Return the canonical S3 key for a single skill file.
+
+    Example: ``hermes-skills/slack_T0B16FV0KFF/personal/uat-x/SKILL.md``
+    """
+    clean = file_path.lstrip("/")
+    return f"{_scope_prefix(identity, scope)}{name}/{clean}"
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -90,8 +123,8 @@ def resolve_skill(name: str, identity) -> Optional[str]:
     _require_boto3()
     s3 = _s3_client()
 
-    for scope in identity.scope_chain:
-        key = f"{scope}/skills/{name}/SKILL.md"
+    for scope in ("personal", "team", "global"):
+        key = _skill_key(identity, scope, name)
         try:
             obj = s3.get_object(Bucket=BUCKET, Key=key)
             content = obj["Body"].read().decode("utf-8")
@@ -145,8 +178,7 @@ def write_skill(name: str, content: str, scope: str, identity) -> None:
     _require_boto3()
     s3 = _s3_client()
 
-    prefix = identity.personal_scope if scope == "personal" else identity.team_scope
-    key = f"{prefix}/skills/{name}/SKILL.md"
+    key = _skill_key(identity, scope, name)
 
     logger.info("write_skill(%r): writing to %r (%s)", name, key, scope)
     s3.put_object(
@@ -184,26 +216,19 @@ def list_skills(identity) -> list[dict]:
     _require_boto3()
     s3 = _s3_client()
 
-    # scope_label maps scope string → human-readable label
-    scope_labels = {
-        identity.personal_scope: "personal",
-        identity.team_scope: "team",
-        identity.global_scope: "global",
-    }
-
     # Walk scopes in resolution order; track seen names so personal shadows team/global.
     seen: set[str] = set()
     result: list[dict] = []
 
-    for scope in identity.scope_chain:
-        scope_label = scope_labels[scope]
-        prefix = f"{scope}/skills/"
+    for scope in ("personal", "team", "global"):
+        scope_label = scope
+        prefix = _scope_prefix(identity, scope)
 
         paginator = s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix, Delimiter="/"):
             # Each skill lives as a "subdirectory" whose key ends with "/"
             for common_prefix in page.get("CommonPrefixes", []):
-                # e.g. "personal/slack/T01/U01/skills/deploy-to-prod/"
+                # e.g. "hermes-skills/slack_T01/personal/deploy-to-prod/"
                 skill_dir = common_prefix["Prefix"]
                 # Extract the skill name: second-to-last segment
                 name = skill_dir.rstrip("/").rsplit("/", 1)[-1]
@@ -251,7 +276,7 @@ def promote_skill_to_team(name: str, identity) -> None:
     _require_boto3()
     s3 = _s3_client()
 
-    personal_key = f"{identity.personal_scope}/skills/{name}/SKILL.md"
+    personal_key = _skill_key(identity, "personal", name)
     try:
         obj = s3.get_object(Bucket=BUCKET, Key=personal_key)
         content = obj["Body"].read().decode("utf-8")
@@ -264,7 +289,7 @@ def promote_skill_to_team(name: str, identity) -> None:
             ) from exc
         raise
 
-    team_key = f"{identity.team_scope}/skills/{name}/SKILL.md"
+    team_key = _skill_key(identity, "team", name)
     logger.info(
         "promote_skill_to_team(%r): %r → %r", name, personal_key, team_key
     )

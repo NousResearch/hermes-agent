@@ -51,6 +51,16 @@ class HermesIdentity:
     # ------------------------------------------------------------------
 
     @property
+    def tenant_slug(self) -> str:
+        """Deterministic, URL-safe tenant identifier: ``{platform}_{team_id}``.
+
+        This is the canonical tenant key segment used by the S3 skill layout
+        shared with hermes-skills-service:
+        ``hermes-skills/{tenant_slug}/{scope}/{skill}/SKILL.md``.
+        """
+        return f"{self.platform}_{self.team_id}"
+
+    @property
     def personal_scope(self) -> str:
         """Most-specific scope — private to this user in this workspace."""
         return f"personal/{self.platform}/{self.team_id}/{self.user_id}"

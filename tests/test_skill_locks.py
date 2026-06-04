@@ -771,5 +771,6 @@ class TestSkillManageSaasTeamRouting:
                 )
 
         assert len(put_object_calls) == 1
-        assert ALICE.team_scope in put_object_calls[0]
-        assert ALICE.personal_scope not in put_object_calls[0]
+        # Canonical layout (Plan 039 A2.5): hermes-skills/{tenant_slug}/{scope}/{name}/SKILL.md
+        assert put_object_calls[0] == f"hermes-skills/{ALICE.tenant_slug}/team/team-skill/SKILL.md"
+        assert "/personal/" not in put_object_calls[0]

@@ -1732,6 +1732,65 @@ class TestDefaultInteractionDispatch:
         finally:
             tools.approval.resolve_gateway_approval = orig
 
+    @pytest.mark.asyncio
+    async def test_dm_session_approval_is_authorized(self):
+        """Approval click for a 'dm' session key must be accepted (#39110).
+
+        The QQ bot creates DM sessions with chat_type='dm', but
+        _is_authorized_interaction_for_session previously only checked
+        'c2c', causing 'Rejected unauthorized approval click' on DMs.
+        """
+        adapter = self._make_adapter()
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i",
+                "chat_type": 2,
+                "user_openid": "u-dm",
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-dm:allow-once"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == [("agent:main:qqbot:dm:u-dm", "once", False)]
+
+    @pytest.mark.asyncio
+    async def test_dm_session_rejects_wrong_operator(self):
+        """Operator mismatch on a 'dm' session must still be rejected."""
+        adapter = self._make_adapter()
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i",
+                "chat_type": 2,
+                "user_openid": "attacker",
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-dm:allow-once"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == []
+
 
 class TestSendExecApproval:
     """Verify the gateway contract: QQAdapter.send_exec_approval(...)."""

@@ -467,11 +467,25 @@ class EmailAdapter(BasePlatformAdapter):
         media_types = []
         msg_type = MessageType.TEXT
 
+        has_image = False
+        has_document = False
         for att in attachments:
             media_urls.append(att["path"])
             media_types.append(att["media_type"])
             if att["type"] == "image":
-                msg_type = MessageType.PHOTO
+                has_image = True
+            else:
+                has_document = True
+
+        # Image attachments take priority (PHOTO routes to the vision pipeline).
+        # Otherwise, non-image attachments must be flagged as DOCUMENT so the
+        # gateway's document-handling branch surfaces the cached file path to
+        # the agent — without this, the agent never learns the file exists and
+        # replies "I can't see the attachment".
+        if has_image:
+            msg_type = MessageType.PHOTO
+        elif has_document:
+            msg_type = MessageType.DOCUMENT
 
         # Store thread context for reply threading
         self._thread_context[sender_addr] = {

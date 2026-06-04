@@ -393,6 +393,78 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(captured_events[0].message_type, MessageType.PHOTO)
         self.assertEqual(captured_events[0].media_urls, ["/tmp/img.jpg"])
 
+    def test_document_attachment_sets_document_type(self):
+        """Email with a non-image attachment should set message type to
+        DOCUMENT so the gateway's document-handling branch surfaces the cached
+        file path to the agent. Regression test for emailed documents (e.g.
+        PDFs) being silently dropped — the type stayed TEXT, so the agent was
+        never told the file existed and replied "I can't see the attachment".
+        """
+        import asyncio
+        from gateway.platforms.base import MessageType
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+
+        msg_data = {
+            "uid": b"7",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Re: report",
+            "message_id": "<msg7@test.com>",
+            "in_reply_to": "",
+            "body": "See attached report",
+            "attachments": [{"path": "/tmp/report.pdf", "filename": "report.pdf", "type": "document", "media_type": "application/pdf"}],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        self.assertEqual(len(captured_events), 1)
+        self.assertEqual(captured_events[0].message_type, MessageType.DOCUMENT)
+        self.assertEqual(captured_events[0].media_urls, ["/tmp/report.pdf"])
+        self.assertEqual(captured_events[0].media_types, ["application/pdf"])
+
+    def test_mixed_attachments_prefer_photo(self):
+        """When an email carries both an image and a document, PHOTO wins so
+        the image still routes to the vision pipeline. Both paths are still
+        forwarded in media_urls.
+        """
+        import asyncio
+        from gateway.platforms.base import MessageType
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+
+        msg_data = {
+            "uid": b"8",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Re: both",
+            "message_id": "<msg8@test.com>",
+            "in_reply_to": "",
+            "body": "Photo and a doc",
+            "attachments": [
+                {"path": "/tmp/report.pdf", "filename": "report.pdf", "type": "document", "media_type": "application/pdf"},
+                {"path": "/tmp/img.jpg", "filename": "img.jpg", "type": "image", "media_type": "image/jpeg"},
+            ],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        self.assertEqual(len(captured_events), 1)
+        self.assertEqual(captured_events[0].message_type, MessageType.PHOTO)
+        self.assertEqual(
+            captured_events[0].media_urls, ["/tmp/report.pdf", "/tmp/img.jpg"]
+        )
+
     def test_source_built_correctly(self):
         """Session source should have correct chat_id and user info."""
         import asyncio

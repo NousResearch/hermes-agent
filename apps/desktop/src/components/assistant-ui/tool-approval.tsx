@@ -26,7 +26,7 @@ import { $approvalRequest, type ApprovalRequest, clearApprovalRequest } from '@/
 
 import type { ToolPart } from './tool-fallback-model'
 
-// Inline, Cursor-style approval control. Rendered as a compact button strip
+// Inline approval control. Rendered as a compact button strip
 // under the pending tool row that raised the approval (the row already shows
 // the command, so the strip deliberately doesn't repeat it) instead of as a
 // modal overlay.
@@ -95,7 +95,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
     [busy, gateway, request.sessionId]
   )
 
-  // ⌘/Ctrl+Enter → Run, Esc → Reject — matching Cursor's accept/skip bindings.
+  // ⌘/Ctrl+Enter → Run, Esc → Reject.
   // While the confirm dialog is open it owns the keyboard (Esc closes it), so
   // the strip-level shortcuts stand down to avoid denying the whole approval.
   useEffect(() => {

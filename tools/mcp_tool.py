@@ -3664,6 +3664,15 @@ def get_mcp_status() -> List[dict]:
     with _lock:
         active_servers = dict(_servers)
 
+    # If discovery is in progress, configured servers that haven't yet
+    # appeared in the live registry are "pending", not "failed" — see #38650.
+    # A server is "pending" if the registry has *some* servers (discovery
+    # is happening) but not this one yet. A truly empty registry means
+    # discovery hasn't started, in which case we don't know whether any
+    # of these will succeed — still call it pending rather than failed
+    # so the welcome screen doesn't show red text on first launch.
+    discovery_started = bool(active_servers)
+
     for name, cfg in configured.items():
         transport = cfg.get("transport", "http") if "url" in cfg else "stdio"
         enabled = _parse_boolish(cfg.get("enabled", True), default=True)
@@ -3679,7 +3688,7 @@ def get_mcp_status() -> List[dict]:
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
             result.append(entry)
-        else:
+        elif not enabled:
             # A server with enabled: false is intentionally not connected — it is
             # disabled, not failed. Surface that distinction so consumers (banner,
             # TUI) can render "disabled" rather than an alarming "failed".
@@ -3688,7 +3697,20 @@ def get_mcp_status() -> List[dict]:
                 "transport": transport,
                 "tools": 0,
                 "connected": False,
-                "disabled": not enabled,
+                "disabled": True,
+            })
+        else:
+            # Not connected and not disabled. Could be "pending" (discovery
+            # hasn't reached this server yet) or "failed" (discovery
+            # completed and this one errored). Distinguish by whether the
+            # registry has any servers at all.
+            result.append({
+                "name": name,
+                "transport": transport,
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "pending": not discovery_started or name not in active_servers,
             })
 
     return result

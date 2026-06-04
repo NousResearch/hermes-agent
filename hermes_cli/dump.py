@@ -99,9 +99,26 @@ def _count_skills(hermes_home: Path) -> int:
 
 
 def _count_mcp_servers(config: dict) -> int:
-    """Count configured MCP servers."""
-    mcp = config.get("mcp", {})
-    servers = mcp.get("servers", {})
+    """Count MCP servers, preferring the live registry over config.
+
+    The config file is read once at startup, but MCP servers are discovered
+    asynchronously in the background. The reliable truth at dump time is
+    the live registry in ``tools.mcp_tool._servers``; the config count is
+    a fallback for the "discovery hasn't run yet" case.
+    """
+    try:
+        from tools.mcp_tool import _servers as live_servers  # type: ignore[attr-defined]
+        if live_servers:
+            return len(live_servers)
+    except Exception:
+        pass
+
+    # Fallback: count from config. The Hermes config uses a top-level
+    # ``mcp_servers`` key (NOT ``mcp.servers`` — that nested key never
+    # existed, which is why the original implementation always returned 0).
+    servers = config.get("mcp_servers", {})
+    if not isinstance(servers, dict):
+        return 0
     return len(servers)
 
 

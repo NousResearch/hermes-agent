@@ -658,6 +658,15 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                     f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
                     f"[dim {dim}]— disabled[/]"
                 )
+            elif srv.get("pending"):
+                # Discovery runs in the background; transient state during
+                # the few seconds before _servers is populated. Don't
+                # alarm the user with "failed" while we're still
+                # connecting — see #38650.
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[dim {dim}]— connecting…[/]"
+                )
             else:
                 right_lines.append(
                     f"[red]{srv['name']}[/] [dim]({srv['transport']})[/] "

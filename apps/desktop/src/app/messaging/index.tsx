@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
+import { Badge, type BadgeProps } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
@@ -17,6 +18,7 @@ import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -41,11 +43,11 @@ const STATE_LABELS: Record<string, string> = {
   startup_failed: 'Startup failed'
 }
 
-const PILL_TONE: Record<StatusTone, string> = {
-  good: 'bg-primary/10 text-primary',
-  muted: 'bg-muted text-muted-foreground',
-  warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
-  bad: 'bg-destructive/10 text-destructive'
+const TONE_VARIANT: Record<StatusTone, BadgeProps['variant']> = {
+  good: 'default',
+  muted: 'muted',
+  warn: 'warn',
+  bad: 'destructive'
 }
 
 const HINT_BY_STATE: Record<string, string> = {
@@ -213,6 +215,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [])
 
+  useRefreshHotkey(() => void refreshPlatforms())
+
   useEffect(() => {
     void refreshPlatforms()
   }, [refreshPlatforms])
@@ -343,15 +347,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     <PageSearchShell
       {...props}
       onSearchChange={setQuery}
+      searchHidden={(platforms?.length ?? 0) === 0}
       searchPlaceholder="Search messaging..."
-      searchTrailingAction={null}
       searchValue={query}
     >
       {!platforms ? (
         <PageLoader label="Loading messaging platforms..." />
       ) : (
         <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          <aside className="min-h-0 overflow-y-auto border-b border-(--ui-stroke-tertiary) p-2 lg:border-b-0 lg:border-r">
+          <aside className="min-h-0 overflow-y-auto p-2">
             <ul className="space-y-1">
               {visiblePlatforms.map(platform => (
                 <li key={platform.id}>
@@ -406,8 +410,8 @@ function PlatformRow({
       className={cn(
         'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
         active
-          ? 'bg-(--ui-bg-tertiary) text-foreground'
-          : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+          ? 'bg-(--ui-row-active-background) text-foreground'
+          : 'text-(--ui-text-secondary) hover:bg-(--ui-row-hover-background) hover:text-foreground'
       )}
       onClick={onSelect}
       type="button"
@@ -482,7 +486,7 @@ function PlatformDetail({
               {introCopy(platform)}
             </p>
             <div className="mt-3">
-              <Button asChild size="sm" variant="outline">
+              <Button asChild size="sm" variant="textStrong">
                 <a href={platform.docs_url} rel="noreferrer" target="_blank">
                   Open setup guide
                   <ExternalLink className="size-3.5" />
@@ -560,19 +564,15 @@ function PlatformDetail({
         </div>
       </div>
 
-      <footer className="border-t border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-5 py-2.5">
+      <footer className="bg-(--ui-chat-surface-background) px-5 py-2.5">
         <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
-          <label className="flex shrink-0 items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2.5 py-1.5 text-[length:var(--conversation-text-font-size)]">
-            <Switch
-              aria-label={platform.enabled ? `Disable ${platform.name}` : `Enable ${platform.name}`}
-              checked={platform.enabled}
-              disabled={saving === `enabled:${platform.id}`}
-              onCheckedChange={onToggle}
-            />
-            <span className="text-xs font-medium text-muted-foreground">
-              {platform.enabled ? 'Enabled' : 'Disabled'}
-            </span>
-          </label>
+          <Switch
+            aria-label={platform.enabled ? `Disable ${platform.name}` : `Enable ${platform.name}`}
+            checked={platform.enabled}
+            disabled={saving === `enabled:${platform.id}`}
+            onCheckedChange={onToggle}
+            size="xs"
+          />
 
           <div className="ml-auto flex items-center gap-2">
             {hasEdits && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
@@ -651,7 +651,7 @@ function MessagingField({
       </div>
       <div className="flex items-center gap-2">
         <Input
-          className="h-9 rounded-lg font-mono text-sm"
+          className="font-mono"
           id={`messaging-field-${field.key}`}
           onChange={event => onEdit(field.key, event.target.value)}
           placeholder={field.is_set ? field.redacted_value || 'Replace current value' : copy.placeholder}
@@ -698,27 +698,13 @@ function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
 
 function StatePill({ children, tone }: { children: string; tone: StatusTone }) {
   return (
-    <span
-      className={cn(
-        'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.66rem] font-medium',
-        PILL_TONE[tone]
-      )}
-    >
+    <Badge variant={TONE_VARIANT[tone]}>
       <StatusDot tone={tone} />
       {children}
-    </span>
+    </Badge>
   )
 }
 
 function SetupPill({ active, children }: { active: boolean; children: string }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-[0.66rem] font-medium',
-        PILL_TONE[active ? 'good' : 'muted']
-      )}
-    >
-      {children}
-    </span>
-  )
+  return <Badge variant={active ? 'default' : 'muted'}>{children}</Badge>
 }

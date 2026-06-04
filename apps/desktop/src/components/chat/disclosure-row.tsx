@@ -34,7 +34,7 @@ export function DisclosureRow({
           // background fill, just the cursor + the affordance caret.
           'flex min-w-0 max-w-fit items-start gap-1.5 text-left transition-colors',
           onToggle
-            ? 'cursor-pointer hover:text-foreground focus-visible:text-foreground focus-visible:outline-none'
+            ? 'hover:text-foreground focus-visible:text-foreground focus-visible:outline-none'
             : 'cursor-default'
         )}
         disabled={!onToggle}

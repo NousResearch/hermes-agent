@@ -2,8 +2,7 @@ import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
+import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 import { getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
@@ -11,7 +10,9 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
 
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
 import { asText, includesQuery, prettyName, toolNames } from '../settings/helpers'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
@@ -72,24 +73,21 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   const [skills, setSkills] = useState<SkillInfo[] | null>(null)
   const [toolsets, setToolsets] = useState<ToolsetInfo[] | null>(null)
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
-  const [refreshing, setRefreshing] = useState(false)
   const [savingSkill, setSavingSkill] = useState<string | null>(null)
   const [savingToolset, setSavingToolset] = useState<string | null>(null)
   const [expandedToolset, setExpandedToolset] = useState<string | null>(null)
 
   const refreshCapabilities = useCallback(async () => {
-    setRefreshing(true)
-
     try {
       const [nextSkills, nextToolsets] = await Promise.all([getSkills(), getToolsets()])
       setSkills(nextSkills)
       setToolsets(nextToolsets)
     } catch (err) {
       notifyError(err, 'Skills failed to load')
-    } finally {
-      setRefreshing(false)
     }
   }, [])
+
+  useRefreshHotkey(refreshCapabilities)
 
   const refreshToolsets = useCallback(() => {
     getToolsets()
@@ -181,65 +179,54 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     <PageSearchShell
       {...props}
       filters={
-        <>
-          <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
-            <TextTab active={mode === 'skills'} onClick={() => setMode('skills')}>
-              Skills
+        mode === 'skills' && categories.length > 0 ? (
+          <>
+            <TextTab active={activeCategory === null} onClick={() => setActiveCategory(null)}>
+              All <TextTabMeta>{totalSkills}</TextTabMeta>
             </TextTab>
-            <TextTab active={mode === 'toolsets'} onClick={() => setMode('toolsets')}>
-              Toolsets
-            </TextTab>
-          </div>
-          {mode === 'skills' && categories.length > 0 && (
-            <div className="flex flex-wrap justify-center gap-x-2 gap-y-1">
-              <TextTab active={activeCategory === null} onClick={() => setActiveCategory(null)}>
-                All <TextTabMeta>{totalSkills}</TextTabMeta>
+            {categories.map(category => (
+              <TextTab
+                active={activeCategory === category.key}
+                key={category.key}
+                onClick={() => setActiveCategory(activeCategory === category.key ? null : category.key)}
+              >
+                {prettyName(category.key)} <TextTabMeta>{category.count}</TextTabMeta>
               </TextTab>
-              {categories.map(category => (
-                <TextTab
-                  active={activeCategory === category.key}
-                  key={category.key}
-                  onClick={() => setActiveCategory(activeCategory === category.key ? null : category.key)}
-                >
-                  {prettyName(category.key)} <TextTabMeta>{category.count}</TextTabMeta>
-                </TextTab>
-              ))}
-            </div>
-          )}
-        </>
+            ))}
+          </>
+        ) : undefined
       }
       onSearchChange={setQuery}
+      searchHidden={mode === 'skills' ? (skills?.length ?? 0) === 0 : (toolsets?.length ?? 0) === 0}
       searchPlaceholder={mode === 'skills' ? 'Search skills...' : 'Search toolsets...'}
-      searchTrailingAction={
-        <Button
-          aria-label={refreshing ? 'Refreshing skills' : 'Refresh skills'}
-          className="text-(--ui-text-tertiary) hover:bg-transparent hover:text-foreground"
-          disabled={refreshing}
-          onClick={() => void refreshCapabilities()}
-          size="icon-xs"
-          title={refreshing ? 'Refreshing skills' : 'Refresh skills'}
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name="refresh" size="0.875rem" spinning={refreshing} />
-        </Button>
-      }
       searchValue={query}
+      tabs={
+        <>
+          <TextTab active={mode === 'skills'} onClick={() => setMode('skills')}>
+            Skills
+          </TextTab>
+          <TextTab active={mode === 'toolsets'} onClick={() => setMode('toolsets')}>
+            Toolsets
+          </TextTab>
+        </>
+      }
     >
       {!skills || !toolsets ? (
         <PageLoader label="Loading capabilities..." />
       ) : mode === 'skills' ? (
-        <div className="h-full overflow-y-auto px-4 py-3">
+        <div className={cn('h-full overflow-y-auto py-3', PAGE_INSET_X)}>
           {visibleSkills.length === 0 ? (
             <EmptyState description="Try a broader search or different category." title="No skills found" />
           ) : (
             <div className="space-y-4">
               {skillGroups.map(([category, list]) => (
                 <div className="space-y-1.5" key={category}>
-                  <div className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                    {prettyName(category)}
-                  </div>
-                  <div className="divide-y divide-(--ui-stroke-quaternary)">
+                  {activeCategory === null && (
+                    <div className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                      {prettyName(category)}
+                    </div>
+                  )}
+                  <div>
                     {list.map(skill => (
                       <div
                         className="grid gap-3 px-0 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
@@ -265,7 +252,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
           )}
         </div>
       ) : (
-        <div className="h-full overflow-y-auto px-4 py-3">
+        <div className={cn('h-full overflow-y-auto py-3', PAGE_INSET_X)}>
           {visibleToolsets.length === 0 ? (
             <EmptyState description="Try a broader search query." title="No toolsets found" />
           ) : (
@@ -273,7 +260,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
               <div className="text-xs text-muted-foreground">
                 {enabledToolsets}/{toolsets.length} toolsets enabled
               </div>
-              <div className="divide-y divide-(--ui-stroke-quaternary)">
+              <div>
                 {visibleToolsets.map(toolset => {
                   const tools = toolNames(toolset)
                   const label = asText(toolset.label || toolset.name)
@@ -287,7 +274,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                           <button
                             aria-expanded={expanded}
                             aria-label={`Configure ${label}`}
-                            className="cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                            className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                             onClick={() => setExpandedToolset(current => (current === toolset.name ? null : toolset.name))}
                             type="button"
                           >
@@ -333,14 +320,11 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
 function StatusPill({ active, children }: { active: boolean; children: string }) {
   return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.64rem]',
-        active ? 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)' : 'bg-(--ui-bg-quinary) text-(--ui-text-tertiary)'
-      )}
+    <Badge
+      className={active ? 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)' : 'bg-(--ui-bg-quinary) text-(--ui-text-tertiary)'}
     >
       {children}
-    </span>
+    </Badge>
   )
 }
 

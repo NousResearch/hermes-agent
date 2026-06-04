@@ -237,7 +237,7 @@ export function GatewaySettings() {
         />
       </div>
 
-      <div className="mt-5 divide-y divide-border/40">
+      <div className="mt-5 grid gap-1">
         <ListRow
           action={
             <Input
@@ -272,28 +272,30 @@ export function GatewaySettings() {
 
       {lastTest ? <div className="mt-4 text-xs text-primary">{lastTest}</div> : null}
 
-      <div className="mt-6 flex flex-wrap justify-end gap-3">
+      <div className="mt-6 flex flex-wrap items-center justify-end gap-4">
         <Button
+          className="mr-auto"
           disabled={state.envOverride || testing || !canUseRemote}
           onClick={() => void testRemote()}
-          variant="outline"
+          size="sm"
+          variant="text"
         >
           {testing ? <Loader2 className="size-4 animate-spin" /> : null}
           Test remote
         </Button>
-        <Button disabled={state.envOverride || saving} onClick={() => void save(false)} variant="outline">
+        <Button disabled={state.envOverride || saving} onClick={() => void save(false)} size="sm" variant="textStrong">
           Save for next restart
         </Button>
-        <Button disabled={state.envOverride || saving} onClick={() => void save(true)}>
+        <Button disabled={state.envOverride || saving} onClick={() => void save(true)} size="sm">
           {saving ? <Loader2 className="size-4 animate-spin" /> : null}
           Save and reconnect
         </Button>
       </div>
 
-      <div className="mt-6 divide-y divide-border/40">
+      <div className="mt-6 grid gap-1">
         <ListRow
           action={
-            <Button onClick={() => void window.hermesDesktop?.revealLogs()} variant="outline">
+            <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
               <FileText className="size-4" />
               Open logs
             </Button>

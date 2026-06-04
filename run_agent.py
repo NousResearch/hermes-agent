@@ -3557,6 +3557,9 @@ class AIAgent:
             import httpx as _httpx
             import socket as _socket
 
+            if "api.githubcopilot.com" in str(base_url or "").lower():
+                return _httpx.Client()
+
             _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
             if hasattr(_socket, "TCP_KEEPIDLE"):
                 _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))

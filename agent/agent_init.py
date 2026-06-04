@@ -809,6 +809,8 @@ def init_agent(
                 # _default_headers instead.
                 _routed_headers = getattr(_routed_client, "_custom_headers", None)
                 if not _routed_headers:
+                    _routed_headers = getattr(_routed_client, "default_headers", None)
+                if not _routed_headers:
                     _routed_headers = getattr(_routed_client, "_default_headers", None)
                 if _routed_headers:
                     client_kwargs["default_headers"] = dict(_routed_headers)
@@ -861,6 +863,8 @@ def init_agent(
                             if _provider_timeout is not None:
                                 client_kwargs["timeout"] = _provider_timeout
                             _fb_headers = getattr(_fb_client, "_custom_headers", None)
+                            if not _fb_headers:
+                                _fb_headers = getattr(_fb_client, "default_headers", None)
                             if not _fb_headers:
                                 _fb_headers = getattr(_fb_client, "_default_headers", None)
                             if _fb_headers:

@@ -855,7 +855,7 @@ def _should_use_native_vision_fast_path() -> bool:
             or _lookup_supports_vision(provider, model, cfg) is True
         )
         if fast_path:
-            logger.info(
+            logger.debug(
                 "Vision: native fast path selected for %s/%s — "
                 "skipping aux vision backend",
                 provider, model,

@@ -2263,7 +2263,7 @@ _RUNTIME_MAIN_MODEL: str = ""
 _RUNTIME_MAIN_BASE_URL: str = ""
 _RUNTIME_MAIN_API_KEY: str = ""
 _RUNTIME_MAIN_API_MODE: str = ""
-_session_route_logged: bool = False
+_last_logged_route: tuple = ()
 
 
 def set_runtime_main(
@@ -2293,12 +2293,13 @@ def set_runtime_main(
     _RUNTIME_MAIN_API_KEY = api_key.strip() if isinstance(api_key, str) else ""
     _RUNTIME_MAIN_API_MODE = (api_mode or "").strip()
 
-    global _session_route_logged
-    if not _session_route_logged:
-        _session_route_logged = True
+    global _last_logged_route
+    _current = (_RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_MAIN_BASE_URL)
+    if _current != _last_logged_route:
+        _last_logged_route = _current
         _info = f" at {_RUNTIME_MAIN_BASE_URL}" if _RUNTIME_MAIN_BASE_URL else ""
         logger.info(
-            "Runtime: main route set to %s/%s%s [session routing configured]",
+            "Runtime: main route set to %s/%s%s",
             _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _info,
         )
 
@@ -2307,13 +2308,13 @@ def clear_runtime_main() -> None:
     """Clear the runtime override (e.g. on session end)."""
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
-    global _session_route_logged
+    global _last_logged_route
     _RUNTIME_MAIN_PROVIDER = ""
     _RUNTIME_MAIN_MODEL = ""
     _RUNTIME_MAIN_BASE_URL = ""
     _RUNTIME_MAIN_API_KEY = ""
     _RUNTIME_MAIN_API_MODE = ""
-    _session_route_logged = False
+    _last_logged_route = ()
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:

@@ -12350,6 +12350,114 @@ _TOP_LEVEL_VALUE_FLAGS = frozenset(
     }
 )
 
+_POST_SUBCOMMAND_TOP_LEVEL_BOOL_FLAGS = frozenset(
+    {
+        "-w", "--worktree",
+        "--accept-hooks",
+        "--yolo",
+        "--pass-session-id",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--tui",
+        "--cli",
+        "--dev",
+    }
+)
+
+_POST_SUBCOMMAND_TOP_LEVEL_VALUE_FLAGS = frozenset(
+    {
+        "-m", "--model",
+        "--provider",
+        "-t", "--toolsets",
+        "-s", "--skills",
+    }
+)
+
+
+def _hoist_post_subcommand_global_flags(
+    argv: list[str],
+    known_cmds: set[str] | frozenset[str],
+) -> list[str]:
+    """Move known top-level launcher flags before the subcommand.
+
+    ``argparse`` only accepts parent-parser options before a subcommand unless
+    each child parser repeats them. That is easy to forget in launchers and
+    relaunch paths: ``hermes dashboard --no-open --tui`` should not die just
+    because ``--tui`` trails the dashboard command. Keep this deliberately
+    conservative: hoist only top-level flags whose values remain meaningful at
+    the parent level, and leave command-specific flags untouched.
+    """
+    if not argv:
+        return argv
+
+    try:
+        separator_index = argv.index("--")
+    except ValueError:
+        separator_index = len(argv)
+
+    head = argv[:separator_index]
+    tail = argv[separator_index:]
+
+    command_index = None
+    i = 0
+    while i < len(head):
+        token = head[i]
+        if token.startswith("-"):
+            if "=" in token:
+                i += 1
+                continue
+            if token in _TOP_LEVEL_VALUE_FLAGS and i + 1 < len(head):
+                i += 2
+                continue
+            i += 1
+            continue
+        if token in known_cmds:
+            command_index = i
+            break
+        return argv
+
+    if command_index is None:
+        return argv
+
+    prefix = head[:command_index]
+    command_and_args = head[command_index:]
+    hoisted: list[str] = []
+    remainder: list[str] = []
+    i = 0
+    while i < len(command_and_args):
+        token = command_and_args[i]
+        if i > 0 and token in _POST_SUBCOMMAND_TOP_LEVEL_BOOL_FLAGS:
+            hoisted.append(token)
+            i += 1
+            continue
+
+        if i > 0:
+            inline_value_match = next(
+                (
+                    flag
+                    for flag in _POST_SUBCOMMAND_TOP_LEVEL_VALUE_FLAGS
+                    if token.startswith(f"{flag}=")
+                ),
+                None,
+            )
+            if inline_value_match:
+                hoisted.append(token)
+                i += 1
+                continue
+
+            if token in _POST_SUBCOMMAND_TOP_LEVEL_VALUE_FLAGS and i + 1 < len(command_and_args):
+                hoisted.extend([token, command_and_args[i + 1]])
+                i += 2
+                continue
+
+        remainder.append(token)
+        i += 1
+
+    if not hoisted:
+        return argv
+
+    return [*prefix, *hoisted, *remainder, *tail]
+
 
 def _first_positional_argv() -> str | None:
     """Return the first non-flag, non-flag-value token in ``sys.argv[1:]``.
@@ -15772,8 +15880,6 @@ Examples:
         # and raises OSError on failure (which propagates as a traceback).
         sys.exit(1)
 
-    _processed_argv = _coalesce_session_name_args(sys.argv[1:])
-
     # ── Defensive subparser routing (bpo-9338 workaround) ───────────
     # On some Python versions (notably <3.11), argparse fails to route
     # subcommand tokens when the parent parser has nargs='?' optional
@@ -15788,6 +15894,10 @@ Examples:
 
     _known_cmds = (
         set(subparsers.choices.keys()) if hasattr(subparsers, "choices") else set()
+    )
+    _processed_argv = _hoist_post_subcommand_global_flags(
+        _coalesce_session_name_args(sys.argv[1:]),
+        _known_cmds,
     )
     _has_cmd_token = any(
         t in _known_cmds for t in _processed_argv if not t.startswith("-")

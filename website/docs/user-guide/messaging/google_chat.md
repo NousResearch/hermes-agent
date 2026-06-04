@@ -13,6 +13,8 @@ process does not need a public URL, a tunnel, or a TLS certificate. It connects,
 authenticates, and listens on a subscription — the same way a Telegram bot listens
 on a token.
 
+> Run `hermes gateway setup` and pick **Google Chat** for a guided walk-through.
+
 :::note Workspace edition
 Google Chat is part of Google Workspace. You can use this integration with a
 personal Workspace (`@yourdomain.com` registered through Google) or a work
@@ -237,13 +239,20 @@ specifically, as the user who asked for the file.
 4. On the host, register the client with Hermes:
 
 ```bash
-python -m gateway.platforms.google_chat_user_oauth \
+python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 
 That writes `~/.hermes/google_chat_user_client_secret.json`. This is shared
 infrastructure — it identifies the OAuth *app*, not any individual user. One
 file per host is enough no matter how many users authorize later.
+
+This file lives at the default Hermes root, so a gateway running under a named
+profile (`hermes -p <name> gateway …`) finds the same host-wide secret — you do
+**not** re-run this step per profile. To deliberately use a separate OAuth app
+for one profile, drop a `google_chat_user_client_secret.json` inside that
+profile's `HERMES_HOME` and it takes precedence. Per-user tokens always stay
+scoped to the active profile.
 
 ### Per-user authorization (in chat)
 
@@ -330,7 +339,7 @@ The one-time host setup wasn't done. From a terminal on the host that runs
 Hermes:
 
 ```bash
-python -m gateway.platforms.google_chat_user_oauth \
+python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 

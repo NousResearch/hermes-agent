@@ -101,11 +101,11 @@ def _guess_extension(data: bytes) -> str:
 
 
 def _is_image_ext(ext: str) -> bool:
-    return ext.lower() in (".jpg", ".jpeg", ".png", ".gif", ".webp")
+    return ext.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
 def _is_audio_ext(ext: str) -> bool:
-    return ext.lower() in (".mp3", ".wav", ".ogg", ".m4a", ".aac")
+    return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac"}
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +269,13 @@ class SimplexAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _health_monitor(self) -> None:
-        """Force reconnect if the WebSocket has been idle too long."""
+        """Observe WebSocket idleness without reconnecting healthy quiet links.
+
+        simplex-chat can legitimately stay application-silent for long periods
+        when no messages arrive. The websockets client already sends protocol
+        pings (see _ws_listener ping_interval/ping_timeout), so treating lack of
+        chat events as a stale connection causes needless reconnect churn.
+        """
         while self._running:
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
             if not self._running:
@@ -277,15 +283,7 @@ class SimplexAdapter(BasePlatformAdapter):
 
             elapsed = time.time() - self._last_ws_activity
             if elapsed > HEALTH_CHECK_STALE_THRESHOLD:
-                logger.warning(
-                    "SimpleX: WS idle for %.0fs, forcing reconnect", elapsed
-                )
-                self._last_ws_activity = time.time()
-                if self._ws:
-                    try:
-                        await self._ws.close()
-                    except Exception:
-                        pass
+                logger.debug("SimpleX: WS application-idle for %.0fs", elapsed)
 
     # ------------------------------------------------------------------
     # Inbound event handling
@@ -293,7 +291,12 @@ class SimplexAdapter(BasePlatformAdapter):
 
     async def _handle_event(self, event: dict) -> None:
         """Dispatch a daemon event to the appropriate handler."""
-        resp_type = event.get("type") or event.get("resp", {}).get("type", "")
+        # simplex-chat WebSocket messages are usually shaped as:
+        #   {"corrId": "...", "resp": {"type": "newChatItems", ...}}
+        # Older/examples may put the response fields at top-level. Normalize
+        # both forms before dispatching, otherwise inbound chatItems are lost.
+        resp = event.get("resp") if isinstance(event.get("resp"), dict) else event
+        resp_type = event.get("type") or resp.get("type", "")
 
         # Filter responses to our own commands (echoes)
         corr_id = event.get("corrId", "")
@@ -302,10 +305,10 @@ class SimplexAdapter(BasePlatformAdapter):
             return
 
         if resp_type == "newChatItem":
-            await self._handle_new_chat_item(event)
+            await self._handle_new_chat_item(resp)
         elif resp_type == "newChatItems":
             # Batch variant — process each item
-            items = event.get("chatItems") or []
+            items = resp.get("chatItems") or []
             for item_wrapper in items:
                 await self._handle_new_chat_item(item_wrapper)
         # Ignore all other event types (delivery receipts, contact updates, etc.)
@@ -326,12 +329,12 @@ class SimplexAdapter(BasePlatformAdapter):
         # Filter out messages sent by us (direction == "snd")
         meta = chat_item.get("meta") or {}
         direction = (meta.get("itemStatus") or {}).get("type", "")
-        if direction in ("sndSent", "sndSentDirect", "sndSentViaProxy", "sndNew"):
+        if direction in {"sndSent", "sndSentDirect", "sndSentViaProxy", "sndNew"}:
             return
 
         # Determine chat type and IDs
         chat_type_raw = chat_info.get("type", "")
-        is_group = chat_type_raw in ("group", "groupInfo")
+        is_group = chat_type_raw in {"group", "groupInfo"}
 
         if is_group:
             group_info = chat_info.get("groupInfo") or chat_info.get("group") or {}
@@ -347,7 +350,9 @@ class SimplexAdapter(BasePlatformAdapter):
                 or contact_info.get("localDisplayName")
                 or contact_id
             )
-            chat_id = contact_id
+            # Replies must be routed by SimpleX CLI display name, while
+            # authorization should still use the stable numeric contactId.
+            chat_id = contact_name or contact_id
             chat_name = contact_name
 
         if not chat_id:
@@ -364,7 +369,7 @@ class SimplexAdapter(BasePlatformAdapter):
                 or sender_id
             )
         else:
-            sender_id = chat_id
+            sender_id = contact_id if not is_group else chat_id
             sender_name = chat_name
 
         # Extract text
@@ -374,7 +379,7 @@ class SimplexAdapter(BasePlatformAdapter):
         media_urls: List[str] = []
         media_types: List[str] = []
         file_info = chat_item.get("file") or {}
-        if file_info and file_info.get("fileStatus") not in ("cancelled", "error"):
+        if file_info and file_info.get("fileStatus") not in {"cancelled", "error"}:
             file_id = file_info.get("fileId")
             file_name = file_info.get("fileName", "file")
             if file_id:
@@ -508,7 +513,11 @@ class SimplexAdapter(BasePlatformAdapter):
             group_id = chat_id[6:]
             cmd_str = f"#[{group_id}] {content}"
         else:
-            cmd_str = f"@[{chat_id}] {content}"
+            # SimpleX CLI addresses direct contacts by display name, e.g.
+            # `@Alice hello`. `@[Alice]` is interpreted literally as a contact
+            # named "[Alice]" and `@[4]` as "[4]", so do not wrap direct
+            # chat IDs / display names in brackets.
+            cmd_str = f"@{chat_id} {content}"
 
         payload = {
             "corrId": corr_id,
@@ -643,7 +652,8 @@ async def _standalone_send(
             group_id = chat_id[6:]
             cmd_str = f"#[{group_id}] {message}"
         else:
-            cmd_str = f"@[{chat_id}] {message}"
+            # Direct contacts are addressed by display name without brackets.
+            cmd_str = f"@{chat_id} {message}"
 
         payload = {
             "corrId": f"hermes-snd-{int(time.time() * 1000)}",
@@ -685,8 +695,8 @@ def interactive_setup() -> None:
         suffix = " [keep current]" if existing else ""
         try:
             if secret:
-                import getpass
-                value = getpass.getpass(f"{prompt}{suffix}: ")
+                from hermes_cli.secret_prompt import masked_secret_prompt
+                value = masked_secret_prompt(f"{prompt}{suffix}: ")
             else:
                 value = input(f"{prompt}{suffix}: ").strip()
         except (EOFError, KeyboardInterrupt):

@@ -2,7 +2,6 @@
 
 import os
 import subprocess
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -91,7 +90,7 @@ class TestSSHBulkUpload:
         assert "/home/testuser/.hermes/credentials" in mkdir_str
 
     def test_staging_symlinks_mirror_remote_layout(self, mock_env, tmp_path):
-        """Symlinks in staging dir should mirror the remote path structure."""
+        """Symlinks in staging dir should mirror the .hermes-relative layout."""
         f1 = tmp_path / "local_a.txt"
         f1.write_text("content a")
 
@@ -107,9 +106,7 @@ class TestSSHBulkUpload:
                 c_idx = cmd.index("-C")
                 staging_dir = cmd[c_idx + 1]
                 # Check the symlink exists
-                expected = os.path.join(
-                    staging_dir, "home/testuser/.hermes/skills/my_skill.md"
-                )
+                expected = os.path.join(staging_dir, "skills/my_skill.md")
                 staging_paths.append(expected)
                 assert os.path.islink(expected), f"Expected symlink at {expected}"
                 assert os.readlink(expected) == os.path.abspath(str(f1))
@@ -166,13 +163,41 @@ class TestSSHBulkUpload:
         assert "-" in tar_cmd  # stdout
         assert "-C" in tar_cmd
 
-        # ssh: extract from stdin at /, preserving existing dir modes (#17767)
+        # ssh: extract from stdin at ~/.hermes, preserving existing dir modes (#17767)
         ssh_str = " ".join(ssh_cmd)
         assert "ssh" in ssh_str
         assert "tar xf -" in ssh_str
         assert "--no-overwrite-dir" in ssh_str
-        assert "-C /" in ssh_str
+        assert "-C /home/testuser/.hermes" in ssh_str
         assert "testuser@example.com" in ssh_str
+
+    def test_bulk_upload_never_stages_remote_home_prefix(self, mock_env, tmp_path):
+        """Regression: do not archive /home/<user> path components."""
+        f1 = tmp_path / "nested.txt"
+        f1.write_text("nested")
+        files = [(str(f1), "/home/testuser/.hermes/cache/nested.txt")]
+
+        def capture_tar_cmd(cmd, **kwargs):
+            if cmd[0] == "tar":
+                c_idx = cmd.index("-C")
+                staging_dir = cmd[c_idx + 1]
+                assert not os.path.exists(os.path.join(staging_dir, "home"))
+                expected = os.path.join(staging_dir, "cache/nested.txt")
+                assert os.path.islink(expected)
+
+            mock = MagicMock()
+            mock.stdout = MagicMock()
+            mock.returncode = 0
+            mock.poll.return_value = 0
+            mock.communicate.return_value = (b"", b"")
+            mock.stderr = MagicMock()
+            mock.stderr.read.return_value = b""
+            return mock
+
+        with patch.object(subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0)), \
+             patch.object(subprocess, "Popen", side_effect=capture_tar_cmd):
+            mock_env._ssh_bulk_upload(files)
 
     def test_mkdir_failure_raises(self, mock_env, tmp_path):
         """mkdir failure should raise RuntimeError before tar pipe."""

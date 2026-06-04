@@ -50,8 +50,10 @@ Token storage layout
     ``${HERMES_HOME}/google_chat_user_oauth_pending/<sanitized_email>.json``
 - Legacy pending state:
     ``${HERMES_HOME}/google_chat_user_oauth_pending.json``
-- Shared OAuth client (one per host):
-    ``${HERMES_HOME}/google_chat_user_client_secret.json``
+- Shared OAuth client (one per host, anchored at the default Hermes root so
+  every profile sees it; a profile-local copy under ``${HERMES_HOME}`` wins
+  when present):
+    ``<default-root>/google_chat_user_client_secret.json`` (default ``~/.hermes``)
 """
 
 from __future__ import annotations
@@ -61,6 +63,8 @@ import json
 import logging
 import os
 import re
+import secrets
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -73,7 +77,11 @@ logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
 # Use the project's HERMES_HOME helper so the token follows the user's
 # profile (e.g. tests can override via HERMES_HOME=/tmp/...).
 try:
-    from hermes_constants import display_hermes_home, get_hermes_home
+    from hermes_constants import (
+        display_hermes_home,
+        get_default_hermes_root,
+        get_hermes_home,
+    )
 except (ModuleNotFoundError, ImportError):
     # Fallback for environments where hermes_constants isn't importable
     # (mirrors the same fallback used by the google-workspace skill's
@@ -82,12 +90,32 @@ except (ModuleNotFoundError, ImportError):
         val = os.environ.get("HERMES_HOME", "").strip()
         return Path(val) if val else Path.home() / ".hermes"
 
+    def get_default_hermes_root() -> Path:
+        # Mirror hermes_constants.get_default_hermes_root(): resolve the
+        # profile root so host-wide files (the shared client secret) are
+        # found regardless of which profile is active.
+        native_home = Path.home() / ".hermes"
+        env_home = os.environ.get("HERMES_HOME", "").strip()
+        if not env_home:
+            return native_home
+        env_path = Path(env_home)
+        try:
+            env_path.resolve().relative_to(native_home.resolve())
+            return native_home
+        except ValueError:
+            pass
+        if env_path.parent.name == "profiles":
+            return env_path.parent.parent
+        return env_path
+
     def display_hermes_home() -> str:
         home = get_hermes_home()
         try:
             return "~/" + str(home.relative_to(Path.home()))
         except ValueError:
             return str(home)
+
+from utils import atomic_replace
 
 
 def _hermes_home() -> Path:
@@ -136,7 +164,24 @@ def _token_path(email: Optional[str] = None) -> Path:
 
 
 def _client_secret_path() -> Path:
-    return _hermes_home() / "google_chat_user_client_secret.json"
+    """Path to the shared OAuth client secret (one per host).
+
+    The client secret identifies the OAuth *app*, not a user or a profile,
+    so it is anchored at the default Hermes root (``~/.hermes`` — or the
+    Docker root) rather than the active profile's ``HERMES_HOME``. That way
+    the one-time ``--client-secret`` host setup is visible to gateways
+    running under any named profile, exactly as the docs describe ("one
+    file per host is enough no matter how many users authorize later").
+
+    A profile-local secret (``$HERMES_HOME/google_chat_user_client_secret.json``)
+    still takes precedence when present, for installs that seeded one under
+    the previous profile-scoped behavior or that deliberately run a separate
+    OAuth app per profile.
+    """
+    profile_local = _hermes_home() / "google_chat_user_client_secret.json"
+    if profile_local.exists():
+        return profile_local
+    return get_default_hermes_root() / "google_chat_user_client_secret.json"
 
 
 def _pending_auth_path(email: Optional[str] = None) -> Path:
@@ -296,14 +341,11 @@ def list_authorized_emails() -> List[str]:
 
 
 def _persist_credentials(creds: Any, token_path: Path) -> None:
-    """Atomic-ish JSON write of refreshed credentials."""
+    """Persist refreshed credentials atomically with private permissions."""
     try:
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(
-            json.dumps(
-                _normalize_authorized_user_payload(json.loads(creds.to_json())),
-                indent=2,
-            )
+        _write_private_json(
+            token_path,
+            _normalize_authorized_user_payload(json.loads(creds.to_json())),
         )
     except Exception:
         logger.debug(
@@ -323,6 +365,38 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
     if not normalized.get("type"):
         normalized["type"] = "authorized_user"
     return normalized
+
+
+def _write_private_json(path: Path, data: Any) -> None:
+    """Atomically write JSON with 0o600 permissions where supported."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+
+    tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+    try:
+        fd = os.open(
+            str(tmp_path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        atomic_replace(tmp_path, path)
+        try:
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
 
 
 def _ensure_deps() -> None:
@@ -402,25 +476,21 @@ def store_client_secret(path: str) -> None:
         sys.exit(1)
 
     target = _client_secret_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, indent=2))
+    _write_private_json(target, data)
     print(f"OK: Client secret saved to {target}")
 
 
 def _save_pending_auth(*, state: str, code_verifier: str,
                       email: Optional[str] = None) -> None:
     pending = _pending_auth_path(email)
-    pending.parent.mkdir(parents=True, exist_ok=True)
-    pending.write_text(
-        json.dumps(
-            {
-                "state": state,
-                "code_verifier": code_verifier,
-                "redirect_uri": _REDIRECT_URI,
-                "email": email or "",
-            },
-            indent=2,
-        )
+    _write_private_json(
+        pending,
+        {
+            "state": state,
+            "code_verifier": code_verifier,
+            "redirect_uri": _REDIRECT_URI,
+            "email": email or "",
+        },
     )
 
 
@@ -548,8 +618,7 @@ def exchange_auth_code(code: str, email: Optional[str] = None) -> None:
         token_payload["scopes"] = granted_scopes
 
     token_path = _token_path(email)
-    token_path.parent.mkdir(parents=True, exist_ok=True)
-    token_path.write_text(json.dumps(token_payload, indent=2))
+    _write_private_json(token_path, token_payload)
     _pending_auth_path(email).unlink(missing_ok=True)
 
     print(f"OK: Authenticated. Token saved to {token_path}")
@@ -586,7 +655,8 @@ def revoke(email: Optional[str] = None) -> None:
                 f"https://oauth2.googleapis.com/revoke?token={creds.token}",
                 method="POST",
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
+            ),
+            timeout=15,
         )
         print("Token revoked with Google.")
     except Exception as exc:

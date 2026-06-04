@@ -15,21 +15,21 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | If you want to add… | Read |
 |---|---|
 | Custom tools, hooks, slash commands, skills, or CLI subcommands | **This guide** (the general plugin surface) |
-| An **LLM / inference backend** (new provider) | [Model Provider Plugins](/docs/developer-guide/model-provider-plugin) |
-| A **gateway channel** (Discord/Telegram/IRC/Teams/etc.) | [Adding Platform Adapters](/docs/developer-guide/adding-platform-adapters) |
-| A **memory backend** (Honcho/Mem0/Supermemory/etc.) | [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) |
-| A **context-compression engine** | [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) |
-| An **image-generation backend** | [Image Generation Provider Plugins](/docs/developer-guide/image-gen-provider-plugin) |
-| A **video-generation backend** | [Video Generation Provider Plugins](/docs/developer-guide/video-gen-provider-plugin) |
-| A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](/docs/user-guide/features/tts#custom-command-providers) — config-driven, no Python needed |
-| An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](/docs/user-guide/features/tts#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to a shell template |
-| **External tools via MCP** (filesystem, GitHub, Linear, any MCP server) | [MCP](/docs/user-guide/features/mcp) — declare `mcp_servers.<name>` in `config.yaml` |
-| **Gateway event hooks** (fire on startup, session events, commands) | [Event Hooks](/docs/user-guide/features/hooks#gateway-event-hooks) — drop `HOOK.yaml` + `handler.py` into `~/.hermes/hooks/<name>/` |
-| **Shell hooks** (run a shell command on events) | [Shell Hooks](/docs/user-guide/features/hooks#shell-hooks) — declare under `hooks:` in `config.yaml` |
-| **Additional skill sources** (custom GitHub repos, private skill indexes) | [Skills](/docs/user-guide/features/skills) — `hermes skills tap add <repo>` · [Publishing a tap](/docs/user-guide/features/skills#publishing-a-custom-skill-tap) |
-| A first-class **core** inference provider (not a plugin) | [Adding Providers](/docs/developer-guide/adding-providers) |
+| An **LLM / inference backend** (new provider) | [Model Provider Plugins](/developer-guide/model-provider-plugin) |
+| A **gateway channel** (Discord/Telegram/IRC/Teams/etc.) | [Adding Platform Adapters](/developer-guide/adding-platform-adapters) |
+| A **memory backend** (Honcho/Mem0/Supermemory/etc.) | [Memory Provider Plugins](/developer-guide/memory-provider-plugin) |
+| A **context-compression engine** | [Context Engine Plugins](/developer-guide/context-engine-plugin) |
+| An **image-generation backend** | [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin) |
+| A **video-generation backend** | [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) |
+| A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](/user-guide/features/tts#custom-command-providers) — config-driven, no Python needed |
+| An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](/user-guide/features/tts#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to a shell template |
+| **External tools via MCP** (filesystem, GitHub, Linear, any MCP server) | [MCP](/user-guide/features/mcp) — declare `mcp_servers.<name>` in `config.yaml` |
+| **Gateway event hooks** (fire on startup, session events, commands) | [Event Hooks](/user-guide/features/hooks#gateway-event-hooks) — drop `HOOK.yaml` + `handler.py` into `~/.hermes/hooks/<name>/` |
+| **Shell hooks** (run a shell command on events) | [Shell Hooks](/user-guide/features/hooks#shell-hooks) — declare under `hooks:` in `config.yaml` |
+| **Additional skill sources** (custom GitHub repos, private skill indexes) | [Skills](/user-guide/features/skills) — `hermes skills tap add <repo>` · [Publishing a tap](/user-guide/features/skills#publishing-a-custom-skill-tap) |
+| A first-class **core** inference provider (not a plugin) | [Adding Providers](/developer-guide/adding-providers) |
 
-See the full [Pluggable interfaces table](/docs/user-guide/features/plugins#pluggable-interfaces--where-to-go-for-each) for a consolidated view of every extension surface including config-driven (TTS, STT, MCP, shell hooks) and drop-in directory (gateway hooks) styles.
+See the full [Pluggable interfaces table](/user-guide/features/plugins#pluggable-interfaces--where-to-go-for-each) for a consolidated view of every extension surface including config-driven (TTS, STT, MCP, shell hooks) and drop-in directory (gateway hooks) styles.
 :::
 
 ## What you're building
@@ -452,6 +452,37 @@ requires_env:
 
 Both formats can be mixed in the same list. Already-set variables are skipped silently.
 
+### Lazy-install optional Python dependencies
+
+If your plugin wraps an SDK that not every user will have installed (a vendor SDK, a heavy ML lib, a platform-specific package), don't `import` it at the top of the module. Use the `tools.lazy_deps.ensure(...)` helper inside the tool handler — Hermes will install the package on first use, gated by the user's `security.allow_lazy_installs` config.
+
+```python
+# tools.py
+from tools.lazy_deps import ensure, FeatureUnavailable
+
+def my_tool_handler(args, **kwargs):
+    try:
+        ensure("my-plugin.my-backend")   # key must be in LAZY_DEPS
+    except FeatureUnavailable as exc:
+        return {"error": str(exc)}
+
+    import my_backend_sdk   # safe now
+    ...
+```
+
+Two rules from the security model in `tools/lazy_deps.py`:
+
+| Rule | Why |
+|---|---|
+| Your feature key must appear in the in-tree `LAZY_DEPS` allowlist | Prevents a malicious config from coaxing Hermes into installing arbitrary packages — only specs Hermes itself ships are eligible |
+| Specs are PyPI-by-name only | No `--index-url`, `git+https://`, or file: paths. Pin versions with PEP 440 (`"my-sdk>=1.2,<2"`) inside the allowlist entry |
+
+For third-party plugins distributed via pip, declare the optional deps as `[project.optional-dependencies]` extras in your own `pyproject.toml` and tell users to `pip install your-plugin[backend]` — that path doesn't go through `lazy_deps`. The lazy-install dance is most useful for **bundled** plugins where shipping a hard dependency on every install would bloat the base Hermes footprint.
+
+When `security.allow_lazy_installs: false` is set globally, `ensure()` raises `FeatureUnavailable` immediately with a remediation hint — your plugin should catch it and degrade gracefully (return an error result, not crash the tool loop).
+
+
+
 ### Conditional tool availability
 
 For tools that depend on optional libraries:
@@ -464,6 +495,30 @@ ctx.register_tool(
     check_fn=lambda: _has_optional_lib(),  # False = tool hidden from model
 )
 ```
+
+### Overriding a built-in tool
+
+To replace a built-in tool with your own implementation (e.g. swap the
+default browser tool for a headed-Chrome CDP backend, or replace
+`web_search` with a custom corporate index), pass `override=True`:
+
+```python
+def register(ctx):
+    ctx.register_tool(
+        name="browser_navigate",             # same name as the built-in
+        toolset="plugin_my_browser",         # your own toolset namespace
+        schema={...},
+        handler=my_custom_navigate,
+        override=True,                       # explicit opt-in
+    )
+```
+
+Without `override=True`, the registry rejects any registration that would
+shadow an existing tool from a different toolset — this prevents
+accidental overwrites. The override is logged at INFO level so it's
+auditable in `~/.hermes/logs/agent.log`. Plugins load after built-in
+tools, so the registration order is correct: your handler replaces the
+built-in one.
 
 ### Register multiple hooks
 
@@ -478,18 +533,18 @@ def register(ctx):
 
 ### Hook reference
 
-Each hook is documented in full on the **[Event Hooks reference](/docs/user-guide/features/hooks#plugin-hooks)** — callback signatures, parameter tables, exactly when each fires, and examples. Here's the summary:
+Each hook is documented in full on the **[Event Hooks reference](/user-guide/features/hooks#plugin-hooks)** — callback signatures, parameter tables, exactly when each fires, and examples. Here's the summary:
 
 | Hook | Fires when | Callback signature | Returns |
 |------|-----------|-------------------|---------|
-| [`pre_tool_call`](/docs/user-guide/features/hooks#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | ignored |
-| [`post_tool_call`](/docs/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
-| [`pre_llm_call`](/docs/user-guide/features/hooks#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
-| [`post_llm_call`](/docs/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
-| [`on_session_start`](/docs/user-guide/features/hooks#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
-| [`on_session_end`](/docs/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
-| [`on_session_finalize`](/docs/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
-| [`on_session_reset`](/docs/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
+| [`pre_tool_call`](/user-guide/features/hooks#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | ignored |
+| [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
+| [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
+| [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
+| [`on_session_start`](/user-guide/features/hooks#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
+| [`on_session_end`](/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
+| [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
+| [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
 
 Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
 
@@ -626,7 +681,7 @@ def register(ctx):
 
 After registration, users can run `hermes my-plugin status`, `hermes my-plugin config`, etc.
 
-**Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](/docs/developer-guide/memory-provider-plugin#adding-cli-commands) for details.
+**Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](/developer-guide/memory-provider-plugin#adding-cli-commands) for details.
 
 **Active-provider gating:** Memory plugin CLI commands only appear when their provider is the active `memory.provider` in config. If a user hasn't set up your provider, your CLI commands won't clutter the help output.
 
@@ -715,7 +770,7 @@ def register(ctx):
 **Runtime behavior:**
 
 - **CLI mode:** `parent_agent` is resolved from the active CLI agent so workspace hints, spinner, and model selection inherit as expected.
-- **Gateway mode:** There is no CLI agent, so tools degrade gracefully — workspace is read from `TERMINAL_CWD` and no spinner is shown.
+- **Gateway mode:** There is no CLI agent, so tools degrade gracefully — workspace is read from the configured terminal working directory and no spinner is shown.
 - **Explicit override:** If the caller passes `parent_agent=` explicitly, it is respected and not overwritten.
 
 This is the public, stable interface for tool dispatch from plugin commands. Plugins should not reach into `ctx._cli_ref.agent` or similar private state.
@@ -759,7 +814,7 @@ description: Acme Inference — OpenAI-compatible direct API
 
 Lazy-discovered the first time anything calls `get_provider_profile()` or `list_providers()` — `auth.py`, `config.py`, `doctor.py`, `models.py`, `runtime_provider.py`, and the chat_completions transport auto-wire to it. User plugins override bundled ones by name.
 
-**Full guide:** [Model Provider Plugins](/docs/developer-guide/model-provider-plugin) — field reference, overridable hooks (`prepare_messages`, `build_extra_body`, `build_api_kwargs_extras`, `fetch_models`), api_mode selection, auth types, testing.
+**Full guide:** [Model Provider Plugins](/developer-guide/model-provider-plugin) — field reference, overridable hooks (`prepare_messages`, `build_extra_body`, `build_api_kwargs_extras`, `fetch_models`), api_mode selection, auth types, testing.
 
 ### Platform plugins — add a gateway channel
 
@@ -819,7 +874,7 @@ optional_env:
     password: false
 ```
 
-**Full guide:** [Adding Platform Adapters](/docs/developer-guide/adding-platform-adapters) — complete `BasePlatformAdapter` contract, message routing, auth gating, setup wizard integration. Look at `plugins/platforms/irc/` for a stdlib-only working example.
+**Full guide:** [Adding Platform Adapters](/developer-guide/adding-platform-adapters) — complete `BasePlatformAdapter` contract, message routing, auth gating, setup wizard integration. Look at `plugins/platforms/irc/` for a stdlib-only working example.
 
 ### Memory provider plugins — add a cross-session knowledge backend
 
@@ -853,7 +908,7 @@ def register(ctx):
 
 Memory providers are single-select — only one is active at a time, chosen via `memory.provider` in `config.yaml`.
 
-**Full guide:** [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) — full `MemoryProvider` ABC, threading contract, profile isolation, CLI command registration via `cli.py`.
+**Full guide:** [Memory Provider Plugins](/developer-guide/memory-provider-plugin) — full `MemoryProvider` ABC, threading contract, profile isolation, CLI command registration via `cli.py`.
 
 ### Context engine plugins — replace the context compressor
 
@@ -875,7 +930,7 @@ def register(ctx):
 
 Context engines are single-select — chosen via `context.engine` in `config.yaml`.
 
-**Full guide:** [Context Engine Plugins](/docs/developer-guide/context-engine-plugin).
+**Full guide:** [Context Engine Plugins](/developer-guide/context-engine-plugin).
 
 ### Image-generation backends
 
@@ -905,13 +960,13 @@ version: 1.0.0
 description: Custom image generation backend
 ```
 
-**Full guide:** [Image Generation Provider Plugins](/docs/developer-guide/image-gen-provider-plugin) — full `ImageGenProvider` ABC, `list_models()` / `get_setup_schema()` metadata, `success_response()`/`error_response()` helpers, base64 vs URL output, user overrides, pip distribution.
+**Full guide:** [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin) — full `ImageGenProvider` ABC, `list_models()` / `get_setup_schema()` metadata, `success_response()`/`error_response()` helpers, base64 vs URL output, user overrides, pip distribution.
 
 **Reference examples:** `plugins/image_gen/openai/` (DALL-E / GPT-Image via OpenAI SDK), `plugins/image_gen/openai-codex/`, `plugins/image_gen/xai/` (Grok image gen).
 
 ## Non-Python extension surfaces
 
-Hermes also accepts extensions that aren't Python plugins at all. These are shown in the [Pluggable interfaces table](/docs/user-guide/features/plugins#pluggable-interfaces--where-to-go-for-each); the sections below sketch each authoring style briefly.
+Hermes also accepts extensions that aren't Python plugins at all. These are shown in the [Pluggable interfaces table](/user-guide/features/plugins#pluggable-interfaces--where-to-go-for-each); the sections below sketch each authoring style briefly.
 
 ### MCP servers — register external tools
 
@@ -930,7 +985,7 @@ mcp_servers:
       type: "oauth"
 ```
 
-Hermes connects to each server at startup, lists its tools, and registers them alongside built-ins. The LLM sees them exactly like any other tool. **Full guide:** [MCP](/docs/user-guide/features/mcp).
+Hermes connects to each server at startup, lists its tools, and registers them alongside built-ins. The LLM sees them exactly like any other tool. **Full guide:** [MCP](/user-guide/features/mcp).
 
 ### Gateway event hooks — fire on lifecycle events
 
@@ -954,7 +1009,7 @@ async def handle(event_type: str, context: dict) -> None:
 
 Events include `gateway:startup`, `session:start`, `session:end`, `session:reset`, `agent:start`, `agent:step`, `agent:end`, and wildcard `command:*`. Errors in hooks are caught and logged — they never block the main pipeline.
 
-**Full guide:** [Gateway Event Hooks](/docs/user-guide/features/hooks#gateway-event-hooks).
+**Full guide:** [Gateway Event Hooks](/user-guide/features/hooks#gateway-event-hooks).
 
 ### Shell hooks — run a shell command on tool calls
 
@@ -970,7 +1025,7 @@ hooks:
 
 Supports all the same events as Python plugin hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`, `pre_gateway_dispatch`) plus structured JSON output for `pre_tool_call` blocking decisions.
 
-**Full guide:** [Shell Hooks](/docs/user-guide/features/hooks#shell-hooks).
+**Full guide:** [Shell Hooks](/user-guide/features/hooks#shell-hooks).
 
 ### Skill sources — add a custom skill registry
 
@@ -984,7 +1039,7 @@ hermes skills install myorg/skills-repo/my-workflow
 
 Publishing your own tap is just a GitHub repo with `skills/<skill-name>/SKILL.md` directories — no server or registry signup needed.
 
-**Full guides:** [Skills Hub](/docs/user-guide/features/skills#skills-hub) · [Publishing a custom tap](/docs/user-guide/features/skills#publishing-a-custom-skill-tap) (repo layout, minimal example, non-default paths, trust levels).
+**Full guides:** [Skills Hub](/user-guide/features/skills#skills-hub) · [Publishing a custom tap](/user-guide/features/skills#publishing-a-custom-skill-tap) (repo layout, minimal example, non-default paths, trust levels).
 
 ### TTS / STT via command templates
 
@@ -1003,7 +1058,7 @@ tts:
 
 For STT, point `HERMES_LOCAL_STT_COMMAND` at a shell template. Supported placeholders: `{input_path}`, `{output_path}`, `{format}`, `{voice}`, `{model}`, `{speed}` (TTS); `{input_path}`, `{output_dir}`, `{language}`, `{model}` (STT). Any path-interacting CLI is automatically a plugin.
 
-**Full guides:** [TTS custom command providers](/docs/user-guide/features/tts#custom-command-providers) · [STT](/docs/user-guide/features/tts#voice-message-transcription-stt).
+**Full guides:** [TTS custom command providers](/user-guide/features/tts#custom-command-providers) · [STT](/user-guide/features/tts#voice-message-transcription-stt).
 
 ## Distribute via pip
 
@@ -1055,7 +1110,7 @@ services.hermes-agent.extraPlugins = [
 ];
 ```
 
-See the [Nix Setup guide](/docs/getting-started/nix-setup#plugins) for complete documentation including overlay usage and collision checking.
+See the [Nix Setup guide](/getting-started/nix-setup#plugins) for complete documentation including overlay usage and collision checking.
 
 ## Common mistakes
 

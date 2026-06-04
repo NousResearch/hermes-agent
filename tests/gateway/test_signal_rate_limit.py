@@ -1,11 +1,9 @@
 """Tests for the SignalAttachmentScheduler token-bucket simulator."""
 import asyncio
-import time
 
 import pytest
 
 from gateway.platforms.signal_rate_limit import (
-    SIGNAL_MAX_ATTACHMENTS_PER_MSG,
     SIGNAL_RATE_LIMIT_BUCKET_CAPACITY,
     SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER,
     SignalAttachmentScheduler,

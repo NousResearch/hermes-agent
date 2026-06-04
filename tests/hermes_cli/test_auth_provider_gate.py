@@ -1,7 +1,6 @@
 """Tests for is_provider_explicitly_configured()."""
 
 import json
-import os
 import pytest
 
 

@@ -9,7 +9,6 @@ of stopping. These tests verify that auth errors now stop the reconnect.
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +30,7 @@ class TestMattermostWSAuthRetry:
             headers=MagicMock(),
         )
 
-        from gateway.platforms.mattermost import MattermostAdapter
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
         adapter = MattermostAdapter.__new__(MattermostAdapter)
         adapter._closing = False
 
@@ -61,7 +60,7 @@ class TestMattermostWSAuthRetry:
             headers=MagicMock(),
         )
 
-        from gateway.platforms.mattermost import MattermostAdapter
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
         adapter = MattermostAdapter.__new__(MattermostAdapter)
         adapter._closing = False
 
@@ -79,7 +78,7 @@ class TestMattermostWSAuthRetry:
 
     def test_transient_error_retries(self):
         """A transient ConnectionError should retry (not stop immediately)."""
-        from gateway.platforms.mattermost import MattermostAdapter
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
         adapter = MattermostAdapter.__new__(MattermostAdapter)
         adapter._closing = False
 

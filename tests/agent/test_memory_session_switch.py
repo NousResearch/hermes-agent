@@ -7,7 +7,6 @@ state in initialize() (Hindsight, and any plugin that stores session_id
 for scoped writes) keep writing into the old session's record.
 """
 
-import json
 
 import pytest
 

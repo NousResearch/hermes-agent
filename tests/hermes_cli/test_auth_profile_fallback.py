@@ -17,12 +17,18 @@ from pathlib import Path
 import pytest
 
 
-def _make_auth_store(pool: dict | None = None, providers: dict | None = None) -> dict:
+def _make_auth_store(
+    pool: dict | None = None,
+    providers: dict | None = None,
+    active_provider: str | None = None,
+) -> dict:
     store: dict = {"version": 1}
     if pool is not None:
         store["credential_pool"] = pool
     if providers is not None:
         store["providers"] = providers
+    if active_provider is not None:
+        store["active_provider"] = active_provider
     return store
 
 
@@ -276,6 +282,98 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
 
 
 # ---------------------------------------------------------------------------
+# _load_provider_state — internal global fallback (issue #18594 follow-up)
+#
+# Several runtime helpers (notably ``resolve_nous_runtime_credentials`` and
+# ``resolve_nous_access_token``) call ``_load_provider_state`` directly with
+# a profile-loaded auth store rather than going through
+# ``get_provider_auth_state``. Without the fallback wired into
+# ``_load_provider_state`` itself, those helpers raise ``"Hermes is not
+# logged into Nous Portal"`` even though the user has a valid global Nous
+# login. These tests pin the per-provider shadowing into the helper.
+# ---------------------------------------------------------------------------
+
+
+def test_load_provider_state_falls_back_to_global(profile_env):
+    """When the loaded profile store has no provider entry, fall back to global."""
+    from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "nous": {"access_token": "global-nous-token", "refresh_token": "rt"},
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+
+    auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "nous")
+    assert state is not None
+    assert state["access_token"] == "global-nous-token"
+
+
+def test_load_provider_state_profile_wins_over_global(profile_env):
+    from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "nous": {"access_token": "global-token"},
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "nous": {"access_token": "profile-token"},
+    }))
+
+    auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "nous")
+    assert state is not None
+    assert state["access_token"] == "profile-token"
+
+
+def test_load_provider_state_returns_none_when_neither_has_it(profile_env):
+    from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={}))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+
+    auth_store = _load_auth_store()
+    assert _load_provider_state(auth_store, "nous") is None
+
+
+def test_load_provider_state_classic_mode_no_fallback(tmp_path, monkeypatch):
+    """In classic mode there is no global to fall back to; behavior is unchanged."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    hermes_home = tmp_path / "classic"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _write(hermes_home / "auth.json", _make_auth_store(providers={
+        "nous": {"access_token": "classic-token"},
+    }))
+
+    from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+    auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "nous")
+    assert state is not None
+    assert state["access_token"] == "classic-token"
+    # Absent providers still return None.
+    assert _load_provider_state(auth_store, "anthropic") is None
+
+
+def test_load_provider_state_malformed_global_does_not_break_profile(profile_env):
+    """A corrupt global auth.json must not break profile reads."""
+    (profile_env["global"] / "auth.json").write_text("{not valid json")
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "nous": {"access_token": "profile-token"},
+    }))
+
+    from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+    auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "nous")
+    assert state is not None
+    assert state["access_token"] == "profile-token"
+
+
+# ---------------------------------------------------------------------------
 # Classic mode — no fallback path should ever trigger
 # ---------------------------------------------------------------------------
 
@@ -358,3 +456,101 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
 
     # Subsequent read returns profile (shadows global).
     assert [e["id"] for e in read_credential_pool("openrouter")] == ["prof-new"]
+
+
+# ---------------------------------------------------------------------------
+# get_active_provider — global active_provider fallback (issue #18594 follow-up)
+#
+# The per-provider state/pool fallbacks let a profile *read* a provider that
+# was only authenticated at the global root, but ``resolve_provider()`` picks
+# the ``auto`` provider from ``active_provider`` — which only ever read the
+# profile store. A named profile running ``model.provider: auto`` could see
+# the global Nous login (``get_provider_auth_state('nous')`` succeeds) yet
+# still fail to select it. These pin the active_provider shadowing so the
+# selection mirrors the state/pool fallbacks: profile wins when present, fall
+# back to global when the profile never chose its own provider.
+# ---------------------------------------------------------------------------
+
+
+def test_active_provider_falls_back_to_global(profile_env):
+    """An empty profile inherits the global-root active_provider selection."""
+    from hermes_cli.auth import get_active_provider
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(
+        providers={"nous": {"access_token": "nous-global"}},
+        active_provider="nous",
+    ))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+
+    assert get_active_provider() == "nous"
+
+
+def test_active_provider_profile_wins_over_global(profile_env):
+    """A profile that selected its own provider shadows the global selection."""
+    from hermes_cli.auth import get_active_provider
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(
+        providers={"nous": {"access_token": "nous-global"}},
+        active_provider="nous",
+    ))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(
+        providers={"anthropic": {"access_token": "ant-profile"}},
+        active_provider="anthropic",
+    ))
+
+    assert get_active_provider() == "anthropic"
+
+
+def test_active_provider_none_when_neither_has_it(profile_env):
+    """No selection anywhere stays None — the fallback must not invent one."""
+    from hermes_cli.auth import get_active_provider
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={}))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+
+    assert get_active_provider() is None
+
+
+def test_active_provider_classic_mode_reads_profile(tmp_path, monkeypatch):
+    """In classic mode there is no global to fall back to; behavior is unchanged."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    hermes_home = tmp_path / "classic"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _write(hermes_home / "auth.json", _make_auth_store(
+        providers={"nous": {"access_token": "classic-token"}},
+        active_provider="nous",
+    ))
+
+    from hermes_cli.auth import get_active_provider
+
+    assert get_active_provider() == "nous"
+
+
+def test_resolve_provider_uses_global_active_provider(profile_env, monkeypatch):
+    """resolve_provider('auto') honors the global-root active_provider.
+
+    This is the user-visible contract: a named profile with no provider entry
+    of its own, started with ``model.provider: auto`` while a valid login
+    exists at the global root, resolves that provider instead of raising
+    ``No inference provider configured``. ``get_auth_status`` is stubbed so the
+    login check stays offline (no Nous token refresh / network).
+    """
+    import hermes_cli.auth as auth
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(
+        providers={"nous": {"access_token": "nous-global"}},
+        active_provider="nous",
+    ))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+
+    monkeypatch.setattr(
+        auth,
+        "get_auth_status",
+        lambda provider=None: {"logged_in": True, "provider": provider},
+    )
+
+    assert auth.resolve_provider("auto") == "nous"

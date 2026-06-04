@@ -1,6 +1,5 @@
 """Tests for credential file passthrough and skills directory mounting."""
 
-import json
 import os
 from pathlib import Path
 from unittest.mock import patch

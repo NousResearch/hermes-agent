@@ -11,7 +11,6 @@ transcript line.
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -34,11 +33,17 @@ def server():
 
         mod = importlib.import_module("tui_gateway.server")
         yield mod
+        # Reset module-level session state without re-importing. importlib.reload
+        # would re-register the module's atexit hooks (ThreadPoolExecutor
+        # shutdown, _shutdown_sessions); the duplicates race the stderr
+        # buffer at interpreter shutdown and surface as Fatal Python error:
+        # _enter_buffered_busy. Clearing the per-session dicts gives the
+        # next test a clean slate; _methods is NOT cleared because it's
+        # populated at module import time and re-registration only happens
+        # via reload (which we don't do).
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
-        mod._methods.clear()
-        importlib.reload(mod)
 
 
 def test_init_session_attaches_background_review_callback(server, monkeypatch):
@@ -49,7 +54,7 @@ def test_init_session_attaches_background_review_callback(server, monkeypatch):
     monkeypatch.setattr(server, "_SlashWorker", lambda *a, **kw: object())
     monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
     monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
-    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": "m"})
+    monkeypatch.setattr(server, "_session_info", lambda agent, session=None: {"model": "m"})
     monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
 
@@ -101,7 +106,7 @@ def test_review_summary_callback_survives_agent_without_attribute(server, monkey
     monkeypatch.setattr(server, "_SlashWorker", lambda *a, **kw: object())
     monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
     monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
-    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": "m"})
+    monkeypatch.setattr(server, "_session_info", lambda agent, session=None: {"model": "m"})
     monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)

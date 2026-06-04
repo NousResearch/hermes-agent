@@ -1,7 +1,6 @@
 """Tests for the Discord server introspection and management tool."""
 
 import json
-import os
 import urllib.error
 from io import BytesIO
 from unittest.mock import MagicMock, patch
@@ -14,7 +13,6 @@ from tools.discord_tool import (
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
     _available_actions,
-    _build_schema,
     _channel_type_name,
     _detect_capabilities,
     _discord_request,
@@ -633,7 +631,7 @@ class TestToolsetInclusion:
     def test_discord_tools_not_in_other_toolsets(self):
         from toolsets import TOOLSETS
         for name, ts in TOOLSETS.items():
-            if name in ("hermes-discord", "hermes-gateway", "discord", "discord_admin"):
+            if name in {"hermes-discord", "hermes-gateway", "discord", "discord_admin"}:
                 continue
             tools = ts.get("tools", [])
             assert "discord" not in tools or name == "discord", (
@@ -1089,9 +1087,17 @@ class Test403Enrichment:
 class TestModelToolsIntegration:
     def setup_method(self):
         _reset_capability_cache()
+        from model_tools import _clear_tool_defs_cache
+        from tools.registry import invalidate_check_fn_cache
+        _clear_tool_defs_cache()
+        invalidate_check_fn_cache()
 
     def teardown_method(self):
         _reset_capability_cache()
+        from model_tools import _clear_tool_defs_cache
+        from tools.registry import invalidate_check_fn_cache
+        _clear_tool_defs_cache()
+        invalidate_check_fn_cache()
 
     @patch("tools.discord_tool._discord_request")
     def test_discord_admin_schema_rebuilt_by_get_tool_definitions(

@@ -6,7 +6,7 @@ description: "Ready-to-use automation recipes — scheduled tasks, GitHub event 
 
 # Automation Templates
 
-Copy-paste recipes for common automation patterns. Each template uses Hermes's built-in [cron scheduler](/docs/user-guide/features/cron) for time-based triggers and [webhook platform](/docs/user-guide/messaging/webhooks) for event-driven triggers.
+Copy-paste recipes for common automation patterns. Each template uses Hermes's built-in [cron scheduler](/user-guide/features/cron) for time-based triggers and [webhook platform](/user-guide/messaging/webhooks) for event-driven triggers.
 
 Every template works with **any model** — not locked to a single provider.
 

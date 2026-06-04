@@ -16,11 +16,17 @@ import json
 import os
 import sys
 import types
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
+
+# Platform uses _missing_() for dynamic members, so "google_chat" is
+# resolvable via Platform("google_chat") even without a static
+# GOOGLE_CHAT attribute on the enum class.
+_GC = Platform("google_chat")
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +235,7 @@ def _make_chat_envelope(text="hello", sender_email="u@example.com", sender_type=
 
 class TestPlatformRegistration:
     def test_enum_value(self):
-        assert Platform.GOOGLE_CHAT.value == "google_chat"
+        assert _GC.value == "google_chat"
 
     def test_requirements_check_returns_true_when_available(self):
         # The shim flag is True in this test module.
@@ -266,14 +272,14 @@ class TestEnvConfigLoading:
         monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "p")
         # No subscription.
         cfg = load_gateway_config()
-        assert Platform.GOOGLE_CHAT not in cfg.platforms
+        assert _GC not in cfg.platforms
 
     def test_missing_project_does_not_enable(self, monkeypatch):
         self._clean_env(monkeypatch)
         monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION_NAME",
                            "projects/p/subscriptions/s")
         cfg = load_gateway_config()
-        assert Platform.GOOGLE_CHAT not in cfg.platforms
+        assert _GC not in cfg.platforms
 
 
 
@@ -1511,6 +1517,13 @@ class TestSetupFilesSlashCommand:
 
 
 class TestUserOAuthHelper:
+    @staticmethod
+    def _assert_private_json_file(path, expected):
+        assert json.loads(path.read_text(encoding="utf-8")) == expected
+        assert list(path.parent.glob(f"{path.stem}.tmp.*")) == []
+        if os.name != "nt":
+            assert (path.stat().st_mode & 0o777) == 0o600
+
     def test_load_user_credentials_returns_none_when_no_token(self, tmp_path, monkeypatch):
         """Missing token file is the expected no-op case (user hasn't
         run /setup-files yet). Must NOT raise."""
@@ -1604,6 +1617,120 @@ class TestUserOAuthHelper:
         assert a != b
         assert a != legacy
         assert "google_chat_user_oauth_pending" in str(a.parent)
+
+    def test_persist_credentials_writes_private_json(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from plugins.platforms.google_chat.oauth import _persist_credentials, _token_path
+
+        creds = type(
+            "Creds",
+            (),
+            {
+                "to_json": lambda self: json.dumps(
+                    {
+                        "client_id": "cid",
+                        "client_secret": "secret",
+                        "refresh_token": "rtok",
+                        "token": "atok",
+                    }
+                )
+            },
+        )()
+
+        path = _token_path("alice@example.com")
+        _persist_credentials(creds, path)
+
+        self._assert_private_json_file(
+            path,
+            {
+                "client_id": "cid",
+                "client_secret": "secret",
+                "refresh_token": "rtok",
+                "token": "atok",
+                "type": "authorized_user",
+            },
+        )
+
+    def test_client_secret_is_shared_across_profiles(self, tmp_path, monkeypatch):
+        """The OAuth client secret is host-wide infra: a secret seeded at the
+        default root by the documented one-time `--client-secret` host step
+        must be visible to a gateway running under a named profile.
+
+        Regression: `_client_secret_path()` used to scope to the active
+        HERMES_HOME, so a profile gateway reported 'No client credentials
+        stored on the host' even after the host setup had been run.
+        """
+        root = tmp_path / ".hermes"
+        profile_home = root / "profiles" / "bot1"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        # Seed the secret at the default root, as the host setup does.
+        secret = root / "google_chat_user_client_secret.json"
+        secret.write_text("{}", encoding="utf-8")
+
+        # Resolve from inside a named profile.
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        from plugins.platforms.google_chat.oauth import _client_secret_path
+        assert _client_secret_path() == secret
+        assert _client_secret_path().exists()
+
+    def test_profile_local_client_secret_takes_precedence(self, tmp_path, monkeypatch):
+        """A profile-local secret (separate OAuth app per bot, or a legacy
+        profile-scoped seed) overrides the host-wide default when present."""
+        root = tmp_path / ".hermes"
+        profile_home = root / "profiles" / "bot1"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        (root / "google_chat_user_client_secret.json").write_text(
+            "{}", encoding="utf-8"
+        )
+        profile_secret = profile_home / "google_chat_user_client_secret.json"
+        profile_secret.write_text("{}", encoding="utf-8")
+
+        from plugins.platforms.google_chat.oauth import _client_secret_path
+        assert _client_secret_path() == profile_secret
+
+    def test_store_client_secret_writes_private_json(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        src = tmp_path / "client_secret.json"
+        payload = {"installed": {"client_id": "cid", "client_secret": "secret"}}
+        src.write_text(json.dumps(payload), encoding="utf-8")
+
+        from plugins.platforms.google_chat.oauth import (
+            _client_secret_path,
+            store_client_secret,
+        )
+
+        store_client_secret(str(src))
+
+        self._assert_private_json_file(_client_secret_path(), payload)
+
+    def test_save_pending_auth_writes_private_json(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from plugins.platforms.google_chat.oauth import (
+            _REDIRECT_URI,
+            _pending_auth_path,
+            _save_pending_auth,
+        )
+
+        _save_pending_auth(
+            state="state-123",
+            code_verifier="verifier-abc",
+            email="alice@example.com",
+        )
+
+        self._assert_private_json_file(
+            _pending_auth_path("alice@example.com"),
+            {
+                "state": "state-123",
+                "code_verifier": "verifier-abc",
+                "redirect_uri": _REDIRECT_URI,
+                "email": "alice@example.com",
+            },
+        )
 
 
 class TestPerUserAttachmentRouting:
@@ -2583,7 +2710,7 @@ class TestAuthorizationEmailMatch:
         runner.pairing_store.is_approved = MagicMock(return_value=False)
 
         source = SessionSource(
-            platform=Platform.GOOGLE_CHAT,
+            platform=_GC,
             chat_id="spaces/S",
             chat_type="dm",
             user_id="alice@example.com",       # post-swap: email is canonical
@@ -2604,7 +2731,7 @@ class TestAuthorizationEmailMatch:
         runner.pairing_store.is_approved = MagicMock(return_value=False)
 
         source = SessionSource(
-            platform=Platform.GOOGLE_CHAT,
+            platform=_GC,
             chat_id="spaces/S",
             chat_type="dm",
             user_id="bob@example.com",
@@ -2630,7 +2757,7 @@ class TestAuthorizationEmailMatch:
         runner.pairing_store.is_approved = MagicMock(return_value=False)
 
         source = SessionSource(
-            platform=Platform.GOOGLE_CHAT,
+            platform=_GC,
             chat_id="spaces/S",
             chat_type="dm",
             user_id="users/77777",  # no email available — resource name wins
@@ -2740,7 +2867,7 @@ class _FakeAiohttpSession:
 
 def _install_fake_aiohttp(monkeypatch, session):
     fake_aiohttp = types.SimpleNamespace(
-        ClientSession=lambda timeout=None: session,
+        ClientSession=lambda timeout=None, **kwargs: session,
         ClientTimeout=lambda total=None: None,
     )
     monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)

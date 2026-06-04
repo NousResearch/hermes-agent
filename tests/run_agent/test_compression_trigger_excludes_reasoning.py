@@ -6,8 +6,6 @@ trigger must use only prompt_tokens so sessions aren't prematurely split.
 """
 
 import types
-import pytest
-from unittest.mock import MagicMock, patch
 
 
 def _make_agent_stub(prompt_tokens, completion_tokens, threshold_tokens):

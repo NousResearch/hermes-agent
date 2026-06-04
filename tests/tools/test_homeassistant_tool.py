@@ -501,16 +501,18 @@ class TestRegistration:
 
     def test_check_fn_gates_availability(self, monkeypatch):
         """Registry should exclude HA tools when HASS_TOKEN is not set."""
-        from tools.registry import registry
+        from tools.registry import invalidate_check_fn_cache, registry
 
         monkeypatch.delenv("HASS_TOKEN", raising=False)
+        invalidate_check_fn_cache()
         defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_call_service"})
         assert len(defs) == 0
 
     def test_check_fn_includes_when_token_set(self, monkeypatch):
         """Registry should include HA tools when HASS_TOKEN is set."""
-        from tools.registry import registry
+        from tools.registry import invalidate_check_fn_cache, registry
 
         monkeypatch.setenv("HASS_TOKEN", "test-token")
+        invalidate_check_fn_cache()
         defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_call_service"})
         assert len(defs) == 3

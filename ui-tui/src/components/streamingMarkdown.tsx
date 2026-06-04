@@ -128,7 +128,7 @@ export const findStableBoundary = (text: string) => {
   return -1
 }
 
-export const StreamingMd = memo(function StreamingMd({ compact, t, text }: StreamingMdProps) {
+export const StreamingMd = memo(function StreamingMd({ cols, compact, t, text }: StreamingMdProps) {
   const stablePrefixRef = useRef('')
 
   // Reset if the text no longer starts with our recorded prefix (defensive;
@@ -151,22 +151,23 @@ export const StreamingMd = memo(function StreamingMd({ compact, t, text }: Strea
   const unstableSuffix = text.slice(stablePrefix.length)
 
   if (!stablePrefix) {
-    return <Md compact={compact} t={t} text={unstableSuffix} />
+    return <Md cols={cols} compact={compact} t={t} text={unstableSuffix} />
   }
 
   if (!unstableSuffix) {
-    return <Md compact={compact} t={t} text={stablePrefix} />
+    return <Md cols={cols} compact={compact} t={t} text={stablePrefix} />
   }
 
   return (
     <Box flexDirection="column">
-      <Md compact={compact} t={t} text={stablePrefix} />
-      <Md compact={compact} t={t} text={unstableSuffix} />
+      <Md cols={cols} compact={compact} t={t} text={stablePrefix} />
+      <Md cols={cols} compact={compact} t={t} text={unstableSuffix} />
     </Box>
   )
 })
 
 interface StreamingMdProps {
+  cols?: number
   compact?: boolean
   t: Theme
   text: string

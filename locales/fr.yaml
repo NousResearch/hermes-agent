@@ -90,6 +90,7 @@ gateway:
     nothing_to_do:         "Rien à compresser pour l'instant (la transcription est encore entièrement du contexte protégé)."
     focus_line:            "Focus : \"{topic}\""
     summary_failed:        "⚠️ Échec de la génération du résumé ({error}). {count} message(s) historique(s) ont été supprimés et remplacés par un espace réservé ; le contexte antérieur n'est plus récupérable. Vérifiez la configuration du modèle auxiliary.compression."
+    aborted:               "⚠️ Compression interrompue ({error}). Aucun message n'a été supprimé — la conversation est inchangée. Lancez /compress pour réessayer, /reset pour une nouvelle session, ou vérifiez la configuration de votre modèle auxiliary.compression."
     aux_failed:            "ℹ️ Le modèle de compression configuré `{model}` a échoué ({error}). Récupéré avec votre modèle principal — le contexte est intact — mais vous pouvez vérifier `auxiliary.compression.model` dans config.yaml."
     failed:                "Échec de la compression : {error}"
 
@@ -221,9 +222,12 @@ gateway:
     no_named_sessions:     "Aucune session nommée trouvée.\nUtilisez `/title Ma session` pour nommer la session actuelle, puis `/resume Ma session` pour y revenir plus tard."
     list_header:           "📋 **Sessions nommées**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nUsage : `/resume <nom de session>`"
+    list_footer_numbered:  "\nUtilisation : `/resume <nom de session>` ou `/resume <numéro>` (par exemple `/resume 1` pour la plus récente)"
     list_failed:           "Impossible de lister les sessions : {error}"
+    out_of_range:          "L'index de reprise {index} est hors limites.\nUtilisez `/resume` sans arguments pour voir les sessions disponibles."
     not_found:             "Aucune session correspondant à '**{name}**' trouvée.\nUtilisez `/resume` sans argument pour voir les sessions disponibles."
     already_on:            "📌 Déjà sur la session **{name}**."
     switch_failed:         "Échec du changement de session."
@@ -286,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "Rien à annuler."
-    removed:               "↩️ {count} message(s) annulé(s).\nSupprimé : « {preview} »"
+    removed:               "↩️ {turns} tour(s) annulé(s) ({count} message(s)).\nSauvegardé dans : « {preview} »\nCopiez/modifiez le texte ci-dessus et envoyez-le pour relancer à partir d'ici."
+    invalid_count:         "Nombre invalide « {arg} » — utilisez /undo ou /undo N."
 
   update:
     platform_not_messaging:  "✗ /update n'est disponible que depuis les plateformes de messagerie. Exécutez `hermes update` depuis le terminal."

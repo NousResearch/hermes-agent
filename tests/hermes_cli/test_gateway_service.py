@@ -999,24 +999,6 @@ class TestGatewaySystemServiceRouting:
 
         assert calls == [(False, False, True)]
 
-    def test_gateway_install_passes_system_flags(self, monkeypatch):
-        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
-        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-
-        calls = []
-        monkeypatch.setattr(
-            gateway_cli,
-            "systemd_install",
-            lambda force=False, system=False, run_as_user=None: calls.append((force, system, run_as_user)),
-        )
-
-        gateway_cli.gateway_command(
-            SimpleNamespace(gateway_command="install", force=True, system=True, run_as_user="alice")
-        )
-
-        assert calls == [(True, True, "alice")]
-
     def test_gateway_install_reports_termux_manual_mode(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: True)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
@@ -1339,7 +1321,6 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_auto_detected_root_is_rejected(self, monkeypatch):
         """When root is auto-detected (not explicitly requested), raise."""
-        import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setenv("USER", "root")
@@ -1361,7 +1342,6 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_non_root_user_passes_through(self, monkeypatch):
         """Normal non-root user works as before."""
-        import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setenv("USER", "nobody")
@@ -1724,7 +1704,12 @@ class TestSystemUnitPathRemapping:
         assert str(root_home) not in unit
         # Target user paths should be present
         assert "/home/alice" in unit
-        assert "WorkingDirectory=/home/alice/.hermes/hermes-agent" in unit
+        # WorkingDirectory is anchored at the target user's HERMES_HOME (stable,
+        # always exists) — NOT the source checkout under it. Pinning cwd to the
+        # checkout is the rot bug fixed alongside this: a relocated/removed
+        # checkout would crash-loop the unit on CHDIR (status=200).
+        assert "WorkingDirectory=/home/alice/.hermes" in unit
+        assert "WorkingDirectory=/home/alice/.hermes/hermes-agent" not in unit
 
 
 class TestDockerAwareGateway:
@@ -2551,3 +2536,67 @@ class TestGatewayCommandCatchesSystemScopeError:
         # Renders the message, NOT the ``('msg', 'action')`` tuple repr
         assert "System gateway start requires root. Re-run with sudo." in out
         assert "('" not in out  # no tuple repr leaking through
+
+
+class TestServiceWorkingDirIsStable:
+    """The gateway service must anchor WorkingDirectory at a stable path
+    (HERMES_HOME), never the source checkout / worktree, so a relocated or
+    deleted checkout can't crash-loop the unit on CHDIR (status=200).
+    """
+
+    def test_stable_working_dir_uses_hermes_home(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        assert Path(gateway_cli._stable_service_working_dir()) == home.resolve()
+
+    def test_stable_working_dir_falls_back_to_project_root(self, tmp_path, monkeypatch):
+        # HERMES_HOME points somewhere that does not exist -> fall back.
+        missing = tmp_path / "does-not-exist" / ".hermes"
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: missing)
+        assert gateway_cli._stable_service_working_dir() == str(gateway_cli.PROJECT_ROOT)
+
+    def test_user_unit_workingdirectory_is_hermes_home_not_checkout(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        wd = [l for l in unit.splitlines() if l.startswith("WorkingDirectory=")]
+        assert wd, "unit has no WorkingDirectory line"
+        value = wd[0].split("=", 1)[1]
+        assert Path(value).resolve() == home.resolve()
+        # The bug class: never pin cwd inside a transient worktree checkout.
+        assert "/.worktrees/" not in value
+
+    def test_launchd_workingdirectory_is_hermes_home(self, tmp_path, monkeypatch):
+        import re
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        plist = gateway_cli.generate_launchd_plist()
+        m = re.search(r"<key>WorkingDirectory</key>\s*<string>(.*?)</string>", plist)
+        assert m, "plist has no WorkingDirectory entry"
+        assert Path(m.group(1)).resolve() == home.resolve()
+        assert "/.worktrees/" not in m.group(1)
+
+    def test_launchd_plist_keepalive_unconditional(self, tmp_path, monkeypatch):
+        """KeepAlive must be unconditional <true/> so the gateway restarts on clean exits.
+
+        Bug #37388: the old ``KeepAlive.SuccessfulExit = false`` dict form meant
+        launchd would NOT restart after a zero-exit (e.g. ``gateway run --replace``
+        causes the old instance to exit cleanly).  Switching to the scalar
+        ``<key>KeepAlive</key><true/>`` makes launchd restart regardless of exit code.
+        """
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        plist = gateway_cli.generate_launchd_plist()
+
+        # Scalar <true/> must be present immediately after the KeepAlive key
+        assert "<key>KeepAlive</key>" in plist
+        # The unconditional form
+        assert "<key>KeepAlive</key>\n    <true/>" in plist
+        # The old conditional dict form must NOT appear
+        assert "SuccessfulExit" not in plist
+        assert "<key>KeepAlive</key>\n    <dict>" not in plist

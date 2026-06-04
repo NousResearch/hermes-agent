@@ -232,7 +232,7 @@ class TestPluginContextEngineSlot:
         assert mgr._context_engine is None
 
     def test_get_plugin_context_engine(self):
-        from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest, get_plugin_context_engine, _plugin_manager
+        from hermes_cli.plugins import PluginManager, get_plugin_context_engine
         import hermes_cli.plugins as plugins_mod
 
         # Inject a test manager

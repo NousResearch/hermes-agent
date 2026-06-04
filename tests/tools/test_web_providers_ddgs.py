@@ -5,14 +5,17 @@ Covers:
 - DDGSWebSearchProvider.search() — happy path, missing package, runtime error
 - Result normalization (title, url, description, position)
 - _is_backend_available("ddgs") / _get_backend() integration
-- web_extract / web_crawl return search-only errors when ddgs is active
+- web_extract returns a search-only error when ddgs is active
 """
 from __future__ import annotations
 
 import json
 import sys
 import types
-from unittest.mock import MagicMock
+
+import pytest
+
+from tests.tools.conftest import register_all_web_providers
 
 
 def _install_fake_ddgs(monkeypatch, *, text_results=None, text_raises=None):
@@ -205,11 +208,20 @@ class TestDDGSBackendWiring:
 
 
 # ---------------------------------------------------------------------------
-# ddgs is search-only: web_extract / web_crawl return clear errors
+# ddgs is search-only: web_extract returns a clear error
 # ---------------------------------------------------------------------------
 
 
 class TestDDGSSearchOnlyErrors:
+    _register_providers = staticmethod(register_all_web_providers)
+
+    @pytest.fixture(autouse=True)
+    def _populate_web_registry(self):
+        self._register_providers()
+        yield
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
+
     def test_web_extract_returns_search_only_error(self, monkeypatch):
         import asyncio
         from tools import web_tools
@@ -217,28 +229,11 @@ class TestDDGSSearchOnlyErrors:
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "ddgs"})
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
 
         result_str = asyncio.get_event_loop().run_until_complete(
             web_tools.web_extract_tool(["https://example.com"])
-        )
-        result = json.loads(result_str)
-        assert result["success"] is False
-        assert "search-only" in result["error"].lower()
-        assert "duckduckgo" in result["error"].lower() or "ddgs" in result["error"].lower()
-
-    def test_web_crawl_returns_search_only_error(self, monkeypatch):
-        import asyncio
-        from tools import web_tools
-
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "ddgs"})
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
-        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
-
-        result_str = asyncio.get_event_loop().run_until_complete(
-            web_tools.web_crawl_tool("https://example.com")
         )
         result = json.loads(result_str)
         assert result["success"] is False

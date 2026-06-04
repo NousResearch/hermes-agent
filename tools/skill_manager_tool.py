@@ -1269,7 +1269,7 @@ def skill_manage(
     if result.get("success"):
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
-            clear_skills_system_prompt_cache(clear_snapshot=True)
+            clear_skills_system_prompt_cache(clear_snapshot=False)
         except Exception:
             pass
         # Curator telemetry: bump patch_count on edit/patch/write_file (the actions

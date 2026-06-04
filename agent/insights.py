@@ -149,6 +149,11 @@ class InsightsEngine:
         activity = self._compute_activity_patterns(sessions)
         top_sessions = self._compute_top_sessions(sessions)
 
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except Exception:
+            pass
+
         return {
             "days": days,
             "source_filter": source,
@@ -193,7 +198,10 @@ class InsightsEngine:
             cursor = self._conn.execute(self._GET_SESSIONS_WITH_SOURCE, (cutoff, source))
         else:
             cursor = self._conn.execute(self._GET_SESSIONS_ALL, (cutoff,))
-        return [dict(row) for row in cursor.fetchall()]
+        try:
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
 
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
         """Get tool call counts from messages.
@@ -228,8 +236,11 @@ class InsightsEngine:
                    ORDER BY count DESC""",
                 (cutoff,),
             )
-        for row in cursor.fetchall():
-            tool_counts[row["tool_name"]] += row["count"]
+        try:
+            for row in cursor.fetchall():
+                tool_counts[row["tool_name"]] += row["count"]
+        finally:
+            cursor.close()
 
         # Source 2: extract from tool_calls JSON on assistant messages
         # (covers CLI sessions where tool_name is NULL on tool responses)
@@ -253,7 +264,11 @@ class InsightsEngine:
             )
 
         tool_calls_counts = Counter()
-        for row in cursor2.fetchall():
+        try:
+            rows2 = cursor2.fetchall()
+        finally:
+            cursor2.close()
+        for row in rows2:
             try:
                 calls = row["tool_calls"]
                 if isinstance(calls, str):
@@ -310,7 +325,11 @@ class InsightsEngine:
                 (cutoff,),
             )
 
-        for row in cursor.fetchall():
+        try:
+            skill_rows = cursor.fetchall()
+        finally:
+            cursor.close()
+        for row in skill_rows:
             try:
                 calls = row["tool_calls"]
                 if isinstance(calls, str):
@@ -389,7 +408,10 @@ class InsightsEngine:
                    WHERE s.started_at >= ?""",
                 (cutoff,),
             )
-        row = cursor.fetchone()
+        try:
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
         return dict(row) if row else {
             "total_messages": 0, "user_messages": 0,
             "assistant_messages": 0, "tool_messages": 0,

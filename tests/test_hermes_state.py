@@ -4609,7 +4609,6 @@ class TestSessionArchive:
         assert db.session_count(include_archived=True) == 2
 
 
-
 class TestSessionIdSearch:
     """Session id search backs Desktop's Search Sessions UX."""
 
@@ -4765,7 +4764,6 @@ class TestListCronJobRuns:
         assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
         assert "idx_sessions_source" in detail, detail
 
-
 def test_gateway_session_peer_round_trip_and_recovery(db):
     db.create_session(
         "gw-session",
@@ -4881,3 +4879,52 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
 
     monkeypatch.setattr(hermes_state.time, "time", lambda: 1016.0)
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
+
+
+# =========================================================================
+# WAL checkpoint unblocked by read-cursor cleanup
+# =========================================================================
+
+class TestWALCheckpoint:
+    """Verify that read methods close cursors so WAL checkpoint can proceed."""
+
+    def test_read_cursor_does_not_block_checkpoint(self, db):
+        """Cursors left open after reads block WAL checkpoint; closing them allows it."""
+        db.create_session(session_id="s1", source="cli", model="test-model")
+        db.append_message("s1", role="user", content="hello")
+        db.append_message("s1", role="assistant", content="hi")
+
+        # Exercise several read paths that previously left cursors open.
+        db.get_messages("s1")
+        db.search_sessions()
+
+        # PASSIVE checkpoint: returns (busy, log, checkpointed).
+        # busy > 0 means at least one read cursor is still blocking the WAL writer;
+        # checkpointed == 0 would indicate no pages were moved (i.e., nothing to do
+        # OR the checkpoint was blocked). We assert busy == 0 to confirm no open
+        # cursors are holding the WAL file open.
+        result = db._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        busy = result[0]
+        assert busy == 0, (
+            f"WAL checkpoint reported {busy} blocking reader(s); "
+            "a read cursor was not closed after use"
+        )
+
+    def test_insights_engine_does_not_block_checkpoint(self, db):
+        """InsightsEngine queries should close cursors so checkpoint can run after generate()."""
+        from agent.insights import InsightsEngine
+
+        db.create_session(session_id="s1", source="cli", model="test-model")
+        db.append_message("s1", role="user", content="hello")
+        db.append_message("s1", role="assistant", content="hi")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        engine.generate(days=30)
+
+        result = db._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        busy = result[0]
+        assert busy == 0, (
+            f"WAL checkpoint reported {busy} blocking reader(s) after InsightsEngine.generate(); "
+            "a cursor was not closed"
+        )

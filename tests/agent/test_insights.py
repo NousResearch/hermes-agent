@@ -436,6 +436,20 @@ class TestInsightsPopulated:
         # All 5 sessions should be included
         assert report["overview"]["total_sessions"] == 5
 
+    def test_generate_does_not_leave_open_cursors(self, populated_db):
+        """After generate(), PASSIVE checkpoint must not report any blocked readers."""
+        engine = InsightsEngine(populated_db)
+        engine.generate(days=30)
+
+        # PASSIVE checkpoint returns (busy, log, checkpointed).
+        # busy > 0 means at least one read cursor is still open on the WAL file.
+        result = populated_db._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        busy = result[0]
+        assert busy == 0, (
+            f"WAL checkpoint reported {busy} blocking reader(s) after generate(); "
+            "a cursor was not closed inside InsightsEngine"
+        )
+
 
 # =========================================================================
 # Formatting

@@ -33,6 +33,13 @@ import {
   shouldAutoDrainOnSettle,
   updateQueuedPrompt
 } from '@/store/composer-queue'
+import {
+  browseBackward,
+  browseForward,
+  deriveUserHistory,
+  isBrowsingHistory,
+  resetBrowseState
+} from '@/store/composer-input-history'
 import { $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 
@@ -124,6 +131,7 @@ export function ChatBar({
   const attachments = useStore($composerAttachments)
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const scrolledUp = useStore($threadScrolledUp)
+  const sessionMessages = useStore($messages)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
 
   const queuedPrompts = useMemo(
@@ -246,6 +254,16 @@ export function ChatBar({
       focusInput()
     }
   }, [disabled, focusInput, focusKey, focusRequestId])
+
+  // Reset input history browse state when the active session changes.
+  const prevSessionRef = useRef(sessionId)
+
+  useEffect(() => {
+    if (prevSessionRef.current !== sessionId) {
+      prevSessionRef.current = sessionId
+      resetBrowseState(sessionId)
+    }
+  }, [sessionId])
 
   useEffect(() => {
     if (disabled) {
@@ -715,6 +733,66 @@ export function ChatBar({
       }
     }
 
+    // ArrowUp/ArrowDown for input history navigation. The user-text ring is
+    // derived from the live session messages on every press — no mirror, no
+    // seeding, no dedup. Single source of truth: $messages.
+    if (event.key === 'ArrowUp') {
+      const currentDraft = draftRef.current
+
+      // Don't hijack Arrow Up when the user has an unsent draft and isn't
+      // already browsing — they'd lose what they typed.
+      if (currentDraft.trim() && !isBrowsingHistory(sessionId)) {
+        return
+      }
+
+      event.preventDefault()
+      triggerKeyConsumedRef.current = true
+
+      const history = deriveUserHistory(sessionMessages, chatMessageText)
+      const entry = browseBackward(sessionId, currentDraft, history)
+
+      if (entry !== null) {
+        const editor = editorRef.current
+
+        draftRef.current = entry
+        aui.composer().setText(entry)
+
+        if (editor) {
+          renderComposerContents(editor, entry)
+          placeCaretEnd(editor)
+        }
+      }
+
+      return
+    }
+
+    if (event.key === 'ArrowDown') {
+      if (isBrowsingHistory(sessionId)) {
+        event.preventDefault()
+        triggerKeyConsumedRef.current = true
+
+        const history = deriveUserHistory(sessionMessages, chatMessageText)
+        const result = browseForward(sessionId, history)
+
+        if (result !== null) {
+          const editor = editorRef.current
+
+          draftRef.current = result.text
+          aui.composer().setText(result.text)
+
+          if (editor) {
+            renderComposerContents(editor, result.text)
+            placeCaretEnd(editor)
+          }
+        }
+
+        return
+      }
+
+      // Not browsing — let the browser handle default cursor movement.
+      return
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
 
@@ -973,6 +1051,7 @@ export function ChatBar({
         }
 
         removeQueuedPrompt(activeQueueSessionKey, entry.id)
+        resetBrowseState(sessionId)
 
         return true
       } finally {
@@ -1077,6 +1156,7 @@ export function ChatBar({
     } else if (draft.trim() || attachments.length > 0) {
       const submitted = draft
       triggerHaptic('submit')
+      resetBrowseState(sessionId)
       clearDraft()
       clearComposerAttachments()
       void onSubmit(submitted, { attachments })
@@ -1146,6 +1226,7 @@ export function ChatBar({
     }
 
     triggerHaptic('submit')
+    resetBrowseState(sessionId)
     clearDraft()
     await onSubmit(text)
   }

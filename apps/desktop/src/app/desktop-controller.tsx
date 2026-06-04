@@ -13,7 +13,9 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getSessionMessages, listSessions } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { toggleCommandPalette } from '../store/command-palette'
 import {
+  $panesFlipped,
   $pinnedSessionIds,
   $sessionsLimit,
   bumpSessionsLimit,
@@ -58,6 +60,7 @@ import {
   PREVIEW_RAIL_PANE_WIDTH
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
+import { CommandPalette } from './command-palette'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { ModelPickerOverlay } from './model-picker-overlay'
@@ -112,6 +115,7 @@ export function DesktopController() {
   const previewTarget = useStore($previewTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const terminalTakeover = useStore($terminalTakeover)
+  const panesFlipped = useStore($panesFlipped)
 
   const routedSessionId = routeSessionId(location.pathname)
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
@@ -193,6 +197,21 @@ export function DesktopController() {
       unsubscribe?.()
       window.removeEventListener('keydown', onKeyDown, { capture: true })
     }
+  }, [])
+
+  // Global command palette: Cmd/Ctrl+K from anywhere. Plain Cmd+K is reserved
+  // for the palette; the composer's "drain next queued" moved to Cmd+Shift+K.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        toggleCommandPalette()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
   const refreshSessions = useCallback(async () => {
@@ -564,6 +583,7 @@ export function DesktopController() {
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
       <BootFailureOverlay />
+      <CommandPalette />
 
       {settingsOpen && (
         <Suspense fallback={null}>
@@ -641,12 +661,52 @@ export function DesktopController() {
     </div>
   )
 
+  // Flipped layout mirrors the default: sessions sidebar → right, file
+  // browser + preview rail → left. Same panes, swapped sides.
+  const sidebarSide = panesFlipped ? 'right' : 'left'
+  const railSide = panesFlipped ? 'left' : 'right'
+
+  const previewPane = (
+    <Pane
+      disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
+      id="preview"
+      key="preview"
+      maxWidth={PREVIEW_RAIL_MAX_WIDTH}
+      minWidth={PREVIEW_RAIL_MIN_WIDTH}
+      resizable
+      side={railSide}
+      width={PREVIEW_RAIL_PANE_WIDTH}
+    >
+      {chatOpen ? (
+        <ChatPreviewRail onRestartServer={restartPreviewServer} setTitlebarToolGroup={setTitlebarToolGroup} />
+      ) : null}
+    </Pane>
+  )
+
+  const fileBrowserPane = (
+    <Pane
+      defaultOpen={false}
+      disabled={!chatOpen}
+      id="file-browser"
+      key="file-browser"
+      maxWidth={FILE_BROWSER_MAX_WIDTH}
+      minWidth={FILE_BROWSER_MIN_WIDTH}
+      resizable
+      side={railSide}
+      width={FILE_BROWSER_DEFAULT_WIDTH}
+    >
+      <RightSidebarPane
+        onActivateFile={composer.attachContextFilePath}
+        onActivateFolder={composer.attachContextFolderPath}
+        onChangeCwd={changeSessionCwd}
+      />
+    </Pane>
+  )
+
   return (
     <AppShell
-      commandCenterOpen={commandCenterOpen}
       leftStatusbarItems={leftStatusbarItems}
       leftTitlebarTools={titlebarToolGroups.flat.left}
-      onOpenSearch={() => openCommandCenterSection('sessions')}
       onOpenSettings={openSettings}
       overlays={overlays}
       statusbarItems={statusbarItems}
@@ -658,7 +718,7 @@ export function DesktopController() {
         maxWidth={SIDEBAR_MAX_WIDTH}
         minWidth={SIDEBAR_DEFAULT_WIDTH}
         resizable
-        side="left"
+        side={sidebarSide}
         width={`${SIDEBAR_DEFAULT_WIDTH}px`}
       >
         {sidebar}
@@ -718,35 +778,13 @@ export function DesktopController() {
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />
         </Routes>
       </PaneMain>
-      <Pane
-        disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
-        id="preview"
-        maxWidth={PREVIEW_RAIL_MAX_WIDTH}
-        minWidth={PREVIEW_RAIL_MIN_WIDTH}
-        resizable
-        side="right"
-        width={PREVIEW_RAIL_PANE_WIDTH}
-      >
-        {chatOpen ? (
-          <ChatPreviewRail onRestartServer={restartPreviewServer} setTitlebarToolGroup={setTitlebarToolGroup} />
-        ) : null}
-      </Pane>
-      <Pane
-        defaultOpen={false}
-        disabled={!chatOpen}
-        id="file-browser"
-        maxWidth={FILE_BROWSER_MAX_WIDTH}
-        minWidth={FILE_BROWSER_MIN_WIDTH}
-        resizable
-        side="right"
-        width={FILE_BROWSER_DEFAULT_WIDTH}
-      >
-        <RightSidebarPane
-          onActivateFile={composer.attachContextFilePath}
-          onActivateFolder={composer.attachContextFolderPath}
-          onChangeCwd={changeSessionCwd}
-        />
-      </Pane>
+      {/*
+        Order within a side maps to column order. Default (rail on the right):
+        main | preview | file-browser. Flipped (rail on the left): mirror it to
+        file-browser | preview | main so preview stays adjacent to the chat.
+      */}
+      {panesFlipped ? fileBrowserPane : previewPane}
+      {panesFlipped ? previewPane : fileBrowserPane}
     </AppShell>
   )
 }

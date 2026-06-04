@@ -5993,6 +5993,28 @@ def neuter_async_httpx_del() -> None:
         pass  # Graceful degradation if the SDK changes its internals
 
 
+def _client_is_closed(client: Any) -> bool:
+    """Best-effort check for cached sync clients with closed transports."""
+    candidates = [
+        client,
+        getattr(client, "_client", None),
+        getattr(client, "client", None),
+        getattr(client, "_real_client", None),
+    ]
+    real_client = getattr(client, "_real_client", None)
+    if real_client is not None:
+        candidates.extend([
+            getattr(real_client, "_client", None),
+            getattr(real_client, "client", None),
+        ])
+    for obj in candidates:
+        if obj is None:
+            continue
+        if getattr(obj, "is_closed", False) is True:
+            return True
+    return False
+
+
 def _force_close_async_httpx(client: Any) -> None:
     """Mark the httpx AsyncClient inside an AsyncOpenAI client as closed.
 
@@ -6153,8 +6175,11 @@ def _get_cached_client(
                 _force_close_async_httpx(cached_client)
                 del _client_cache[cache_key]
             else:
-                effective = _compat_model(cached_client, model, cached_default)
-                return cached_client, effective
+                if _client_is_closed(cached_client):
+                    del _client_cache[cache_key]
+                else:
+                    effective = _compat_model(cached_client, model, cached_default)
+                    return cached_client, effective
     # Build outside the lock.
     # For pool-backed api_key providers, derive the active API key from the
     # pool entry rather than from env vars.  resolve_api_key_provider_credentials

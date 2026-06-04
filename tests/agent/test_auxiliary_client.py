@@ -4934,6 +4934,41 @@ class TestAuxiliaryClientPoisonedCacheEviction:
         assert _evict_cached_client_instance(None) is False
         assert _evict_cached_client_instance(MagicMock()) is False
 
+    def test_get_cached_client_rebuilds_closed_sync_client(self):
+        """A cached sync client with a closed transport must not be reused."""
+        from agent.auxiliary_client import (
+            _client_cache, _client_cache_key, _client_cache_lock, _get_cached_client,
+        )
+
+        closed_client = SimpleNamespace(
+            _client=SimpleNamespace(is_closed=True),
+            base_url="https://openrouter.ai/api/v1",
+        )
+        fresh_client = SimpleNamespace(
+            _client=SimpleNamespace(is_closed=False),
+            base_url="https://openrouter.ai/api/v1",
+        )
+        cache_key = _client_cache_key("openrouter", async_mode=False)
+
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[cache_key] = (closed_client, "openrouter/model", None)
+
+        try:
+            with patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(fresh_client, "openrouter/model"),
+            ) as resolve_mock:
+                client, model = _get_cached_client("openrouter")
+
+            assert client is fresh_client
+            assert model == "openrouter/model"
+            resolve_mock.assert_called_once()
+            assert _client_cache[cache_key][0] is fresh_client
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
     def test_evict_cached_client_instance_walks_async_wrapper(self):
         """async_mode is part of the cache key so sync and async share the same
         underlying OpenAI client across two distinct cache entries. A single

@@ -102,12 +102,13 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   }, [respond])
 
   return (
-    <div className="mt-1 flex items-center gap-1 ps-5" data-slot="tool-approval-inline">
+    <div className="mt-1 flex items-center gap-2.5 ps-5" data-slot="tool-approval-inline">
       <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
         <Button
           className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
           disabled={busy}
           onClick={() => void respond('once')}
+          size="xs"
           variant="ghost"
         >
           {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : 'Run'}
@@ -118,8 +119,9 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
           <DropdownMenuTrigger asChild>
             <Button
               aria-label="More approval options"
-              className="h-full rounded-none px-1 text-primary hover:bg-primary/15 hover:text-primary"
+              className="h-full w-5 rounded-none px-0 text-primary hover:bg-primary/15 hover:text-primary"
               disabled={busy}
+              size="xs"
               variant="ghost"
             >
               <ChevronDown className="size-3" />
@@ -136,9 +138,10 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
       </div>
 
       <Button
-        className="h-6 gap-1 rounded-md px-2 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
+        className="h-6 gap-1.5 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
         disabled={busy}
         onClick={() => void respond('deny')}
+        size="xs"
         variant="ghost"
       >
         {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : 'Reject'}

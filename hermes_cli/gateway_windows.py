@@ -335,13 +335,28 @@ def _build_gateway_cmd_script(
     lines.append(f'set "HERMES_HOME={hermes_home}"')
     lines.append('set "PYTHONIOENCODING=utf-8"')
     lines.append('set "HERMES_GATEWAY_DETACHED=1"')
-    # VIRTUAL_ENV lets the gateway's own python detection find the venv
-    # if someone imports hermes_constants-based logic during startup.
-    venv_dir = str(Path(python_path).resolve().parent.parent)
-    lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
 
-    pythonw_path = _derive_venv_pythonw(python_path)
-    prog_args = [pythonw_path, "-m", "hermes_cli.main"]
+    # Resolve the real pythonw.exe — for uv-created venvs the venv Scripts/
+    # pythonw is a redirector that spawns console python.exe, leaving a
+    # visible blank window.  Read pyvenv.cfg and use the base interpreter's
+    # pythonw.exe directly, with PYTHONPATH injected so imports resolve
+    # without the venv launcher shim.  (Same logic as _resolve_detached_python
+    # used by _spawn_detached / _build_gateway_argv.)
+    resolved_python, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
+    if extra_pythonpath:
+        # Include working_dir first (so project code resolves), then the
+        # extra paths from the base interpreter (so venv site-packages etc.
+        # are found without the venv launcher shim).  Mirrors what
+        # _build_gateway_argv does via _prepend_pythonpath.
+        pp_entries = [working_dir, *extra_pythonpath]
+        lines.append(
+            'set "PYTHONPATH='
+            + os.pathsep.join(pp_entries)
+            + ';%PYTHONPATH%"'
+        )
+
+    prog_args = [resolved_python, "-m", "hermes_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())
     prog_args.extend(["gateway", "run"])

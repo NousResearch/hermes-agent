@@ -150,7 +150,11 @@ def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
 
 def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypatch):
     """Scheduled Task wrapper should launch pythonw once and avoid replace loops."""
-    monkeypatch.setattr(gateway_windows, "_derive_venv_pythonw", lambda exe: exe.replace("python.exe", "pythonw.exe"))
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (exe.replace("python.exe", "pythonw.exe"), Path(exe).parent.parent, []),
+    )
 
     content = gateway_windows._build_gateway_cmd_script(
         r"C:\\Hermes\\hermes-agent\\venv\\Scripts\\python.exe",
@@ -162,7 +166,57 @@ def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypa
     assert "pythonw.exe" in content
     assert "gateway run" in content
     assert "--replace" not in content
-    assert "start \"\"" not in content
+    assert 'start ""' not in content
+    assert "exit /b 0" in content
+    # When extra_pythonpath is empty, no PYTHONPATH set statement emitted
+    assert "PYTHONPATH" not in content
+
+
+def test_gateway_cmd_script_uses_base_pythonw_for_uv_venv(monkeypatch, tmp_path):
+    """Avoid uv's venv pythonw redirector in the .cmd script — same as the argv path."""
+    project = tmp_path / "project"
+    scripts = project / "venv" / "Scripts"
+    site_packages = project / "venv" / "Lib" / "site-packages"
+    base = tmp_path / "uv" / "python" / "cpython-3.11-windows-x86_64-none"
+    scripts.mkdir(parents=True)
+    site_packages.mkdir(parents=True)
+    base.mkdir(parents=True)
+
+    venv_python = scripts / "python.exe"
+    venv_pythonw = scripts / "pythonw.exe"
+    base_pythonw = base / "pythonw.exe"
+    for exe in (venv_python, venv_pythonw, base_pythonw):
+        exe.write_text("", encoding="utf-8")
+    (project / "venv" / "pyvenv.cfg").write_text(
+        f"home = {base}\nimplementation = CPython\nuv = 0.11.14\nversion_info = 3.11.15\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(gateway_windows.sys, "platform", "win32")
+
+    content = gateway_windows._build_gateway_cmd_script(
+        str(venv_python),
+        str(project),
+        str(tmp_path / "hermes-home"),
+        "",
+    )
+
+    # The .cmd script should reference the base pythonw.exe, not scripts/pythonw.exe
+    assert str(base_pythonw) in content
+    assert str(venv_pythonw) not in content
+    assert "gateway run" in content
+
+    # VIRTUAL_ENV should point at the venv dir
+    assert f"VIRTUAL_ENV={project / 'venv'}" in content
+
+    # PYTHONPATH should include working_dir first and site-packages
+    assert f"PYTHONPATH={project}" in content
+    assert str(site_packages) in content
+    assert f";%PYTHONPATH%\"" in content
+
+    # No replace, no start churn
+    assert "--replace" not in content
+    assert 'start ""' not in content
     assert "exit /b 0" in content
 
 

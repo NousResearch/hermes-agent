@@ -20,6 +20,8 @@ change is backward-compatible with existing suites.
 from __future__ import annotations
 
 import sys
+import threading
+import time
 import types
 from unittest.mock import MagicMock
 
@@ -127,6 +129,33 @@ class TestCleanupAgentResourcesPassesMessages:
         runner._cleanup_agent_resources(agent)
 
         # close() still invoked after the swallowed exception.
+        agent.close.assert_called_once()
+
+    def test_blocking_provider_shutdown_does_not_block_cleanup(self):
+        """A stuck memory provider must not pin gateway teardown."""
+        runner = _make_runner()
+        runner._MEMORY_PROVIDER_SHUTDOWN_JOIN_TIMEOUT_SECS = 0.01
+        started = threading.Event()
+        release = threading.Event()
+        transcript = [{"role": "user", "content": "x"}]
+        agent = _FakeAgent(session_messages=transcript)
+
+        def _blocked_shutdown(messages):
+            assert messages is transcript
+            started.set()
+            release.wait(timeout=1.0)
+
+        agent.shutdown_memory_provider = _blocked_shutdown
+
+        before = time.monotonic()
+        try:
+            runner._cleanup_agent_resources(agent)
+            elapsed = time.monotonic() - before
+        finally:
+            release.set()
+
+        assert started.wait(timeout=0.2)
+        assert elapsed < 0.2
         agent.close.assert_called_once()
 
     def test_none_agent_is_noop(self):

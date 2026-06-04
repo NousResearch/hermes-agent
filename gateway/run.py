@@ -1833,6 +1833,7 @@ class GatewayRunner:
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+    _MEMORY_PROVIDER_SHUTDOWN_JOIN_TIMEOUT_SECS: float = 2.0
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -3830,10 +3831,7 @@ class GatewayRunner:
                 # call signature-compatible with the pre-fix behaviour
                 # (``shutdown_memory_provider(messages=None)``).
                 session_messages = getattr(agent, "_session_messages", None)
-                if isinstance(session_messages, list):
-                    agent.shutdown_memory_provider(session_messages)
-                else:
-                    agent.shutdown_memory_provider()
+                self._shutdown_memory_provider_bounded(agent, session_messages)
         except Exception:
             pass
         # Close tool resources (terminal sandboxes, browser daemons,
@@ -3853,6 +3851,43 @@ class GatewayRunner:
             cleanup_stale_async_clients()
         except Exception:
             pass
+
+    def _shutdown_memory_provider_bounded(
+        self,
+        agent: Any,
+        session_messages: Any,
+    ) -> None:
+        """Best-effort memory-provider cleanup without pinning gateway teardown."""
+        errors: list[BaseException] = []
+
+        def _run_shutdown() -> None:
+            try:
+                if isinstance(session_messages, list):
+                    agent.shutdown_memory_provider(session_messages)
+                else:
+                    agent.shutdown_memory_provider()
+            except BaseException as exc:
+                errors.append(exc)
+
+        session_id = getattr(agent, "session_id", None) or "<unknown>"
+        thread = threading.Thread(
+            target=_run_shutdown,
+            name=f"hermes-memory-shutdown-{session_id}",
+            daemon=True,
+        )
+        thread.start()
+        timeout = max(0.0, float(self._MEMORY_PROVIDER_SHUTDOWN_JOIN_TIMEOUT_SECS))
+        thread.join(timeout)
+        if thread.is_alive():
+            logger.warning(
+                "Memory provider shutdown exceeded %.1fs for session %s; "
+                "continuing gateway cleanup",
+                timeout,
+                session_id,
+            )
+            return
+        if errors:
+            raise errors[0]
 
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"

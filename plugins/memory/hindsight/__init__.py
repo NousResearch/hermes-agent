@@ -52,6 +52,8 @@ _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.4.22"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
+_DEFAULT_RETAIN_MAX_CONTENT_CHARS = 200_000
+_DEFAULT_RETAIN_MAX_QUEUE_SIZE = 25
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
 # Without it, reusing a stable session-scoped document_id silently
@@ -573,6 +575,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_every_n_turns = 1
         self._retain_async = True
         self._retain_context = "conversation between Hermes Agent and the User"
+        self._retain_max_content_chars = _DEFAULT_RETAIN_MAX_CONTENT_CHARS
+        self._retain_max_queue_size = _DEFAULT_RETAIN_MAX_QUEUE_SIZE
         self._turn_counter = 0
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
 
@@ -1193,6 +1197,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._auto_retain = self._config.get("auto_retain", True)
         self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 1)))
         self._retain_context = self._config.get("retain_context", "conversation between Hermes Agent and the User")
+        self._retain_max_content_chars = max(0, int(self._config.get("retain_max_content_chars", _DEFAULT_RETAIN_MAX_CONTENT_CHARS)))
+        self._retain_max_queue_size = max(0, int(self._config.get("retain_max_queue_size", _DEFAULT_RETAIN_MAX_QUEUE_SIZE)))
 
         # Recall controls
         self._auto_recall = self._config.get("auto_recall", True)
@@ -1361,6 +1367,20 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
         self._prefetch_thread.start()
 
+    def _retain_payload_too_large(self, content: str, *, source: str) -> bool:
+        if self._retain_max_content_chars and len(content) > self._retain_max_content_chars:
+            logger.warning(
+                "Hindsight %s retain skipped: payload %d chars exceeds cap %d",
+                source,
+                len(content),
+                self._retain_max_content_chars,
+            )
+            return True
+        return False
+
+    def _retain_queue_full(self) -> bool:
+        return bool(self._retain_max_queue_size and self._retain_queue.qsize() >= self._retain_max_queue_size)
+
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
         now = datetime.now(timezone.utc).isoformat()
         return [
@@ -1464,6 +1484,18 @@ class HindsightMemoryProvider(MemoryProvider):
         logger.debug("sync_turn: retaining %d turns, total session content %d chars",
                      len(self._session_turns), sum(len(t) for t in self._session_turns))
         content = "[" + ",".join(self._session_turns) + "]"
+        if self._retain_payload_too_large(content, source="auto-turn"):
+            # Drop the accumulated batch rather than enqueueing a giant stale
+            # retain that can wedge Hindsight for minutes during shutdown.
+            self._session_turns = []
+            return
+        if self._retain_queue_full():
+            logger.warning(
+                "Hindsight auto-turn retain skipped: queue size %d reached cap %d",
+                self._retain_queue.qsize(),
+                self._retain_max_queue_size,
+            )
+            return
 
         lineage_tags: list[str] = []
         if self._session_id:
@@ -1527,6 +1559,11 @@ class HindsightMemoryProvider(MemoryProvider):
                     context=context,
                     tags=args.get("tags"),
                 )
+                if self._retain_payload_too_large(content, source="tool"):
+                    return tool_error(
+                        f"Memory content is too large ({len(content)} chars; cap {self._retain_max_content_chars}). "
+                        "Summarize or split it before retaining."
+                    )
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)
                 self._run_hindsight_operation(lambda client: client.aretain(**retain_kwargs))
@@ -1644,6 +1681,7 @@ class HindsightMemoryProvider(MemoryProvider):
             if old_parent_session_id:
                 old_lineage_tags.append(f"parent:{old_parent_session_id}")
             old_content = "[" + ",".join(old_turns) + "]"
+            flush_old_session = not self._retain_payload_too_large(old_content, source="flush-on-switch")
             # Resolve doc_id + update_mode against the OLD session BEFORE
             # we rotate _session_id, so the flush lands in the old
             # session's document either way (legacy: per-process unique;
@@ -1685,7 +1723,7 @@ class HindsightMemoryProvider(MemoryProvider):
             # two threads on aretain_batch against the same document, and
             # keeps shutdown's drain semantics intact. Skip enqueue if
             # shutdown has already fired — the writer is draining/gone.
-            if not self._shutting_down.is_set():
+            if flush_old_session and not self._shutting_down.is_set() and not self._retain_queue_full():
                 self._ensure_writer()
                 self._register_atexit()
                 self._retain_queue.put(_flush)

@@ -1336,24 +1336,44 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     _apply_runtime_ws_overrides()
 
     async def _run() -> None:
-        """Drive the client lifecycle without calling start()."""
-        if hasattr(ws_client, '_connect'):
-            try:
-                await ws_client._connect()
-            except Exception as exc:
-                logger.error("[Feishu] WS connect failed: %s", exc)
-                raise
+        """Drive the client lifecycle without calling start().
 
-            # _connect() already starts _receive_message_loop internally.
-            # Just start the ping loop and keep the loop alive.
-            loop.create_task(ws_client._ping_loop())
+        Reconnects automatically on disconnect so the adapter stays online
+        across network blips, matching the behaviour of the SDK's start().
+        """
+        while getattr(adapter, "_running", True):
+            if hasattr(ws_client, '_connect'):
+                try:
+                    await ws_client._connect()
+                except Exception as exc:
+                    logger.error("[Feishu] WS connect failed: %s", exc)
+                    # Back off before retrying
+                    await asyncio.sleep(5)
+                    continue
 
-            # Keep the loop alive until disconnect is requested
-            while getattr(ws_client, "_conn", None) is not None:
-                await asyncio.sleep(1)
-        else:
-            # Fallback for test fakes or older SDK versions
-            ws_client.start()
+                # _connect() already starts _receive_message_loop internally.
+                # Just start the ping loop and keep the loop alive.
+                ping_task = loop.create_task(ws_client._ping_loop())
+
+                # Keep the loop alive until disconnect is requested
+                while getattr(ws_client, "_conn", None) is not None and getattr(adapter, "_running", True):
+                    await asyncio.sleep(1)
+
+                ping_task.cancel()
+                try:
+                    await ping_task
+                except asyncio.CancelledError:
+                    pass
+
+                if not getattr(adapter, "_running", True):
+                    break
+
+                logger.info("[Feishu] WS disconnected; reconnecting in 5s...")
+                await asyncio.sleep(5)
+            else:
+                # Fallback for test fakes or older SDK versions
+                ws_client.start()
+                break
 
     try:
         loop.run_until_complete(_run())

@@ -30,32 +30,42 @@ def _run(coro):
 class TestExtractMediaImages:
     """Test that MEDIA: tags with image extensions are correctly extracted."""
 
-    def test_png_image_extracted(self):
-        content = "Here is the screenshot:\nMEDIA:/home/user/.hermes/browser_screenshots/shot.png"
+    def test_png_image_extracted(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"png")
+        content = f"Here is the screenshot:\nMEDIA:{img}"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
-        assert media[0][0] == "/home/user/.hermes/browser_screenshots/shot.png"
+        assert media[0][0] == str(img)
         assert "MEDIA:" not in cleaned
         assert "Here is the screenshot" in cleaned
 
-    def test_jpg_image_extracted(self):
-        content = "MEDIA:/tmp/photo.jpg"
+    def test_jpg_image_extracted(self, tmp_path):
+        img = tmp_path / "photo.jpg"
+        img.write_bytes(b"jpg")
+        content = f"MEDIA:{img}"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
-        assert media[0][0] == "/tmp/photo.jpg"
+        assert media[0][0] == str(img)
 
-    def test_webp_image_extracted(self):
-        content = "MEDIA:/tmp/image.webp"
+    def test_webp_image_extracted(self, tmp_path):
+        img = tmp_path / "image.webp"
+        img.write_bytes(b"webp")
+        content = f"MEDIA:{img}"
         media, _ = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
 
-    def test_mixed_audio_and_image(self):
-        content = "MEDIA:/audio.ogg\nMEDIA:/screenshot.png"
+    def test_mixed_audio_and_image(self, tmp_path):
+        audio = tmp_path / "audio.ogg"
+        audio.write_bytes(b"ogg")
+        image = tmp_path / "screenshot.png"
+        image.write_bytes(b"png")
+        content = f"MEDIA:{audio}\nMEDIA:{image}"
         media, _ = BasePlatformAdapter.extract_media(content)
         assert len(media) == 2
         paths = [m[0] for m in media]
-        assert "/audio.ogg" in paths
-        assert "/screenshot.png" in paths
+        assert str(audio) in paths
+        assert str(image) in paths
 
 
 # ---------------------------------------------------------------------------

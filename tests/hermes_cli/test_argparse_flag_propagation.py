@@ -130,3 +130,72 @@ class TestAcceptHooksOnAgentSubparsers:
             f"stderr: {result.stderr[:300]}"
         )
         assert "unrecognized arguments" not in result.stderr
+
+
+class TestMcpAddCommandRouting:
+    """Regression coverage for `hermes mcp add` parser/dispatch collisions."""
+
+    def test_mcp_add_parser_keeps_top_level_command(self):
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        mcp = subparsers.add_parser("mcp")
+        mcp_sub = mcp.add_subparsers(dest="mcp_action")
+        mcp_add = mcp_sub.add_parser("add")
+        mcp_add.add_argument("name")
+        mcp_add.add_argument("--url")
+        mcp_add.add_argument("--command", dest="mcp_stdio_command")
+
+        args = parser.parse_args([
+            "mcp", "add", "notion", "--url", "https://mcp.notion.com/mcp"
+        ])
+
+        assert args.command == "mcp"
+        assert args.mcp_action == "add"
+        assert args.mcp_stdio_command is None
+
+    def test_main_routes_mcp_add_to_mcp_handler(self, monkeypatch):
+        import hermes_cli.main as main_mod
+        import hermes_cli.mcp_config as mcp_config
+        import hermes_cli.plugins as plugins_mod
+        import tools.mcp_tool as mcp_tool_mod
+        import agent.shell_hooks as shell_hooks_mod
+        import hermes_cli.config as config_mod
+
+        captured = {}
+
+        monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+        monkeypatch.setattr(mcp_tool_mod, "discover_mcp_tools", lambda: None)
+        monkeypatch.setattr(config_mod, "load_config", lambda: {})
+        monkeypatch.setattr(
+            shell_hooks_mod, "register_from_config", lambda cfg, accept_hooks=False: None
+        )
+        monkeypatch.setattr(
+            main_mod, "cmd_chat", lambda args: pytest.fail("routed to chat unexpectedly")
+        )
+
+        def fake_mcp_command(args):
+            captured["args"] = args
+            raise SystemExit(0)
+
+        monkeypatch.setattr(mcp_config, "mcp_command", fake_mcp_command)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "hermes",
+                "mcp",
+                "add",
+                "notion",
+                "--url",
+                "https://mcp.notion.com/mcp",
+            ],
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            main_mod.main()
+
+        assert excinfo.value.code == 0
+        assert captured["args"].command == "mcp"
+        assert captured["args"].mcp_action == "add"
+        assert captured["args"].name == "notion"
+        assert captured["args"].url == "https://mcp.notion.com/mcp"

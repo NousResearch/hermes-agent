@@ -738,24 +738,28 @@ class TestSignalSendVideo:
 class TestSignalMediaExtraction:
     """Verify the full pipeline: MEDIA: tag → extract → send_image_file/send_voice."""
 
-    def test_extract_media_finds_image_tag(self):
+    def test_extract_media_finds_image_tag(self, tmp_path):
         """BasePlatformAdapter.extract_media should find MEDIA: image paths."""
         from gateway.platforms.base import BasePlatformAdapter
+        img = tmp_path / "price_graph.png"
+        img.write_bytes(b"png")
         media, cleaned = BasePlatformAdapter.extract_media(
-            "Here's the chart.\nMEDIA:/tmp/price_graph.png"
+            f"Here's the chart.\nMEDIA:{img}"
         )
         assert len(media) == 1
-        assert media[0][0] == "/tmp/price_graph.png"
+        assert media[0][0] == str(img)
         assert "MEDIA:" not in cleaned
 
-    def test_extract_media_finds_audio_tag(self):
+    def test_extract_media_finds_audio_tag(self, tmp_path):
         """BasePlatformAdapter.extract_media should find MEDIA: audio paths."""
         from gateway.platforms.base import BasePlatformAdapter
+        audio = tmp_path / "reply.ogg"
+        audio.write_bytes(b"ogg")
         media, cleaned = BasePlatformAdapter.extract_media(
-            "[[audio_as_voice]]\nMEDIA:/tmp/reply.ogg"
+            f"[[audio_as_voice]]\nMEDIA:{audio}"
         )
         assert len(media) == 1
-        assert media[0][0] == "/tmp/reply.ogg"
+        assert media[0][0] == str(audio)
         assert media[0][1] is True  # is_voice flag
 
     def test_signal_has_all_media_methods(self, monkeypatch):

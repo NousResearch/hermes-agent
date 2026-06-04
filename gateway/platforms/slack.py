@@ -72,6 +72,62 @@ class _ThreadContextCache:
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
 
 
+# Fixed plan-mode row identifiers — rendered once per turn and updated in
+# place; tool calls do NOT add new rows.
+_PLAN_TITLE = "Working on your request"
+ANALYZE_ID = "analyze"
+ANALYZE_TITLE = "Understand request"
+TOOLS_ID = "tools"
+TOOLS_TITLE = "Use tools if needed"
+RESPOND_ID = "respond"
+RESPOND_TITLE = "Draft response"
+_NO_TOOLS_DETAIL = "No tools needed"
+_DETAIL_LIMIT = 280
+_MAX_TOOL_HISTORY = 8
+
+
+@dataclass
+class _ThinkingCardState:
+    """In-flight Slack thinking-steps card for one (channel, thread) pair.
+
+    Plan mode: a card holds three fixed rows (analyze/tools/respond) for the
+    whole turn. Tool calls update the `tools` row in place by re-rendering
+    `tool_history` as a bulleted markdown list — they never add new rows.
+    The card body stays empty until finalize, when the final assistant
+    response is appended as a single `markdown_text` chunk.
+    """
+    card_ts: str
+    channel_id: str
+    thread_ts: str
+    team_id: str = ""
+    user_id: str = ""
+    # Running list of tool invocations, each `{"name": str, "target": str,
+    # "count": int}`. Consecutive identical entries collapse via count++.
+    tool_history: list = field(default_factory=list)
+    # Per-row status tracking ("pending" | "in_progress" | "complete").
+    analyze_status: str = "in_progress"
+    tools_status: str = "pending"
+    respond_status: str = "pending"
+    closed: bool = False
+    # Set True once the stream consumer pushes the model's full response
+    # text into the card via append_thinking_text(is_response=True). When
+    # that has happened, finalize_thinking_card must NOT also include the
+    # same text as a summary chunk on chat.stopStream — Slack would render
+    # it twice.
+    streamed_full_response: bool = False
+
+
+def _thinking_card_enabled_globally() -> bool:
+    """Global on/off switch for the thinking-steps card behavior.
+
+    Default ON for this fork — that's the whole point of the fork. Set
+    HERMES_SLACK_THINKING_CARD=0 to fall back to the original per-step
+    chat.postMessage / chat.update behavior.
+    """
+    raw = os.getenv("HERMES_SLACK_THINKING_CARD", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
@@ -343,6 +399,10 @@ class SlackAdapter(BasePlatformAdapter):
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
+        # Active thinking-steps cards keyed by (channel_id, thread_ts).
+        # One card per agent turn: opened when the first tool kicks off,
+        # closed when the gateway finishes the turn.
+        self._thinking_cards: Dict[Tuple[str, str], _ThinkingCardState] = {}
         # Slash-command contexts: stash response_url + user_id so send()
         # can route the first reply ephemerally.  Keyed by
         # (channel_id, user_id) to avoid cross-user collisions.
@@ -762,9 +822,52 @@ class SlackAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a message to a Slack channel or DM."""
+        """Send a message to a Slack channel or DM.
+
+        If a thinking-steps card is currently open for (chat_id, thread_ts),
+        this method finalizes the card with `content` as the closing
+        markdown_text chunk (via chat.stopStream) instead of posting a
+        separate chat.postMessage. That collapses the agent's final answer
+        into the same card that holds the step timeline — exactly one
+        Slack object per agent turn.
+        """
         if not self._app:
             return SendResult(success=False, error="Not connected")
+
+        # Card-absorbing path: if we have a live card on this thread,
+        # close it with `content` as the summary and return as if we'd
+        # just posted a message. If the stream consumer already streamed
+        # the full response text into the card, skip the summary so we
+        # don't render it twice.
+        thread_ts_for_card = self._resolve_thread_ts(reply_to, metadata)
+        active_card = self.get_thinking_card(chat_id, thread_ts_for_card or "")
+        if active_card is not None and content:
+            summary_for_finalize = (
+                None if active_card.streamed_full_response else content
+            )
+            ok = await self.finalize_thinking_card(
+                chat_id=chat_id,
+                thread_ts=thread_ts_for_card or "",
+                summary=summary_for_finalize,
+            )
+            if ok:
+                # Track the card ts as a "sent" message so thread replies
+                # still wake the bot up.
+                self._bot_message_ts.add(active_card.card_ts)
+                logger.info(
+                    "[Slack] absorbed %d-char response into thinking card %s",
+                    len(content), active_card.card_ts,
+                )
+                return SendResult(
+                    success=True,
+                    message_id=active_card.card_ts,
+                )
+            # Finalize failed — fall through and post the message normally
+            # so the user still sees the response.
+            logger.warning(
+                "[Slack] thinking-card finalize failed; sending response as "
+                "regular message instead",
+            )
 
         try:
             # Check for a pending slash-command context.  When the user ran a
@@ -943,6 +1046,462 @@ class SlackAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.debug("[Slack] assistant.threads.setStatus clear failed: %s", e)
+
+    # ----- Thinking-steps card (chat.startStream / appendStream / stopStream) -----
+    #
+    # Plan-mode card: one Slack card per agent turn, with three fixed rows
+    # (analyze / tools / respond) that update in place as the agent works.
+    # Tool calls update the `tools` row's `details` field with a re-rendered
+    # bulleted history; they never add new rows. The card body stays empty
+    # until finalize, when the final assistant response is appended.
+    #   start_thinking_card     → chat.startStream      (opens the card)
+    #   record_tool_call        → chat.appendStream     (updates tools row)
+    #   append_thinking_text    → chat.appendStream     (response body only)
+    #   finalize_thinking_card  → chat.stopStream       (closes the card)
+    #
+    # All four are best-effort: if the SDK is too old or Slack rejects the
+    # call (e.g. missing recipient_team_id in a channel post), we wipe the
+    # card state and let the caller fall back to legacy chat.postMessage.
+
+    def thinking_card_enabled(self) -> bool:
+        """Whether the thinking-steps card path should be used at all."""
+        return _thinking_card_enabled_globally()
+
+    def _streaming_supported(self, client: AsyncWebClient) -> bool:
+        """slack-sdk >= 3.40.0 ships chat_startStream on the client."""
+        return hasattr(client, "chat_startStream")
+
+    def _channel_needs_recipient(self, chat_id: str) -> bool:
+        """chat.startStream needs recipient_team_id/user_id for non-DM channels.
+
+        Slack channel ID prefixes: D = DM, C = public channel, G = private
+        channel / mpim. DMs can omit the recipient_* fields.
+        """
+        return bool(chat_id) and not chat_id.startswith("D")
+
+    def _resolve_recipient(self, chat_id: str, thread_ts: str) -> Tuple[str, str]:
+        """Pull (team_id, user_id) for a (channel, thread) from caches.
+
+        Returns empty strings if unknown — caller decides whether that's
+        fatal (in a public channel) or fine (in a DM).
+        """
+        team_id = self._channel_team.get(chat_id, "")
+        user_id = ""
+        key = self._assistant_thread_key(chat_id, thread_ts)
+        if key:
+            cached = self._assistant_threads.get(key, {})
+            user_id = cached.get("user_id", "") or user_id
+            team_id = cached.get("team_id", "") or team_id
+        return team_id, user_id
+
+    async def start_thinking_card(
+        self,
+        chat_id: str,
+        thread_ts: str,
+        *,
+        opening_text: Optional[str] = None,
+    ) -> Optional[_ThinkingCardState]:
+        """Open a thinking-steps card. Returns the state, or None on failure."""
+        if not (self._app and chat_id and thread_ts):
+            return None
+        if not self.thinking_card_enabled():
+            return None
+
+        key = (str(chat_id), str(thread_ts))
+        existing = self._thinking_cards.get(key)
+        if existing and not existing.closed:
+            return existing  # reuse — one card per turn
+
+        client = self._get_client(chat_id)
+        if not self._streaming_supported(client):
+            logger.warning(
+                "[Slack] chat_startStream unavailable (slack-sdk<3.40); "
+                "falling back to legacy progress messages",
+            )
+            return None
+
+        team_id, user_id = self._resolve_recipient(chat_id, thread_ts)
+        needs_recipient = self._channel_needs_recipient(chat_id)
+        logger.info(
+            "[Slack] thinking-card start: channel=%s thread=%s "
+            "needs_recipient=%s team_id=%s user_id=%s",
+            chat_id, thread_ts, needs_recipient,
+            team_id or "<missing>", user_id or "<missing>",
+        )
+        if needs_recipient and not (team_id and user_id):
+            # Public/private channel without cached recipient identity —
+            # Slack will reject the start call. Bail so caller falls back.
+            logger.warning(
+                "[Slack] thinking card skipped: missing team_id/user_id for "
+                "channel %s thread %s", chat_id, thread_ts,
+            )
+            return None
+
+        # Plan mode: open the card with a `plan_update` and three fixed
+        # `task_update` rows (analyze / tools / respond). The `analyze` row
+        # starts in_progress so the user sees activity immediately; the
+        # other two stay `pending` until the agent advances. Note: Slack
+        # rejects requests that pass *both* `markdown_text` and `chunks`
+        # — we use chunks only. The card body stays empty until finalize.
+        del opening_text  # plan-mode card has no free-form opening text
+        kwargs: Dict[str, Any] = {
+            "channel": chat_id,
+            "thread_ts": thread_ts,
+            "task_display_mode": "plan",
+            "chunks": [
+                {"type": "plan_update", "title": _PLAN_TITLE},
+                {
+                    "type": "task_update",
+                    "id": ANALYZE_ID,
+                    "title": ANALYZE_TITLE,
+                    "status": "in_progress",
+                },
+                {
+                    "type": "task_update",
+                    "id": TOOLS_ID,
+                    "title": TOOLS_TITLE,
+                    "status": "pending",
+                },
+                {
+                    "type": "task_update",
+                    "id": RESPOND_ID,
+                    "title": RESPOND_TITLE,
+                    "status": "pending",
+                },
+            ],
+        }
+        if team_id:
+            kwargs["recipient_team_id"] = team_id
+        if user_id:
+            kwargs["recipient_user_id"] = user_id
+
+        try:
+            resp = await client.chat_startStream(**kwargs)
+        except Exception as e:
+            logger.warning(
+                "[Slack] chat.startStream failed (%s); falling back to legacy progress",
+                e,
+            )
+            return None
+
+        card_ts = (resp or {}).get("ts")
+        logger.info(
+            "[Slack] chat.startStream returned ts=%s ok=%s",
+            card_ts, (resp or {}).get("ok"),
+        )
+        if not card_ts:
+            return None
+
+        state = _ThinkingCardState(
+            card_ts=card_ts,
+            channel_id=chat_id,
+            thread_ts=thread_ts,
+            team_id=team_id,
+            user_id=user_id,
+        )
+        self._thinking_cards[key] = state
+        # Track the card ts so thread replies still trigger the bot.
+        self._bot_message_ts.add(card_ts)
+        if len(self._bot_message_ts) > self._BOT_TS_MAX:
+            excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
+            for old_ts in list(self._bot_message_ts)[:excess]:
+                self._bot_message_ts.discard(old_ts)
+        return state
+
+    def get_thinking_card(self, chat_id: str, thread_ts: str) -> Optional[_ThinkingCardState]:
+        if not (chat_id and thread_ts):
+            return None
+        state = self._thinking_cards.get((str(chat_id), str(thread_ts)))
+        if state and state.closed:
+            return None
+        return state
+
+    @staticmethod
+    def _limit_detail(text: str) -> str:
+        if len(text) <= _DETAIL_LIMIT:
+            return text
+        return text[: _DETAIL_LIMIT - 1].rstrip() + "…"
+
+    @staticmethod
+    def _compact_url(url: str) -> str:
+        compact = url.replace("https://", "").replace("http://", "")
+        return compact.rstrip("/")
+
+    @classmethod
+    def _tool_target(cls, args: Optional[Dict[str, Any]]) -> str:
+        """Extract a one-line target from common tool argument names.
+
+        Mirrors ductor's `_tool_target`: prefer URLs (compacted), then
+        text-y queries, then file/dir paths, then commands, then list-of-
+        urls/paths. Returns "" if nothing useful is found.
+        """
+        if not isinstance(args, dict) or not args:
+            return ""
+
+        def _string(keys, transform=None):
+            for key in keys:
+                value = args.get(key)
+                if isinstance(value, str) and value.strip():
+                    cleaned = " ".join(value.split())
+                    return transform(cleaned) if callable(transform) else cleaned
+            return ""
+
+        def _list(keys):
+            for key in keys:
+                value = args.get(key)
+                if isinstance(value, list) and value:
+                    first = value[0]
+                    if isinstance(first, str) and first.strip():
+                        suffix = f" (+{len(value) - 1} more)" if len(value) > 1 else ""
+                        return f"{first.strip()}{suffix}"
+            return ""
+
+        target = (
+            _string(("url", "uri"), transform=cls._compact_url)
+            or _string(("query", "q", "search", "pattern"))
+            or _string(("path", "file_path", "file", "filepath", "directory", "dir"))
+            or _string(("cmd", "command"))
+            or _list(("urls", "paths"))
+            or _string(("target",))  # gateway falls back to {"target": preview}
+        )
+        return cls._limit_detail(target) if target else ""
+
+    @classmethod
+    def _render_tool_details(cls, history: list) -> str:
+        """Render the tool history list as a bulleted markdown string.
+
+        The list is already run-length-collapsed by `record_tool_call`.
+        """
+        if not history:
+            return ""
+        lines: list = []
+        for entry in history[-_MAX_TOOL_HISTORY:]:
+            name = entry.get("name") or "tool"
+            target = entry.get("target") or ""
+            count = int(entry.get("count") or 1)
+            label = f"{name} x{count}" if count > 1 else name
+            if target:
+                lines.append(f"- {label}: {target}")
+            else:
+                lines.append(f"- {label}")
+        return cls._limit_detail("\n".join(lines))
+
+    async def record_tool_call(
+        self,
+        chat_id: str,
+        thread_ts: str,
+        *,
+        tool_name: str,
+        args: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Record a tool invocation into the active card's `tools` row.
+
+        Appends the call to `state.tool_history` (with run-length
+        collapsing of consecutive identical entries) and re-renders the
+        whole list as the `details` field of the `tools` row. The first
+        tool call also flips `analyze` → complete and `tools` →
+        in_progress, all in a single appendStream batch.
+
+        Returns True if the chunk was sent, False if there was no active
+        card or the API call failed.
+        """
+        state = self.get_thinking_card(chat_id, thread_ts)
+        if not state:
+            return False
+
+        clean_name = (tool_name or "tool").strip() or "tool"
+        target = self._tool_target(args)
+
+        # Run-length-collapse consecutive identical entries.
+        if (
+            state.tool_history
+            and state.tool_history[-1].get("name") == clean_name
+            and state.tool_history[-1].get("target") == target
+        ):
+            state.tool_history[-1]["count"] = int(state.tool_history[-1].get("count") or 1) + 1
+        else:
+            state.tool_history.append({
+                "name": clean_name,
+                "target": target,
+                "count": 1,
+            })
+
+        chunks: list = []
+        # First tool call advances the plan: analyze → complete, tools → in_progress.
+        if state.analyze_status != "complete":
+            state.analyze_status = "complete"
+            chunks.append({
+                "type": "task_update",
+                "id": ANALYZE_ID,
+                "title": ANALYZE_TITLE,
+                "status": "complete",
+            })
+        if state.tools_status != "in_progress":
+            state.tools_status = "in_progress"
+        details = self._render_tool_details(state.tool_history)
+        tools_chunk: Dict[str, Any] = {
+            "type": "task_update",
+            "id": TOOLS_ID,
+            "title": TOOLS_TITLE,
+            "status": "in_progress",
+        }
+        if details:
+            tools_chunk["details"] = details
+        chunks.append(tools_chunk)
+        return await self._append_chunks(state, chunks)
+
+    async def append_thinking_text(
+        self,
+        chat_id: str,
+        thread_ts: str,
+        text: str,
+        *,
+        is_response: bool = False,
+    ) -> bool:
+        """Append free-form markdown text to the active card.
+
+        Plan-mode card: only the model's actual reply (`is_response=True`)
+        is allowed. Status callbacks / interim commentary / token deltas
+        from non-response paths must leave `is_response` at the default
+        False — for those we no-op so the card body stays empty until
+        finalize.
+
+        When `is_response=True` we set `state.streamed_full_response =
+        True` so the eventual `finalize_thinking_card` (called from the
+        SlackAdapter.send override) knows the response is already on the
+        card and skips the duplicate summary chunk.
+        """
+        if not text or not is_response:
+            return False
+        state = self.get_thinking_card(chat_id, thread_ts)
+        if not state:
+            return False
+        ok = await self._append_chunks(
+            state,
+            [{"type": "markdown_text", "text": text[:11000]}],
+        )
+        if ok:
+            state.streamed_full_response = True
+        return ok
+
+    async def _append_chunks(
+        self,
+        state: _ThinkingCardState,
+        chunks: list,
+    ) -> bool:
+        if not chunks:
+            return False
+        client = self._get_client(state.channel_id)
+        try:
+            await client.chat_appendStream(
+                channel=state.channel_id,
+                ts=state.card_ts,
+                chunks=chunks,
+            )
+            return True
+        except Exception as e:
+            logger.warning(
+                "[Slack] chat.appendStream failed for card %s: %s",
+                state.card_ts, e,
+            )
+            return False
+
+    async def finalize_thinking_card(
+        self,
+        chat_id: str,
+        thread_ts: str,
+        *,
+        summary: Optional[str] = None,
+        blocks: Optional[list] = None,
+    ) -> bool:
+        """Close the active thinking-steps card via chat.stopStream.
+
+        Plan-mode finalize: emit one batch with all three rows marked
+        `complete` (rendering the final tool history into `tools` if any
+        tools ran), then append `summary` as a markdown_text chunk —
+        unless the response was already streamed into the card via
+        append_thinking_text(is_response=True), in which case the caller
+        passes `summary=None` and the body stays as the streamed text.
+
+        `blocks` (optional) are Block Kit blocks rendered beneath the
+        streamed body — typical use is feedback / approval buttons.
+        """
+        state = self.get_thinking_card(chat_id, thread_ts)
+        if not state:
+            return False
+
+        chunks: list = []
+        # Row 1 — analyze: always complete.
+        if state.analyze_status != "complete":
+            state.analyze_status = "complete"
+        chunks.append({
+            "type": "task_update",
+            "id": ANALYZE_ID,
+            "title": ANALYZE_TITLE,
+            "status": "complete",
+        })
+        # Row 2 — tools: complete with final rendered history (or
+        # "No tools needed" if the agent didn't call any).
+        used_tools = bool(state.tool_history)
+        tools_chunk: Dict[str, Any] = {
+            "type": "task_update",
+            "id": TOOLS_ID,
+            "title": TOOLS_TITLE,
+            "status": "complete",
+        }
+        if used_tools:
+            details = self._render_tool_details(state.tool_history)
+            if details:
+                tools_chunk["details"] = details
+        else:
+            tools_chunk["details"] = _NO_TOOLS_DETAIL
+        state.tools_status = "complete"
+        chunks.append(tools_chunk)
+        # Row 3 — respond: complete.
+        state.respond_status = "complete"
+        chunks.append({
+            "type": "task_update",
+            "id": RESPOND_ID,
+            "title": RESPOND_TITLE,
+            "status": "complete",
+        })
+        # Final answer body (skipped when streamed via on_delta).
+        if summary:
+            chunks.append({"type": "markdown_text", "text": summary[:11000]})
+
+        client = self._get_client(state.channel_id)
+        kwargs: Dict[str, Any] = {
+            "channel": state.channel_id,
+            "ts": state.card_ts,
+            "chunks": chunks,
+        }
+        if blocks:
+            kwargs["blocks"] = blocks
+
+        ok = True
+        try:
+            await client.chat_stopStream(**kwargs)
+        except Exception as e:
+            logger.warning(
+                "[Slack] chat.stopStream failed for card %s: %s",
+                state.card_ts, e,
+            )
+            ok = False
+
+        state.closed = True
+        self._thinking_cards.pop((state.channel_id, state.thread_ts), None)
+        return ok
+
+    async def abort_thinking_card(self, chat_id: str, thread_ts: str) -> None:
+        """Tear down a card's local state without trying to stop the stream.
+
+        Called on errors where we just want to drop our tracking and stop
+        sending updates — e.g. an appendStream returned a fatal error.
+        """
+        key = (str(chat_id or ""), str(thread_ts or ""))
+        state = self._thinking_cards.pop(key, None)
+        if state:
+            state.closed = True
 
     def _dm_top_level_threads_as_sessions(self) -> bool:
         """Whether top-level Slack DMs get per-message session threads.
@@ -1298,10 +1857,10 @@ class SlackAdapter(BasePlatformAdapter):
             await self._get_client(channel).reactions_add(
                 channel=channel, timestamp=timestamp, name=emoji
             )
+            logger.info("[Slack] reactions.add %s on %s ok", emoji, timestamp)
             return True
         except Exception as e:
-            # Don't log as error — may fail if already reacted or missing scope
-            logger.debug("[Slack] reactions.add failed (%s): %s", emoji, e)
+            logger.warning("[Slack] reactions.add %s failed on %s: %s", emoji, timestamp, e)
             return False
 
     async def _remove_reaction(
@@ -1314,9 +1873,10 @@ class SlackAdapter(BasePlatformAdapter):
             await self._get_client(channel).reactions_remove(
                 channel=channel, timestamp=timestamp, name=emoji
             )
+            logger.info("[Slack] reactions.remove %s on %s ok", emoji, timestamp)
             return True
         except Exception as e:
-            logger.debug("[Slack] reactions.remove failed (%s): %s", emoji, e)
+            logger.warning("[Slack] reactions.remove %s failed on %s: %s", emoji, timestamp, e)
             return False
 
     def _reactions_enabled(self) -> bool:
@@ -1948,6 +2508,19 @@ class SlackAdapter(BasePlatformAdapter):
                 thread_ts = ts
         else:
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
+
+        # Cache (channel, thread) → (team_id, user_id) so the thinking-steps
+        # card can pick up the recipient identity Slack requires for non-DM
+        # channels. Without this, only assistant-view threads ever populate
+        # the cache and channel @mentions fall back to the legacy per-step
+        # message wall.
+        if channel_id and thread_ts and (team_id or user_id):
+            self._cache_assistant_thread_metadata({
+                "channel_id": channel_id,
+                "thread_ts": thread_ts,
+                "team_id": team_id or "",
+                "user_id": user_id or "",
+            })
 
         # In channels, respond if:
         #   0. Channel is in free_response_channels, OR require_mention is

@@ -8,6 +8,7 @@ import pytest
 from model_tools import (
     handle_function_call,
     get_all_tool_names,
+    get_tool_definitions,
     get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
@@ -127,6 +128,18 @@ class TestAgentLoopTools:
     def test_no_regular_tools_in_set(self):
         assert "web_search" not in _AGENT_LOOP_TOOLS
         assert "terminal" not in _AGENT_LOOP_TOOLS
+
+
+class TestGetToolDefinitions:
+    def test_missing_registry_generation_falls_back_to_zero(self, monkeypatch):
+        import model_tools as mt
+
+        monkeypatch.setattr(mt, "_compute_tool_definitions", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "_tool_defs_cache", {})
+        monkeypatch.delattr(mt.registry, "_generation", raising=False)
+
+        assert get_tool_definitions(quiet_mode=True) == []
+        assert get_tool_definitions(quiet_mode=True) == []
 
 
 # =========================================================================

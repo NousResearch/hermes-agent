@@ -246,6 +246,62 @@ class TestMcpAdd:
         assert srv["command"] == "npx"
         assert srv["args"] == ["@mcp/github"]
 
+    def test_add_stdio_server_reads_new_parser_dest(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """The CLI parser now stores --command on args.mcp_stdio_command."""
+        seen = {}
+
+        def mock_probe(name, config, **kw):
+            seen["config"] = config
+            return [("search", "Search repos")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="github",
+            command="mcp",
+            mcp_stdio_command="npx",
+            args=["@mcp/github"],
+        ))
+
+        out = capsys.readouterr().out
+        assert "Saved" in out
+        assert seen["config"]["command"] == "npx"
+
+    def test_add_stdio_server_keeps_back_compat_for_old_command_field(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Older parser builds stored stdio --command on args.command."""
+        seen = {}
+
+        def mock_probe(name, config, **kw):
+            seen["config"] = config
+            return [("search", "Search repos")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="legacy-github",
+            command="npx",
+            mcp_stdio_command=None,
+            args=["@mcp/github"],
+        ))
+
+        out = capsys.readouterr().out
+        assert "Saved" in out
+        assert seen["config"]["command"] == "npx"
+
     def test_add_connection_failure_save_disabled(
         self, tmp_path, capsys, monkeypatch
     ):

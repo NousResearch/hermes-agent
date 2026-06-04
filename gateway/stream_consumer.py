@@ -167,6 +167,25 @@ class GatewayStreamConsumer:
         self._in_think_block = False
         self._think_buffer = ""
 
+        # ── Slack thinking-card mode ───────────────────────────────────
+        # When a thinking-steps card is active for this (channel, thread),
+        # token deltas are appended into the card via chat.appendStream
+        # instead of edited into a separate Slack message.  The flag is
+        # latched lazily on the first flush — the card is opened by the
+        # progress-message task concurrently, so it may not exist yet at
+        # consumer construction time.
+        self._card_thread_ts: Optional[str] = None
+        if metadata:
+            tid = metadata.get("thread_id") or metadata.get("thread_ts")
+            if tid:
+                self._card_thread_ts = str(tid)
+        self._use_card = False
+        # Number of chars of `_accumulated` pushed via the final
+        # append_thinking_text call on stream-done. Plan-mode card buffers
+        # the entire response and pushes once at the end; this is bookkeeping
+        # for the streamed_full_response flag.
+        self._card_sent_chars = 0
+
         # Native draft-streaming state.  Resolved at the start of run() based
         # on cfg.transport, cfg.chat_type, and the adapter's
         # supports_draft_streaming() probe.  When True, the consumer emits
@@ -358,6 +377,34 @@ class GatewayStreamConsumer:
             self._accumulated += self._think_buffer
             self._think_buffer = ""
 
+    def _refresh_card_mode(self) -> bool:
+        """Check whether a Slack thinking-steps card is active for this stream.
+
+        Latches `_use_card` to True the first time a card is observed.  Once
+        latched it stays on for the rest of the consumer's lifetime — even
+        if the card is later finalized — so we don't accidentally fall back
+        to legacy edits and create a duplicate message under the card.
+        """
+        if self._use_card:
+            return True
+        if not self._card_thread_ts:
+            return False
+        adapter = self.adapter
+        getter = getattr(adapter, "get_thinking_card", None)
+        enabled = getattr(adapter, "thinking_card_enabled", None)
+        if getter is None or enabled is None:
+            return False
+        try:
+            if not enabled():
+                return False
+            state = getter(self.chat_id, self._card_thread_ts)
+        except Exception:
+            return False
+        if state is None:
+            return False
+        self._use_card = True
+        return True
+
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
         # Platform message length limit — leave room for cursor + formatting.
@@ -433,6 +480,67 @@ class GatewayStreamConsumer:
                         # check. _len_fn is reserved for overflow detection.
                         or len(self._accumulated) >= self.cfg.buffer_threshold
                     )
+
+                # ── Slack thinking-card path ───────────────────────────
+                # Plan-mode card: the card body must stay empty until
+                # finalize. We BUFFER deltas locally and only push the
+                # full accumulated response on got_done as a single
+                # append_thinking_text(is_response=True) call. The
+                # SlackAdapter.send() override then sees
+                # streamed_full_response=True and skips the duplicate
+                # summary in finalize_thinking_card.
+                if self._refresh_card_mode():
+                    # Drop commentary entirely — plan-mode card hides it.
+                    if commentary_text is not None:
+                        self._last_edit_time = time.monotonic()
+                        await asyncio.sleep(0.05)
+                        continue
+
+                    if got_segment_break:
+                        # Tool boundaries don't trigger a card update —
+                        # the tools row is owned by the progress task.
+                        # Keep accumulating; don't reset since the
+                        # response_text is the *whole* conversation
+                        # turn we hand to finalize.
+                        await asyncio.sleep(0.05)
+                        continue
+
+                    if got_done:
+                        # End of stream: push the entire accumulated
+                        # response as a single markdown_text chunk so
+                        # the SlackAdapter.send override can skip the
+                        # duplicate summary on finalize. We mark
+                        # is_response=True so the card's
+                        # streamed_full_response flag is set.
+                        cleaned = self._clean_for_display(self._accumulated)
+                        if cleaned.strip():
+                            ok = False
+                            try:
+                                ok = await self.adapter.append_thinking_text(
+                                    self.chat_id,
+                                    self._card_thread_ts,
+                                    cleaned,
+                                    is_response=True,
+                                )
+                            except Exception as e:
+                                logger.debug(
+                                    "Card final append raised: %s", e,
+                                )
+                                ok = False
+                            if ok:
+                                self._already_sent = True
+                                self._card_sent_chars = len(cleaned)
+                        # Either way, return — the gateway's
+                        # adapter.send() override owns finalize. Do NOT
+                        # set _final_response_sent: the card-absorbing
+                        # path in SlackAdapter.send() needs the final
+                        # `content` to be passed through so it can call
+                        # finalize_thinking_card with the streamed flag.
+                        return
+
+                    # Mid-stream in card mode: buffer only, never flush.
+                    await asyncio.sleep(0.05)
+                    continue
 
                 current_update_visible = False
                 if should_edit and self._accumulated:

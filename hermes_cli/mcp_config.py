@@ -227,10 +227,14 @@ def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
     name = args.name
     url = getattr(args, "url", None)
-    # Read from `mcp_command` (set by --command via explicit dest) — see
+    # Prefer `mcp_command` (set by --command via explicit dest) — see
     # mcp_add_p.add_argument("--command", dest="mcp_command", ...) in
-    # hermes_cli/main.py for why the dest is renamed.
-    command = getattr(args, "mcp_command", None)
+    # hermes_cli/main.py for why the dest is renamed. Keep compatibility with
+    # transient parser builds that used `mcp_stdio_command`, and with older
+    # builds that accidentally stored stdio --command on `args.command`.
+    command = getattr(args, "mcp_command", None) or getattr(args, "mcp_stdio_command", None)
+    if command is None and getattr(args, "command", None) not in {None, "mcp"}:
+        command = getattr(args, "command", None)
     cmd_args = getattr(args, "args", None) or []
     auth_type = getattr(args, "auth", None)
     preset_name = getattr(args, "preset", None)

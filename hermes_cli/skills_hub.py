@@ -31,6 +31,76 @@ _console = Console()
 # Shared do_* functions
 # ---------------------------------------------------------------------------
 
+def _load_installed_skill_preview(name: str) -> Optional[dict]:
+    """Return preview metadata for an already-installed skill, if present."""
+    from tools.skills_tool import SKILLS_DIR, skill_view
+
+    try:
+        loaded = json.loads(skill_view(name, preprocess=False))
+    except Exception:
+        return None
+
+    if not loaded.get("success"):
+        return None
+
+    skill_name = str(loaded.get("name") or name)
+    skill_file: Optional[Path] = None
+    skill_dir = loaded.get("skill_dir")
+    rel_path = loaded.get("path")
+
+    if skill_dir:
+        skill_file = Path(skill_dir) / "SKILL.md"
+    elif rel_path:
+        skill_file = SKILLS_DIR / rel_path
+
+    content = ""
+    if skill_file and skill_file.exists():
+        try:
+            content = skill_file.read_text(encoding="utf-8")
+        except Exception:
+            content = str(loaded.get("content") or "")
+    else:
+        content = str(loaded.get("content") or "")
+
+    lines = content.split("\n") if content else []
+    preview = "\n".join(lines[:50])
+    if len(lines) > 50:
+        preview += f"\n\n... ({len(lines) - 50} more lines)"
+
+    return {
+        "name": skill_name,
+        "description": str(loaded.get("description") or ""),
+        "source": "installed",
+        "trust": "local",
+        "identifier": name,
+        "path": str(skill_file) if skill_file else None,
+        "preview": preview,
+        "tags": list(loaded.get("tags") or []),
+    }
+
+
+def _render_installed_skill_preview(preview: dict, console: Optional[Console] = None) -> None:
+    """Print an inspect-style preview for an installed skill."""
+    c = console or _console
+
+    info_lines = [
+        f"[bold]Name:[/] {preview['name']}",
+        f"[bold]Description:[/] {preview.get('description') or '(no description)'}",
+        f"[bold]Source:[/] installed",
+        f"[bold]Trust:[/] [green]local[/]",
+        f"[bold]Identifier:[/] {preview['identifier']}",
+    ]
+    if preview.get("path"):
+        info_lines.append(f"[bold]Path:[/] {preview['path']}")
+    if preview.get("tags"):
+        info_lines.append(f"[bold]Tags:[/] {', '.join(preview['tags'])}")
+
+    c.print()
+    c.print(Panel("\n".join(info_lines), title=f"Skill: {preview['name']}"))
+    if preview.get("preview"):
+        c.print(Panel(preview["preview"], title="SKILL.md Preview", subtitle="installed skill"))
+    c.print()
+
 def _resolve_short_name(name: str, sources, console: Console) -> str:
     """
     Resolve a short skill name (e.g. 'pptx') to a full identifier by searching
@@ -629,6 +699,12 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     from tools.skills_hub import GitHubAuth, create_source_router
 
     c = console or _console
+    if "/" not in identifier:
+        local_preview = _load_installed_skill_preview(identifier)
+        if local_preview:
+            _render_installed_skill_preview(local_preview, c)
+            return
+
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
@@ -729,6 +805,19 @@ def inspect_skill(identifier: str) -> Optional[dict]:
             pass
 
     c = _Q()
+    if "/" not in identifier:
+        local_preview = _load_installed_skill_preview(identifier)
+        if local_preview:
+            return {
+                "name": local_preview["name"],
+                "description": local_preview["description"],
+                "source": local_preview["source"],
+                "identifier": local_preview["identifier"],
+                "tags": list(local_preview.get("tags") or []),
+                "skill_md_preview": local_preview.get("preview") or "",
+                "path": local_preview.get("path"),
+            }
+
     auth = GitHubAuth()
     sources = create_source_router(auth)
     ident = identifier

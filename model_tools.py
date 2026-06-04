@@ -253,6 +253,19 @@ _LEGACY_TOOLSET_MAP = {
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 
 
+def _registry_generation() -> int:
+    """Return the registry generation, tolerating pre-upgrade registry singletons.
+
+    Long-lived processes like the gateway can keep an older in-memory
+    ``tools.registry.registry`` instance alive across source upgrades. If new
+    ``model_tools.py`` code starts referencing ``registry._generation`` before
+    that process is restarted, direct attribute access raises
+    ``AttributeError`` and user messages fail. Treat missing generations as 0 so
+    the process keeps working until a restart refreshes the singleton.
+    """
+    return int(getattr(registry, "_generation", 0) or 0)
+
+
 def _clear_tool_defs_cache() -> None:
     """Drop memoized get_tool_definitions() results. Called when dynamic
     schema dependencies change (e.g. discord capability cache reset,
@@ -297,7 +310,7 @@ def get_tool_definitions(
         cache_key = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
-            registry._generation,
+            _registry_generation(),
             cfg_fp,
         )
         cached = _tool_defs_cache.get(cache_key)

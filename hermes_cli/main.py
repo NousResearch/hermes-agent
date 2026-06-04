@@ -7736,7 +7736,13 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
         return None
     try:
         print("  → Termux detected: trying to install uv for faster dependency updates...")
-        subprocess.run(pip_cmd + ["install", "uv"], cwd=PROJECT_ROOT, check=False)
+        result = subprocess.run(
+            pip_cmd + ["install", "uv", "--only-binary", ":all:"],
+            cwd=PROJECT_ROOT,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
     except Exception:
         pass
     # After pip install, check managed path first, then PATH

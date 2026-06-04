@@ -531,6 +531,70 @@ def test_complete_phantom_card_message_advertises_retry(worker_env):
         conn.close()
 
 
+def test_complete_verification_failure_message_reports_blocked_details_without_retry(
+    monkeypatch, tmp_path
+):
+    from pathlib import Path as _Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifact = workspace / "result.json"
+    artifact.write_text(json.dumps({"verdict": "FAIL"}), encoding="utf-8")
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="gated-worker-test",
+            assignee="test-worker",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+            gate_recipe={
+                "checks": [
+                    {
+                        "type": "result_field_equals",
+                        "file": "result.json",
+                        "key": "verdict",
+                        "expect": "PASS",
+                    }
+                ]
+            },
+        )
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    out = kt._handle_complete({"summary": "claimed pass"})
+    err = json.loads(out).get("error", "")
+
+    assert "verification gate blocked" in err
+    assert "task has been moved to blocked" in err
+    assert "Do not simply retry" in err
+    assert "result_field_equals" in err
+    assert "expected=PASS" in err
+    assert "actual=FAIL" in err
+    assert "path=" in err
+    assert "Retry kanban_complete" not in err
+    assert "still in-flight" not in err
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

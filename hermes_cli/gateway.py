@@ -2899,20 +2899,57 @@ def launchd_plist_is_current() -> bool:
     return _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected)
 
 
+def _launchd_service_target(label: str | None = None) -> str:
+    """Return the launchd service target for the gateway LaunchAgent."""
+    return f"{_launchd_domain()}/{label or get_launchd_label()}"
+
+
+def _launchd_kickstart_gateway(*, kill_existing: bool = True, timeout: int = 90) -> None:
+    """Single launchd restart entrypoint for the Hermes gateway.
+
+    This intentionally uses ``launchctl kickstart -k`` instead of
+    ``bootout``/``bootstrap`` so the service definition remains loaded even if
+    the process that requested the restart is terminated by the restart.  All
+    restart/cutover paths must route through this helper.
+    """
+    cmd = ["launchctl", "kickstart"]
+    if kill_existing:
+        cmd.append("-k")
+    cmd.append(_launchd_service_target())
+    subprocess.run(cmd, check=True, timeout=timeout)
+
+
+def _launchd_unload_service_definition_for_stop_only(target: str | None = None) -> None:
+    """Unload the LaunchAgent only for explicit stop/uninstall operations.
+
+    Restart/cutover paths must never call this helper; they use
+    ``_launchd_kickstart_gateway`` so KeepAlive cannot be lost if the caller
+    dies mid-restart.
+    """
+    subprocess.run(["launchctl", "bootout", target or _launchd_service_target()], check=True, timeout=90)
+
+
 def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed launchd plist when the generated definition has changed.
 
-    This helper intentionally does *not* unload/reload the launchd job. Gateway
-    restarts are routed through ``launchctl kickstart -k`` so an in-gateway
-    restart request cannot boot itself out, die on SIGTERM, and leave the
-    service unloaded.
+    The plist is updated on disk, then the loaded job is nudged through the
+    single kickstart restart entrypoint.  Do not bootout/bootstrap here: when
+    invoked from a gateway-hosted command, unloading the job can kill the caller
+    before the bootstrap half runs, leaving the gateway down.
     """
     plist_path = get_launchd_plist_path()
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-    print("↻ Updated gateway launchd service definition on disk; use kickstart restart to apply safely")
+    try:
+        _launchd_kickstart_gateway()
+    except subprocess.CalledProcessError as e:
+        # If the job is not loaded, leave the refreshed plist in place;
+        # launchd_start() owns bootstrap recovery for unloaded jobs.
+        if e.returncode not in {3, 113}:
+            raise
+    print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 
 
@@ -2945,8 +2982,11 @@ def launchd_install(force: bool = False):
 
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
-    label = get_launchd_label()
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
+    try:
+        _launchd_unload_service_definition_for_stop_only()
+    except subprocess.CalledProcessError as e:
+        if e.returncode not in {3, 113}:
+            raise
     
     if plist_path.exists():
         plist_path.unlink()
@@ -2956,7 +2996,6 @@ def launchd_uninstall():
 
 def launchd_start():
     plist_path = get_launchd_plist_path()
-    label = get_launchd_label()
 
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
@@ -2964,24 +3003,23 @@ def launchd_start():
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        _launchd_kickstart_gateway(kill_existing=False, timeout=30)
         print("✓ Service started")
         return
 
     refresh_launchd_plist_if_needed()
     try:
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        _launchd_kickstart_gateway(kill_existing=False, timeout=30)
     except subprocess.CalledProcessError as e:
         if e.returncode not in {3, 113}:
             raise
         print("↻ launchd job was unloaded; reloading service definition")
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        _launchd_kickstart_gateway(kill_existing=False, timeout=30)
     print("✓ Service started")
 
 def launchd_stop():
-    label = get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
+    target = _launchd_service_target()
     try:
         from gateway.status import get_running_pid, write_planned_stop_marker
         pid = get_running_pid(cleanup_stale=False)
@@ -2989,12 +3027,11 @@ def launchd_stop():
             write_planned_stop_marker(pid)
     except Exception:
         pass
-    # bootout unloads the service definition so KeepAlive doesn't respawn
-    # the process.  A plain `kill SIGTERM` only signals the process — launchd
-    # immediately restarts it because KeepAlive.SuccessfulExit = false.
-    # `hermes gateway start` re-bootstraps when it detects the job is unloaded.
+    # Explicit stop/uninstall is the only path allowed to unload the service
+    # definition. Restart/cutover paths must keep KeepAlive loaded and use
+    # _launchd_kickstart_gateway() instead.
     try:
-        subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
+        _launchd_unload_service_definition_for_stop_only(target)
     except subprocess.CalledProcessError as e:
         if e.returncode in {3, 113}:
             pass  # Already unloaded — nothing to stop.
@@ -3046,16 +3083,11 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
 
 
 def launchd_restart():
-    label = get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
     drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
 
     try:
         pid = get_running_pid()
-        if pid is not None and _request_gateway_self_restart(pid):
-            print("✓ Service restart requested")
-            return
         if pid is not None:
             try:
                 terminate_pid(pid, force=False)
@@ -3065,17 +3097,15 @@ def launchd_restart():
                 exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
                 if not exited:
                     print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        _launchd_kickstart_gateway(timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
-        if e.returncode not in {3, 113}:
-            raise
-        # Job not loaded — bootstrap and start fresh
-        print("↻ launchd job was unloaded; reloading")
-        plist_path = get_launchd_plist_path()
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
-        print("✓ Service restarted")
+        if e.returncode in {3, 113}:
+            raise RuntimeError(
+                "launchd gateway job is not loaded; restart refused to bootstrap. "
+                "Run the explicit start/install recovery path outside gateway-hosted restart."
+            ) from e
+        raise
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()

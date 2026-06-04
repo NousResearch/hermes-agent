@@ -389,6 +389,53 @@ def _handle_list(args: dict, **kw) -> str:
         return tool_error(f"kanban_list: {e}")
 
 
+_VERIFICATION_SAFE_FINDING_FIELDS = ("type", "reason", "expected", "actual", "path", "pattern")
+_SECRET_FIELD_MARKERS = (
+    "secret", "token", "password", "passwd", "credential", "api_key", "apikey",
+    "authorization", "bearer", ".env",
+)
+
+
+def _verification_finding_value_is_secret_like(value: object) -> bool:
+    text = str(value).casefold()
+    return any(marker in text for marker in _SECRET_FIELD_MARKERS)
+
+
+def _summarize_verification_failures(findings: list[dict]) -> str:
+    failed = [f for f in findings if isinstance(f, dict) and not f.get("ok")]
+    if not failed:
+        return "no failed check details were provided"
+    lines: list[str] = []
+    for idx, finding in enumerate(failed[:8], start=1):
+        pieces: list[str] = []
+        for field in _VERIFICATION_SAFE_FINDING_FIELDS:
+            if field not in finding or finding.get(field) is None:
+                continue
+            value = finding.get(field)
+            rendered = "[redacted]" if _verification_finding_value_is_secret_like(value) else str(value)
+            if len(rendered) > 160:
+                rendered = rendered[:157] + "..."
+            pieces.append(f"{field}={rendered}")
+        if not pieces:
+            pieces.append("type=unknown")
+        lines.append(f"#{idx} " + "; ".join(pieces))
+    if len(failed) > len(lines):
+        lines.append(f"... {len(failed) - len(lines)} more failed check(s) omitted")
+    return " | ".join(lines)
+
+
+def _verification_failed_tool_error(ver_err) -> str:
+    details = _summarize_verification_failures(getattr(ver_err, "findings", []) or [])
+    return tool_error(
+        "kanban_complete: verification gate blocked completion; "
+        "task has been moved to blocked. Do not simply retry with the same "
+        "summary/result. Failed checks: "
+        f"{details}. If the missing or mismatched evidence is real, fix the "
+        "artifact/output first, then ask an operator to move the task back "
+        "to ready. Do not try to bypass the verification gate."
+    )
+
+
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
     tid = _default_task_id(args.get("task_id"))
@@ -496,6 +543,8 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
                 )
+            except kb.VerificationFailedError as ver_err:
+                return _verification_failed_tool_error(ver_err)
             if not ok:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"
@@ -668,6 +717,7 @@ def _handle_create(args: dict, **kw) -> str:
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
     skills = args.get("skills")
+    gate_recipe = args.get("gate_recipe")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
         skills = [skills]
@@ -705,6 +755,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                gate_recipe=gate_recipe,
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(
@@ -1164,6 +1215,16 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "gate_recipe": {
+                "type": "object",
+                "description": (
+                    "Optional deterministic verification recipe. If set, "
+                    "complete_task runs the declared checks before allowing "
+                    "status='done'. Use checks like artifact_exists, "
+                    "sha256_equals, result_field_equals, worker_log_absent, "
+                    "and no_child_cards."
                 ),
             },
             "board": _board_schema_prop(),

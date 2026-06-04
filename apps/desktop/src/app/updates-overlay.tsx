@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { ErrorState } from '@/components/ui/error-state'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, CheckCircle2, Copy, Loader2, Sparkles, Terminal } from '@/lib/icons'
@@ -331,31 +332,22 @@ function ApplyingView({ apply }: { apply: UpdateApplyState }) {
 
 function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss: () => void; onRetry: () => void }) {
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
-      <div className="flex flex-col items-center gap-3 text-center">
-        <span className="flex size-14 items-center justify-center rounded-2xl bg-destructive/10 text-destructive">
-          <AlertCircle className="size-7" />
-        </span>
-
-        <DialogTitle className="text-center text-xl">Update didn’t finish</DialogTitle>
-        <DialogDescription className="text-center text-sm">
+    <ErrorState
+      className="px-6 pb-6 pt-7 pr-8"
+      description={
+        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
           {message || 'No worries — nothing was lost. You can try again now.'}
         </DialogDescription>
-      </div>
-
-      <div className="grid gap-2">
-        <Button className="font-semibold" onClick={onRetry} size="lg">
-          Try again
-        </Button>
-        <button
-          className="text-center text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-          onClick={onDismiss}
-          type="button"
-        >
-          Not now
-        </button>
-      </div>
-    </div>
+      }
+      title={<DialogTitle className="text-center text-xl font-semibold tracking-tight">Update didn’t finish</DialogTitle>}
+    >
+      <Button className="font-semibold" onClick={onRetry} size="lg">
+        Try again
+      </Button>
+      <Button onClick={onDismiss} variant="text">
+        Not now
+      </Button>
+    </ErrorState>
   )
 }
 

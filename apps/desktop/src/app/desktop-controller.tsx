@@ -216,6 +216,20 @@ export function DesktopController() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
+  // Cmd/Ctrl+. toggles the command center (sessions / system / usage).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key === '.') {
+        event.preventDefault()
+        toggleCommandCenter()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [toggleCommandCenter])
+
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
@@ -435,6 +449,8 @@ export function DesktopController() {
 
       event.preventDefault()
       startFreshSessionDraft()
+      // Briefly light up the sidebar's ⌘N hint so the shortcut is discoverable.
+      window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     }
 
     window.addEventListener('keydown', onKeyDown)

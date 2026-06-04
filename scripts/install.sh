@@ -2238,6 +2238,60 @@ postinstall_mode() {
     fi
 }
 
+# Clear the cached Electron download + any half-written unpacked output so the
+# next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
+# the per-user Electron download cache — most often a partial download resumed
+# into the same file, leaving concatenated junk — makes electron-builder's
+# `app-builder unpack-electron` extract a tree MISSING the `electron` binary, so
+# the final `electron` -> `Hermes` rename dies with ENOENT, and every re-run
+# repeats the broken extraction forever.
+#
+# We deliberately do not validate the zip ourselves: the common
+# prepended/concatenated-junk corruption slips past naive `unzip -t`-style
+# checks (the end-of-central-directory still resolves), so a self-rolled gate
+# would skip the real-world case. Instead we unconditionally drop the cached
+# `electron-*.zip` (the loose copy and any @electron/get hash-subdir copy) plus
+# the stale unpacked dir, then let the caller retry once — @electron/get
+# re-downloads with its own SHASUM verification, the real source of truth.
+#
+# Prints each removed path (one per line); empty output => nothing cleared, so a
+# retry is pointless. Best-effort: never aborts the script.
+_purge_electron_build_cache() {
+    local desktop_dir="$1"
+    local cache_dirs=() dir zip target
+
+    # Per-OS Electron download cache dirs, honoring the overrides @electron/get
+    # respects, then the platform default ($OS is set by the installer).
+    if [ -n "${electron_config_cache:-}" ]; then cache_dirs+=("$electron_config_cache"); fi
+    if [ -n "${ELECTRON_CACHE:-}" ]; then cache_dirs+=("$ELECTRON_CACHE"); fi
+    if [ "$OS" = "macos" ]; then
+        cache_dirs+=("$HOME/Library/Caches/electron")
+    else
+        cache_dirs+=("${XDG_CACHE_HOME:-$HOME/.cache}/electron")
+    fi
+
+    for dir in "${cache_dirs[@]}"; do
+        [ -d "$dir" ] || continue
+        # Recurse: the bad copy may be the loose top-level zip OR a copy inside
+        # an @electron/get hash subdir.
+        while IFS= read -r zip; do
+            [ -n "$zip" ] || continue
+            if rm -f "$zip" 2>/dev/null; then printf '%s\n' "$zip"; fi
+        done < <(find "$dir" -type f -name 'electron-*.zip' 2>/dev/null)
+    done
+
+    # A half-written unpacked dir from an interrupted prior pack poisons the
+    # rename even after the zip is fixed. Cover every platform's output dir name
+    # (linux-unpacked, win-unpacked / win-arm64-unpacked, mac / mac-arm64 /
+    # mac-universal).
+    if [ -d "$desktop_dir/release" ]; then
+        for target in "$desktop_dir/release"/*-unpacked "$desktop_dir/release"/mac "$desktop_dir/release"/mac-*; do
+            [ -d "$target" ] || continue
+            if rm -rf "$target" 2>/dev/null; then printf '%s\n' "$target"; fi
+        done
+    fi
+}
+
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's
 # Install-Desktop: a root-level npm install so the apps/* workspace resolves
 # the desktop's own deps (Electron ~150MB), then `npm run pack`
@@ -2292,11 +2346,26 @@ install_desktop() {
     #    real signed/notarized .dmg needs Apple credentials and is a separate
     #    release concern.
     log_info "Building desktop app (this takes 1-3 minutes)..."
-    ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack ) || {
-        log_error "Desktop app build failed"
-        log_info "Run manually: cd $desktop_dir && npm run pack"
-        return 1
-    }
+    if ! ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack ); then
+        # A corrupt cached Electron zip makes `pack` fail with an opaque ENOENT
+        # on the final `electron` -> `Hermes` rename: app-builder's
+        # unpack-electron extracted a partial tree (missing the binary) from the
+        # bad zip, and re-running reuses the poisoned cache forever. Purge the
+        # cached download + any stale unpacked output and retry once;
+        # @electron/get re-downloads with its own SHASUM check. Without this, a
+        # corrupt download hard-fails the whole installer with no recovery path.
+        local purged
+        purged="$(_purge_electron_build_cache "$desktop_dir")"
+        if [ -n "$purged" ]; then
+            log_warn "Desktop build failed — cleared cached Electron download, retrying once:"
+            printf '%s\n' "$purged" | while IFS= read -r line; do log_info "  - $line"; done
+        fi
+        if [ -z "$purged" ] || ! ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack ); then
+            log_error "Desktop app build failed"
+            log_info "Run manually: cd $desktop_dir && npm run pack"
+            return 1
+        fi
+    fi
 
     local app=""
     if [ "$OS" = "linux" ]; then

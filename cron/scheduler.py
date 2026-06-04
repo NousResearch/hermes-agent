@@ -1551,9 +1551,16 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
         reasoning_config = parse_reasoning_effort(effort)
 
-        # Prefill messages from env or config.yaml
+        # Prefill messages from env or config.yaml. The top-level
+        # prefill_messages_file key is canonical; agent.prefill_messages_file is
+        # retained as a legacy fallback for older CLI/godmode configs.
         prefill_messages = None
-        prefill_file = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "") or _cfg.get("prefill_messages_file", "")
+        agent_cfg = _cfg.get("agent", {}) if isinstance(_cfg.get("agent", {}), dict) else {}
+        prefill_file = (
+            os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
+            or _cfg.get("prefill_messages_file", "")
+            or agent_cfg.get("prefill_messages_file", "")
+        )
         if prefill_file:
             pfpath = Path(prefill_file).expanduser()
             if not pfpath.is_absolute():

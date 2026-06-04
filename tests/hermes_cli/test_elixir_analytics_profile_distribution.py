@@ -201,7 +201,11 @@ def test_elixir_analytics_distribution_ships_product_roadmap():
     assert "Current Status Snapshot" in body
     assert "Production dashboard" in body
     assert "Analytics PR #6" in body
+    assert "Analytics PR #7" in body
+    assert "Open visualization" in body
+    assert "Compact-link PR #7 open and verified" in body
     assert "ops-readiness status from analytics `main` is `ready`" in body
+    assert 'overallStatus: "ready"' in body
     assert "signed-in browser proof pending" in body
     assert "Slack E2E Checklist" in body
     assert "Milestone 10A: finish production dashboard signed-in proof." in body
@@ -213,6 +217,7 @@ def test_elixir_analytics_distribution_ships_product_roadmap():
     assert "row_cap_truncation" in body
     assert "Milestone 12A: choose and implement hosted gateway." in body
     assert "Milestone 13A: choose Hermes upstream/private sync path." in body
+    assert "Milestone 14A: compact Slack answer links." in body
     assert "active users this week" in body
     assert "how many app active users this week?" in body
     assert "delete from profiles" in body

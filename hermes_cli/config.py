@@ -3792,15 +3792,46 @@ def get_custom_provider_context_length(
     return None
 
 
+def _coerce_config_version(value: Any) -> int:
+    """Return a safe integer config version, treating invalid values as legacy."""
+    if isinstance(value, bool):
+        return 0
+    try:
+        version = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(version, 0)
+
+
 def check_config_version() -> Tuple[int, int]:
     """
-    Check config version.
-    
+    Check the raw on-disk config schema version.
+
+    ``load_config()`` deliberately starts from ``DEFAULT_CONFIG`` and deep-merges
+    the user's file, which is correct for runtime reads but wrong for deciding
+    whether the user's persisted schema has been migrated. A config file with no
+    raw ``_config_version`` must remain visible as legacy instead of inheriting
+    the latest default version in memory.
+
     Returns (current_version, latest_version).
     """
-    config = load_config()
-    current = config.get("_config_version", 0)
-    latest = DEFAULT_CONFIG.get("_config_version", 1)
+    latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
+    config_path = get_config_path()
+    if not config_path.exists():
+        return latest, latest
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    except Exception as e:
+        # Invalid YAML needs a parse warning, not an automatic schema rewrite
+        # that could replace the user's broken file with defaults.
+        _warn_config_parse_failure(config_path, e)
+        return latest, latest
+
+    if not isinstance(config, dict):
+        config = {}
+    current = _coerce_config_version(config.get("_config_version"))
     return current, latest
 
 

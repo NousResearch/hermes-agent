@@ -99,3 +99,12 @@ def test_stage2_hook_creates_s6_envdir_before_writing_browser_path(stage2_text: 
     assert mkdir_line in stage2_text
     assert write_line in stage2_text
     assert stage2_text.index(mkdir_line) < stage2_text.index(write_line)
+
+
+def test_stage2_hook_runs_config_migration_as_hermes(stage2_text: str) -> None:
+    assert "scripts/docker_config_migrate.py" in stage2_text
+    assert 's6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python"' in stage2_text
+
+
+def test_stage2_hook_documents_config_migration_opt_out(stage2_text: str) -> None:
+    assert "HERMES_SKIP_CONFIG_MIGRATION" in stage2_text

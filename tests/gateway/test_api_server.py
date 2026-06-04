@@ -1763,6 +1763,221 @@ class TestChatCompletionsEndpoint:
 
         assert session_ids[0] != session_ids[1]
 
+    @pytest.mark.asyncio
+    async def test_chat_completions_includes_reasoning_content(self, adapter):
+        """reasoning_content appears in message when show_reasoning=True and last_reasoning is set."""
+        mock_result = {
+            "final_response": "Answer",
+            "last_reasoning": "Let me think...",
+            "completed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run,
+                patch(
+                    "gateway.platforms.api_server.resolve_display_setting",
+                    return_value=True,
+                ),
+            ):
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "think"}],
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                msg = data["choices"][0]["message"]
+                assert msg["content"] == "Answer"
+                assert msg["reasoning_content"] == "Let me think..."
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_omits_reasoning_when_empty(self, adapter):
+        """reasoning_content key is absent when last_reasoning is None."""
+        mock_result = {
+            "final_response": "Answer",
+            "last_reasoning": None,
+            "completed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run,
+                patch(
+                    "gateway.platforms.api_server.resolve_display_setting",
+                    return_value=True,
+                ),
+            ):
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "think"}],
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                msg = data["choices"][0]["message"]
+                assert "reasoning_content" not in msg
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_omits_reasoning_when_display_disabled(self, adapter):
+        """reasoning_content key is absent when show_reasoning resolves to False."""
+        mock_result = {
+            "final_response": "Answer",
+            "last_reasoning": "deep thought",
+            "completed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run,
+                patch(
+                    "gateway.platforms.api_server.resolve_display_setting",
+                    return_value=False,
+                ),
+            ):
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "think"}],
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                msg = data["choices"][0]["message"]
+                assert "reasoning_content" not in msg
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_stream_includes_reasoning_chunks(self, adapter):
+        """Streaming response includes delta.reasoning_content chunks when show_reasoning=True."""
+        import asyncio
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                tp_cb = kwargs.get("tool_progress_callback")
+                cb = kwargs.get("stream_delta_callback")
+                if tp_cb:
+                    tp_cb("reasoning.available", preview="thinking text")
+                if cb:
+                    await asyncio.sleep(0.01)
+                    cb("Answer")
+                return (
+                    {"final_response": "Answer", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+                )
+
+            with (
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+                patch(
+                    "gateway.platforms.api_server.resolve_display_setting",
+                    return_value=True,
+                ),
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "think"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            reasoning_chunks = []
+            content_chunks = []
+            for line in body.splitlines():
+                if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                    continue
+                try:
+                    chunk = _json.loads(line[len("data: "):])
+                except _json.JSONDecodeError:
+                    continue
+                for choice in chunk.get("choices", []):
+                    delta = choice.get("delta", {})
+                    if "reasoning_content" in delta:
+                        reasoning_chunks.append(delta["reasoning_content"])
+                    if "content" in delta:
+                        content_chunks.append(delta["content"])
+            assert reasoning_chunks, "Expected at least one reasoning_content delta"
+            assert "thinking text" in reasoning_chunks
+            assert any("Answer" in c for c in content_chunks)
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_stream_omits_reasoning_when_display_disabled(self, adapter):
+        """Streaming response omits reasoning_content when show_reasoning=False."""
+        import asyncio
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                tp_cb = kwargs.get("tool_progress_callback")
+                cb = kwargs.get("stream_delta_callback")
+                # When display is disabled, tool_progress_callback is None, so reasoning
+                # events are never enqueued. Verify the callback is not set.
+                assert tp_cb is None, "tool_progress_callback should be None when display is off"
+                if cb:
+                    await asyncio.sleep(0.01)
+                    cb("Answer")
+                return (
+                    {"final_response": "Answer", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+                )
+
+            with (
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+                patch(
+                    "gateway.platforms.api_server.resolve_display_setting",
+                    return_value=False,
+                ),
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "think"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            for line in body.splitlines():
+                if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                    continue
+                try:
+                    chunk = _json.loads(line[len("data: "):])
+                except _json.JSONDecodeError:
+                    continue
+                for choice in chunk.get("choices", []):
+                    assert "reasoning_content" not in choice.get("delta", {}), \
+                        "reasoning_content must be absent when display is disabled"
+
 
 # ---------------------------------------------------------------------------
 # _derive_chat_session_id unit tests

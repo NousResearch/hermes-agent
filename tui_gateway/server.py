@@ -3013,6 +3013,19 @@ def _(rid, params: dict) -> dict:
     except ValueError as e:
         return _err(rid, 4017, str(e))
     agent = session.get("agent")
+    # The AIAgent caches its system prompt on ``_cached_system_prompt`` for
+    # the lifetime of the session (prefix-cache optimization). Without an
+    # invalidation here, the "Current working directory" line baked into that
+    # cache stays stale and subsequent turns see the previous cwd even though
+    # session["cwd"], terminal_tool overrides, and the session.info event
+    # all already reflect the new directory.
+    if agent is not None:
+        try:
+            from agent.system_prompt import invalidate_system_prompt
+
+            invalidate_system_prompt(agent)
+        except Exception:
+            pass
     info = _session_info(agent, session) if agent is not None else {
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),

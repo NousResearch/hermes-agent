@@ -164,6 +164,18 @@ class InsightsEngine:
             "top_sessions": top_sessions,
         }
 
+    def get_skill_breakdown(self, days: int = 30, source: str = None) -> Dict[str, Any]:
+        """Return only the skills section without running a full generate().
+
+        Uses the instr()-prefiltered _get_skill_usage query so only messages
+        that reference skill_view or skill_manage are loaded from SQLite,
+        avoiding the cost of _get_sessions, _get_tool_usage, and the other
+        compute passes that generate() performs.
+        """
+        cutoff = time.time() - (days * 86400)
+        skill_usage = self._get_skill_usage(cutoff, source)
+        return self._compute_skill_breakdown(skill_usage)
+
     # =========================================================================
     # Data gathering (SQL queries)
     # =========================================================================
@@ -298,7 +310,9 @@ class InsightsEngine:
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
                    WHERE s.started_at >= ? AND s.source = ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
+                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL
+                     AND (instr(m.tool_calls, 'skill_view') > 0
+                          OR instr(m.tool_calls, 'skill_manage') > 0)""",
                 (cutoff, source),
             )
         else:
@@ -307,7 +321,9 @@ class InsightsEngine:
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
                    WHERE s.started_at >= ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
+                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL
+                     AND (instr(m.tool_calls, 'skill_view') > 0
+                          OR instr(m.tool_calls, 'skill_manage') > 0)""",
                 (cutoff,),
             )
 

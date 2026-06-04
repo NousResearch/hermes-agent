@@ -506,6 +506,49 @@ class TestInsightsPopulated:
         # All 5 sessions should be included
         assert report["overview"]["total_sessions"] == 5
 
+    def test_get_skill_breakdown_matches_full_generate(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        full = engine.generate(days=30)
+        focused = engine.get_skill_breakdown(days=30)
+        assert focused == full["skills"]
+
+    def test_get_skill_breakdown_respects_source_filter(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        # Only s1 (cli) has skill_view "github-pr-workflow"
+        focused = engine.get_skill_breakdown(days=30, source="cli")
+        skill_names = [s["skill"] for s in focused["top_skills"]]
+        assert "github-pr-workflow" in skill_names
+        # github-code-review was in discord (s4), not cli
+        assert "github-code-review" not in skill_names
+
+    def test_get_skill_breakdown_empty_db(self, db):
+        focused = InsightsEngine(db).get_skill_breakdown(days=30)
+        assert focused == {
+            "summary": {
+                "total_skill_loads": 0,
+                "total_skill_edits": 0,
+                "total_skill_actions": 0,
+                "distinct_skills_used": 0,
+            },
+            "top_skills": [],
+        }
+
+    def test_get_skill_usage_prefilter_ignores_non_skill_substring(self, db):
+        # "my_skill_view_helper" contains "skill_view" as a substring; instr()
+        # will match but the Python-side name check keeps the set clean.
+        # More importantly, messages with no skill_* tools must be excluded.
+        db.create_session(session_id="sx", source="cli", model="gpt-4o")
+        db.append_message(
+            "sx",
+            role="assistant",
+            content="Just using read_file.",
+            tool_calls=[{"function": {"name": "read_file", "arguments": '{"path":"/tmp/x"}'}}],
+        )
+        db._conn.commit()
+        focused = InsightsEngine(db).get_skill_breakdown(days=30)
+        assert focused["summary"]["total_skill_actions"] == 0
+        assert focused["top_skills"] == []
+
 
 # =========================================================================
 # Formatting

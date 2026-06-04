@@ -4945,6 +4945,16 @@ class TestNewEndpoints:
         except Exception:
             pass
 
+    def test_analytics_usage_skips_full_insights_generate(self):
+        """get_usage_analytics must call get_skill_breakdown, not generate()."""
+        from unittest.mock import patch
+        from agent.insights import InsightsEngine
+
+        with patch.object(InsightsEngine, "generate") as mock_generate:
+            resp = self.client.get("/api/analytics/usage?days=7")
+        assert resp.status_code == 200
+        mock_generate.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Model context length: normalize/denormalize + /api/model/info

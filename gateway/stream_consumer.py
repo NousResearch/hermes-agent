@@ -530,7 +530,19 @@ class GatewayStreamConsumer:
                         if split_at < _safe_limit // 2:
                             split_at = _safe_limit
                         chunk = self._accumulated[:split_at]
-                        ok = await self._send_or_edit(chunk)
+                        # finalize=True so the adapter applies platform-specific
+                        # rich-text markup (e.g. Telegram MarkdownV2). This chunk
+                        # is surrendered immediately below (_message_id is reset to
+                        # None), so it can never be edited again and must receive
+                        # its final formatting now. is_turn_final=False because the
+                        # remainder (_accumulated[split_at:]) is still the real
+                        # answer: it keeps _try_fresh_final from setting
+                        # _final_response_sent on this mid-stream chunk, which would
+                        # otherwise let a cancel/timeout before got_done suppress
+                        # the final send and strand the continuation.
+                        ok = await self._send_or_edit(
+                            chunk, finalize=True, is_turn_final=False,
+                        )
                         if self._fallback_final_send or not ok:
                             # Edit failed (or backed off due to flood control)
                             # while attempting to split an oversized message.

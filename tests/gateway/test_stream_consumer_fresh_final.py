@@ -158,6 +158,100 @@ class TestFreshFinalForLongLivedPreviews:
         adapter.edit_message.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_oversize_split_chunk_finalizes_without_marking_final(self):
+        """Oversize-split first chunk finalizes for formatting but stays non-final.
+
+        The overflow loop in the run cycle finalizes the first half of an
+        oversized message (so the adapter applies platform markup) and then
+        resets ``_message_id`` so a fresh message carries the remainder.  That
+        finalize must pass ``is_turn_final=False``: the chunk is not the
+        turn-final answer.  If it set ``_final_response_sent`` (what a bare
+        ``finalize=True`` does on a long-lived preview), a cancel/timeout
+        before ``got_done`` would let the gateway suppress the real final send
+        and strand the continuation.
+        """
+        adapter = _make_adapter()
+        adapter.send.side_effect = [
+            SimpleNamespace(success=True, message_id="initial_preview"),
+            SimpleNamespace(success=True, message_id="fresh_final"),
+        ]
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(fresh_final_after_seconds=60.0),
+        )
+        await consumer._send_or_edit("first part so far")
+        consumer._message_created_ts = 0.0  # preview is stale → fresh-final path
+        # Mirror the overflow split call site: finalize the (distinct) chunk for
+        # markup, but the remainder is still the real answer, so
+        # is_turn_final=False.  Text must differ from the prior send or the
+        # skip-if-same guard short-circuits before fresh-final runs.
+        ok = await consumer._send_or_edit(
+            "first part of an oversized answer", finalize=True, is_turn_final=False,
+        )
+        assert ok is True
+        # Fresh-final still fired (formatting/cleanup happened) ...
+        assert adapter.send.call_count == 2
+        # ... but the chunk was NOT recorded as the turn-final response.
+        assert consumer._final_response_sent is False
+        assert consumer.final_response_sent is False
+
+    @pytest.mark.asyncio
+    async def test_run_loop_overflow_split_passes_is_turn_final_false(self):
+        """End-to-end guard for the overflow-split call site.
+
+        Drives the real run() loop with an oversized accumulation so the
+        ``while ... _message_id is not None`` overflow branch fires, and asserts
+        the split chunk is delivered via ``_send_or_edit(finalize=True,
+        is_turn_final=False)``.  With no segment break in the stream, that is the
+        only call carrying ``is_turn_final=False`` (got_done passes
+        ``is_turn_final=got_done``), so reverting the call site to a bare
+        ``finalize=True`` makes this assertion fail.
+        """
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096  # cursor="" -> _safe_limit = 3996
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="m1"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="m1"),
+        )
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, cursor="",
+            ),
+        )
+
+        captured: list[dict] = []
+        original = consumer._send_or_edit
+
+        async def _spy(text, **kwargs):
+            captured.append(kwargs)
+            return await original(text, **kwargs)
+
+        consumer._send_or_edit = _spy  # type: ignore[assignment]
+
+        consumer.on_delta("Start. ")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)  # first send establishes _message_id
+        consumer.on_delta("X" * 5000)  # accumulation now exceeds _safe_limit
+        await asyncio.sleep(0.08)  # overflow while-loop fires the split
+        consumer.finish()
+        await task
+
+        finalize_nonfinal = [
+            kw for kw in captured
+            if kw.get("finalize") is True and kw.get("is_turn_final") is False
+        ]
+        assert finalize_nonfinal, (
+            "overflow-split chunk must be sent with finalize=True, "
+            f"is_turn_final=False; captured kwargs={captured}"
+        )
+
+    @pytest.mark.asyncio
     async def test_no_edit_sentinel_is_not_affected(self):
         """Platforms with the ``__no_edit__`` sentinel never go fresh-final."""
         adapter = _make_adapter()

@@ -297,7 +297,7 @@ class TestErrorLoggingExcInfo:
     async def test_analysis_error_logs_exc_info(self, caplog):
         """When vision_analyze_tool encounters an error, it should log with exc_info."""
         with (
-            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._validate_image_url_async", new_callable=AsyncMock, return_value=True),
             patch(
                 "tools.vision_tools._download_image",
                 new_callable=AsyncMock,
@@ -329,7 +329,7 @@ class TestErrorLoggingExcInfo:
             return dest
 
         with (
-            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._validate_image_url_async", new_callable=AsyncMock, return_value=True),
             patch("tools.vision_tools._download_image", side_effect=fake_download),
             patch(
                 "tools.vision_tools._image_to_base64_data_url",
@@ -451,7 +451,7 @@ class TestVisionSafetyGuards:
 
         with (
             patch("tools.vision_tools.check_website_access", return_value=blocked),
-            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._validate_image_url_async", new_callable=AsyncMock, return_value=True),
             patch("tools.vision_tools._download_image", new_callable=AsyncMock) as mock_download,
         ):
             result = json.loads(await vision_analyze_tool("https://blocked.test/cat.png", "describe"))
@@ -549,7 +549,9 @@ class TestTildeExpansion:
         img = fake_home / "test_image.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
 
+        # Windows expanduser() prefers USERPROFILE over HOME; POSIX uses HOME.
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         mock_response = MagicMock()
         mock_choice = MagicMock()
@@ -580,6 +582,7 @@ class TestTildeExpansion:
         fake_home = tmp_path / "fakehome"
         fake_home.mkdir()
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         result = await vision_analyze_tool(
             "~/nonexistent.png", "describe this", "test/model"

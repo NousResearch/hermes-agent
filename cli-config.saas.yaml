@@ -20,22 +20,29 @@ model:
   # loader learns to resolve `tier:` against the shared tiers.yaml (a
   # follow-up phase), `default:` becomes unused and can be deleted.
   #
-  # Why Nova Pro (the current `balanced` model):
-  #   - Streaming + tools fully supported on Bedrock Converse (Llama 3.3
-  #     forced a choice between the two; Hermes needs both for Slack
-  #     mid-turn progress + tool-use).
-  #   - ~$0.80 / $3.20 per M tokens (in / out) — roughly 1/8 the Sonnet 4
-  #     price.
-  #   - Bedrock-native (no Portkey hop — see Plan 018 decommission).
-  #   - Multimodal (text + image + video) — headroom for Slack-image /
-  #     voice inputs without a model swap.
+  # Model: Claude Haiku 4.5 on Bedrock (2026-06-03, Plan 037 nanny-state fix).
   #
-  # Rollback: bump tiers.yaml `balanced.model` (or edit `default:` here)
-  # to `us.anthropic.claude-sonnet-4-6`, rebuild, redeploy. IAM
-  # (agentic-stack-hermes-task) already grants amazon.* + us.amazon.* +
-  # us.anthropic.* ARNs as of 2026-05-28; revert is safe.
+  # Why moved OFF Nova Pro:
+  #   - Nova Pro's built-in alignment persona produced "nanny-state"
+  #     refusals: it declined ordinary personal-assistant requests (e.g.
+  #     "recall my own memories" -> refused on "privacy/security" and
+  #     moralized about "unsafe behavior"), never calling the ungated
+  #     atlas_recall tool. The agent code + prompt are clean — the refusal
+  #     was the model. Haiku follows the helpful-assistant prompt directly.
+  #   - Haiku 4.5 on Bedrock Converse fully supports streaming + tool use
+  #     (the Llama-3.3 streaming-tool gap that originally drove the Nova
+  #     choice does NOT apply to Claude). IAM (agentic-stack-hermes-task)
+  #     already grants us.anthropic.* ARNs, so no IAM change is needed.
+  #   - ~$1 / $5 per M tokens (in / out) — cheaper/faster than Sonnet 4.6;
+  #     fine for a personal assistant. Bedrock-native (no Portkey hop).
+  #
+  # Rollback: set `default:` back to `us.amazon.nova-pro-v1:0` (or
+  # `us.anthropic.claude-sonnet-4-6`), rebuild, redeploy. IAM grants
+  # amazon.* + us.amazon.* + us.anthropic.* — revert is safe.
+  # NOTE: `tier:` is documentation-only today — Hermes's loader uses the
+  # literal `default:` string (tiers.yaml resolution is unimplemented).
   tier: balanced
-  default: us.amazon.nova-pro-v1:0
+  default: us.anthropic.claude-haiku-4-5-20251001-v1:0
   provider: bedrock
 
 # No providers / fallback_providers / credential_pool_strategies needed for

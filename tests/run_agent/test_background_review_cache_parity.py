@@ -41,6 +41,10 @@ def _make_agent_stub(agent_cls):
     # Non-None so the test catches a missing-kwarg regression.
     agent.enabled_toolsets = ["memory", "skills", "terminal"]
     agent.disabled_toolsets = ["spotify", "feishu_doc"]
+    # Chat context the review fork must inherit so its blackbox row is attributable.
+    agent._chat_id = "571820863"
+    agent._chat_name = "Daemonarchy / #aegis"
+    agent._chat_type = "channel"
     return agent
 
 
@@ -236,4 +240,61 @@ def test_review_fork_inherits_parent_toolset_config():
     assert captured.get("disabled_toolsets") == agent.disabled_toolsets, (
         f"disabled_toolsets mismatch: {captured.get('disabled_toolsets')!r} "
         f"vs expected {agent.disabled_toolsets!r}"
+    )
+
+
+def test_review_fork_inherits_parent_chat_context():
+    """Blackbox attribution: fork must inherit parent's chat_id/chat_name/chat_type.
+
+    Regression for background_review rows landing with empty chat fields, which
+    made them un-attributable in /cost session and the blackbox DB.
+    """
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    captured = {}
+
+    class _Recorder:
+        def __init__(self, *args, **kwargs):
+            captured["chat_id"] = kwargs.get("chat_id")
+            captured["chat_name"] = kwargs.get("chat_name")
+            captured["chat_type"] = kwargs.get("chat_type")
+            self._cached_system_prompt = None
+            self._memory_write_origin = None
+            self._memory_write_context = None
+            self._memory_store = None
+            self._memory_enabled = None
+            self._user_profile_enabled = None
+            self._memory_nudge_interval = None
+            self._skill_nudge_interval = None
+            self.suppress_status_output = None
+            self.session_start = None
+            self.session_id = None
+
+        def run_conversation(self, *args, **kwargs):
+            raise RuntimeError("stop after recording — don't actually call the API")
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert captured.get("chat_id") == "571820863", (
+        f"chat_id not inherited: {captured.get('chat_id')!r}"
+    )
+    assert captured.get("chat_name") == "Daemonarchy / #aegis", (
+        f"chat_name not inherited: {captured.get('chat_name')!r}"
+    )
+    assert captured.get("chat_type") == "channel", (
+        f"chat_type not inherited: {captured.get('chat_type')!r}"
     )

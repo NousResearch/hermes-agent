@@ -444,7 +444,7 @@ def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
         return None
 
     try:
-        raw = pid_path.read_text().strip()
+        raw = pid_path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
         # File was deleted between exists() and read_text(), permission
         # flipped, or it holds non-UTF-8 / binary garbage.

@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -658,6 +659,7 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    gate_recipe: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -726,6 +728,9 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            gate_recipe=(
+                row["gate_recipe"] if "gate_recipe" in keys else None
             ),
         )
 
@@ -864,7 +869,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- for tasks created from the CLI, dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
-    session_id           TEXT
+    session_id           TEXT,
+    -- Deterministic verification recipe. NULL means no verification gate;
+    -- non-NULL JSON is evaluated inside complete_task() before any done
+    -- transition is allowed.
+    gate_recipe          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1354,6 +1363,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "gate_recipe" not in cols:
+        # Deterministic verification gate recipe. NULL keeps legacy tasks
+        # on the pre-existing completion path.
+        _add_column_if_missing(conn, "tasks", "gate_recipe", "gate_recipe TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -1544,6 +1558,7 @@ def create_task(
     max_retries: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    gate_recipe: Optional[dict | str] = None,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -1709,8 +1724,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, session_id, gate_recipe
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1730,6 +1745,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
                         session_id,
+                        _normalise_gate_recipe_for_storage(gate_recipe),
                     ),
                 )
                 for pid in parents:
@@ -2858,6 +2874,208 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+
+class VerificationFailedError(ValueError):
+    """Raised by ``complete_task`` when a deterministic gate blocks done."""
+
+    def __init__(self, task_id: str, findings: list[dict[str, Any]]):
+        self.task_id = task_id
+        self.findings = findings
+        failed = [f for f in findings if not f.get("ok")]
+        super().__init__(
+            f"completion blocked: verification_failed for {task_id} "
+            f"({len(failed)} failed check(s))"
+        )
+
+
+def _normalise_gate_recipe_for_storage(recipe: Optional[dict | str]) -> Optional[str]:
+    if recipe is None:
+        return None
+    if isinstance(recipe, str):
+        raw = recipe.strip()
+        if not raw:
+            return None
+        _parsed, errors = _parse_gate_recipe(raw)  # validate first-class creation/tool surface
+        if errors:
+            raise ValueError(f"invalid gate_recipe: {errors[0].get('reason')}")
+        return raw
+    raw = json.dumps(recipe, sort_keys=True)
+    _parsed, errors = _parse_gate_recipe(raw)
+    if errors:
+        raise ValueError(f"invalid gate_recipe: {errors[0].get('reason')}")
+    return raw
+
+
+def _parse_gate_recipe(raw: Optional[str]) -> tuple[Optional[dict[str, Any]], list[dict[str, Any]]]:
+    if raw is None or not str(raw).strip():
+        return None, []
+    try:
+        parsed = json.loads(str(raw))
+    except Exception as exc:
+        return None, [{"type": "recipe", "ok": False, "reason": f"invalid_json: {exc}"}]
+    if not isinstance(parsed, dict):
+        return None, [{"type": "recipe", "ok": False, "reason": "recipe must be an object"}]
+    checks = parsed.get("checks")
+    if not isinstance(checks, list) or not checks:
+        return None, [{"type": "recipe", "ok": False, "reason": "checks must be a non-empty list"}]
+    for idx, check in enumerate(checks):
+        if not isinstance(check, dict) or not check.get("type"):
+            return None, [{"type": "recipe", "ok": False, "reason": f"check[{idx}] must be an object with type"}]
+    return parsed, []
+
+
+def _gate_workspace_root(row: sqlite3.Row) -> Optional[Path]:
+    path = row["workspace_path"] if "workspace_path" in row.keys() else None
+    if not path:
+        return None
+    try:
+        return Path(str(path)).expanduser().resolve(strict=False)
+    except OSError:
+        return None
+
+
+def _gate_path(root: Optional[Path], rel: Any) -> tuple[Optional[Path], Optional[str]]:
+    if root is None:
+        return None, "workspace_path is missing"
+    if not isinstance(rel, str) or not rel.strip():
+        return None, "path is required"
+    candidate = Path(rel).expanduser()
+    if candidate.is_absolute():
+        try:
+            resolved = candidate.resolve(strict=False)
+        except OSError as exc:
+            return None, str(exc)
+    else:
+        try:
+            resolved = (root / candidate).resolve(strict=False)
+        except OSError as exc:
+            return None, str(exc)
+    try:
+        if resolved != root and not resolved.is_relative_to(root):
+            return None, "path escapes workspace"
+    except ValueError:
+        return None, "path escapes workspace"
+    return resolved, None
+
+
+def _json_field(data: Any, key: str) -> Any:
+    cur = data
+    for part in str(key).split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return None
+    return cur
+
+
+def _evaluate_gate_recipe(
+    conn: sqlite3.Connection,
+    task_id: str,
+    raw_recipe: str,
+) -> list[dict[str, Any]]:
+    recipe, recipe_errors = _parse_gate_recipe(raw_recipe)
+    if recipe is None:
+        return recipe_errors or [{"type": "recipe", "ok": False, "reason": "empty recipe"}]
+    row = conn.execute(
+        "SELECT id, workspace_path FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    root = _gate_workspace_root(row) if row else None
+    findings: list[dict[str, Any]] = []
+    for check in recipe["checks"]:
+        ctype = str(check.get("type") or "").strip()
+        try:
+            if ctype == "artifact_exists":
+                path, err = _gate_path(root, check.get("path"))
+                ok = bool(path and path.exists())
+                findings.append({"type": ctype, "ok": ok, "path": str(path) if path else check.get("path"), "reason": err if err else None})
+            elif ctype == "sha256_equals":
+                path, err = _gate_path(root, check.get("path"))
+                expected = str(check.get("hex") or "").lower()
+                actual = hashlib.sha256(path.read_bytes()).hexdigest() if path and path.exists() else None
+                findings.append({"type": ctype, "ok": bool(actual and actual == expected), "path": str(path) if path else check.get("path"), "expected": expected, "actual": actual, "reason": err if err else None})
+            elif ctype == "result_field_equals":
+                path, err = _gate_path(root, check.get("file"))
+                actual = None
+                reason = err
+                if path and path.exists():
+                    try:
+                        actual = _json_field(json.loads(path.read_text(encoding="utf-8")), str(check.get("key") or ""))
+                    except Exception as exc:
+                        reason = f"json_read_error: {exc}"
+                findings.append({"type": ctype, "ok": actual == check.get("expect"), "path": str(path) if path else check.get("file"), "key": check.get("key"), "expected": check.get("expect"), "actual": actual, "reason": reason})
+            elif ctype == "worker_log_absent":
+                pattern = str(check.get("pattern") or check.get("regex") or "")
+                log = read_worker_log(task_id) or ""
+                matched = bool(pattern and re.search(pattern, log, re.MULTILINE))
+                findings.append({"type": ctype, "ok": not matched, "pattern": pattern, "matched": matched})
+            elif ctype == "no_child_cards":
+                children = child_ids(conn, task_id)
+                findings.append({"type": ctype, "ok": not children, "children": children})
+            else:
+                findings.append({"type": ctype or "unknown", "ok": False, "reason": "unknown check type"})
+        except Exception as exc:
+            findings.append({"type": ctype or "unknown", "ok": False, "reason": f"gate_error: {exc}"})
+    if not findings:
+        findings.append({"type": "recipe", "ok": False, "reason": "checks must be non-empty"})
+    return findings
+
+
+def _record_verification_failure(
+    conn: sqlite3.Connection,
+    task_id: str,
+    findings: list[dict[str, Any]],
+    *,
+    expected_run_id: Optional[int] = None,
+) -> None:
+    with write_txn(conn):
+        if expected_run_id is None:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'blocked',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready', 'blocked')
+                """,
+                (task_id,),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'blocked',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready', 'blocked')
+                   AND current_run_id = ?
+                """,
+                (task_id, int(expected_run_id)),
+            )
+        run_id = None
+        if cur.rowcount == 1:
+            run_id = _end_run(
+                conn, task_id,
+                outcome="verification_failed", status="blocked",
+                summary="deterministic verification failed",
+                metadata={"findings": findings},
+            )
+            if run_id is None:
+                run_id = _synthesize_ended_run(
+                    conn, task_id,
+                    outcome="verification_failed",
+                    summary="deterministic verification failed",
+                    metadata={"findings": findings},
+                )
+        _append_event(
+            conn, task_id, "verification_failed",
+            {"findings": findings},
+            run_id=run_id,
+        )
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2924,6 +3142,20 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    verification_findings: list[dict[str, Any]] = []
+    gate_row = conn.execute(
+        "SELECT gate_recipe FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    gate_recipe = gate_row["gate_recipe"] if gate_row and "gate_recipe" in gate_row.keys() else None
+    if gate_recipe:
+        verification_findings = _evaluate_gate_recipe(conn, task_id, gate_recipe)
+        if any(not finding.get("ok") for finding in verification_findings):
+            _record_verification_failure(
+                conn, task_id, verification_findings,
+                expected_run_id=expected_run_id,
+            )
+            raise VerificationFailedError(task_id, verification_findings)
 
     with write_txn(conn):
         if expected_run_id is None:
@@ -3002,6 +3234,12 @@ def complete_task(
                 ]
                 if cleaned_artifacts:
                     completed_payload["artifacts"] = cleaned_artifacts
+        if verification_findings:
+            _append_event(
+                conn, task_id, "verification_passed",
+                {"findings": verification_findings},
+                run_id=run_id,
+            )
         _append_event(
             conn, task_id, "completed",
             completed_payload,
@@ -4096,6 +4334,8 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    skipped_gate_invalid: list[str] = field(default_factory=list)
+    """Ready task ids skipped because gate_recipe is present but invalid."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5191,7 +5431,7 @@ def dispatch_once(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, gate_recipe FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -5216,6 +5456,17 @@ def dispatch_once(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
+        if row["gate_recipe"]:
+            parsed_recipe, recipe_errors = _parse_gate_recipe(row["gate_recipe"])
+            if parsed_recipe is None or recipe_errors:
+                result.skipped_gate_invalid.append(row["id"])
+                if not dry_run:
+                    with write_txn(conn):
+                        _append_event(
+                            conn, row["id"], "dispatch_gate_invalid",
+                            {"findings": recipe_errors or [{"type": "recipe", "ok": False}]},
+                        )
+                continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a

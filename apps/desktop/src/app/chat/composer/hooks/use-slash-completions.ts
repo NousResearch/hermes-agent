@@ -12,11 +12,11 @@ import {
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
-interface SlashItemMetadata extends Record<string, string> {
+type SlashItemMetadata = {
   command: string
   display: string
   meta: string
-  rawText?: string
+  rawText: string
 }
 
 function textValue(value: unknown, fallback = ''): string {

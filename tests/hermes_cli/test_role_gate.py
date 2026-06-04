@@ -175,6 +175,14 @@ def test_gate_recipe_for_assignee_known_and_unknown():
     assert role_gate.gate_recipe_for_assignee("") is None
 
 
+def test_gate_recipe_for_all_readonly_roles():
+    # 등록된 모든 read-only 역할은 동일한 이중게이트 recipe를 받는다.
+    for role in ("news-curator", "invest-watcher", "ops-monitor"):
+        r = role_gate.gate_recipe_for_assignee(role)
+        assert r is not None, role
+        assert {c["type"] for c in r["checks"]} == {"plan_gate", "artifact_exists", "no_child_cards"}, role
+
+
 def test_create_task_auto_attaches_for_role(kanban_home):
     with kb.connect() as conn:
         # 역할 카드: gate_recipe 명시 안 해도 자동 부착.

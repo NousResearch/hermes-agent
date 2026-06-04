@@ -30,6 +30,8 @@ READONLY_WRITE_ALLOWLIST = ("조사노트", "note", "research-note", "research_n
 # 신규 역할은 여기에 1줄 추가한다.
 ROLE_GATE_POLICIES: dict[str, dict[str, str]] = {
     "news-curator": {"kind": "read-only", "deliverable": "note.md"},
+    "invest-watcher": {"kind": "read-only", "deliverable": "note.md"},
+    "ops-monitor": {"kind": "read-only", "deliverable": "note.md"},
 }
 
 

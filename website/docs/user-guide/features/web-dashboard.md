@@ -598,6 +598,132 @@ The `/auth/password-login` endpoint is rate-limited per client IP (default 10 at
 
 `basic` is just one implementation of an extension point. Any plugin can register a password provider: set `supports_password = True` on your `DashboardAuthProvider` subclass and implement `complete_password_login(*, username, password) -> Session` (raise `InvalidCredentialsError` on rejection, `ProviderError` if your backing store is down). The OAuth `start_login` / `complete_login` methods can be left as `NotImplementedError` stubs for a pure-password provider. This is the path for LDAP-bind, a credentials database, or any other non-redirect auth scheme — the framework handles the form, the route, the cookies, and refresh for you.
 
+### Self-hosted OIDC provider
+
+If you run your own identity provider, the bundled `plugins/dashboard_auth/self_hosted` plugin authenticates the dashboard against it using **standard OpenID Connect** — no per-IDP code, no Nous Portal involved. It's verified against and works with any conformant OIDC server:
+
+> **Authentik · Keycloak · Zitadel · Authelia · Auth0 · Okta · Google · …**
+
+Like the Nous provider, it auto-loads and only registers itself once it's configured, so it's a no-op for loopback / `--insecure` dashboards.
+
+#### Configuration
+
+Configure an **issuer** and a **client_id** (a public PKCE client — no client secret). The plugin fetches the IDP's `authorization_endpoint`, `token_endpoint`, and `jwks_uri` from `{issuer}/.well-known/openid-configuration`, so you never hardcode endpoint URLs.
+
+**`config.yaml`** — the canonical surface:
+
+```yaml
+dashboard:
+  oauth:
+    provider: self-hosted
+    self_hosted:
+      issuer: https://auth.example.com/application/o/hermes/   # required
+      client_id: hermes-dashboard                              # required
+      scopes: "openid profile email"                           # optional (this is the default)
+```
+
+**Environment variables** — operator overrides (env wins over `config.yaml` when set non-empty; an empty value is treated as unset):
+
+| Env var | Overrides | Notes |
+|---------|-----------|-------|
+| `HERMES_DASHBOARD_OIDC_ISSUER` | `dashboard.oauth.self_hosted.issuer` | OIDC issuer URL — required |
+| `HERMES_DASHBOARD_OIDC_CLIENT_ID` | `dashboard.oauth.self_hosted.client_id` | Public client id — required |
+| `HERMES_DASHBOARD_OIDC_SCOPES` | `dashboard.oauth.self_hosted.scopes` | Defaults to `openid profile email` |
+
+In your IDP, register a **public** application/client with the authorization-code + PKCE (S256) grant and add the dashboard's callback as an allowed redirect URI. The callback is `<dashboard public URL>/auth/callback` (see [Public URL override](#public-url-override) for how the dashboard derives its public URL behind a proxy).
+
+#### What it verifies
+
+The provider verifies the OpenID Connect **ID token** (RS256/ES256) against the discovered `jwks_uri`, with the `iss` and `aud` claims pinned to your configured `issuer` and `client_id`. Standard OIDC claims map onto the dashboard session:
+
+| Session field | Claim(s) |
+|---------------|----------|
+| `user_id` | `sub` (required) |
+| `email` | `email` |
+| `display_name` | `name` → `preferred_username` → `nickname` → `email` |
+| `org_id` | `org_id` / `organization`, else joined `groups` |
+
+The ID token is what establishes identity — the access token is treated as opaque (the OIDC spec does not require it to be a JWT). Endpoint URLs are required to be HTTPS (loopback `http://` is allowed for local-dev IDPs), and the discovery document's advertised `issuer` must match your configured one (a trailing-slash difference is tolerated). Refresh tokens, when the IDP issues them, are used for silent re-auth via the standard `refresh_token` grant; logout calls the IDP's RFC 7009 `revocation_endpoint` when advertised.
+
+> **Confidential clients** (those with a `client_secret`) are not supported yet — configure a public + PKCE client, which is the typical choice for a browser-facing dashboard.
+
+#### Worked example: Keycloak
+
+[Keycloak](https://www.keycloak.org/) is one of the easiest self-hosted OIDC servers to stand up for a local test — it runs as a single container in dev mode (in-memory DB) and exposes textbook OIDC discovery. This walkthrough gets you from nothing to a working dashboard login in a few minutes.
+
+**1. Run Keycloak with a pre-configured realm.** Save this realm export as `realm-hermes.json` — it defines a `hermes` realm, a **public PKCE client** (`hermes-dashboard`), and a test user, all imported on boot so there's nothing to click in the admin UI:
+
+```json
+{
+  "realm": "hermes",
+  "enabled": true,
+  "clients": [
+    {
+      "clientId": "hermes-dashboard",
+      "name": "Hermes Agent Dashboard",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "protocol": "openid-connect",
+      "redirectUris": ["http://localhost:9119/auth/callback"],
+      "webOrigins": ["http://localhost:9119"],
+      "attributes": { "pkce.code.challenge.method": "S256" }
+    }
+  ],
+  "users": [
+    {
+      "username": "testuser",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "testuser@example.com",
+      "firstName": "Test",
+      "lastName": "User",
+      "credentials": [
+        { "type": "password", "value": "testpassword", "temporary": false }
+      ]
+    }
+  ]
+}
+```
+
+Start it (Keycloak 26+), mounting that file into the import directory:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+  -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+  -v "$PWD/realm-hermes.json:/opt/keycloak/data/import/realm-hermes.json:ro" \
+  quay.io/keycloak/keycloak:26.0 \
+  start-dev --import-realm
+```
+
+Once it's up, the realm advertises standard OIDC discovery at
+`http://localhost:8080/realms/hermes/.well-known/openid-configuration` (issuer
+`http://localhost:8080/realms/hermes`). The admin console is at
+`http://localhost:8080/` (`admin` / `admin`).
+
+**2. Point the dashboard at it.** The self-hosted plugin permits a loopback `http://` issuer (HTTPS is required for any non-loopback issuer), so the local Keycloak works as-is:
+
+```bash
+export HERMES_DASHBOARD_OIDC_ISSUER="http://localhost:8080/realms/hermes"
+export HERMES_DASHBOARD_OIDC_CLIENT_ID="hermes-dashboard"
+export HERMES_DASHBOARD_PUBLIC_URL="http://localhost:9119"
+hermes dashboard --host 0.0.0.0 --port 9119 --no-open
+```
+
+`HERMES_DASHBOARD_PUBLIC_URL` tells the dashboard its OAuth callback is
+`http://localhost:9119/auth/callback` — the redirect URI the realm registered
+above. Binding to `0.0.0.0` (a non-loopback bind) without `--insecure` is what
+engages the OAuth gate.
+
+**3. Log in.** Open `http://localhost:9119/`, you'll be bounced to `/login`. Click **Sign in with Self-Hosted OIDC** → authenticate at Keycloak as `testuser` / `testpassword` → land back on the authenticated dashboard. The sidebar shows `Logged in as Test User via self-hosted`, and `GET /api/auth/me` returns the verified session (`provider: self-hosted`, `email: testuser@example.com`).
+
+> If you bind or browse on a different host/port, add that origin's
+> `…/auth/callback` to the client's **Valid redirect URIs** in the Keycloak
+> admin console (Clients → hermes-dashboard → Settings). The same pattern works
+> for Authentik, Zitadel, Authelia, and other OIDC servers — only the issuer
+> URL and client registration UI differ.
+
 ### Public URL override
 
 By default, the dashboard reconstructs the OAuth callback URL from the request — `X-Forwarded-Host` + `X-Forwarded-Proto` + `X-Forwarded-Prefix` (when uvicorn is configured with `proxy_headers=True`, which `start_server` enables under the gate). This works out of the box on Fly.io, which sets all three headers correctly.

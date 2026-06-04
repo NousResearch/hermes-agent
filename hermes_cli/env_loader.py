@@ -78,9 +78,10 @@ def format_secret_source_suffix(env_var: str) -> str:
         return ""
     if source == "bitwarden":
         return " (from Bitwarden)"
+    if source == "onepassword":
+        return " (from 1Password)"
     # Generic fallback — future-proofing for additional secret sources
-    # (e.g. 1Password, HashiCorp Vault) without having to update every
-    # call site.
+    # (e.g. Vault) without having to update every call site.
     return f" (from {source})"
 
 
@@ -275,52 +276,77 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         return
 
     bw_cfg = (cfg or {}).get("bitwarden") or {}
-    if not bw_cfg.get("enabled"):
-        return
+    if bw_cfg.get("enabled"):
+        try:
+            from agent.secret_sources.bitwarden import apply_bitwarden_secrets
+        except ImportError:
+            apply_bitwarden_secrets = None  # type: ignore[assignment]
 
-    try:
-        from agent.secret_sources.bitwarden import apply_bitwarden_secrets
-    except ImportError:
-        return
+        if apply_bitwarden_secrets is not None:
+            try:
+                result = apply_bitwarden_secrets(
+                    enabled=True,
+                    access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
+                    project_id=bw_cfg.get("project_id", ""),
+                    override_existing=bool(bw_cfg.get("override_existing", False)),
+                    cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
+                    auto_install=bool(bw_cfg.get("auto_install", True)),
+                    server_url=str(bw_cfg.get("server_url", "") or "").strip(),
+                    home_path=home_path,
+                )
+            except Exception as exc:  # noqa: BLE001 — never block startup
+                print(f"  Bitwarden Secrets Manager: {exc}", file=sys.stderr)
+            else:
+                _report_external_secret_result(
+                    label="Bitwarden Secrets Manager",
+                    source="bitwarden",
+                    result=result,
+                )
 
-    result = apply_bitwarden_secrets(
-        enabled=True,
-        access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
-        project_id=bw_cfg.get("project_id", ""),
-        override_existing=bool(bw_cfg.get("override_existing", False)),
-        cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
-        auto_install=bool(bw_cfg.get("auto_install", True)),
-        server_url=str(bw_cfg.get("server_url", "") or "").strip(),
-        home_path=home_path,
-    )
+    op_cfg = (cfg or {}).get("onepassword") or {}
+    if op_cfg.get("enabled"):
+        try:
+            from agent.secret_sources.onepassword import apply_onepassword_secrets
+        except ImportError:
+            apply_onepassword_secrets = None  # type: ignore[assignment]
 
+        if apply_onepassword_secrets is not None:
+            try:
+                result = apply_onepassword_secrets(
+                    enabled=True,
+                    service_account_token_env=op_cfg.get(
+                        "service_account_token_env", "OP_SERVICE_ACCOUNT_TOKEN"
+                    ),
+                    mapping=op_cfg.get("mapping") or {},
+                    override_existing=bool(op_cfg.get("override_existing", False)),
+                    cache_ttl_seconds=float(op_cfg.get("cache_ttl_seconds", 300)),
+                )
+            except Exception as exc:  # noqa: BLE001 — never block startup
+                print(f"  1Password: {exc}", file=sys.stderr)
+            else:
+                _report_external_secret_result(
+                    label="1Password",
+                    source="onepassword",
+                    result=result,
+                )
+
+
+def _report_external_secret_result(*, label: str, source: str, result) -> None:
+    """Print a concise status line and remember source metadata."""
     if result.applied:
-        # Re-run the ASCII sanitization pass: BSM values are user-supplied
-        # and might have the same copy-paste corruption as a manually
-        # edited .env (see #6843).
         _sanitize_loaded_credentials()
-        # Remember where these came from so the setup / `hermes model`
-        # flows can label detected credentials with "(from Bitwarden)" —
-        # otherwise users see "credentials ✓" with no hint that the value
-        # came from BSM rather than .env.
         for name in result.applied:
-            _SECRET_SOURCES[name] = "bitwarden"
+            _SECRET_SOURCES[name] = source
         print(
-            f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
+            f"  {label}: applied {len(result.applied)} "
             f"secret{'s' if len(result.applied) != 1 else ''} "
             f"({', '.join(sorted(result.applied))})",
             file=sys.stderr,
         )
     if result.error:
-        print(
-            f"  Bitwarden Secrets Manager: {result.error}",
-            file=sys.stderr,
-        )
+        print(f"  {label}: {result.error}", file=sys.stderr)
     for warn in result.warnings:
-        print(
-            f"  Bitwarden Secrets Manager: {warn}",
-            file=sys.stderr,
-        )
+        print(f"  {label}: {warn}", file=sys.stderr)
 
 
 def _load_secrets_config(home_path: Path) -> dict:

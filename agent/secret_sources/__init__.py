@@ -6,8 +6,10 @@ default sources are non-destructive: they only set values for env vars
 that aren't already present, so .env and shell exports continue to win.
 
 Currently shipped:
-
   - ``bitwarden`` — Bitwarden Secrets Manager (`bws` CLI).  See
     ``agent.secret_sources.bitwarden`` for the integration and
     ``hermes_cli.secrets_cli`` for the user-facing setup wizard.
+  - ``onepassword`` — 1Password CLI (`op`) secret references.  See
+    ``agent.secret_sources.onepassword`` for the integration and
+    ``hermes_cli.onepassword_secrets_cli`` for the user-facing commands.
 """

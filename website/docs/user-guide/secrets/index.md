@@ -5,5 +5,6 @@ Hermes can pull API keys from external secret managers at process startup instea
 Supported:
 
 - [Bitwarden Secrets Manager](./bitwarden) — `bws` CLI, lazy-installed, free tier works.
+- [1Password](./onepassword) — `op` CLI secret references using `OP_SERVICE_ACCOUNT_TOKEN`.
 
-More backends (Vault, AWS Secrets Manager, 1Password CLI) are easy to add behind the same interface — the lift is one module in `agent/secret_sources/` and one CLI handler. File a request if you have a specific one in mind.
+More backends (Vault, AWS Secrets Manager, etc.) are easy to add behind the same interface — the lift is one module in `agent/secret_sources/` and one CLI handler. File a request if you have a specific one in mind.

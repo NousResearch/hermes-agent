@@ -19,6 +19,7 @@ import type {
   ThemeLayoutVariant,
   ThemeListEntry,
   ThemePalette,
+  ThemeSeriesColors,
   ThemeTypography,
 } from "./types";
 import { api } from "@/lib/api";
@@ -26,6 +27,21 @@ import { api } from "@/lib/api";
 /** LocalStorage key — pre-applied before the React tree mounts to avoid
  *  a visible flash of the default palette on theme-overridden installs. */
 const STORAGE_KEY = "hermes-dashboard-theme";
+
+/** Renames of built-in theme keys we've shipped previously. Without this,
+ *  users who saved one of the old names in localStorage (or had it
+ *  persisted server-side) would silently fall back to `defaultTheme`
+ *  because the lookup in `resolveTheme` no longer finds the stale key.
+ *  Keep entries here until enough release cycles have passed that we can
+ *  reasonably assume nobody still has the old value persisted. */
+const THEME_NAME_ALIASES: Record<string, string> = {
+  // Renamed during the LENS_5I port + Nous-blue rebrand.
+  "lens-5i": "nous-blue",
+};
+
+function migrateThemeName(name: string): string {
+  return THEME_NAME_ALIASES[name] ?? name;
+}
 
 /** Tracks fontUrls we've already injected so multiple theme switches don't
  *  pile up <link> tags. Keyed by URL. */
@@ -121,6 +137,30 @@ function overrideVars(
   for (const [key, value] of Object.entries(overrides)) {
     if (!value) continue;
     const cssVar = OVERRIDE_KEY_TO_VAR[key as keyof ThemeColorOverrides];
+    if (cssVar) out[cssVar] = value;
+  }
+  return out;
+}
+
+/** Map data-series accents to their CSS vars. Themes omit either field to
+ *  inherit the `:root` default from `index.css`; when omitted we also
+ *  proactively clear any leftover value from a previous theme so switches
+ *  don't carry stale colors. */
+const SERIES_KEY_TO_VAR: Record<keyof ThemeSeriesColors, string> = {
+  inputTokenAccent: "--series-input-token",
+  outputTokenAccent: "--series-output-token",
+};
+
+const ALL_SERIES_VARS = Object.values(SERIES_KEY_TO_VAR);
+
+function seriesColorVars(
+  series: ThemeSeriesColors | undefined,
+): Record<string, string> {
+  if (!series) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(series)) {
+    if (!value) continue;
+    const cssVar = SERIES_KEY_TO_VAR[key as keyof ThemeSeriesColors];
     if (cssVar) out[cssVar] = value;
   }
   return out;
@@ -268,6 +308,12 @@ function applyTheme(theme: DashboardTheme) {
   for (const cssVar of ALL_OVERRIDE_VARS) {
     root.style.removeProperty(cssVar);
   }
+  // Same clear-then-set for series colors so a theme that defines them
+  // (e.g. Nous Blue) doesn't leave its values behind when the user
+  // switches to a theme that inherits the `:root` defaults.
+  for (const cssVar of ALL_SERIES_VARS) {
+    root.style.removeProperty(cssVar);
+  }
   // Clear dynamic (asset/component) vars from the previous theme so the
   // new one starts clean — otherwise stale notched clip-paths, hero URLs,
   // etc. would bleed across theme switches.
@@ -287,6 +333,7 @@ function applyTheme(theme: DashboardTheme) {
     ...typographyVars(theme.typography),
     ...layoutVars(theme.layout),
     ...overrideVars(theme.colorOverrides),
+    ...seriesColorVars(theme.seriesColors),
     ...assetMap,
     ...componentMap,
   };
@@ -297,6 +344,12 @@ function applyTheme(theme: DashboardTheme) {
   injectFontStylesheet(theme.typography.fontUrl);
   applyCustomCSS(theme.customCSS);
   applyLayoutVariant(theme.layoutVariant);
+
+  // Terminal background — read by ChatPage via useTheme(); also available as CSS var.
+  root.style.setProperty(
+    "--theme-terminal-background",
+    theme.terminalBackground ?? "#000000",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -307,7 +360,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   /** Name of the currently active theme (built-in id or user YAML name). */
   const [themeName, setThemeName] = useState<string>(() => {
     if (typeof window === "undefined") return "default";
-    return window.localStorage.getItem(STORAGE_KEY) ?? "default";
+    const stored = window.localStorage.getItem(STORAGE_KEY) ?? "default";
+    const migrated = migrateThemeName(stored);
+    // Write the migrated name back so future reads converge on the new
+    // key and we eventually retire the alias entry.
+    if (migrated !== stored) {
+      window.localStorage.setItem(STORAGE_KEY, migrated);
+    }
+    return migrated;
   });
 
   /** All selectable themes (shown in the picker). Starts with just the
@@ -371,9 +431,18 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           }
           if (Object.keys(defs).length > 0) setUserThemeDefs(defs);
         }
-        if (resp.active && resp.active !== themeName) {
-          setThemeName(resp.active);
-          window.localStorage.setItem(STORAGE_KEY, resp.active);
+        if (resp.active) {
+          const migratedActive = migrateThemeName(resp.active);
+          if (migratedActive !== themeName) {
+            setThemeName(migratedActive);
+            window.localStorage.setItem(STORAGE_KEY, migratedActive);
+          }
+          // If the server is still persisting the stale key, push the
+          // migrated value back so it converges too — otherwise every
+          // future page load would re-trigger this branch.
+          if (migratedActive !== resp.active) {
+            api.setTheme(migratedActive).catch(() => {});
+          }
         }
       })
       .catch(() => {});

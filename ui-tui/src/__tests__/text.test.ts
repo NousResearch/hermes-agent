@@ -69,6 +69,29 @@ describe('buildVerboseToolTrailLine', () => {
       mark: '✗'
     })
   })
+
+  it('caps a large result to a small persisted preview (#34095)', () => {
+    // A 40KB browser-snapshot-sized result must NOT be embedded whole — the
+    // persisted, expanded-by-default trail block is what blew up the Ink
+    // render tree and silently OOM-killed the TUI. The block stays small.
+    const huge = 'A'.repeat(40_000)
+    const line = buildVerboseToolTrailLine('browser_snapshot', 'https://x.example', false, 2, undefined, huge)
+
+    expect(line).toContain('Result:\n')
+    // Far below the old 16KB live-render budget; the whole line (call + label +
+    // omitted marker + preview) must stay on the order of ~1KB, not ~40KB.
+    expect(line.length).toBeLessThan(2_000)
+    expect(line).toContain('omitted')
+    expect(line.endsWith(' ✓')).toBe(true)
+  })
+
+  it('does not truncate a result that already fits the preview budget', () => {
+    const small = 'ok: 3 files changed'
+    const line = buildVerboseToolTrailLine('patch', 'index.html', false, 0.1, undefined, small)
+
+    expect(line).toContain(`Result:\n${small}`)
+    expect(line).not.toContain('omitted')
+  })
 })
 
 describe('lastCotTrailIndex', () => {

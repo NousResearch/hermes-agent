@@ -7,6 +7,7 @@ sibling platform-plugin tests on the same xdist worker.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -214,7 +215,7 @@ async def test_send_dm():
     result = await adapter.send("contact-42", "Hello, SimpleX!")
     mock_ws.send.assert_called_once()
     payload = json.loads(mock_ws.send.call_args[0][0])
-    assert payload["cmd"] == "@[contact-42] Hello, SimpleX!"
+    assert payload["cmd"] == "@contact-42 Hello, SimpleX!"
     assert payload["corrId"].startswith(_CORR_PREFIX)
     assert result.success is True
 
@@ -301,23 +302,55 @@ async def test_standalone_send_missing_websockets(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_standalone_send_missing_url(monkeypatch):
+async def test_standalone_send_defaults_to_local_daemon(monkeypatch):
     monkeypatch.delenv("SIMPLEX_WS_URL", raising=False)
     pconfig = MagicMock()
     pconfig.extra = {}
-    # We expect the URL fallback (extra+env both empty) to be empty string,
-    # producing an error. We also need websockets to be importable for the
-    # url-check branch to be reached, so skip when it's not.
-    try:
-        import websockets.client  # noqa: F401
-    except ImportError:
-        pytest.skip("websockets not installed")
+
+    sent_payloads = []
+
+    class DummyWs:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def send(self, payload):
+            sent_payloads.append(json.loads(payload))
+
+    def fake_connect(url, **kwargs):
+        assert url == "ws://127.0.0.1:5225"
+        assert kwargs["open_timeout"] == 10
+        assert kwargs["close_timeout"] == 5
+        return DummyWs()
+
+    import websockets
+    monkeypatch.setattr(websockets, "connect", fake_connect)
 
     result = await _standalone_send(pconfig, "contact-42", "hi")
-    assert isinstance(result, dict)
-    # Either error about URL or a connection attempt failure — both are valid
-    # signals that the standalone path requires configuration.
-    assert "error" in result
+    assert result == {"success": True, "platform": "simplex", "chat_id": "contact-42"}
+    assert sent_payloads[0]["cmd"] == "@contact-42 hi"
+
+
+@pytest.mark.asyncio
+async def test_health_monitor_does_not_reconnect_quiet_healthy_ws(monkeypatch):
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._running = True
+    adapter._last_ws_activity = 0
+    adapter._ws = AsyncMock()
+
+    monkeypatch.setattr(_simplex, "HEALTH_CHECK_INTERVAL", 0.01)
+    monkeypatch.setattr(_simplex, "HEALTH_CHECK_STALE_THRESHOLD", 0.01)
+
+    task = asyncio.create_task(adapter._health_monitor())
+    await asyncio.sleep(0.03)
+    adapter._running = False
+    await asyncio.wait_for(task, timeout=1)
+
+    adapter._ws.close.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

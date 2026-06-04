@@ -2721,20 +2721,23 @@ SETUP_SECTIONS = [
 
 
 def _run_portal_one_shot(config: dict) -> None:
-    """One-shot Nous Portal setup — OAuth + provider switch + Tool Gateway.
+    """One-shot Nous Portal setup — OAuth + model pick + provider + Tool Gateway.
 
-    Wired into ``hermes setup --portal``. Does NOT prompt for anything
-    besides what the underlying OAuth + Tool Gateway prompts already need.
-    Designed to be shareable as a single command (``hermes setup --portal``)
-    that gets a brand-new user from zero to a fully working Hermes session
-    with web/image/tts/browser tools all routed via their Portal sub.
+    Wired into ``hermes setup --portal`` and ``hermes portal``. This is the
+    Nous-Portal slice of the first-time quick setup, collapsed into a single
+    shareable command so a brand-new user goes from zero to a fully working
+    Hermes session — model selected, provider set, and web/image/tts/browser
+    tools routed via their Portal sub — without being told to run
+    ``hermes setup`` and hunt for the quick-setup option.
+
+    The login + model selection + provider switch + Tool Gateway opt-in are all
+    delegated to ``_model_flow_nous`` — the exact same flow quick setup uses
+    (``_run_first_time_quick_setup``) and the same one ``hermes model`` runs
+    when you pick Nous. Routing through it (instead of hand-rolling the auth +
+    provider write here) means ``hermes portal`` always offers a model picker,
+    and there is a single source of truth for the Nous onboarding steps.
     """
-    from types import SimpleNamespace
-
-    from hermes_cli.auth_commands import auth_add_command
-    from hermes_cli.config import save_config
-    from hermes_cli.auth import get_nous_auth_status
-    from hermes_cli.nous_subscription import prompt_enable_tool_gateway
+    from hermes_cli.config import load_config
 
     print()
     print(
@@ -2758,77 +2761,46 @@ def _run_portal_one_shot(config: dict) -> None:
     print_info("  Sign up: https://portal.nousresearch.com/manage-subscription")
     print()
 
-    # Skip OAuth if already logged in (don't re-prompt every time the user
-    # runs `hermes setup --portal` after a successful first run).
-    already_logged_in = False
+    # _model_flow_nous handles BOTH the logged-out path (device-code OAuth,
+    # which selects a model internally) and the already-logged-in path (curated
+    # Nous model picker), then offers the Tool Gateway opt-in and sets
+    # provider=nous via the login/model save. This is the same routine quick
+    # setup calls, so `hermes portal` == quick setup's Nous step.
     try:
-        already_logged_in = bool((get_nous_auth_status() or {}).get("logged_in"))
-    except Exception:
-        already_logged_in = False
+        from hermes_cli.main import _model_flow_nous
 
-    if already_logged_in:
-        print_success("  Already logged into Nous Portal.")
-    else:
-        # Hand off to the shared auth wiring so the device-code flow is
-        # identical to `hermes auth add nous --type oauth`. SimpleNamespace
-        # mirrors the argparse Namespace contract that auth_add_command expects.
-        ns = SimpleNamespace(
-            provider="nous",
-            auth_type="oauth",
-            label=None,
-            api_key=None,
-            portal_url=None,
-            inference_url=None,
-            client_id=None,
-            scope=None,
-            no_browser=False,
-            timeout=None,
-            insecure=False,
-            ca_bundle=None,
-        )
-        try:
-            auth_add_command(ns)
-        except SystemExit as e:
-            print()
-            print_error(f"  Nous Portal login failed (exit {e.code}).")
-            print_info("  You can retry later with `hermes auth add nous --type oauth`.")
-            return
-        except (KeyboardInterrupt, EOFError):
-            print()
-            print_info("  Setup cancelled.")
-            return
-        except Exception as exc:
-            print()
-            print_error(f"  Nous Portal login failed: {exc}")
-            print_info("  You can retry later with `hermes auth add nous --type oauth`.")
-            return
-
-    # Set provider → nous so the model picker, status surfaces, and
-    # managed-tool gating all light up. Leave model.model empty so the
-    # runtime picks Nous's default model; the user can change it later
-    # with `hermes model`.
-    model_cfg = config.get("model")
-    if not isinstance(model_cfg, dict):
-        model_cfg = {}
-        config["model"] = model_cfg
-    model_cfg["provider"] = "nous"
-    save_config(config)
-    print()
-    print_success("  Nous set as your inference provider.")
-
-    # Offer the Tool Gateway opt-in (single Y/n) — same flow that fires
-    # from `hermes model` after picking Nous.
-    print()
-    try:
-        prompt_enable_tool_gateway(config)
-    except (KeyboardInterrupt, EOFError):
-        pass
+        _model_flow_nous(config)
+    except (KeyboardInterrupt, EOFError, SystemExit):
+        # _login_nous raises SystemExit(130)/(1) on cancel/failure; the
+        # logged-out path inside _model_flow_nous catches it, but the
+        # expired-session re-login path only catches Exception, so a
+        # SystemExit there would otherwise escape and kill the whole CLI.
+        # Treat all of these as a graceful cancel/abort for the portal flow.
+        print()
+        print_info("  Setup cancelled.")
+        print_info("  You can retry later with `hermes portal`.")
+        return
     except Exception as exc:
-        print_warning(f"  Tool Gateway prompt skipped: {exc}")
+        logger.debug("_model_flow_nous error during `hermes portal`: %s", exc)
+        print()
+        print_error(f"  Nous Portal setup encountered an error: {exc}")
+        print_info("  You can retry later with `hermes portal`.")
+        return
+
+    # Re-sync the in-memory config from disk — _model_flow_nous (and the
+    # underlying login/model save) write via their own load/save cycle, so any
+    # later save_config(config) by a caller must not clobber those values.
+    try:
+        _refreshed = load_config()
+        if isinstance(_refreshed, dict):
+            config.clear()
+            config.update(_refreshed)
+    except Exception:
+        pass
 
     print()
     print_success("Portal setup complete.")
-    print_info("  Run `hermes portal status` to inspect routing.")
+    print_info("  Run `hermes portal info` to inspect routing.")
     print_info("  Run `hermes` to start chatting.")
 
 

@@ -107,14 +107,17 @@ def set_session_vars(
     user_name: str = "",
     session_key: str = "",
     message_id: str = "",
+    cwd: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.
 
-    Call ``clear_session_vars(tokens)`` in a ``finally`` block to restore
-    the previous values when the handler exits.
+    Call ``clear_session_vars(tokens)`` in a ``finally`` block when the handler
+    exits. Note ``clear_session_vars`` resets every var to ``""`` (to suppress
+    the ``os.environ`` fallback) rather than restoring prior values — these
+    helpers are not nestable/stack-safe, and the returned tokens are accepted
+    only for API compatibility.
 
-    Returns a list of ``Token`` objects (one per variable) that can be
-    passed to ``clear_session_vars``.
+    ``cwd`` pins the logical working directory for this context.
     """
     tokens = [
         _SESSION_PLATFORM.set(platform),
@@ -126,6 +129,12 @@ def set_session_vars(
         _SESSION_KEY.set(session_key),
         _SESSION_MESSAGE_ID.set(message_id),
     ]
+    try:
+        from agent.runtime_cwd import set_session_cwd
+
+        set_session_cwd(cwd)
+    except Exception:
+        pass
     return tokens
 
 
@@ -151,6 +160,12 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_MESSAGE_ID,
     ):
         var.set("")
+    try:
+        from agent.runtime_cwd import clear_session_cwd
+
+        clear_session_cwd()
+    except Exception:
+        pass
 
 
 def get_session_env(name: str, default: str = "") -> str:

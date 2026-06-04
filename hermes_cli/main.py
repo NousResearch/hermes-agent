@@ -13674,7 +13674,7 @@ Examples:
     env_subparsers.add_parser("path", help="Print .env file path")
 
     # env list
-    env_subparsers.add_parser("list", help="List all env vars (values masked)")
+    env_subparsers.add_parser("list", help="List env var names")
 
     # env get
     env_get = env_subparsers.add_parser("get", help="Get value of an env var")

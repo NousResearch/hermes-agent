@@ -1343,14 +1343,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     
     # WhatsApp (typically uses different auth mechanism)
     whatsapp_enabled = os.getenv("WHATSAPP_ENABLED", "").lower() in {"true", "1", "yes"}
+    whatsapp_disabled_explicitly = os.getenv("WHATSAPP_ENABLED", "").lower() in {"false", "0", "no"}
     if Platform.WHATSAPP in config.platforms:
         # YAML config exists — respect explicit disable. Only override if the
         # user never explicitly set enabled (legacy env-only migration).
         wa_cfg = config.platforms[Platform.WHATSAPP]
-        if whatsapp_enabled and not wa_cfg.enabled and not wa_cfg.enabled_explicit:
+        if wa_cfg.enabled_explicit:
+            # YAML is authoritative; ignore env var for enable/disable
+            pass
+        elif whatsapp_disabled_explicitly:
+            wa_cfg.enabled = False
+        elif whatsapp_enabled:
             wa_cfg.enabled = True
     elif whatsapp_enabled:
         config.platforms[Platform.WHATSAPP] = PlatformConfig(enabled=True)
+    elif whatsapp_disabled_explicitly:
+        # User explicitly disabled via env, but no YAML config exists yet.
+        # Create a disabled entry so the intent is recorded.
+        config.platforms[Platform.WHATSAPP] = PlatformConfig(enabled=False)
     whatsapp_home = os.getenv("WHATSAPP_HOME_CHANNEL")
     if whatsapp_home and Platform.WHATSAPP in config.platforms:
         config.platforms[Platform.WHATSAPP].home_channel = HomeChannel(

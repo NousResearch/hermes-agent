@@ -227,8 +227,14 @@ def remove_env_vars_for_feature(category: str, name: str) -> List[str]:
     Args:
         category: "platform" or "tool".
         name: Platform or tool name (e.g. "slack", "homeassistant").
+
+    Raises:
+        ValueError: If category is not "platform" or "tool".
     """
     from hermes_cli.config import remove_env_value
+
+    if category not in ("platform", "tool"):
+        raise ValueError(f"Invalid category {category!r}: must be 'platform' or 'tool'")
 
     removed: List[str] = []
     mapping = PLATFORM_ENV_VARS if category == "platform" else TOOL_ENV_VARS

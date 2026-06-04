@@ -17,6 +17,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -5859,8 +5860,11 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
-def set_config_value(key: str, value: str):
+from typing import Union
+
+def set_config_value(key: str, value: Union[str, bool, int, float]):
     """Set a configuration value."""
+    from hermes_cli.env_cleanup import remove_env_vars_for_feature
     if is_managed():
         managed_error("set configuration values")
         return
@@ -5878,7 +5882,7 @@ def set_config_value(key: str, value: str):
     ]
     
     if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
-        save_env_value(key.upper(), value)
+        save_env_value(key.upper(), str(value))
         print(f"✓ Set {key} in {get_env_path()}")
         return
     
@@ -5899,15 +5903,16 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
-    # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
-    elif value.lower() in {'false', 'no', 'off'}:
-        value = False
-    elif value.isdigit():
-        value = int(value)
-    elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+    # Convert value to appropriate type (only if it's a string)
+    if isinstance(value, str):
+        if value.lower() in {'true', 'yes', 'on'}:
+            value = True
+        elif value.lower() in {'false', 'no', 'off'}:
+            value = False
+        elif value.isdigit():
+            value = int(value)
+        elif value.replace('.', '', 1).isdigit():
+            value = float(value)
 
     _set_nested(user_config, key, value)
     
@@ -5917,9 +5922,8 @@ def set_config_value(key: str, value: str):
     atomic_yaml_write(config_path, user_config, sort_keys=False)
     
     # Clean up .env vars when a platform is explicitly disabled
-    if key.startswith("platforms.") and key.endswith(".enabled") and value is False:
+    if key.startswith("platforms.") and key.endswith(".enabled") and isinstance(value, bool) and value is False:
         platform_name = key.split(".")[1]
-        from hermes_cli.env_cleanup import remove_env_vars_for_feature
         removed = remove_env_vars_for_feature("platform", platform_name)
         if removed:
             logger.info("Removed %s env vars for disabled platform %s", len(removed), platform_name)
@@ -6272,11 +6276,12 @@ def env_command(args):
             sys.exit(1)
         value = get_env_value(key)
         if value is not None:
-            # Mask secrets
-            if len(value) > 8:
-                print(f"{key}={value[:4]}{'*' * (len(value) - 8)}{value[-4:]}")
+            # Always mask secrets — even short tokens can leak credentials
+            if len(value) <= 4:
+                masked = "*" * len(value)
             else:
-                print(f"{key}={value}")
+                masked = value[:2] + "*" * (len(value) - 4) + value[-2:]
+            print(f"{key}={masked}")
         else:
             print(f"{key} is not set")
         return
@@ -6314,5 +6319,9 @@ def env_command(args):
         print()
         if not env_path.exists():
             env_path.write_text("# Hermes environment variables\n", encoding="utf-8")
-        subprocess.run([editor, str(env_path)])
+        try:
+            editor_cmd = shlex.split(editor)
+        except ValueError:
+            editor_cmd = [editor]
+        subprocess.run(editor_cmd + [str(env_path)])
         return

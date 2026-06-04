@@ -17,6 +17,7 @@ import {
   filterDesktopCommandsCatalog,
   isDesktopSlashCommand
 } from '@/lib/desktop-slash-commands'
+import { isDesktopComposerImagePath, shouldInlineImageAttachmentsForGateway } from '@/lib/gateway-connection'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
@@ -179,12 +180,51 @@ export function usePromptActions({
       sessionId: string,
       attachments: ComposerAttachment[],
       options: { updateComposerAttachments?: boolean } = {}
-    ) => {
+    ): Promise<string[]> => {
       const updateComposerAttachments = options.updateComposerAttachments ?? true
       const images = attachments.filter(attachment => attachment.kind === 'image' && attachment.path)
+      const dataUrls: string[] = []
+
+      const inlineImagesForGateway = await shouldInlineImageAttachmentsForGateway()
 
       for (const attachment of images) {
         if (attachment.attachedSessionId === sessionId) {
+          continue
+        }
+
+        const path = attachment.path!
+        const mustInlinePath = isDesktopComposerImagePath(path)
+
+        // Remote gateways cannot read desktop-local paths (composer-images cache,
+        // clipboard paste temp files, etc.). Inline the bytes as data URLs instead
+        // of image.attach, which resolves paths on the gateway machine.
+        if (inlineImagesForGateway || mustInlinePath) {
+          let dataUrl = attachment.previewUrl
+
+          if (!dataUrl) {
+            try {
+              dataUrl = await window.hermesDesktop?.readFileDataUrl(path)
+            } catch (err) {
+              console.error('[remote] Failed to read image as data URL:', err)
+            }
+          }
+
+          if (!dataUrl) {
+            const label = attachment.label || pathLabel(path)
+            throw new Error(`Could not upload ${label} to the remote gateway. Try attaching the image again.`)
+          }
+
+          dataUrls.push(dataUrl)
+
+          if (updateComposerAttachments) {
+            addComposerAttachment({
+              ...attachment,
+              id: attachment.id,
+              attachedSessionId: sessionId,
+              previewUrl: dataUrl
+            })
+          }
+
           continue
         }
 
@@ -210,6 +250,8 @@ export function usePromptActions({
           })
         }
       }
+
+      return dataUrls
     },
     [requestGateway]
   )
@@ -327,10 +369,14 @@ export function usePromptActions({
       }
 
       try {
-        await syncImageAttachmentsForSubmit(sessionId, attachments, {
+        const dataUrls = await syncImageAttachmentsForSubmit(sessionId, attachments, {
           updateComposerAttachments: usingComposerAttachments
         })
-        await requestGateway('prompt.submit', { session_id: sessionId, text })
+
+        // In remote mode, embed data URLs in the prompt text so the Pi backend receives them
+        const finalText = dataUrls.length > 0 ? `${text}\n\n${dataUrls.join('\n\n')}` : text
+
+        await requestGateway('prompt.submit', { session_id: sessionId, text: finalText })
 
         if (usingComposerAttachments) {
           clearComposerAttachments()

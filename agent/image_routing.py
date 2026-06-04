@@ -144,6 +144,83 @@ def extract_image_refs(text: str) -> Tuple[List[str], List[str]]:
     return local_paths, urls
 
 
+# Desktop remote mode embeds pasted/attached images as data URLs inside the
+# prompt text because the gateway cannot read client-local composer-images
+# paths. Match the desktop renderer's embedded-images.ts extraction rules.
+_EMBEDDED_DATA_IMAGE_RE = re.compile(
+    r"data:image/[\w.+-]+;base64,[A-Za-z0-9+/=]{64,}"
+)
+
+
+def extract_embedded_data_image_urls(text: str) -> Tuple[str, List[str]]:
+    """Pull inline ``data:image/...;base64,...`` URLs out of free-form text.
+
+    Returns ``(cleaned_text, urls)``. Order-preserving, deduplicated.
+    """
+    if not isinstance(text, str) or "data:image/" not in text:
+        return text, []
+
+    urls: List[str] = []
+    seen: set[str] = set()
+
+    def _collect(match: re.Match[str]) -> str:
+        url = match.group(0)
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+        return ""
+
+    cleaned = _EMBEDDED_DATA_IMAGE_RE.sub(_collect, text)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, urls
+
+
+def materialize_data_image_urls(
+    urls: List[str],
+    dest_dir: Path,
+    *,
+    prefix: str = "embedded",
+) -> List[str]:
+    """Decode inline data URLs to temp files for text-mode vision preprocessing."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    paths: List[str] = []
+    ext_by_mime = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/bmp": ".bmp",
+        "image/tiff": ".tiff",
+        "image/svg+xml": ".svg",
+    }
+
+    for index, raw_url in enumerate(urls):
+        url = str(raw_url or "").strip()
+        if not url.startswith("data:image/") or "," not in url:
+            continue
+        header, _, payload = url.partition(",")
+        if not payload:
+            continue
+        mime = header[5:].split(";", 1)[0].strip().lower() or "image/png"
+        ext = ext_by_mime.get(mime, ".png")
+        try:
+            data = base64.b64decode(payload, validate=False)
+        except Exception:
+            logger.warning("image_routing: invalid embedded data URL at index %d", index)
+            continue
+        out_path = dest_dir / f"{prefix}_{index + 1}{ext}"
+        try:
+            out_path.write_bytes(data)
+        except OSError as exc:
+            logger.warning("image_routing: failed to write embedded image %s — %s", out_path, exc)
+            continue
+        paths.append(str(out_path))
+
+    return paths
+
+
 # Strict YAML/JSON boolean coercion for capability overrides.
 #
 # ``bool("false")`` is True in Python because non-empty strings are truthy, so
@@ -508,4 +585,6 @@ __all__ = [
     "decide_image_input_mode",
     "build_native_content_parts",
     "extract_image_refs",
+    "extract_embedded_data_image_urls",
+    "materialize_data_image_urls",
 ]

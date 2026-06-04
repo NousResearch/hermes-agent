@@ -15,7 +15,9 @@ from agent.image_routing import (
     _supports_vision_override,
     build_native_content_parts,
     decide_image_input_mode,
+    extract_embedded_data_image_urls,
     extract_image_refs,
+    materialize_data_image_urls,
 )
 
 
@@ -571,6 +573,35 @@ class TestExtractImageRefs:
         body = f"see {img}"
         paths, urls = extract_image_refs(body)
         assert paths == [str(img)]
+
+
+# ─── extract_embedded_data_image_urls ────────────────────────────────────────
+
+
+class TestExtractEmbeddedDataImageUrls:
+    SAMPLE = "data:image/png;base64," + ("A" * 120)
+
+    def test_no_data_urls(self):
+        assert extract_embedded_data_image_urls("hello") == ("hello", [])
+
+    def test_extracts_bare_data_url(self):
+        cleaned, urls = extract_embedded_data_image_urls(f"describe this\n\n{self.SAMPLE}")
+        assert urls == [self.SAMPLE]
+        assert cleaned == "describe this"
+
+    def test_deduplicates_repeated_urls(self):
+        body = f"{self.SAMPLE}\n\n{self.SAMPLE}"
+        cleaned, urls = extract_embedded_data_image_urls(body)
+        assert urls == [self.SAMPLE]
+        assert cleaned == ""
+
+
+class TestMaterializeDataImageUrls:
+    def test_writes_decoded_png(self, tmp_path: Path):
+        data_url = "data:image/png;base64," + base64.b64encode(_png_bytes()).decode("ascii")
+        paths = materialize_data_image_urls([data_url], tmp_path)
+        assert len(paths) == 1
+        assert Path(paths[0]).read_bytes() == _png_bytes()
 
 
 # ─── build_native_content_parts with URLs ────────────────────────────────────

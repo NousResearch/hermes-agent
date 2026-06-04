@@ -228,6 +228,19 @@ class TestTakeCheckpoint:
         assert (BASE / "store" / "projects" / f"{_project_hash(str(a))}.json").exists()
         assert (BASE / "store" / "projects" / f"{_project_hash(str(b))}.json").exists()
 
+    def test_failed_take_does_not_pollute_checkpointed_dirs(self, mgr, work_dir):
+        """Regression: when _take() fails the dir must NOT stay in
+        _checkpointed_dirs, otherwise future calls for the same dir are
+        silently skipped.  See #38891."""
+        with patch.object(mgr, "_take", return_value=False):
+            result = mgr.ensure_checkpoint(str(work_dir), "failing take")
+        assert result is False
+        assert str(work_dir.resolve()) not in mgr._checkpointed_dirs
+
+        # After new_turn the dir should still be eligible for checkpointing.
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "retry") is True
+
 
 # =========================================================================
 # CheckpointManager — listing

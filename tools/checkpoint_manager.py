@@ -646,13 +646,15 @@ class CheckpointManager:
         if abs_dir in self._checkpointed_dirs:
             return False
 
-        self._checkpointed_dirs.add(abs_dir)
-
         try:
-            return self._take(abs_dir, reason)
+            ok = self._take(abs_dir, reason)
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False
+
+        if ok:
+            self._checkpointed_dirs.add(abs_dir)
+        return ok
 
     def list_checkpoints(self, working_dir: str) -> List[Dict]:
         """List available checkpoints for a directory (most recent first)."""

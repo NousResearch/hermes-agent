@@ -1839,6 +1839,65 @@ class TestResponsesEndpoint:
             assert first_session_id == second_session_id
 
     @pytest.mark.asyncio
+    async def test_previous_response_id_with_conversation_history_preserves_session(self, adapter):
+        """When both conversation_history and previous_response_id are sent,
+        the session_id from the previous response must still be reused.
+
+        This is the OpenWebUI pattern: the client sends its own visible
+        conversation_history alongside previous_response_id.  The server
+        should reuse the session (for hidden tool history, prompt caching,
+        dashboard grouping) while accepting the client-supplied visible
+        history.
+        """
+        mock_result = {
+            "final_response": "ok",
+            "messages": [{"role": "assistant", "content": "ok"}],
+            "api_calls": 1,
+        }
+        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            # First request — establishes a session with a tool call result
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, usage)
+                resp1 = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "Load skill X"},
+                )
+            assert resp1.status == 200
+            first_session_id = mock_run.call_args.kwargs["session_id"]
+            data1 = await resp1.json()
+            response_id = data1["id"]
+
+            # Second request — sends both conversation_history AND
+            # previous_response_id (mimics OpenWebUI behaviour)
+            client_history = [
+                {"role": "user", "content": "Load skill X"},
+                {"role": "assistant", "content": "Skill loaded."},
+            ]
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, usage)
+                resp2 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Use the skill",
+                        "previous_response_id": response_id,
+                        "conversation_history": client_history,
+                    },
+                )
+            assert resp2.status == 200
+            second_session_id = mock_run.call_args.kwargs["session_id"]
+
+            # Session must be reused even though client also sent history
+            assert first_session_id == second_session_id
+
+            # The client-supplied history should be used (not the stored one)
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == client_history
+
+    @pytest.mark.asyncio
     async def test_invalid_previous_response_id_returns_404(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:

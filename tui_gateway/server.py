@@ -1047,7 +1047,10 @@ def _load_reasoning_config() -> dict | None:
     effort = str(
         (_load_cfg().get("agent") or {}).get("reasoning_effort", "") or ""
     ).strip()
-    return parse_reasoning_effort(effort)
+    # Desktop/TUI sessions default to Thinking Off.  AIAgent treats
+    # ``reasoning_config=None`` as provider default, which can become Medium on
+    # the first real turn even though the desktop startup UI showed Off.
+    return parse_reasoning_effort(effort) or {"enabled": False}
 
 
 def _load_service_tier() -> str | None:
@@ -1572,7 +1575,7 @@ def _current_profile_name() -> str:
 def _reasoning_effort_for_session_info(agent) -> str:
     reasoning_config = getattr(agent, "reasoning_config", None)
     if not isinstance(reasoning_config, dict):
-        return ""
+        return "none"
     if reasoning_config.get("enabled") is False:
         return "none"
     return str(reasoning_config.get("effort", "") or "")
@@ -2891,6 +2894,7 @@ def _(rid, params: dict) -> dict:
             "messages": _history_to_messages(history),
             "info": {
                 "model": _resolve_model(),
+                "reasoning_effort": _reasoning_effort_for_session_info(None),
                 "tools": {},
                 "skills": {},
                 "cwd": _sessions[sid]["cwd"],

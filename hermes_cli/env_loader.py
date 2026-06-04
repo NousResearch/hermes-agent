@@ -209,6 +209,14 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         pass  # best-effort — don't block gateway startup
 
 
+# Ephemeral per-process tokens the desktop shell injects on spawn.  These must
+# not be replaced by a stale value persisted in ~/.hermes/.env — doing so
+# breaks /api/ws (token_mismatch → "Could not connect to Hermes gateway").
+_DOTENV_PRESERVE_IF_SET: frozenset[str] = frozenset({
+    "HERMES_DASHBOARD_SESSION_TOKEN",
+})
+
+
 def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
@@ -221,8 +229,15 @@ def load_hermes_dotenv(
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
+    - :data:`_DOTENV_PRESERVE_IF_SET` is restored after each load when already
+      set in the process environment (desktop-spawned ephemeral tokens).
     """
     loaded: list[Path] = []
+    preserved = {
+        key: os.environ[key]
+        for key in _DOTENV_PRESERVE_IF_SET
+        if key in os.environ
+    }
 
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     user_env = home_path / ".env"
@@ -243,6 +258,9 @@ def load_hermes_dotenv(
         loaded.append(project_env_path)
 
     _apply_external_secret_sources(home_path)
+
+    for key, value in preserved.items():
+        os.environ[key] = value
 
     return loaded
 

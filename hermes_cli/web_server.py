@@ -8841,6 +8841,14 @@ def start_server(
     app.state.bound_host = host
     app.state.bound_port = port
 
+    # Adopt a desktop-minted session token after dotenv load.  main.py calls
+    # load_hermes_dotenv() before this module is imported; preserving the spawn
+    # env var there keeps _SESSION_TOKEN aligned with the renderer's wsUrl.
+    global _SESSION_TOKEN
+    injected = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN")
+    if injected:
+        _SESSION_TOKEN = injected
+
     if open_browser:
         import webbrowser
 

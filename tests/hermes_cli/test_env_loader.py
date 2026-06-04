@@ -86,6 +86,26 @@ def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_API_KEY") == "sk-123"
 
 
+def test_dashboard_session_token_not_overwritten_by_user_env(tmp_path, monkeypatch):
+    """Desktop spawns the dashboard with a fresh per-boot token in the environment.
+
+    ~/.hermes/.env must not replace it with a stale persisted value — that
+    breaks /api/ws with token_mismatch (Hermes.app shows gateway offline).
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=stale-from-dotenv\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-fresh-token")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "desktop-fresh-token"
+
+
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()

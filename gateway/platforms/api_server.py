@@ -484,14 +484,49 @@ class ResponseStore:
         self._conn.commit()
 
     def close(self) -> None:
-        """Close the database connection."""
+        """Close the database connection.
+
+        Runs a WAL checkpoint before closing so the WAL and SHM sidecar
+        files are flushed and the FDs for those files are released along
+        with the main database FD.  Without the checkpoint, SQLite keeps
+        the WAL/SHM files open even after the connection closes on some
+        platforms, which is the root cause of the FD accumulation
+        described in #37369.
+
+        Safe to call multiple times — subsequent calls after the first
+        are no-ops.
+        """
+        conn = self._conn
+        if conn is None:
+            return
+        self._conn = None  # Guard against double-close before any I/O
         try:
-            self._conn.close()
+            # PASSIVE checkpoint: flush WAL pages to the main DB file so
+            # the WAL/SHM sidecars can be fully released when the
+            # connection closes.  PASSIVE never blocks writers — on a busy
+            # server the checkpoint may not fully complete, but releasing
+            # this connection's own FDs is the priority.
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except Exception:
+            pass
+        try:
+            conn.close()
         except Exception:
             pass
 
+    def __enter__(self) -> "ResponseStore":
+        """Support use as a context manager: ``with ResponseStore() as store: ...``"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Ensure the SQLite connection is closed when leaving a ``with`` block."""
+        self.close()
+
     def __len__(self) -> int:
-        row = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()
+        conn = self._conn
+        if conn is None:
+            return 0
+        row = conn.execute("SELECT COUNT(*) FROM responses").fetchone()
         return row[0] if row else 0
 
 
@@ -4208,8 +4243,9 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         self._mark_disconnected()
         if self._response_store is not None:
+            store, self._response_store = self._response_store, None
             try:
-                self._response_store.close()
+                store.close()
             except Exception:
                 logger.debug(
                     "Failed to close response store for %s", self.name, exc_info=True,

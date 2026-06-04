@@ -129,6 +129,39 @@ class TestResponseStore:
         # resp_2 mapping should still be intact
         assert store.get_conversation("chat-b") == "resp_2"
 
+    def test_close_is_idempotent(self):
+        """Calling close() multiple times must not raise (#37369)."""
+        store = ResponseStore(max_size=10)
+        store.close()
+        store.close()  # second call must be a no-op
+
+    def test_len_after_close_returns_zero(self):
+        """__len__ after close() returns 0 rather than raising (#37369)."""
+        store = ResponseStore(max_size=10)
+        store.put("resp_1", {"output": "hello"})
+        assert len(store) == 1
+        store.close()
+        assert len(store) == 0
+
+    def test_context_manager_closes_connection(self):
+        """ResponseStore used as a context manager closes its connection on exit."""
+        with ResponseStore(max_size=10) as store:
+            store.put("resp_1", {"output": "hello"})
+            assert len(store) == 1
+        # After the with-block the connection is closed; len should return 0.
+        assert len(store) == 0
+
+    def test_context_manager_closes_on_exception(self):
+        """ResponseStore context manager closes the connection even if body raises."""
+        store_ref = []
+        with pytest.raises(RuntimeError):
+            with ResponseStore(max_size=10) as store:
+                store.put("resp_1", {"output": "hello"})
+                store_ref.append(store)
+                raise RuntimeError("simulated failure")
+        # Connection must have been closed despite the exception.
+        assert len(store_ref[0]) == 0
+
     @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
     def test_file_store_created_owner_only_under_permissive_umask(self, tmp_path):
         """response_store.db must be 0o600 on creation even under umask 022."""

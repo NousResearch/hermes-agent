@@ -42,9 +42,24 @@ import {
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
-// The rail is a single horizontal strip; pin drags to the x-axis so a vertical
-// nudge can't translate a square down and fault in a cross-axis scrollbar.
-const lockToXAxis: Modifier = ({ transform }) => ({ ...transform, y: 0 })
+const RAIL_GAP = 4 // px — matches gap-1 between squares.
+
+// The rail is a single horizontal strip of fixed cells. Pin drags to the x-axis
+// (no cross-axis scrollbar), snap to whole cells so a square steps slot-to-slot
+// instead of gliding, and clamp to the occupied strip so it can't float past the
+// last profile onto the "+".
+const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, transform }) => {
+  if (!draggingNodeRect || !containerNodeRect) {
+    return { ...transform, y: 0 }
+  }
+
+  const pitch = draggingNodeRect.width + RAIL_GAP
+  const minX = containerNodeRect.left - draggingNodeRect.left
+  const maxX = containerNodeRect.right - draggingNodeRect.right
+  const snapped = Math.round(transform.x / pitch) * pitch
+
+  return { ...transform, x: Math.min(maxX, Math.max(minX, snapped)), y: 0 }
+}
 
 // Arc-Spaces-style profile rail at the sidebar foot: a default↔all toggle pinned
 // left, the colored named profiles scrolling between, and Manage pinned right.
@@ -112,20 +127,24 @@ export function ProfileRail() {
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <DndContext
           collisionDetection={closestCenter}
-          modifiers={[lockToXAxis]}
+          modifiers={[stepThroughCells]}
           onDragEnd={handleDragEnd}
           sensors={sensors}
         >
           <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
-            {named.map(profile => (
-              <ProfileSquare
-                active={!isAll && normalizeProfileKey(profile.name) === activeKey}
-                color={profileColor(profile.name)}
-                key={profile.name}
-                label={profile.name}
-                onSelect={() => selectProfile(profile.name)}
-              />
-            ))}
+            {/* relative → the strip is the dragged square's offsetParent, so the
+                clamp modifier bounds drags to the occupied cells (not the +). */}
+            <div className="relative flex items-center gap-1">
+              {named.map(profile => (
+                <ProfileSquare
+                  active={!isAll && normalizeProfileKey(profile.name) === activeKey}
+                  color={profileColor(profile.name)}
+                  key={profile.name}
+                  label={profile.name}
+                  onSelect={() => selectProfile(profile.name)}
+                />
+              ))}
+            </div>
           </SortableContext>
         </DndContext>
 

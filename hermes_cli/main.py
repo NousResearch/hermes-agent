@@ -7225,6 +7225,8 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
         candidates = [
             release_dir / "linux-unpacked" / "hermes",
             release_dir / "linux-unpacked" / "Hermes",
+            release_dir / "linux-arm64-unpacked" / "hermes",
+            release_dir / "linux-arm64-unpacked" / "Hermes",
         ]
 
     existing = [p for p in candidates if p.exists()]

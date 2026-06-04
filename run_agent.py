@@ -407,6 +407,425 @@ class AIAgent:
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
     ):
+<<<<<<< HEAD
+        """
+        Initialize the AI Agent.
+
+        Args:
+            base_url (str): Base URL for the model API (optional)
+            api_key (str): API key for authentication (optional, uses env var if not provided)
+            provider (str): Provider identifier (optional; used for telemetry/routing hints)
+            api_mode (str): API mode override: "chat_completions" or "codex_responses"
+            model (str): Model name to use (default: "anthropic/claude-opus-4.6")
+            max_iterations (int): Maximum number of tool calling iterations (default: 90)
+            tool_delay (float): Delay between tool calls in seconds (default: 1.0)
+            enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
+            disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
+            save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
+            verbose_logging (bool): Enable verbose logging for debugging (default: False)
+            quiet_mode (bool): Suppress progress output for clean CLI experience (default: False)
+            ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
+            log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 100)
+            log_prefix (str): Prefix to add to all log messages for identification in parallel processing (default: "")
+            providers_allowed (List[str]): OpenRouter providers to allow (optional)
+            providers_ignored (List[str]): OpenRouter providers to ignore (optional)
+            providers_order (List[str]): OpenRouter providers to try in order (optional)
+            provider_sort (str): Sort providers by price/throughput/latency (optional)
+            session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
+            tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
+            clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
+                Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
+            max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
+            reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
+                If None, defaults to {"enabled": True, "effort": "medium"} for OpenRouter. Set to disable/customize reasoning.
+            prefill_messages (List[Dict]): Messages to prepend to conversation history as prefilled context.
+                Useful for injecting a few-shot example or priming the model's response style.
+                Example: [{"role": "user", "content": "Hi!"}, {"role": "assistant", "content": "Hello!"}]
+            platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp").
+                Used to inject platform-specific formatting hints into the system prompt.
+            skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
+                into the system prompt. Use this for batch processing and data generation to avoid
+                polluting trajectories with user-specific persona or project instructions.
+        """
+        _install_safe_stdio()
+
+        self.model = model
+        self.max_iterations = max_iterations
+        # Shared iteration budget — parent creates, children inherit.
+        # Consumed by every LLM turn across parent + all subagents.
+        self.iteration_budget = iteration_budget or IterationBudget(max_iterations)
+        self.tool_delay = tool_delay
+        self.save_trajectories = save_trajectories
+        self.verbose_logging = verbose_logging
+        self.quiet_mode = quiet_mode
+        self.ephemeral_system_prompt = ephemeral_system_prompt
+        self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+        self._user_id = user_id  # Platform user identifier (gateway sessions)
+        # Pluggable print function — CLI replaces this with _cprint so that
+        # raw ANSI status lines are routed through prompt_toolkit's renderer
+        # instead of going directly to stdout where patch_stdout's StdoutProxy
+        # would mangle the escape sequences.  None = use builtins.print.
+        self._print_fn = None
+        self.background_review_callback = None  # Optional sync callback for gateway delivery
+        self.skip_context_files = skip_context_files
+        self.pass_session_id = pass_session_id
+        self.persist_session = persist_session
+        self._credential_pool = credential_pool
+        self.log_prefix_chars = log_prefix_chars
+        self.log_prefix = f"{log_prefix} " if log_prefix else ""
+        # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
+        self.base_url = base_url or ""
+        provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
+        self.provider = provider_name or ""
+        self.acp_command = acp_command or command
+        self.acp_args = list(acp_args or args or [])
+        explicit_api_mode = api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}
+        self._explicit_api_mode = explicit_api_mode
+        if explicit_api_mode:
+            self.api_mode = api_mode
+        elif self.provider == "openai-codex":
+            self.api_mode = "codex_responses"
+        elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self._base_url_lower:
+            self.api_mode = "codex_responses"
+            self.provider = "openai-codex"
+        elif self.provider == "anthropic" or (provider_name is None and "api.anthropic.com" in self._base_url_lower):
+            self.api_mode = "anthropic_messages"
+            self.provider = "anthropic"
+        elif self._base_url_lower.rstrip("/").endswith("/anthropic"):
+            # Third-party Anthropic-compatible endpoints (e.g. MiniMax, DashScope)
+            # use a URL convention ending in /anthropic. Auto-detect these so the
+            # Anthropic Messages API adapter is used instead of chat completions.
+            self.api_mode = "anthropic_messages"
+        else:
+            self.api_mode = "chat_completions"
+
+        try:
+            from hermes_cli.model_normalize import (
+                _AGGREGATOR_PROVIDERS,
+                normalize_model_for_provider,
+            )
+
+            if self.provider not in _AGGREGATOR_PROVIDERS:
+                self.model = normalize_model_for_provider(self.model, self.provider)
+        except Exception:
+            pass
+
+        # GPT-5.x models require the Responses API path — they are rejected
+        # on /v1/chat/completions by both OpenAI and OpenRouter.  Also
+        # auto-upgrade for direct OpenAI URLs (api.openai.com) since all
+        # newer tool-calling models prefer Responses there.
+        # ACP runtimes are excluded: CopilotACPClient handles its own
+        # routing and does not implement the Responses API surface.
+        if (
+            not explicit_api_mode
+            and self.api_mode == "chat_completions"
+            and self.provider != "copilot-acp"
+            and not str(self.base_url or "").lower().startswith("acp://copilot")
+            and not str(self.base_url or "").lower().startswith("acp+tcp://")
+            and (
+                self._is_direct_openai_url()
+                or self._model_requires_responses_api(self.model)
+            )
+        ):
+            self.api_mode = "codex_responses"
+
+        # Pre-warm OpenRouter model metadata cache in a background thread.
+        # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
+        # HTTP request on the first API response when pricing is estimated.
+        if self.provider == "openrouter" or self._is_openrouter_url():
+            threading.Thread(
+                target=lambda: fetch_model_metadata(),
+                daemon=True,
+            ).start()
+
+        self.tool_progress_callback = tool_progress_callback
+        self.tool_start_callback = tool_start_callback
+        self.tool_complete_callback = tool_complete_callback
+        self.suppress_status_output = False
+        self.thinking_callback = thinking_callback
+        self.reasoning_callback = reasoning_callback
+        self.clarify_callback = clarify_callback
+        self.step_callback = step_callback
+        self.stream_delta_callback = stream_delta_callback
+        self.interim_assistant_callback = interim_assistant_callback
+        self.status_callback = status_callback
+        self.tool_gen_callback = tool_gen_callback
+
+        
+        # Tool execution state — allows _vprint during tool execution
+        # even when stream consumers are registered (no tokens streaming then)
+        self._executing_tools = False
+
+        # Interrupt mechanism for breaking out of tool loops
+        self._interrupt_requested = False
+        self._interrupt_message = None  # Optional message that triggered interrupt
+        self._execution_thread_id: int | None = None  # Set at run_conversation() start
+        self._client_lock = threading.RLock()
+        
+        # Subagent delegation state
+        self._delegate_depth = 0        # 0 = top-level agent, incremented for children
+        self._active_children = []      # Running child AIAgents (for interrupt propagation)
+        self._active_children_lock = threading.Lock()
+        
+        # Store OpenRouter provider preferences
+        self.providers_allowed = providers_allowed
+        self.providers_ignored = providers_ignored
+        self.providers_order = providers_order
+        self.provider_sort = provider_sort
+        self.provider_require_parameters = provider_require_parameters
+        self.provider_data_collection = provider_data_collection
+
+        # Store toolset filtering options
+        self.enabled_toolsets = enabled_toolsets
+        self.disabled_toolsets = disabled_toolsets
+        
+        # Model response configuration
+        self.max_tokens = max_tokens  # None = use model default
+        self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
+        self.service_tier = service_tier
+        self.request_overrides = dict(request_overrides or {})
+        self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
+        self._force_ascii_payload = False
+        
+        # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
+        # Reduces input costs by ~75% on multi-turn conversations by caching the
+        # conversation prefix. Uses system_and_3 strategy (4 breakpoints).
+        is_openrouter = self._is_openrouter_url()
+        is_claude = "claude" in self.model.lower()
+        is_native_anthropic = self.api_mode == "anthropic_messages" and self.provider == "anthropic"
+        self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
+        self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
+        
+        # Iteration budget: the LLM is only notified when it actually exhausts
+        # the iteration budget (api_call_count >= max_iterations).  At that
+        # point we inject ONE message, allow one final API call, and if the
+        # model doesn't produce a text response, force a user-message asking
+        # it to summarise.  No intermediate pressure warnings — they caused
+        # models to "give up" prematurely on complex tasks (#7915).
+        self._budget_exhausted_injected = False
+        self._budget_grace_call = False
+
+        # Context pressure warnings: notify the USER (not the LLM) as context
+        # fills up.  Purely informational — displayed in CLI output and sent via
+        # status_callback for gateway platforms.  Does NOT inject into messages.
+        # Tiered: fires at 85% and again at 95% of compaction threshold.
+        self._context_pressure_warned_at = 0.0  # highest tier already shown
+
+        # Activity tracking — updated on each API call, tool execution, and
+        # stream chunk.  Used by the gateway timeout handler to report what the
+        # agent was doing when it was killed, and by the "still working"
+        # notifications to show progress.
+        self._last_activity_ts: float = time.time()
+        self._last_activity_desc: str = "initializing"
+        self._current_tool: str | None = None
+        self._api_call_count: int = 0
+
+        # Rate limit tracking — updated from x-ratelimit-* response headers
+        # after each API call.  Accessed by /usage slash command.
+        self._rate_limit_state: Optional["RateLimitState"] = None
+
+        # Centralized logging — agent.log (INFO+) and errors.log (WARNING+)
+        # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
+        # (which creates a new AIAgent per message) won't duplicate handlers.
+        from hermes_logging import setup_logging, setup_verbose_logging
+        setup_logging(hermes_home=_hermes_home)
+
+        if self.verbose_logging:
+            setup_verbose_logging()
+            logger.info("Verbose logging enabled (third-party library logs suppressed)")
+        else:
+            if self.quiet_mode:
+                # In quiet mode (CLI default), suppress all tool/infra log
+                # noise on the *console*. The TUI has its own rich display
+                # for status; logger INFO/WARNING messages just clutter it.
+                # File handlers (agent.log, errors.log) still capture everything.
+                for quiet_logger in [
+                    'tools',               # all tools.* (terminal, browser, web, file, etc.)
+                    'run_agent',            # agent runner internals
+                    'trajectory_compressor',
+                    'cron',                 # scheduler (only relevant in daemon mode)
+                    'hermes_cli',           # CLI helpers
+                ]:
+                    logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+        
+        # Internal stream callback (set during streaming TTS).
+        # Initialized here so _vprint can reference it before run_conversation.
+        self._stream_callback = None
+        # Deferred paragraph break flag — set after tool iterations so a
+        # single "\n\n" is prepended to the next real text delta.
+        self._stream_needs_break = False
+        # Visible assistant text already delivered through live token callbacks
+        # during the current model response. Used to avoid re-sending the same
+        # commentary when the provider later returns it as a completed interim
+        # assistant message.
+        self._current_streamed_assistant_text = ""
+
+        # Optional current-turn user-message override used when the API-facing
+        # user message intentionally differs from the persisted transcript
+        # (e.g. CLI voice mode adds a temporary prefix for the live call only).
+        self._persist_user_message_idx = None
+        self._persist_user_message_override = None
+
+        # Cache anthropic image-to-text fallbacks per image payload/URL so a
+        # single tool loop does not repeatedly re-run auxiliary vision on the
+        # same image history.
+        self._anthropic_image_fallback_cache: Dict[str, str] = {}
+
+        # Initialize LLM client via centralized provider router.
+        # The router handles auth resolution, base URL, headers, and
+        # Codex/Anthropic wrapping for all known providers.
+        # raw_codex=True because the main agent needs direct responses.stream()
+        # access for Codex Responses API streaming.
+        self._anthropic_client = None
+        self._is_anthropic_oauth = False
+
+        if self.api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
+            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
+            # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
+            # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
+            _is_native_anthropic = self.provider == "anthropic"
+            effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
+            self.api_key = effective_key
+            self._anthropic_api_key = effective_key
+            self._anthropic_base_url = base_url
+            from agent.anthropic_adapter import _is_oauth_token as _is_oat
+            self._is_anthropic_oauth = _is_oat(effective_key)
+            self._anthropic_client = build_anthropic_client(effective_key, base_url)
+            # No OpenAI client needed for Anthropic mode
+            self.client = None
+            self._client_kwargs = {}
+            if not self.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
+                if effective_key and len(effective_key) > 12:
+                    print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+        else:
+            if api_key and base_url:
+                # Explicit credentials from CLI/gateway — construct directly.
+                # The runtime provider resolver already handled auth for us.
+                client_kwargs = {"api_key": api_key, "base_url": base_url}
+                if self.provider == "copilot-acp":
+                    client_kwargs["command"] = self.acp_command
+                    client_kwargs["args"] = self.acp_args
+                effective_base = base_url
+                if "openrouter" in effective_base.lower():
+                    client_kwargs["default_headers"] = {
+                        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+                        "X-OpenRouter-Title": "Hermes Agent",
+                        "X-OpenRouter-Categories": "productivity,cli-agent",
+                    }
+                elif "api.githubcopilot.com" in effective_base.lower():
+                    from hermes_cli.models import copilot_default_headers
+
+                    client_kwargs["default_headers"] = copilot_default_headers()
+                elif "api.kimi.com" in effective_base.lower():
+                    client_kwargs["default_headers"] = {
+                        "User-Agent": "KimiCLI/1.30.0",
+                    }
+                elif "portal.qwen.ai" in effective_base.lower():
+                    client_kwargs["default_headers"] = _qwen_portal_headers()
+                elif "sophon-ai.bytedance.net" in effective_base.lower() and api_key:
+                    client_kwargs["default_headers"] = {"api-key": api_key}
+            else:
+                # No explicit creds — use the centralized provider router
+                from agent.auxiliary_client import resolve_provider_client
+                _routed_client, _ = resolve_provider_client(
+                    self.provider or "auto", model=self.model, raw_codex=True)
+                if _routed_client is not None:
+                    client_kwargs = {
+                        "api_key": _routed_client.api_key,
+                        "base_url": str(_routed_client.base_url),
+                    }
+                    # Preserve any default_headers the router set
+                    if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
+                        client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+                else:
+                    # When the user explicitly chose a non-OpenRouter provider
+                    # but no credentials were found, fail fast with a clear
+                    # message instead of silently routing through OpenRouter.
+                    _explicit = (self.provider or "").strip().lower()
+                    if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                        raise RuntimeError(
+                            f"Provider '{_explicit}' is set in config.yaml but no API key "
+                            f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                            f"variable, or switch to a different provider with `hermes model`."
+                        )
+                    # Final fallback: try raw OpenRouter key
+                    client_kwargs = {
+                        "api_key": os.getenv("OPENROUTER_API_KEY", ""),
+                        "base_url": OPENROUTER_BASE_URL,
+                        "default_headers": {
+                            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+                            "X-OpenRouter-Title": "Hermes Agent",
+                            "X-OpenRouter-Categories": "productivity,cli-agent",
+                        },
+                    }
+            
+            self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+
+            # Enable fine-grained tool streaming for Claude on OpenRouter.
+            # Without this, Anthropic buffers the entire tool call and goes
+            # silent for minutes while thinking — OpenRouter's upstream proxy
+            # times out during the silence.  The beta header makes Anthropic
+            # stream tool call arguments token-by-token, keeping the
+            # connection alive.
+            _effective_base = str(client_kwargs.get("base_url", "")).lower()
+            if "openrouter" in _effective_base and "claude" in (self.model or "").lower():
+                headers = client_kwargs.get("default_headers") or {}
+                existing_beta = headers.get("x-anthropic-beta", "")
+                _FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
+                if _FINE_GRAINED not in existing_beta:
+                    if existing_beta:
+                        headers["x-anthropic-beta"] = f"{existing_beta},{_FINE_GRAINED}"
+                    else:
+                        headers["x-anthropic-beta"] = _FINE_GRAINED
+                    client_kwargs["default_headers"] = headers
+
+            self.api_key = client_kwargs.get("api_key", "")
+            self.base_url = client_kwargs.get("base_url", self.base_url)
+            try:
+                self.client = self._create_openai_client(client_kwargs, reason="agent_init", shared=True)
+                if not self.quiet_mode:
+                    print(f"🤖 AI Agent initialized with model: {self.model}")
+                    if base_url:
+                        print(f"🔗 Using custom base URL: {base_url}")
+                    # Always show API key info (masked) for debugging auth issues
+                    key_used = client_kwargs.get("api_key", "none")
+                    if key_used and key_used != "dummy-key" and len(key_used) > 12:
+                        print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+                    else:
+                        print(f"⚠️  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
+            except Exception as e:
+                raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
+        
+        # Provider fallback chain — ordered list of backup providers tried
+        # when the primary is exhausted (rate-limit, overload, connection
+        # failure).  Supports both legacy single-dict ``fallback_model`` and
+        # new list ``fallback_providers`` format.
+        if isinstance(fallback_model, list):
+            self._fallback_chain = [
+                f for f in fallback_model
+                if isinstance(f, dict) and f.get("provider") and f.get("model")
+            ]
+        elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
+            self._fallback_chain = [fallback_model]
+        else:
+            self._fallback_chain = []
+        self._fallback_index = 0
+        self._fallback_activated = False
+        # Legacy attribute kept for backward compat (tests, external callers)
+        self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
+        if self._fallback_chain and not self.quiet_mode:
+            if len(self._fallback_chain) == 1:
+                fb = self._fallback_chain[0]
+                print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
+            else:
+                print(f"🔄 Fallback chain ({len(self._fallback_chain)} providers): " +
+                      " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
+
+        # Get available tools with filtering
+        self.tools = get_tool_definitions(
+=======
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
         init_agent(
@@ -422,6 +841,7 @@ class AIAgent:
             model=model,
             max_iterations=max_iterations,
             tool_delay=tool_delay,
+>>>>>>> upstream/main
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
             save_trajectories=save_trajectories,
@@ -3644,11 +4064,16 @@ class AIAgent:
             self._client_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "portal.qwen.ai"):
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
+<<<<<<< HEAD
+        elif "sophon-ai.bytedance.net" in normalized and getattr(self, "api_key", ""):
+            self._client_kwargs["default_headers"] = {"api-key": self.api_key}
+=======
         elif base_url_host_matches(base_url, "chatgpt.com"):
             from agent.auxiliary_client import _codex_cloudflare_headers
             self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
                 self._client_kwargs.get("api_key", "")
             )
+>>>>>>> upstream/main
         else:
             # No URL-specific headers — check profile.default_headers before clearing.
             _ph_headers = None

@@ -127,10 +127,23 @@ _RATE_LIMIT_PATTERNS = [
     "please retry after",
     "resource_exhausted",
     "rate increased too quickly",  # Alibaba/DashScope throttling
-    # AWS Bedrock throttling
-    "throttlingexception",
-    "too many concurrent requests",
-    "servicequotaexceededexception",
+    # 国内厂商（Sophon / DashScope / BigModel 等）常见的限流关键字
+    # 这些厂商常用 HTTP 500 而非标准的 429 返回限流错误
+    "qpm limit",
+    "qpm_limit",
+    "qpm exceeded",
+    "tpm limit",
+    "tpm_limit",
+    "tpm exceeded",
+    "qps limit",
+    "qps_limit",
+    "qps exceeded",
+    "frequency limit",
+    "调用频率",
+    "超过频率",
+    "请求频率",
+    "请求过于频繁",
+    "频率超限",
 ]
 
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
@@ -840,22 +853,22 @@ def _classify_by_status(
             result_fn=result_fn,
         )
 
-    if status_code in {500, 502}:
-        # Some OpenAI-compatible gateways return request-validation errors
-        # with a 5xx status (codex.nekos.me returns 502 for unknown/
-        # unsupported parameters). These are deterministic — every retry
-        # gets the identical rejection — so the generic "5xx → retryable
-        # server_error" rule turns one bad request into a retry flood.
-        # Detect the unambiguous request-validation signals (in either the
-        # message text or the structured error code) and fail fast.
-        if (
-            any(p in error_msg for p in _REQUEST_VALIDATION_PATTERNS)
-            or error_code.lower() in {"invalid_request_error", "unknown_parameter",
-                                      "unsupported_parameter"}
-        ):
+    if status_code in (500, 502):
+        # 部分非标准 provider（Sophon / DashScope / BigModel 等）会把
+        # 限流或计费错误伪装成 HTTP 500 返回，需要基于 message 关键字
+        # 进一步区分，才能让上层走 rate_limit / billing 的 fallback 分支。
+        if any(p in error_msg for p in _RATE_LIMIT_PATTERNS):
             return result_fn(
-                FailoverReason.format_error,
+                FailoverReason.rate_limit,
+                retryable=True,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
+        if any(p in error_msg for p in _BILLING_PATTERNS):
+            return result_fn(
+                FailoverReason.billing,
                 retryable=False,
+                should_rotate_credential=True,
                 should_fallback=True,
             )
         return result_fn(FailoverReason.server_error, retryable=True)
@@ -873,6 +886,23 @@ def _classify_by_status(
 
     # Other 5xx — retryable
     if 500 <= status_code < 600:
+        # 与 500/502 分支保持一致：识别 message 中的限流/计费关键字，
+        # 避免非标准 provider 通过 5xx 返回限流错误时被错误归类为
+        # server_error 而错过 fallback 切换。
+        if any(p in error_msg for p in _RATE_LIMIT_PATTERNS):
+            return result_fn(
+                FailoverReason.rate_limit,
+                retryable=True,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
+        if any(p in error_msg for p in _BILLING_PATTERNS):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         return result_fn(FailoverReason.server_error, retryable=True)
 
     return None

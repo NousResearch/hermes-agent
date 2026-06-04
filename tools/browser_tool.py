@@ -2360,15 +2360,27 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         from tools.browser_camofox import camofox_navigate
         return camofox_navigate(url, task_id)
 
-    if auto_local_this_nav:
-        logger.info(
-            "browser_navigate: auto-routing %s to local Chromium sidecar "
-            "(cloud provider %s stays on cloud for public URLs; "
-            "set browser.auto_local_for_private_urls: false to disable)",
-            url,
-            type(_get_cloud_provider()).__name__ if _get_cloud_provider() else "none",
-        )
+    # Auto-bootstrap a local CDP Chrome when the user hasn't run /browser
+    # connect yet, mirroring the cli.py launch flow (port probe → Chrome
+    # launch with --remote-allow-origins=* etc. → cookie injection).
+    # Only kicks in when no cloud provider is configured AND the env override
+    # is missing/unreachable, so cloud sessions and explicit overrides win.
+    try:
+        from tools.browser_cdp_bootstrap import ensure_cdp_browser_ready, DEFAULT_CDP_URL
+        from tools.browser_cdp_bootstrap import _port_open, _parse_host_port
+        cdp_env = os.environ.get("BROWSER_CDP_URL", "").strip()
+        provider_configured = _get_cloud_provider() is not None
+        if not provider_configured:
+            target_cdp = cdp_env or DEFAULT_CDP_URL
+            host, port = _parse_host_port(target_cdp)
+            if not _port_open(host, port):
+                logger.info("browser_navigate: bootstrapping CDP browser at %s", target_cdp)
+                ensure_cdp_browser_ready(target_cdp)
+    except Exception as _bootstrap_err:
+        logger.warning("browser_navigate: CDP bootstrap failed: %s", _bootstrap_err)
 
+    effective_task_id = task_id or "default"
+    
     # Get session info to check if this is a new session
     # (will create one with features logged if not exists)
     session_info = _get_session_info(nav_session_key)

@@ -351,6 +351,65 @@ def _parse_service_tier_config(raw: str) -> str | None:
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
+
+
+def _get_chrome_debug_candidates(system: str) -> list[str]:
+    """Return likely browser executables for local CDP auto-launch."""
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add_candidate(path: str | None) -> None:
+        if not path:
+            return
+        normalized = os.path.normcase(os.path.normpath(path))
+        if normalized in seen:
+            return
+        if os.path.isfile(path):
+            candidates.append(path)
+            seen.add(normalized)
+
+    def _add_from_path(*names: str) -> None:
+        for name in names:
+            _add_candidate(shutil.which(name))
+
+    if system == "Darwin":
+        for app in (
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ):
+            _add_candidate(app)
+    elif system == "Windows":
+        _add_from_path(
+            "chrome.exe", "msedge.exe", "brave.exe", "chromium.exe",
+            "chrome", "msedge", "brave", "chromium",
+        )
+
+        for base in (
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramFiles(x86)"),
+            os.environ.get("LOCALAPPDATA"),
+        ):
+            if not base:
+                continue
+            for parts in (
+                ("Google", "Chrome", "Application", "chrome.exe"),
+                ("Chromium", "Application", "chrome.exe"),
+                ("Chromium", "Application", "chromium.exe"),
+                ("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+                ("Microsoft", "Edge", "Application", "msedge.exe"),
+            ):
+                _add_candidate(os.path.join(base, *parts))
+    else:
+        _add_from_path(
+            "google-chrome", "google-chrome-stable", "chromium-browser",
+            "chromium", "brave-browser", "microsoft-edge",
+        )
+
+    return candidates
+
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
@@ -6660,7 +6719,7 @@ class HermesCLI:
             # First session or empty history — still finalize the old session
             self._notify_session_boundary("on_session_finalize")
 
-        old_session_id = self.session_id
+        old_session_id = self.session_idl
         if self._session_db and old_session_id:
             try:
                 self._session_db.end_session(old_session_id, "new_session")
@@ -9395,45 +9454,43 @@ class HermesCLI:
 
         Returns True if a launch command was executed (doesn't guarantee success).
         """
-        return try_launch_chrome_debug(port, system)
+        import subprocess as _sp
 
-    def _handle_bundles_command(self, cmd: str) -> None:
-        """In-session ``/bundles`` — show installed skill bundles.
+        candidates = _get_chrome_debug_candidates(system)
+        print(f' 浏览器配置有 {len(candidates)} 个')
+        for candidate in candidates:
+            print(f'浏览器配置： {candidate}')
+        if not candidates:
+            return False
 
-        Mirrors ``hermes bundles list`` but renders inside the running
-        CLI so users can discover what's available without dropping out
-        of their session. Bundles are loaded via ``/<bundle-name>``.
-        """
+        # Dedicated profile dir so debug Chrome won't collide with normal Chrome
+        data_dir = str(_hermes_home / "chrome-debug")
+        print(f'浏览器用户数据保存地址: {data_dir}')
+        os.makedirs(data_dir, exist_ok=True)
+        
+        chrome = candidates[0]
+        print(f'加载 浏览器 信息，浏览器地址为 {chrome}')
         try:
-            from agent.skill_bundles import list_bundles, _bundles_dir
-        except Exception as exc:
-            _cprint(f"\033[1;31mBundle subsystem unavailable: {exc}{_RST}")
-            return
-
-        bundles = list_bundles()
-        if not bundles:
-            _cprint("  No skill bundles installed.")
-            _cprint(
-                f"  {_DIM}Create one with: hermes bundles create "
-                f"<name> --skill <s1> --skill <s2>{_RST}"
+            _sp.Popen(
+                [
+                    chrome,
+                    f"--remote-debugging-port={port}",
+                    f"--user-data-dir={data_dir}",
+                    "--remote-allow-origins=*",
+                    "--disable-features=ClearSiteDataOnExit",
+                    "--disable-clear-browsing-data-on-exit",
+                    "--persist-cookies",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--password-store=basic",
+                ],
+                stdout=_sp.DEVNULL,
+                stderr=_sp.DEVNULL,
+                start_new_session=True,  # detach from terminal
             )
-            _cprint(f"  {_DIM}Directory: {_bundles_dir()}{_RST}")
-            return
-
-        _cprint(f"\n  ▣ {_BOLD}Skill Bundles{_RST} ({len(bundles)} installed):")
-        for info in bundles:
-            skill_count = len(info.get("skills", []))
-            desc = info.get("description") or f"Load {skill_count} skills"
-            ChatConsole().print(
-                f"    [bold {_accent_hex()}]/{info['slug']:<20}[/] "
-                f"[dim]-[/] {_escape(desc)} [dim]({skill_count} skills)[/]"
-            )
-            for s in info.get("skills", []):
-                ChatConsole().print(f"        [dim]· {_escape(s)}[/]")
-        _cprint(
-            f"\n  {_DIM}Invoke a bundle with /<slug>. "
-            f"Manage with `hermes bundles`.{_RST}"
-        )
+            return True
+        except Exception:
+            return False
 
     def _handle_browser_command(self, cmd: str):
         """Handle /browser connect|disconnect|status — manage live Chromium-family CDP connection."""
@@ -9442,7 +9499,7 @@ class HermesCLI:
         parts = cmd.strip().split(None, 1)
         sub = parts[1].lower().strip() if len(parts) > 1 else "status"
 
-        _DEFAULT_CDP = DEFAULT_BROWSER_CDP_URL
+        _DEFAULT_CDP = "http://localhost:9223"
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
         if sub.startswith("connect"):
@@ -9490,14 +9547,30 @@ class HermesCLI:
 
             print()
 
-            # Check if a Chromium-family browser is already serving CDP on the debug port
-            _already_open = is_browser_debug_ready(cdp_url, timeout=1.0)
+            # Extract port for connectivity checks
+            _port = 9223
+            try:
+                _port = int(cdp_url.rsplit(":", 1)[-1].split("/")[0])
+            except (ValueError, IndexError):
+                pass
+
+            # Check if Chrome is already listening on the debug port
+            import socket
+            _already_open = False
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(1)
+                s.connect(("127.0.0.1", _port))
+                s.close()
+                _already_open = True
+            except (OSError, socket.timeout):
+                pass
 
             if _already_open:
-                print(f"   ✓ Chromium-family browser is already listening on port {_port}")
+                print(f"   ✓ chromium is already listening on port {_port}")
             elif cdp_url == _DEFAULT_CDP:
-                # Try to auto-launch a Chromium-family browser with remote debugging
-                print("   Chromium-family browser isn't running with remote debugging — attempting to launch...")
+                # Try to auto-launch Chrome with remote debugging
+                print("   chromium isn't running with remote debugging — attempting to launch...")
                 _launched = self._try_launch_chrome_debug(_port, _plat.system())
                 if _launched:
                     # Wait for the DevTools discovery endpoint to come up
@@ -9512,14 +9585,39 @@ class HermesCLI:
                         print(f"   ⚠ Browser launched but port {_port} isn't responding yet")
                         print("     Try again in a few seconds — the debug instance may still be starting")
                 else:
-                    print("   ⚠ Could not auto-launch a Chromium-family browser")
+                    print("   ⚠ Could not auto-launch Chromium")
+                    # Show manual instructions as fallback
+                    _data_dir = str(_hermes_home / "chrome-debug")
                     sys_name = _plat.system()
-                    chrome_cmd = manual_chrome_debug_command(_port, sys_name)
-                    if chrome_cmd:
-                        print(f"     Launch a Chromium-family browser manually:")
-                        print(f"     {chrome_cmd}")
+                    if sys_name == "Darwin":
+                        chromium_cmd = (
+                            'open -a /Applications/Chromium.app/Contents/MacOS/Chromium --args',
+                            f"--remote-debugging-port={_port}",
+                            f"--user-data-dir={_data_dir}",
+                            "--remote-allow-origins=*",
+                            "--disable-features=ClearSiteDataOnExit",
+                            "--disable-clear-browsing-data-on-exit",
+                            "--persist-cookies",
+                            "--no-first-run",
+                            "--no-default-browser-check",
+                            "--password-store=basic",
+                        )
+                    elif sys_name == "Windows":
+                        chromium_cmd = (
+                            f'chrome.exe --remote-debugging-port=9223'
+                            f' --user-data-dir="{_data_dir}"'
+                            f" --remote-allow-origins=*"
+                            f" --no-first-run --no-default-browser-check"
+                        )
                     else:
-                        print("     No supported Chromium-family browser executable found in this environment")
+                        chromium_cmd = (
+                            f"google-chrome --remote-debugging-port=9223"
+                            f' --user-data-dir="{_data_dir}"'
+                            f" --remote-allow-origins=*"
+                            f" --no-first-run --no-default-browser-check"
+                        )
+                    print(f"     Launch Chrome manually:")
+                    print(f"     {chromium_cmd}")
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
 
@@ -9540,6 +9638,12 @@ class HermesCLI:
             print()
             print("🌐 Browser connected to live Chromium-family browser via CDP")
             print(f"   Endpoint: {cdp_url}")
+            print("开始注入cookie信息")
+            try:
+                from inject_cookies import chromium_cookie as _inject_cookies_main
+                _inject_cookies_main(["--host", "localhost", "--port", str(_port)])
+            except Exception as _e:
+                print(f"   ⚠ 注入 cookie 失败: {_e}")
             print()
 
             # Inject context message so the model knows this slash command
@@ -9587,7 +9691,7 @@ class HermesCLI:
                 print("🌐 Browser: connected to live Chromium-family browser via CDP")
                 print(f"   Endpoint: {current}")
 
-                _port = 9222
+                _port = 9223
                 try:
                     _port = int(current.rsplit(":", 1)[-1].split("/")[0])
                 except (ValueError, IndexError):
@@ -11418,7 +11522,6 @@ class HermesCLI:
                     self._voice_continuous = False
                     self._no_speech_count = 0
                     _cprint(f"{_DIM}No speech detected 3 times, continuous mode stopped.{_RST}")
-                    return
             else:
                 self._no_speech_count = 0
 

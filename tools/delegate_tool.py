@@ -40,6 +40,12 @@ from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
 
+# Re-export ACP marker so we can set base_url when acp_command is provided
+try:
+    from agent.copilot_acp_client import ACP_MARKER_BASE_URL
+except ImportError:
+    ACP_MARKER_BASE_URL = "acp://copilot"
+
 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset(
@@ -1019,43 +1025,23 @@ def _build_child_agent(
 
     # Resolve effective credentials: config override > parent inherit
     effective_model = model or parent_agent.model
-    effective_provider = override_provider or getattr(parent_agent, "provider", None)
-    effective_base_url = override_base_url or parent_agent.base_url
-    effective_api_key = override_api_key or parent_api_key
-    # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
-    # different provider than the parent — each provider has its own API surface
-    # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
-    # Inheriting the parent's mode causes 404 errors when the child routes to the
-    # wrong endpoint.  Derive the mode from the target provider when it differs.
-    _parent_provider = getattr(parent_agent, "provider", None) or ""
-    if override_api_mode is not None:
-        effective_api_mode = override_api_mode
-    elif effective_provider != _parent_provider:
-        effective_api_mode = None  # force re-derivation from provider's defaults
-    else:
-        effective_api_mode = getattr(parent_agent, "api_mode", None)
-    effective_acp_command = override_acp_command or getattr(
-        parent_agent, "acp_command", None
-    )
-    effective_acp_args = list(
-        override_acp_args
-        if override_acp_args is not None
-        else (getattr(parent_agent, "acp_args", []) or [])
-    )
-
-    # When override_provider is set (e.g. delegation.provider: minimax-cn),
-    # the subagent must use direct API calls — not the parent's ACP transport.
-    # Inheriting acp_command unconditionally causes run_agent.py to initialize
-    # CopilotACPClient, bypassing override credentials entirely (issue #16816).
-    if override_provider and not override_acp_command:
-        effective_acp_command = None
-        effective_acp_args = []
-
-    if override_acp_command:
-        # If explicitly forcing an ACP transport override, the provider MUST be copilot-acp
-        # so run_agent.py initializes the CopilotACPClient.
+    effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
+    effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
+    # When acp_command is explicitly provided, the child must run as copilot-acp
+    # transport so the command/args are actually used (see run_agent.py:904).
+    # Without this, acp_command is silently ignored and the child falls through
+    # to a regular OpenAI client — which causes SimpleNamespace-type mismatches
+    # when the non-ACP provider returns unexpected response shapes.
+    if effective_acp_command and effective_acp_command.strip():
         effective_provider = "copilot-acp"
+        effective_base_url = override_base_url or ACP_MARKER_BASE_URL
+        effective_api_key = override_api_key or "copilot-acp"
         effective_api_mode = "chat_completions"
+    else:
+        effective_provider = override_provider or getattr(parent_agent, "provider", None)
+        effective_base_url = override_base_url or parent_agent.base_url
+        effective_api_key = override_api_key or parent_api_key
+        effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
 
     # Resolve reasoning config: delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)

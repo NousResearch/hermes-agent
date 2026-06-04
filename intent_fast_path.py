@@ -680,6 +680,7 @@ def _render_weather(display_name: str, data: dict) -> Optional[str]:
 
     cond = _wmo_text(current.get("weathercode"))
     wind = current.get("windspeed_10m")
+    humidity = current.get("relative_humidity_2m")
 
     lines: List[str] = []
     header = f"*Weather — {display_name}*"
@@ -695,6 +696,11 @@ def _render_weather(display_name: str, data: dict) -> Optional[str]:
             now_line += f", wind {round(float(wind))} mph"
         except (TypeError, ValueError):
             pass
+    if humidity is not None:
+        try:
+            now_line += f", humidity {round(float(humidity))}%"
+        except (TypeError, ValueError):
+            pass
     lines.append(now_line)
 
     daily = data.get("daily") if isinstance(data, dict) else None
@@ -702,6 +708,7 @@ def _render_weather(display_name: str, data: dict) -> Optional[str]:
         codes = daily.get("weathercode") or []
         highs = daily.get("temperature_2m_max") or []
         lows = daily.get("temperature_2m_min") or []
+        precip = daily.get("precipitation_probability_max") or []
         n = min(len(codes), len(highs), len(lows), 3)
         if n:
             lines.append("")
@@ -717,6 +724,11 @@ def _render_weather(display_name: str, data: dict) -> Optional[str]:
                 line = f"{label}: {day_cond}"
                 if rng:
                     line += f", {rng}"
+                try:
+                    if i < len(precip) and precip[i] is not None:
+                        line += f", {round(float(precip[i]))}% precip"
+                except (TypeError, ValueError):
+                    pass
                 lines.append(line)
 
     return "\n".join(lines)
@@ -735,10 +747,10 @@ async def _fetch_forecast(client: "object", lat: float, lon: float) -> Optional[
     """
     forecast_url = (
         f"{_FORECAST_URL}?latitude={lat}&longitude={lon}"
-        "&current=temperature_2m,weathercode,windspeed_10m"
-        "&daily=weathercode,temperature_2m_max,temperature_2m_min"
+        "&current=temperature_2m,relative_humidity_2m,weathercode,windspeed_10m"
+        "&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
         "&temperature_unit=fahrenheit&windspeed_unit=mph"
-        "&forecast_days=3&timezone=auto"
+        "&forecast_days=3&timezone=America%2FChicago"
     )
     try:
         resp = await client.get(forecast_url)  # type: ignore[attr-defined]

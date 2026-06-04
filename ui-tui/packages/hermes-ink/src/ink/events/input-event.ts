@@ -5,32 +5,6 @@ import { Event } from './event.js'
 const inputForSpecialSequence = (name: string): string =>
   name === 'space' ? ' ' : name === 'return' || name === 'escape' ? '' : name
 
-// SGR mouse-report fragment that leaked into a nameless text/sequence token.
-// In alt-screen Ink enables MOUSE_ANY (DEC 1003), so every pixel of motion
-// emits a CSI mouse report (ESC[<btn;col;row M/m). When a heavy React commit
-// blocks the event loop past App's 50ms flush watchdog, that CSI can be split
-// across stdin chunks at ANY byte boundary. The tokenizer flush force-emits
-// the buffered prefix and resets to ground, so BOTH halves can surface as
-// unparseable tokens that parseKeypress can't classify (name=''):
-//
-//   - flushed prefix   — ESC[< / [< / < + partial params, no terminator yet
-//                        (e.g. `ESC[<0;35;`, `[<0;`, `<0;35;46`)
-//   - ESC-less tail    — 1-, 2-, or 3-field digit run ending in M/m
-//                        (e.g. `46M`, `;46M`, `35;46M`, `;35;46M`, `0;35;46M`)
-//
-// One regex covers every split position. The leading-`;` and 1-/2-field tails
-// are the cases the older `/^\[<\d+;\d+;\d+[Mm]/` guard missed, which is how
-// `46M35;40M...` ends up typed into the prompt during long sessions.
-//
-// Safety: the `(?=…\d)` lookahead requires at least one digit, so a typed `<`,
-// `[`, `;`, or `M` (none of which carry a coordinate digit) is never matched;
-// the embedded `M`/`m` in `[\d;]+` means a run like `1;2;3M9;10M` (two stuck-
-// together fragments / prose) can't satisfy the `$` anchor and is left intact.
-// Combined with the caller's `!keypress.name` gate — real typing arrives one
-// char per chunk with a name set — no genuine keystroke is swallowed.
-// eslint-disable-next-line no-control-regex
-const SGR_MOUSE_FRAGMENT_LEAK_RE = /^(?:\x1b)?(?=(?:\[<|<)?[\d;]*\d)(?:\[<|<)?[\d;]+[Mm]?$/
-
 export type Key = {
   upArrow: boolean
   downArrow: boolean
@@ -109,15 +83,10 @@ function parseKey(keypress: ParsedKey): [Key, string] {
     input = ''
   }
 
-  // Suppress SGR mouse-report fragments left over from a flush-boundary split
-  // (see SGR_MOUSE_FRAGMENT_LEAK_RE). Both the flushed CSI prefix and the
-  // ESC-less remainder reach here as nameless tokens that parseKeypress can't
-  // classify, so without this sink they leak into the prompt as `46M35;40M…`.
-  // This is the same defensive sink as the F13 guard above; the underlying
-  // tokenizer-flush race is upstream of this layer.
-  if (!keypress.name && SGR_MOUSE_FRAGMENT_LEAK_RE.test(input)) {
-    input = ''
-  }
+  // (SGR mouse-report fragments used to be scrubbed here. They no longer reach
+  // this layer: the tokenizer keeps an incomplete CSI buffered across a
+  // watchdog flush and reassembles it on the next feed instead of force-
+  // emitting the partial as input. See termio/tokenize.ts.)
 
   // Strip meta if it's still remaining after `parseKeypress`
   // TODO(vadimdemedes): remove this in the next major version.

@@ -140,6 +140,26 @@ def run_oneshot(
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
+    # ── Pre-LLM deterministic intent fast-path (-z parity) ──────────────
+    # ``hermes -z "what's the weather"`` must answer deterministically from a
+    # cheap HTTP API, bypassing the agent — same as the single-query (-q) and
+    # interactive-REPL surfaces.  Without this, oneshot built the full AIAgent
+    # and let the LLM answer (drifting/hallucinating).  On ANY doubt the helper
+    # returns None and we fall through to the agent below, unchanged.  An
+    # explicit --model/--provider/--toolsets means the caller wants the agent,
+    # so we skip the fast-path and honour the override.
+    if not (model or provider or toolsets):
+        try:
+            from intent_fast_path import try_fast_path_reply
+
+            _fp = try_fast_path_reply(prompt, has_images=False)
+        except Exception:
+            _fp = None
+        if _fp:
+            sys.stdout.write(_fp if _fp.endswith("\n") else _fp + "\n")
+            sys.stdout.flush()
+            return 0
+
     # Silence every stdlib logger for the duration.  AIAgent, tools, and
     # provider adapters all log to stderr through the root logger; file
     # handlers added by setup_logging() keep working (they're attached to

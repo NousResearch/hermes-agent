@@ -143,15 +143,20 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       ) : (
         <OverlaySplitLayout>
           <OverlaySidebar>
-            <Button
-              className="mb-1 w-full justify-start gap-2"
-              onClick={() => setCreateOpen(true)}
-              size="sm"
-              variant="text"
-            >
-              <Codicon name="add" />
-              New profile
-            </Button>
+            <div className="mb-1 flex items-center justify-between gap-2 pl-1.5 pr-0.5">
+              <span className="text-[0.7rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
+                Profiles
+              </span>
+              <Button
+                aria-label="New profile"
+                className="text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
+                onClick={() => setCreateOpen(true)}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <Codicon name="add" size="0.875rem" />
+              </Button>
+            </div>
             {profiles.map(profile => (
               <ProfileRow
                 active={selected?.name === profile.name}
@@ -161,7 +166,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
               />
             ))}
             {profiles.length === 0 && (
-              <p className="px-2 py-4 text-center text-xs text-muted-foreground">No profiles yet.</p>
+              <p className="px-1.5 py-3 text-xs text-muted-foreground">No profiles yet.</p>
             )}
           </OverlaySidebar>
 

@@ -309,6 +309,48 @@ When tools above don't have what's needed, generate ASCII art directly using the
 - Max height: 15 lines for banners, 25 for scenes
 - Monospace only: output must render correctly in fixed-width fonts
 
+## Tool 10: ASCII Video Production
+
+Advanced pipeline for creating ASCII art videos (MP4, GIF, image sequences) from video, audio, or generative input.
+
+### Quick Start
+
+Full documentation at `references/ascii-video.md`.
+
+```bash
+# The pipeline is a single Python script. See references/ for details on:
+# references/inputs.md      - audio analysis, video sampling, text/lyrics, TTS
+# references/effects.md   - effect building blocks, particles, transforms
+# references/scenes.md    - scene functions, scene table, beat-sync
+# references/shaders.md   - 38 shader catalog, transitions, audio-reactive
+# references/composition.md - blend modes, tonemap, feedback buffer
+# references/architecture.md - grid system, palettes, color system
+# references/optimization.md - hardware detection, quality profiles
+# references/troubleshooting.md - common issues and fixes
+```
+
+### Modes
+
+| Mode | Input | Output |
+|------|-------|--------|
+| **Video-to-ASCII** | Video file | ASCII recreation of source footage |
+| **Audio-reactive** | Audio file | Generative visuals driven by audio features |
+| **Generative** | None | Procedural ASCII animation |
+| **Hybrid** | Video + audio | ASCII video with audio-reactive overlays |
+| **Lyrics/text** | Audio + text/SRT | Timed text with visual effects |
+| **TTS narration** | Text + TTS API | Narrated video with typed text |
+
+### Stack
+
+Python 3.10+, NumPy, SciPy, Pillow, ffmpeg (CLI), concurrent.futures, OpenCV (optional), ElevenLabs (TTS optional).
+
+### Key Decisions
+
+- **Use `tonemap()` not linear multipliers** — adaptive percentile-based brightness normalization prevents highlight clipping. See `references/composition.md`
+- **Per-scene variation** — never use the same config for the entire video. Vary effects, palettes, colors, and shader intensity per scene.
+- **Test frames first** — render single frames at key timestamps before full render
+- **Brightness check** — `canvas.mean() > 8` for all ASCII content
+
 ## Decision Flow
 
 1. **Text as a banner** → pyfiglet if installed, otherwise asciified API via curl
@@ -320,3 +362,4 @@ When tools above don't have what's needed, generate ASCII art directly using the
 7. **Weather/moon art** → wttr.in via curl
 8. **Something custom/creative** → LLM generation with Unicode palette
 9. **Any tool not installed** → install it, or fall back to next option
+10. **ASCII video/animation** → see `references/ascii-video.md` for the full video production pipeline

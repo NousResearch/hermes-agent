@@ -12,7 +12,32 @@ metadata:
 
 Create dynamic webhook subscriptions so external services (GitHub, GitLab, Stripe, CI/CD, IoT sensors, monitoring tools) can trigger Hermes agent runs by POSTing events to a URL.
 
-## Setup (Required First)
+## ⚠️ CONCEPT FIRST — Do Not Auto-Configure
+
+When a user asks about webhooks, they are likely asking **what it is**, not asking you to set it up. Before taking any action:
+
+1. **Explain the concept first.** Describe what a webhook is in plain terms (push vs. pull/API polling) and the basic sequence: register URL → event fires → external service POSTs → something receives and acts.
+2. **Wait for explicit confirmation** before running any setup, `hermes gateway setup`, or editing config.yaml.
+3. **Setup is optional.** Webhooks are an advanced feature — many users just want to understand the mechanism.
+
+If the user then says "yes, set it up" or "do it", proceed with the setup steps below.
+
+## What a Webhook Is (plain explanation)
+
+**Normal API (pull):** You ask a service "do you have new events?" repeatedly. You poll.
+
+**Webhook (push):** The service calls you the moment something happens. No polling.
+
+Sequence:
+1. You register a URL with an external service (GitHub, Stripe, etc.)
+2. Something triggers — PR opened, payment made, sensor threshold crossed, etc.
+3. The external service POSTs an HTTP request with JSON to your URL
+4. Hermes's webhook server (port 8644) receives it
+5. An agent run fires — I read the payload and act on it
+
+**Common misconception:** Webhooks are just HTTP POSTs triggered by events. Nothing magical — just "call this URL when X happens."
+
+## Setup (Only After User Confirms)
 
 The webhook platform must be enabled before subscriptions can be created. Check with:
 ```bash
@@ -32,11 +57,7 @@ Add to `~/.hermes/config.yaml`:
 ```yaml
 platforms:
   webhook:
-    enabled: true
-    extra:
-      host: "0.0.0.0"
-      port: 8644
-      secret: "generate-a-strong-secret-here"
+    enabled: false
 ```
 
 ### Option 3: Environment variables

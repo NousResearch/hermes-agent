@@ -501,6 +501,58 @@ for g in json.load(sys.stdin):
     print(f\"  {g['id']}  {g['description'] or '(no desc)':40}  {files}\")"
 ```
 
+## 11. Fixing Line-Ending Issues (CRLF / LF)
+
+When `git status` shows dozens of files as modified but `git diff` reveals only line-ending changes (CRLF ↔ LF), the repo has inconsistent line endings across contributors' environments (typically Windows ↔ Unix).
+
+**Diagnosis:**
+```bash
+# Confirm line-ending problem
+git diff --stat   # If all files show ~N changes with no real code diff, it's line endings
+git diff          # Look for lines that are all +/- with identical content = only line-ending changes
+```
+
+**Fix (reset everything to repo's intended line endings):**
+```bash
+# Step 1: Set git to normalize on checkout (use 'input' for LF, 'true' for CRLF)
+git config core.autocrlf input   # recommended for Unix/Mac — stores LF, converts to CRLF on Windows checkout
+
+# Step 2: Remove all working-copy changes and re-checkout with the new setting
+git checkout -- .
+
+# Step 3: Confirm clean
+git status    # Should show "nothing to commit"
+```
+
+**Alternative (if you want to commit the line-ending normalization):**
+```bash
+git add --renormalize .
+git commit -m "Normalize line endings to LF"
+```
+
+**Prevention — add `.gitattributes` to the repo:**
+```
+* text=auto
+*.py text eol=lf
+*.sh text eol=lf
+*.tsx text eol=lf
+*.ts text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+# Binary files should not be converted
+*.png binary
+*.jpg binary
+*.ico binary
+*.bin binary
+```
+
+**Pitfalls:**
+- Don't use `git reset --hard` — that also discards uncommitted real changes
+- `core.autocrlf` set to `true` on Linux causes the opposite problem (converts LF→CRLF on checkout)
+- Some CI systems (Windows runners) may need `core.autocrlf=true` in their git config — add `.gitattributes` instead to handle this per-file
+
 ## Quick Reference Table
 
 | Action | gh | git + curl |

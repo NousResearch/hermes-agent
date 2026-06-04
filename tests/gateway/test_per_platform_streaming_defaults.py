@@ -50,6 +50,29 @@ def test_user_override_wins_over_default():
     assert merged["display"]["platforms"]["telegram"]["streaming"] is True
 
 
+def test_global_transport_off_is_hard_kill_switch_for_platform_defaults():
+    """Global transport=off must disable streaming even when Telegram's
+    per-platform default says streaming=true."""
+    from hermes_cli.config import DEFAULT_CONFIG, _deep_merge
+    from gateway.config import StreamingConfig
+    from gateway.display_config import (
+        resolve_display_setting,
+        resolve_gateway_streaming_enabled,
+    )
+
+    cfg = _deep_merge(dict(DEFAULT_CONFIG), {"streaming": {"transport": "off"}})
+    scfg = StreamingConfig.from_dict(cfg["streaming"])
+    telegram_override = resolve_display_setting(cfg, "telegram", "streaming")
+
+    assert telegram_override is True
+    assert scfg.transport == "off"
+    assert resolve_gateway_streaming_enabled(scfg, telegram_override) is False
+
+    yaml_bool_cfg = _deep_merge(dict(DEFAULT_CONFIG), {"streaming": {"transport": False}})
+    yaml_bool_scfg = StreamingConfig.from_dict(yaml_bool_cfg["streaming"])
+    assert resolve_gateway_streaming_enabled(yaml_bool_scfg, telegram_override) is False
+
+
 def test_dashboard_schema_exposes_per_platform_streaming():
     """Because the web settings schema is built from DEFAULT_CONFIG, the
     per-platform streaming toggles surface in the dashboard automatically."""

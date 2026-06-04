@@ -1,6 +1,7 @@
 import { type CSSProperties, useState } from 'react'
 
 import { t } from '@/store/i18n'
+import { useLocaleSync } from '@/store/use-locale-sync'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
 
@@ -155,6 +156,8 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 }
 
 export function Intro({ personality, seed }: IntroProps) {
+  useLocaleSync()
+
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
   const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
 

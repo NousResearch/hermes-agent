@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { t } from '@/store/i18n'
+import { useLocaleSync } from '@/store/use-locale-sync'
 import type {
   DesktopBootstrapEvent,
   DesktopBootstrapStageDescriptor,
@@ -50,12 +51,19 @@ interface StageRowProps {
   now: number
 }
 
-const STATE_LABEL: Record<DesktopBootstrapStageState, string> = {
-  pending: t('bootstrap.pending'),
-  running: t('bootstrap.running'),
-  succeeded: t('bootstrap.done'),
-  skipped: t('bootstrap.skipped'),
-  failed: t('bootstrap.failed')
+function stageStateLabel(state: DesktopBootstrapStageState): string {
+  switch (state) {
+    case 'pending':
+      return t('bootstrap.pending')
+    case 'running':
+      return t('bootstrap.running')
+    case 'succeeded':
+      return t('bootstrap.done')
+    case 'skipped':
+      return t('bootstrap.skipped')
+    case 'failed':
+      return t('bootstrap.failed')
+  }
 }
 
 function formatStageName(name: string): string {
@@ -122,9 +130,9 @@ function StageRow({ descriptor, result, isCurrent, now }: StageRowProps) {
             {formatStageName(descriptor.name)}
           </span>
           <span className="flex-shrink-0 text-xs tabular-nums text-muted-foreground">
-            {state === 'running' ? (elapsed ? `${STATE_LABEL[state]} · ${elapsed}` : STATE_LABEL[state]) : null}
+            {state === 'running' ? (elapsed ? `${stageStateLabel(state)} · ${elapsed}` : stageStateLabel(state)) : null}
             {state === 'succeeded' || state === 'skipped' ? formatDuration(result?.durationMs) : null}
-            {state === 'failed' ? STATE_LABEL[state] : null}
+            {state === 'failed' ? stageStateLabel(state) : null}
           </span>
         </div>
         {reason && state !== 'pending' && <p className="mt-0.5 truncate text-xs text-muted-foreground">{reason}</p>}
@@ -204,6 +212,8 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
 }
 
 export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayProps) {
+  useLocaleSync()
+
   const [state, setState] = useState<DesktopBootstrapState>(EMPTY_STATE)
   const [logOpen, setLogOpen] = useState(false)
   const [copied, setCopied] = useState(false)

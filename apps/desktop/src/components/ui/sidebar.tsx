@@ -14,6 +14,7 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { PanelLeftIcon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { t } from '@/store/i18n'
+import { useLocaleSync } from '@/store/use-locale-sync'
 
 const SIDEBAR_COOKIE_NAME = 'sidebar_state'
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
@@ -151,6 +152,8 @@ function Sidebar({
   variant?: 'sidebar' | 'floating' | 'inset'
   collapsible?: 'offcanvas' | 'icon' | 'none'
 }) {
+  useLocaleSync()
+
   const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
 
   if (collapsible === 'none') {
@@ -239,6 +242,8 @@ function Sidebar({
 }
 
 function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<typeof Button>) {
+  useLocaleSync()
+
   const { toggleSidebar } = useSidebar()
 
   return (
@@ -261,6 +266,8 @@ function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<t
 }
 
 function SidebarRail({ className, ...props }: React.ComponentProps<'button'>) {
+  useLocaleSync()
+
   const { toggleSidebar } = useSidebar()
 
   return (

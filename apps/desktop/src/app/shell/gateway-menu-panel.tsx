@@ -6,6 +6,7 @@ import { Activity, AlertCircle } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { cn } from '@/lib/utils'
 import { t } from '@/store/i18n'
+import { useLocaleSync } from '@/store/use-locale-sync'
 import type { StatusResponse } from '@/types/hermes'
 
 interface GatewayMenuPanelProps {
@@ -40,6 +41,8 @@ export function GatewayMenuPanel({
   onOpenSystem,
   statusSnapshot
 }: GatewayMenuPanelProps) {
+  useLocaleSync()
+
   const gatewayOpen = gatewayState === 'open'
   const gatewayConnecting = gatewayState === 'connecting'
   const inferenceReady = gatewayOpen && inferenceStatus?.ready === true

@@ -12,6 +12,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Globe } from '@/lib/icons'
 import { t } from '@/store/i18n'
+import { useLocaleSync } from '@/store/use-locale-sync'
 
 const URL_HINT = /^https?:\/\//i
 
@@ -30,6 +31,8 @@ export function UrlDialog({
   open: boolean
   value: string
 }) {
+  useLocaleSync()
+
   const trimmed = value.trim()
   const looksLikeUrl = trimmed.length > 0 && URL_HINT.test(trimmed)
 

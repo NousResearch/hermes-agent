@@ -6,8 +6,9 @@ import { requestComposerInsert } from '@/app/chat/composer/focus'
 import { CopyButton } from '@/components/ui/copy-button'
 import { PanelBottom, Send, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { notify } from '@/store/notifications'
 import { t } from '@/store/i18n'
+import { notify } from '@/store/notifications'
+import { useLocaleSync } from '@/store/use-locale-sync'
 
 import type { ConsoleEntry, PreviewConsoleState } from './preview-console-state'
 
@@ -150,6 +151,8 @@ export function PreviewConsolePanel({
   consoleState,
   startConsoleResize
 }: PreviewConsolePanelProps) {
+  useLocaleSync()
+
   const consoleHeight = useStore(consoleState.$height)
   const logs = useStore(consoleState.$logs)
   const selectedLogIds = useStore(consoleState.$selectedLogIds)

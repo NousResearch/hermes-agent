@@ -28,10 +28,11 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { Activity, AlertCircle, BarChart3, Pin } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
-import { t } from '@/store/i18n'
 import { upsertDesktopActionTask } from '@/store/activity'
+import { t } from '@/store/i18n'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $sessions, sessionPinId } from '@/store/session'
+import { useLocaleSync } from '@/store/use-locale-sync'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayActionButton, OverlayCard, overlayCardClass, OverlayIconButton } from '../overlays/overlay-chrome'
@@ -189,6 +190,8 @@ export function CommandCenterView({
   onNavigateRoute,
   onOpenSession
 }: CommandCenterViewProps) {
+  useLocaleSync()
+
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
 

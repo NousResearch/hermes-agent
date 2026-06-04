@@ -6,9 +6,10 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { getHermesConfigRecord, type HermesGateway, saveHermesConfig } from '@/hermes'
 import { Package, Wrench } from '@/lib/icons'
-import { notify, notifyError } from '@/store/notifications'
 import { t } from '@/store/i18n'
+import { notify, notifyError } from '@/store/notifications'
 import { $activeSessionId } from '@/store/session'
+import { useLocaleSync } from '@/store/use-locale-sync'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { includesQuery } from './helpers'
@@ -52,6 +53,8 @@ function serverMatches(name: string, server: Record<string, unknown>, query: str
 }
 
 export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps) {
+  useLocaleSync()
+
   const activeSessionId = useStore($activeSessionId)
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [selected, setSelected] = useState<string | null>(null)

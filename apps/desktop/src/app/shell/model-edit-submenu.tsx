@@ -12,24 +12,34 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
-import { notifyError } from '@/store/notifications'
 import { t } from '@/store/i18n'
+import { notifyError } from '@/store/notifications'
 import {
   $activeSessionId,
   $currentReasoningEffort,
   setCurrentFastMode,
   setCurrentReasoningEffort
 } from '@/store/session'
+import { useLocaleSync } from '@/store/use-locale-sync'
 
 // Hermes' real reasoning levels (see VALID_REASONING_EFFORTS); `none` is owned
 // by the Thinking toggle, not the radio.
-const EFFORT_OPTIONS = [
-  { value: 'minimal', label: t('model.effortMinimal') },
-  { value: 'low', label: t('model.effortLow') },
-  { value: 'medium', label: t('model.effortMedium') },
-  { value: 'high', label: t('model.effortHigh') },
-  { value: 'xhigh', label: t('model.effortMax') }
-] as const
+const EFFORT_VALUES = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const
+
+function effortLabel(value: (typeof EFFORT_VALUES)[number]): string {
+  switch (value) {
+    case 'minimal':
+      return t('model.effortMinimal')
+    case 'low':
+      return t('model.effortLow')
+    case 'medium':
+      return t('model.effortMedium')
+    case 'high':
+      return t('model.effortHigh')
+    case 'xhigh':
+      return t('model.effortMax')
+  }
+}
 
 /** How "fast" is achieved for a given model — two different mechanisms:
  *  - `param`: the Anthropic/OpenAI `speed=fast` request parameter.
@@ -101,6 +111,8 @@ export function ModelEditSubmenu({
   reasoning,
   requestGateway
 }: ModelEditSubmenuProps) {
+  useLocaleSync()
+
   // Reactive session state comes straight from the stores rather than being
   // drilled through the panel, so editing it re-renders only this submenu.
   const activeSessionId = useStore($activeSessionId)
@@ -213,14 +225,14 @@ export function ModelEditSubmenu({
                 onValueChange={value => void patchReasoning(value, currentReasoningEffort)}
                 value={effort}
               >
-                {EFFORT_OPTIONS.map(option => (
+                {EFFORT_VALUES.map(value => (
                   <DropdownMenuRadioItem
                     className={cn(dropdownMenuRow, 'cursor-pointer')}
-                    key={option.value}
+                    key={value}
                     onSelect={event => event.preventDefault()}
-                    value={option.value}
+                    value={value}
                   >
-                    {option.label}
+                    {effortLabel(value)}
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>
@@ -245,5 +257,5 @@ function normalizeEffort(effort: string): string {
     return ''
   }
 
-  return EFFORT_OPTIONS.some(option => option.value === value) ? value : 'medium'
+  return EFFORT_VALUES.some(option => option === value) ? value : 'medium'
 }

@@ -36,7 +36,7 @@ for (const [path, data] of Object.entries(localeModules)) {
 // --- Module-level state ---
 let _currentLocale = getInitialLocale()
 
-function normalizeLocale(raw: string): string {
+export function normalizeLocale(raw: string): string {
   const lc = raw.toLowerCase()
   if (lc.startsWith('zh')) {
     if (lc === 'zh-tw' || lc === 'zh-hk' || lc === 'zh-mo') return 'zh-Hant'

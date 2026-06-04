@@ -40,6 +40,7 @@ import {
 } from '@/store/onboarding'
 import type { OAuthProvider } from '@/types/hermes'
 import { t } from '@/store/i18n'
+import { useLocaleSync } from '@/store/use-locale-sync'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -129,6 +130,8 @@ const sortProviders = (providers: OAuthProvider[]) =>
   [...providers].sort((a, b) => orderOf(a) - orderOf(b) || a.name.localeCompare(b.name))
 
 export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway }: DesktopOnboardingOverlayProps) {
+  useLocaleSync()
+
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
   const ctxRef = useRef<OnboardingContext>({ requestGateway, onCompleted })

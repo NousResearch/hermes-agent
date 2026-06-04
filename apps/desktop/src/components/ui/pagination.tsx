@@ -3,8 +3,11 @@ import * as React from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import { cn } from '@/lib/utils'
 import { t } from '@/store/i18n'
+import { useLocaleSync } from '@/store/use-locale-sync'
 
 function Pagination({ className, ...props }: React.ComponentProps<'nav'>) {
+  useLocaleSync()
+
   return (
     <nav
       aria-label={t('pagination.ariaLabel')}
@@ -49,6 +52,8 @@ function PaginationButton({ className, isActive, ...props }: PaginationButtonPro
 }
 
 function PaginationPrevious({ className, ...props }: React.ComponentProps<'button'>) {
+  useLocaleSync()
+
   return (
     <button
       aria-label={t('pagination.prevAria')}
@@ -67,6 +72,8 @@ function PaginationPrevious({ className, ...props }: React.ComponentProps<'butto
 }
 
 function PaginationNext({ className, ...props }: React.ComponentProps<'button'>) {
+  useLocaleSync()
+
   return (
     <button
       aria-label={t('pagination.nextAria')}

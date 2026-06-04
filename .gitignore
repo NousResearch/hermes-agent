@@ -116,3 +116,7 @@ scripts/out/
 # stores the published notes. They are not a build artifact and must never be
 # committed to the repo root. See the hermes-release skill.
 RELEASE_v*.md
+
+# Desktop app bootstrap marker (created by apps/desktop/electron/main.cjs)
+# Causes 'hermes update' to needlessly stash local changes
+.hermes-bootstrap-complete

@@ -3263,6 +3263,25 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
         return model_name
 
 
+def _infer_provider_from_model_slug(model: str) -> Optional[str]:
+    """Extract a Hermes provider name from a provider-qualified model slug.
+
+    ``"google/gemini-3-flash-preview"`` → ``"gemini"``
+    ``"anthropic/claude-opus-4.6"``      → ``"anthropic"``
+    ``"gpt-5"``                          → ``None``  (no slash)
+
+    The prefix before the first ``/`` is normalised through
+    ``_PROVIDER_ALIASES`` so common OpenRouter-style slugs map to the
+    Hermes provider that can actually serve them.
+    """
+    if not model or "/" not in model:
+        return None
+    prefix = model.split("/", 1)[0].strip().lower()
+    if not prefix:
+        return None
+    return _PROVIDER_ALIASES.get(prefix, prefix)
+
+
 def resolve_provider_client(
     provider: str,
     model: str = None,
@@ -3393,6 +3412,31 @@ def resolve_provider_client(
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
+        # When the caller passes a provider-qualified model slug (e.g.
+        # "google/gemini-3-flash-preview" via auxiliary.compression.model),
+        # infer the provider from the prefix and try it first.  This
+        # prevents the auto-detection chain from routing a Google model
+        # through the main provider (e.g. openai-codex) which rejects it.
+        if model and "/" in model:
+            inferred = _infer_provider_from_model_slug(model)
+            if inferred and inferred != "auto":
+                try:
+                    c, m = resolve_provider_client(
+                        inferred, model=model,
+                        async_mode=False,
+                        main_runtime=main_runtime,
+                    )
+                    if c is not None:
+                        logger.info(
+                            "Auxiliary auto: inferred provider %r from model "
+                            "%r (prefix match)", inferred, model)
+                        return (_to_async_client(c, m, is_vision=is_vision)
+                                if async_mode else (c, m))
+                except Exception:
+                    logger.debug(
+                        "Auxiliary auto: inferred provider %r from model "
+                        "%r failed, falling back to auto chain",
+                        inferred, model)
         client, resolved = _resolve_auto(main_runtime=main_runtime)
         if client is None:
             return None, None

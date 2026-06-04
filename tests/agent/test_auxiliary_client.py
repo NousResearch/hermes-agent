@@ -3586,3 +3586,76 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+class TestAutoInferProviderFromModelSlug:
+    """Regression: ``provider: auto`` with a provider-qualified model slug
+    (e.g. ``google/gemini-3-flash-preview``) should infer the provider from
+    the prefix instead of blindly reusing the main provider.
+
+    Issue: #39047 — auxiliary compression routes provider-qualified Gemini
+    model to Codex backend when main provider is openai-codex.
+    """
+
+    def test_infer_google_prefix_routes_to_gemini(self, monkeypatch):
+        """google/gemini-3-flash-preview → gemini provider, not main."""
+        mock_client = MagicMock(name="gemini-client")
+        mock_client.base_url = "https://generativelanguage.googleapis.com/"
+        original_rpc = resolve_provider_client
+
+        def fake_rpc(provider, **kwargs):
+            if provider == "gemini":
+                return mock_client, "gemini-3-flash-preview"
+            if provider == "auto":
+                return MagicMock(), "gpt-5"
+            return None, None
+
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   side_effect=fake_rpc) as mock_rpc, \
+             patch("agent.auxiliary_client._resolve_auto") as mock_auto:
+            mock_auto.return_value = (MagicMock(), "gpt-5")
+            client, model = original_rpc(
+                "auto",
+                model="google/gemini-3-flash-preview",
+            )
+            assert client is not None
+            # _resolve_auto should NOT have been called — the inferred
+            # provider path should have returned first.
+            mock_auto.assert_not_called()
+            # The recursive call should have been for "gemini"
+            calls = [c for c in mock_rpc.call_args_list
+                     if c[0] and c[0][0] == "gemini"]
+            assert len(calls) == 1
+
+    def test_no_slash_falls_back_to_resolve_auto(self, monkeypatch):
+        """Model without / falls back to the normal auto chain."""
+        mock_client = MagicMock(name="auto-client")
+        with patch("agent.auxiliary_client._resolve_auto",
+                    return_value=(mock_client, "gpt-5")) as mock_auto:
+            client, model = resolve_provider_client("auto", model="gpt-5")
+            assert client is not None
+            mock_auto.assert_called_once()
+
+    def test_unknown_prefix_falls_back_to_resolve_auto(self, monkeypatch):
+        """Unrecognised prefix (e.g. foobar/baz) falls through."""
+        mock_client = MagicMock(name="auto-client")
+        with patch("agent.auxiliary_client._resolve_auto",
+                    return_value=(mock_client, "gpt-5")) as mock_auto:
+            client, model = resolve_provider_client(
+                "auto", model="foobar/baz-model")
+            assert client is not None
+            mock_auto.assert_called_once()
+
+    def test_inferred_provider_failure_falls_back_to_auto(self, monkeypatch):
+        """If the inferred provider fails, fall through to _resolve_auto."""
+        mock_client = MagicMock(name="auto-client")
+        with patch("agent.auxiliary_client._resolve_auto",
+                    return_value=(mock_client, "gpt-5")) as mock_auto, \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                    side_effect=[(None, None)]):
+            client, model = resolve_provider_client(
+                "auto",
+                model="google/gemini-3-flash-preview",
+            )
+            assert client is not None
+            mock_auto.assert_called_once()

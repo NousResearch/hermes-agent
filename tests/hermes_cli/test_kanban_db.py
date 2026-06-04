@@ -2258,6 +2258,139 @@ def test_autopilot_parent_rollup_rejects_done_child_without_verifier_pass(kanban
     assert parent_task.review_phase is None
 
 
+def test_autopilot_parent_report_exposes_incomplete_child_matrix_and_next_child(kanban_home, monkeypatch):
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name in {"alice", "verifier"})
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="autopilot parent", triage=True)
+        first = kb.create_task(conn, title="finished child", assignee="alice")
+        second = kb.create_task(conn, title="next child", assignee="alice", goal_mode=True)
+        kb.link_tasks(conn, parent, first, relation_type="hierarchy")
+        kb.link_tasks(conn, parent, second, relation_type="hierarchy")
+        assert kb.apply_closeout_transition(
+            conn,
+            first,
+            review_phase="review_ready",
+            closeout_evidence=_review_ready_child_evidence(first),
+        ) is True
+        conn.execute(
+            "UPDATE tasks SET admission_snapshot=? WHERE id=?",
+            (json.dumps({"ready_contract": _structured_ready_contract()}), second),
+        )
+        report = kb.autopilot_parent_report(conn, parent)
+
+    matrix = report["parent_child_matrix"]
+    assert matrix["parentScopeComplete"] is False
+    assert matrix["cannotFinalCloseoutParent"] is True
+    assert matrix["nextRequiredChild"] == second
+    assert matrix["remainingChildren"] == [second]
+    assert {row["task_id"] for row in matrix["children"]} == {first, second}
+
+
+def test_parent_scoped_dispatch_blocks_stale_admission_only_conflict(kanban_home, monkeypatch):
+    from hermes_cli import profiles
+
+    monkeypatch.setenv("HERMES_KANBAN_STRICT_READY_GATE", "false")
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name in {"alice", "verifier"})
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="autopilot parent", triage=True)
+        child = kb.create_task(conn, title="stale admission child", assignee="alice", goal_mode=True)
+        kb.link_tasks(conn, parent, child, relation_type="hierarchy")
+        snapshot = {
+            "admission_only": True,
+            "execution_approved": False,
+            "executor_dispatch": "forbidden_during_admission",
+            "ready_contract": _structured_ready_contract(),
+        }
+        conn.execute(
+            "UPDATE tasks SET status='ready', admission_snapshot=? WHERE id=?",
+            (json.dumps(snapshot), child),
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, parent_task_id=parent)
+        after = kb.get_task(conn, child)
+        events = kb.list_events(conn, child)
+
+    assert spawns == []
+    assert child in res.auto_blocked
+    assert after.status == "blocked"
+    assert "stale_admission_only_conflict" in after.admission_snapshot["ready_gate_reason_codes"]
+    assert any(event.kind == "ready_gate_blocked" for event in events)
+
+
+def test_parent_scoped_dispatch_allows_current_authority_to_supersede_admission_boundary(kanban_home, monkeypatch):
+    from hermes_cli import profiles
+
+    monkeypatch.setenv("HERMES_KANBAN_STRICT_READY_GATE", "false")
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name in {"alice", "verifier"})
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="autopilot parent", triage=True)
+        child = kb.create_task(conn, title="approved execution child", assignee="alice", goal_mode=True)
+        kb.link_tasks(conn, parent, child, relation_type="hierarchy")
+        snapshot = {
+            "admission_only": True,
+            "execution_approved": True,
+            "supersedes": ["admission_only"],
+            "executor_dispatch": "forbidden_during_admission",
+            "ready_contract": _structured_ready_contract(),
+        }
+        conn.execute(
+            "UPDATE tasks SET status='ready', admission_snapshot=? WHERE id=?",
+            (json.dumps(snapshot), child),
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, parent_task_id=parent)
+        after = kb.get_task(conn, child)
+
+    assert [item[0] for item in res.spawned] == [child]
+    assert spawns == [child]
+    assert after.status == "running"
+
+
+def test_autopilot_tick_records_parent_progression_blocker_when_children_remain(kanban_home, monkeypatch):
+    from hermes_cli import profiles
+
+    monkeypatch.setenv("HERMES_KANBAN_STRICT_READY_GATE", "false")
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name in {"alice", "verifier"})
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="autopilot parent", triage=True)
+        child = kb.create_task(conn, title="blocked admission child", assignee="alice", goal_mode=True)
+        kb.link_tasks(conn, parent, child, relation_type="hierarchy")
+        snapshot = {
+            "admission_only": True,
+            "executor_dispatch": "forbidden_during_admission",
+            "ready_contract": _structured_ready_contract(),
+        }
+        conn.execute(
+            "UPDATE tasks SET status='ready', admission_snapshot=? WHERE id=?",
+            (json.dumps(snapshot), child),
+        )
+        kb.set_autopilot_enabled(conn, parent_task_ref=parent, mode="auto")
+
+        res = kb.autopilot_tick(conn)
+        state = kb.get_autopilot_state(conn)
+        ledger = conn.execute(
+            "SELECT reason FROM kanban_autopilot_tick_ledger ORDER BY tick_at DESC LIMIT 1"
+        ).fetchone()
+        report = kb.autopilot_parent_report(conn, parent)
+
+    assert res is not None
+    assert state["last_decision"] == "parent_scope_incomplete"
+    assert ledger["reason"] == "parent_scope_incomplete"
+    assert report["parent_child_matrix"]["nextRequiredChild"] == child
+
+
 
 def _governed_worker_body() -> str:
     return """

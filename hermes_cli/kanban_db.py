@@ -1062,6 +1062,45 @@ def _task_row_to_ready_gate_candidate(row: sqlite3.Row) -> dict[str, Any]:
     return candidate
 
 
+def _autopilot_authority_conflict_reason_codes(admission_snapshot: Mapping[str, Any]) -> list[str]:
+    """Return fail-closed authority blockers for Autopilot dispatch.
+
+    Admission-only residue must not be consumed as executable Autopilot work.
+    A current execution approval may supersede the old admission boundary, but
+    the supersession must be explicit in the authority snapshot rather than
+    inferred from raw ``status=ready``.
+    """
+
+    if not isinstance(admission_snapshot, Mapping):
+        return []
+    execution_approved = admission_snapshot.get("execution_approved") is True
+    supersedes = admission_snapshot.get("supersedes") or admission_snapshot.get("superseded_boundaries") or []
+    if isinstance(supersedes, str):
+        supersedes_set = {supersedes.strip().lower()}
+    elif isinstance(supersedes, list):
+        supersedes_set = {str(item).strip().lower() for item in supersedes}
+    else:
+        supersedes_set = set()
+    admission_superseded = bool({"admission_only", "read_only", "read-only", "analysis_only"} & supersedes_set)
+
+    forbidden_actions = admission_snapshot.get("forbidden_actions") or []
+    if isinstance(forbidden_actions, str):
+        forbidden_set = {forbidden_actions.strip().lower()}
+    elif isinstance(forbidden_actions, list):
+        forbidden_set = {str(item).strip().lower() for item in forbidden_actions}
+    else:
+        forbidden_set = set()
+
+    stale_boundary = (
+        admission_snapshot.get("admission_only") is True
+        or str(admission_snapshot.get("executor_dispatch") or "").strip().lower() == "forbidden_during_admission"
+        or bool(forbidden_set & {"worker_dispatch", "claim", "spawn", "code_edits"})
+    )
+    if stale_boundary and not (execution_approved and admission_superseded):
+        return ["stale_admission_only_conflict"]
+    return []
+
+
 def _string_list(value: Any) -> list[str]:
     if value is None or value is False:
         return []
@@ -1281,6 +1320,10 @@ def _evaluate_autopilot_ready_gate_for_row(row: sqlite3.Row) -> dict[str, Any]:
         admission_snapshot = _json_loads_maybe(admission_snapshot) or {}
     if not isinstance(admission_snapshot, dict):
         admission_snapshot = {}
+    authority_reason_codes = _autopilot_authority_conflict_reason_codes(admission_snapshot)
+    if authority_reason_codes:
+        reason_codes.extend(authority_reason_codes)
+        missing_labels.append("current execution authority superseding admission-only/read-only boundary")
     structured_ready_contract = admission_snapshot.get("ready_contract")
     if structured_ready_contract and not structural_reason_codes:
         from hermes_cli import profiles
@@ -1292,7 +1335,7 @@ def _evaluate_autopilot_ready_gate_for_row(row: sqlite3.Row) -> dict[str, Any]:
             assignee=str(candidate.get("assignee") or "").strip() or None,
             profile_exists=profiles.profile_exists,
         )
-        if validation.accepted:
+        if validation.accepted and not authority_reason_codes:
             ledger = validation.ready_contract
             return {
                 "task_id": candidate.get("id"),
@@ -3122,6 +3165,42 @@ def disable_autopilot(conn: sqlite3.Connection, *, board: str = DEFAULT_BOARD, r
     return get_autopilot_state(conn, board=board)
 
 
+def _autopilot_parent_child_matrix(children: list[dict[str, Any]]) -> dict[str, Any]:
+    matrix_children: list[dict[str, Any]] = []
+    remaining: list[str] = []
+    ready_remaining: list[str] = []
+    for item in children:
+        task_id = str(item.get("task_id") or "")
+        review_phase = str(item.get("review_phase") or "")
+        status = str(item.get("status") or "")
+        terminal = review_phase in {"review_ready", "closed"}
+        if not terminal:
+            remaining.append(task_id)
+            if item.get("autopilot_eligible") is True:
+                ready_remaining.append(task_id)
+        matrix_children.append(
+            {
+                "task_id": task_id,
+                "public_id": item.get("public_id"),
+                "title": item.get("title"),
+                "status": status,
+                "review_phase": review_phase or None,
+                "autopilot_eligible": item.get("autopilot_eligible") is True,
+                "complete": terminal,
+                "reason": None if terminal else "child_not_review_ready",
+            }
+        )
+    next_required = (ready_remaining or remaining or [None])[0]
+    complete = not remaining
+    return {
+        "parentScopeComplete": complete,
+        "remainingChildren": remaining,
+        "nextRequiredChild": next_required,
+        "cannotFinalCloseoutParent": not complete,
+        "children": matrix_children,
+    }
+
+
 def autopilot_parent_report(conn: sqlite3.Connection, parent_task_id: str) -> dict[str, Any]:
     parent = resolve_task_ref(conn, parent_task_id)
     if parent is None:
@@ -3190,6 +3269,7 @@ def autopilot_parent_report(conn: sqlite3.Connection, parent_task_id: str) -> di
             autopilot_ready.append(item)
         elif ready_reason_codes or autopilot_eligible is False:
             autopilot_blocked.append(item)
+    parent_child_matrix = _autopilot_parent_child_matrix(children)
     return {
         "parent_task_id": parent,
         "parent_public_id": _task_public_id(conn, parent),
@@ -3199,6 +3279,11 @@ def autopilot_parent_report(conn: sqlite3.Connection, parent_task_id: str) -> di
         "blocked": blocked,
         "autopilot_ready": autopilot_ready,
         "autopilot_blocked": autopilot_blocked,
+        "parent_child_matrix": parent_child_matrix,
+        "parentScopeComplete": parent_child_matrix["parentScopeComplete"],
+        "remainingChildren": parent_child_matrix["remainingChildren"],
+        "nextRequiredChild": parent_child_matrix["nextRequiredChild"],
+        "cannotFinalCloseoutParent": parent_child_matrix["cannotFinalCloseoutParent"],
     }
 
 
@@ -3711,6 +3796,9 @@ def autopilot_tick(
         if parent_rollup and parent_rollup.get("status") in {"transitioned", "already_review_ready"}:
             decision = "select"
             reason = "parent_review_ready"
+        elif parent_rollup and parent_rollup.get("status") == "blocked" and not res.spawned:
+            decision = "skip"
+            reason = "parent_scope_incomplete"
         else:
             decision = "spawn" if res.spawned and not effective_dry_run else "select" if res.spawned else "skip"
             reason = "spawned" if res.spawned and not effective_dry_run else "dry_run_selected" if res.spawned else "no_eligible_child"

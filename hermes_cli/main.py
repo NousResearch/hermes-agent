@@ -15326,6 +15326,17 @@ Examples:
             "https://hermes.example.com/auth/callback. Omit for localhost-only use."
         ),
     )
+    dashboard_register_parser.add_argument(
+        "--portal-url",
+        dest="portal_url",
+        default=None,
+        help=(
+            "Override the Nous Portal base URL for registration (default: the "
+            "portal you logged into). The access token must be valid at this "
+            "portal. Also settable via HERMES_DASHBOARD_PORTAL_URL. Mainly for "
+            "testing against a staging/preview portal."
+        ),
+    )
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
 
     # =========================================================================

@@ -157,6 +157,34 @@ class TestHappyPath:
         )
 
 
+class TestPortalResolution:
+    def test_override_arg_wins(self):
+        assert (
+            dr._resolve_portal_base_url("https://preview.example.com/")
+            == "https://preview.example.com"
+        )
+
+    def test_falls_back_to_stored_login_portal(self):
+        with patch(
+            "hermes_cli.auth.get_provider_auth_state",
+            return_value={"portal_base_url": "https://portal.staging-nousresearch.com"},
+        ):
+            assert (
+                dr._resolve_portal_base_url(None)
+                == "https://portal.staging-nousresearch.com"
+            )
+
+    def test_blank_override_ignored(self):
+        with patch(
+            "hermes_cli.auth.get_provider_auth_state",
+            return_value={"portal_base_url": "https://portal.staging-nousresearch.com"},
+        ):
+            assert (
+                dr._resolve_portal_base_url("   ")
+                == "https://portal.staging-nousresearch.com"
+            )
+
+
 class TestPortalErrors:
     def _run_http_error(self, code, body):
         err = urllib.error.HTTPError(

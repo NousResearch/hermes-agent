@@ -25,6 +25,7 @@ so this client never needs to know the namespace convention.
 from __future__ import annotations
 
 import json
+import os
 import random
 import sys
 import urllib.error
@@ -61,8 +62,22 @@ def _generate_dashboard_name() -> str:
     return f"{random.choice(_NAME_ADJECTIVES)}_{random.choice(_NAME_NOUNS)}"
 
 
-def _resolve_portal_base_url() -> str:
-    """Best-effort portal base URL from the stored Nous login, with default."""
+def _resolve_portal_base_url(override: Optional[str] = None) -> str:
+    """Resolve the portal base URL for the registration request.
+
+    Precedence:
+      1. ``override`` — explicit ``--portal-url`` flag or
+         ``HERMES_DASHBOARD_PORTAL_URL`` env (used for testing against a
+         preview/staging portal). NOTE: the access token must be valid at
+         this portal — it's minted by whatever portal you logged into, so an
+         override only works if the token's issuer matches (e.g. you logged
+         into the same staging/preview portal).
+      2. The ``portal_base_url`` stored on the Nous login — this is the
+         portal that issued the token, so it's the correct default target.
+      3. The production default.
+    """
+    if isinstance(override, str) and override.strip():
+        return override.rstrip("/")
     try:
         from hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL, get_provider_auth_state
 
@@ -223,7 +238,12 @@ def cmd_dashboard_register(args) -> None:
         print(f"✗ Could not resolve a Nous Portal access token: {exc}")
         sys.exit(1)
 
-    portal_base_url = _resolve_portal_base_url()
+    # Portal override: explicit --portal-url flag wins, else the
+    # HERMES_DASHBOARD_PORTAL_URL env var, else the stored login's portal.
+    portal_override = getattr(args, "portal_url", None) or os.environ.get(
+        "HERMES_DASHBOARD_PORTAL_URL"
+    )
+    portal_base_url = _resolve_portal_base_url(portal_override)
 
     name = getattr(args, "name", None) or _generate_dashboard_name()
     custom_redirect_uri = getattr(args, "redirect_uri", None)

@@ -209,20 +209,6 @@ export function renameSession(
   })
 }
 
-// Set ("" clears) a per-session icon glyph. `profile` targets another profile's
-// session (the backend opens its state.db). Omit for the current profile.
-export function setSessionIcon(
-  id: string,
-  icon: string,
-  profile?: string | null
-): Promise<{ ok: boolean; icon: string | null }> {
-  return window.hermesDesktop.api<{ ok: boolean; icon: string | null }>({
-    path: `/api/sessions/${encodeURIComponent(id)}`,
-    method: 'PATCH',
-    body: { icon, ...(profile ? { profile } : {}) }
-  })
-}
-
 export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
   return window.hermesDesktop.api<ModelInfoResponse>({
     ...profileScoped(),

@@ -254,8 +254,8 @@ function DefaultProjectDirSetting() {
       </p>
       <ListRow
         action={
-          <div className="flex items-center gap-1.5">
-            <Button disabled={busy} onClick={() => void choose()} size="sm" type="button" variant="outline">
+          <div className="flex items-center gap-3">
+            <Button disabled={busy} onClick={() => void choose()} size="sm" type="button" variant="textStrong">
               <FolderOpen className="size-3.5" />
               <span>{dir ? t('sessions.change') : t('sessions.choose')}</span>
             </Button>

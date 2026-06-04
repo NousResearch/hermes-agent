@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 import { getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
@@ -164,8 +165,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
     try {
       await toggleToolset(toolset.name, enabled)
-      setToolsets(current =>
-        current?.map(row => (row.name === toolset.name ? { ...row, enabled, available: enabled } : row)) ?? current
+      setToolsets(
+        current =>
+          current?.map(row => (row.name === toolset.name ? { ...row, enabled, available: enabled } : row)) ?? current
       )
       notify({
         kind: 'success',
@@ -289,8 +291,10 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                           <button
                             aria-expanded={expanded}
                             aria-label={`Configure ${label}`}
-                            className="cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                            onClick={() => setExpandedToolset(current => (current === toolset.name ? null : toolset.name))}
+                            className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                            onClick={() =>
+                              setExpandedToolset(current => (current === toolset.name ? null : toolset.name))
+                            }
                             type="button"
                           >
                             <StatusPill active={toolset.configured}>
@@ -335,14 +339,13 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
 function StatusPill({ active, children }: { active: boolean; children: string }) {
   return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.64rem]',
+    <Badge
+      className={
         active ? 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)' : 'bg-(--ui-bg-quinary) text-(--ui-text-tertiary)'
-      )}
+      }
     >
       {children}
-    </span>
+    </Badge>
   )
 }
 

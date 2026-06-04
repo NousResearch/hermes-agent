@@ -247,6 +247,13 @@ That writes `~/.hermes/google_chat_user_client_secret.json`. This is shared
 infrastructure — it identifies the OAuth *app*, not any individual user. One
 file per host is enough no matter how many users authorize later.
 
+This file lives at the default Hermes root, so a gateway running under a named
+profile (`hermes -p <name> gateway …`) finds the same host-wide secret — you do
+**not** re-run this step per profile. To deliberately use a separate OAuth app
+for one profile, drop a `google_chat_user_client_secret.json` inside that
+profile's `HERMES_HOME` and it takes precedence. Per-user tokens always stay
+scoped to the active profile.
+
 ### Per-user authorization (in chat)
 
 Each user runs the flow once, in their own DM with the bot:

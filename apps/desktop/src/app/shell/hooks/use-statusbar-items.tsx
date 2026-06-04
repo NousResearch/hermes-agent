@@ -4,7 +4,18 @@ import { useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
-import { Activity, AlertCircle, ChevronDown, Clock, Command, Hash, Loader2, Sparkles } from '@/lib/icons'
+import {
+  Activity,
+  AlertCircle,
+  ChevronDown,
+  Clock,
+  Command,
+  Hash,
+  Loader2,
+  Sparkles,
+  Zap,
+  ZapFilled
+} from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'

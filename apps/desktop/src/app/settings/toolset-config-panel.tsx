@@ -136,7 +136,9 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       </div>
 
       {isSet && revealed !== null && (
-        <div className="rounded-md bg-background px-2.5 py-1.5 font-mono text-xs text-foreground">{revealed || '---'}</div>
+        <div className="rounded-md bg-background px-2.5 py-1.5 font-mono text-xs text-foreground">
+          {revealed || '---'}
+        </div>
       )}
 
       {editing && (

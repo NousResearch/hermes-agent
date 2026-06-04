@@ -188,6 +188,7 @@ function ModelResults({
   }
 
   const q = search.trim().toLowerCase()
+
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q ||
     model.toLowerCase().includes(q) ||

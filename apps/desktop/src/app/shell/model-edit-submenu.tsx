@@ -67,9 +67,7 @@ export function resolveFastControl(
 
     // Only a toggle if there's a base to switch back to; otherwise it's a
     // standalone fast model with no "off" state.
-    return providerModels.includes(baseId)
-      ? { kind: 'variant', baseId, fastId: model, on: true }
-      : { kind: 'none' }
+    return providerModels.includes(baseId) ? { kind: 'variant', baseId, fastId: model, on: true } : { kind: 'none' }
   }
 
   const fastId = `${model}-fast`
@@ -196,25 +194,22 @@ export function ModelEditSubmenu({
         <>
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>{t('model.options')}</DropdownMenuLabel>
           {reasoning ? (
-            <DropdownMenuItem
-              className={cn(dropdownMenuRow, 'cursor-pointer')}
-              onSelect={event => event.preventDefault()}
-            >
+            <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
               {t('model.thinking')}
               <Switch
                 checked={thinkingOn}
-                className="ml-auto cursor-pointer"
-                onCheckedChange={checked => void patchReasoning(checked ? effort || 'medium' : 'none', currentReasoningEffort)}
+                className="ml-auto"
+                onCheckedChange={checked =>
+                  void patchReasoning(checked ? effort || 'medium' : 'none', currentReasoningEffort)
+                }
+                size="xs"
               />
             </DropdownMenuItem>
           ) : null}
           {hasFast ? (
-            <DropdownMenuItem
-              className={cn(dropdownMenuRow, 'cursor-pointer')}
-              onSelect={event => event.preventDefault()}
-            >
+            <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
               {t('model.fast')}
-              <Switch checked={fastOn} className="ml-auto cursor-pointer" onCheckedChange={toggleFast} />
+              <Switch checked={fastOn} className="ml-auto" onCheckedChange={toggleFast} size="xs" />
             </DropdownMenuItem>
           ) : null}
           {reasoning ? (

@@ -22,11 +22,7 @@ import { chatMessageText } from '@/lib/chat-messages'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import {
-  $composerAttachments,
-  clearComposerAttachments,
-  type ComposerAttachment
-} from '@/store/composer'
+import { $composerAttachments, clearComposerAttachments, type ComposerAttachment } from '@/store/composer'
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
@@ -145,6 +141,7 @@ export function ChatBar({
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   const [focusRequestId, setFocusRequestId] = useState(0)
   const dragDepthRef = useRef(0)
+  const composingRef = useRef(false) // true during IME composition (CJK input)
   const lastSpokenIdRef = useRef<string | null>(null)
 
   const narrow = useMediaQuery('(max-width: 30rem)')
@@ -1154,6 +1151,11 @@ export function ChatBar({
           onDrop={handleDrop}
           onSubmit={e => {
             e.preventDefault()
+
+            if (composingRef.current) {
+              return
+            }
+
             submitDraft()
           }}
           ref={composerRef}

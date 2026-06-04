@@ -15,6 +15,7 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   isPinned: boolean
   isSelected: boolean
   isWorking: boolean
+  needsInput?: boolean
   onArchive: () => void
   onDelete: () => void
   onPin: () => void
@@ -47,6 +48,7 @@ export function SidebarSessionRow({
   isPinned,
   isSelected,
   isWorking,
+  needsInput,
   onArchive,
   onDelete,
   onPin,
@@ -133,8 +135,13 @@ export function SidebarSessionRow({
               />
             </span>
           ) : (
-            <span className="grid w-3.5 shrink-0 place-items-center overflow-hidden">
-              <SidebarRowDot isWorking={isWorking} />
+            <span
+              className={cn(
+                'grid w-3.5 shrink-0 place-items-center',
+                needsInput ? 'overflow-visible' : 'overflow-hidden'
+              )}
+            >
+              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
             </span>
           )}
           <span className="truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
@@ -171,7 +178,7 @@ export function SidebarSessionRow({
   )
 }
 
-function SidebarRowDot({ isWorking, className }: { isWorking: boolean; className?: string }) {
+function SidebarRowDot({ isWorking, needsInput, className }: { isWorking: boolean; needsInput?: boolean; className?: string }) {
   const { t } = useTranslation()
   return (
     <span

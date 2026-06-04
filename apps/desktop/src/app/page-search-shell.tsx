@@ -51,9 +51,7 @@ export function PageSearchShell({
       <div className="shrink-0">
         {(tabs || !searchHidden) && (
           <div className="flex items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]">
-            {tabs ? (
-              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">{tabs}</div>
-            ) : null}
+            {tabs ? <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">{tabs}</div> : null}
             {!searchHidden && (
               <div className={cn('flex shrink-0 items-center', !tabs && 'flex-1')}>
                 <SearchField
@@ -66,9 +64,7 @@ export function PageSearchShell({
             )}
           </div>
         )}
-        {filters ? (
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pb-2">{filters}</div>
-        ) : null}
+        {filters ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pb-2">{filters}</div> : null}
       </div>
       <div className="min-h-0 flex-1 overflow-hidden bg-(--ui-chat-surface-background)">{children}</div>
     </section>

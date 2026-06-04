@@ -1,13 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from '@/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getAuxiliaryModels, getGlobalModelInfo, getGlobalModelOptions, setModelAssignment } from '@/hermes'
 import type { AuxiliaryModelsResponse, ModelOptionProvider } from '@/hermes'
 import { Cpu, Loader2 } from '@/lib/icons'
@@ -29,7 +23,6 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'vision', label: 'Vision', hint: 'Image analysis' },
   { key: 'web_extract', label: 'Web extract', hint: 'Page summarization' },
   { key: 'compression', label: 'Compression', hint: 'Context compaction' },
-  { key: 'session_search', label: 'Session search', hint: 'Recall queries' },
   { key: 'skills_hub', label: 'Skills hub', hint: 'Skill search' },
   { key: 'approval', label: 'Approval', hint: 'Smart auto-approve' },
   { key: 'mcp', label: 'MCP', hint: 'MCP tool routing' },
@@ -232,7 +225,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               ))}
             </SelectContent>
           </Select>
-          <Button disabled={!selectedProvider || !selectedModel || applying} onClick={() => void applyMainModel()} size="sm">
+          <Button
+            disabled={!selectedProvider || !selectedModel || applying}
+            onClick={() => void applyMainModel()}
+            size="sm"
+          >
             {applying && <Loader2 className="size-3.5 animate-spin" />}
             {applying ? 'Applying...' : 'Apply'}
           </Button>
@@ -333,7 +330,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                 }
                 description={
                   <span className="font-mono text-[0.68rem]">
-                    {isAuto ? 'auto · use main model' : `${current.provider} · ${current.model || '(provider default)'}`}
+                    {isAuto
+                      ? 'auto · use main model'
+                      : `${current.provider} · ${current.model || '(provider default)'}`}
                   </span>
                 }
                 key={meta.key}

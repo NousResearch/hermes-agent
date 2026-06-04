@@ -45,7 +45,12 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "zhaolei.vc@bytedance.com": "zhaoleibd",
+    "jeffrobodie@gmail.com": "jeffrobodie-glitch",
+    "kyssta-exe@users.noreply.github.com": "kyssta-exe",
     "copii.list@gmail.com": "stremtec",
+    "solaiagent@gmail.com": "solaitken",
+    "cryptoworlldz@gmail.com": "worlldz",
     "prostoandrei9@gmail.com": "vladkvlchk",
     "116314616+ThyFriendlyFox@users.noreply.github.com": "ThyFriendlyFox",
     "liliangjya@gmail.com": "truenorth-lj",
@@ -64,6 +69,7 @@ AUTHOR_MAP = {
     "tonybear55665566@gmail.com": "TonyPepeBear",
     "kaspersniels@gmail.com": "nielskaspers",
     "kurobaryo@gmail.com": "kurobaryo",
+    "scubamount@users.noreply.github.com": "scubamount",
     "155192176+alelpoan@users.noreply.github.com": "alelpoan",
     "aman@abacus.ai": "Aman113114-IITD",
     "octavio.turra@gmail.com": "octavioturra",
@@ -72,6 +78,7 @@ AUTHOR_MAP = {
     "kchuang1015@users.noreply.github.com": "kchuang1015",
     "maheshthedev@gmail.com": "MaheshtheDev",
     "kyssta-exe@users.noreply.github.com": "kyssta-exe",
+    "shriganesh.patel@gmail.com": "ashishpatel26",
     "45688690+fujinice@users.noreply.github.com": "fujinice",
     "276689385+carltonawong@users.noreply.github.com": "carltonawong",
     "195255660+EvilHumphrey@users.noreply.github.com": "EvilHumphrey",

@@ -105,19 +105,70 @@ def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> b
     old venv may point to a Python without FTS5, so we rebuild it with a
     fresh interpreter from the current managed uv.  Returns ``True`` on
     success.
+
+    The old venv is moved aside *atomically* (``os.replace`` to ``<venv>.old``)
+    before recreating — never deleted in place. On Windows a still-running
+    ``hermes.exe`` (gateway/desktop) holds ``venv\\Scripts\\python.exe`` open;
+    ``shutil.rmtree(ignore_errors=True)`` would delete everything it *can*
+    (site-packages, certifi's cert bundle) and silently leave a half-gutted
+    venv that the following ``uv venv`` then refuses to overwrite ("directory
+    already exists") — bricking the install with no recovery (every later HTTPS
+    call dies with ``FileNotFoundError`` for the missing cert bundle).
+    ``--clear`` alone does not fix this: when the locked interpreter is *inside*
+    the venv being rebuilt, neither ``rmtree`` nor ``uv venv --clear`` can
+    delete the held ``python.exe``. ``os.replace`` of the parent directory *is*
+    allowed (Windows tracks a running ``.exe`` by handle, not path), so the
+    rebuild completes while the running process keeps using the moved-aside copy
+    until it restarts. If the venv genuinely cannot be moved, we abort cleanly
+    and leave it fully intact; and if the rebuild itself fails we move the old
+    venv back so Hermes is never left with no venv at all.
     """
+    backup: Optional[Path] = None
     if venv_dir.exists():
         print(f"  → Rebuilding venv (old Python may lack FTS5)...")
-        shutil.rmtree(venv_dir, ignore_errors=True)
+        backup = venv_dir.with_name(venv_dir.name + ".old")
+        shutil.rmtree(backup, ignore_errors=True)  # clear any stale backup
+        try:
+            # Atomic move — fails (without partial deletion) if a process still
+            # holds files inside the venv, which is exactly the Windows
+            # file-lock case that previously bricked the install.
+            os.replace(venv_dir, backup)
+        except OSError as exc:
+            logger.warning("venv rebuild aborted — venv in use: %s", exc)
+            print(
+                "  ✗ venv rebuild aborted — the venv is in use; stop the "
+                f"gateway/desktop and retry ({exc})"
+            )
+            return False
 
     result = subprocess.run(
-        [uv_bin, "venv", str(venv_dir), "--python", python_version],
+        [uv_bin, "venv", str(venv_dir), "--python", python_version, "--clear"],
         capture_output=True,
         text=True,
         check=False,
     )
+
+    def _restore_backup() -> None:
+        if backup is not None and backup.exists():
+            shutil.rmtree(venv_dir, ignore_errors=True)
+            try:
+                os.replace(backup, venv_dir)
+                print("  ↩ Restored previous venv after failed rebuild.")
+            except OSError:
+                pass
+
     if result.returncode == 0:
         venv_python = venv_dir / ("Scripts" if platform.system() == "Windows" else "bin") / "python"
+        # uv can exit 0 yet leave no usable interpreter (e.g. a half-written
+        # venv). Don't report success on a venv that has no python — restore the
+        # moved-aside copy so the caller can abort without losing a working env.
+        if not venv_python.exists():
+            logger.warning("venv rebuild reported success but %s is missing", venv_python)
+            print(f"  ✗ venv rebuild failed: Python interpreter missing at {venv_python}")
+            _restore_backup()
+            return False
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
         py_ver = subprocess.run(
             [str(venv_python), "--version"],
             capture_output=True,
@@ -127,6 +178,9 @@ def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> b
         print(f"  ✓ venv rebuilt ({py_ver})")
         return True
     else:
+        # Rebuild failed — restore the old venv so we never leave Hermes with no
+        # venv (the bricked-install failure mode this function exists to avoid).
+        _restore_backup()
         logger.warning("venv rebuild failed: %s", result.stderr)
         print(f"  ✗ venv rebuild failed: {result.stderr.strip()}")
         return False

@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import type { DesktopConnectionConfig } from '@/global'
+import { useI18n } from '@/i18n'
 import { AlertTriangle, FileText, Loader2, LogIn, RefreshCw, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
@@ -27,6 +28,7 @@ type BusyAction = 'local' | 'repair' | 'retry' | 'signin' | null
 export function BootFailureOverlay() {
   const boot = useStore($desktopBoot)
   const onboarding = useStore($desktopOnboarding)
+  const { t } = useI18n()
   const [busy, setBusy] = useState<BusyAction>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
@@ -141,7 +143,7 @@ export function BootFailureOverlay() {
       const result = await window.hermesDesktop?.oauthLoginConnectionConfig(remoteReauth.url)
 
       if (result?.connected) {
-        notify({ kind: 'success', title: 'Signed in', message: 'Reconnecting to the remote gateway…' })
+        notify({ kind: 'success', title: t.boot.failure.signedInTitle, message: t.boot.failure.signedInMessage })
         window.location.reload()
 
         return
@@ -149,19 +151,24 @@ export function BootFailureOverlay() {
 
       notify({
         kind: 'warning',
-        title: 'Sign-in incomplete',
-        message: 'The login window closed before authentication finished.'
+        title: t.boot.failure.signInIncompleteTitle,
+        message: t.boot.failure.signInIncompleteMessage
       })
     } catch (err) {
-      notifyError(err, 'Sign-in failed')
+      notifyError(err, t.boot.failure.signInFailed)
     } finally {
       setBusy(null)
     }
   }
 
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
+  const copy = t.boot.failure
 
-  const label = signInLabel(remoteReauth)
+  const label = signInLabel(remoteReauth, {
+    identityProvider: copy.identityProvider,
+    remoteGateway: copy.signInToRemoteGateway,
+    withProvider: copy.signInWithProvider
+  })
 
   return (
     <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-(--ui-chat-surface-background) p-6">
@@ -172,12 +179,10 @@ export function BootFailureOverlay() {
           </div>
           <div>
             <h2 className="text-[0.9375rem] font-semibold tracking-tight">
-              {remoteReauth ? 'Remote gateway sign-in required' : "Hermes couldn't start"}
+              {remoteReauth ? copy.remoteTitle : copy.title}
             </h2>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              {remoteReauth
-                ? 'Your remote gateway session has expired (the dashboard likely restarted). Sign in again to reconnect — nothing here deletes your chats or settings.'
-                : "The background gateway didn't come up. Try one of the recovery steps below — nothing here deletes your chats or settings."}
+              {remoteReauth ? copy.remoteDescription : copy.description}
             </p>
           </div>
         </div>
@@ -197,28 +202,26 @@ export function BootFailureOverlay() {
               ) : (
                 <Button disabled={Boolean(busy)} onClick={() => void retry()}>
                   {busy === 'retry' ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                  Retry
+                  {copy.retry}
                 </Button>
               )}
               {!remoteReauth ? (
                 <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="outline">
                   {busy === 'repair' ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
-                  Repair install
+                  {copy.repairInstall}
                 </Button>
               ) : null}
               <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="outline">
                 {busy === 'local' ? <Loader2 className="size-4 animate-spin" /> : null}
-                Use local gateway
+                {copy.useLocalGateway}
               </Button>
               <Button onClick={openLogs} variant="ghost">
                 <FileText className="size-4" />
-                Open logs
+                {copy.openLogs}
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
-              {remoteReauth
-                ? 'Opens the gateway login window. Use “Use local gateway” to switch to the bundled backend instead.'
-                : 'Repair re-runs the installer and can take a few minutes on a fresh machine.'}
+              {remoteReauth ? copy.remoteSignInHint : copy.repairHint}
             </p>
           </div>
 
@@ -229,7 +232,7 @@ export function BootFailureOverlay() {
                 onClick={() => setShowLogs(v => !v)}
                 type="button"
               >
-                {showLogs ? 'Hide' : 'Show'} recent logs
+                {showLogs ? copy.hideRecentLogs : copy.showRecentLogs}
               </button>
               {showLogs ? (
                 <pre className="max-h-48 overflow-auto rounded-2xl border border-border bg-secondary/30 p-3 font-mono text-[0.7rem] leading-4 text-muted-foreground">

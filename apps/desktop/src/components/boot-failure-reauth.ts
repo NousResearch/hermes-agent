@@ -14,6 +14,18 @@ export interface RemoteReauth {
   providerLabel: string
 }
 
+interface SignInCopy {
+  identityProvider: string
+  remoteGateway: string
+  withProvider: (provider: string) => string
+}
+
+const DEFAULT_SIGN_IN_COPY: SignInCopy = {
+  identityProvider: 'your identity provider',
+  remoteGateway: 'Sign in to remote gateway',
+  withProvider: provider => `Sign in with ${provider}`
+}
+
 // A remote, gated (oauth-bucket), not-currently-connected gateway is a
 // remote-reauth boot failure: the access cookie lapsed (e.g. the remote
 // dashboard restarted) and the local-recovery buttons (Retry/Repair) can't
@@ -58,10 +70,12 @@ export function deriveProviderShape(providers: DesktopAuthProvider[] | null | un
 }
 
 // Button copy for the remote sign-in action.
-export function signInLabel(reauth: RemoteReauth | null): string {
+export function signInLabel(reauth: RemoteReauth | null, copy: SignInCopy = DEFAULT_SIGN_IN_COPY): string {
   if (reauth?.isPassword) {
-    return 'Sign in to remote gateway'
+    return copy.remoteGateway
   }
 
-  return `Sign in with ${reauth?.providerLabel ?? 'your identity provider'}`
+  const provider = reauth?.providerLabel === DEFAULT_SIGN_IN_COPY.identityProvider ? copy.identityProvider : reauth?.providerLabel
+
+  return copy.withProvider(provider ?? copy.identityProvider)
 }

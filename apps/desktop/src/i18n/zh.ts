@@ -14,6 +14,75 @@ export const zh: Translations = {
     off: '关'
   },
 
+  boot: {
+    ready: 'Hermes Desktop 已就绪',
+    desktopBootFailedWithMessage: message => `桌面启动失败:${message}`,
+    steps: {
+      connectingGateway: '正在连接实时桌面网关',
+      loadingSettings: '正在加载 Hermes 设置',
+      loadingSessions: '正在加载最近会话',
+      startingDesktopConnection: '正在启动桌面连接',
+      startingHermesDesktop: '正在启动 Hermes Desktop…'
+    },
+    errors: {
+      backgroundExited: 'Hermes 后台进程已退出。',
+      backgroundExitedDuringStartup: 'Hermes 后台进程在启动期间退出。',
+      backendStopped: '后端已停止',
+      desktopBootFailed: '桌面启动失败',
+      gatewaySignInRequired: '需要登录网关',
+      ipcBridgeUnavailable: '桌面 IPC 桥不可用。'
+    },
+    failure: {
+      title: 'Hermes 无法启动',
+      description: '后台网关没有启动。请尝试下面的恢复步骤。这些操作不会删除你的对话或设置。',
+      remoteTitle: '需要重新登录远程网关',
+      remoteDescription: '你的远程网关会话已过期。请重新登录以恢复连接。这些操作不会删除你的对话或设置。',
+      retry: '重试',
+      repairInstall: '修复安装',
+      useLocalGateway: '使用本地网关',
+      openLogs: '打开日志',
+      repairHint: '修复会重新运行安装器。在新机器上可能需要几分钟。',
+      remoteSignInHint: '打开网关登录窗口。也可以使用本地网关切换到随应用提供的后端。',
+      hideRecentLogs: '隐藏最近日志',
+      showRecentLogs: '显示最近日志',
+      signedInTitle: '已登录',
+      signedInMessage: '正在重新连接远程网关…',
+      signInIncompleteTitle: '登录未完成',
+      signInIncompleteMessage: '登录窗口在认证完成前关闭。',
+      signInFailed: '登录失败',
+      signInToRemoteGateway: '登录远程网关',
+      signInWithProvider: provider => `使用 ${provider} 登录`,
+      identityProvider: '你的身份提供方'
+    }
+  },
+
+  notifications: {
+    region: '通知',
+    hide: '隐藏',
+    show: '显示',
+    more: count => `另外 ${count} 条通知`,
+    clearAll: '全部清除',
+    dismiss: '关闭通知',
+    details: '详情',
+    copyDetail: '复制详情',
+    copyDetailFailed: '无法复制通知详情',
+    backendOutOfDateTitle: '后端版本过旧',
+    backendOutOfDateMessage: '你的 Hermes 后端早于当前桌面构建,可能无法正常工作。请更新以保持一致。',
+    updateHermes: '更新 Hermes',
+    updateReadyTitle: '有可用更新',
+    updateReadyMessage: count => `有 ${count} 项新更改可用。`,
+    seeWhatsNew: '查看更新内容',
+    errors: {
+      elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
+      elevenLabsRejectedKey: 'ElevenLabs 拒绝了该 API key (401)。',
+      methodNotAllowed: '桌面后端拒绝了该请求(405 Method Not Allowed)。请尝试重启 Hermes Desktop。',
+      microphonePermission: '麦克风权限已被拒绝。',
+      openaiRejectedApiKey: 'OpenAI 拒绝了该 API key。',
+      openaiRejectedApiKeyWithStatus: status => `OpenAI 拒绝了该 API key (${status} invalid_api_key)。`,
+      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。'
+    }
+  },
+
   titlebar: {
     hideSidebar: '隐藏侧边栏',
     showSidebar: '显示侧边栏',
@@ -30,7 +99,9 @@ export const zh: Translations = {
 
   language: {
     label: '语言',
-    description: '选择桌面界面的语言。'
+    description: '选择桌面界面的语言。',
+    saving: '正在保存语言…',
+    saveError: '语言更新失败'
   },
 
   settings: {

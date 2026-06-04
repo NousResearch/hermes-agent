@@ -1,57 +1,168 @@
-import { act, renderHook } from '@testing-library/react'
-import type { ReactNode } from 'react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { I18nProvider, useI18n } from './context'
+import type { HermesConfigRecord } from '@/hermes'
 
-const STORAGE_KEY = 'hermes-desktop-locale'
+import { type I18nConfigClient, I18nProvider, useI18n } from './context'
+import type { Locale } from './types'
 
-// This jsdom build ships a partial localStorage (missing removeItem/clear), so
-// back it with a Map for a deterministic, self-contained test.
-function installStorageMock() {
-  const store = new Map<string, string>()
+function LanguageProbe({ target = 'zh' }: { target?: Locale }) {
+  const { isLoadingConfig, isSavingLocale, locale, saveError, setLocale, t } = useI18n()
 
-  const mock: Storage = {
-    get length() {
-      return store.size
-    },
-    clear: () => store.clear(),
-    getItem: key => store.get(key) ?? null,
-    key: index => Array.from(store.keys())[index] ?? null,
-    removeItem: key => void store.delete(key),
-    setItem: (key, value) => void store.set(key, String(value))
-  }
-
-  Object.defineProperty(window, 'localStorage', { configurable: true, value: mock })
+  return (
+    <div>
+      <p data-testid="locale">{locale}</p>
+      <p data-testid="label">{t.language.label}</p>
+      <p data-testid="loading">{String(isLoadingConfig)}</p>
+      <p data-testid="saving">{String(isSavingLocale)}</p>
+      <p data-testid="save-error">{saveError?.message ?? ''}</p>
+      <button onClick={() => void setLocale(target).catch(() => undefined)} type="button">
+        switch
+      </button>
+    </div>
+  )
 }
 
-const wrapper = ({ children }: { children: ReactNode }) => <I18nProvider>{children}</I18nProvider>
-
 describe('I18nProvider', () => {
-  beforeEach(installStorageMock)
-
-  it('defaults to English', () => {
-    const { result } = renderHook(() => useI18n(), { wrapper })
-
-    expect(result.current.locale).toBe('en')
-    expect(result.current.t.language.label).toBe('Language')
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
   })
 
-  it('switches translations and persists the locale', () => {
-    const { result } = renderHook(() => useI18n(), { wrapper })
+  it('defaults to English without a config client', () => {
+    render(
+      <I18nProvider configClient={null}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
 
-    act(() => result.current.setLocale('zh'))
-
-    expect(result.current.locale).toBe('zh')
-    expect(result.current.t.language.label).toBe('语言')
-    expect(window.localStorage.getItem(STORAGE_KEY)).toBe('zh')
+    expect(screen.getByTestId('locale').textContent).toBe('en')
+    expect(screen.getByTestId('label').textContent).toBe('Language')
   })
 
-  it('restores a persisted locale on mount', () => {
-    window.localStorage.setItem(STORAGE_KEY, 'zh')
+  it('normalizes an initial locale alias and switches translations', async () => {
+    render(
+      <I18nProvider configClient={null} initialLocale="zh-CN">
+        <LanguageProbe target="en" />
+      </I18nProvider>
+    )
 
-    const { result } = renderHook(() => useI18n(), { wrapper })
+    expect(screen.getByTestId('locale').textContent).toBe('zh')
+    expect(screen.getByTestId('label').textContent).toBe('语言')
 
-    expect(result.current.locale).toBe('zh')
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+
+    await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('en'))
+    expect(screen.getByTestId('label').textContent).toBe('Language')
+  })
+
+  it('loads the initial locale from display.language config', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'zh-Hans' } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('zh')
+    expect(screen.getByTestId('label').textContent).toBe('语言')
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('keeps English usable when config loading fails', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockRejectedValue(new Error('config unavailable')),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient} initialLocale="zh">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('en')
+    expect(screen.getByTestId('label').textContent).toBe('Language')
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('does not overwrite unsupported configured languages', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'ja' } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient} initialLocale="zh">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('en')
+    expect(screen.getByTestId('label').textContent).toBe('Language')
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('reads latest config before saving language and preserves unrelated values', async () => {
+    const saveConfig = vi.fn().mockResolvedValue({ ok: true })
+
+    const latestConfig: HermesConfigRecord = {
+      display: { language: 'en', skin: 'slate' },
+      terminal: { cwd: '/new' }
+    }
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi
+        .fn()
+        .mockResolvedValueOnce({ display: { language: 'en', skin: 'mono' }, terminal: { cwd: '/old' } })
+        .mockResolvedValueOnce(latestConfig),
+      saveConfig
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+
+    await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
+    expect(saveConfig).toHaveBeenCalledWith({
+      display: { language: 'zh', skin: 'slate' },
+      terminal: { cwd: '/new' }
+    })
+  })
+
+  it('rolls back the visible locale when saving fails', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'en' } }),
+      saveConfig: vi.fn().mockRejectedValue(new Error('save failed'))
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+
+    await waitFor(() => expect(screen.getByTestId('save-error').textContent).toBe('save failed'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('en')
+    expect(screen.getByTestId('label').textContent).toBe('Language')
   })
 })

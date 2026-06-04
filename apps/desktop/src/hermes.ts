@@ -29,6 +29,7 @@ import type {
   OAuthSubmitResponse,
   PaginatedSessions,
   ProfileCreatePayload,
+  ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
   SessionMessagesResponse,
@@ -80,6 +81,7 @@ export type {
   PaginatedSessions,
   ProfileCreatePayload,
   ProfileInfo,
+  ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
   RpcEvent,
@@ -560,6 +562,12 @@ export function updateProfileSoul(name: string, content: string): Promise<{ ok: 
     path: `/api/profiles/${encodeURIComponent(name)}/soul`,
     method: 'PUT',
     body: { content }
+  })
+}
+
+export function getProfileSetupCommand(name: string): Promise<ProfileSetupCommand> {
+  return window.hermesDesktop.api<ProfileSetupCommand>({
+    path: `/api/profiles/${encodeURIComponent(name)}/setup-command`
   })
 }
 

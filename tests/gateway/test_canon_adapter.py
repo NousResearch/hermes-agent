@@ -1227,6 +1227,42 @@ class TestCanonOutbound:
         assert resolved == [("clarify-structured", "field: pre_vat_total\nnew_value: 900.00")]
 
     @pytest.mark.asyncio
+    async def test_send_clarify_preserves_blank_legacy_value(self, monkeypatch):
+        resolved = []
+        monkeypatch.setattr(
+            "tools.clarify_gateway.resolve_gateway_clarify",
+            lambda input_id, value: resolved.append((input_id, value)) or True,
+        )
+
+        adapter = CanonAdapter(_config(extra={"api_key": "key"}))
+        fake = self.FakeClient()
+
+        async def blank_response(conversation_id, input_id, *, cancel=False):
+            fake.runtime_input_responses.append((conversation_id, input_id, cancel))
+            return {
+                "status": "submitted",
+                "inputId": input_id,
+                "kind": "clarify",
+                "value": "",
+                "choice": {"value": "fallback-choice", "label": "Fallback choice"},
+            }
+
+        fake.consume_runtime_input_response = blank_response
+        adapter._client = fake
+
+        result = await adapter.send_clarify(
+            "convo-1",
+            "Optional note?",
+            [],
+            "clarify-blank",
+            "session-1",
+        )
+
+        assert result.success is True
+        await asyncio.wait_for(_wait_for(lambda: bool(resolved)), timeout=1)
+        assert resolved == [("clarify-blank", "")]
+
+    @pytest.mark.asyncio
     async def test_send_exec_approval_creates_approval_card_and_resolves_session(self, monkeypatch):
         resolved = []
         monkeypatch.setattr(

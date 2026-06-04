@@ -2619,9 +2619,12 @@ def _canon_runtime_choices(choices: Optional[list]) -> Optional[list[dict[str, A
 
 def _runtime_input_response_value(response: dict[str, Any]) -> str:
     value = response.get("value")
-    if isinstance(value, str) and value.strip():
-        return value
     answers = response.get("answers")
+    if isinstance(value, str):
+        if value.strip():
+            return value
+        if not isinstance(answers, dict):
+            return value
     if isinstance(answers, dict):
         values: list[str] = []
         for question_id, item in answers.items():
@@ -2642,6 +2645,8 @@ def _runtime_input_response_value(response: dict[str, Any]) -> str:
                 values.append(f"{question_id}: {', '.join(normalized)}")
         if values:
             return "\n".join(values)
+    if isinstance(value, str):
+        return value
     choice = response.get("choice")
     if isinstance(choice, dict):
         for key in ("value", "label"):

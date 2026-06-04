@@ -38,5 +38,46 @@ jobs:
           # which also helps keep the SSH channel active.
           docker build --progress=plain -t hermes-agent:local .
           docker compose -f /opt/hermes/docker-compose.yml up -d
+
+          # ---- Post-deploy health gate ---------------------------------
+          # A successful `up -d` only means the container was *created*, not
+          # that the bots can actually answer. The recurring outage mode is
+          # the container booting WITHOUT the :11435 Claude proxy: its s6 def
+          # lives on the volume and 03-seed-data-services re-seeds it into the
+          # tmpfs scandir on boot. When that reseed misses, the gateway loses
+          # its Claude provider and the bots go dark -- yet the deploy still
+          # reported green. Gate on the two server-side signals that map
+          # directly to that failure: the container is actually Running (not
+          # restart-looping) and the proxy answers GET /health on :11435
+          # (network_mode: host, so it's on the host's localhost). Fail the
+          # deploy if either never comes up.
+          probe() {
+            curl -fsS -m 5 -o /dev/null "$1" 2>/dev/null \
+              || wget -q -T 5 -O /dev/null "$1" 2>/dev/null
+          }
+          health_ok=""
+          for i in $(seq 1 24); do   # up to 24 * 5s = 120s
+            running=$(docker inspect -f '{{.State.Running}}' hermes 2>/dev/null || echo false)
+            restarting=$(docker inspect -f '{{.State.Restarting}}' hermes 2>/dev/null || echo false)
+            if [ "$running" = "true" ] && [ "$restarting" = "false" ] \
+               && probe http://127.0.0.1:11435/health; then
+              health_ok=1
+              echo "health-gate: container running and :11435 /health OK (attempt $i)"
+              break
+            fi
+            echo "health-gate: not ready (attempt $i: running=$running restarting=$restarting) -- retrying in 5s"
+            sleep 5
+          done
+
+          if [ -z "$health_ok" ]; then
+            echo "health-gate: FAILED -- bots unhealthy after deploy. Diagnostics:"
+            docker ps -a --filter name=hermes || true
+            echo "--- last 80 log lines (hermes) ---"
+            docker logs --tail 80 hermes 2>&1 || true
+            echo "--- s6 runtime service states ---"
+            docker exec hermes sh -c 'for s in /run/service/*/; do printf "%s " "$s"; s6-svstat "$s" 2>/dev/null || echo "(no svstat)"; done' 2>&1 || true
+            exit 1
+          fi
+
           echo "Deploy complete"
           REMOTE

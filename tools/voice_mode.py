@@ -1039,6 +1039,16 @@ def stop_playback() -> None:
         pass
 
 
+def _is_wsl() -> bool:
+    """True when running inside Windows Subsystem for Linux."""
+    try:
+        with open("/proc/version", "r") as f:
+            return "microsoft" in f.read().lower()
+    except Exception:
+        return False
+    return False
+
+
 def play_audio_file(file_path: str) -> bool:
     """Play an audio file through the default output device.
 
@@ -1067,7 +1077,27 @@ def play_audio_file(file_path: str) -> bool:
                 audio_data = np.frombuffer(frames, dtype=np.int16)
                 sample_rate = wf.getframerate()
 
-            sd.play(audio_data, samplerate=sample_rate)
+            # WSLg RDP audio needs a warmup to avoid crackling at the start.
+            # The RDP virtual-channel connection takes ~100 ms to stabilise,
+            # and small default blocksize exasperates timing jitter caused by
+            # systemd-timesyncd clock adjustments (microsoft/wslg#1257).
+            if _is_wsl():
+                silence_samples = int(0.1 * sample_rate)
+                fade_samples = int(0.1 * sample_rate)
+                fade = np.linspace(0.0, 1.0, fade_samples, dtype=np.float64)
+                audio_float = audio_data.astype(np.float64)
+                audio_float[:fade_samples] *= fade
+                tail = np.zeros(int(0.05 * sample_rate), dtype=np.int16)
+                audio_data = np.concatenate([
+                    np.zeros(silence_samples, dtype=np.int16),
+                    audio_float.astype(np.int16),
+                    tail,
+                ])
+                blocksize = 4096
+            else:
+                blocksize = 0  # default (auto)
+
+            sd.play(audio_data, samplerate=sample_rate, blocksize=blocksize)
             # sd.wait() calls Event.wait() without timeout — hangs forever if
             # the audio device stalls.  Poll with a ceiling and force-stop.
             duration_secs = len(audio_data) / sample_rate

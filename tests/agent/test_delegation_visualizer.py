@@ -159,3 +159,63 @@ def test_argv_passthrough(daemon_up, capsys):
     out2 = capsys.readouterr().out
     assert rc1 == rc2 == 0
     assert out1 == out2
+
+
+# ---------------------------------------------------------------------------
+# slash command  (HermesCLI._handle_delegation_command)
+# ---------------------------------------------------------------------------
+#
+# The slash handler is the interactive-session mirror of the standalone
+# `hermes delegation` subcommand. It must:
+#   * default to `status` when no subcommand is given,
+#   * swallow argparse's SystemExit (e.g. on --help) so the REPL survives,
+#   * catch generic exceptions and print `(._.) delegation: <msg>` instead of
+#     bubbling them up and killing the session.
+#
+# HermesCLI.__init__ takes ~60 args, so we build a bare instance with
+# __new__ to skip it — the handler is self-contained and touches no instance
+# state beyond `self`.
+
+
+@pytest.fixture
+def hermes_cli():
+    """A bare HermesCLI instance (skips the ~60-arg __init__)."""
+    from cli import HermesCLI
+
+    return HermesCLI.__new__(HermesCLI)
+
+
+def test_handle_delegation_command_status_runs(hermes_cli, daemon_up, capsys):
+    hermes_cli._handle_delegation_command("/delegation status")
+    out = capsys.readouterr().out
+    assert "daemon" in out
+
+
+def test_handle_delegation_command_no_args_defaults_to_status(
+    hermes_cli, daemon_up, capsys
+):
+    hermes_cli._handle_delegation_command("/delegation")
+    out = capsys.readouterr().out
+    assert "daemon" in out
+
+
+def test_handle_delegation_command_swallows_argparse_exit(hermes_cli, capsys):
+    # argparse calls sys.exit() on --help; the handler must not let the
+    # resulting SystemExit propagate and kill the interactive session.
+    hermes_cli._handle_delegation_command("/delegation --help")
+    # no SystemExit raised => we get here; --help printed usage to stdout.
+    out = capsys.readouterr().out
+    assert "usage" in out.lower()
+
+
+def test_handle_delegation_command_error_is_caught(hermes_cli, monkeypatch, capsys):
+    def boom(*a, **k):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(dv, "cli_main", boom)
+
+    # Must not raise — the error is caught and printed.
+    hermes_cli._handle_delegation_command("/delegation status")
+    out = capsys.readouterr().out
+    assert "(._.) delegation:" in out
+    assert "kaboom" in out

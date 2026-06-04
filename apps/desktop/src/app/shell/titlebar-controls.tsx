@@ -15,7 +15,14 @@ import {
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
-import { $fileBrowserOpen, $sidebarOpen, toggleFileBrowserOpen, toggleSidebarOpen } from '@/store/layout'
+import {
+  $fileBrowserOpen,
+  $panesFlipped,
+  $sidebarOpen,
+  toggleFileBrowserOpen,
+  togglePanesFlipped,
+  toggleSidebarOpen
+} from '@/store/layout'
 
 import { PROFILES_ROUTE } from '../routes'
 
@@ -41,22 +48,15 @@ export type SetTitlebarToolGroup = (id: string, tools: readonly TitlebarTool[], 
 interface TitlebarControlsProps extends ComponentProps<'div'> {
   leftTools?: readonly TitlebarTool[]
   tools?: readonly TitlebarTool[]
-  commandCenterOpen?: boolean
   onOpenSettings: () => void
-  onOpenSearch: () => void
 }
 
-export function TitlebarControls({
-  leftTools = [],
-  tools = [],
-  commandCenterOpen = false,
-  onOpenSettings,
-  onOpenSearch
-}: TitlebarControlsProps) {
+export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
   const navigate = useNavigate()
   const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
+  const panesFlipped = useStore($panesFlipped)
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -70,38 +70,48 @@ export function TitlebarControls({
     }
   }
 
+  // Each titlebar button controls the pane physically on its side, so a flip
+  // swaps which pane each one toggles. Default: sessions left, file browser
+  // right. Flipped: file browser left, sessions right.
+  // `active` stays tied to the file browser (the toggleable extra pane) rather
+  // than the sessions sidebar, which has never shown a highlight.
+  const fileBrowserEdge = { active: fileBrowserOpen, open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
+  const sessionsEdge = { active: undefined, open: sidebarOpen, toggle: toggleSidebarOpen }
+  const leftEdge = panesFlipped ? fileBrowserEdge : sessionsEdge
+  const rightEdge = panesFlipped ? sessionsEdge : fileBrowserEdge
+
   const leftToolbarTools: TitlebarTool[] = [
     {
+      active: leftEdge.active,
       icon: <Codicon name="layout-sidebar-left" />,
       id: 'sidebar',
-      label: sidebarOpen ? 'Hide sidebar' : 'Show sidebar',
+      label: `${leftEdge.open ? 'Hide' : 'Show'} left sidebar`,
       onSelect: () => {
         triggerHaptic('tap')
-        toggleSidebarOpen()
+        leftEdge.toggle()
       }
     },
     {
-      active: commandCenterOpen,
-      icon: <Codicon name="search" />,
-      id: 'search',
-      label: 'Search',
+      icon: <Codicon name="arrow-swap" />,
+      id: 'flip-panes',
+      label: 'Swap sidebar sides',
       onSelect: () => {
-        triggerHaptic('open')
-        onOpenSearch()
+        triggerHaptic('tap')
+        togglePanesFlipped()
       },
-      title: 'Search sessions, views, and actions'
+      title: 'Swap the sessions and file browser sides'
     },
     ...leftTools
   ]
 
   const rightSidebarTool: TitlebarTool = {
-    active: fileBrowserOpen,
+    active: rightEdge.active,
     icon: <Codicon name="layout-sidebar-right" />,
     id: 'right-sidebar',
-    label: fileBrowserOpen ? 'Hide right sidebar' : 'Show right sidebar',
+    label: `${rightEdge.open ? 'Hide' : 'Show'} right sidebar`,
     onSelect: () => {
       triggerHaptic('tap')
-      toggleFileBrowserOpen()
+      rightEdge.toggle()
     }
   }
 

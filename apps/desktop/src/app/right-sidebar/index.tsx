@@ -7,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
+import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
 import { $currentBranch, $currentCwd } from '@/store/session'
@@ -38,6 +39,7 @@ const RIGHT_SIDEBAR_TABS: readonly RightSidebarTab[] = [
 export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd }: RightSidebarPaneProps) {
   const activeTab = useStore($rightSidebarTab)
   const terminalTakeover = useStore($terminalTakeover)
+  const panesFlipped = useStore($panesFlipped)
   const currentBranch = useStore($currentBranch).trim()
   const currentCwd = useStore($currentCwd).trim()
   const hasCwd = currentCwd.length > 0
@@ -96,7 +98,12 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
   return (
     <aside
       aria-label="Right sidebar"
-      className="before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary) shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]"
+      className={cn(
+        'before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary)',
+        panesFlipped
+          ? 'border-r shadow-[inset_-0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
+          : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
+      )}
     >
       <RightSidebarChrome activeTab={effectiveTab} branch={currentBranch} tabs={tabs} />
 

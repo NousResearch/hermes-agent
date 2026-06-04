@@ -1,0 +1,5 @@
+name: producers-triage
+version: 1.0.0
+description: "Fast-path triage and immediate acknowledgment for producers profile in Discord"
+author: NousResearch
+kind: backend

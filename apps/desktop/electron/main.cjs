@@ -1384,6 +1384,19 @@ function resolveHermesCliBinary(updateRoot) {
   return findOnPath('hermes') || null
 }
 
+// Resolve the rebuilt Linux Electron binary so the desktop can short-circuit
+// the "Restart Hermes" prompt.
+function findLinuxLaunchable(updateRoot) {
+  const binaries = [
+    path.join(updateRoot, 'apps', 'desktop', 'release', 'linux-unpacked', 'Hermes'),
+    path.join(updateRoot, 'apps', 'desktop', 'release', 'linux-unpacked', 'hermes'),
+  ]
+  for (const exe of binaries) {
+    if (fileExists(exe)) return exe
+  }
+  return null
+}
+
 // Spawn a command and stream each output line to the update progress channel.
 function runStreamedUpdate(command, args, { cwd, env, stage } = {}) {
   return new Promise(resolve => {
@@ -1498,20 +1511,33 @@ async function applyUpdatesPosixInApp(opts = {}) {
   }
 
   const rebuiltApp = [
+    path.join(updateRoot, 'apps', 'desktop', 'release', 'linux-unpacked', 'Hermes'),
     path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
-  ].find(directoryExists)
+    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app'),
+  ]
+  const linuxBinary = rebuiltApp.find(p => !p.endsWith('.app') && fileExists(p)) || null
+  const macBundle = rebuiltApp.find(p => p.endsWith('.app') && directoryExists(p)) || null
   const targetApp = runningAppBundle()
 
-  // No bundle to swap (dev run, Linux AppImage, or unresolved paths): the
-  // backend is updated; the next launch picks up the rebuilt GUI.
-  if (!rebuiltApp || !targetApp) {
+  // Linux: the rebuild produces a plain binary in linux-unpacked/, running
+  // alongside the live process. Re-launch it directly so the user never sees
+  // a "Restart Hermes" prompt. The old process can exit freely because the
+  // running instance is a child of the CLI (its own fd refs), not a file lock.
+  if (linuxBinary && !targetApp) {
+    emitUpdateProgress({ stage: 'restart', message: 'Restarting Hermes…', percent: 95 })
+    spawn(linuxBinary, [], { detached: true, stdio: 'ignore' }).unref()
+    setTimeout(() => app.quit(), 600)
+    return { ok: true, handedOff: true, rebuiltApp: linuxBinary }
+  }
+
+  // macOS: swap the .app bundle while we're gone
+  if (!macBundle || !targetApp) {
     emitUpdateProgress({
       stage: 'done',
       message: 'Backend updated. Restart Hermes to load the new version.',
       percent: 100
     })
-    return { ok: true, backendUpdated: true, rebuiltApp: rebuiltApp || null }
+    return { ok: true, backendUpdated: true, rebuiltApp: macBundle || linuxBinary || null }
   }
 
   emitUpdateProgress({ stage: 'restart', message: 'Installing the updated app and restarting…', percent: 95 })
@@ -1521,7 +1547,7 @@ async function applyUpdatesPosixInApp(opts = {}) {
   const swapScript = `#!/bin/bash
 set -u
 APP_PID=${process.pid}
-SRC=${shellQuote(rebuiltApp)}
+SRC=${shellQuote(macBundle)}
 DST=${shellQuote(targetApp)}
 for _ in $(seq 1 240); do
   kill -0 "$APP_PID" 2>/dev/null || break
@@ -1547,16 +1573,16 @@ fi
       message: 'Backend + app updated. Restart Hermes to load the new version.',
       percent: 100
     })
-    rememberLog(`[updates] could not write swap script: ${err.message}; rebuilt app at ${rebuiltApp}`)
-    return { ok: true, backendUpdated: true, rebuiltApp }
+    rememberLog(`[updates] could not write swap script: ${err.message}; rebuilt app at ${macBundle}`)
+    return { ok: true, backendUpdated: true, rebuiltApp: macBundle }
   }
 
   const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
   child.unref()
-  rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
+  rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${macBundle} -> ${targetApp})`)
 
   setTimeout(() => app.quit(), 600)
-  return { ok: true, handedOff: true, rebuiltApp, targetApp }
+  return { ok: true, handedOff: true, rebuiltApp: macBundle, targetApp }
 }
 
 function readJson(filePath) {

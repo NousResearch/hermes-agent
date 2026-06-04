@@ -135,9 +135,13 @@ app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 _SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
-# In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
-# or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
-_DASHBOARD_EMBEDDED_CHAT_ENABLED = False
+# In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
+# desktop app and the dashboard's own Chat tab both drive the agent over the
+# `/api/ws` + `/api/pty` WebSockets, so the embedded-chat surface is an
+# unconditional part of the dashboard.  Kept as a module-level constant (rather
+# than inlining ``True`` at every gate) so the WS endpoints and the SPA token
+# injection share a single, testable seam.
+_DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
@@ -8677,14 +8681,9 @@ def start_server(
     port: int = 9119,
     open_browser: bool = True,
     allow_public: bool = False,
-    *,
-    embedded_chat: bool = False,
 ):
     """Start the web UI server."""
     import uvicorn
-
-    global _DASHBOARD_EMBEDDED_CHAT_ENABLED
-    _DASHBOARD_EMBEDDED_CHAT_ENABLED = embedded_chat
 
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5

@@ -2799,11 +2799,11 @@ class MatrixAdapter(BasePlatformAdapter):
     def _markdown_to_html(self, text: str) -> str:
         """Convert Markdown to Matrix-compatible HTML (org.matrix.custom.html).
 
-        Uses the ``markdown`` library when available (installed with the
-        ``matrix`` extra).  Falls back to a comprehensive regex converter
-        that handles fenced code blocks, inline code, headers, bold,
-        italic, strikethrough, links, blockquotes, lists, and horizontal
-        rules — everything the Matrix HTML spec allows.
+        Uses the ``markdown`` library (a core dependency) when available.
+        Falls back to a comprehensive regex converter that handles fenced
+        code blocks, inline code, headers, bold, italic, strikethrough,
+        links, blockquotes, lists, and horizontal rules — everything the
+        Matrix HTML spec allows.
         """
         try:
             import markdown as _md

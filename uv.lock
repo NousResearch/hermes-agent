@@ -1398,6 +1398,7 @@ dependencies = [
     { name = "fire" },
     { name = "httpx", extra = ["socks"] },
     { name = "jinja2" },
+    { name = "markdown" },
     { name = "openai" },
     { name = "pathspec" },
     { name = "prompt-toolkit" },
@@ -1502,7 +1503,6 @@ matrix = [
     { name = "aiohttp-socks" },
     { name = "aiosqlite" },
     { name = "asyncpg" },
-    { name = "markdown" },
     { name = "mautrix", extra = ["encryption"] },
 ]
 mcp = [
@@ -1642,7 +1642,7 @@ requires-dist = [
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },
     { name = "jinja2", specifier = "==3.1.6" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.5.3" },
-    { name = "markdown", marker = "extra == 'matrix'", specifier = "==3.10.2" },
+    { name = "markdown", specifier = "==3.10.2" },
     { name = "mautrix", extras = ["encryption"], marker = "extra == 'matrix'", specifier = "==0.21.0" },
     { name = "mcp", marker = "extra == 'computer-use'", specifier = "==1.26.0" },
     { name = "mcp", marker = "extra == 'dev'", specifier = "==1.26.0" },

@@ -1,5 +1,6 @@
 """Tests for gateway service management helpers."""
 
+import ast
 import os
 import subprocess
 from pathlib import Path
@@ -494,10 +495,8 @@ class TestLaunchdServiceRecovery:
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()
         assert "--replace" in plist_path.read_text(encoding="utf-8")
-        assert calls[:2] == [
-            ["launchctl", "bootout", f"{domain}/{label}"],
-            ["launchctl", "bootstrap", domain, str(plist_path)],
-        ]
+        assert calls[:1] == [["launchctl", "kickstart", "-k", f"{domain}/{label}"]]
+        assert all("bootout" not in cmd for cmd in calls)
 
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
@@ -580,28 +579,84 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", "-k", target],
         ]
 
-    def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
+    def test_launchd_restart_does_not_use_gateway_self_restart_shortcut(self, monkeypatch):
+        """Restart must go through launchctl kickstart -k even when invoked by gateway descendants."""
         calls = []
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
-        monkeypatch.setattr(
-            "gateway.status.get_running_pid",
-            lambda: 321,
-        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
         monkeypatch.setattr(
             gateway_cli,
             "_request_gateway_self_restart",
-            lambda pid: calls.append(("self", pid)) or True,
+            lambda pid: (_ for _ in ()).throw(AssertionError("self-restart shortcut must not run")),
         )
-        monkeypatch.setattr(
-            gateway_cli.subprocess,
-            "run",
-            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("launchctl should not run")),
-        )
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.launchd_restart()
 
-        assert calls == [("self", 321)]
-        assert "restart requested" in capsys.readouterr().out.lower()
+        assert calls == [("term", 321, False), ["launchctl", "kickstart", "-k", target]]
+
+    def test_launchd_restart_paths_do_not_bootout_or_bootstrap(self, tmp_path, monkeypatch):
+        """Restart/cutover paths must keep the LaunchAgent loaded via kickstart -k."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.refresh_launchd_plist_if_needed()
+        gateway_cli.launchd_restart()
+
+        assert ["launchctl", "kickstart", "-k", gateway_cli._launchd_service_target()] in calls
+        assert all("bootout" not in cmd for cmd in calls)
+        assert all("bootstrap" not in cmd for cmd in calls)
+
+    def test_launchd_bootout_direct_calls_are_stop_only(self):
+        """Static guard: new restart paths must not call launchctl bootout directly."""
+        source_path = Path(gateway_cli.__file__)
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                child._parent = parent
+        bootout_call_functions = []
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            args = node.args
+            if not args or not isinstance(args[0], ast.List):
+                continue
+            literal_args = [elt.value for elt in args[0].elts if isinstance(elt, ast.Constant)]
+            if "launchctl" in literal_args and "bootout" in literal_args:
+                parent = node
+                function_name = None
+                while hasattr(parent, "_parent"):
+                    parent = parent._parent
+                    if isinstance(parent, ast.FunctionDef):
+                        function_name = parent.name
+                        break
+                bootout_call_functions.append(function_name)
+
+        assert bootout_call_functions == ["_launchd_unload_service_definition_for_stop_only"]
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
         """launchd_stop must bootout the service so KeepAlive doesn't respawn it."""

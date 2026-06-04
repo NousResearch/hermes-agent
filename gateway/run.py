@@ -6791,6 +6791,54 @@ class GatewayRunner:
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
         
+        # AI Staff OS stage0: optional record-only/fail-closed classifier.
+        # Disabled by default and intentionally placed after authorization so
+        # pairing/unauthorized flows remain unchanged.  When enabled it is
+        # terminal for every classified decision: no card creation, no agent
+        # dispatch, no ready promotion, and no worker/queue activation. Slash
+        # commands bypass this hook and keep their normal command routing.
+        if (
+            not is_internal
+            and event.get_command() is None
+            and str(os.getenv("HERMES_AI_STAFF_STAGE0_RECORD_ONLY", "")).strip().lower()
+            in {"1", "true", "yes", "on"}
+        ):
+            try:
+                from gateway.kanban_routing import (
+                    build_stage0_record_only_decision as _stage0_decision,
+                    load_routing_map as _stage0_load_routing_map,
+                )
+
+                _stage0_result = _stage0_decision(
+                    source=source,
+                    text=event.text or "",
+                    routing_map=_stage0_load_routing_map(),
+                )
+                logger.info(
+                    "ai-staff-os stage0 record-only decision=%s route=%s board=%s anchor=%s",
+                    _stage0_result.decision,
+                    _stage0_result.route_key,
+                    _stage0_result.board,
+                    _stage0_result.anchor_task_id,
+                )
+                if _stage0_result.decision == "PASS_RECORD_ONLY":
+                    return (
+                        "AI Staff OS stage0 record-only: "
+                        f"{_stage0_result.reason}. agent dispatch 없이 분류만 완료했습니다."
+                    )
+                if _stage0_result.decision == "NO_DUPLICATE":
+                    return (
+                        "AI Staff OS stage0 record-only: "
+                        f"{_stage0_result.reason}. 중복 후보라 dispatch 없이 종료했습니다."
+                    )
+                return (
+                    "AI Staff OS stage0 fail-closed: "
+                    f"{_stage0_result.reason}. 기록 전용 후보로 차단했습니다."
+                )
+            except Exception as _stage0_exc:
+                logger.warning("ai-staff-os stage0 classifier failed: %s", _stage0_exc)
+                return "AI Staff OS stage0 fail-closed: classifier_error. 기록 전용 후보로 차단했습니다."
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via

@@ -38,6 +38,7 @@ _log = logging.getLogger(__name__)
 _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login",
     "/auth/callback",
+    "/auth/password-login",
     "/auth/logout",
     "/login",
     "/api/auth/providers",

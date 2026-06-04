@@ -224,9 +224,9 @@ export function DesktopController() {
     }
   }, [])
 
-  // Global chrome shortcuts (plain Cmd/Ctrl, no alt/shift): Cmd+K → command
-  // palette (the composer's "drain next queued" moved to Cmd+Shift+K), Cmd+. →
-  // command center (sessions / system / usage).
+  // Global chrome shortcuts (plain Cmd/Ctrl, no alt/shift): Cmd+K / Cmd+P →
+  // command palette (the composer's "drain next queued" moved to Cmd+Shift+K),
+  // Cmd+. → command center (sessions / system / usage).
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) {
@@ -235,7 +235,7 @@ export function DesktopController() {
 
       const key = event.key.toLowerCase()
 
-      if (key === 'k') {
+      if (key === 'k' || key === 'p') {
         event.preventDefault()
         toggleCommandPalette()
       } else if (key === '.') {

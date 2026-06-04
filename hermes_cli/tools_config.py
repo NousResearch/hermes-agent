@@ -1532,6 +1532,26 @@ def _get_platform_tools(
         disabled_set = {str(ts) for ts in disabled_toolsets}
         enabled_toolsets -= disabled_set
 
+    # #38798: if this platform was explicitly configured but every toolset name
+    # is invalid (e.g. a migration or hand-edit left `hermes` instead of
+    # `hermes-cli`), resolve_toolset() returns [] for each and the platform ends
+    # up with no native tools — silently, with no error. Surface it at the point
+    # tools are resolved for a session so an already-corrupted config is caught
+    # at runtime, not only during the next `hermes update`/`hermes doctor`.
+    _explicit = platform_toolsets.get(platform)
+    if isinstance(_explicit, list) and _explicit:
+        from toolsets import validate_toolset
+
+        _named = [str(t) for t in _explicit if isinstance(t, str) and t]
+        if _named and not any(validate_toolset(t) for t in _named):
+            logger.warning(
+                "platform '%s' has no valid toolsets configured (unknown "
+                "name(s): %s) - tools will be unavailable. Run `hermes tools` "
+                "to reconfigure. See issue #38798.",
+                platform,
+                ", ".join(_named),
+            )
+
     return enabled_toolsets
 
 

@@ -19170,10 +19170,10 @@ def _run_planned_stop_watcher(
         stop_event.wait(poll_interval)
 
 
-def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
+def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60, runner=None):
     """
     Background thread that ticks the cron scheduler at a regular interval.
-    
+
     Runs inside the gateway process so cronjobs fire automatically without
     needing a separate `hermes cron daemon` or system cron entry.
 
@@ -19183,6 +19183,17 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     Also refreshes the channel directory every 5 minutes and prunes the
     image/audio/document cache + expired ``hermes debug share`` pastes
     once per hour.
+
+    Args:
+        stop_event: Set when the gateway is shutting down — causes the
+            ticker loop to exit cleanly.
+        adapters: Live platform adapters for in-process delivery.
+        loop: The gateway asyncio event loop.
+        interval: Seconds between scheduler ticks (default 60).
+        runner: Optional GatewayRunner reference.  When provided, each tick
+            checks ``runner._draining`` before invoking the scheduler so
+            that a cron job cannot start a new outbound agent API call
+            after shutdown has been initiated (issue #37858).
     """
     from cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
@@ -19197,7 +19208,13 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     tick_count = 0
     while not stop_event.is_set():
         try:
-            cron_tick(verbose=False, adapters=adapters, loop=loop)
+            # Issue #37858: skip cron tick when the gateway is draining so
+            # a pending job cannot fire an outbound agent API call after
+            # shutdown has been initiated.
+            if runner is not None and getattr(runner, "_draining", False):
+                logger.debug("Cron tick skipped — gateway is draining")
+            else:
+                cron_tick(verbose=False, adapters=adapters, loop=loop)
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
 
@@ -19624,11 +19641,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
+    # Pass runner so the ticker can skip ticks while the gateway is draining
+    # (issue #37858 — prevents outbound agent API calls after stop is initiated).
     cron_stop = threading.Event()
     cron_thread = threading.Thread(
         target=_start_cron_ticker,
         args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop(), "runner": runner},
         daemon=True,
         name="cron-ticker",
     )

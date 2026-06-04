@@ -6391,11 +6391,20 @@ def _gateway_command_inner(args):
                 print("  Fix the service, then retry: hermes gateway start")
                 sys.exit(1)
 
-            # Manual restart: stop only this profile's gateway
+            # Manual restart: stop only this profile's gateway.
+            # Issue #37453 — wait for the full drain timeout before force-
+            # killing so a simultaneous stop+start cannot race on the same
+            # port/socket.  Add 5s of headroom beyond the gateway's own
+            # drain_timeout so the drain loop can finish cleanly before the
+            # CLI escalates to SIGKILL.
             if stop_profile_gateway():
                 print("✓ Stopped gateway for this profile")
 
-            _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+            _drain_timeout = _get_restart_drain_timeout()
+            _wait_for_gateway_exit(
+                timeout=_drain_timeout + 5.0,
+                force_after=_drain_timeout,
+            )
 
             # Start fresh
             print("Starting gateway...")

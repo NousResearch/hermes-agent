@@ -2579,3 +2579,104 @@ class TestServiceWorkingDirIsStable:
         assert m, "plist has no WorkingDirectory entry"
         assert Path(m.group(1)).resolve() == home.resolve()
         assert "/.worktrees/" not in m.group(1)
+
+
+class TestSystemdKillMode:
+    """Issue #37454 — systemd unit must use KillMode=mixed so the main
+    process receives SIGTERM (drain-then-exit) before worker processes in
+    the cgroup are killed.  KillMode=control-group (the systemd default)
+    sends SIGKILL to the whole cgroup immediately, bypassing the drain.
+    """
+
+    def test_user_unit_has_kill_mode_mixed(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_get_restart_drain_timeout",
+            lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+        )
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert "KillMode=mixed" in unit, (
+            "user-scope unit must set KillMode=mixed so SIGTERM reaches the "
+            "main process before workers are killed (#37454)"
+        )
+
+    def test_system_unit_has_kill_mode_mixed(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_get_restart_drain_timeout",
+            lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+        )
+        unit = gateway_cli.generate_systemd_unit(system=True)
+        assert "KillMode=mixed" in unit, (
+            "system-scope unit must set KillMode=mixed (#37454)"
+        )
+
+    def test_unit_does_not_use_control_group_kill_mode(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_get_restart_drain_timeout",
+            lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+        )
+        for system in (False, True):
+            unit = gateway_cli.generate_systemd_unit(system=system)
+            assert "KillMode=control-group" not in unit, (
+                f"{'system' if system else 'user'}-scope unit must NOT use "
+                "KillMode=control-group (would SIGKILL workers before drain)"
+            )
+
+
+class TestManualRestartDrainWait:
+    """Issue #37453 — manual `hermes gateway restart` (no systemd/launchd)
+    must wait for the full drain timeout before force-killing the old process
+    so a simultaneous stop+start cannot race on the same port/socket.
+    """
+
+    def test_manual_restart_waits_for_drain_timeout_not_hardcoded_10s(
+        self, monkeypatch, capsys
+    ):
+        """The wait before spawning the replacement must honour the configured
+        drain_timeout, not a hardcoded 10s value.  Without this, a 60s drain
+        that has not yet finished is force-killed after 5s, and the new
+        gateway process races on the same socket (#37453).
+        """
+        configured_drain = 45.0  # non-default — proves the value is respected
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_dispatch_via_service_manager_if_s6", lambda _: False)
+        monkeypatch.setattr(gateway_cli, "_dispatch_all_via_service_manager_if_s6", lambda _: False)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: configured_drain)
+        monkeypatch.setattr(gateway_cli, "stop_profile_gateway", lambda: True)
+
+        wait_calls = []
+
+        def fake_wait_for_exit(timeout, force_after):
+            wait_calls.append((timeout, force_after))
+
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", fake_wait_for_exit)
+        monkeypatch.setattr(gateway_cli, "run_gateway", lambda verbose=0: None)
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(
+                gateway_command="restart",
+                system=False,
+                **{"all": False},
+            )
+        )
+
+        assert wait_calls, "expected _wait_for_gateway_exit to be called"
+        timeout, force_after = wait_calls[0]
+        # timeout must be at least the drain_timeout so the process gets the
+        # full budget to finish draining before the CLI gives up.
+        assert timeout >= configured_drain, (
+            f"wait timeout ({timeout}s) must be >= drain_timeout ({configured_drain}s) "
+            "to avoid race-starting the new gateway while old one is still draining"
+        )
+        # force_after must also be >= drain_timeout so we don't SIGKILL before
+        # the drain window has expired.
+        assert force_after >= configured_drain, (
+            f"force_after ({force_after}s) must be >= drain_timeout ({configured_drain}s)"
+        )

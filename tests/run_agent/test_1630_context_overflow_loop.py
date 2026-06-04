@@ -200,6 +200,39 @@ class TestCompressionExhaustedFlag:
         assert not agent_result.get("compression_exhausted")
 
 
+class TestCompressionExhaustionHandoff:
+    """Gateway auto-reset should keep a tiny continuity bridge, not history."""
+
+    def test_handoff_is_bounded_and_skips_tool_noise(self):
+        from gateway.run import _build_compression_exhaustion_handoff
+
+        history = [
+            {"role": "system", "content": "system noise"},
+            {"role": "user", "content": "we were wiring the Mi Band BLE bridge"},
+            {"role": "tool", "content": "huge raw tool dump" * 500},
+            {"role": "assistant", "content": "I found the GATT service candidate."},
+        ]
+        handoff = _build_compression_exhaustion_handoff(
+            parent_session_id="parent-123",
+            history=history,
+            failed_user_message="继续跑吧",
+            agent_result={
+                "api_calls": 56,
+                "error": "Context length exceeded: max compression attempts (3) reached.",
+            },
+            max_chars=1200,
+        )
+
+        assert len(handoff) <= 1200
+        assert "parent-123" in handoff
+        assert "继续跑吧" in handoff
+        assert "56" in handoff
+        assert "Mi Band BLE bridge" in handoff
+        assert "GATT service candidate" in handoff
+        assert "huge raw tool dump" not in handoff
+        assert "background context only" in handoff
+
+
 # ---------------------------------------------------------------------------
 # Test 3: Context-overflow error messages
 # ---------------------------------------------------------------------------

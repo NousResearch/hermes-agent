@@ -77,6 +77,74 @@ class ProfileGatewayProcess:
     pid: int
 
 
+def _extract_launchd_pids(output: str, label: str) -> set[int]:
+    """Extract managed gateway PIDs from modern and legacy launchctl output."""
+    pids: set[int] = set()
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith('"PID" = ') or line.startswith("PID = "):
+            value = line.split("=", 1)[1].strip().rstrip(";")
+            try:
+                pid = int(value)
+            except ValueError:
+                continue
+            if pid > 0:
+                pids.add(pid)
+            continue
+        if line.startswith("pid = "):
+            try:
+                pid = int(line.split("=", 1)[1].strip())
+            except ValueError:
+                continue
+            if pid > 0:
+                pids.add(pid)
+            continue
+        parts = line.split()
+        if len(parts) >= 3 and parts[2] == label:
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            if pid > 0:
+                pids.add(pid)
+    return pids
+
+
+def _probe_launchd_job() -> tuple[bool, bool, str]:
+    """Return (loaded, running, diagnostic output) for the launchd gateway job."""
+    label = get_launchd_label()
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            output = result.stdout
+            return True, bool(_extract_launchd_pids(output, label)), output
+    except (FileNotFoundError, PermissionError, OSError, subprocess.TimeoutExpired):
+        pass
+
+    target = f"{_launchd_domain()}/{label}"
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", target],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, PermissionError, OSError, subprocess.TimeoutExpired):
+        return False, False, ""
+
+    if result.returncode != 0:
+        return False, False, result.stderr
+
+    output = result.stdout
+    running = "state = running" in output or bool(_extract_launchd_pids(output, label))
+    return True, running, output
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
@@ -126,27 +194,10 @@ def _get_service_pids() -> set:
 
     # --- launchd (macOS) ---
     if is_macos():
-        try:
-            label = get_launchd_label()
-            result = subprocess.run(
-                ["launchctl", "list", label],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 3 and parts[2] == label:
-                        try:
-                            pid = int(parts[0])
-                            if pid > 0:
-                                pids.add(pid)
-                        except ValueError:
-                            pass
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        label = get_launchd_label()
+        loaded, _running, output = _probe_launchd_job()
+        if loaded:
+            pids.update(_extract_launchd_pids(output, label))
 
     return pids
 
@@ -180,7 +231,7 @@ def _get_parent_pid(pid: int) -> int | None:
             text=True,
             timeout=5,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, PermissionError, OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
         return None
@@ -1026,16 +1077,8 @@ def _recover_pending_systemd_restart(
 def _probe_launchd_service_running() -> bool:
     if not get_launchd_plist_path().exists():
         return False
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        return False
-    return result.returncode == 0
+    _loaded, running, _output = _probe_launchd_job()
+    return running
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
@@ -3355,19 +3398,7 @@ def launchd_restart():
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
-    label = get_launchd_label()
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", label],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        loaded = result.returncode == 0
-        loaded_output = result.stdout
-    except subprocess.TimeoutExpired:
-        loaded = False
-        loaded_output = ""
+    loaded, _running, loaded_output = _probe_launchd_job()
 
     print(f"Launchd plist: {plist_path}")
     if launchd_plist_is_current():
@@ -4716,16 +4747,8 @@ def _is_service_running() -> bool:
 
         return False
     elif is_macos() and get_launchd_plist_path().exists():
-        try:
-            result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            return result.returncode == 0
-        except subprocess.TimeoutExpired:
-            return False
+        _loaded, running, _output = _probe_launchd_job()
+        return running
     elif is_windows():
         from hermes_cli import gateway_windows
 

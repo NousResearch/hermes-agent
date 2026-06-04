@@ -9,6 +9,8 @@ Uses python-telegram-bot library for:
 
 import asyncio
 import dataclasses
+import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -16,9 +18,15 @@ import tempfile
 import html as _html
 import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Any
+import time
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+_peer_relay_suppressed_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "telegram_peer_relay_suppressed",
+    default=False,
+)
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
@@ -468,6 +476,11 @@ class TelegramAdapter(BasePlatformAdapter):
             if self.config.extra.get("base_url")
             else 20 * 1024 * 1024
         )
+        self._peer_relays: List[Dict[str, Any]] = self._load_peer_relays()
+        self._recent_internal_peer_relays: Dict[tuple[str, str, str, str], float] = {}
+        self._recent_internal_peer_relay_ttl_seconds: float = float(
+            os.getenv("HERMES_TELEGRAM_INTERNAL_PEER_RELAY_TTL_SECONDS", "30")
+        )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
@@ -692,6 +705,295 @@ class TelegramAdapter(BasePlatformAdapter):
         if not thread_id:
             return None
         return int(thread_id)
+
+    @staticmethod
+    def _normalize_peer_username(value: Any) -> str:
+        return str(value or "").strip().lstrip("@").lower()
+
+    @staticmethod
+    def _normalize_peer_filter_list(value: Any) -> set[str]:
+        if value is None or value == "":
+            return set()
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return set()
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        return {str(item).strip() for item in parsed if str(item).strip()}
+                except json.JSONDecodeError:
+                    pass
+            items = raw.split(",")
+        elif isinstance(value, (list, tuple, set)):
+            items = value
+        else:
+            items = [value]
+        return {str(item).strip() for item in items if str(item).strip()}
+
+    def _load_peer_relays(self) -> List[Dict[str, Any]]:
+        configured = self.config.extra.get("bot_peer_relays")
+        if configured is None:
+            raw = os.getenv("TELEGRAM_BOT_PEER_RELAYS", "").strip()
+            if raw:
+                try:
+                    configured = json.loads(raw)
+                except json.JSONDecodeError as e:
+                    logger.warning("[%s] Invalid TELEGRAM_BOT_PEER_RELAYS JSON: %s", self.name, e)
+                    return []
+        if not configured:
+            return []
+        if isinstance(configured, dict):
+            configured = [configured]
+        if not isinstance(configured, list):
+            logger.warning("[%s] telegram bot_peer_relays must be a list or object; got %s", self.name, type(configured).__name__)
+            return []
+
+        relays: List[Dict[str, Any]] = []
+        for item in configured:
+            if not isinstance(item, dict):
+                logger.warning("[%s] Ignoring bot_peer_relays entry with invalid type: %s", self.name, type(item).__name__)
+                continue
+            username = self._normalize_peer_username(item.get("username") or item.get("bot_username"))
+            endpoint = str(item.get("endpoint") or "").strip()
+            if not username or not endpoint:
+                logger.warning("[%s] Ignoring bot_peer_relays entry missing username or endpoint", self.name)
+                continue
+            relays.append({
+                "username": username,
+                "endpoint": endpoint,
+                "api_key": str(item.get("api_key") or item.get("token") or "").strip(),
+                "chat_ids": self._normalize_peer_filter_list(item.get("chat_ids") or item.get("only_chat_ids")),
+                "thread_ids": self._normalize_peer_filter_list(item.get("thread_ids") or item.get("only_thread_ids")),
+                "timeout_seconds": float(item.get("timeout_seconds") or item.get("timeout") or 15.0),
+            })
+        return relays
+
+    def _peer_relays_suppressed(self) -> bool:
+        return bool(_peer_relay_suppressed_ctx.get())
+
+    @contextlib.contextmanager
+    def _suppress_peer_relays(self):
+        token = _peer_relay_suppressed_ctx.set(True)
+        try:
+            yield
+        finally:
+            _peer_relay_suppressed_ctx.reset(token)
+
+    def _content_mentions_username(self, content: str, username: str) -> bool:
+        if not content or not username:
+            return False
+        pattern = rf"(?i)(?<![A-Za-z0-9_])@{re.escape(username)}(?![A-Za-z0-9_./-])"
+        return re.search(pattern, content) is not None
+
+    @staticmethod
+    def _clean_trigger_text_for_username(text: Optional[str], username: str) -> Optional[str]:
+        if not text or not username:
+            return text
+        escaped = re.escape(username.lstrip("@"))
+        cleaned = re.sub(rf"(?i)@{escaped}(?![A-Za-z0-9_./-])[,:\-]*\s*", "", text).strip()
+        return cleaned or text
+
+    def _peer_relay_matches_chat(
+        self,
+        relay: Dict[str, Any],
+        chat_id: str,
+        thread_id: Optional[str],
+    ) -> bool:
+        chat_id = str(chat_id)
+        if not chat_id.startswith("-"):
+            return False
+        chat_ids = relay.get("chat_ids") or set()
+        if chat_ids and chat_id not in chat_ids:
+            return False
+        thread_ids = relay.get("thread_ids") or set()
+        if thread_ids and str(thread_id or "") not in thread_ids:
+            return False
+        return True
+
+    def _matching_peer_relays(
+        self,
+        content: str,
+        chat_id: str,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        matches: List[Dict[str, Any]] = []
+        suppressed = self._peer_relays_suppressed()
+        return_only_username = None
+        relay_hop = 0
+        if metadata:
+            return_only_username = self._normalize_peer_username(metadata.get("peer_relay_sender_username"))
+            try:
+                relay_hop = int(metadata.get("peer_relay_hop") or 0)
+            except (TypeError, ValueError):
+                relay_hop = 0
+
+        if suppressed and (not return_only_username or relay_hop >= 1):
+            return []
+
+        for relay in self._peer_relays:
+            if not self._peer_relay_matches_chat(relay, chat_id, thread_id):
+                continue
+            if suppressed and relay["username"] != return_only_username:
+                continue
+            if self._content_mentions_username(content, relay["username"]):
+                matches.append(relay)
+        return matches
+
+    @staticmethod
+    def _build_peer_relay_id(
+        chat_id: str,
+        message_id: Optional[str],
+        thread_id: Optional[str],
+        username: str,
+    ) -> str:
+        return ":".join(
+            [
+                "telegram-peer-relay",
+                str(chat_id),
+                str(thread_id or "root"),
+                str(message_id or "pending"),
+                username,
+            ]
+        )
+
+    async def _post_peer_relay(self, relay: Dict[str, Any], payload: Dict[str, Any]) -> None:
+        import urllib.request
+
+        body = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        api_key = relay.get("api_key") or ""
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        def _send_request() -> tuple[int, str]:
+            request = urllib.request.Request(
+                relay["endpoint"],
+                data=body,
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(
+                request,
+                timeout=float(relay.get("timeout_seconds") or 15.0),
+            ) as response:
+                preview = response.read(512).decode("utf-8", "ignore")
+                return int(getattr(response, "status", 200)), preview
+
+        try:
+            status, preview = await asyncio.to_thread(_send_request)
+            if status >= 300:
+                logger.warning(
+                    "[%s] Peer relay to @%s returned HTTP %s: %s",
+                    self.name,
+                    relay["username"],
+                    status,
+                    preview[:200],
+                )
+            else:
+                logger.info(
+                    "[%s] Peer relay to @%s accepted by %s (HTTP %s)",
+                    self.name,
+                    relay["username"],
+                    relay["endpoint"],
+                    status,
+                )
+        except Exception as e:
+            logger.warning(
+                "[%s] Peer relay to @%s failed: %s",
+                self.name,
+                relay["username"],
+                e,
+            )
+
+    async def _shadow_peer_relays(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        message_id: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        thread_id = metadata.get("thread_id") if metadata else None
+        matches = self._matching_peer_relays(content, chat_id, thread_id, metadata=metadata)
+        if not matches:
+            return
+
+        sender_username = (getattr(self._bot, "username", None) or "").lstrip("@")
+        sender_bot_id = getattr(self._bot, "id", None)
+        relay_hop = None
+        if metadata and "peer_relay_hop" in metadata:
+            try:
+                relay_hop = int(metadata.get("peer_relay_hop") or 0)
+            except (TypeError, ValueError):
+                relay_hop = 0
+        tasks = []
+        for relay in matches:
+            cleaned_text = self._clean_trigger_text_for_username(content, relay["username"]) or content
+            payload = {
+                "relay_id": self._build_peer_relay_id(chat_id, message_id, thread_id, relay["username"]),
+                "chat_id": str(chat_id),
+                "thread_id": str(thread_id) if thread_id else None,
+                "text": cleaned_text,
+                "raw_text": content,
+                "message_id": str(message_id) if message_id else None,
+                "sender_bot_username": sender_username,
+                "sender_bot_id": str(sender_bot_id) if sender_bot_id is not None else None,
+                "peer_relay_hop": (relay_hop + 1) if relay_hop is not None else 0,
+            }
+            tasks.append(self._post_peer_relay(relay, payload))
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _schedule_shadow_peer_relays(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        message_id: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        peer_relays = getattr(self, "_peer_relays", [])
+        if not peer_relays:
+            return False
+        thread_id = metadata.get("thread_id") if metadata else None
+        matches = self._matching_peer_relays(content, str(chat_id), thread_id, metadata=metadata)
+        if not matches:
+            return False
+
+        relay_task = asyncio.create_task(
+            self._shadow_peer_relays(
+                chat_id=str(chat_id),
+                content=content,
+                message_id=message_id,
+                metadata=metadata,
+            )
+        )
+        self._background_tasks.add(relay_task)
+        relay_task.add_done_callback(self._background_tasks.discard)
+        return True
+
+    def schedule_deferred_peer_relay(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        message_id: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        relay_metadata = dict(metadata) if metadata else {}
+        relay_metadata.pop("defer_peer_relay", None)
+        if not relay_metadata:
+            relay_metadata = None
+        return self._schedule_shadow_peer_relays(
+            chat_id=chat_id,
+            content=content,
+            message_id=message_id,
+            metadata=relay_metadata,
+        )
 
     @staticmethod
     def _is_thread_not_found_error(error: Exception) -> bool:
@@ -1840,6 +2142,20 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    def _parse_reply_to_message_id(self, reply_to: Optional[str]) -> Optional[int]:
+        """Return a numeric Telegram reply target, ignoring symbolic tokens."""
+        if reply_to in (None, ""):
+            return None
+        try:
+            return int(str(reply_to))
+        except (TypeError, ValueError):
+            logger.warning(
+                "[%s] Ignoring non-numeric Telegram reply_to token: %r",
+                self.name,
+                reply_to,
+            )
+            return None
+
     async def send(
         self,
         chat_id: str,
@@ -1918,7 +2234,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 else:
                     should_thread = self._should_thread_reply(reply_to_source, i)
-                reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
+                reply_to_id = (
+                    self._parse_reply_to_message_id(reply_to_source)
+                    if should_thread and reply_to_source
+                    else None
+                )
                 if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
                     return SendResult(
                         success=False,
@@ -2085,6 +2405,17 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception:
                 pass  # Typing failures are non-fatal
 
+            relay_metadata = dict(metadata) if metadata else {}
+            defer_peer_relay = bool(relay_metadata.pop("defer_peer_relay", False))
+            relay_metadata = relay_metadata or None
+            if message_ids and not defer_peer_relay:
+                self._schedule_shadow_peer_relays(
+                    chat_id=str(chat_id),
+                    content=content,
+                    message_id=message_ids[0],
+                    metadata=relay_metadata,
+                )
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
@@ -2115,6 +2446,21 @@ class TelegramAdapter(BasePlatformAdapter):
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(e)
             is_pool_timeout = self._looks_like_pool_timeout(e)
+            relay_metadata = dict(metadata) if metadata else {}
+            defer_peer_relay = bool(relay_metadata.pop("defer_peer_relay", False))
+            relay_metadata = relay_metadata or None
+            if is_timeout and not is_connect_timeout and not is_pool_timeout and not defer_peer_relay:
+                scheduled = self._schedule_shadow_peer_relays(
+                    chat_id=str(chat_id),
+                    content=content,
+                    message_id=None,
+                    metadata=relay_metadata,
+                )
+                if scheduled:
+                    logger.info(
+                        "[%s] Telegram send timed out; scheduled best-effort peer relay fallback",
+                        self.name,
+                    )
             return SendResult(success=False, error=str(e), retryable=(is_connect_timeout or is_pool_timeout or not is_timeout))
 
     async def send_or_update_status(
@@ -3261,6 +3607,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
             )
+            return
+
+        # --- Task tree browser callbacks ---
+        if data.startswith("task:"):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(caller_id):
+                await query.answer(text="⛔ You are not authorized to browse tasks.", show_alert=True)
+                return
+            await self._handle_task_browser_callback(query, data)
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---
@@ -5179,6 +5534,85 @@ class TelegramAdapter(BasePlatformAdapter):
         consuming channel posts without ever building a gateway event.
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
+
+    async def send_task_browser_view(
+        self,
+        chat_id: str,
+        view: Any,
+        *,
+        reply_to: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> SendResult:
+        """Send a /task TaskView with Telegram inline navigation buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(button.label, callback_data=button.callback_data) for button in row]
+            for row in (getattr(view, "buttons", None) or [])
+        ])
+        kwargs: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "text": self.format_message(getattr(view, "text", "")),
+            "parse_mode": ParseMode.MARKDOWN_V2,
+            "reply_markup": keyboard,
+            "reply_to_message_id": int(reply_to) if reply_to else None,
+            **self._link_preview_kwargs(),
+        }
+        if thread_id:
+            kwargs["message_thread_id"] = self._message_thread_id_for_send(str(thread_id))
+        try:
+            msg = await self._bot.send_message(**kwargs)
+            return SendResult(success=True, message_id=str(getattr(msg, "message_id", "") or ""))
+        except Exception as md_error:
+            logger.warning("[%s] Task browser MarkdownV2 send failed, falling back to plain text: %s", self.name, md_error)
+            kwargs["text"] = _strip_mdv2(kwargs["text"])
+            kwargs["parse_mode"] = None
+            msg = await self._bot.send_message(**kwargs)
+            return SendResult(success=True, message_id=str(getattr(msg, "message_id", "") or ""))
+
+    async def _send_task_browser_view(self, message: Message, view: Any) -> None:
+        await self.send_task_browser_view(
+            str(message.chat_id),
+            view,
+            reply_to=str(getattr(message, "message_id", "") or "") or None,
+            thread_id=str(getattr(message, "message_thread_id", "") or "") or None,
+        )
+
+    async def _handle_task_browser_callback(self, query: Any, data: str) -> None:
+        """Edit an inline /task browser message after a button click."""
+        try:
+            from task_tree import build_task_callback_view
+
+            view = build_task_callback_view(data)
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(button.label, callback_data=button.callback_data) for button in row]
+                for row in (view.buttons or [])
+            ])
+            formatted = self.format_message(view.text)
+            try:
+                await query.edit_message_text(
+                    text=formatted,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=keyboard,
+                    **self._link_preview_kwargs(),
+                )
+            except Exception as md_error:
+                if "not modified" in str(md_error).lower():
+                    await query.answer(text="Already current")
+                    return
+                await query.edit_message_text(
+                    text=_strip_mdv2(formatted),
+                    parse_mode=None,
+                    reply_markup=keyboard,
+                    **self._link_preview_kwargs(),
+                )
+            await query.answer()
+        except Exception as exc:
+            logger.error("[%s] Task browser callback failed: %s", self.name, exc, exc_info=True)
+            try:
+                await query.answer(text="Task browser failed")
+            except Exception:
+                pass
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.

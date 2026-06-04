@@ -1067,8 +1067,8 @@ DEFAULT_CONFIG = {
         "abort_on_summary_failure": False,  # When True, auto-compression that fails
                                       # to generate a summary (aux LLM errored / returned
                                       # non-JSON / timed out) aborts entirely instead of
-                                      # dropping the middle window with a static
-                                      # "summary unavailable" placeholder.  Messages are
+                                      # dropping the middle window with a local
+                                      # extractive fallback summary.  Messages are
                                       # preserved unchanged and the session "freezes" at
                                       # its current size until the user runs /compress
                                       # (which bypasses the failure cooldown) or /new.

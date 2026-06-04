@@ -754,6 +754,10 @@ def _live_system_guard(request, monkeypatch):
             def __init__(self, cmd, *args, **kwargs):
                 _check_subprocess_cmd("Popen", cmd)
                 super().__init__(cmd, *args, **kwargs)
+                try:
+                    _initial_children.add(int(self.pid))
+                except Exception:
+                    pass
 
         _GuardedPopen.__name__ = "Popen"
         _GuardedPopen.__qualname__ = "Popen"

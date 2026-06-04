@@ -6445,6 +6445,22 @@ class HermesCLI:
         print(f"  Home:    {display}")
         print()
 
+    def _queue_pending_agent_note(self, note: str) -> None:
+        """Queue a session note to prepend to the next real user turn."""
+        clean = str(note or "").strip()
+        if not clean:
+            return
+        existing = getattr(self, "_pending_model_switch_note", None)
+        self._pending_model_switch_note = f"{existing}\n\n{clean}" if existing else clean
+
+    def _handle_today_command(self):
+        """Show today's synced todo snapshot and queue it for next turn context."""
+        from today_todo import build_today_todo_note, load_today_todo_snapshot, render_today_todo_text
+
+        snapshot = load_today_todo_snapshot()
+        self._queue_pending_agent_note(build_today_todo_note(snapshot))
+        self.console.print(render_today_todo_text(snapshot), highlight=False, markup=False)
+
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
         # Get terminal config from environment (which was set from cli-config.yaml)
@@ -8736,6 +8752,8 @@ class HermesCLI:
             self.show_help()
         elif canonical == "profile":
             self._handle_profile_command()
+        elif canonical == "today":
+            self._handle_today_command()
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":

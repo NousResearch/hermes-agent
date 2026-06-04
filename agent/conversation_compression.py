@@ -468,9 +468,14 @@ def compress_context(
     if summary_error:
         if getattr(agent, "_last_compression_summary_warning", None) != summary_error:
             agent._last_compression_summary_warning = summary_error
+            fallback_kind = (
+                "Inserted an extractive fallback summary."
+                if getattr(agent.context_compressor, "_last_summary_fallback_used", False)
+                else "Inserted a fallback context marker."
+            )
             agent._emit_warning(
                 f"⚠ Compression summary failed: {summary_error}. "
-                "Inserted a fallback context marker."
+                f"{fallback_kind}"
             )
     else:
         # No hard failure — but did the configured aux model error out

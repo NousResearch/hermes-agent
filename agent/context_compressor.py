@@ -104,6 +104,8 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 # for tail-cut decisions.
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+_EXTRACTIVE_FALLBACK_MAX_ITEMS = 12
+_EXTRACTIVE_FALLBACK_EXCERPT_CHARS = 420
 
 # Hard ceiling for the deterministic summary-failure handoff.  The fallback is
 # only meant to preserve continuity anchors from the dropped window, not to
@@ -216,6 +218,50 @@ def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -
         return [text_block, *content] if prepend else [*content, text_block]
     rendered = str(content)
     return text + rendered if prepend else rendered + text
+
+
+def _clean_fallback_excerpt(text: Any, max_chars: int = _EXTRACTIVE_FALLBACK_EXCERPT_CHARS) -> str:
+    """Return a short, redacted one-line excerpt for local fallback summaries."""
+    if text is None:
+        return ""
+    rendered = text if isinstance(text, str) else str(text)
+    rendered = redact_sensitive_text(rendered)
+    rendered = re.sub(r"\s+", " ", rendered).strip()
+    if len(rendered) > max_chars:
+        rendered = rendered[: max_chars - 1].rstrip() + "…"
+    return rendered
+
+
+def _extract_tool_call_names(msg: Dict[str, Any]) -> list[str]:
+    """Best-effort tool names from an assistant message's tool_calls."""
+    names: list[str] = []
+    for tc in msg.get("tool_calls") or []:
+        if isinstance(tc, dict):
+            name = (tc.get("function") or {}).get("name") or tc.get("name")
+        else:
+            fn = getattr(tc, "function", None)
+            name = getattr(fn, "name", None) if fn else getattr(tc, "name", None)
+        if name:
+            names.append(str(name))
+    return names
+
+
+def _extract_relevant_paths(text: str, *, limit: int = 12) -> list[str]:
+    """Extract likely file paths from an excerpt without preserving secrets."""
+    if not text:
+        return []
+    path_re = re.compile(
+        r"(?:(?:~|/Users|/tmp|/var|\.)/[^\s\]')\"`]+|"
+        r"[\w.-]+/(?:[\w .@+-]+/)*[\w .@+-]+\.(?:py|ts|tsx|js|jsx|json|ya?ml|toml|md|txt|log|sh|swift|kt|java|go|rs|sql))"
+    )
+    seen: list[str] = []
+    for match in path_re.finditer(text):
+        p = match.group(0).rstrip(".,;:")
+        if p not in seen:
+            seen.append(p)
+        if len(seen) >= limit:
+            break
+    return seen
 
 
 def _strip_image_parts_from_parts(parts: Any) -> Any:
@@ -609,8 +655,8 @@ class ContextCompressor(ContextEngine):
         self.quiet_mode = quiet_mode
         # When True, summary-generation failure aborts compression entirely
         # (returns messages unchanged, sets _last_compress_aborted=True).
-        # When False (default = historical behavior), insert a
-        # deterministic "summary unavailable" handoff and drop the middle window.
+        # When False (default = historical behavior), insert a local
+        # extractive fallback (deterministic) summary and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
 
         self.context_length = get_model_context_length(
@@ -715,7 +761,11 @@ class ContextCompressor(ContextEngine):
 
         baseline = self.last_rough_tokens_when_real_prompt_fit or self.last_compression_rough_tokens
         if baseline <= 0:
-            return False
+            tolerated_over_threshold = max(8192, int(self.threshold_tokens * 0.10))
+            if rough_tokens > self.threshold_tokens + tolerated_over_threshold:
+                return False
+            self.last_rough_tokens_when_real_prompt_fit = max(self.threshold_tokens, rough_tokens)
+            return True
 
         growth = max(0, rough_tokens - baseline)
         tolerated_growth = max(4096, int(self.threshold_tokens * 0.05))
@@ -1129,7 +1179,7 @@ class ContextCompressor(ContextEngine):
         active_task = (
             f"User asked: {user_asks[-1]!r}"
             if user_asks
-            else "Unknown from deterministic fallback."
+            else "Unknown from extractive fallback (deterministic)."
         )
         previous_summary_note = ""
         if self._previous_summary:
@@ -1143,7 +1193,7 @@ class ContextCompressor(ContextEngine):
 {active_task}
 
 ## Goal
-Recovered from a deterministic fallback because the LLM context summarizer was unavailable. Continue from the protected recent messages after this summary and use current file/system state for exact details.{previous_summary_note}
+Recovered from an extractive fallback (deterministic) because the LLM context summarizer was unavailable. Continue from the protected recent messages after this summary and use current file/system state for exact details.{previous_summary_note}
 
 ## Constraints & Preferences
 - This fallback was generated locally without an LLM summary call.
@@ -1154,7 +1204,7 @@ Recovered from a deterministic fallback because the LLM context summarizer was u
 {chr(10).join(completed) if completed else "None recoverable from compacted turns."}
 
 ## Active State
-Unknown from deterministic fallback. Inspect current repository/session state if needed.
+Unknown from extractive fallback (deterministic). Inspect current repository/session state if needed.
 
 ## In Progress
 {active_task}
@@ -1163,10 +1213,10 @@ Unknown from deterministic fallback. Inspect current repository/session state if
 {_bullets(blockers, limit=5)}
 
 ## Key Decisions
-None recoverable from deterministic fallback.
+None recoverable from extractive fallback (deterministic).
 
 ## Resolved Questions
-None recoverable from deterministic fallback.
+None recoverable from extractive fallback (deterministic).
 
 ## Pending User Asks
 {active_task}
@@ -1181,7 +1231,7 @@ Continue from the most recent unfulfilled user ask and protected tail messages. 
 {_bullets(last_dropped_turns, limit=8)}
 
 ## Critical Context
-Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
+LLM summarization failed, so this is a best-effort extractive fallback (deterministic) for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
         summary = self._with_summary_prefix(redact_sensitive_text(body.strip()))
         if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
             summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
@@ -1213,6 +1263,24 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self._last_aux_model_failure_model = self.summary_model
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
+
+    def _generate_extractive_fallback_summary(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+        *,
+        n_dropped: int,
+        focus_topic: Optional[str] = None,
+    ) -> str:
+        """Build a bounded local handoff when auxiliary summarization fails."""
+        reason = self._last_summary_error
+        if focus_topic:
+            reason = f"{reason or 'unknown error'}; focus_topic={focus_topic}"
+        summary = self._build_static_fallback_summary(
+            turns_to_summarize,
+            reason=reason,
+        )
+        self._previous_summary = summary.removeprefix(SUMMARY_PREFIX).strip()
+        return summary
 
     def _generate_summary(
         self,
@@ -1940,9 +2008,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         #   True  → ABORT compression entirely. Return messages unchanged
         #           and set _last_compress_aborted=True so callers can warn
         #           the user and stop the auto-compress retry loop.
-        #   False → Fall through to the default fallback path below: insert
-        #           a deterministic "summary unavailable" handoff and drop
-        #           the middle window.  Records _last_summary_fallback_used /
+        #   False → Fall through to the fallback path below: insert
+        #           a local extractive fallback summary for the middle window.
+        #           Records _last_summary_fallback_used /
         #           _last_summary_dropped_count for gateway hygiene to
         #           surface a warning.
         # Default is False (historical behavior).
@@ -1975,18 +2043,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     )
             compressed.append(msg)
 
-        # If LLM summary failed, insert a deterministic fallback so the model
-        # gets at least locally recoverable continuity anchors instead of a
-        # content-free "N messages were removed" marker.
+        # Fallback path: LLM summary failed and abort_on_summary_failure is
+        # False (the default).  Build a local extractive fallback summary
+        # from the dropped window rather than inserting a context-free marker.
         if not summary:
             if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting deterministic fallback context summary")
+                logger.warning("Summary generation failed — inserting extractive fallback summary")
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
-            summary = self._build_static_fallback_summary(
+            summary = self._generate_extractive_fallback_summary(
                 turns_to_summarize,
-                reason=self._last_summary_error,
+                n_dropped=n_dropped,
+                focus_topic=focus_topic,
             )
 
         _merge_summary_into_tail = False

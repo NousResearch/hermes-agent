@@ -44,6 +44,28 @@ from hermes_time import now as _hermes_now
 logger = logging.getLogger(__name__)
 
 
+def _runtime_reasoning_effort(effort: Optional[object]) -> str:
+    """Map user-facing cron effort labels to runtime parser labels."""
+    text = str(effort or "").strip().lower()
+    if text == "middle":
+        return "medium"
+    return text
+
+
+def _resolve_job_reasoning_config(job: dict, cfg: dict) -> Optional[dict]:
+    """Resolve reasoning config for a cron run.
+
+    Job-specific ``reasoning_effort`` wins over the global ``agent.reasoning_effort``.
+    Jobs store Queen-facing ``middle``; model runtime expects ``medium``.
+    """
+    from hermes_constants import parse_reasoning_effort
+
+    job_effort = str(job.get("reasoning_effort") or "").strip()
+    global_effort = str((cfg.get("agent") or {}).get("reasoning_effort", "")).strip()
+    effort = job_effort or global_effort
+    return parse_reasoning_effort(_runtime_reasoning_effort(effort))
+
+
 class CronPromptInjectionBlocked(Exception):
     """Raised by _build_job_prompt when the fully-assembled prompt trips the
     injection scanner. Caught in run_job so the operator sees a clean
@@ -149,13 +171,25 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
-# Sentinel: when a cron agent has nothing new to report, it can start its
-# response with this marker to suppress delivery.  Output is still saved
-# locally for audit.
+# Sentinel: when a cron agent has nothing new to report, it can respond with
+# exactly this marker to suppress delivery. Output is still saved locally for
+# audit. Do not treat incidental mentions of the marker in a real report as
+# silence.
 SILENT_MARKER = "[SILENT]"
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
+
+
+def _is_silent_response(response: str) -> bool:
+    """Return True only for an exact cron silence sentinel.
+
+    Cron prompts explicitly tell agents to return exactly ``[SILENT]`` and
+    nothing else when delivery should be suppressed. A substring check is too
+    broad: normal reports may mention another job's ``[SILENT]`` status and
+    still need to be delivered.
+    """
+    return response.strip().upper() == SILENT_MARKER
 
 
 def _get_hermes_home() -> Path:
@@ -1546,10 +1580,8 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception:
             pass
 
-        # Reasoning config from config.yaml
-        from hermes_constants import parse_reasoning_effort
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
-        reasoning_config = parse_reasoning_effort(effort)
+        # Reasoning config: per-job override wins over config.yaml default.
+        reasoning_config = _resolve_job_reasoning_config(job, _cfg)
 
         # Prefill messages from env or config.yaml
         prefill_messages = None
@@ -1979,7 +2011,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
                 should_deliver = bool(deliver_content.strip())
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+                if should_deliver and success and _is_silent_response(deliver_content):
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 

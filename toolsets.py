@@ -56,6 +56,8 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
+    # Local desktop control (availability-gated by the tool registration)
+    "computer_control",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -176,6 +178,12 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_cdp",
             "browser_dialog", "web_search"
         ],
+        "includes": []
+    },
+
+    "computer": {
+        "description": "Local desktop control on macOS: screenshot, activate apps, open files/URLs, keystrokes, and frontmost-app inspection",
+        "tools": ["computer_control"],
         "includes": []
     },
     

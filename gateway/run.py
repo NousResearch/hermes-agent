@@ -751,6 +751,138 @@ def _collect_auto_append_media_tags(
 
     return media_tags, has_voice_directive
 
+def _clip_handoff_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _build_compression_exhaustion_handoff(
+    *,
+    parent_session_id: str,
+    history: Optional[List[Dict[str, Any]]],
+    failed_user_message: str,
+    agent_result: Dict[str, Any],
+    max_chars: int = 4000,
+) -> str:
+    """Build a bounded continuity note for post-exhaustion auto-reset.
+
+    The goal is not to replay the old transcript. Replaying is exactly what
+    caused the context-overflow loop. This note is a small audit/continuity
+    bridge so the next fresh session understands why it woke up with less
+    context and what the user had just asked.
+    """
+    lines = [
+        "[System note: The previous session exceeded the model context window "
+        "and Hermes could not compress it further, so a fresh session was "
+        "created. The following handoff is bounded background context only; "
+        "do not continue old work unless the user asks.]",
+        f"Parent session: {parent_session_id}",
+    ]
+
+    api_calls = agent_result.get("api_calls")
+    if api_calls is not None:
+        lines.append(f"Failed turn API calls before reset: {api_calls}")
+
+    error = _clip_handoff_text(agent_result.get("error"), 500)
+    if error:
+        lines.append(f"Failure reason: {error}")
+
+    failed_user_message = _clip_handoff_text(failed_user_message, 900)
+    if failed_user_message:
+        lines.append("")
+        lines.append("User message that triggered the exhausted turn:")
+        lines.append(f"- {failed_user_message}")
+
+    recent: list[str] = []
+    for msg in reversed(history or []):
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        if role not in {"user", "assistant"}:
+            continue
+        content = _clip_handoff_text(msg.get("content"), 650)
+        if not content:
+            continue
+        recent.append(f"- {role}: {content}")
+        if len(recent) >= 8:
+            break
+    if recent:
+        lines.append("")
+        lines.append("Recent prior conversation, newest last:")
+        lines.extend(reversed(recent))
+
+    lines.append("")
+    lines.append(
+        "Recovery guidance: answer the user's next message from this short "
+        "handoff plus durable memory/files. If more detail is needed, ask the "
+        "user or suggest /resume instead of loading the whole old transcript."
+    )
+
+    return _clip_handoff_text("\n".join(lines), max_chars)
+
+_COMPRESSION_CALIBRATION_FIELDS = (
+    "last_prompt_tokens",
+    "last_real_prompt_tokens",
+    "last_compression_rough_tokens",
+    "last_rough_tokens_when_real_prompt_fit",
+)
+
+
+def _nonnegative_int(value: Any) -> int:
+    try:
+        ivalue = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, ivalue)
+
+
+def _calibration_source_value(source: Any, field: str) -> Any:
+    if isinstance(source, dict):
+        return source.get(field, 0)
+    return getattr(source, field, 0)
+
+
+def _compression_calibration_from_session_entry(session_entry: Any) -> Dict[str, int]:
+    if session_entry is None:
+        return {}
+    return {
+        field: _nonnegative_int(_calibration_source_value(session_entry, field))
+        for field in _COMPRESSION_CALIBRATION_FIELDS
+    }
+
+
+def _hydrate_gateway_compression_calibration(agent: Any, calibration_source: Any) -> None:
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None or calibration_source is None:
+        return
+
+    for field in _COMPRESSION_CALIBRATION_FIELDS:
+        value = _nonnegative_int(_calibration_source_value(calibration_source, field))
+        if value > 0:
+            setattr(compressor, field, value)
+
+    # Backward compatibility for sessions created before the explicit
+    # calibration fields existed: below-threshold last_prompt_tokens came from
+    # a successful provider call often enough to be useful as a conservative
+    # "real prompt fit" signal. Above-threshold values still won't defer.
+    if _nonnegative_int(getattr(compressor, "last_real_prompt_tokens", 0)) <= 0:
+        last_prompt = _nonnegative_int(
+            _calibration_source_value(calibration_source, "last_prompt_tokens")
+        )
+        if last_prompt > 0:
+            compressor.last_real_prompt_tokens = last_prompt
+
+
+def _compression_calibration_from_agent(agent: Any) -> Dict[str, int]:
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return {}
+    return {
+        field: _nonnegative_int(getattr(compressor, field, 0))
+        for field in _COMPRESSION_CALIBRATION_FIELDS
+    }
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -6878,7 +7010,9 @@ class GatewayRunner:
             if not check_api_server_requirements():
                 logger.warning("API Server: aiohttp not installed")
                 return None
-            return APIServerAdapter(config)
+            adapter = APIServerAdapter(config)
+            adapter.gateway_runner = self
+            return adapter
 
         elif platform == Platform.WEBHOOK:
             from gateway.platforms.webhook import WebhookAdapter, check_webhook_requirements
@@ -7763,6 +7897,10 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
 
+            # /task should be query-only and never interrupt.
+            if _cmd_def_inner and _cmd_def_inner.name == "task":
+                return await self._handle_task_command(event)
+
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
             # /btw is an alias of /background and resolves to the same canonical
@@ -8082,6 +8220,12 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "today":
+            return await self._handle_today_command(event)
+
+        if canonical == "task":
+            return await self._handle_task_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -8867,10 +9011,20 @@ class GatewayRunner:
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
                 context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
+            elif reset_reason == "compression_exhausted":
+                context_note = (
+                    "[System note: The user's previous session exceeded the model "
+                    "context window and could not be compressed further. This is a "
+                    "fresh conversation; use the bounded handoff below as background "
+                    "context only.]"
+                )
             elif reset_reason == "daily":
                 context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
             else:
                 context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
+            _reset_handoff = getattr(session_entry, "reset_context_handoff", None)
+            if _reset_handoff:
+                context_note = f"{context_note}\n\n{_reset_handoff}"
             context_prompt = context_note + "\n\n" + context_prompt
 
             # Send a user-facing notification explaining the reset, unless:
@@ -8896,6 +9050,8 @@ class GatewayRunner:
                     if adapter:
                         if reset_reason == "suspended":
                             reason_text = "previous session was stopped or interrupted"
+                        elif reset_reason == "compression_exhausted":
+                            reason_text = "previous session exceeded the model context window and could not be compressed"
                         elif reset_reason == "daily":
                             reason_text = f"daily schedule at {policy.at_hour}:00"
                         else:
@@ -8905,7 +9061,7 @@ class GatewayRunner:
                             reason_text = f"inactive for {duration}"
                         notice = (
                             f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
+                            f"Conversation history cleared from the live context.\n"
                             f"Use /resume to browse and restore a previous session.\n"
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
@@ -8924,6 +9080,12 @@ class GatewayRunner:
 
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
+            session_entry.reset_parent_session_id = None
+            session_entry.reset_context_handoff = None
+            try:
+                self.session_store._save()
+            except Exception:
+                logger.debug("Failed to persist auto-reset handoff consumption", exc_info=True)
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.
@@ -9197,6 +9359,10 @@ class GatewayRunner:
                                     )
                                     # Reset stored token count — transcript was rewritten
                                     session_entry.last_prompt_tokens = 0
+                                    session_entry.last_real_prompt_tokens = 0
+                                    session_entry.last_compression_rough_tokens = 0
+                                    session_entry.last_rough_tokens_when_real_prompt_fit = 0
+                                    self.session_store._save()
                                     history = _compressed
                                     _new_count = len(_compressed)
                                     _new_tokens = estimate_messages_tokens_rough(
@@ -9377,6 +9543,10 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                event=event,
+                compression_calibration=_compression_calibration_from_session_entry(
+                    session_entry
+                ),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -9609,7 +9779,17 @@ class GatewayRunner:
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
                 )
-                self.session_store.reset_session(session_key)
+                _handoff = _build_compression_exhaustion_handoff(
+                    parent_session_id=session_entry.session_id,
+                    history=history,
+                    failed_user_message=message_text,
+                    agent_result=agent_result,
+                )
+                self.session_store.reset_session(
+                    session_key,
+                    auto_reset_reason="compression_exhausted",
+                    reset_context_handoff=_handoff,
+                )
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
@@ -9713,6 +9893,11 @@ class GatewayRunner:
             self.session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+                last_real_prompt_tokens=agent_result.get("last_real_prompt_tokens", 0),
+                last_compression_rough_tokens=agent_result.get("last_compression_rough_tokens", 0),
+                last_rough_tokens_when_real_prompt_fit=agent_result.get(
+                    "last_rough_tokens_when_real_prompt_fit", 0
+                ),
             )
 
             # Auto voice reply: send TTS audio before the text response
@@ -10115,6 +10300,25 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
+    def _queue_pending_agent_note(self, session_key: str, note: str) -> None:
+        """Queue a session note to prepend to the next real user turn."""
+        clean = str(note or "").strip()
+        if not clean or not session_key:
+            return
+        if not hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes = {}
+        existing = self._pending_model_notes.get(session_key)
+        self._pending_model_notes[session_key] = f"{existing}\n\n{clean}" if existing else clean
+
+    async def _handle_today_command(self, event: MessageEvent) -> str:
+        """Handle /today by syncing the local todo snapshot into the session."""
+        from today_todo import build_today_todo_note, load_today_todo_snapshot, render_today_todo_text
+
+        session_entry = self.session_store.get_or_create_session(event.source)
+        snapshot = load_today_todo_snapshot()
+        self._queue_pending_agent_note(session_entry.session_key, build_today_todo_note(snapshot))
+        return render_today_todo_text(snapshot)
+
 
     def _check_slash_access(
         self, source: SessionSource, canonical_cmd: str
@@ -10371,6 +10575,24 @@ class GatewayRunner:
         ])
 
         return "\n".join(lines)
+
+    async def _handle_task_command(self, event: MessageEvent) -> str:
+        """Handle /task — deterministic task-tree browser over todo-state.json."""
+        from task_tree import build_task_command_view
+
+        view = build_task_command_view(event.get_command_args())
+        adapter = (getattr(self, "adapters", {}) or {}).get(event.source.platform)
+        send_task_view = getattr(adapter, "send_task_browser_view", None)
+        if callable(send_task_view) and event.source.chat_id:
+            result = await send_task_view(
+                event.source.chat_id,
+                view,
+                reply_to=event.message_id,
+                thread_id=event.source.thread_id,
+            )
+            if getattr(result, "success", False):
+                return ""
+        return view.text
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
@@ -11430,6 +11652,10 @@ class GatewayRunner:
         self.session_store.rewrite_transcript(session_entry.session_id, truncated)
         # Reset stored token count — transcript was truncated
         session_entry.last_prompt_tokens = 0
+        session_entry.last_real_prompt_tokens = 0
+        session_entry.last_compression_rough_tokens = 0
+        session_entry.last_rough_tokens_when_real_prompt_fit = 0
+        self.session_store._save()
         
         # Re-send by creating a fake text event with the old message
         retry_event = MessageEvent(
@@ -11780,6 +12006,10 @@ class GatewayRunner:
 
         # Reset stored token count — transcript was truncated.
         session_entry.last_prompt_tokens = 0
+        session_entry.last_real_prompt_tokens = 0
+        session_entry.last_compression_rough_tokens = 0
+        session_entry.last_rough_tokens_when_real_prompt_fit = 0
+        self.session_store._save()
         # Evict the cached agent so the next turn rebuilds from the active-only
         # transcript and memory providers refresh their per-session caches.
         try:
@@ -13105,7 +13335,11 @@ class GatewayRunner:
                 self.session_store.rewrite_transcript(new_session_id, compressed)
                 # Reset stored token count — transcript changed, old value is stale
                 self.session_store.update_session(
-                    session_entry.session_key, last_prompt_tokens=0
+                    session_entry.session_key,
+                    last_prompt_tokens=0,
+                    last_real_prompt_tokens=0,
+                    last_compression_rough_tokens=0,
+                    last_rough_tokens_when_real_prompt_fit=0,
                 )
                 new_tokens = estimate_request_tokens_rough(
                     compressed, system_prompt=_sys_prompt, tools=_tools
@@ -16801,6 +17035,8 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        event: Optional[MessageEvent] = None,
+        compression_calibration: Optional[Dict[str, int]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -16837,6 +17073,117 @@ class GatewayRunner:
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+        _is_telegram_turn = getattr(source.platform, "value", source.platform) == "telegram"
+        _is_internal_peer_relay_turn = (
+            _is_telegram_turn
+            and event is not None
+            and getattr(event, "internal", False)
+            and isinstance(getattr(event, "raw_message", None), dict)
+            and (
+                event.raw_message.get("sender_bot_username")
+                or event.raw_message.get("peer_relay_hop") not in (None, "")
+            )
+        )
+        _is_visible_telegram_other_bot_turn = False
+        _actionable_visible_telegram_peer_turn = False
+        _peer_turn_sender_label = None
+
+        if _is_telegram_turn and event is not None and not getattr(event, "internal", False):
+            _raw_message_obj = getattr(event, "raw_message", None)
+            _raw_sender = getattr(_raw_message_obj, "from_user", None)
+            if _raw_sender is not None and bool(getattr(_raw_sender, "is_bot", False)) and source.chat_type != "dm":
+                _telegram_adapter = self.adapters.get(source.platform)
+                _current_bot = getattr(_telegram_adapter, "_bot", None)
+                _current_bot_id = getattr(_current_bot, "id", None)
+                _current_bot_username = str(getattr(_current_bot, "username", "") or "").strip().lstrip("@")
+                _sender_id = getattr(_raw_sender, "id", None)
+                _is_visible_telegram_other_bot_turn = _sender_id != _current_bot_id
+                if _is_visible_telegram_other_bot_turn:
+                    _raw_username = str(getattr(_raw_sender, "username", "") or "").strip().lstrip("@")
+                    if _raw_username and re.fullmatch(r"[A-Za-z0-9_]{1,64}", _raw_username):
+                        _peer_turn_sender_label = f"@{_raw_username}"
+
+                    _raw_reply = getattr(_raw_message_obj, "reply_to_message", None)
+                    _reply_target_id = getattr(getattr(_raw_reply, "from_user", None), "id", None)
+                    _raw_message_mentions_current_bot = False
+                    for _source_text, _entities in (
+                        (getattr(_raw_message_obj, "text", None) or "", getattr(_raw_message_obj, "entities", None) or []),
+                        (getattr(_raw_message_obj, "caption", None) or "", getattr(_raw_message_obj, "caption_entities", None) or []),
+                    ):
+                        if _current_bot_username and re.search(
+                            rf"(?i)(?<![A-Za-z0-9_])@{re.escape(_current_bot_username)}(?![A-Za-z0-9_./-])",
+                            _source_text,
+                        ):
+                            _raw_message_mentions_current_bot = True
+                            break
+                        for _entity in _entities:
+                            _entity_type = str(getattr(_entity, "type", "")).split(".")[-1].lower()
+                            if _entity_type == "mention" and _current_bot_username:
+                                _offset = int(getattr(_entity, "offset", -1))
+                                _length = int(getattr(_entity, "length", 0))
+                                if _offset < 0 or _length <= 0:
+                                    continue
+                                if _source_text[_offset:_offset + _length].strip().lower() == f"@{_current_bot_username.lower()}":
+                                    _raw_message_mentions_current_bot = True
+                                    break
+                            elif _entity_type == "text_mention":
+                                _entity_user = getattr(_entity, "user", None)
+                                if _entity_user and getattr(_entity_user, "id", None) == _current_bot_id:
+                                    _raw_message_mentions_current_bot = True
+                                    break
+                        if _raw_message_mentions_current_bot:
+                            break
+                    _actionable_visible_telegram_peer_turn = bool(
+                        _raw_message_mentions_current_bot
+                        or (_reply_target_id is not None and _reply_target_id == _current_bot_id)
+                    )
+
+        _force_one_shot_telegram_reply = _is_internal_peer_relay_turn or _is_visible_telegram_other_bot_turn
+        _peer_turn_context_note = None
+        if _is_internal_peer_relay_turn or _actionable_visible_telegram_peer_turn:
+            if _is_internal_peer_relay_turn and isinstance(getattr(event, "raw_message", None), dict):
+                _relay_username = str(event.raw_message.get("sender_bot_username") or "").strip().lstrip("@")
+                if _relay_username and re.fullmatch(r"[A-Za-z0-9_]{1,64}", _relay_username):
+                    _peer_turn_sender_label = f"@{_relay_username}"
+            _sender_fragment = f" from {_peer_turn_sender_label}" if _peer_turn_sender_label else ""
+            _delivery_fragment = (
+                "Hermes internally relayed it because Telegram does not deliver bot-authored messages directly."
+                if _is_internal_peer_relay_turn
+                else "Telegram delivered a visible peer-bot message that explicitly addressed you, so treat it as a direct bot turn."
+            )
+            _peer_turn_context_note = (
+                "[System note: This Telegram peer-bot turn is actionable. "
+                f"A peer bot directly addressed you{_sender_fragment}. "
+                f"{_delivery_fragment} "
+                "Reply directly in this same chat/thread. "
+                "Do not treat cron delivery footer text like 'The agent cannot see this message, and therefore cannot respond to it.' "
+                "as a reason to stay silent; that footer is transport boilerplate.]"
+            )
+
+        if _is_internal_peer_relay_turn:
+            try:
+                _peer_relay_hop = int(event.raw_message.get("peer_relay_hop") or 0)
+            except (TypeError, ValueError):
+                _peer_relay_hop = 0
+            if _peer_relay_hop >= 1:
+                logger.info(
+                    "Consuming Telegram peer-relay return hop without reply in %s (hop=%s)",
+                    source.chat_id,
+                    _peer_relay_hop,
+                )
+                return {
+                    "final_response": "",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                    "history_offset": len(history),
+                    "last_prompt_tokens": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "model": None,
+                    "session_id": session_id,
+                    "response_previewed": False,
+                }
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -16887,6 +17234,8 @@ class GatewayRunner:
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
         tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        if _force_one_shot_telegram_reply:
+            tool_progress_enabled = False
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -16901,6 +17250,8 @@ class GatewayRunner:
                 )
             )
         )
+        if _force_one_shot_telegram_reply:
+            interim_assistant_messages_enabled = False
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -17506,6 +17857,8 @@ class GatewayRunner:
             event_channel_prompt = (channel_prompt or "").strip()
             if event_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
+            if _peer_turn_context_note:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + _peer_turn_context_note).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
 
@@ -17714,6 +18067,8 @@ class GatewayRunner:
                         _cache[session_key] = (agent, _sig)
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
+
+            _hydrate_gateway_compression_calibration(agent, compression_calibration)
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
@@ -18145,11 +18500,13 @@ class GatewayRunner:
             _output_toks = 0
             _context_length = 0
             _agent = agent_holder[0]
+            _compression_calibration = {}
             if _agent and hasattr(_agent, "context_compressor"):
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
+                _compression_calibration = _compression_calibration_from_agent(_agent)
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
@@ -18168,6 +18525,7 @@ class GatewayRunner:
                     "tools": tools_holder[0] or [],
                     "history_offset": len(agent_history),
                     "last_prompt_tokens": _last_prompt_toks,
+                    **_compression_calibration,
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
@@ -18324,6 +18682,7 @@ class GatewayRunner:
                 "tools": tools_holder[0] or [],
                 "history_offset": _effective_history_offset,
                 "last_prompt_tokens": _last_prompt_toks,
+                **_compression_calibration,
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
@@ -18926,6 +19285,7 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    event=pending_event,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

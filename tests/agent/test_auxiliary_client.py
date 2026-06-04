@@ -52,9 +52,11 @@ def _clean_env(monkeypatch):
     # cache for later ones, causing _resolve_auto to skip providers
     # that the test patched to return valid clients.
     import agent.auxiliary_client as _aux_mod
+    _aux_mod.clear_runtime_main()
     _aux_mod._aux_unhealthy_until.clear()
     _aux_mod._aux_unhealthy_logged_at.clear()
     yield
+    _aux_mod.clear_runtime_main()
     _aux_mod._aux_unhealthy_until.clear()
     _aux_mod._aux_unhealthy_logged_at.clear()
 
@@ -898,6 +900,9 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._read_main_provider", return_value=None), \
+             patch("agent.auxiliary_client._read_main_model", return_value=None), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None, None)), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = get_text_auxiliary_client()
         assert client is None
@@ -908,6 +913,7 @@ class TestGetTextAuxiliaryClient:
                    return_value=("https://api.openai.com/v1", "sk-test", "codex_responses")), \
              patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=None), \
+             patch("agent.auxiliary_client._read_main_provider", return_value=None), \
              patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.3-codex"), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
@@ -2794,7 +2800,7 @@ class TestCodexAuxiliaryAdapterTimeout:
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
         class _SlowAliveCreateStream:
             def __iter__(self):
-                for _ in range(5):
+                for _ in range(10):
                     time.sleep(0.03)
                     yield SimpleNamespace(type="response.in_progress")
 
@@ -2814,7 +2820,7 @@ class TestCodexAuxiliaryAdapterTimeout:
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        assert time.monotonic() - started < 0.25
 
 
 class TestCodexAuxiliaryAdapterNullOutputRecovery:

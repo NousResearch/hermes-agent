@@ -452,6 +452,9 @@ class SessionEntry:
     
     # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
+    last_real_prompt_tokens: int = 0
+    last_compression_rough_tokens: int = 0
+    last_rough_tokens_when_real_prompt_fit: int = 0
     
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
@@ -467,6 +470,8 @@ class SessionEntry:
     # context-note prepend — both wrong for an explicit manual reset.
     # See issue #6508.
     is_fresh_reset: bool = False
+    reset_parent_session_id: Optional[str] = None
+    reset_context_handoff: Optional[str] = None
     
     # Set by the background expiry watcher after it finalizes an expired
     # session (invoking on_session_finalize hooks and evicting the cached
@@ -506,6 +511,9 @@ class SessionEntry:
             "cache_write_tokens": self.cache_write_tokens,
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
+            "last_real_prompt_tokens": self.last_real_prompt_tokens,
+            "last_compression_rough_tokens": self.last_compression_rough_tokens,
+            "last_rough_tokens_when_real_prompt_fit": self.last_rough_tokens_when_real_prompt_fit,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "expiry_finalized": self.expiry_finalized,
@@ -518,6 +526,8 @@ class SessionEntry:
                 else None
             ),
             "is_fresh_reset": self.is_fresh_reset,
+            "reset_parent_session_id": self.reset_parent_session_id,
+            "reset_context_handoff": self.reset_context_handoff,
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
@@ -562,6 +572,9 @@ class SessionEntry:
             cache_write_tokens=data.get("cache_write_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
+            last_real_prompt_tokens=data.get("last_real_prompt_tokens", 0),
+            last_compression_rough_tokens=data.get("last_compression_rough_tokens", 0),
+            last_rough_tokens_when_real_prompt_fit=data.get("last_rough_tokens_when_real_prompt_fit", 0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             expiry_finalized=data.get("expiry_finalized", data.get("memory_flushed", False)),
@@ -570,6 +583,8 @@ class SessionEntry:
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
             is_fresh_reset=data.get("is_fresh_reset", False),
+            reset_parent_session_id=data.get("reset_parent_session_id"),
+            reset_context_handoff=data.get("reset_context_handoff"),
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
@@ -958,6 +973,9 @@ class SessionStore:
         self,
         session_key: str,
         last_prompt_tokens: int = None,
+        last_real_prompt_tokens: int = None,
+        last_compression_rough_tokens: int = None,
+        last_rough_tokens_when_real_prompt_fit: int = None,
     ) -> None:
         """Update lightweight session metadata after an interaction."""
         with self._lock:
@@ -968,6 +986,12 @@ class SessionStore:
                 entry.updated_at = _now()
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
+                if last_real_prompt_tokens is not None:
+                    entry.last_real_prompt_tokens = last_real_prompt_tokens
+                if last_compression_rough_tokens is not None:
+                    entry.last_compression_rough_tokens = last_compression_rough_tokens
+                if last_rough_tokens_when_real_prompt_fit is not None:
+                    entry.last_rough_tokens_when_real_prompt_fit = last_rough_tokens_when_real_prompt_fit
                 self._save()
 
     def suspend_session(self, session_key: str) -> bool:
@@ -1127,9 +1151,17 @@ class SessionStore:
                 self._save()
         return count
 
-    def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
+    def reset_session(
+        self,
+        session_key: str,
+        display_name: Optional[str] = None,
+        *,
+        auto_reset_reason: Optional[str] = None,
+        reset_context_handoff: Optional[str] = None,
+    ) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
         db_end_session_id = None
+        db_end_reason = "session_reset"
         db_create_kwargs = None
         new_entry = None
 
@@ -1141,6 +1173,8 @@ class SessionStore:
 
             old_entry = self._entries[session_key]
             db_end_session_id = old_entry.session_id
+            if auto_reset_reason == "compression_exhausted":
+                db_end_reason = "compression_exhaustion_reset"
 
             now = _now()
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -1154,7 +1188,12 @@ class SessionStore:
                 display_name=display_name if display_name is not None else old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
-                is_fresh_reset=True,
+                is_fresh_reset=auto_reset_reason is None,
+                was_auto_reset=auto_reset_reason is not None,
+                auto_reset_reason=auto_reset_reason,
+                reset_had_activity=True if auto_reset_reason else False,
+                reset_parent_session_id=old_entry.session_id if auto_reset_reason else None,
+                reset_context_handoff=reset_context_handoff if auto_reset_reason else None,
             )
 
             self._entries[session_key] = new_entry
@@ -1164,10 +1203,12 @@ class SessionStore:
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
             }
+            if auto_reset_reason:
+                db_create_kwargs["parent_session_id"] = old_entry.session_id
 
         if self._db and db_end_session_id:
             try:
-                self._db.end_session(db_end_session_id, "session_reset")
+                self._db.end_session(db_end_session_id, db_end_reason)
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 

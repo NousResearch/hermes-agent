@@ -99,17 +99,20 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg", "btw"), args_hint="<prompt>"),
-    CommandDef("agents", "Show active agents and running tasks", "Session",
-               aliases=("tasks",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
+    CommandDef("agents", "Show active agents and running tasks", "Session",
+               aliases=("tasks",)),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                args_hint="<prompt>"),
+    CommandDef("today", "Show today's synced todo snapshot and queue it for the next turn", "Session"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
                args_hint="[text | pause | resume | clear | status]"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session info", "Session"),
+    CommandDef("task", "Browse the canonical task tree from todo-state.json", "Session",
+               gateway_only=True, args_hint="[task id|title]"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -348,6 +351,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "status",
         "steer",
         "stop",
+        "task",
         "update",
     }
 )
@@ -1077,16 +1081,30 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
-    # Second pass: aliases.
+    # Second pass: high-use aliases that should survive Slack's 50-command cap.
+    # Without this, earlier low-value aliases can consume the final slots before
+    # /q is registered, breaking native slash parity for common shortcuts.
+    priority_aliases = {"reset", "bg", "btw", "q"}
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
         for alias in cmd.aliases:
+            if alias not in priority_aliases:
+                continue
+            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+
+    # Third pass: remaining aliases.
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        for alias in cmd.aliases:
+            if alias in priority_aliases:
+                continue
             # Skip aliases that only differ from canonical by case/punctuation
             # normalization (already covered by _add dedup).
             _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
-    # Third pass: plugin commands.
+    # Fourth pass: plugin commands.
     for name, description, args_hint in _iter_plugin_command_entries():
         _add(name, description, args_hint or "")
 

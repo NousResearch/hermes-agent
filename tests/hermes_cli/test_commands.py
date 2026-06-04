@@ -98,6 +98,7 @@ class TestResolveCommand:
         assert resolve_command("background").name == "background"
         assert resolve_command("copy").name == "copy"
         assert resolve_command("agents").name == "agents"
+        assert resolve_command("task").name == "task"
 
     def test_alias_resolves_to_canonical(self):
         assert resolve_command("bg").name == "background"
@@ -136,6 +137,12 @@ class TestDerivedDicts:
             if cmd.gateway_only:
                 assert f"/{cmd.name}" not in COMMANDS, \
                     f"gateway_only command /{cmd.name} should not be in COMMANDS"
+
+    def test_task_is_gateway_only(self):
+        task = resolve_command("task")
+        assert task is not None
+        assert task.gateway_only is True
+        assert "/task" not in COMMANDS
 
     def test_commands_dict_includes_all_cli_commands(self):
         for cmd in COMMAND_REGISTRY:

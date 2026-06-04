@@ -473,6 +473,54 @@ class TestTelegramApprovalCallback:
         mock_resolve.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_task_browser_callback_rejects_unauthorized_user(self):
+        """Task browser buttons should honor TELEGRAM_ALLOWED_USERS."""
+        adapter = _make_adapter()
+
+        query = AsyncMock()
+        query.data = "task:p:0"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.answer = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+            with patch.object(adapter, "_handle_task_browser_callback", new_callable=AsyncMock) as task_handler:
+                await adapter._handle_callback_query(update, context)
+
+        task_handler.assert_not_awaited()
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_task_browser_callback_allows_authorized_user(self):
+        """Allowed Telegram users can click task browser buttons."""
+        adapter = _make_adapter()
+
+        query = AsyncMock()
+        query.data = "task:p:0"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.answer = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+            with patch.object(adapter, "_handle_task_browser_callback", new_callable=AsyncMock) as task_handler:
+                await adapter._handle_callback_query(update, context)
+
+        task_handler.assert_awaited_once_with(query, "task:p:0")
+
+    @pytest.mark.asyncio
     async def test_update_prompt_callback_not_affected(self, tmp_path):
         """Ensure update prompt callbacks still work."""
         adapter = _make_adapter()

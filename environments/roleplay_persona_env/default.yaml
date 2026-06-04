@@ -1,0 +1,55 @@
+# Roleplay Persona Environment -- Default Configuration
+#
+# Capture-first roleplay benchmark environment for Hermes.
+# Each rollout must write a SOUL.md file, then answer in character.
+#
+# Usage example:
+#   python environments/roleplay_persona_env/roleplay_persona_env.py process \
+#       --openai.base_url http://127.0.0.1:8000/v1 \
+#       --openai.model_name Qwen3.6-35B-A3B-4bit \
+#       --openai.server_type openai \
+#       --openai.api_key dracoglasser \
+#       --env.backend_label 8000 \
+#       --env.model_label Qwen3.6-35B-A3B-4bit \
+#       --env.context_tier 128k \
+#       --env.context_target_chars 480000 \
+#       --env.group_size 1 \
+#       --env.total_steps 56 \
+#       --env.summary_output_path /tmp/roleplay-summary.json \
+#       --env.artifacts_root /tmp/hermes-roleplay-artifacts
+
+env:
+  enabled_toolsets: ["terminal", "file"]
+  max_agent_turns: 18
+  max_token_length: 1024
+  agent_temperature: 0.2
+  group_size: 1
+  total_steps: 8
+  steps_per_eval: 1000
+  terminal_backend: "local"
+  tool_call_parser: "hermes"
+  tokenizer_name: "NousResearch/DeepHermes-3-Llama-3-3B-Preview"
+  ensure_scores_are_not_same: false
+  use_wandb: false
+  system_prompt: >
+    You are being evaluated inside a Hermes roleplay benchmark.
+    You MUST use the available terminal/file tools to create the requested SOUL.md file before your final answer.
+    Only work inside the provided workspace path.
+    Your final answer must be the in-character assistant reply requested by the user prompt.
+  persona_config_path: "~/.hermes/config.yaml"
+  artifacts_root: "/tmp/hermes-roleplay-artifacts"
+  summary_output_path: "/tmp/hermes-roleplay-summary.json"
+  model_label: "unknown-model"
+  backend_label: "8000"
+  context_tier: "128k"
+  context_target_chars: 480000
+  workspace_root: "/tmp/hermes-roleplay-workspaces"
+  persona_names_csv: ""
+  scenario_names_csv: "persona_boot,persona_multiturn,persona_long_context,persona_conflict"
+
+openai:
+  base_url: "http://127.0.0.1:8000/v1"
+  model_name: "placeholder-model"
+  server_type: "openai"
+  api_key: ""
+  health_check: false

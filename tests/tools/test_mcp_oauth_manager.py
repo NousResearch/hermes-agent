@@ -8,6 +8,7 @@ import json
 import os
 import time
 
+import httpx
 import pytest
 
 pytest.importorskip(
@@ -82,6 +83,50 @@ def test_hermes_provider_subclass_exists():
 
 
 @pytest.mark.asyncio
+async def test_mcp_sdk_token_exchange_accepts_201_created():
+    """The installed MCP SDK keeps the local Supabase 201-token fix equivalent."""
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+    from mcp.shared.auth import OAuthClientMetadata
+
+    class _Storage:
+        def __init__(self):
+            self.tokens = None
+
+        async def get_tokens(self):
+            return self.tokens
+
+        async def set_tokens(self, tokens):
+            self.tokens = tokens
+
+        async def get_client_info(self):
+            return None
+
+        async def set_client_info(self, client_info):
+            pass
+
+    storage = _Storage()
+    provider = OAuthClientProvider(
+        "https://example.supabase.co/mcp",
+        OAuthClientMetadata(redirect_uris=["http://localhost/callback"]),
+        storage,
+    )
+    response = httpx.Response(
+        201,
+        json={
+            "access_token": "SUPABASE",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        },
+        request=httpx.Request("POST", "https://example.supabase.co/oauth/token"),
+    )
+
+    await provider._handle_token_response(response)
+
+    assert provider.context.current_tokens.access_token == "SUPABASE"
+    assert storage.tokens.access_token == "SUPABASE"
+
+
+@pytest.mark.asyncio
 async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     """When the tokens file mtime changes, provider._initialized flips False.
 
@@ -138,4 +183,3 @@ def test_manager_builds_hermes_provider_subclass(tmp_path, monkeypatch):
     assert _HERMES_PROVIDER_CLS is not None
     assert isinstance(provider, _HERMES_PROVIDER_CLS)
     assert provider._hermes_server_name == "srv"
-

@@ -82,6 +82,23 @@ class TestPreflightDeferral:
 
         assert compressor.should_defer_preflight_to_real_usage(93_000) is False
 
+    def test_defers_near_threshold_without_rough_baseline_after_real_fit(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 70_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 0
+        compressor.last_compression_rough_tokens = 0
+
+        assert compressor.should_defer_preflight_to_real_usage(92_000) is True
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 92_000
+
+    def test_does_not_defer_far_above_threshold_without_rough_baseline(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 70_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 0
+        compressor.last_compression_rough_tokens = 0
+
+        assert compressor.should_defer_preflight_to_real_usage(100_000) is False
+
 
 
 class TestCompress:
@@ -96,7 +113,7 @@ class TestCompress:
     def test_truncation_fallback_no_client(self, compressor):
         # Simulate "no summarizer available" explicitly. call_llm can otherwise
         # discover the developer's real auxiliary credentials from auth state.
-        # The failed summary should use the deterministic fallback path.
+        # The failed summary should use the local extractive fallback path.
         msgs = [{"role": "system", "content": "System prompt"}] + self._make_messages(10)
         with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
             result = compressor.compress(msgs)
@@ -107,6 +124,55 @@ class TestCompress:
         # Abort flag must NOT fire under the default config.
         assert compressor._last_compress_aborted is False
         assert compressor._last_summary_fallback_used is True
+        joined = "\n".join(str(m.get("content", "")) for m in result)
+        assert "extractive fallback" in joined
+        assert "Summary generation was unavailable" not in joined
+
+    def test_extractive_fallback_preserves_task_snapshot_and_user_asks(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+
+        msgs = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "一开始任务是让小模型 mcbot 接入 agent 模式，像正常玩家一样移动"},
+            {"role": "assistant", "content": "先做 HeadlessMC smoke test"},
+            {
+                "role": "user",
+                "content": "[Your active task list was preserved across context compression]\n"
+                           "- [>] mcbot. 小模型 mcbot agent team 调度 (in_progress)",
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"function": {"name": "terminal"}}],
+            },
+            {
+                "role": "tool",
+                "name": "terminal",
+                "content": "ran headlessmc smoke; log at /Users/dracoglasser/.hermes/minecraft-headlessmc/smoke.log",
+            },
+            {"role": "user", "content": "tail 最新问题"},
+            {"role": "assistant", "content": "tail answer"},
+        ]
+
+        def fail_summary(self, turns, focus_topic=None):
+            self._last_summary_error = "forced timeout"
+            return None
+
+        with patch.object(ContextCompressor, "_generate_summary", fail_summary):
+            result = c.compress(msgs, force=True)
+
+        joined = "\n".join(str(m.get("content", "")) for m in result)
+        assert "小模型 mcbot" in joined
+        assert "active task list" in joined
+        assert "/Users/dracoglasser/.hermes/minecraft-headlessmc/smoke.log" in joined
+        assert "Summary generation was unavailable" not in joined
 
     def test_summary_failure_uses_deterministic_fallback_with_recovered_context(self):
         """Regression: failed LLM summaries should not emit a content-free marker.
@@ -161,7 +227,8 @@ class TestCompress:
         assert "Please fix the compression summary failure" in combined
         assert "read_file" in combined
         assert "agent/context_compressor.py" in combined
-        assert "Summary generation was unavailable" in combined
+        assert "extractive fallback" in combined
+        assert "Summary generation was unavailable" not in combined
         assert "removed to free context space but could not be summarized" not in combined
         assert c._last_summary_fallback_used is True
         assert c._last_summary_dropped_count == 3
@@ -812,7 +879,7 @@ class TestAuxModelFallbackSurfacedToCallers:
 
 class TestSummaryFailureTrackingForGatewayWarning:
     """Default behavior (compression.abort_on_summary_failure=False):
-    summary-generation failure inserts a static fallback placeholder and
+    summary-generation failure inserts a local extractive fallback summary and
     records dropped count + fallback flag so gateway hygiene & /compress
     can surface a visible warning."""
 
@@ -839,10 +906,9 @@ class TestSummaryFailureTrackingForGatewayWarning:
         assert c._last_summary_error is not None
         # Default mode: abort flag must NOT fire.
         assert c._last_compress_aborted is False
-        assert any(
-            isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
-            for m in result
-        )
+        joined = "\n".join(str(m.get("content", "")) for m in result)
+        assert "extractive fallback" in joined
+        assert "Summary generation was unavailable" not in joined
 
     def test_summary_failure_fallback_preserves_tool_paths_and_redacts_secret_context(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
@@ -875,7 +941,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
         with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
             result = c.compress(msgs)
 
-        fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
+        fallback = next(m["content"] for m in result if "extractive fallback" in m.get("content", ""))
         assert "Called tool(s): read_file" in fallback
         assert "/tmp/project/app.py" in fallback
         assert secret not in fallback
@@ -903,7 +969,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
         with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
             result = c.compress(msgs)
 
-        fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
+        fallback = next(m["content"] for m in result if "extractive fallback" in m.get("content", ""))
         assert "Called tool(s): terminal" in fallback
         assert "/repo/scripts/fix.py" in fallback
         assert "/repo" in fallback
@@ -931,7 +997,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
         with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
             result = c.compress(msgs)
 
-        fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
+        fallback = next(m["content"] for m in result if "extractive fallback" in m.get("content", ""))
         assert "## Last Dropped Turns" in fallback
         assert "ASSISTANT: I inspected /tmp/active.py and found the failing branch" in fallback
         assert "TOOL: ValueError: boom in /tmp/active.py" in fallback
@@ -956,9 +1022,9 @@ class TestSummaryFailureTrackingForGatewayWarning:
         with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
             result = c.compress(msgs)
 
-        fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
+        fallback = next(m["content"] for m in result if "extractive fallback" in m.get("content", ""))
         assert len(fallback) <= 8300
-        assert "deterministic fallback" in fallback
+        assert "deterministic" in fallback
         assert "important detail" in fallback
 
     def test_compress_clears_fallback_flag_on_subsequent_success(self):

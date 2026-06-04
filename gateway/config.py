@@ -1026,6 +1026,8 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(allowed_topics, list):
                         allowed_topics = ",".join(str(v) for v in allowed_topics)
                     os.environ["TELEGRAM_ALLOWED_TOPICS"] = str(allowed_topics)
+                if "bot_peer_relays" in telegram_cfg and not os.getenv("TELEGRAM_BOT_PEER_RELAYS"):
+                    os.environ["TELEGRAM_BOT_PEER_RELAYS"] = json.dumps(telegram_cfg["bot_peer_relays"])
                 ignored_threads = telegram_cfg.get("ignored_threads")
                 if ignored_threads is not None and not os.getenv("TELEGRAM_IGNORED_THREADS"):
                     if isinstance(ignored_threads, list):

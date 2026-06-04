@@ -809,10 +809,21 @@ class _CodexCompletionsAdapter:
                 # cadence the old in-line ``_check_cancelled()`` used.
                 _check_cancelled()
 
+            def _events_with_cancel_checks(_events: Any):
+                iterator = iter(_events)
+                while True:
+                    _check_cancelled()
+                    try:
+                        event = next(iterator)
+                    except StopIteration:
+                        return
+                    _check_cancelled()
+                    yield event
+
             event_stream = self._client.responses.create(**stream_kwargs)
             try:
                 final = _consume_codex_event_stream(
-                    event_stream,
+                    _events_with_cancel_checks(event_stream),
                     model=resp_kwargs.get("model"),
                     on_event=_on_each_event,
                 )

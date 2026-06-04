@@ -32,6 +32,7 @@ Requires:
 """
 
 import asyncio
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
@@ -55,6 +56,8 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
     SendResult,
     is_network_accessible,
 )
@@ -495,6 +498,269 @@ class ResponseStore:
         return row[0] if row else 0
 
 
+class IPhoneCompanionStore:
+    """SQLite-backed store for iPhone companion registrations and uploads."""
+
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            try:
+                from hermes_cli.config import get_hermes_home
+                db_path = str(get_hermes_home() / "iphone_companion.db")
+            except Exception:
+                db_path = ":memory:"
+        try:
+            self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        except Exception:
+            self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS iphone_devices (
+                client_id TEXT PRIMARY KEY,
+                device_name TEXT NOT NULL,
+                bundle_identifier TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                os_version TEXT NOT NULL,
+                capabilities_json TEXT NOT NULL,
+                submitted_at TEXT NOT NULL,
+                registered_device_id TEXT NOT NULL,
+                device_token TEXT NOT NULL UNIQUE,
+                registered_at TEXT NOT NULL
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS iphone_event_uploads (
+                upload_id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                device_name TEXT NOT NULL,
+                submitted_at TEXT NOT NULL,
+                event_count INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                received_at TEXT NOT NULL
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS iphone_location_requests (
+                request_id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                requested_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                decided_at TEXT,
+                decision_note TEXT
+            )"""
+        )
+        self._conn.commit()
+
+    @staticmethod
+    def _iso_now() -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _receipt_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "clientID": row["client_id"],
+            "registeredDeviceID": row["registered_device_id"],
+            "deviceToken": row["device_token"],
+            "registeredAt": row["registered_at"],
+        }
+
+    def register_device(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        client_id = str(payload["clientID"]).strip()
+        existing = self._conn.execute(
+            "SELECT client_id, registered_device_id, device_token, registered_at FROM iphone_devices WHERE client_id = ?",
+            (client_id,),
+        ).fetchone()
+        if existing is not None:
+            return self._receipt_from_row(existing)
+
+        row = {
+            "client_id": client_id,
+            "device_name": str(payload["deviceName"]).strip(),
+            "bundle_identifier": str(payload["bundleIdentifier"]).strip(),
+            "platform": str(payload["platform"]).strip(),
+            "os_version": str(payload["osVersion"]).strip(),
+            "capabilities_json": json.dumps(payload["capabilities"], sort_keys=True),
+            "submitted_at": str(payload["submittedAt"]).strip(),
+            "registered_device_id": str(uuid.uuid4()),
+            "device_token": f"iphone_{uuid.uuid4().hex}",
+            "registered_at": self._iso_now(),
+        }
+        self._conn.execute(
+            """INSERT INTO iphone_devices (
+                client_id, device_name, bundle_identifier, platform, os_version,
+                capabilities_json, submitted_at, registered_device_id, device_token, registered_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                row["client_id"],
+                row["device_name"],
+                row["bundle_identifier"],
+                row["platform"],
+                row["os_version"],
+                row["capabilities_json"],
+                row["submitted_at"],
+                row["registered_device_id"],
+                row["device_token"],
+                row["registered_at"],
+            ),
+        )
+        self._conn.commit()
+        return {
+            "clientID": row["client_id"],
+            "registeredDeviceID": row["registered_device_id"],
+            "deviceToken": row["device_token"],
+            "registeredAt": row["registered_at"],
+        }
+
+    def get_device_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            """SELECT client_id, device_name, bundle_identifier, platform, os_version,
+                      submitted_at, registered_device_id, device_token, registered_at
+               FROM iphone_devices WHERE device_token = ?""",
+            (token,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_device_by_client_id(self, client_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            """SELECT client_id, device_name, bundle_identifier, platform, os_version,
+                      submitted_at, registered_device_id, device_token, registered_at
+               FROM iphone_devices WHERE client_id = ?""",
+            (client_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    @staticmethod
+    def _location_request_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "requestID": row["request_id"],
+            "clientID": row["client_id"],
+            "reason": row["reason"],
+            "requestedAt": row["requested_at"],
+            "status": row["status"],
+        }
+
+    def create_location_request(self, *, client_id: str, reason: str, requested_at: str) -> Dict[str, Any]:
+        request_id = str(uuid.uuid4())
+        self._conn.execute(
+            """INSERT INTO iphone_location_requests (
+                request_id, client_id, reason, requested_at, status, decided_at, decision_note
+            ) VALUES (?, ?, ?, ?, ?, NULL, NULL)""",
+            (request_id, client_id, reason, requested_at, "pending"),
+        )
+        self._conn.commit()
+        return {
+            "requestID": request_id,
+            "clientID": client_id,
+            "reason": reason,
+            "requestedAt": requested_at,
+            "status": "pending",
+        }
+
+    def get_next_pending_location_request_for_client(self, client_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            """SELECT request_id, client_id, reason, requested_at, status
+               FROM iphone_location_requests
+               WHERE client_id = ? AND status = 'pending'
+               ORDER BY requested_at ASC, request_id ASC
+               LIMIT 1""",
+            (client_id,),
+        ).fetchone()
+        return self._location_request_from_row(row) if row is not None else None
+
+    def decide_location_request(
+        self,
+        *,
+        request_id: str,
+        client_id: str,
+        status: str,
+        decided_at: str,
+        note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            """SELECT request_id, client_id, reason, requested_at, status
+               FROM iphone_location_requests
+               WHERE request_id = ? AND client_id = ?""",
+            (request_id, client_id),
+        ).fetchone()
+        if row is None or row["status"] != "pending":
+            return None
+        self._conn.execute(
+            """UPDATE iphone_location_requests
+               SET status = ?, decided_at = ?, decision_note = ?
+               WHERE request_id = ? AND client_id = ?""",
+            (status, decided_at, note, request_id, client_id),
+        )
+        self._conn.commit()
+        return {
+            "requestID": request_id,
+            "clientID": client_id,
+            "reason": row["reason"],
+            "requestedAt": row["requested_at"],
+            "status": status,
+        }
+
+    def record_event_upload(
+        self,
+        *,
+        client_id: str,
+        device_name: str,
+        submitted_at: str,
+        event_count: int,
+        payload: Dict[str, Any],
+    ) -> None:
+        self._conn.execute(
+            """INSERT INTO iphone_event_uploads (
+                upload_id, client_id, device_name, submitted_at, event_count, payload_json, received_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                uuid.uuid4().hex,
+                client_id,
+                device_name,
+                submitted_at,
+                event_count,
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                self._iso_now(),
+            ),
+        )
+        self._conn.commit()
+
+    def get_latest_personal_context_snapshot_for_client(self, client_id: str) -> Optional[Dict[str, Any]]:
+        rows = self._conn.execute(
+            """SELECT payload_json
+               FROM iphone_event_uploads
+               WHERE client_id = ?
+               ORDER BY submitted_at DESC, received_at DESC, upload_id DESC""",
+            (client_id,),
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except Exception:
+                continue
+            events = payload.get("events") if isinstance(payload, dict) else None
+            if not isinstance(events, list):
+                continue
+            for event in reversed(events):
+                if not isinstance(event, dict):
+                    continue
+                event_payload = event.get("payload")
+                if not isinstance(event_payload, dict):
+                    continue
+                if event_payload.get("kind") != "personal_context_snapshot":
+                    continue
+                snapshot = event_payload.get("personalContextSnapshot")
+                if isinstance(snapshot, dict):
+                    return snapshot
+        return None
+
+    def close(self) -> None:
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # CORS middleware
 # ---------------------------------------------------------------------------
@@ -718,6 +984,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._iphone_companion_store = IPhoneCompanionStore()
+        self.gateway_runner = None
+        self._telegram_peer_relay_cache = _IdempotencyCache(max_items=1000, ttl_seconds=900)
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -866,6 +1135,105 @@ class APIServerAdapter(BasePlatformAdapter):
             status=401,
         )
 
+    @staticmethod
+    def _parse_uuid_string(value: Any) -> Optional[str]:
+        try:
+            return str(uuid.UUID(str(value).strip()))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_iso8601_string(value: Any) -> Optional[str]:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return raw
+        except Exception:
+            return None
+
+    def _check_iphone_device_auth(
+        self, request: "web.Request",
+    ) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+            if token:
+                record = self._iphone_companion_store.get_device_by_token(token)
+                if record is not None:
+                    return record, None
+        return None, web.json_response({"error": "Invalid device token"}, status=401)
+
+    @staticmethod
+    def _parse_iso8601_datetime(value: Any) -> Optional[datetime]:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    def _build_iphone_recommendation(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        generated_at = IPhoneCompanionStore._iso_now()
+        notification_status = str(snapshot.get("notificationAuthorization") or "").strip()
+        battery = snapshot.get("battery") if isinstance(snapshot.get("battery"), dict) else {}
+        reminders = snapshot.get("reminders") if isinstance(snapshot.get("reminders"), dict) else {}
+        calendar = snapshot.get("calendar") if isinstance(snapshot.get("calendar"), dict) else {}
+
+        if notification_status in {"notDetermined", "denied", "provisional"}:
+            return {
+                "id": "recommendation-enable-notifications",
+                "kind": "enable_notifications",
+                "title": "Enable notifications for nudges",
+                "body": "Companion Node can capture context, but Hermes needs notification permission to deliver timely nudges on the phone.",
+                "generatedAt": generated_at,
+            }
+
+        battery_level = battery.get("levelPercent")
+        charging_state = str(battery.get("chargingState") or "").strip()
+        if isinstance(battery_level, int) and battery_level <= 25 and charging_state not in {"charging", "full"}:
+            return {
+                "id": "recommendation-charge-soon",
+                "kind": "charge_soon",
+                "title": "Charge before you head out",
+                "body": f"Battery is at {battery_level}% and the phone is not charging.",
+                "generatedAt": generated_at,
+            }
+
+        due_soon_count = reminders.get("dueSoonCount")
+        if isinstance(due_soon_count, int) and due_soon_count > 0:
+            return {
+                "id": "recommendation-review-reminders",
+                "kind": "review_reminders",
+                "title": "Review near-term reminders",
+                "body": f"You have {due_soon_count} reminder(s) due soon.",
+                "generatedAt": generated_at,
+            }
+
+        upcoming_event_count = calendar.get("upcomingEventCount")
+        next_event_start = self._parse_iso8601_datetime(calendar.get("nextEventStartAt"))
+        if isinstance(upcoming_event_count, int) and upcoming_event_count > 0 and next_event_start is not None:
+            now = datetime.now(timezone.utc)
+            time_until_event = next_event_start - now
+            if time_until_event.total_seconds() <= 2 * 60 * 60:
+                return {
+                    "id": "recommendation-prepare-calendar",
+                    "kind": "prepare_for_calendar",
+                    "title": "Prep for your next event",
+                    "body": "Hermes sees an upcoming calendar event within the next two hours.",
+                    "generatedAt": generated_at,
+                }
+
+        return {
+            "id": "recommendation-keep-momentum",
+            "kind": "keep_momentum",
+            "title": "Context synced successfully",
+            "body": "Hermes has your latest battery, calendar, reminder, and notification context.",
+            "generatedAt": generated_at,
+        }
+
     # ------------------------------------------------------------------
     # Session header helpers
     # ------------------------------------------------------------------
@@ -962,6 +1330,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        service_tier: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -994,6 +1363,14 @@ class APIServerAdapter(BasePlatformAdapter):
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = GatewayRunner._load_fallback_model()
+        service_tier = service_tier or GatewayRunner._load_service_tier()
+        request_overrides = None
+        if service_tier:
+            try:
+                from hermes_cli.models import resolve_fast_mode_overrides
+                request_overrides = resolve_fast_mode_overrides(model)
+            except Exception as e:
+                logger.debug("Failed to resolve API server fast-mode overrides for %s: %s", model, e)
 
         agent = AIAgent(
             model=model,
@@ -1013,12 +1390,312 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
+            service_tier=service_tier,
+            request_overrides=request_overrides,
         )
         return agent
+
+    @staticmethod
+    def _parse_request_service_tier(raw: Optional[str]) -> Optional[str]:
+        """Normalize per-request service tier header values."""
+        value = str(raw or "").strip().lower()
+        if value in {"fast", "priority", "on"}:
+            return "priority"
+        if value and value not in {"normal", "default", "standard", "off", "none"}:
+            logger.warning("Ignoring invalid X-Hermes-Service-Tier value: %r", raw)
+        return None
 
     # ------------------------------------------------------------------
     # HTTP Handlers
     # ------------------------------------------------------------------
+
+    async def _handle_iphone_register(self, request: "web.Request") -> "web.Response":
+        """POST /api/iphone/register — register an iPhone companion device."""
+        auth_error = self._check_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        client_id = self._parse_uuid_string(payload.get("clientID"))
+        submitted_at = self._parse_iso8601_string(payload.get("submittedAt"))
+        device_name = str(payload.get("deviceName") or "").strip()
+        bundle_identifier = str(payload.get("bundleIdentifier") or "").strip()
+        platform_name = str(payload.get("platform") or "").strip()
+        os_version = str(payload.get("osVersion") or "").strip()
+        capabilities = payload.get("capabilities")
+
+        if client_id is None:
+            return web.json_response({"error": "clientID must be a valid UUID"}, status=400)
+        if not device_name:
+            return web.json_response({"error": "deviceName is required"}, status=400)
+        if not bundle_identifier:
+            return web.json_response({"error": "bundleIdentifier is required"}, status=400)
+        if not platform_name:
+            return web.json_response({"error": "platform is required"}, status=400)
+        if not os_version:
+            return web.json_response({"error": "osVersion is required"}, status=400)
+        if not isinstance(capabilities, dict):
+            return web.json_response({"error": "capabilities must be an object"}, status=400)
+        if submitted_at is None:
+            return web.json_response({"error": "submittedAt must be an ISO8601 timestamp"}, status=400)
+
+        receipt = self._iphone_companion_store.register_device(
+            {
+                "clientID": client_id,
+                "deviceName": device_name,
+                "bundleIdentifier": bundle_identifier,
+                "platform": platform_name,
+                "osVersion": os_version,
+                "capabilities": capabilities,
+                "submittedAt": submitted_at,
+            }
+        )
+        return web.json_response(receipt)
+
+    async def _handle_iphone_events(self, request: "web.Request") -> "web.Response":
+        """POST /api/iphone/events — accept iPhone companion relay event uploads."""
+        device_record, auth_error = self._check_iphone_device_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        client_id = self._parse_uuid_string(payload.get("clientID"))
+        submitted_at = self._parse_iso8601_string(payload.get("submittedAt"))
+        device_name = str(payload.get("deviceName") or "").strip()
+        events = payload.get("events")
+
+        if client_id is None:
+            return web.json_response({"error": "clientID must be a valid UUID"}, status=400)
+        if client_id != device_record["client_id"]:
+            return web.json_response({"error": "Device token does not match clientID"}, status=403)
+        if not device_name:
+            return web.json_response({"error": "deviceName is required"}, status=400)
+        if submitted_at is None:
+            return web.json_response({"error": "submittedAt must be an ISO8601 timestamp"}, status=400)
+        if not isinstance(events, list):
+            return web.json_response({"error": "events must be an array"}, status=400)
+
+        self._iphone_companion_store.record_event_upload(
+            client_id=client_id,
+            device_name=device_name,
+            submitted_at=submitted_at,
+            event_count=len(events),
+            payload=payload,
+        )
+        return web.json_response(
+            {
+                "status": "accepted",
+                "acceptedCount": len(events),
+                "clientID": client_id,
+            },
+            status=202,
+        )
+
+    async def _handle_iphone_recommendation_latest(self, request: "web.Request") -> "web.Response":
+        """GET /api/iphone/recommendations/latest — evaluate the latest personal-context snapshot."""
+        device_record, auth_error = self._check_iphone_device_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        snapshot = self._iphone_companion_store.get_latest_personal_context_snapshot_for_client(
+            device_record["client_id"]
+        )
+        if snapshot is None:
+            return web.Response(status=204)
+        return web.json_response(self._build_iphone_recommendation(snapshot))
+
+    async def _handle_iphone_location_request_create(self, request: "web.Request") -> "web.Response":
+        """POST /api/iphone/location-requests — enqueue a location approval request."""
+        auth_error = self._check_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        client_id = self._parse_uuid_string(payload.get("clientID"))
+        requested_at = self._parse_iso8601_string(payload.get("requestedAt"))
+        reason = str(payload.get("reason") or "").strip()
+
+        if client_id is None:
+            return web.json_response({"error": "clientID must be a valid UUID"}, status=400)
+        if not reason:
+            return web.json_response({"error": "reason is required"}, status=400)
+        if requested_at is None:
+            return web.json_response({"error": "requestedAt must be an ISO8601 timestamp"}, status=400)
+        if self._iphone_companion_store.get_device_by_client_id(client_id) is None:
+            return web.json_response({"error": "Unknown iPhone clientID"}, status=404)
+
+        created = self._iphone_companion_store.create_location_request(
+            client_id=client_id,
+            reason=reason,
+            requested_at=requested_at,
+        )
+        return web.json_response(created, status=202)
+
+    async def _handle_iphone_location_request_next(self, request: "web.Request") -> "web.Response":
+        """GET /api/iphone/location-requests/next — fetch the next pending location request."""
+        device_record, auth_error = self._check_iphone_device_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        pending = self._iphone_companion_store.get_next_pending_location_request_for_client(device_record["client_id"])
+        if pending is None:
+            return web.Response(status=204)
+        return web.json_response(pending)
+
+    async def _handle_iphone_location_request_decision(self, request: "web.Request") -> "web.Response":
+        """POST /api/iphone/location-requests/{request_id}/decision — resolve a location request."""
+        device_record, auth_error = self._check_iphone_device_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        request_id = self._parse_uuid_string(request.match_info.get("request_id"))
+        if request_id is None:
+            return web.json_response({"error": "request_id must be a valid UUID"}, status=400)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        decision = str(payload.get("decision") or "").strip().lower()
+        decided_at = self._parse_iso8601_string(payload.get("decidedAt"))
+        note = str(payload.get("note") or "").strip() or None
+        if decision not in {"denied", "fulfilled", "failed"}:
+            return web.json_response({"error": "decision must be denied, fulfilled, or failed"}, status=400)
+        if decided_at is None:
+            return web.json_response({"error": "decidedAt must be an ISO8601 timestamp"}, status=400)
+
+        decided = self._iphone_companion_store.decide_location_request(
+            request_id=request_id,
+            client_id=device_record["client_id"],
+            status=decision,
+            decided_at=decided_at,
+            note=note,
+        )
+        if decided is None:
+            return web.json_response({"error": "Location request not found"}, status=404)
+        return web.json_response(decided)
+
+    async def _handle_telegram_bot_relay(self, request: "web.Request") -> "web.Response":
+        """POST /api/telegram/bot-relay — inject a synthetic Telegram event."""
+        auth_error = self._check_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        if not self.gateway_runner:
+            return web.json_response({"error": "Gateway runner unavailable"}, status=503)
+
+        telegram_adapter = getattr(self.gateway_runner, "adapters", {}).get(Platform.TELEGRAM)
+        if telegram_adapter is None:
+            return web.json_response({"error": "Telegram adapter not configured"}, status=503)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        chat_id = str(payload.get("chat_id") or "").strip()
+        text = str(payload.get("text") or "").strip()
+        if not chat_id or not text:
+            return web.json_response(
+                {"error": "Missing required fields: chat_id and text"},
+                status=400,
+            )
+
+        thread_id = payload.get("thread_id")
+        thread_id_str = str(thread_id).strip() if thread_id not in (None, "") else None
+        sender_bot_username = str(payload.get("sender_bot_username") or "").strip().lstrip("@")
+        sender_bot_id = payload.get("sender_bot_id")
+        relay_id = str(payload.get("relay_id") or "").strip()
+        user_name = f"@{sender_bot_username}" if sender_bot_username else "@telegram-bot-relay"
+        user_id = (
+            str(sender_bot_id)
+            if sender_bot_id not in (None, "")
+            else f"telegram-bot-relay:{sender_bot_username or 'unknown'}"
+        )
+        chat_type = str(payload.get("chat_type") or ("group" if chat_id.startswith("-") else "dm"))
+        chat_name = payload.get("chat_name")
+
+        async def _dispatch_peer_relay() -> None:
+            chat_topic = None
+            topic_skill = None
+            resolve_topic = getattr(telegram_adapter, "_resolve_group_topic_binding", None)
+            if callable(resolve_topic):
+                chat_topic, topic_skill = resolve_topic(chat_id, thread_id_str)
+
+            source = telegram_adapter.build_source(
+                chat_id=chat_id,
+                chat_name=chat_name,
+                chat_type=chat_type,
+                user_id=user_id,
+                user_name=user_name,
+                thread_id=thread_id_str,
+                chat_topic=chat_topic,
+            )
+            event = MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=payload,
+                message_id=str(payload.get("message_id")) if payload.get("message_id") not in (None, "") else None,
+                auto_skill=topic_skill,
+                internal=True,
+            )
+
+            suppress_peer_relays = getattr(telegram_adapter, "_suppress_peer_relays", None)
+            if callable(suppress_peer_relays):
+                with suppress_peer_relays():
+                    await telegram_adapter.handle_message(event)
+            else:
+                await telegram_adapter.handle_message(event)
+
+        if relay_id:
+            relay_fingerprint = _make_request_fingerprint(
+                payload,
+                keys=[
+                    "chat_id",
+                    "thread_id",
+                    "text",
+                    "raw_text",
+                    "message_id",
+                    "sender_bot_username",
+                    "sender_bot_id",
+                ],
+            )
+            await self._telegram_peer_relay_cache.get_or_set(
+                f"telegram-bot-relay:{relay_id}",
+                relay_fingerprint,
+                _dispatch_peer_relay,
+            )
+        else:
+            await _dispatch_peer_relay()
+
+        return web.json_response(
+            {"status": "accepted", "relay_id": relay_id or None},
+            status=202,
+        )
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
@@ -1733,6 +2410,16 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        max_history_messages = None
+        max_history_raw = request.headers.get("X-Hermes-Max-History-Messages", "").strip()
+        if max_history_raw:
+            try:
+                parsed_max_history = int(max_history_raw)
+                if parsed_max_history >= 0:
+                    max_history_messages = parsed_max_history
+            except ValueError:
+                logger.warning("Ignoring invalid X-Hermes-Max-History-Messages value: %r", max_history_raw)
+
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
         #
@@ -1781,6 +2468,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     break
             session_id = _derive_chat_session_id(system_prompt, first_user)
             # history already set from request body above
+
+        if max_history_messages is not None:
+            history = history[-max_history_messages:] if max_history_messages else []
+
+        request_service_tier = self._parse_request_service_tier(request.headers.get("X-Hermes-Service-Tier"))
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
@@ -1868,6 +2560,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                service_tier=request_service_tier,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1887,6 +2580,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                service_tier=request_service_tier,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3057,7 +3751,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
     # Allowed fields for update — prevents clients injecting arbitrary keys
-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+    _UPDATE_ALLOWED_FIELDS = {
+        "name",
+        "schedule",
+        "prompt",
+        "deliver",
+        "skills",
+        "skill",
+        "repeat",
+        "enabled",
+        "reasoning_effort",
+    }
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
@@ -3115,6 +3819,7 @@ class APIServerAdapter(BasePlatformAdapter):
             deliver = body.get("deliver", "local")
             skills = body.get("skills")
             repeat = body.get("repeat")
+            reasoning_effort = body.get("reasoning_effort")
 
             if not name:
                 return web.json_response({"error": "Name is required"}, status=400)
@@ -3130,6 +3835,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
+            if reasoning_effort is not None:
+                try:
+                    from cron.jobs import normalize_reasoning_effort
+                    reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+                except ValueError as exc:
+                    return web.json_response({"error": str(exc)}, status=400)
 
             kwargs = {
                 "prompt": prompt,
@@ -3142,6 +3853,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 kwargs["skills"] = skills
             if repeat is not None:
                 kwargs["repeat"] = repeat
+            if reasoning_effort is not None:
+                kwargs["reasoning_effort"] = reasoning_effort
 
             job = _cron_create(**kwargs)
             return web.json_response({"job": job})
@@ -3193,6 +3906,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
+            if "reasoning_effort" in sanitized:
+                try:
+                    from cron.jobs import normalize_reasoning_effort
+                    sanitized["reasoning_effort"] = normalize_reasoning_effort(sanitized["reasoning_effort"])
+                except ValueError as exc:
+                    return web.json_response({"error": str(exc)}, status=400)
             job = _cron_update(job_id, sanitized)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
@@ -3435,6 +4154,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        service_tier: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3458,6 +4178,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                service_tier=service_tier,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -4110,6 +4831,17 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            # iPhone companion bridge API
+            self._app.router.add_post("/api/iphone/register", self._handle_iphone_register)
+            self._app.router.add_post("/api/iphone/events", self._handle_iphone_events)
+            self._app.router.add_get("/api/iphone/recommendations/latest", self._handle_iphone_recommendation_latest)
+            self._app.router.add_post("/api/iphone/location-requests", self._handle_iphone_location_request_create)
+            self._app.router.add_get("/api/iphone/location-requests/next", self._handle_iphone_location_request_next)
+            self._app.router.add_post(
+                "/api/iphone/location-requests/{request_id}/decision",
+                self._handle_iphone_location_request_decision,
+            )
+            self._app.router.add_post("/api/telegram/bot-relay", self._handle_telegram_bot_relay)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

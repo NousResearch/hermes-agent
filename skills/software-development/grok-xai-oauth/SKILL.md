@@ -84,6 +84,8 @@ Hermes remembers across days/weeks. Pair it with Grok's X search:
 - "Monitor sentiment on X about [topic] overnight and summarize in my ledger tomorrow at 8am."
 - Use Hermes cron + the grok-powered X search.
 
+Real-world example (from community): People are already using Hermes + Grok X search for things like predicting 2026 World Cup winners by combining X sentiment, stats, odds, and NotebookLM – then turning results into content/scripts. Your Hermes on Grok can do the X part natively with citations and memory.
+
 ### 2. Agentic Coding with Visuals
 - Ask Hermes (on Grok) to plan a feature.
 - During implementation, have it generate UI mockups or architecture diagrams with Grok Imagine.

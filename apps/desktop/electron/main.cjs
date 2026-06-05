@@ -35,6 +35,7 @@ const {
   cookiesHaveSession,
   normalizeRemoteBaseUrl,
   resolveAuthMode,
+  resolveTestWsUrl,
   tokenPreview
 } = require('./connection-config.cjs')
 const {
@@ -3770,7 +3771,7 @@ async function testDesktopConnectionConfig(input = {}) {
   // false-positive "reachable" while the real boot still failed with "Could not
   // connect to Hermes gateway". Mirror the renderer's connect here so the test
   // reflects the full path the app actually uses.
-  const wsUrl = await resolveTestWsUrl(baseUrl, authMode, token)
+  const wsUrl = await resolveTestWsUrl(baseUrl, authMode, token, { mintTicket: mintGatewayWsTicket })
   // Skip the WS leg only when the runtime genuinely lacks a WebSocket (so an
   // older Electron/Node never fails the test spuriously); Electron's main
   // process ships a global WebSocket on every supported version.
@@ -3789,26 +3790,6 @@ async function testDesktopConnectionConfig(input = {}) {
     baseUrl,
     version: status?.version || null
   }
-}
-
-// Build the WS URL the renderer would connect with, so the connection test can
-// exercise the same transport. OAuth gateways need a freshly minted single-use
-// ticket; token/local gateways carry a long-lived token in the query string. A
-// null return means we can't form a credentialed URL (e.g. OAuth without a live
-// session) and the WS leg of the test is skipped rather than failing spuriously.
-async function resolveTestWsUrl(baseUrl, authMode, token) {
-  if (authMode === 'oauth') {
-    try {
-      const ticket = await mintGatewayWsTicket(baseUrl)
-      return buildGatewayWsUrlWithTicket(baseUrl, ticket)
-    } catch {
-      return null
-    }
-  }
-  if (!token) {
-    return null
-  }
-  return buildGatewayWsUrl(baseUrl, token)
 }
 
 function resetBootProgressForReconnect() {

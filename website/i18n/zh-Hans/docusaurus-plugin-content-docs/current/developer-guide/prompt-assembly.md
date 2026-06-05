@@ -87,9 +87,39 @@ would do or plan to do without actually doing it.
 
 # Layer 7: Skills index
 ## Skills (mandatory)
-Before replying, scan the skills below. If one clearly matches
-your task, load it with skill_view(name) and follow its instructions.
-...
+To keep the agent fast (especially on coding tasks), search first: use `skills_list`
+(with optional `category` e.g. 'sdlc' or 'software-development') to discover relevant skills.
+Only then load with `skill_view(name)` (or hermes -s / --skills) the ones that are a *strong* match
+and provide specialized knowledge, exact commands, pitfalls or conventions needed for *this* task.
+
+For coding tasks (feature, bugfix, refactor, investigation): do NOT preload all 6 software-development
+skills (plan, writing-plans, subagent-driven-development, test-driven-development, systematic-debugging, requesting-code-review).
+Instead load only SDLC skills (sdlc-orchestrator, sdlc-worker, sdlc-review, sdlc-groomer, sdlc-sentinel and sdlc-sentinel-v3-checks)
+and expectations (hermes-execution-preferences, hermes-agent, project AGENTS.md when workdir is set) *as needed* after searching.
+
+Err on the side of fewer loads for speed. Load a skill only after search confirms relevance — even if you think you could handle the task with basic tools like web_search or terminal.
+Skills contain specialized knowledge (API endpoints, tool-specific commands, proven workflows) that outperform general-purpose approaches.
+Skills also encode the user's preferred approach, conventions, and quality standards for tasks like code review, planning, and testing.
+
+Whenever the user asks you to configure, set up, install, enable, disable, modify,
+or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools,
+skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill
+first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`,
+`hermes setup`) so you don't have to guess or invent workarounds.
+If a skill has issues, fix it with skill_manage(action='patch').
+After difficult/iterative tasks, offer to save as a skill.
+If a skill you loaded was missing steps, had wrong commands, or needed
+pitfalls you discovered, update it before finishing.
+
+<available_skills>
+  software-development:
+    - code-review: Structured code review workflow
+    - test-driven-development: TDD methodology
+  research:
+    - arxiv: Search and summarize arXiv papers
+</available_skills>
+
+Only proceed without loading a skill if genuinely none are relevant to the task after searching.
 <available_skills>
   software-development:
     - code-review: Structured code review workflow

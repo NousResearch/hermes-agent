@@ -1085,6 +1085,16 @@ class TestSessionEntryFromDictTraversalValidation:
         with pytest.raises(ValueError, match="session_id"):
             SessionEntry.from_dict(self._entry(session_id="\\windows\\system32\\config"))
 
+    def test_session_id_windows_drive_letter_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_id"):
+            SessionEntry.from_dict(self._entry(session_id="C:/windows/system32"))
+
+    def test_session_id_windows_drive_backslash_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_id"):
+            SessionEntry.from_dict(self._entry(session_id="D:\\path\\to\\file"))
+
 
 class TestEnsureLoadedSkipsInvalidEntries:
     """Regression: one bad sessions.json entry must not block valid entries from loading."""

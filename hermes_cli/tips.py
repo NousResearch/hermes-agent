@@ -56,7 +56,7 @@ TIPS = [
     # --- Keybindings ---
     "Alt+Enter inserts a newline for multi-line input. (Windows Terminal intercepts Alt+Enter — use Ctrl+Enter instead.)",
     "Ctrl+C interrupts the agent. Double-press within 2 seconds to force exit.",
-    "Ctrl+Z suspends Hermes to the background — run fg in your shell to resume.",
+    "Ctrl+Z/Y undo/redo input edits (Windows). On Unix, Ctrl+Z suspends — run fg to resume.",
     "Tab accepts auto-suggestion ghost text or autocompletes slash commands.",
     "Type a new message while the agent is working to interrupt and redirect it.",
     "Alt+V pastes an image from your clipboard into the conversation.",

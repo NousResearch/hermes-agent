@@ -177,7 +177,7 @@ def classify_durable_evidence(
             return DurableEvidence("mirrored", "validation-ready mirror evidence is present")
         return DurableEvidence("insufficient", "artifact-producing node has no durable artifact pointer or mirror")
 
-    if _is_scratch_path(artifact) and workspace_kind != "dir":
+    if _is_scratch_workspace_path(artifact, workspace_kind=workspace_kind):
         if _has_validation_ready_mirror(metadata, comments):
             return DurableEvidence("mirrored", "scratch artifact path is paired with validation-ready mirror evidence")
         return DurableEvidence("insufficient", "scratch artifact path has no validation-ready mirror evidence")
@@ -229,6 +229,21 @@ def _is_scratch_path(path: str) -> bool:
     return bool(_SCRATCH_PATH_RE.search(normalized))
 
 
+def _is_scratch_workspace_path(path: str, *, workspace_kind: str | None = None) -> bool:
+    normalized = path.replace("\\", "/")
+    if workspace_kind == "dir":
+        return False
+    if _is_scratch_path(normalized):
+        return True
+    if workspace_kind == "scratch" and _is_local_absolute_path(normalized):
+        return "/durable-artifacts/" not in normalized
+    return False
+
+
+def _is_local_absolute_path(path: str) -> bool:
+    return path.startswith("/") or bool(re.match(r"^[A-Za-z]:/", path))
+
+
 def _is_durable_location(path: str, *, workspace_kind: str | None = None) -> bool:
     normalized = path.replace("\\", "/")
     lower = normalized.lower()
@@ -243,6 +258,8 @@ def _is_durable_location(path: str, *, workspace_kind: str | None = None) -> boo
     if re.fullmatch(r"[A-Za-z0-9_-]{20,}", path):
         return True
     if _is_scratch_path(normalized):
+        return False
+    if workspace_kind == "scratch" and _is_local_absolute_path(normalized):
         return False
     return normalized.startswith("/") and "/kanban/workspaces/" not in normalized
 

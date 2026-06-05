@@ -170,6 +170,17 @@ def test_scratch_artifact_alone_is_insufficient():
     assert "scratch" in evidence.reason
 
 
+def test_custom_scratch_root_with_scratch_workspace_kind_is_insufficient():
+    metadata = lean_metadata(
+        artifact_ref="/tmp/custom-kanban-workspaces/t_123/output.md"
+    )
+
+    evidence = classify_durable_evidence(metadata, workspace_kind="scratch")
+
+    assert evidence.state == "insufficient"
+    assert "scratch" in evidence.reason
+
+
 def test_scratch_artifact_with_mirror_pointer_only_is_insufficient():
     metadata = lean_metadata(
         artifact_ref="/root/.hermes/kanban/boards/demo/workspaces/t_1234/output.md",

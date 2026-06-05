@@ -19,6 +19,21 @@
 # boot is not. Idempotent: an already-present runtime service is left
 # untouched, so re-running never clobbers a live supervise/ tree.
 
+# Role gate: only the gateway container owns the volume-backed auxiliary
+# services (notably the :11435 Claude proxy, whose s6-log takes an exclusive
+# lock on the SHARED /opt/data/logs/claude-proxy/). The dashboard container
+# mounts the same volume; if it also seeds + starts the proxy, the two s6-log
+# processes deadlock on that lock and the gateway's logger flaps on exit 111
+# ("Resource busy"), taking the bots down. So the dashboard seeds nothing.
+# See docker/hermes-role.sh.
+# shellcheck source=docker/hermes-role.sh disable=SC1091
+. /opt/hermes/docker/hermes-role.sh
+if [ "$(hermes_role)" = dashboard ]; then
+    echo "seed-services: dashboard role -- skipping volume service seed" \
+        "(gateways + :11435 proxy belong to the gateway container)"
+    exit 0
+fi
+
 SERVICES_SRC="${HERMES_HOME:-/opt/data}/services"
 SCANDIR=/run/service
 

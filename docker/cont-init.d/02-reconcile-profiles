@@ -42,5 +42,20 @@ if [ -d /run/service/.s6-svscan ]; then
     done
 fi
 
+# Role gate: per-profile gateways run ONLY in the gateway container. The
+# dashboard container shares this volume and image but must not bring up
+# gateway processes (they bind shared host ports and contend on the same
+# volume-backed proxy log lock -- see docker/hermes-role.sh and
+# 03-seed-data-services). The chowns above are harmless and left in place so
+# the scandir is consistently owned regardless of role; only the reconciler
+# (which recreates + auto-starts gateways) is gated off for the dashboard.
+# shellcheck source=docker/hermes-role.sh disable=SC1091
+. /opt/hermes/docker/hermes-role.sh
+if [ "$(hermes_role)" = dashboard ]; then
+    echo "reconcile-profiles: dashboard role -- skipping gateway reconcile" \
+        "(per-profile gateways run in the gateway container)"
+    exit 0
+fi
+
 exec s6-setuidgid hermes /opt/hermes/.venv/bin/python -m hermes_cli.container_boot
 

@@ -19,6 +19,8 @@ services:
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
+      # Owns the per-profile gateways and the :11435 Claude proxy.
+      - HERMES_ROLE=gateway
     command: ["gateway", "run"]
 
   dashboard:
@@ -32,6 +34,11 @@ services:
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
+      # Dashboard-only viewer; shares the volume with the gateway. The role
+      # gate keeps its boot hooks from starting a duplicate proxy/gateways
+      # that would deadlock on the shared proxy log lock. See
+      # docker/hermes-role.sh.
+      - HERMES_ROLE=dashboard
       - HERMES_DASHBOARD_HOST=0.0.0.0
     ports:
       - "127.0.0.1:9119:9119"

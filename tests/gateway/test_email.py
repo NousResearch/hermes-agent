@@ -1192,14 +1192,36 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
             "LOGIN — the polling path opens a fresh IMAP connection.",
         )
 
-    def test_send_imap_id_swallows_errors_for_non_supporting_servers(self):
-        """Servers that reject ID must not break the connection."""
+    def test_send_imap_id_swallows_errors_when_capabilities_unknown(self):
+        """Without a capability list, ID remains best-effort and never fatal."""
         from gateway.platforms.email import _send_imap_id
 
         mock_imap = MagicMock()
         mock_imap.xatom.side_effect = Exception("BAD command unknown: ID")
 
         _send_imap_id(mock_imap)
+        mock_imap.xatom.assert_called_once()
+
+    def test_send_imap_id_skips_when_capability_omits_id(self):
+        """Known capabilities without ID must not send a command that can desync imaplib."""
+        from gateway.platforms.email import _send_imap_id
+
+        mock_imap = MagicMock()
+        mock_imap.capabilities = (b"IMAP4REV1", b"UIDPLUS")
+
+        _send_imap_id(mock_imap)
+
+        mock_imap.xatom.assert_not_called()
+
+    def test_send_imap_id_sends_when_capability_includes_id(self):
+        """Servers that advertise RFC 2971 ID still get the NetEase compatibility command."""
+        from gateway.platforms.email import _send_imap_id
+
+        mock_imap = MagicMock()
+        mock_imap.capabilities = (b"IMAP4REV1", b"ID", b"UIDPLUS")
+
+        _send_imap_id(mock_imap)
+
         mock_imap.xatom.assert_called_once()
 
 

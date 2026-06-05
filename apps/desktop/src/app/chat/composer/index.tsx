@@ -17,7 +17,9 @@ import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-te
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
+import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
@@ -44,6 +46,7 @@ import {
   focusComposerInput,
   markActiveComposer,
   onComposerFocusRequest,
+  onComposerInsertRefsRequest,
   onComposerInsertRequest
 } from './focus'
 import { HelpHint } from './help-hint'
@@ -51,7 +54,12 @@ import { useAtCompletions } from './hooks/use-at-completions'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useVoiceConversation } from './hooks/use-voice-conversation'
 import { useVoiceRecorder } from './hooks/use-voice-recorder'
-import { dragHasAttachments, droppedFileInlineRef, insertInlineRefsIntoEditor } from './inline-refs'
+import {
+  dragHasAttachments,
+  droppedFileInlineRef,
+  type InlineRefInput,
+  insertInlineRefsIntoEditor
+} from './inline-refs'
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
@@ -76,29 +84,6 @@ const COMPOSER_SINGLE_LINE_MAX_PX = 36
 
 const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
-
-// Resting composer placeholders. New sessions get open-ended starters; an
-// existing chat gets phrasings that read as a continuation of the thread.
-// One is picked at random per session (stable until the session changes).
-const NEW_SESSION_PLACEHOLDERS = [
-  'What are we building?',
-  'Give Hermes a task',
-  "What's on your mind?",
-  'Describe what you need',
-  'What should we tackle?',
-  'Ask anything',
-  'Start with a goal'
-]
-
-const FOLLOW_UP_PLACEHOLDERS = [
-  'Send a follow-up',
-  'Add more context',
-  'Refine the request',
-  "What's next?",
-  'Keep it going',
-  'Push it further',
-  'Adjust or continue'
-]
 
 const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
 
@@ -183,7 +168,10 @@ export function ChatBar({
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
   const showHelpHint = draft === '?'
 
+  const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
+  const newSessionPlaceholders = t.composer.newSessionPlaceholders
+  const followUpPlaceholders = t.composer.followUpPlaceholders
 
   // Resting placeholder: a starter for brand-new sessions, a continuation for
   // existing ones. Picked once and only re-rolled when we genuinely move to a
@@ -191,7 +179,7 @@ export function ChatBar({
   // started session (null → id, on the first send) is treated as the same
   // conversation so the placeholder doesn't visibly flip mid-stream.
   const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
-    pickPlaceholder(sessionId ? FOLLOW_UP_PLACEHOLDERS : NEW_SESSION_PLACEHOLDERS)
+    pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
   )
 
   const prevSessionIdRef = useRef(sessionId)
@@ -210,16 +198,16 @@ export function ChatBar({
       return
     }
 
-    setRestingPlaceholder(pickPlaceholder(sessionId ? FOLLOW_UP_PLACEHOLDERS : NEW_SESSION_PLACEHOLDERS))
-  }, [sessionId])
+    setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
+  }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
 
   // When the bar is disabled it's because the gateway isn't open. Distinguish a
   // cold start ("Starting Hermes...") from a dropped connection we're trying to
   // restore (e.g. after the Mac slept) so the stuck state reads as recoverable.
   const placeholder = disabled
     ? gatewayState === 'closed' || gatewayState === 'error'
-      ? 'Reconnecting to Hermes…'
-      : 'Starting Hermes...'
+      ? t.composer.placeholderReconnecting
+      : t.composer.placeholderStarting
     : restingPlaceholder
 
   const focusInput = useCallback(() => {
@@ -431,7 +419,7 @@ export function ChatBar({
     requestMainFocus()
   }
 
-  const insertInlineRefs = (refs: string[]) => {
+  const insertInlineRefs = (refs: InlineRefInput[]) => {
     const editor = editorRef.current
 
     if (!editor) {
@@ -450,6 +438,19 @@ export function ChatBar({
 
     return true
   }
+
+  // Latest-closure ref so the (once-only) subscription always calls the current
+  // insertInlineRefs without re-subscribing every render.
+  const insertInlineRefsRef = useRef(insertInlineRefs)
+  insertInlineRefsRef.current = insertInlineRefs
+
+  useEffect(() => {
+    return onComposerInsertRefsRequest(({ refs, target }) => {
+      if (target === 'main') {
+        insertInlineRefsRef.current(refs)
+      }
+    })
+  }, [])
 
   const selectSkinSlashCommand = (command: string) => {
     draftRef.current = command
@@ -1037,7 +1038,19 @@ export function ChatBar({
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
-      if (hasComposerPayload) {
+      // Slash commands should execute immediately even while the agent is
+      // busy — they're client-side operations (/yolo, /skin, /new, /help,
+      // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
+      // routes them to executeSlashCommand, which has its own per-command
+      // busy guard for commands that genuinely need an idle session (skill
+      // /send directives).  Queuing them would make every slash command wait
+      // for the current turn to finish, which is how the TUI never behaves.
+      if (!attachments.length && SLASH_COMMAND_RE.test(draft.trim())) {
+        const submitted = draft
+        triggerHaptic('submit')
+        clearDraft()
+        void onSubmit(submitted)
+      } else if (hasComposerPayload) {
         queueCurrentDraft()
       } else {
         // Stop button: an explicit interrupt must actually halt the running
@@ -1181,7 +1194,7 @@ export function ChatBar({
   const input = (
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
-        aria-label="Message"
+        aria-label={t.composer.message}
         autoCapitalize="off"
         autoCorrect="off"
         className={cn(

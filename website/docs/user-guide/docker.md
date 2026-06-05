@@ -17,6 +17,19 @@ This page covers option 1. The container stores all user data (config, API keys,
 
 If this is your first time running Hermes Agent, create a data directory on the host and start the container interactively to run the setup wizard:
 
+:::caution Avoid browser-based VPS consoles for the install commands
+Some VPS providers (Hetzner Cloud, and several others) offer a browser-based
+console for managing hosts. These consoles transmit special characters
+incorrectly — `:` may arrive as `;`, `@` may be mis-rendered, and non-English
+keyboard layouts fare worse — which silently corrupts `docker run` arguments
+like `-v ~/.hermes:/opt/data`, `-e KEY=value`, and pasted API keys / tokens.
+
+**Connect over SSH instead** (`ssh root@<host>`) for copy-paste-safe command
+entry. If you must use the browser console, type the commands manually
+instead of pasting, and double-check every `:`, `@`, `=`, and `/` in the
+result before hitting Enter.
+:::
+
 ```sh
 mkdir -p ~/.hermes
 docker run -it --rm \
@@ -105,7 +118,13 @@ The dashboard's auth gate engages automatically when both of the following are t
 1. The bind host is non-loopback (e.g. the default `0.0.0.0` inside the container), **and**
 2. A `DashboardAuthProvider` plugin is registered.
 
-The simplest way to satisfy the second condition is the bundled **username/password** provider: set `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` + `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` (and `HERMES_DASHBOARD_BASIC_AUTH_SECRET` for restart-stable sessions). For hosted/public deploys the OAuth (`dashboard_auth/nous`) provider activates whenever `HERMES_DASHBOARD_OAUTH_CLIENT_ID` is set. Either way the gate redirects callers to a login page before they can reach any protected route. See [Web Dashboard → Authentication](features/web-dashboard.md#authentication-gated-mode) for both providers.
+There are three bundled ways to satisfy the second condition:
+
+- **Username/password** — the simplest for a self-hosted / on-prem / homelab container on a trusted network or behind a VPN: set `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` + `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` (and `HERMES_DASHBOARD_BASIC_AUTH_SECRET` for restart-stable sessions). Not suitable for direct public-internet exposure.
+- **OAuth (Nous Portal)** — for hosted/public deploys: the `dashboard_auth/nous` provider activates whenever `HERMES_DASHBOARD_OAUTH_CLIENT_ID` is set.
+- **Self-hosted OIDC** — to authenticate against your own identity provider via standard OpenID Connect: the `dashboard_auth/self_hosted` provider activates when `HERMES_DASHBOARD_OIDC_ISSUER` + `HERMES_DASHBOARD_OIDC_CLIENT_ID` are set.
+
+Whichever you choose, the gate redirects callers to a login page before they can reach any protected route. See [Web Dashboard → Authentication](features/web-dashboard.md#authentication-gated-mode) for all three providers.
 
 If no provider is registered and the bind is non-loopback, the dashboard **fails closed at startup** with a specific error pointing at the missing env var. The `HERMES_DASHBOARD_INSECURE=1` escape hatch disables the gate entirely (the bind host alone never implies `--insecure`), but it serves an unauthenticated dashboard — configure a provider instead unless you have your own auth layer in front.
 

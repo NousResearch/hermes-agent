@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -6,6 +7,7 @@ import type { DesktopAuthProvider, DesktopConnectionProbeResult } from '@/global
 import { AlertCircle, Check, FileText, Globe, Loader2, LogIn, Monitor } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { $profiles, refreshActiveProfile } from '@/store/profile'
 
 import { CONTROL_TEXT } from './constants'
 import { EmptyState, ListRow, LoadingState, Pill, SettingsContent } from './primitives'
@@ -74,6 +76,23 @@ function ModeCard({
   )
 }
 
+function ScopeChip({ active, label, onSelect }: { active: boolean; label: string; onSelect: () => void }) {
+  return (
+    <button
+      className={cn(
+        'rounded-full border px-3 py-1 text-[length:var(--conversation-caption-font-size)] transition',
+        active
+          ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) text-(--ui-text-primary)'
+          : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover)'
+      )}
+      onClick={onSelect}
+      type="button"
+    >
+      {label}
+    </button>
+  )
+}
+
 export function GatewaySettings() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -82,6 +101,16 @@ export function GatewaySettings() {
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [remoteToken, setRemoteToken] = useState('')
   const [lastTest, setLastTest] = useState<null | string>(null)
+
+  // Connection scope: null = the global/default connection (the original
+  // behavior); a profile name = that profile's per-profile remote override, so
+  // each profile can point at its own backend.
+  const [scope, setScope] = useState<null | string>(null)
+  const profiles = useStore($profiles)
+
+  useEffect(() => {
+    void refreshActiveProfile()
+  }, [])
 
   // Auth-mode probe: as the user types a remote URL we ask the gateway (via
   // its public /api/status) whether it gates with OAuth or a static session
@@ -100,8 +129,14 @@ export function GatewaySettings() {
       return () => void (cancelled = true)
     }
 
+    setLoading(true)
+    // Clear scope-local entry state so a token from one scope can't leak into
+    // the next when switching profiles.
+    setRemoteToken('')
+    setLastTest(null)
+
     desktop
-      .getConnectionConfig()
+      .getConnectionConfig(scope)
       .then(config => {
         if (cancelled) {
           return
@@ -117,7 +152,7 @@ export function GatewaySettings() {
       })
 
     return () => void (cancelled = true)
-  }, [])
+  }, [scope])
 
   // Debounced probe of the entered remote URL. Only runs in remote mode with a
   // syntactically plausible URL. The probe result drives whether we render the
@@ -223,6 +258,10 @@ export function GatewaySettings() {
     return providers.length > 0 && providers.every(p => p.supportsPassword)
   }, [probe])
 
+  // The 'default' profile uses the global ("All profiles") connection, so the
+  // per-profile scopes are the named, non-default profiles.
+  const namedProfiles = useMemo(() => profiles.filter(profile => profile.name !== 'default'), [profiles])
+
   const oauthConnected = state.remoteOauthConnected
 
   const canUseRemote = useMemo(() => {
@@ -239,6 +278,7 @@ export function GatewaySettings() {
 
   const payload = () => ({
     mode: state.mode,
+    profile: scope ?? undefined,
     remoteAuthMode: authMode,
     remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
     remoteUrl: trimmedUrl
@@ -296,6 +336,7 @@ export function GatewaySettings() {
       // oauth mode is persisted, without yet flipping the live connection.
       const saved = await window.hermesDesktop.saveConnectionConfig({
         mode: state.mode,
+        profile: scope ?? undefined,
         remoteAuthMode: 'oauth',
         remoteUrl: trimmedUrl
       })
@@ -305,7 +346,7 @@ export function GatewaySettings() {
       const result = await window.hermesDesktop.oauthLoginConnectionConfig(trimmedUrl)
 
       if (result.connected) {
-        const refreshed = await window.hermesDesktop.getConnectionConfig()
+        const refreshed = await window.hermesDesktop.getConnectionConfig(scope)
         setState(refreshed)
         notify({ kind: 'success', title: 'Signed in', message: `Connected to ${providerLabel}.` })
       } else {
@@ -327,7 +368,7 @@ export function GatewaySettings() {
 
     try {
       await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl || undefined)
-      const refreshed = await window.hermesDesktop.getConnectionConfig()
+      const refreshed = await window.hermesDesktop.getConnectionConfig(scope)
       setState(refreshed)
       notify({ kind: 'success', title: 'Signed out', message: 'Cleared the remote gateway session.' })
     } catch (err) {
@@ -357,6 +398,7 @@ export function GatewaySettings() {
     try {
       const result = await window.hermesDesktop.testConnectionConfig({
         mode: 'remote',
+        profile: scope ?? undefined,
         remoteAuthMode: authMode,
         remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
         remoteUrl: trimmedUrl
@@ -395,9 +437,34 @@ export function GatewaySettings() {
         </div>
         <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
           Hermes Desktop starts its own local gateway by default. Use a remote gateway when you want this app to control
-          an already-running Hermes backend on another machine or behind a trusted proxy.
+          an already-running Hermes backend on another machine or behind a trusted proxy. Pick a profile below to give it
+          its own remote host.
         </p>
       </div>
+
+      {namedProfiles.length > 0 ? (
+        <div className="mb-5 grid gap-2">
+          <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
+            Applies to
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <ScopeChip active={scope === null} label="All profiles" onSelect={() => setScope(null)} />
+            {namedProfiles.map(profile => (
+              <ScopeChip
+                active={scope === profile.name}
+                key={profile.name}
+                label={profile.name}
+                onSelect={() => setScope(profile.name)}
+              />
+            ))}
+          </div>
+          <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {scope === null
+              ? 'Default connection for every profile that has no override of its own.'
+              : `Connection used only when “${scope}” is the active profile. Set it to Local to inherit the default.`}
+          </p>
+        </div>
+      ) : null}
 
       {state.envOverride ? (
         <div className="mb-5 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-[length:var(--conversation-caption-font-size)] text-destructive">

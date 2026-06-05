@@ -3,16 +3,29 @@ export {}
 declare global {
   interface Window {
     hermesDesktop: {
-      getConnection: () => Promise<HermesConnection>
-      getGatewayWsUrl: () => Promise<string>
+      // Resolve a backend connection. Omit `profile` (or pass the primary) for
+      // the window's backend; pass a named profile to lazily spawn/reuse that
+      // profile's backend from the pool.
+      getConnection: (profile?: string | null) => Promise<HermesConnection>
+      // Keepalive: mark a pool profile backend as recently used so the idle
+      // reaper spares it while its chat is active.
+      touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
+      getGatewayWsUrl: (profile?: null | string) => Promise<string>
       getBootProgress: () => Promise<DesktopBootProgress>
-      getConnectionConfig: () => Promise<DesktopConnectionConfig>
+      getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
+      profile: {
+        get: () => Promise<DesktopActiveProfile>
+        // Persists the desktop's profile choice and relaunches the local
+        // backend under the new HERMES_HOME (reloads the window). Pass null to
+        // clear the preference.
+        set: (name: string | null) => Promise<DesktopActiveProfile>
+      }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
@@ -151,6 +164,9 @@ export interface HermesConnection {
   token: string
   wsUrl: string
   logs: string[]
+  // Set for pool (non-primary) backends so the renderer knows which profile a
+  // connection belongs to.
+  profile?: string
   windowButtonPosition: { x: number; y: number } | null
 }
 
@@ -165,9 +181,18 @@ export interface HermesWindowState {
   windowButtonPosition: { x: number; y: number } | null
 }
 
+export interface DesktopActiveProfile {
+  // The desktop's stored profile preference, or null when unset (legacy launch
+  // that defers to the sticky active_profile / default).
+  profile: string | null
+}
+
 export interface DesktopConnectionConfig {
   envOverride: boolean
   mode: 'local' | 'remote'
+  // The profile this config describes, or null for the global/default
+  // connection. Per-profile entries let a profile point at its own backend.
+  profile: null | string
   remoteAuthMode: 'oauth' | 'token'
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
@@ -177,6 +202,9 @@ export interface DesktopConnectionConfig {
 
 export interface DesktopConnectionConfigInput {
   mode: 'local' | 'remote'
+  // When set, the save/apply/test targets this profile's per-profile remote
+  // override instead of the global connection.
+  profile?: null | string
   remoteAuthMode?: 'oauth' | 'token'
   remoteToken?: string
   remoteUrl?: string
@@ -293,6 +321,10 @@ export interface HermesApiRequest {
   method?: string
   body?: unknown
   timeoutMs?: number
+  // Route this REST call to a specific profile's backend. Omit for the primary
+  // (window) backend. Read-only cross-profile data is served by the primary, so
+  // this is only needed for profile-scoped live/settings calls.
+  profile?: string | null
 }
 
 export interface HermesNotification {

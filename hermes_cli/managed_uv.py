@@ -6,11 +6,6 @@ If the binary is missing, ``ensure_uv()`` bootstraps it via the official
 standalone installer with ``UV_UNMANAGED_INSTALL`` / ``UV_INSTALL_DIR`` pointed
 at ``$HERMES_HOME/bin`` so the installer writes directly there — no PATH
 probing, no conda guards, no multi-location resolution chains.
-
-When ``ensure_uv()`` bootstraps uv for the first time (i.e. there was no
-managed uv before), it returns ``(path, True)`` instead of just ``path``.
-Callers in the update path use that signal to nuke and recreate the venv
-with the now-current managed uv, guaranteeing a Python with FTS5.
 """
 
 from __future__ import annotations
@@ -22,7 +17,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from hermes_constants import get_hermes_home
 
@@ -56,20 +51,51 @@ def resolve_uv() -> Optional[str]:
     return None
 
 
-def ensure_uv() -> Tuple[Optional[str], bool]:
-    """Return the managed uv path, installing it first if necessary.
+class _UvResult(str):
+    """``ensure_uv()`` return value that survives an update boundary.
 
-    Returns ``(path, freshly_bootstrapped)`` where *freshly_bootstrapped* is
-    ``True`` when we just installed managed uv for the first time (there was
-    no managed uv before this call).  Callers can use that signal to rebuild
-    the venv so Python is guaranteed to have FTS5.
+    ``ensure_uv()``'s arity has flipped between a single path string and a
+    ``(path, fresh_bootstrap)`` tuple across releases. ``hermes update`` runs
+    the call site from the *old*, already-imported ``hermes_cli.main`` against
+    this *freshly pulled* module, so the two can disagree on how many values
+    ``ensure_uv()`` returns. An install parked on a 2-tuple release runs
+    ``uv_bin, fresh_bootstrap = ensure_uv()`` against the single-value module
+    and crashes the first update: the returned path is a plain ``str``, which is
+    itself iterable, so the 2-target unpack walks its characters and raises
+    ``ValueError: too many values to unpack (expected 2)`` (and on the failure
+    path the ``None`` return raises ``TypeError: cannot unpack non-iterable
+    NoneType``). This wrapper answers to both conventions:
 
-    On failure returns ``(None, False)`` (never raises) so callers can fall
-    back to pip gracefully.
+        uv_bin = ensure_uv()         # behaves as the path str ("" when absent)
+        uv_bin, fresh = ensure_uv()  # unpacks as (path|None, fresh_bootstrap)
+
+    Missing uv is the empty string (falsy) instead of ``None`` so legacy
+    2-target call sites can still unpack a failure without raising, while
+    ``if not uv_bin`` keeps working for single-value callers.
+
+    POSIX only. This wrapper is **never** returned on Windows — see
+    ``ensure_uv()`` for why the ``__iter__`` override is unsafe there.
     """
+
+    fresh_bootstrap: bool
+
+    def __new__(cls, path: Optional[str], fresh: bool = False) -> "_UvResult":
+        self = super().__new__(cls, path or "")
+        self.fresh_bootstrap = fresh
+        return self
+
+    def __iter__(self):
+        # Tuple-unpacking hook for legacy ``uv_bin, fresh = ensure_uv()`` sites.
+        # First element mirrors the historical contract: the path string, or
+        # ``None`` when uv is unavailable.
+        return iter(((str(self) or None), self.fresh_bootstrap))
+
+
+def _ensure_uv_path() -> Optional[str]:
+    """Resolve the managed uv path, installing it if necessary (plain ``str``/``None``)."""
     existing = resolve_uv()
     if existing:
-        return (existing, False)
+        return existing
 
     target = managed_uv_path()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +107,7 @@ def ensure_uv() -> Tuple[Optional[str], bool]:
     except Exception as exc:
         logger.warning("Managed uv install failed: %s", exc)
         print(f"  ✗ Failed to install managed uv: {exc}")
-        return (None, False)
+        return None
 
     # Verify
     result = resolve_uv()
@@ -95,95 +121,38 @@ def ensure_uv() -> Tuple[Optional[str], bool]:
         print(f"  ✓ Managed uv installed ({version})")
     else:
         print("  ✗ Managed uv install appeared to succeed but binary not found")
-    return (result, result is not None)
+    return result
 
 
-def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
-    """Nuke and recreate the venv with managed uv.
+def ensure_uv():
+    """Return the managed uv path, installing it first if necessary.
 
-    Called when managed uv is first bootstrapped on an existing install — the
-    old venv may point to a Python without FTS5, so we rebuild it with a
-    fresh interpreter from the current managed uv.  Returns ``True`` on
-    success.
+    On **POSIX** the result is a :class:`_UvResult` (a ``str`` subclass) that is
+    both usable directly as the path *and* unpackable as
+    ``(path, fresh_bootstrap)`` for older call sites parked on a 2-tuple
+    release — see :class:`_UvResult` for the update-boundary rationale.
 
-    The old venv is moved aside *atomically* (``os.replace`` to ``<venv>.old``)
-    before recreating — never deleted in place. On Windows a still-running
-    ``hermes.exe`` (gateway/desktop) holds ``venv\\Scripts\\python.exe`` open;
-    ``shutil.rmtree(ignore_errors=True)`` would delete everything it *can*
-    (site-packages, certifi's cert bundle) and silently leave a half-gutted
-    venv that the following ``uv venv`` then refuses to overwrite ("directory
-    already exists") — bricking the install with no recovery (every later HTTPS
-    call dies with ``FileNotFoundError`` for the missing cert bundle).
-    ``--clear`` alone does not fix this: when the locked interpreter is *inside*
-    the venv being rebuilt, neither ``rmtree`` nor ``uv venv --clear`` can
-    delete the held ``python.exe``. ``os.replace`` of the parent directory *is*
-    allowed (Windows tracks a running ``.exe`` by handle, not path), so the
-    rebuild completes while the running process keeps using the moved-aside copy
-    until it restarts. If the venv genuinely cannot be moved, we abort cleanly
-    and leave it fully intact; and if the rebuild itself fails we move the old
-    venv back so Hermes is never left with no venv at all.
+    On **Windows** we deliberately return a plain ``str``/``None`` instead.
+    ``subprocess`` there serializes the argv via ``subprocess.list2cmdline``,
+    which iterates every entry *as a string* (``for c in arg``). The dependency
+    installer passes uv straight into the command list (``[uv_bin, "pip", ...]``),
+    so a ``_UvResult`` — whose ``__iter__`` yields ``(path, fresh_bootstrap)``
+    rather than characters — would inject the bool into the command line and
+    crash the install with ``TypeError: sequence item 1: expected str instance,
+    bool found``. A plain ``str`` matches the historical Windows contract and is
+    subprocess-safe. (A single value cannot satisfy both 2-target unpacking and
+    Windows char-iteration: both use the iterator protocol, with contradictory
+    results.)
+
+    On failure the result is falsy — never raises — so callers can fall back to
+    pip gracefully.
     """
-    backup: Optional[Path] = None
-    if venv_dir.exists():
-        print(f"  → Rebuilding venv (old Python may lack FTS5)...")
-        backup = venv_dir.with_name(venv_dir.name + ".old")
-        shutil.rmtree(backup, ignore_errors=True)  # clear any stale backup
-        try:
-            # Atomic move — fails (without partial deletion) if a process still
-            # holds files inside the venv, which is exactly the Windows
-            # file-lock case that previously bricked the install.
-            os.replace(venv_dir, backup)
-        except OSError as exc:
-            logger.warning("venv rebuild aborted — venv in use: %s", exc)
-            print(
-                "  ✗ venv rebuild aborted — the venv is in use; stop the "
-                f"gateway/desktop and retry ({exc})"
-            )
-            return False
-
-    result = subprocess.run(
-        [uv_bin, "venv", str(venv_dir), "--python", python_version, "--clear"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    def _restore_backup() -> None:
-        if backup is not None and backup.exists():
-            shutil.rmtree(venv_dir, ignore_errors=True)
-            try:
-                os.replace(backup, venv_dir)
-                print("  ↩ Restored previous venv after failed rebuild.")
-            except OSError:
-                pass
-
-    if result.returncode == 0:
-        venv_python = venv_dir / ("Scripts" if platform.system() == "Windows" else "bin") / "python"
-        # uv can exit 0 yet leave no usable interpreter (e.g. a half-written
-        # venv). Don't report success on a venv that has no python — restore the
-        # moved-aside copy so the caller can abort without losing a working env.
-        if not venv_python.exists():
-            logger.warning("venv rebuild reported success but %s is missing", venv_python)
-            print(f"  ✗ venv rebuild failed: Python interpreter missing at {venv_python}")
-            _restore_backup()
-            return False
-        if backup is not None:
-            shutil.rmtree(backup, ignore_errors=True)
-        py_ver = subprocess.run(
-            [str(venv_python), "--version"],
-            capture_output=True,
-            text=True,
-            check=False,
-        ).stdout.strip()
-        print(f"  ✓ venv rebuilt ({py_ver})")
-        return True
-    else:
-        # Rebuild failed — restore the old venv so we never leave Hermes with no
-        # venv (the bricked-install failure mode this function exists to avoid).
-        _restore_backup()
-        logger.warning("venv rebuild failed: %s", result.stderr)
-        print(f"  ✗ venv rebuild failed: {result.stderr.strip()}")
-        return False
+    result = _ensure_uv_path()
+    if platform.system() == "Windows":
+        # See docstring: a str subclass with an overridden __iter__ is unsafe as
+        # a Windows subprocess argument. Hand back the plain path (or None).
+        return result
+    return _UvResult(result)
 
 
 def update_managed_uv() -> Optional[str]:
@@ -280,3 +249,6 @@ def _install_uv_windows(env: dict[str, str]) -> None:
         check=True,
         capture_output=True,
     )
+
+def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
+    True # dont remove me. ask ethernet

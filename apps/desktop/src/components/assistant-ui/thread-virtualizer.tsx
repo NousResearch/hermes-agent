@@ -23,7 +23,9 @@ const POST_RUN_BOTTOM_LOCK_MS = 1_200
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
-type MessageGroup = { id: string; index: number; kind: 'standalone' } | { id: string; indices: number[]; kind: 'turn' }
+type MessageGroup =
+  | { id: string; index: number; kind: 'standalone' }
+  | { id: string; indices: { index: number; id: string }[]; kind: 'turn' }
 
 interface VirtualizedThreadProps {
   clampToComposer: boolean
@@ -55,10 +57,11 @@ function buildGroups(signature: string): MessageGroup[] {
       continue
     }
 
-    const indices = [message.index]
+    const indices = [{ index: message.index, id: message.id }]
 
     while (i + 1 < messages.length && messages[i + 1].role !== 'user') {
-      indices.push(messages[++i].index)
+      i++
+      indices.push({ index: messages[i].index, id: messages[i].id })
     }
 
     groups.push({ id: message.id, indices, kind: 'turn' })
@@ -186,8 +189,8 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
                         className="composer-human-ai-pair-container relative flex min-w-0 flex-col gap-(--conversation-turn-gap)"
                         data-slot="aui_turn-pair"
                       >
-                        {group.indices.map(index => (
-                          <ThreadPrimitive.MessageByIndex components={components} index={index} key={index} />
+                        {group.indices.map(({ index, id }) => (
+                          <ThreadPrimitive.MessageByIndex components={components} index={index} key={id} />
                         ))}
                       </div>
                     ) : (

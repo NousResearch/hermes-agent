@@ -44,7 +44,7 @@ class _SpyProvider:
     def __init__(self):
         self.fired = []
 
-    def fire_due(self, job_id, *, adapters=None, loop=None):
+    def fire_due(self, job_id, *, adapters=None, loop=None, hooks=None):
         self.fired.append(job_id)
         return True
 
@@ -145,7 +145,7 @@ async def test_valid_fire_reservation_blocks_drain_before_body_and_task(adapter,
     release_fire = threading.Event()
 
     class BlockingProvider:
-        def fire_due(self, job_id, *, adapters=None, loop=None):
+        def fire_due(self, job_id, *, adapters=None, loop=None, hooks=None):
             fired.set()
             release_fire.wait(timeout=2)
             return True

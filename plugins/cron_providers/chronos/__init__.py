@@ -54,6 +54,7 @@ class ChronosCronScheduler(CronScheduler):
         self._armed: Dict[str, str] = {}
         self._lock = threading.Lock()
         self._client = None  # lazily constructed (no network in is_available)
+        self._hooks = None
 
     # -- identity / availability -----------------------------------------
 
@@ -100,12 +101,13 @@ class ChronosCronScheduler(CronScheduler):
 
     # -- lifecycle --------------------------------------------------------
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+    def start(self, stop_event, *, adapters=None, loop=None, hooks=None, interval=60):
         """Arm all enabled jobs via NAS, then RETURN immediately.
 
         Does NOT block and does NOT spawn a 60s wake (DQ-1) — that is the whole
         point of scale-to-zero. The machine wakes only on a NAS→agent fire.
         """
+        self._hooks = hooks
         try:
             self.reconcile()
         except Exception as e:
@@ -212,7 +214,14 @@ class ChronosCronScheduler(CronScheduler):
 
     # -- fire -------------------------------------------------------------
 
-    def fire_due(self, job_id: str, *, adapters: Any = None, loop: Any = None) -> bool:
+    def fire_due(
+        self,
+        job_id: str,
+        *,
+        adapters: Any = None,
+        loop: Any = None,
+        hooks: Any = None,
+    ) -> bool:
         """Run the due job (claim + run_one_job via the ABC default), then
         re-arm the NEXT one-shot through NAS.
 
@@ -220,7 +229,9 @@ class ChronosCronScheduler(CronScheduler):
         If the job is gone (one-shot completed / repeat-N exhausted), get_job
         returns None → nothing to re-arm (the schedule naturally stops).
         """
-        ran = super().fire_due(job_id, adapters=adapters, loop=loop)
+        if hooks is None:
+            hooks = self._hooks
+        ran = super().fire_due(job_id, adapters=adapters, loop=loop, hooks=hooks)
         if ran:
             from cron.jobs import get_job
             job = get_job(job_id)

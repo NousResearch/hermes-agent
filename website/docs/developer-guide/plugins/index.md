@@ -1148,7 +1148,7 @@ async def handle(event_type: str, context: dict) -> None:
         pass
 ```
 
-Events include `gateway:startup`, `session:start`, `session:end`, `session:reset`, `agent:start`, `agent:step`, `agent:end`, and wildcard `command:*`. Errors in hooks are caught and logged — they never block the main pipeline.
+Events include `gateway:startup`, `session:start`, `session:end`, `session:reset`, `agent:start`, `agent:step`, `agent:end`, `job:end`, and wildcard `command:*`. Errors in hooks are caught and logged — they never block the main pipeline.
 
 **Full guide:** [Gateway Event Hooks](/user-guide/features/hooks#gateway-event-hooks).
 

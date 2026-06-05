@@ -211,6 +211,7 @@ Gateway hook 是响应生命周期事件的 Python 模块。
 | `agent:start` | Agent 开始处理消息时 |
 | `agent:step` | Agent 完成一次工具调用迭代时 |
 | `agent:end` | Agent 完成并返回响应时 |
+| `job:end` | Cron 任务完成处理时 |
 | `command:*` | 任意斜杠命令被执行时 |
 
 Hook 从 `gateway/builtin_hooks/`（扩展点 — 当前发行版中为空；`_register_builtin_hooks()` 是一个空操作存根）和 `~/.hermes/hooks/`（用户安装）中发现。每个 hook 是一个包含 `HOOK.yaml` 清单和 `handler.py` 的目录。

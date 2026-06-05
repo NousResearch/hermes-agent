@@ -39,6 +39,7 @@ description: Log all agent activity to a file
 events:
   - agent:start
   - agent:end
+  - job:end
   - agent:step
 ```
 
@@ -81,6 +82,7 @@ async def handle(event_type: str, context: dict):
 | `agent:start` | Agent begins processing a message | `platform`, `user_id`, `session_id`, `message` |
 | `agent:step` | Each iteration of the tool-calling loop | `platform`, `user_id`, `session_id`, `iteration`, `tool_names` |
 | `agent:end` | Agent finishes processing | `platform`, `user_id`, `session_id`, `message`, `response` |
+| `job:end` | Cron job finishes processing | `job_id`, `job_name`, `success`, `response`, `error`, `delivery_error`, `silent`, `no_agent` |
 | `command:*` | Any slash command executed | `platform`, `user_id`, `command`, `args` |
 
 #### Wildcard Matching

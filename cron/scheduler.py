@@ -3517,12 +3517,55 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
+def _emit_job_end(
+    hooks,
+    job: dict,
+    success: bool,
+    final_response: str,
+    error: Optional[str],
+    delivery_error: Optional[str],
+    *,
+    loop=None,
+) -> None:
+    """Best-effort emission for the shared cron completion boundary."""
+    if hooks is None:
+        return
+
+    context = {
+        "job_id": job["id"],
+        "job_name": job.get("name"),
+        "success": success,
+        "response": final_response,
+        "error": error,
+        "delivery_error": delivery_error,
+        "silent": _is_cron_silence_response(final_response),
+        "no_agent": bool(job.get("no_agent")),
+    }
+    try:
+        coro = hooks.emit("job:end", context)
+        if loop is not None:
+            asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=5)
+        else:
+            asyncio.run(coro)
+    except Exception as exc:
+        logger.debug("job:end hook failed for job %s: %s", job.get("id"), exc)
+
+
+def run_one_job(
+    job: dict,
+    *,
+    adapters=None,
+    loop=None,
+    hooks=None,
+    verbose: bool = False,
+) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
     This is the shared firing body extracted from ``tick``'s per-job closure so
     that BOTH the built-in ticker and an external provider's ``fire_due`` (e.g.
-    Chronos) run the identical sequence — no duplicated correctness.
+    Chronos) run the identical sequence — no duplicated correctness. When a
+    hook registry is supplied, job:end fires after the persisted run status is
+    updated.
 
     It does NOT decide whether the job is due, claim it, or compute the next
     run — those are the caller's concern (``tick`` advances ``next_run_at``
@@ -3571,6 +3614,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # below once delivery is done. Defense-in-depth alongside the
         # interpreter-shutdown guard in _deliver_result.
         _deferred_agents: list = []
+        delivery_error = None
         try:
             success, output, final_response, error = run_job(
                 job, defer_agent_teardown=_deferred_agents
@@ -3593,7 +3637,6 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # / empty-response computation, or _deliver_result itself — raises, the
         # deferred agent is still torn down. Otherwise the outer `except` would
         # swallow the error and leak the agent's subprocesses/clients (#10200).
-        delivery_error = None
         try:
             output_file = save_job_output(job["id"], output)
             if verbose:
@@ -3653,12 +3696,31 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            _emit_job_end(
+                hooks,
+                job,
+                success,
+                final_response,
+                error,
+                delivery_error,
+                loop=loop,
+            )
         return True
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
+        execution_error = str(e)
         if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], False, str(e))
+            mark_job_run(job["id"], False, execution_error)
+            _emit_job_end(
+                hooks,
+                job,
+                False,
+                "",
+                execution_error,
+                None,
+                loop=loop,
+            )
         return False
 
 
@@ -3687,6 +3749,7 @@ def tick(
     sync: bool = True,
     *,
     can_dispatch=None,
+    hooks=None,
 ):
     """
     Check and run all due jobs.
@@ -3700,6 +3763,7 @@ def tick(
         loop: Optional asyncio event loop (from gateway) for live adapter sends
         can_dispatch: Optional synchronous gate; false leaves due jobs untouched
             for the next allowed tick
+        hooks: Optional gateway hook registry propagated to run_one_job
 
     Returns:
         Number of jobs executed (0 if another tick is already running)
@@ -3775,7 +3839,13 @@ def tick(
             module-level ``run_one_job`` so ``tick`` and external providers
             (Chronos ``fire_due``) use the identical execute→save→deliver→mark
             body."""
-            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
+            return run_one_job(
+                job,
+                adapters=adapters,
+                loop=loop,
+                hooks=hooks,
+                verbose=verbose,
+            )
 
         # Partition due jobs: those with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so

@@ -4,8 +4,8 @@
 built-in) until an external provider (Chronos, Phase 4) shakes it out. Until
 then the module path, method signatures, and start() kwargs MAY change without
 a deprecation cycle. Once a second provider validates the shape it becomes
-stable. Any growth MUST be additive (new optional method with a default), never
-a changed signature on start() or a new abstractmethod.
+stable. Any growth MUST be additive (an optional keyword or method with a
+default), never a new required parameter or abstractmethod.
 
 A CronScheduler decides *when* a due job fires. It does NOT decide what firing
 means: execution + delivery stay in cron.scheduler.run_job / _deliver_result,
@@ -55,6 +55,7 @@ class CronScheduler(ABC):
         *,
         adapters: Any = None,
         loop: Any = None,
+        hooks: Any = None,
         interval: int = 60,
     ) -> None:
         """Begin firing due jobs.
@@ -63,6 +64,8 @@ class CronScheduler(ABC):
         (it is run inside a daemon thread by the caller, exactly as today).
         An external provider may register a schedule/webhook and return
         immediately; in that case it must still honor stop_event for teardown.
+        The hooks argument is the optional gateway hook registry forwarded to
+        job fires.
         """
 
     def stop(self) -> None:
@@ -82,7 +85,14 @@ class CronScheduler(ABC):
         Built-in: no-op (it re-reads jobs.json on every tick)."""
         return None
 
-    def fire_due(self, job_id: str, *, adapters: Any = None, loop: Any = None) -> bool:
+    def fire_due(
+        self,
+        job_id: str,
+        *,
+        adapters: Any = None,
+        loop: Any = None,
+        hooks: Any = None,
+    ) -> bool:
         """Run a single job NOW via the shared orchestrator. Called by the
         inbound fire webhook when an external scheduler signals a job is due.
 
@@ -90,6 +100,7 @@ class CronScheduler(ABC):
         (multi-machine at-most-once), then runs it via the shared
         ``run_one_job`` body. Built-in never calls this (it has its own tick
         loop); an external provider routes its inbound fire here.
+        The optional ``hooks`` registry is forwarded to that shared body.
 
         Returns True if THIS caller claimed and ran the job, False if the claim
         was lost (another machine/retry won it) or the job no longer exists.
@@ -102,7 +113,7 @@ class CronScheduler(ABC):
         job = get_job(job_id)
         if job is None:
             return False  # job removed (e.g. repeat-N exhausted) between arm and fire
-        return run_one_job(job, adapters=adapters, loop=loop)
+        return run_one_job(job, adapters=adapters, loop=loop, hooks=hooks)
 
     def reconcile(self) -> None:
         """Converge the external registry toward jobs.json (the desired state):
@@ -165,7 +176,16 @@ class InProcessCronScheduler(CronScheduler):
     def name(self) -> str:
         return "builtin"
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None):
+    def start(
+        self,
+        stop_event,
+        *,
+        adapters=None,
+        loop=None,
+        hooks=None,
+        interval=60,
+        can_dispatch=None,
+    ):
         import logging
         from cron.scheduler import tick as cron_tick
         from cron.jobs import record_ticker_heartbeat
@@ -187,6 +207,7 @@ class InProcessCronScheduler(CronScheduler):
                         loop=loop,
                         sync=False,
                         can_dispatch=can_dispatch,
+                        hooks=hooks,
                     )
                 ok = True
             except BaseException as e:

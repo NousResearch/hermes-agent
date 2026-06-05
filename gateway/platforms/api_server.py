@@ -3964,10 +3964,23 @@ class APIServerAdapter(BasePlatformAdapter):
             provider = resolve_cron_scheduler()
 
             loop = asyncio.get_running_loop()
+            hooks = None
+            try:
+                from gateway.run import _gateway_runner_ref
+                runner = _gateway_runner_ref()
+                hooks = getattr(runner, "hooks", None) if runner is not None else None
+            except Exception:
+                pass
             # Fire in the background (202 immediately). fire_due claims via the
             # store CAS, so a retry while this is in flight is de-duped.
             task = asyncio.create_task(
-                asyncio.to_thread(provider.fire_due, job_id, adapters=None, loop=loop)
+                asyncio.to_thread(
+                    provider.fire_due,
+                    job_id,
+                    adapters=None,
+                    loop=loop,
+                    hooks=hooks,
+                )
             )
             reservation["detached"] = True
             task.add_done_callback(

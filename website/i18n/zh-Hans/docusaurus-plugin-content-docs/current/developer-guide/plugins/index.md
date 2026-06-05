@@ -1001,7 +1001,7 @@ async def handle(event_type: str, context: dict) -> None:
         pass
 ```
 
-事件包括 `gateway:startup`、`session:start`、`session:end`、`session:reset`、`agent:start`、`agent:step`、`agent:end` 以及通配符 `command:*`。钩子中的错误会被捕获并记录日志——它们不会阻塞主流程。
+事件包括 `gateway:startup`、`session:start`、`session:end`、`session:reset`、`agent:start`、`agent:step`、`agent:end`、`job:end` 以及通配符 `command:*`。钩子中的错误会被捕获并记录日志——它们不会阻塞主流程。
 
 **完整指南：** [网关事件钩子](/user-guide/features/hooks#gateway-event-hooks)。
 

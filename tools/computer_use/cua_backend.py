@@ -78,6 +78,42 @@ def _is_macos() -> bool:
     return sys.platform == "darwin"
 
 
+# Substrings that, when found (case-insensitive) in an env var name, indicate
+# it holds a credential and must not be passed to the cua-driver child process.
+_CUA_SECRET_SUBSTRINGS = (
+    "KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
+    "PASSWD", "AUTH", "DSN", "WEBHOOK",
+)
+
+# Env var name prefixes that are safe to forward to the cua-driver subprocess.
+# cua-driver is a macOS accessibility tool: it needs PATH/HOME/TMPDIR and
+# locale settings. It must NOT receive API keys or operator secrets.
+_CUA_SAFE_ENV_PREFIXES = (
+    "PATH", "HOME", "USER", "LANG", "LC_", "TERM",
+    "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
+    "XDG_", "DISPLAY", "WAYLAND_DISPLAY",
+    "HERMES_CUA_DRIVER_",   # version / cmd overrides for cua-driver itself
+)
+
+
+def _scrub_cua_env(source_env: dict) -> dict:
+    """Return a sanitized copy of *source_env* safe to pass to the cua-driver
+    MCP subprocess.
+
+    Only env vars whose names match a safe prefix are forwarded; any var whose
+    name contains a credential-shaped substring (KEY, TOKEN, SECRET, …) is
+    always stripped regardless of prefix.
+    """
+    clean: dict = {}
+    for k, v in source_env.items():
+        # Hard-block credential-shaped names first.
+        if any(s in k.upper() for s in _CUA_SECRET_SUBSTRINGS):
+            continue
+        if any(k.startswith(p) for p in _CUA_SAFE_ENV_PREFIXES):
+            clean[k] = v
+    return clean
+
+
 def cua_driver_binary_available() -> bool:
     """True if `cua-driver` is on $PATH or HERMES_CUA_DRIVER_CMD resolves."""
     return bool(shutil.which(_CUA_DRIVER_CMD))
@@ -238,7 +274,7 @@ class _CuaDriverSession:
         params = StdioServerParameters(
             command=_CUA_DRIVER_CMD,
             args=_CUA_DRIVER_ARGS,
-            env={**os.environ},
+            env=_scrub_cua_env(os.environ),
         )
         stack = AsyncExitStack()
         read, write = await stack.enter_async_context(stdio_client(params))

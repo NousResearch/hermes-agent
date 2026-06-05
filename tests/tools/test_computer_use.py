@@ -1314,3 +1314,137 @@ class TestFocusAppFilterNoMatch:
         assert res.ok is True
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
+
+
+# ---------------------------------------------------------------------------
+# _scrub_cua_env — environment sanitization for the cua-driver subprocess
+# ---------------------------------------------------------------------------
+
+class TestScrubCuaEnv:
+    """Verify that _scrub_cua_env strips credentials and keeps safe vars."""
+
+    def _scrub(self, env: dict) -> dict:
+        from tools.computer_use.cua_backend import _scrub_cua_env
+        return _scrub_cua_env(env)
+
+    # -- Credential stripping ------------------------------------------------
+
+    def test_strips_api_key(self):
+        result = self._scrub({"ANTHROPIC_API_KEY": "sk-secret", "PATH": "/usr/bin"})
+        assert "ANTHROPIC_API_KEY" not in result
+
+    def test_strips_openai_api_key(self):
+        result = self._scrub({"OPENAI_API_KEY": "sk-abc", "HOME": "/home/user"})
+        assert "OPENAI_API_KEY" not in result
+
+    def test_strips_token_var(self):
+        result = self._scrub({"GH_TOKEN": "ghp_xxx", "PATH": "/usr/bin"})
+        assert "GH_TOKEN" not in result
+
+    def test_strips_secret_var(self):
+        result = self._scrub({"MY_SECRET": "hunter2", "PATH": "/usr/bin"})
+        assert "MY_SECRET" not in result
+
+    def test_strips_password_var(self):
+        result = self._scrub({"DB_PASSWORD": "s3cr3t", "PATH": "/usr/bin"})
+        assert "DB_PASSWORD" not in result
+
+    def test_strips_auth_var(self):
+        result = self._scrub({"BASIC_AUTH": "user:pass", "PATH": "/usr/bin"})
+        assert "BASIC_AUTH" not in result
+
+    def test_strips_webhook_var(self):
+        result = self._scrub({"SLACK_WEBHOOK": "https://hooks.slack.com/x", "PATH": "/usr/bin"})
+        assert "SLACK_WEBHOOK" not in result
+
+    def test_strips_credential_var(self):
+        result = self._scrub({"AWS_CREDENTIAL": "AKIA...", "PATH": "/usr/bin"})
+        assert "AWS_CREDENTIAL" not in result
+
+    def test_strips_dsn_var(self):
+        result = self._scrub({"DATABASE_DSN": "postgres://...", "PATH": "/usr/bin"})
+        assert "DATABASE_DSN" not in result
+
+    def test_strips_passwd_var(self):
+        result = self._scrub({"MYSQL_PASSWD": "pass123", "HOME": "/home/user"})
+        assert "MYSQL_PASSWD" not in result
+
+    # -- Safe var forwarding -------------------------------------------------
+
+    def test_keeps_path(self):
+        result = self._scrub({"PATH": "/usr/local/bin:/usr/bin"})
+        assert result.get("PATH") == "/usr/local/bin:/usr/bin"
+
+    def test_keeps_home(self):
+        result = self._scrub({"HOME": "/home/operator"})
+        assert result.get("HOME") == "/home/operator"
+
+    def test_keeps_tmpdir(self):
+        result = self._scrub({"TMPDIR": "/tmp"})
+        assert result.get("TMPDIR") == "/tmp"
+
+    def test_keeps_lang(self):
+        result = self._scrub({"LANG": "en_US.UTF-8"})
+        assert result.get("LANG") == "en_US.UTF-8"
+
+    def test_keeps_lc_all(self):
+        result = self._scrub({"LC_ALL": "en_US.UTF-8"})
+        assert result.get("LC_ALL") == "en_US.UTF-8"
+
+    def test_keeps_term(self):
+        result = self._scrub({"TERM": "xterm-256color"})
+        assert result.get("TERM") == "xterm-256color"
+
+    def test_keeps_shell(self):
+        result = self._scrub({"SHELL": "/bin/zsh"})
+        assert result.get("SHELL") == "/bin/zsh"
+
+    def test_keeps_cua_driver_override(self):
+        result = self._scrub({"HERMES_CUA_DRIVER_VERSION": "0.5.0"})
+        assert result.get("HERMES_CUA_DRIVER_VERSION") == "0.5.0"
+
+    def test_keeps_cua_driver_cmd_override(self):
+        result = self._scrub({"HERMES_CUA_DRIVER_CMD": "/opt/bin/cua-driver"})
+        assert result.get("HERMES_CUA_DRIVER_CMD") == "/opt/bin/cua-driver"
+
+    # -- Noise vars that must NOT pass ----------------------------------------
+
+    def test_strips_arbitrary_operator_var(self):
+        """Non-safe-prefix vars with no credential suffix must still be stripped."""
+        result = self._scrub({"HERMES_BASE_URL": "https://internal.example.com", "PATH": "/usr/bin"})
+        assert "HERMES_BASE_URL" not in result
+
+    def test_strips_hermes_kanban_db(self):
+        result = self._scrub({"HERMES_KANBAN_DB": "/data/kanban.db", "PATH": "/usr/bin"})
+        assert "HERMES_KANBAN_DB" not in result
+
+    # -- Mixed-env sanity check -----------------------------------------------
+
+    def test_mixed_env_only_safe_vars_pass(self):
+        source = {
+            "PATH": "/usr/local/bin",
+            "HOME": "/home/op",
+            "ANTHROPIC_API_KEY": "sk-secret",
+            "OPENAI_API_KEY": "sk-open",
+            "GH_TOKEN": "ghp_xxx",
+            "HERMES_BASE_URL": "https://internal",
+            "LANG": "en_US.UTF-8",
+            "TMPDIR": "/tmp",
+            "HERMES_CUA_DRIVER_VERSION": "0.5.0",
+        }
+        result = self._scrub(source)
+        # Safe vars present
+        assert "PATH" in result
+        assert "HOME" in result
+        assert "LANG" in result
+        assert "TMPDIR" in result
+        assert "HERMES_CUA_DRIVER_VERSION" in result
+        # Credentials absent
+        assert "ANTHROPIC_API_KEY" not in result
+        assert "OPENAI_API_KEY" not in result
+        assert "GH_TOKEN" not in result
+        # Non-safe operator vars absent
+        assert "HERMES_BASE_URL" not in result
+
+    def test_empty_env_returns_empty(self):
+        assert self._scrub({}) == {}

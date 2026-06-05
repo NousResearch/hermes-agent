@@ -215,3 +215,300 @@ class TestConfigOverrides:
         import hermes_cli.dingtalk_auth as mod
         importlib.reload(mod)
         assert mod.REGISTRATION_SOURCE == "openClaw"
+
+
+# ---------------------------------------------------------------------------
+# poll_registration — single-shot status check
+# ---------------------------------------------------------------------------
+
+
+class TestPollRegistration:
+
+    def test_returns_normalized_dict_for_waiting(self):
+        from hermes_cli.dingtalk_auth import poll_registration
+
+        with patch("hermes_cli.dingtalk_auth._api_post",
+                   return_value={"errcode": 0, "status": "waiting"}):
+            result = poll_registration("dev")
+        assert result["status"] == "WAITING"  # upper-cased
+        assert result["client_id"] is None
+        assert result["client_secret"] is None
+        assert result["fail_reason"] is None
+
+    def test_returns_credentials_for_success(self):
+        from hermes_cli.dingtalk_auth import poll_registration
+
+        with patch("hermes_cli.dingtalk_auth._api_post",
+                   return_value={"errcode": 0, "status": "SUCCESS",
+                                 "client_id": "cid", "client_secret": "sec"}):
+            result = poll_registration("dev")
+        assert result["status"] == "SUCCESS"
+        assert result["client_id"] == "cid"
+        assert result["client_secret"] == "sec"
+
+    def test_unknown_status_normalized_to_unknown(self):
+        from hermes_cli.dingtalk_auth import poll_registration
+
+        with patch("hermes_cli.dingtalk_auth._api_post",
+                   return_value={"errcode": 0, "status": "weird-future-state"}):
+            result = poll_registration("dev")
+        assert result["status"] == "UNKNOWN"
+
+
+# ---------------------------------------------------------------------------
+# wait_for_registration_success — transient-error and terminal-failure paths
+# ---------------------------------------------------------------------------
+
+
+class TestWaitForSuccessFailurePaths:
+
+    def test_transient_poll_error_within_retry_window_continues(self):
+        """A short burst of RegistrationError should be retried, then succeed."""
+        from hermes_cli.dingtalk_auth import wait_for_registration_success, RegistrationError
+
+        side_effects = [
+            RegistrationError("transient 1"),
+            RegistrationError("transient 2"),
+            {"status": "SUCCESS", "client_id": "cid", "client_secret": "sec"},
+        ]
+        with patch("hermes_cli.dingtalk_auth.poll_registration", side_effect=side_effects), \
+             patch("hermes_cli.dingtalk_auth.time.sleep"):
+            cid, secret = wait_for_registration_success(
+                device_code="dev", interval=0, expires_in=60
+            )
+        assert cid == "cid"
+        assert secret == "sec"
+
+    def test_persistent_poll_error_eventually_raises(self):
+        """After the retry window expires, the error should propagate."""
+        from hermes_cli.dingtalk_auth import wait_for_registration_success, RegistrationError
+
+        with patch("hermes_cli.dingtalk_auth.poll_registration",
+                   side_effect=RegistrationError("permanent")), \
+             patch("hermes_cli.dingtalk_auth.time.sleep"), \
+             patch("hermes_cli.dingtalk_auth.time.monotonic",
+                   side_effect=[0, 1, 2, 200, 400]):
+            with pytest.raises(RegistrationError, match="permanent"):
+                wait_for_registration_success(
+                    device_code="dev", interval=0, expires_in=600
+                )
+
+    def test_fail_status_raises_with_reason(self):
+        """A terminal FAIL status (after retry window) propagates the reason."""
+        from hermes_cli.dingtalk_auth import wait_for_registration_success, RegistrationError
+
+        with patch("hermes_cli.dingtalk_auth.poll_registration",
+                   return_value={"status": "FAIL", "fail_reason": "user denied",
+                                 "client_id": None, "client_secret": None}), \
+             patch("hermes_cli.dingtalk_auth.time.sleep"), \
+             patch("hermes_cli.dingtalk_auth.time.monotonic",
+                   side_effect=[0, 1, 2, 200, 400]):
+            with pytest.raises(RegistrationError, match="user denied"):
+                wait_for_registration_success(
+                    device_code="dev", interval=0, expires_in=600
+                )
+
+    def test_overall_timeout_raises(self):
+        """If the deadline is reached without SUCCESS, raise a timeout error."""
+        from hermes_cli.dingtalk_auth import wait_for_registration_success, RegistrationError
+
+        with patch("hermes_cli.dingtalk_auth.poll_registration",
+                   return_value={"status": "WAITING", "client_id": None,
+                                 "client_secret": None, "fail_reason": None}), \
+             patch("hermes_cli.dingtalk_auth.time.sleep"), \
+             patch("hermes_cli.dingtalk_auth.time.monotonic",
+                   side_effect=[0, 100, 200]):
+            with pytest.raises(RegistrationError, match="timed out"):
+                wait_for_registration_success(
+                    device_code="dev", interval=0, expires_in=50
+                )
+
+
+# ---------------------------------------------------------------------------
+# _ensure_qrcode_installed — already-installed / install-success / install-fail
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureQrcodeInstalled:
+
+    def test_returns_true_when_already_installed(self):
+        """A real qrcode (or any object) in sys.modules short-circuits install."""
+        from hermes_cli import dingtalk_auth
+
+        # Inject a fake qrcode module — import succeeds, no subprocess call.
+        fake_qrcode = MagicMock()
+        with patch.dict(sys.modules, {"qrcode": fake_qrcode}), \
+             patch("subprocess.check_call") as mock_install:
+            assert dingtalk_auth._ensure_qrcode_installed() is True
+        mock_install.assert_not_called()
+
+    def test_falls_through_to_install_when_missing(self):
+        """When import fails, the function tries uv pip install."""
+        from hermes_cli import dingtalk_auth
+
+        fake_qrcode = MagicMock()
+        install_calls = []
+
+        def fake_check_call(cmd, **kwargs):
+            install_calls.append(cmd)
+            # After the install command runs, "complete" by injecting the module
+            sys.modules["qrcode"] = fake_qrcode
+
+        # Force the initial import to miss by removing qrcode first
+        with patch.dict(sys.modules, {"qrcode": None}, clear=False), \
+             patch("subprocess.check_call", side_effect=fake_check_call):
+            sys.modules.pop("qrcode", None)
+            assert dingtalk_auth._ensure_qrcode_installed() is True
+        assert any("uv" in c or "pip" in c for cmd in install_calls for c in cmd)
+
+    def test_returns_false_when_both_installers_fail(self):
+        """If uv and pip both fail, return False without raising."""
+        from hermes_cli import dingtalk_auth
+        import subprocess as _subprocess
+
+        # Ensure qrcode isn't already imported
+        with patch.dict(sys.modules, {"qrcode": None}, clear=False), \
+             patch("subprocess.check_call",
+                   side_effect=_subprocess.CalledProcessError(1, "uv")):
+            sys.modules.pop("qrcode", None)
+            assert dingtalk_auth._ensure_qrcode_installed() is False
+
+
+# ---------------------------------------------------------------------------
+# render_qr_to_terminal — true rendering path with a synthetic qrcode module
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_qrcode_module():
+    """Build a minimal stand-in for the ``qrcode`` library.
+
+    The real qrcode wheel may not be installed in this venv.  The renderer
+    only uses ``qrcode.QRCode(...)``, ``qrcode.constants.ERROR_CORRECT_L``,
+    and the ``add_data``/``make``/``get_matrix`` methods, so we stub exactly
+    those.
+    """
+    fake = MagicMock()
+    fake.constants.ERROR_CORRECT_L = "L"
+
+    class _FakeQR:
+        def __init__(self, *_, **__):
+            self._data: str = ""
+            # 4x4 matrix that exercises every branch of the half-block encoder
+            # (top-only, bottom-only, both, neither).
+            self._matrix = [
+                [True, False, True, False],
+                [False, True, True, False],
+                [True, True, False, False],
+                [False, False, False, True],
+            ]
+
+        def add_data(self, data: str) -> None:
+            self._data = data
+
+        def make(self, fit: bool = True) -> None:  # noqa: ARG002
+            pass
+
+        def get_matrix(self):
+            return self._matrix
+
+    fake.QRCode = _FakeQR
+    return fake
+
+
+class TestRenderQRTrueRendering:
+
+    def test_renders_matrix_when_qrcode_present(self, capsys):
+        """Inject a synthetic qrcode module and verify a matrix is printed."""
+        from hermes_cli import dingtalk_auth
+
+        with patch.dict(sys.modules, {"qrcode": _make_fake_qrcode_module()}):
+            ok = dingtalk_auth.render_qr_to_terminal("https://example.com")
+        assert ok is True
+        captured = capsys.readouterr()
+        # The half-block encoder uses U+2580/U+2584/U+2588; at least one must
+        # appear in the output for a non-trivial matrix.
+        assert any(ch in captured.out for ch in "▀▄█")
+
+
+# ---------------------------------------------------------------------------
+# dingtalk_qr_auth — orchestration: begin → render → wait → return creds
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _stub_setup_printers(monkeypatch):
+    """Provide a stand-in ``hermes_cli.setup`` so dingtalk_qr_auth can import
+    its print_* helpers without pulling in the real wizard."""
+    fake_setup = MagicMock()
+    fake_setup.print_info = MagicMock()
+    fake_setup.print_success = MagicMock()
+    fake_setup.print_warning = MagicMock()
+    fake_setup.print_error = MagicMock()
+    monkeypatch.setitem(sys.modules, "hermes_cli.setup", fake_setup)
+    return fake_setup
+
+
+class TestDingtalkQrAuth:
+
+    def test_returns_credentials_on_happy_path(self, _stub_setup_printers):
+        from hermes_cli import dingtalk_auth
+
+        begin_payload = {
+            "device_code": "dev-abc",
+            "verification_uri_complete": "https://example/auth",
+            "expires_in": 7200,
+            "interval": 2,
+        }
+        with patch.object(dingtalk_auth, "begin_registration", return_value=begin_payload), \
+             patch.object(dingtalk_auth, "_ensure_qrcode_installed", return_value=True), \
+             patch.object(dingtalk_auth, "render_qr_to_terminal", return_value=True), \
+             patch.object(dingtalk_auth, "wait_for_registration_success",
+                          return_value=("cid-final", "secret-final-extra")):
+            result = dingtalk_auth.dingtalk_qr_auth()
+        assert result == ("cid-final", "secret-final-extra")
+
+    def test_returns_none_when_begin_fails(self, _stub_setup_printers):
+        from hermes_cli import dingtalk_auth
+        from hermes_cli.dingtalk_auth import RegistrationError
+
+        with patch.object(dingtalk_auth, "begin_registration",
+                          side_effect=RegistrationError("init failed")):
+            assert dingtalk_auth.dingtalk_qr_auth() is None
+        _stub_setup_printers.print_error.assert_called()
+
+    def test_returns_none_when_wait_fails(self, _stub_setup_printers):
+        from hermes_cli import dingtalk_auth
+        from hermes_cli.dingtalk_auth import RegistrationError
+
+        begin_payload = {
+            "device_code": "dev",
+            "verification_uri_complete": "https://example/auth",
+            "expires_in": 60,
+            "interval": 2,
+        }
+        with patch.object(dingtalk_auth, "begin_registration", return_value=begin_payload), \
+             patch.object(dingtalk_auth, "_ensure_qrcode_installed", return_value=True), \
+             patch.object(dingtalk_auth, "render_qr_to_terminal", return_value=True), \
+             patch.object(dingtalk_auth, "wait_for_registration_success",
+                          side_effect=RegistrationError("user cancelled")):
+            assert dingtalk_auth.dingtalk_qr_auth() is None
+        _stub_setup_printers.print_error.assert_called()
+
+    def test_warns_when_qrcode_install_unavailable(self, _stub_setup_printers):
+        """Even if qrcode can't be installed, the flow proceeds and warns."""
+        from hermes_cli import dingtalk_auth
+
+        begin_payload = {
+            "device_code": "dev",
+            "verification_uri_complete": "https://example/auth",
+            "expires_in": 60,
+            "interval": 2,
+        }
+        with patch.object(dingtalk_auth, "begin_registration", return_value=begin_payload), \
+             patch.object(dingtalk_auth, "_ensure_qrcode_installed", return_value=False), \
+             patch.object(dingtalk_auth, "render_qr_to_terminal", return_value=False), \
+             patch.object(dingtalk_auth, "wait_for_registration_success",
+                          return_value=("cid", "secretsecret")):
+            result = dingtalk_auth.dingtalk_qr_auth()
+        assert result == ("cid", "secretsecret")
+        _stub_setup_printers.print_warning.assert_called()

@@ -159,6 +159,33 @@ def _has_agent_browser() -> bool:
     return bool(agent_browser_bin or local_bin.exists())
 
 
+def _local_browser_runnable() -> bool:
+    """Return True when the *local* browser backend would actually start.
+
+    The ``agent-browser`` CLI being present is necessary but not sufficient for
+    local mode: agent-browser also needs a Chromium build on disk (without one
+    it hangs on first use until the command timeout fires), unless the
+    Lightpanda engine is selected — text-only navigation needs no Chromium.
+
+    This mirrors the local-mode tail of
+    :func:`tools.browser_tool.check_browser_requirements`, so the setup/status
+    surfaces advertise local browser readiness only when the runtime would
+    actually run it. Cloud providers (Browserbase, Browser Use, Firecrawl) host
+    their own Chromium and therefore gate on :func:`_has_agent_browser` alone.
+    """
+    if not _has_agent_browser():
+        return False
+    try:
+        from tools.browser_tool import _chromium_installed, _using_lightpanda_engine
+    except Exception:
+        # If the runtime probe can't be imported, fall back to binary presence
+        # (prior behaviour) rather than crashing the setup/status surface.
+        return True
+    if _using_lightpanda_engine():
+        return True
+    return _chromium_installed()
+
+
 def _browser_label(current_provider: str) -> str:
     mapping = {
         "browserbase": "Browserbase",
@@ -188,13 +215,23 @@ def _resolve_browser_feature_state(
     browser_provider: str,
     browser_provider_explicit: bool,
     browser_local_available: bool,
+    browser_local_runnable: bool,
     direct_camofox: bool,
     direct_browserbase: bool,
     direct_browser_use: bool,
     direct_firecrawl: bool,
     managed_browser_available: bool,
 ) -> tuple[str, bool, bool, bool]:
-    """Resolve browser availability using the same precedence as runtime."""
+    """Resolve browser availability using the same precedence as runtime.
+
+    ``browser_local_available`` means "the agent-browser CLI is present" — the
+    only local requirement for cloud providers, which host their own Chromium.
+    ``browser_local_runnable`` additionally requires a usable local Chromium
+    build (or the Lightpanda engine), mirroring the local-mode tail of
+    :func:`tools.browser_tool.check_browser_requirements`. Local mode must gate
+    on the latter, or setup/status advertise a browser that fails on first use
+    when Chromium is missing.
+    """
     if direct_camofox:
         return "camofox", True, bool(browser_tool_enabled), False
 
@@ -223,7 +260,7 @@ def _resolve_browser_feature_state(
             return current_provider, False, False, False
 
         current_provider = "local"
-        available = bool(browser_local_available)
+        available = bool(browser_local_runnable)
         active = bool(browser_tool_enabled and available)
         return current_provider, available, active, False
 
@@ -243,7 +280,7 @@ def _resolve_browser_feature_state(
         active = bool(browser_tool_enabled and available)
         return "browserbase", available, active, False
 
-    available = bool(browser_local_available)
+    available = bool(browser_local_runnable)
     active = bool(browser_tool_enabled and available)
     return "local", available, active, False
 
@@ -445,6 +482,7 @@ def get_nous_subscription_features(
     tts_active = bool(tts_tool_enabled and tts_available)
 
     browser_local_available = _has_agent_browser()
+    browser_local_runnable = _local_browser_runnable()
     (
         browser_current_provider,
         browser_available,
@@ -455,6 +493,7 @@ def get_nous_subscription_features(
         browser_provider=browser_provider,
         browser_provider_explicit=browser_provider_explicit,
         browser_local_available=browser_local_available,
+        browser_local_runnable=browser_local_runnable,
         direct_camofox=direct_camofox,
         direct_browserbase=direct_browserbase,
         direct_browser_use=direct_browser_use,

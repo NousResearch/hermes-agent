@@ -224,6 +224,37 @@ class TestSupportsVisionOverride:
         cfg = {"model": "some-string", "providers": ["not-a-dict"]}
         assert _supports_vision_override(cfg, "custom", "my-llava") is None
 
+    def test_custom_colon_name_stripped_suffix_lookup(self):
+        # model.provider: custom:my-proxy → should resolve stripped key "my-proxy"
+        cfg = {
+            "model": {"provider": "custom:my-proxy"},
+            "providers": {
+                "my-proxy": {"models": {"gpt-5.5": {"supports_vision": True}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "gpt-5.5") is True
+
+    def test_custom_colon_name_stripped_suffix_false(self):
+        # Explicitly disabled vision on the stripped key.
+        cfg = {
+            "model": {"provider": "custom:my-proxy"},
+            "providers": {
+                "my-proxy": {"models": {"gpt-5.5": {"supports_vision": False}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "gpt-5.5") is False
+
+    def test_custom_colon_name_no_stripped_key_falls_through(self):
+        # custom:my-proxy but providers only has "custom" — stripped key
+        # doesn't match, but "custom" does via runtime provider.
+        cfg = {
+            "model": {"provider": "custom:my-proxy"},
+            "providers": {
+                "custom": {"models": {"gpt-5.5": {"supports_vision": True}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "gpt-5.5") is True
+
 
 # ─── _lookup_supports_vision (override-aware) ────────────────────────────────
 

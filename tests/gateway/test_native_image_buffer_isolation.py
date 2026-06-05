@@ -59,6 +59,22 @@ async def test_native_image_buffer_isolated_per_session():
 
 
 @pytest.mark.asyncio
+async def test_image_turn_buffers_route_hint_for_semantic_escalation():
+    runner = _make_runner()
+    source = _source("chat-a")
+    session_key = build_session_key(source)
+
+    await runner._prepare_inbound_message_text(
+        event=_image_event(source, "/tmp/a.png"),
+        source=source,
+        history=[],
+    )
+
+    assert runner._consume_pending_route_hints(session_key) == {"has_image": True}
+    assert runner._consume_pending_route_hints(session_key) == {}
+
+
+@pytest.mark.asyncio
 async def test_native_image_buffer_not_cleared_by_other_sessions_without_images():
     runner = _make_runner()
     source_a = _source("chat-a")

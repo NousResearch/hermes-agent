@@ -1363,6 +1363,16 @@ def _run_single_child(
 
     child_pool = getattr(child, "_credential_pool", None)
     leased_cred_id = None
+    if child_pool is not None and not _pool_matches_provider(
+        child_pool,
+        getattr(child, "provider", None),
+    ):
+        logger.warning(
+            "Skipping subagent credential lease: pool=%s, child=%s provider mismatch",
+            getattr(child_pool, "provider", None),
+            getattr(child, "provider", None),
+        )
+        child_pool = None
     if child_pool is not None:
         leased_cred_id = child_pool.acquire_lease()
         if leased_cred_id is not None:
@@ -2337,6 +2347,24 @@ def delegate_task(
     )
 
 
+def _normalized_provider_name(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().lower()
+
+
+def _pool_matches_provider(pool, provider: Optional[str]) -> bool:
+    """Return whether a credential pool is safe to use for provider.
+
+    Older/mocked pools may not expose a provider field. Treat missing provider
+    metadata as compatible, but reject explicit cross-provider mismatches so a
+    child cannot be rebound to the wrong runtime endpoint during lease binding.
+    """
+    wanted = _normalized_provider_name(provider)
+    pool_provider = _normalized_provider_name(getattr(pool, "provider", None))
+    return not wanted or not pool_provider or pool_provider == wanted
+
+
 def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
     """Resolve a credential pool for the child agent.
 
@@ -2353,13 +2381,23 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     parent_provider = getattr(parent_agent, "provider", None) or ""
     parent_pool = getattr(parent_agent, "_credential_pool", None)
     if parent_pool is not None and effective_provider == parent_provider:
-        return parent_pool
+        if _pool_matches_provider(parent_pool, effective_provider):
+            return parent_pool
+        logger.debug(
+            "Parent credential pool provider '%s' does not match child provider '%s'; resolving child pool independently",
+            getattr(parent_pool, "provider", None),
+            effective_provider,
+        )
 
     try:
         from agent.credential_pool import load_pool
 
         pool = load_pool(effective_provider)
-        if pool is not None and pool.has_credentials():
+        if (
+            pool is not None
+            and pool.has_credentials()
+            and _pool_matches_provider(pool, effective_provider)
+        ):
             return pool
     except Exception as exc:
         logger.debug(

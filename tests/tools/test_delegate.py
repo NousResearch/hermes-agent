@@ -1413,6 +1413,19 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         result = _resolve_child_credential_pool("openrouter", parent)
         self.assertIs(result, mock_pool)
 
+    def test_same_provider_refuses_mismatched_parent_pool(self):
+        parent = _make_mock_parent()
+        parent.provider = "openai-codex"
+        mismatched_pool = MagicMock()
+        mismatched_pool.provider = "opencode-go"
+        parent._credential_pool = mismatched_pool
+
+        with patch("agent.credential_pool.load_pool", return_value=None) as mock_load:
+            result = _resolve_child_credential_pool("openai-codex", parent)
+
+        self.assertIsNone(result)
+        mock_load.assert_called_once_with("openai-codex")
+
     def test_no_provider_inherits_parent_pool(self):
         parent = _make_mock_parent()
         mock_pool = MagicMock()
@@ -1473,6 +1486,39 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             )
 
             self.assertEqual(mock_child._credential_pool, mock_pool)
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_agent_does_not_attach_mismatched_parent_pool(self, mock_cfg):
+        parent = _make_mock_parent()
+        parent.provider = "openai-codex"
+        parent.base_url = "https://chatgpt.com/backend-api/codex"
+        parent.api_mode = "codex_responses"
+        parent.model = "gpt-5.5"
+        mismatched_pool = MagicMock()
+        mismatched_pool.provider = "opencode-go"
+        parent._credential_pool = mismatched_pool
+
+        with patch("agent.credential_pool.load_pool", return_value=None), patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child._credential_pool = None
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test runtime coherence",
+                context=None,
+                toolsets=[],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["provider"], "openai-codex")
+        self.assertEqual(kwargs["base_url"], "https://chatgpt.com/backend-api/codex")
+        self.assertEqual(kwargs["api_mode"], "codex_responses")
+        self.assertIsNone(mock_child._credential_pool)
 
     @patch("tools.delegate_tool._load_config", return_value={})
     def test_build_child_agent_preserves_mcp_toolsets_by_default(self, mock_cfg):
@@ -1558,6 +1604,34 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child._credential_pool.acquire_lease.assert_called_once_with()
         child._swap_credential.assert_called_once_with(leased_entry)
         child._credential_pool.release_lease.assert_called_once_with("cred-b")
+
+    def test_run_single_child_skips_mismatched_pool_lease(self):
+        from tools.delegate_tool import _run_single_child
+
+        child = MagicMock()
+        child.provider = "openai-codex"
+        child._credential_pool = MagicMock()
+        child._credential_pool.provider = "opencode-go"
+        child._credential_pool.acquire_lease.return_value = "cred-a"
+        child._credential_pool.current.return_value = MagicMock(id="cred-a")
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Investigate mismatched pool",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "completed")
+        child._credential_pool.acquire_lease.assert_not_called()
+        child._swap_credential.assert_not_called()
 
     def test_run_single_child_releases_lease_after_failure(self):
         from tools.delegate_tool import _run_single_child

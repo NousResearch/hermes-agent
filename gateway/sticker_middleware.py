@@ -7,6 +7,10 @@ from the corresponding mood directory, and returns cleaned text + image path.
 Design: LLM embeds tags like %愉快% in its reply. The gateway send layer
 intercepts, strips the tag, and optionally sends a sticker image.
 This avoids the LLM tool-calling loop that caused repeated speech issues.
+
+Two sticker sources (auto-discovered):
+  1. ~/.hermes/stickers/{mood}/     — new directory structure (subdirs)
+  2. ~/.hermes/output/stickers/     — old flat files (mood_N.ext)
 """
 
 from __future__ import annotations
@@ -20,32 +24,56 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-STICKER_DIR = os.path.expanduser("~/.hermes/stickers")
+# Sticker directories — both scanned dynamically
+STICKER_DIRS = [
+    os.path.expanduser("~/.hermes/stickers"),        # new: subdirs by mood
+    os.path.expanduser("~/.hermes/output/stickers"),  # old: flat files
+]
 TAG_PATTERN = re.compile(r"%([一-鿿]+)%")
-
-# Chinese tag → mood directory mapping
-MOOD_MAP: dict[str, str] = {
-    "愉快": "joy",
-    "开心": "joy",
-    "高兴": "joy",
-    "难过": "sad",
-    "伤心": "sad",
-    "遗憾": "sad",
-    "无语": "speechless",
-    "无奈": "speechless",
-    "惊讶": "surprised",
-    "震惊": "surprised",
-    "疑惑": "doubt",
-    "困惑": "doubt",
-    "安慰": "comfort",
-    "鼓励": "comfort",
-    "害羞": "shy",
-    "不好意思": "shy",
-    "撒娇": "shy",
-}
 
 # Probability of actually sending a sticker (0.0 = never, 1.0 = always)
 SEND_PROBABILITY = 0.5
+
+
+def _discover_moods() -> dict[str, list[str]]:
+    """Dynamically scan all sticker directories and build mood → files map.
+
+    Returns dict of mood_name → list of image file paths.
+    Mood names come from directory names (new) or filename prefixes (old).
+    """
+    moods: dict[str, list[str]] = {}
+    image_exts = (".jpg", ".jpeg", ".gif", ".png", ".webp")
+
+    for base_dir in STICKER_DIRS:
+        if not os.path.isdir(base_dir):
+            continue
+
+        # Check for subdirectories (new structure)
+        for entry in os.listdir(base_dir):
+            subdir = os.path.join(base_dir, entry)
+            if os.path.isdir(subdir):
+                files = []
+                for ext in image_exts:
+                    files.extend(glob.glob(os.path.join(subdir, f"*{ext}")))
+                if files:
+                    moods.setdefault(entry, []).extend(files)
+
+        # Check for flat files with mood prefix (old structure: mood_N.ext)
+        for fname in os.listdir(base_dir):
+            fpath = os.path.join(base_dir, fname)
+            if not os.path.isfile(fpath):
+                continue
+            _, ext = os.path.splitext(fname)
+            if ext.lower() not in image_exts:
+                continue
+            # Extract mood from filename: "加油_2.gif" → "加油"
+            parts = fname.rsplit(".", 1)[0]  # remove extension
+            if "_" in parts:
+                mood = parts.rsplit("_", 1)[0]  # take prefix before last _
+                if mood:
+                    moods.setdefault(mood, []).append(fpath)
+
+    return moods
 
 
 def scan_sticker_tags(text: str) -> Tuple[str, Optional[str]]:
@@ -57,22 +85,32 @@ def scan_sticker_tags(text: str) -> Tuple[str, Optional[str]]:
 
     If a valid tag is found and a sticker image exists, there is a 50% chance
     the sticker path is returned. The tag is always stripped from the text.
+    Mood directories are discovered dynamically — no hardcoded mapping.
     """
     match = TAG_PATTERN.search(text)
     if not match:
         return text, None
 
     tag = match.group(1)
-    mood_dir = MOOD_MAP.get(tag)
-    if not mood_dir:
-        logger.debug("Unknown sticker tag: %s", tag)
-        return text, None
 
-    sticker_path = _pick_random_sticker(mood_dir)
-    if not sticker_path:
-        logger.debug("No stickers available for mood: %s", mood_dir)
+    # Dynamic discovery — finds all moods from both directories
+    moods = _discover_moods()
+
+    # Try exact match first, then partial match
+    files = moods.get(tag)
+    if not files:
+        # Partial match: tag contained in mood name or vice versa
+        for mood_name, mood_files in moods.items():
+            if tag in mood_name or mood_name in tag:
+                files = mood_files
+                break
+
+    if not files:
+        logger.debug("No stickers found for tag: %s (available: %s)", tag, list(moods.keys()))
         cleaned = TAG_PATTERN.sub("", text).strip()
         return cleaned, None
+
+    sticker_path = random.choice(files)
 
     # Always strip the tag from text
     cleaned = TAG_PATTERN.sub("", text).strip()
@@ -86,14 +124,15 @@ def scan_sticker_tags(text: str) -> Tuple[str, Optional[str]]:
     return cleaned, sticker_path
 
 
-def _pick_random_sticker(mood: str) -> Optional[str]:
-    """Pick a random image file from the given mood directory."""
-    mood_dir = os.path.join(STICKER_DIR, mood)
-    if not os.path.isdir(mood_dir):
-        return None
-
-    files: list[str] = []
-    for ext in ("*.jpg", "*.jpeg", "*.gif", "*.png", "*.webp"):
-        files.extend(glob.glob(os.path.join(mood_dir, ext)))
-
-    return random.choice(files) if files else None
+def is_animated_gif(path: str) -> bool:
+    """Check if a GIF file has multiple frames (is animated)."""
+    if not path.lower().endswith(".gif"):
+        return False
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        # GIF89a header + multiple image blocks = animated
+        # Simple heuristic: count GIF image descriptor markers (0x2C)
+        return data.count(b"\x2c") > 1
+    except Exception:
+        return False

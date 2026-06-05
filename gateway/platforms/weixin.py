@@ -1811,7 +1811,13 @@ class WeixinAdapter(BasePlatformAdapter):
             # Deliver sticker image if tag was matched.
             if sticker_path:
                 try:
-                    await self.send_image_file(chat_id=chat_id, image_path=sticker_path, metadata=metadata)
+                    from gateway.sticker_middleware import is_animated_gif
+                    if is_animated_gif(sticker_path):
+                        # Send GIF as file attachment to preserve animation
+                        # (ITEM_IMAGE renders GIFs as static in WeChat)
+                        await self.send_document(chat_id=chat_id, file_path=sticker_path)
+                    else:
+                        await self.send_image_file(chat_id=chat_id, image_path=sticker_path, metadata=metadata)
                 except Exception as exc:
                     logger.warning("[%s] sticker delivery failed for %s: %s", self.name, sticker_path, exc)
 

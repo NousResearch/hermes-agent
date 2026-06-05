@@ -1,9 +1,8 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { OAuthProvider } from '@/types/hermes'
-
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
+import type { OAuthProvider } from '@/types/hermes'
 
 import { Picker } from './desktop-onboarding-overlay'
 
@@ -52,11 +51,11 @@ describe('onboarding Picker', () => {
 
     expect(screen.getByText('Nous Portal')).toBeTruthy()
     expect(screen.getByText('Recommended')).toBeTruthy()
-    expect(screen.queryByText('Anthropic Claude')).toBeNull()
+    expect(screen.queryByText('Anthropic API Key')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Other providers' }))
 
-    expect(screen.getByText('Anthropic Claude')).toBeTruthy()
+    expect(screen.getByText('Anthropic API Key')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Collapse' })).toBeTruthy()
   })
 
@@ -64,8 +63,8 @@ describe('onboarding Picker', () => {
     setProviders([provider('anthropic', 'Anthropic Claude'), provider('openai-codex', 'OpenAI Codex / ChatGPT')])
     render(<Picker ctx={ctx} />)
 
-    expect(screen.getByText('Anthropic Claude')).toBeTruthy()
-    expect(screen.getByText('OpenAI Codex / ChatGPT')).toBeTruthy()
+    expect(screen.getByText('Anthropic API Key')).toBeTruthy()
+    expect(screen.getByText('OpenAI OAuth (ChatGPT)')).toBeTruthy()
     expect(screen.queryByText('Other sign-in options')).toBeNull()
     expect(screen.queryByText('Recommended')).toBeNull()
   })

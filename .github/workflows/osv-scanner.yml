@@ -28,7 +28,6 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'ui-tui/package.json'
-      - 'ui-tui/package-lock.json'
       - 'website/package.json'
       - 'website/package-lock.json'
       - '.github/workflows/osv-scanner.yml'
@@ -39,7 +38,6 @@ on:
       - 'pyproject.toml'
       - 'package.json'
       - 'package-lock.json'
-      - 'ui-tui/package-lock.json'
       - 'website/package-lock.json'
   schedule:
     # Weekly scan against main — catches CVEs published after merge for
@@ -62,6 +60,6 @@ jobs:
       # the three sources of truth and skip vendored / test / worktree dirs.
       scan-args: |-
         --lockfile=uv.lock
-        --lockfile=ui-tui/package-lock.json
+        --lockfile=package-lock.json
         --lockfile=website/package-lock.json
       fail-on-vuln: false

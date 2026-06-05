@@ -13,6 +13,7 @@ import { useStore } from '@nanostores/react'
 import { IconPlayerStopFilled } from '@tabler/icons-react'
 import {
   type ClipboardEvent,
+  type ComponentProps,
   type FC,
   type FocusEvent,
   type FormEvent,
@@ -48,13 +49,13 @@ import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/co
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
-import { DirectiveContent, DirectiveText } from '@/components/assistant-ui/directive-text'
-import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
-import { MarkdownText } from '@/components/assistant-ui/markdown-text'
+import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
+import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
 import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistant-ui/todo-tool'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
+import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
@@ -73,6 +74,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
+import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
@@ -219,6 +221,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
   const messageStatus = useAuiState(s => s.message.status?.type)
   const isPlaceholder = messageStatus === 'running' && content.length === 0
   const interruptedOnly = useMemo(() => isInterruptedOnlyMessage(messageText), [messageText])
+  const enterRef = useEnterAnimation(messageStatus === 'running', `assistant-message:${messageId}`)
 
   if (isPlaceholder) {
     return null
@@ -229,6 +232,8 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
       data-role="assistant"
       data-slot="aui_assistant-message-root"
+      data-streaming={messageStatus === 'running' ? 'true' : undefined}
+      ref={enterRef}
     >
       <div
         className={cn(
@@ -370,7 +375,9 @@ const ThinkingDisclosure: FC<{
     observer.observe(content)
 
     return () => observer.disconnect()
-  }, [isPreview])
+    // Re-run when the disclosure toggles so the observer attaches to the new
+    // DOM after expand/collapse (refs are conditionally rendered on `open`).
+  }, [isPreview, open])
 
   return (
     <div
@@ -431,7 +438,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
       s.thread.isRunning &&
       s.message.status?.type === 'running' &&
       s.message.parts
-        .slice(Math.max(0, startIndex), Math.min(s.message.parts.length, endIndex))
+        .slice(Math.max(0, startIndex))
         .some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
   )
 
@@ -444,17 +451,19 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
 
 const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ text, status }) => {
   const displayText = text.trimStart()
+  const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  const isRunning = status?.type === 'running' || messageRunning
 
   return (
-    <div
-      className={cn(
-        'whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground/85',
-        status?.type === 'running' && 'shimmer text-muted-foreground/55'
+    <MarkdownTextContent
+      containerClassName={cn(
+        'text-xs leading-relaxed text-muted-foreground/85',
+        isRunning && 'shimmer text-muted-foreground/55'
       )}
-      data-slot="aui_reasoning-text"
-    >
-      {displayText}
-    </div>
+      containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
+      isRunning={isRunning}
+      text={displayText}
+    />
   )
 }
 
@@ -609,13 +618,13 @@ const AssistantFooter: FC<MessageActionProps> = props => (
       className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
       hideWhenSingleBranch
     >
-      <BranchPickerPrimitive.Previous className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+      <BranchPickerPrimitive.Previous className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
         <Codicon name="chevron-left" size="0.875rem" />
       </BranchPickerPrimitive.Previous>
       <span className="tabular-nums">
         <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
       </span>
-      <BranchPickerPrimitive.Next className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+      <BranchPickerPrimitive.Next className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
         <Codicon name="chevron-right" size="0.875rem" />
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>
@@ -636,7 +645,7 @@ function messageAttachmentRefs(value: unknown): string[] {
 function StickyHumanMessageContainer({ children }: { children: ReactNode }) {
   return (
     <div
-      className="group/user-message sticky top-0 z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-2"
+      className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-2"
       data-role="user"
       data-slot="aui_user-message-root"
     >
@@ -653,7 +662,7 @@ const USER_BUBBLE_BASE_CLASS =
   'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left shadow-composer'
 
 const USER_ACTION_ICON_BUTTON_CLASS =
-  'grid cursor-pointer place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
+  'grid place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
 
 const USER_ACTION_ICON_SIZE = '0.6875rem'
 const StopGlyph = <IconPlayerStopFilled aria-hidden className="size-3.5 -translate-y-px" />
@@ -684,6 +693,32 @@ const UserMessage: FC<{
     return messageAttachmentRefs(custom.attachmentRefs)
   })
 
+  // Sticky human bubbles clamp to ~2 lines with a soft fade so a long prompt
+  // doesn't dominate the viewport while the response streams underneath; the
+  // clamp lifts on hover / focus (see styles.css). We measure the *unclamped*
+  // inner wrapper so the ResizeObserver only fires on real content / width
+  // changes, not on every frame while the outer max-height animates open.
+  const clampInnerRef = useRef<HTMLDivElement | null>(null)
+  const [bodyClamped, setBodyClamped] = useState(false)
+
+  const measureClamp = useCallback(() => {
+    const inner = clampInnerRef.current
+    const outer = inner?.parentElement
+
+    if (!inner || !outer) {
+      return
+    }
+
+    const styles = getComputedStyle(inner)
+    const lineHeight = parseFloat(styles.lineHeight) || 1.5 * parseFloat(styles.fontSize) || 20
+    const fullHeight = inner.scrollHeight
+
+    outer.style.setProperty('--human-msg-full', `${fullHeight}px`)
+    setBodyClamped(fullHeight > lineHeight * 2 + 1)
+  }, [])
+
+  useResizeObserver(measureClamp, clampInnerRef)
+
   const hasBody = messageText.trim().length > 0
   const isLatestUser = messageId === latestUserId
   const showStop = isLatestUser && threadRunning && Boolean(onCancel)
@@ -703,9 +738,14 @@ const UserMessage: FC<{
         </span>
       )}
       {hasBody && (
-        <span className="wrap-anywhere block whitespace-pre-line">
-          <MessagePrimitive.Parts components={{ Text: DirectiveText }} />
-        </span>
+        // Render the user's text through a minimal markdown pipeline:
+        // backtick `code` and ``` fenced ``` blocks, with directive chips
+        // (`@file:` etc.) still resolved inside the plain-text spans.
+        <div className="sticky-human-clamp" data-clamped={bodyClamped ? 'true' : undefined}>
+          <div ref={clampInnerRef}>
+            <UserMessageText className="wrap-anywhere" text={messageText} />
+          </div>
+        </div>
       )}
     </>
   )
@@ -765,7 +805,7 @@ const UserMessage: FC<{
             >
               <span aria-hidden className="checkpoint-icon size-1.5 rounded-full border border-current" />
               <BranchPickerPrimitive.Previous
-                className="checkpoint-restore-text cursor-pointer rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
+                className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
                 title="Restore previous checkpoint"
               >
                 Restore checkpoint
@@ -774,7 +814,7 @@ const UserMessage: FC<{
                 <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
               </span>
               <BranchPickerPrimitive.Next
-                className="checkpoint-restore-text cursor-pointer rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
+                className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
                 title="Restore next checkpoint"
               >
                 Go forward
@@ -840,6 +880,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
   const [triggerItems, setTriggerItems] = useState<readonly Unstable_TriggerItem[]>([])
+  // See index.tsx: set in keydown when the open popover consumes a nav/control
+  // key so the matching keyup skips refreshTrigger (timing-immune vs reading
+  // `trigger`, which keyup sees as already-null after Escape).
+  const triggerKeyConsumedRef = useRef(false)
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)
@@ -964,8 +1008,15 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     }
 
     setTrigger(detected)
-    setTriggerActive(0)
-  }, [])
+
+    // Only reset the highlight when the trigger actually changed (opened, or
+    // the query/kind differs). Re-detecting the *same* trigger — e.g. on a
+    // caret move (mouseup) or a stray refresh — must preserve the user's
+    // current selection instead of snapping back to the first item.
+    if (detected?.kind !== trigger?.kind || detected?.query !== trigger?.query) {
+      setTriggerActive(0)
+    }
+  }, [trigger])
 
   const closeTrigger = useCallback(() => {
     setTrigger(null)
@@ -1198,6 +1249,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         setTriggerActive(idx => (idx + 1) % triggerItems.length)
 
         return
@@ -1205,6 +1257,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       if (event.key === 'ArrowUp') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         setTriggerActive(idx => (idx - 1 + triggerItems.length) % triggerItems.length)
 
         return
@@ -1212,6 +1265,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       if (event.key === 'Enter' || event.key === 'Tab') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         const item = triggerItems[triggerActive]
 
         if (item) {
@@ -1223,6 +1277,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       if (event.key === 'Escape') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         closeTrigger()
 
         return
@@ -1240,6 +1295,22 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
       event.preventDefault()
       submitEdit(event.currentTarget)
     }
+  }
+
+  const handleKeyUp = () => {
+    // If this keyup belongs to a key the open trigger popover already consumed
+    // in keydown (Arrow/Enter/Tab/Escape), skip the refresh. Those keys never
+    // edit text, and for Escape the keydown already closed the menu — a refresh
+    // here would re-detect the still-present `/` and instantly reopen it. We
+    // read a ref set during keydown rather than `trigger`, because by keyup
+    // time React has re-rendered and `trigger` may already be null.
+    if (triggerKeyConsumedRef.current) {
+      triggerKeyConsumedRef.current = false
+
+      return
+    }
+
+    window.setTimeout(refreshTrigger, 0)
   }
 
   return (
@@ -1292,7 +1363,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               onFocus={() => markActiveComposer('edit')}
               onInput={handleInput}
               onKeyDown={handleKeyDown}
-              onKeyUp={() => window.setTimeout(refreshTrigger, 0)}
+              onKeyUp={handleKeyUp}
               onMouseUp={refreshTrigger}
               onPaste={handlePaste}
               ref={editorRef}

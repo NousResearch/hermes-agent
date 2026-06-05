@@ -448,6 +448,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # While True, send() short-circuits to a failure so callers
         # (cron live-adapter branch) fall through to standalone delivery.
         self._send_path_degraded: bool = False
+        # Periodic health-check background task.  Detects silently dead
+        # connections after laptop sleep / WiFi switch where the error
+        # callback never fires.  See `_polling_health_check_loop`.
+        self._polling_health_check_task: Optional[asyncio.Task] = None
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # Track forum chats where we've already registered bot commands
@@ -1067,6 +1071,58 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, HEARTBEAT_PROBE_DELAY, probe_err,
             )
             await self._handle_polling_network_error(probe_err)
+
+    # ------------------------------------------------------------------
+    # Periodic polling health check (network-change detection)
+    # ------------------------------------------------------------------
+    async def _polling_health_check_loop(self) -> None:
+        """Periodically probe ``getMe()`` to detect silently dead connections.
+
+        When a laptop sleeps and wakes on a different WiFi the long-poll
+        TCP connection is silently broken at the kernel level.  PTB's
+        error callback often does **not** fire because the connection is
+        in a half-closed state that httpx treats as valid.  The gateway
+        appears "connected" but no messages are received or sent.
+
+        This loop runs every HEALTH_CHECK_INTERVAL seconds while polling
+        is active.  A failed ``getMe()`` with a short timeout indicates a
+        stale connection and triggers the normal reconnection ladder via
+        ``_handle_polling_network_error``.
+        """
+        HEALTH_CHECK_INTERVAL = 300   # 5 minutes
+        PROBE_TIMEOUT = 15            # seconds
+
+        while True:
+            await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+
+            # Abort if the adapter has been stopped or is already fatal.
+            if not self._running or self.has_fatal_error:
+                return
+
+            # Only probe when the updater *should* be running (polling mode).
+            if not (self._app and self._app.updater and self._app.updater.running):
+                continue
+
+            # Skip probe if a reconnect is already in flight.
+            if self._polling_error_task and not self._polling_error_task.done():
+                continue
+
+            try:
+                await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
+                # Healthy — clear any degraded flag from a previous flaky probe.
+                self._send_path_degraded = False
+            except Exception as probe_err:
+                logger.warning(
+                    "[%s] Polling health check failed (stale connection?): %s — scheduling reconnect",
+                    self.name, probe_err,
+                )
+                # Reuse the existing reconnect ladder so all the backoff
+                # and retry-limit logic stays in one place.
+                if not self._polling_error_task or self._polling_error_task.done():
+                    loop = asyncio.get_running_loop()
+                    self._polling_error_task = loop.create_task(
+                        self._handle_polling_network_error(probe_err),
+                    )
 
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
@@ -1719,6 +1775,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
                 )
+                # Start the periodic health check to detect silently dead
+                # connections after laptop sleep / WiFi switch.
+                if self._polling_health_check_task is None or self._polling_health_check_task.done():
+                    self._polling_health_check_task = asyncio.ensure_future(
+                        self._polling_health_check_loop(),
+                    )
+                    self._background_tasks.add(self._polling_health_check_task)
+                    self._polling_health_check_task.add_done_callback(
+                        self._background_tasks.discard,
+                    )
             
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new
@@ -1789,6 +1855,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        # Stop the periodic health check loop so it doesn't probe a dead adapter.
+        if self._polling_health_check_task and not self._polling_health_check_task.done():
+            self._polling_health_check_task.cancel()
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:
             task.cancel()

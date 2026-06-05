@@ -7,10 +7,9 @@ standalone installer with ``UV_UNMANAGED_INSTALL`` / ``UV_INSTALL_DIR`` pointed
 at ``$HERMES_HOME/bin`` so the installer writes directly there — no PATH
 probing, no conda guards, no multi-location resolution chains.
 
-When ``ensure_uv()`` bootstraps uv for the first time (i.e. there was no
-managed uv before), it returns ``(path, True)`` instead of just ``path``.
-Callers in the update path use that signal to nuke and recreate the venv
-with the now-current managed uv, guaranteeing a Python with FTS5.
+``ensure_uv()`` returns a ``_UvResult`` (a ``str`` subclass) that is both
+usable as the bare path and unpackable as ``(path, fresh_bootstrap)`` for
+older call sites that straddle an update boundary (issue #39706).
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from hermes_constants import get_hermes_home
 
@@ -31,6 +30,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
+
 
 def managed_uv_path() -> Path:
     """Return the path where Hermes keeps *its* uv binary.
@@ -56,20 +56,84 @@ def resolve_uv() -> Optional[str]:
     return None
 
 
-def ensure_uv() -> Tuple[Optional[str], bool]:
-    """Return the managed uv path, installing it first if necessary.
+class _UvResult(str):
+    """``ensure_uv()`` return value that survives an update boundary.
 
-    Returns ``(path, freshly_bootstrapped)`` where *freshly_bootstrapped* is
-    ``True`` when we just installed managed uv for the first time (there was
-    no managed uv before this call).  Callers can use that signal to rebuild
-    the venv so Python is guaranteed to have FTS5.
+    Why: ``ensure_uv()``'s return arity has flipped between a single path
+    string and a ``(path, fresh_bootstrap)`` tuple across releases (issue
+    #39706).  ``hermes update`` runs the call site from the *old*,
+    already-imported ``hermes_cli.main`` against this *freshly pulled* module.
+    An install parked on a 2-tuple release runs
+    ``uv_bin, fresh_bootstrap = ensure_uv()`` against the single-value module:
+    the returned path is a plain ``str``, which is iterable, so the 2-target
+    unpack walks its characters and raises
+    ``ValueError: too many values to unpack (expected 2)``.  This wrapper
+    answers to both conventions:
 
-    On failure returns ``(None, False)`` (never raises) so callers can fall
-    back to pip gracefully.
+        uv_bin = ensure_uv()         # behaves as the path str ("" when absent)
+        uv_bin, fresh = ensure_uv()  # unpacks as (path|None, fresh_bootstrap)
+
+    Missing uv is the empty string (falsy) instead of ``None`` so legacy
+    2-target call sites can still unpack a failure without raising, while
+    ``if not uv_bin`` keeps working for single-value callers.
+    fresh_bootstrap is always ``False`` (the rebuild-venv path it gated was
+    superseded by the unconditional _resolve_project_venv_root() approach).
+
+    POSIX only — ``_UvResult`` is **never** returned on Windows because
+    ``subprocess.list2cmdline`` iterates every argv entry *as a string*
+    (per-character), so the overridden ``__iter__`` would inject the bool into
+    the command line and crash with
+    ``TypeError: sequence item 1: expected str instance, bool found``.
+
+    What: str subclass with __iter__ that yields exactly ``(path|None,
+    fresh_bootstrap)`` — a 2-tuple, always.
+
+    WARNING: do NOT spread or iterate this object as a plain string.
+    ``[*uv_bin]``, ``list(uv_bin)``, and ``for ch in uv_bin`` will yield
+    the 2-tuple items ``(path|None, False)``, NOT the individual characters
+    of the path.  This is intentional (it is the whole point of this class),
+    but it means ``_UvResult`` must never be passed to APIs that iterate
+    their argv entries as strings (e.g. ``subprocess.list2cmdline`` on
+    Windows — which is why we return a plain str/None there instead).
+
+    Test: ``a, b = ensure_uv()`` unpacks without error; ``if not ensure_uv()``
+    stays falsy when uv is absent; Windows path returns plain str/None;
+    ``list(ensure_uv())`` has exactly 2 elements (not len(path) characters).
+    """
+
+    fresh_bootstrap: bool
+
+    def __new__(cls, path: Optional[str], fresh: bool = False) -> "_UvResult":
+        self = super().__new__(cls, path or "")
+        self.fresh_bootstrap = fresh
+        # Runtime invariant: __iter__ must always yield exactly 2 items so the
+        # dual-mode contract (path-str AND 2-tuple unpack) can never silently
+        # drift if this class is ever modified.  Checked here rather than in
+        # __iter__ so the assertion fires at construction time, not at unpack.
+        assert len(list(self.__iter__())) == 2, (  # noqa: S101
+            f"_UvResult.__iter__ must yield exactly 2 items for #39706 "
+            f"update-boundary compat; got {list(self.__iter__())!r}"
+        )
+        return self
+
+    def __iter__(self):  # type: ignore[override]  # 2026-06: intentional dual-mode return for #39706 update boundary
+        # Tuple-unpacking hook for legacy ``uv_bin, fresh = ensure_uv()`` sites.
+        # First element mirrors the historical contract: the path string, or
+        # ``None`` when uv is unavailable.
+        return iter(((str(self) or None), self.fresh_bootstrap))
+
+
+def _ensure_uv_path() -> Optional[str]:
+    """Resolve the managed uv path, installing it if necessary.
+
+    Why: internal helper used by both the POSIX (_UvResult wrapper) and
+    Windows (plain str) code paths.
+    What: returns the path string on success, None on failure.
+    Test: called indirectly via ensure_uv(); see TestEnsureUv.
     """
     existing = resolve_uv()
     if existing:
-        return (existing, False)
+        return existing
 
     target = managed_uv_path()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +145,7 @@ def ensure_uv() -> Tuple[Optional[str], bool]:
     except Exception as exc:
         logger.warning("Managed uv install failed: %s", exc)
         print(f"  ✗ Failed to install managed uv: {exc}")
-        return (None, False)
+        return None
 
     # Verify
     result = resolve_uv()
@@ -95,7 +159,33 @@ def ensure_uv() -> Tuple[Optional[str], bool]:
         print(f"  ✓ Managed uv installed ({version})")
     else:
         print("  ✗ Managed uv install appeared to succeed but binary not found")
-    return (result, result is not None)
+    return result
+
+
+def ensure_uv() -> "_UvResult":
+    """Return the managed uv path, installing it first if necessary.
+
+    Why: the return arity has flipped across releases; this wrapper ensures
+    callers on either side of an update boundary can unpack the result safely
+    (issue #39706).  See ``_UvResult`` for the full explanation.
+
+    Returns a :class:`_UvResult` (a ``str`` subclass) on POSIX — usable
+    directly as the path *and* unpackable as ``(path, fresh_bootstrap)`` for
+    older call sites.  On Windows returns a plain ``str``/``None`` because
+    ``subprocess.list2cmdline`` iterates argv entries per-character and the
+    overridden ``__iter__`` would break the command line.
+
+    On failure the result is falsy (empty string on POSIX, ``None`` on
+    Windows) — never raises — so callers can fall back to pip gracefully.
+
+    What: resolves/installs managed uv; returns update-boundary-safe result.
+    Test: ``a, b = ensure_uv()`` does not raise; ``if not ensure_uv()`` is
+    falsy when absent; Windows path returns plain str/None.
+    """
+    path = _ensure_uv_path()
+    if platform.system() == "Windows":
+        return path  # type: ignore[return-value]
+    return _UvResult(path)
 
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
@@ -158,13 +248,21 @@ def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> b
                 pass
 
     if result.returncode == 0:
-        venv_python = venv_dir / ("Scripts" if platform.system() == "Windows" else "bin") / "python"
+        venv_python = (
+            venv_dir
+            / ("Scripts" if platform.system() == "Windows" else "bin")
+            / "python"
+        )
         # uv can exit 0 yet leave no usable interpreter (e.g. a half-written
         # venv). Don't report success on a venv that has no python — restore the
         # moved-aside copy so the caller can abort without losing a working env.
         if not venv_python.exists():
-            logger.warning("venv rebuild reported success but %s is missing", venv_python)
-            print(f"  ✗ venv rebuild failed: Python interpreter missing at {venv_python}")
+            logger.warning(
+                "venv rebuild reported success but %s is missing", venv_python
+            )
+            print(
+                f"  ✗ venv rebuild failed: Python interpreter missing at {venv_python}"
+            )
             _restore_backup()
             return False
         if backup is not None:
@@ -214,13 +312,16 @@ def update_managed_uv() -> Optional[str]:
         print(f"  ✓ Managed uv updated ({version})")
     else:
         # Non-fatal — old uv still works fine.
-        logger.debug("uv self update failed (rc=%d): %s", result.returncode, result.stderr)
+        logger.debug(
+            "uv self update failed (rc=%d): %s", result.returncode, result.stderr
+        )
     return existing
 
 
 # ---------------------------------------------------------------------------
 # Installer internals
 # ---------------------------------------------------------------------------
+
 
 def _install_uv(target: Path) -> None:
     """Bootstrap uv into *target* using the official standalone installer.
@@ -271,9 +372,7 @@ def _install_uv_posix(env: dict[str, str]) -> None:
 
 def _install_uv_windows(env: dict[str, str]) -> None:
     """Invoke the PowerShell installer."""
-    cmd = (
-        'irm https://astral.sh/uv/install.ps1 | iex'
-    )
+    cmd = "irm https://astral.sh/uv/install.ps1 | iex"
     subprocess.run(
         ["powershell", "-ExecutionPolicy", "Bypass", "-c", cmd],
         env=env,

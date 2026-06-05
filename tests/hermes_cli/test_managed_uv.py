@@ -80,7 +80,13 @@ class TestEnsureUv:
             assert path == str(tmp_path / "bin" / "uv")
             assert fresh is False
 
-    def test_installs_if_missing_sets_bootstrap_flag(self, tmp_path):
+    def test_installs_if_missing_returns_path(self, tmp_path):
+        """Why: _UvResult.fresh_bootstrap is always False since the venv-rebuild
+        path it gated was superseded by _resolve_project_venv_root() (issue
+        #39706).  The relevant contract is now: path is returned on success.
+        What: ensure_uv() calls _install_uv, then returns the path.
+        Test: stub _install_uv to create the binary; assert path returned.
+        """
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv._install_uv") as mock_install:
             # Simulate the installer creating the binary
@@ -91,7 +97,9 @@ class TestEnsureUv:
             from hermes_cli.managed_uv import ensure_uv
             path, fresh = ensure_uv()
             assert path == str(tmp_path / "bin" / "uv")
-            assert fresh is True
+            # fresh_bootstrap is always False — venv rebuild now uses
+            # _resolve_project_venv_root() unconditionally (issue #39706).
+            assert fresh is False
             mock_install.assert_called_once()
 
     def test_install_failure_returns_none_false(self, tmp_path):

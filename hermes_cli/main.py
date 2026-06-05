@@ -8039,7 +8039,7 @@ def _update_via_zip(args):
     # may point to a Python without FTS5.  Rebuild it so the new managed
     # uv provides a fresh interpreter with FTS5 guaranteed.
     if fresh_bootstrap and uv_bin:
-        if not rebuild_venv(uv_bin, PROJECT_ROOT / "venv"):
+        if not rebuild_venv(uv_bin, _resolve_project_venv_root()):
             raise RuntimeError(
                 "venv rebuild failed; aborting update before dependency install"
             )
@@ -8048,7 +8048,7 @@ def _update_via_zip(args):
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(_resolve_project_venv_root())}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -8688,9 +8688,43 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _resolve_project_venv_root() -> Path:
+    """Return the active project venv root, detecting it reliably.
+
+    Why: ``hermes update`` previously hardcoded ``PROJECT_ROOT / "venv"``
+    everywhere, so on a uv-based install (which creates ``.venv``) deps were
+    written to an orphan ``venv/`` directory that the running CLI never
+    imports from (issue #39714).
+
+    Resolution order (highest priority first):
+    1. ``sys.prefix`` when we are running *inside* a venv — the interpreter
+       itself knows its venv root, regardless of directory name.
+    2. ``PROJECT_ROOT / ".venv"`` if the directory exists (uv default).
+    3. ``PROJECT_ROOT / "venv"`` as the legacy fallback (managed-installer).
+
+    What: returns the Path to the active venv root.
+    Test: patch sys.prefix / sys.base_prefix and PROJECT_ROOT; assert the
+    returned path matches the expected venv root for each scenario.
+    """
+    if sys.prefix != sys.base_prefix:
+        return Path(sys.prefix)
+    dot_venv = PROJECT_ROOT / ".venv"
+    if dot_venv.is_dir():
+        return dot_venv
+    return PROJECT_ROOT / "venv"
+
+
 def _venv_scripts_dir() -> Path | None:
-    """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
+    """Return the venv Scripts/bin directory for the active project venv.
+
+    Why: Windows lock detection and Windows exe-quarantine logic look up
+    shims in the venv Scripts dir.  Must target the *active* venv, not a
+    stale hardcoded path (issue #39714).
+    What: resolves via _resolve_project_venv_root() and returns the bin
+    subdir, or None when it doesn't exist.
+    Test: patch sys.prefix to a .venv dir; create .venv/bin; assert result.
+    """
+    venv_dir = _resolve_project_venv_root()
     if not venv_dir.is_dir():
         return None
     scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
@@ -10585,7 +10619,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # may point to a Python without FTS5.  Rebuild it so the new managed
         # uv provides a fresh interpreter with FTS5 guaranteed.
         if fresh_bootstrap and uv_bin:
-            if not rebuild_venv(uv_bin, PROJECT_ROOT / "venv"):
+            if not rebuild_venv(uv_bin, _resolve_project_venv_root()):
                 raise RuntimeError(
                     "venv rebuild failed; aborting update before dependency install"
                 )
@@ -10596,7 +10630,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(_resolve_project_venv_root())}
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)

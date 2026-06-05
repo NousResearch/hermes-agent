@@ -4621,9 +4621,87 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
 
+    # ── Version 25 → 26: seed display.interface in raw config + validate
+    # platform_toolsets (issue #38798) ──────────────────────────────────────
+    # The v26 bump added display.interface ("cli" default).  The generic
+    # get_missing_config_fields() path would have merged it at runtime, but it
+    # only writes config when there are *other* missing keys — so on a clean
+    # config the raw YAML never got the key and it was lost on the next raw
+    # save.  This step writes it explicitly.
+    #
+    # Additionally, a transient commit window could corrupt platform_toolsets
+    # (e.g. rename hermes-cli → hermes and strip non-cli platforms).  We add
+    # a validation pass that warns on unrecognised toolset names so such
+    # corruption surfaces immediately rather than silently killing all tools.
+    if current_ver < 26:
+        config = read_raw_config()
+        touched = False
+
+        # Seed display.interface if absent
+        raw_display = config.get("display")
+        if not isinstance(raw_display, dict):
+            raw_display = {}
+        if "interface" not in raw_display:
+            raw_display["interface"] = "cli"
+            config["display"] = raw_display
+            touched = True
+            results["config_added"].append("display.interface=cli")
+            if not quiet:
+                print("  ✓ Seeded display.interface=cli in config.yaml")
+
+        # Validate platform_toolsets — warn on names that look wrong
+        raw_pt = config.get("platform_toolsets")
+        if isinstance(raw_pt, dict):
+            try:
+                from toolsets import TOOLSETS as _TOOLSETS  # type: ignore[import]
+                known_toolset_keys = set(_TOOLSETS.keys())
+            except Exception:
+                known_toolset_keys = None  # type: ignore[assignment]
+
+            if known_toolset_keys is not None:
+                for _plat, _ts_list in raw_pt.items():
+                    if not isinstance(_ts_list, list):
+                        continue
+                    for _name in _ts_list:
+                        if not isinstance(_name, str):
+                            continue
+                        # Composite toolsets like hermes-cli, hermes-telegram,
+                        # model_switch, and plugin-provided keys are valid but
+                        # not in TOOLSETS; only flag bare "hermes" (no suffix)
+                        # or other clearly unknown names.
+                        if (
+                            _name not in known_toolset_keys
+                            and not _name.startswith("hermes-")
+                            and not _name.startswith("plugin:")
+                            and _name != "model_switch"
+                            and _name != "app_tools"
+                        ):
+                            warning = (
+                                f"platform_toolsets.{_plat} contains unrecognised "
+                                f"toolset name '{_name}' — tools may not load "
+                                f"(expected e.g. 'hermes-cli', not '{_name}')"
+                            )
+                            results["warnings"].append(warning)
+                            if not quiet:
+                                import logging as _logging
+                                _logging.getLogger(__name__).warning(warning)
+                                print(f"  ⚠ {warning}")
+
+        if touched:
+            # Set the version BEFORE saving so this step writes v26 atomically
+            # in a single file operation.  Without this, _config_version would
+            # still be 25 here and would only reach 26 via the generic bump
+            # path below — meaning a crash between the two saves would leave a
+            # config with display.interface seeded but _config_version still at
+            # 25, causing the migration step to re-run (and re-warn) on the
+            # next launch.  The generic bump path that follows becomes a no-op
+            # harmless re-save when the version is already correct.
+            config["_config_version"] = latest_ver
+            save_config(config)
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
-    
+
     # Check for missing required env vars
     missing_env = get_missing_env_vars(required_only=True)
     

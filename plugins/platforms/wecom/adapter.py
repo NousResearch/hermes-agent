@@ -1693,6 +1693,9 @@ class WeComAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=False, error=error)
 
+        # Mark delivered so _keep_typing cannot open an orphan stream after
+        # this turn's reply already landed (regardless of which path was taken).
+        self._stream_delivered_chats.add(str(chat_id or "").strip())
         return SendResult(
             success=True,
             message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12],

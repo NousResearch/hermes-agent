@@ -1349,11 +1349,11 @@ async function applyUpdates(opts = {}) {
 
     rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
 
-    // Give the OS a beat to register the new process, then quit. The updater
-    // rebuilds and relaunches us when it's done.
+    // Give the renderer time to show the "Handing off" message, then quit.
+    // The updater runs detached and will relaunch the desktop when done.
     setTimeout(() => {
       app.quit()
-    }, 600)
+    }, 2000)
 
     return { ok: true, handedOff: true, updater }
   } finally {
@@ -1540,7 +1540,9 @@ fi
   child.unref()
   rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
 
-  setTimeout(() => app.quit(), 600)
+  // Give the renderer time to show the "Restarting" state, then hand off
+  // to the detached swap script which will replace the .app and relaunch.
+  setTimeout(() => app.quit(), 2000)
   return { ok: true, handedOff: true, rebuiltApp, targetApp }
 }
 

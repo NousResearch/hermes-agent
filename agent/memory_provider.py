@@ -290,7 +290,14 @@ class MemoryProvider(ABC):
         content: the entry content
         metadata: structured provenance for the write, when available. Common
           keys include ``write_origin``, ``execution_context``, ``session_id``,
-          ``parent_session_id``, ``platform``, and ``tool_name``.
+          ``parent_session_id``, ``platform``, and ``tool_name``. For
+          ``replace``/``remove`` the firing site also passes ``old_text`` so the
+          provider can supersede/soft-delete the prior entry instead of
+          accumulating duplicates.
+
+        Only successful built-in writes are bridged (the firing site gates on
+        the memory tool result), so providers do not need to mirror failed
+        zero-match/multi-match writes.
 
         Use to mirror built-in memory writes to your backend.
         """

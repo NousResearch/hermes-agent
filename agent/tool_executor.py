@@ -911,17 +911,26 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 old_text=function_args.get("old_text"),
                 store=agent._memory_store,
             )
-            # Bridge: notify external memory provider of built-in memory writes
-            if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
+            # Bridge: notify external memory provider of built-in memory writes.
+            # hermes#25526: forward add/replace/remove (not just add/replace),
+            # gate on success, and pass old_text so providers can supersede/
+            # soft-delete the prior entry instead of accumulating duplicates.
+            _mem_action = function_args.get("action", "")
+            if (agent._memory_manager and _mem_action in {"add", "replace", "remove"}
+                    and agent._memory_manager.write_succeeded(function_result)):
                 try:
+                    _mem_meta = agent._build_memory_write_metadata(
+                        task_id=effective_task_id,
+                        tool_call_id=getattr(tool_call, "id", None),
+                    )
+                    _mem_old = function_args.get("old_text")
+                    if _mem_old:
+                        _mem_meta = {**_mem_meta, "old_text": _mem_old}
                     agent._memory_manager.on_memory_write(
-                        function_args.get("action", ""),
+                        _mem_action,
                         target,
                         function_args.get("content", ""),
-                        metadata=agent._build_memory_write_metadata(
-                            task_id=effective_task_id,
-                            tool_call_id=getattr(tool_call, "id", None),
-                        ),
+                        metadata=_mem_meta,
                     )
                 except Exception:
                     pass

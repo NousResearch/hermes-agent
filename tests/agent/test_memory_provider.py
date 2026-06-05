@@ -1093,18 +1093,26 @@ class TestOnMemoryWriteBridge:
         mgr.on_memory_write("replace", "user", "updated pref")
         assert p.memory_writes == [("replace", "user", "updated pref")]
 
-    def test_on_memory_write_remove_not_bridged(self):
-        """The bridge intentionally skips 'remove' — only add/replace notify."""
-        # This tests the contract that run_agent.py checks:
-        #   function_args.get("action") in ("add", "replace")
+    def test_on_memory_write_remove_bridged(self):
+        """The bridge forwards 'remove' to providers (hermes#25526 / defi #64).
+        Previously the firing site skipped remove; now add/replace/remove all
+        bridge so external stores can soft-delete superseded entries."""
         mgr = MemoryManager()
         p = FakeMemoryProvider("ext")
         mgr.add_provider(p)
 
-        # Manager itself doesn't filter — run_agent.py does.
-        # But providers should handle remove gracefully.
         mgr.on_memory_write("remove", "memory", "old fact")
         assert p.memory_writes == [("remove", "memory", "old fact")]
+
+    def test_write_succeeded_gates_on_tool_result(self):
+        """write_succeeded() parses the built-in memory tool result so the firing
+        site only mirrors successful writes (hermes#25526 success gating)."""
+        assert MemoryManager.write_succeeded('{"success": true}') is True
+        assert MemoryManager.write_succeeded({"success": True}) is True
+        assert MemoryManager.write_succeeded('{"success": false, "error": "x"}') is False
+        assert MemoryManager.write_succeeded('{"target": "memory"}') is False
+        assert MemoryManager.write_succeeded("not json at all") is False
+        assert MemoryManager.write_succeeded("") is False
 
     def test_memory_manager_tool_injection_deduplicates(self):
         """Memory manager tools already in self.tools (from plugin registry)

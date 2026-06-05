@@ -25,6 +25,7 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import inspect
@@ -577,6 +578,21 @@ class MemoryManager:
         if len(accepted) >= 4:
             return "positional"
         return "legacy"
+
+    @staticmethod
+    def write_succeeded(tool_result: Any) -> bool:
+        """True if a built-in memory tool result indicates a successful write.
+
+        The firing site uses this to gate provider bridging, so failed/no-match
+        writes (e.g. replace with no match) are NOT mirrored to external stores
+        (hermes#25526 success gating). Accepts the raw JSON string the memory
+        tool returns or an already-parsed dict.
+        """
+        try:
+            parsed = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
+        except (ValueError, TypeError):
+            return False
+        return bool(isinstance(parsed, dict) and parsed.get("success") is True)
 
     def on_memory_write(
         self,

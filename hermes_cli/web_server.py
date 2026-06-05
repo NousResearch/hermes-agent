@@ -1574,6 +1574,7 @@ async def get_sessions(
     min_messages: int = 0,
     archived: str = "exclude",
     order: str = "created",
+    include_cron: bool = False,
 ):
     """List sessions.
 
@@ -1586,6 +1587,11 @@ async def get_sessions(
     start time) or ``recent`` (by latest activity across the compression
     chain). ``recent`` keeps a long-running conversation on the first page
     after it auto-compresses into a fresh continuation id.
+
+    Internal/non-human runs are hidden by default from the human session picker
+    (cron scheduler runs, API-server integration calls, ACP worker sessions).
+    Cron runs remain available in the Cron dashboard/output views and can be
+    included here for admin/debug use with ``include_cron=true``.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(
@@ -1604,6 +1610,9 @@ async def get_sessions(
             min_message_count = max(0, min_messages)
             archived_only = archived == "only"
             include_archived = archived == "include"
+            exclude_sources = ["cron", "api_server", "acp"]
+            if include_cron:
+                exclude_sources.remove("cron")
             sessions = db.list_sessions_rich(
                 limit=limit,
                 offset=offset,
@@ -1611,12 +1620,14 @@ async def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
+                exclude_sources=exclude_sources,
             )
             total = db.session_count(
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
                 exclude_children=True,
+                exclude_sources=exclude_sources,
             )
             now = time.time()
             for s in sessions:
@@ -1743,16 +1754,16 @@ async def get_profiles_sessions(
 
 
 @app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20):
-    """Search sessions by ID plus full-text message content using FTS5.
+@app.get("/api/sessions/search")
+async def search_sessions(q: str = "", limit: int = 20, include_cron: bool = False):
+    """Full-text search across session message content using FTS5.
 
-    Direct session-id matches are surfaced first, then FTS message-content
-    matches. Results are deduped by compression lineage, not by raw
-    ``session_id``. Auto-compression rotates a conversation onto a fresh
-    session id (and leaves the old segment's messages in the FTS index), so one
-    logical chat can own many ``sessions`` rows that all match the same query.
-    Branches also use ``parent_session_id``, but they are real alternate
-    conversations; don't collapse branch-specific hits back into the parent.
+    Results are deduped by compression lineage, not by raw ``session_id``.
+    ``recent`` keeps a long-running conversation on the first page
+    after it auto-compresses into a fresh continuation id.
+
+    Internal/non-human runs are hidden by default (cron, api_server, acp).
+    Include them for admin/debug with ``include_cron=true``.
     """
     if not q or not q.strip():
         return {"results": []}
@@ -1760,7 +1771,25 @@ async def search_sessions(q: str = "", limit: int = 20):
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            safe_limit = max(1, min(int(limit or 20), 100))
+            # Auto-add prefix wildcards so partial words match
+            # e.g. "nimb" -> "nimb*" matches "nimby"
+            # Preserve quoted phrases and existing wildcards as-is
+            import re
+            terms = []
+            for token in re.findall(r'"[^"]*"|\S+', q.strip()):
+                if token.startswith('"') or token.endswith("*"):
+                    terms.append(token)
+                else:
+                    terms.append(token + "*")
+            prefix_query = " ".join(terms)
+            # Over-fetch so lineage dedup can still surface `limit` distinct
+            # conversations even when several hits collapse onto one root.
+            fetch_limit = max(limit * 5, 50)
+            matches = db.search_messages(
+                query=prefix_query,
+                limit=fetch_limit,
+                exclude_sources=["api_server", "acp"] if include_cron else ["cron", "api_server", "acp"],
+            )
 
             # Walk parent_session_id to the compression root, memoized so a
             # chain of compression segments only costs one walk. We deliberately

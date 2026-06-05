@@ -297,6 +297,57 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
+    def test_get_sessions_hides_internal_sources_by_default(self, monkeypatch):
+        """Internal runs should not pollute the human-facing session picker."""
+        captured = {}
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, **kwargs):
+                captured["list"] = kwargs.get("exclude_sources")
+                return []
+
+            def session_count(self, **kwargs):
+                captured["count"] = kwargs.get("exclude_sources")
+                return 0
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+
+        resp = self.client.get("/api/sessions?limit=5&offset=0")
+        assert resp.status_code == 200
+        assert captured["list"] == ["cron", "api_server", "acp"]
+        assert captured["count"] == ["cron", "api_server", "acp"]
+
+    def test_get_sessions_can_include_cron_for_admin_debug(self, monkeypatch):
+        captured = {}
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, **kwargs):
+                captured["list"] = kwargs.get("exclude_sources")
+                return []
+
+            def session_count(self, **kwargs):
+                captured["count"] = kwargs.get("exclude_sources")
+                return 0
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+
+        resp = self.client.get("/api/sessions?include_cron=true")
+        assert resp.status_code == 200
+        assert captured["list"] == ["api_server", "acp"]
+        assert captured["count"] == ["api_server", "acp"]
+
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route
         was missing entirely, so the desktop rename dialog got a 405)."""

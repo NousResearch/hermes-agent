@@ -617,6 +617,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
 def _sess_nowait(params, rid):
     s = _sessions.get(params.get("session_id") or "")
+    if s and (t := current_transport()) is not None:
+        s["transport"] = t
     return (s, None) if s else (None, _err(rid, 4001, "session not found"))
 
 

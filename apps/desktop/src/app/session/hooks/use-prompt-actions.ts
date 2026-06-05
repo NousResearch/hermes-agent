@@ -60,6 +60,25 @@ function inlineErrorMessage(error: unknown, fallback: string): string {
   return (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw).replace(/^Error:\s*/, '').trim()
 }
 
+function isRequestTimeout(error: unknown, method: string): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return new RegExp(`request timed out:\\s*${method}`, 'i').test(message)
+}
+
+async function isBackendSessionRunning(
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>,
+  sessionId: string
+): Promise<boolean> {
+  try {
+    const status = await requestGateway<{ output?: string }>('session.status', { session_id: sessionId })
+
+    return /Agent Running:\s*Yes/i.test(status.output || '')
+  } catch {
+    return false
+  }
+}
+
 interface PromptActionsOptions {
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
@@ -320,7 +339,19 @@ export function usePromptActions({
         await syncImageAttachmentsForSubmit(sessionId, attachments, {
           updateComposerAttachments: usingComposerAttachments
         })
-        await requestGateway('prompt.submit', { session_id: sessionId, text })
+        try {
+          await requestGateway('prompt.submit', { session_id: sessionId, text })
+        } catch (err) {
+          if (isRequestTimeout(err, 'prompt.submit') && (await isBackendSessionRunning(requestGateway, sessionId))) {
+            if (usingComposerAttachments) {
+              clearComposerAttachments()
+            }
+
+            return true
+          }
+
+          throw err
+        }
 
         if (usingComposerAttachments) {
           clearComposerAttachments()

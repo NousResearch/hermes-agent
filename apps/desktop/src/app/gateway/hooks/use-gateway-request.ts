@@ -26,7 +26,7 @@ export function useGatewayRequest() {
       return null
     }
 
-    if (gatewayStateRef.current === 'open') {
+    if (existing.connectionState === 'open') {
       return existing
     }
 

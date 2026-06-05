@@ -101,18 +101,28 @@ export class JsonRpcGatewayClient {
     })
 
     socket.addEventListener('close', () => {
-      this.setState('closed')
-      this.rejectAllPending(new Error(this.options.closedErrorMessage))
+      if (this.socket === socket) {
+        this.setState('closed')
+        this.rejectAllPending(new Error(this.options.closedErrorMessage))
+      }
     })
 
     await new Promise<void>((resolve, reject) => {
       const onOpen = () => {
+        if (this.socket !== socket) {
+          return
+        }
+
         socket.removeEventListener('error', onError)
         this.setState('open')
         resolve()
       }
 
       const onError = () => {
+        if (this.socket !== socket) {
+          return
+        }
+
         socket.removeEventListener('open', onOpen)
         this.setState('error')
         reject(new Error(this.options.connectErrorMessage))
@@ -126,6 +136,8 @@ export class JsonRpcGatewayClient {
   close(): void {
     this.socket?.close()
     this.socket = null
+    this.setState('closed')
+    this.rejectAllPending(new Error(this.options.closedErrorMessage))
   }
 
   on<P = unknown>(type: GatewayEventName, handler: (event: GatewayEvent<P>) => void): () => void {
@@ -175,6 +187,7 @@ export class JsonRpcGatewayClient {
         pending.timer = setTimeout(() => {
           if (this.pending.delete(id)) {
             reject(new Error(`request timed out: ${method}`))
+            this.close()
           }
         }, timeoutMs)
       }

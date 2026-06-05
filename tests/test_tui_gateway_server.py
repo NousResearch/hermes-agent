@@ -1300,6 +1300,28 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_session_lookup_rebinds_current_transport():
+    class _Transport:
+        def write(self, obj):
+            return True
+
+        def close(self):
+            return None
+
+    transport = _Transport()
+    server._sessions["sid"] = _session(transport=server._stdio_transport)
+    token = server.bind_transport(transport)
+
+    try:
+        session, err = server._sess_nowait({"session_id": "sid"}, "1")
+
+        assert err is None
+        assert session["transport"] is transport
+    finally:
+        server.reset_transport(token)
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_yolo_toggles_session_scope():
     from tools.approval import clear_session, is_session_yolo_enabled
 

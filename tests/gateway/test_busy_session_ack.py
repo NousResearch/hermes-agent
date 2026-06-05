@@ -64,6 +64,7 @@ def _make_runner():
     runner._busy_ack_ts = {}
     runner._draining = False
     runner._busy_text_mode = "interrupt"
+    runner._busy_queue_delivery = "next_turn"
     runner.adapters = {}
     runner.config = MagicMock()
     runner.session_store = None
@@ -118,6 +119,32 @@ class TestBusySessionAck:
         assert adapter._pending_messages[sk] is event
         assert sk not in runner._pending_messages
         running_agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_message_queue_delivery_steer_participates_in_active_loop(self):
+        """Queue mode can opt into same-turn participation on the priority path."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter()
+
+        event = _make_event(text="please include proxy support")
+        sk = build_session_key(event.source)
+
+        running_agent = MagicMock()
+        running_agent.steer = MagicMock(return_value=True)
+        runner._busy_input_mode = "queue"
+        runner._busy_queue_delivery = "steer"
+        runner._running_agents[sk] = running_agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await GatewayRunner._handle_message(runner, event)
+
+        assert result is None
+        running_agent.steer.assert_called_once_with("please include proxy support")
+        running_agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages
+        assert sk not in runner._pending_messages
 
     @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):
@@ -186,6 +213,61 @@ class TestBusySessionAck:
         assert "Queued for the next turn" in content
         assert "respond once the current task finishes" in content
         assert "Interrupting" not in content
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_can_soft_inject_followup_into_current_loop(self):
+        """Opt-in queue participation steers queued text after next tool return."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        runner._busy_queue_delivery = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="include proxy support")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event") as mock_merge:
+            await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_called_once_with("include proxy support")
+        agent.interrupt.assert_not_called()
+        mock_merge.assert_not_called()
+        adapter._send_with_retry.assert_called_once()
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
+        assert "Steered into current run" in content
+        assert "Interrupting" not in content
+
+    @pytest.mark.asyncio
+    async def test_queue_participation_falls_back_to_next_turn_when_steer_rejects(self):
+        """Queue participation never drops messages when steer is unavailable."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        runner._busy_queue_delivery = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="keep this follow-up")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=False)
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event") as mock_merge:
+            await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_called_once_with("keep this follow-up")
+        agent.interrupt.assert_not_called()
+        mock_merge.assert_called_once()
+        adapter._send_with_retry.assert_called_once()
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
+        assert "Queued for the next turn" in content
 
     @pytest.mark.asyncio
     async def test_busy_text_mode_queue_delegates_to_adapter_handle_message(self):

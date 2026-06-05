@@ -134,6 +134,24 @@ def test_load_busy_text_mode_defaults_to_queue_and_allows_interrupt(tmp_path, mo
     assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
 
 
+def test_load_busy_queue_delivery_defaults_next_turn_and_allows_steer(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("HERMES_GATEWAY_BUSY_QUEUE_DELIVERY", raising=False)
+
+    assert gateway_run.GatewayRunner._load_busy_queue_delivery() == "next_turn"
+
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  busy_queue_delivery: steer\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_busy_queue_delivery() == "steer"
+
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_QUEUE_DELIVERY", "next_turn")
+    assert gateway_run.GatewayRunner._load_busy_queue_delivery() == "next_turn"
+
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_QUEUE_DELIVERY", "bogus")
+    assert gateway_run.GatewayRunner._load_busy_queue_delivery() == "next_turn"
+
+
 def test_load_restart_drain_timeout_prefers_env_then_config_then_default(
     tmp_path, monkeypatch, caplog
 ):

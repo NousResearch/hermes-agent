@@ -1017,6 +1017,8 @@ if _config_path.exists():
                 os.environ["HERMES_GATEWAY_BUSY_INPUT_MODE"] = str(_display_cfg["busy_input_mode"])
             if "busy_text_mode" in _display_cfg:
                 os.environ["HERMES_GATEWAY_BUSY_TEXT_MODE"] = str(_display_cfg["busy_text_mode"])
+            if "busy_queue_delivery" in _display_cfg:
+                os.environ["HERMES_GATEWAY_BUSY_QUEUE_DELIVERY"] = str(_display_cfg["busy_queue_delivery"])
             if "busy_ack_enabled" in _display_cfg:
                 os.environ["HERMES_GATEWAY_BUSY_ACK_ENABLED"] = str(_display_cfg["busy_ack_enabled"])
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
@@ -1844,6 +1846,7 @@ class GatewayRunner:
     _running_agents_ts: Dict[str, float] = {}
     _busy_input_mode: str = "interrupt"
     _busy_text_mode: str = "interrupt"
+    _busy_queue_delivery: str = "next_turn"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -1872,6 +1875,7 @@ class GatewayRunner:
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
+        self._busy_queue_delivery = self._load_busy_queue_delivery()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
@@ -3229,6 +3233,24 @@ class GatewayRunner:
         return "queue"
 
     @staticmethod
+    def _load_busy_queue_delivery() -> str:
+        """Load how queue-mode busy messages are delivered.
+
+        ``next_turn`` preserves historical queue semantics: follow-ups wait
+        until the active agent turn finishes. ``steer`` opts into #17298-style
+        queue participation: text follow-ups are injected into the running
+        loop after the next tool result via ``AIAgent.steer()``, without
+        interrupting any in-flight tool call.
+        """
+        mode = os.getenv("HERMES_GATEWAY_BUSY_QUEUE_DELIVERY", "").strip().lower()
+        if not mode:
+            cfg = _load_gateway_runtime_config()
+            mode = str(cfg_get(cfg, "display", "busy_queue_delivery", default="") or "").strip().lower()
+        if mode == "steer":
+            return "steer"
+        return "next_turn"
+
+    @staticmethod
     def _load_restart_drain_timeout() -> float:
         """Load graceful gateway restart/stop drain timeout in seconds."""
         raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
@@ -3419,6 +3441,7 @@ class GatewayRunner:
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
             and effective_mode != "steer"
+            and getattr(self, "_busy_queue_delivery", "next_turn") != "steer"
         ):
             return False
 
@@ -3446,7 +3469,12 @@ class GatewayRunner:
             )
             effective_mode = "queue"
         steered = False
-        if effective_mode == "steer":
+        queue_participation = (
+            effective_mode == "queue"
+            and getattr(self, "_busy_queue_delivery", "next_turn") == "steer"
+            and event.message_type == MessageType.TEXT
+        )
+        if effective_mode == "steer" or queue_participation:
             steer_text = (event.text or "").strip()
             can_steer = (
                 steer_text
@@ -3460,6 +3488,11 @@ class GatewayRunner:
                 except Exception as exc:
                     logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
                     steered = False
+            if steered and queue_participation:
+                logger.info(
+                    "Delivered queue-mode busy message into current loop for session %s (#17298)",
+                    session_key,
+                )
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
@@ -3476,8 +3509,8 @@ class GatewayRunner:
                 merge_text=event.message_type == MessageType.TEXT,
             )
 
-        is_queue_mode = effective_mode == "queue"
-        is_steer_mode = effective_mode == "steer"
+        is_queue_mode = effective_mode == "queue" and not steered
+        is_steer_mode = effective_mode == "steer" or (queue_participation and steered)
 
         # If not in queue/steer mode, interrupt the running agent immediately.
         # This aborts in-flight tool calls and causes the agent loop to exit
@@ -8009,6 +8042,30 @@ class GatewayRunner:
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
             if self._busy_input_mode == "queue":
+                if (
+                    getattr(self, "_busy_queue_delivery", "next_turn") == "steer"
+                    and event.message_type == MessageType.TEXT
+                ):
+                    steer_text = (event.text or "").strip()
+                    steered = False
+                    if (
+                        steer_text
+                        and running_agent is not None
+                        and running_agent is not _AGENT_PENDING_SENTINEL
+                        and hasattr(running_agent, "steer")
+                    ):
+                        try:
+                            steered = bool(running_agent.steer(steer_text))
+                        except Exception as exc:
+                            logger.warning(
+                                "PRIORITY queue participation steer failed for session %s: %s",
+                                _quick_key,
+                                exc,
+                            )
+                            steered = False
+                    if steered:
+                        logger.debug("PRIORITY queue participation steer for session %s", _quick_key)
+                        return None
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None

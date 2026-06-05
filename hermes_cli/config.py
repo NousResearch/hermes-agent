@@ -1347,6 +1347,11 @@ DEFAULT_CONFIG = {
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        # Queue-mode delivery policy for gateway follow-ups while an agent is
+        # already running. "next_turn" preserves classic queue-and-wait
+        # semantics. "steer" injects text follow-ups into the current agent
+        # loop after the next tool return (soft participation, no tool abort).
+        "busy_queue_delivery": "next_turn",  # next_turn | steer
         # Which interface bare `hermes` (and `hermes chat`) launches by default:
         #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
         #   "tui" — the modern Ink TUI (same as passing `--tui`)

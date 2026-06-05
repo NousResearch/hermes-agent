@@ -1760,7 +1760,29 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_id=_cron_session_id,
             session_db=_session_db,
         )
-        
+
+        # Set the session title to the cron job name so the desktop app
+        # (and session_search) display a human-friendly label instead of
+        # the raw "[IMPORTANT: ...]" prompt text.
+        # Append the date to ensure uniqueness across daily runs (the DB
+        # has a UNIQUE INDEX on title).
+        if _session_db:
+            _base_name = (job.get("name") or "").strip()
+            if not _base_name:
+                # Fall back to first line of prompt, truncated
+                _raw_prompt = (job.get("prompt") or "").strip()
+                _first_line = _raw_prompt.split("\n", 1)[0].strip() if _raw_prompt else ""
+                # Skip the "[IMPORTANT: ...]" preamble if present
+                if _first_line.startswith("["):
+                    _first_line = ""
+                _base_name = _first_line[:60] if _first_line else f"Cron Job {job_id[:8]}"
+            _date_suffix = _hermes_now().strftime("%m/%d")
+            _cron_title = f"{_base_name} ({_date_suffix})"
+            try:
+                _session_db.set_session_title(_cron_session_id, _cron_title[:80])
+            except Exception as _title_err:
+                logger.debug("Job '%s': failed to set session title: %s", job_id, _title_err)
+
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
         # but a hung API call or stuck tool with no activity for the configured

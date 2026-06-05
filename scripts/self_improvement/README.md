@@ -59,6 +59,21 @@ such as “proceed”, one-off task prompts, background-process notification
 fragments, and low-importance raw conversation entries. Stable distilled rules
 and preferences are intentionally ignored even when they mention those words.
 
+## `summarize.py`
+
+Summarizes `task_runs.jsonl` and `memory_context_audit.jsonl` into a compact
+review payload. It reports aggregate tokens/tool/API counts, the latest task's
+largest context contributors, memory-context candidate counts, and review flags
+such as `duplicate_skill_view`, `repeated_cronjob_list`, and
+`memory_context_noise`.
+
+```bash
+python scripts/self_improvement/summarize.py
+```
+
+The summary is safe to paste into review notes because candidate previews include
+reason codes, content lengths, and memory ids only — not raw memory content.
+
 ## Output files
 
 - `task_runs.jsonl` — task/session telemetry records.

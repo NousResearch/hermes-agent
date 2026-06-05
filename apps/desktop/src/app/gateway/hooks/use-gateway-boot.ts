@@ -126,14 +126,12 @@ export function useGatewayBoot({
       reconnecting = true
 
       try {
-        // Drop a stale REMOTE backend cache before re-dialing. After sleep/wake a
-        // remote backend can become unreachable, but it has no child process
-        // whose 'exit' would clear the main process's cached descriptor — without
-        // this the renderer re-dials the same dead endpoint forever and stays on
-        // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
-        await desktop.revalidateConnection?.().catch(() => undefined)
-
-        const conn = await desktop.getConnection($activeGatewayProfile.get())
+        // revalidate: the main process liveness-probes the cached backend before
+        // returning it and rebuilds a dead one (e.g. a remote backend that became
+        // unreachable across a sleep/wake — it has no child process whose 'exit'
+        // would otherwise clear the stale cache). Without this the renderer would
+        // re-dial the same dead endpoint forever and stay on "Starting Hermes…".
+        const conn = await desktop.getConnection($activeGatewayProfile.get(), { revalidate: true })
 
         if (cancelled) {
           return
@@ -231,12 +229,12 @@ export function useGatewayBoot({
         reconnectAttempt = 0
         reauthNotified = false
         clearReconnectTimer()
-
-        // A revalidate-driven reconnect can rebuild the backend in place when the
-        // cached remote was found dead, which re-drives the boot-progress overlay.
-        // Unlike the initial boot, nothing calls completeDesktopBoot() afterwards,
-        // so dismiss it here once we're open again — otherwise the overlay sticks
-        // at ~94%. A no-op on a normal (non-rebuild) reconnect.
+        // A revalidate-driven reconnect can rebuild the backend in place (when
+        // getConnection found the cached one dead), which re-drives the boot
+        // progress overlay via resetHermesConnection/advanceBootProgress. Unlike
+        // the initial boot, nothing calls completeDesktopBoot() afterwards, so
+        // dismiss it here once we're open again — otherwise the overlay would
+        // stick at ~94%. No-op on a normal (non-rebuild) reconnect.
         if (bootCompleted) {
           completeDesktopBoot()
         }

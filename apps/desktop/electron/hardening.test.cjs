@@ -7,12 +7,18 @@ const { pathToFileURL } = require('node:url')
 
 const {
   DEFAULT_FETCH_TIMEOUT_MS,
+  REMOTE_REVALIDATE_FAILURE_THRESHOLD,
+  REVALIDATE_PROBE_TIMEOUT_MS,
+  REVALIDATE_STREAK_WINDOW_MS,
   encryptDesktopSecret,
   resolveDirectoryForIpc,
+  isFreshRevalidateEpisode,
+  probeBackendAlive,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
-  sensitiveFileBlockReason
+  sensitiveFileBlockReason,
+  shouldRebuildStaleConnection
 } = require('./hardening.cjs')
 
 async function rejectsWithCode(promise, code) {
@@ -276,4 +282,117 @@ test('resolveDirectoryForIpc accepts directory symlinks or junctions', async t =
   const resolved = await resolveDirectoryForIpc(linkPath)
   assert.equal(resolved.resolvedPath, linkPath)
   assert.equal(resolved.stat.isDirectory(), true)
+})
+
+// ── Sleep/wake reconnect: cached-connection liveness revalidation ────────────
+
+test('probeBackendAlive returns true when /api/status responds', async () => {
+  const calls = []
+  const fetchJson = async (url, opts) => {
+    calls.push({ url, opts })
+    return { ok: true }
+  }
+
+  const alive = await probeBackendAlive({ baseUrl: 'https://gw.example.com' }, fetchJson, { timeoutMs: 2500 })
+
+  assert.equal(alive, true)
+  assert.equal(calls.length, 1)
+  // Trailing slash on baseUrl must not double up before /api/status.
+  assert.equal(calls[0].url, 'https://gw.example.com/api/status')
+  assert.equal(calls[0].opts.timeoutMs, 2500)
+})
+
+test('probeBackendAlive normalizes a trailing slash on baseUrl', async () => {
+  let seen = null
+  const fetchJson = async url => {
+    seen = url
+    return null
+  }
+
+  await probeBackendAlive({ baseUrl: 'http://127.0.0.1:8787/' }, fetchJson)
+  assert.equal(seen, 'http://127.0.0.1:8787/api/status')
+})
+
+test('probeBackendAlive returns false (never throws) when the probe rejects', async () => {
+  const fetchJson = async () => {
+    throw new Error('ECONNREFUSED')
+  }
+
+  const alive = await probeBackendAlive({ baseUrl: 'https://gw.example.com' }, fetchJson)
+  assert.equal(alive, false)
+})
+
+test('probeBackendAlive returns false for a missing baseUrl or fetcher', async () => {
+  const ok = async () => ({})
+  assert.equal(await probeBackendAlive(null, ok), false)
+  assert.equal(await probeBackendAlive({ baseUrl: '' }, ok), false)
+  assert.equal(await probeBackendAlive({ baseUrl: 'https://gw.example.com' }, undefined), false)
+})
+
+test('probeBackendAlive defaults the probe timeout to REVALIDATE_PROBE_TIMEOUT_MS', async () => {
+  let seenTimeout
+  const fetchJson = async (_url, opts) => {
+    seenTimeout = opts.timeoutMs
+    return {}
+  }
+
+  await probeBackendAlive({ baseUrl: 'https://gw.example.com' }, fetchJson)
+  assert.equal(seenTimeout, REVALIDATE_PROBE_TIMEOUT_MS)
+})
+
+test('shouldRebuildStaleConnection only tears down a remote past the failure threshold', () => {
+  // A live backend is never rebuilt, regardless of streak.
+  assert.equal(
+    shouldRebuildStaleConnection({ alive: true, mode: 'remote', failureStreak: 99 }),
+    false
+  )
+
+  // A local backend is never rebuilt here — it self-heals via its child 'exit'
+  // handler, so a probe miss means "WS not reattached yet", not "backend dead".
+  assert.equal(
+    shouldRebuildStaleConnection({ alive: false, mode: 'local', failureStreak: 99 }),
+    false
+  )
+
+  // A single remote miss is ignored (rides out transient post-wake blips)…
+  assert.equal(
+    shouldRebuildStaleConnection({ alive: false, mode: 'remote', failureStreak: 1 }),
+    false
+  )
+
+  // …but the second consecutive miss crosses the threshold and rebuilds.
+  assert.equal(
+    shouldRebuildStaleConnection({
+      alive: false,
+      mode: 'remote',
+      failureStreak: REMOTE_REVALIDATE_FAILURE_THRESHOLD
+    }),
+    true
+  )
+
+  // Unknown / undefined mode (e.g. a rejected cache) is not eligible.
+  assert.equal(
+    shouldRebuildStaleConnection({ alive: false, mode: undefined, failureStreak: 5 }),
+    false
+  )
+})
+
+test('REMOTE_REVALIDATE_FAILURE_THRESHOLD requires at least two misses', () => {
+  assert.ok(REMOTE_REVALIDATE_FAILURE_THRESHOLD >= 2)
+})
+
+test('isFreshRevalidateEpisode scopes the failure streak to one reconnect episode', () => {
+  // First-ever failure (no prior timestamp) always starts a fresh episode.
+  assert.equal(isFreshRevalidateEpisode(1_000, 0), true)
+
+  // A miss within the window continues the same episode (streak accumulates).
+  assert.equal(isFreshRevalidateEpisode(10_000, 10_000 - (REVALIDATE_STREAK_WINDOW_MS - 1)), false)
+
+  // A miss past the window is a new episode (streak resets) — this is what stops
+  // a stale miss from an earlier, since-recovered episode pre-loading the counter.
+  assert.equal(isFreshRevalidateEpisode(10_000, 10_000 - (REVALIDATE_STREAK_WINDOW_MS + 1)), true)
+
+  // The window comfortably exceeds the renderer's 15s backoff cap so two
+  // genuinely-consecutive backoff-paced misses always fall inside it.
+  assert.ok(REVALIDATE_STREAK_WINDOW_MS > 15_000)
 })

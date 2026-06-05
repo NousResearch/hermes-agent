@@ -87,9 +87,12 @@ const {
   DEFAULT_FETCH_TIMEOUT_MS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   encryptDesktopSecret: encryptDesktopSecretStrict,
+  isFreshRevalidateEpisode,
+  probeBackendAlive,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
-  resolveTimeoutMs
+  resolveTimeoutMs,
+  shouldRebuildStaleConnection
 } = require('./hardening.cjs')
 
 let nodePty = null
@@ -703,6 +706,18 @@ function registerMediaProtocol() {
 let mainWindow = null
 let hermesProcess = null
 let connectionPromise = null
+// Consecutive failed liveness probes of the cached PRIMARY connection during a
+// revalidate-on-reconnect (sleep/wake). Crossing REMOTE_REVALIDATE_FAILURE_THRESHOLD
+// tears the stale remote connection down and rebuilds; reset on any live probe, a
+// fresh build, or when a new reconnect episode starts (see lastRevalidateFailureAt
+// and isFreshRevalidateEpisode). See startHermes().
+let remoteRevalidateFailures = 0
+// Timestamp of the most recent failed liveness probe, used to scope the
+// "consecutive failures" streak to a single reconnect episode: a miss far enough
+// from the previous one resets the streak so a stale failure left over from an
+// earlier, since-recovered episode can't pre-load the counter and force an early
+// rebuild.
+let lastRevalidateFailureAt = 0
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend
 // (the desktop's launch profile) stays managed by hermesProcess +
 // connectionPromise + startHermes(); this pool only holds EXTRA profile
@@ -4805,11 +4820,11 @@ function primaryProfileKey() {
 // profile to startHermes() (the window backend: boot UI, bootstrap, remote
 // mode), and any OTHER profile to a lazily-spawned pool backend. An empty /
 // unknown profile resolves to the primary, so all legacy callers are unchanged.
-async function ensureBackend(profile) {
+async function ensureBackend(profile, options) {
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
 
   if (key === primaryProfileKey()) {
-    return startHermes()
+    return startHermes(options)
   }
 
   const existing = backendPool.get(key)
@@ -5062,17 +5077,93 @@ async function prepareProfileDeleteRequest(request) {
   await teardownPoolBackendAndWait(profile)
 }
 
-async function startHermes() {
+async function startHermes(options = {}) {
   // Latched-failure short-circuit: once bootstrap has failed in this
   // process, every subsequent startHermes() call re-throws the same error
   // without re-running install.ps1. This prevents the renderer's
   // ensureGatewayOpen retries (and any other getConnection callers) from
   // restarting a 5-10 minute install loop while the user is still reading
-  // the failure overlay.
+  // the failure overlay. Must stay ABOVE the revalidate block so a latched
+  // failure is never reinterpreted as a dead-cache rebuild.
   if (bootstrapFailure) {
     throw bootstrapFailure
   }
-  if (connectionPromise) return connectionPromise
+
+  if (connectionPromise) {
+    // Steady-state and cold boot reuse the cached connection untouched — no
+    // added latency on the happy paths.
+    if (!options.revalidate) {
+      return connectionPromise
+    }
+
+    // Reconnect-after-wake path (renderer's backoff-paced attemptReconnect):
+    // confirm the cached backend is actually reachable before the renderer
+    // re-dials it. A REMOTE primary has no child process, so the 'exit'/'error'
+    // handlers that would clear a dead connectionPromise never fire — without
+    // this probe the renderer re-dials the same unreachable remote forever and
+    // the composer stays stuck on "Starting Hermes…". Local backends self-heal
+    // via the child 'exit' handler and are deliberately never torn down here.
+    const cached = connectionPromise
+    let conn = null
+
+    try {
+      conn = await cached
+    } catch {
+      // The cached boot rejected (its own catch nulls connectionPromise). Treat
+      // as unreachable; the fall-through below builds a fresh connection.
+      conn = null
+    }
+
+    const alive = conn ? await probeBackendAlive(conn, fetchPublicJson) : false
+
+    if (alive) {
+      remoteRevalidateFailures = 0
+
+      return cached
+    }
+
+    // The cache vanished while we awaited/probed it — a concurrent backend 'exit'
+    // nulled it, or the cached boot itself rejected. There's nothing to
+    // revalidate: hand back a peer's fresh rebuild if one exists, otherwise fall
+    // through and build a new connection below.
+    if (connectionPromise !== cached) {
+      if (connectionPromise) {
+        return connectionPromise
+      }
+    } else {
+      // Cache still present but unreachable. Require consecutive misses within a
+      // single reconnect episode before tearing a REMOTE down (locals self-heal
+      // via their child 'exit' handler, so a probe miss there means "WS not
+      // reattached yet"). The time-window reset stops a stale miss from an
+      // earlier, since-recovered episode from pre-loading this episode's counter.
+      const now = Date.now()
+
+      if (isFreshRevalidateEpisode(now, lastRevalidateFailureAt)) {
+        remoteRevalidateFailures = 0
+      }
+
+      lastRevalidateFailureAt = now
+      remoteRevalidateFailures += 1
+
+      if (!shouldRebuildStaleConnection({ alive, mode: conn?.mode, failureStreak: remoteRevalidateFailures })) {
+        // Not (yet) a confirmed-dead remote: leave the cache in place and let the
+        // renderer's backoff loop retry. The next consecutive miss crosses the
+        // threshold and rebuilds; a local backend never rebuilds here at all.
+        return cached
+      }
+
+      // resetHermesConnection is synchronous (nulls connectionPromise + SIGTERMs
+      // any local child); we re-checked connectionPromise === cached with no
+      // intervening await above, so this can't kill a freshly-rebuilt backend.
+      rememberLog('Cached Hermes backend failed liveness revalidation; rebuilding connection.')
+      resetHermesConnection()
+    }
+  }
+
+  // Any path that reaches a fresh build establishes a new connection, so the
+  // stale-probe streak no longer applies (covers the revalidate teardown above,
+  // a peer's concurrent teardown, and a rebuild from a self-nulled/rejected cache).
+  remoteRevalidateFailures = 0
 
   connectionPromise = (async () => {
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
@@ -5476,46 +5567,7 @@ function createWindow() {
   })
 }
 
-ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
-// Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
-// so the 'exit'/'error' handlers that would clear a dead connectionPromise never
-// fire — once the remote becomes unreachable across a sleep/wake the renderer
-// re-dials the same dead descriptor forever and the composer stays stuck on
-// "Starting Hermes…". Before the renderer's backoff loop reconnects, it asks us
-// to confirm the cached PRIMARY backend is still reachable; if a remote one is
-// not, we drop the cache so the next getConnection() rebuilds it. Local backends
-// self-heal via their child 'exit' handler, so we never touch them here.
-ipcMain.handle('hermes:connection:revalidate', async () => {
-  if (!connectionPromise) {
-    return { ok: true, rebuilt: false }
-  }
-
-  let conn = null
-  try {
-    conn = await connectionPromise
-  } catch {
-    // The cached boot already rejected (its own catch nulls connectionPromise);
-    // nothing to revalidate — the next getConnection() builds fresh.
-    return { ok: true, rebuilt: false }
-  }
-
-  if (!conn || conn.mode !== 'remote' || !conn.baseUrl) {
-    return { ok: true, rebuilt: false }
-  }
-
-  const base = conn.baseUrl.replace(/\/+$/, '')
-  try {
-    await fetchPublicJson(`${base}/api/status`, { timeoutMs: 2_500 })
-    return { ok: true, rebuilt: false }
-  } catch {
-    // Unreachable remote: drop the stale cache so the renderer's next reconnect
-    // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
-    // nulls connectionPromise for a remote (no child to SIGTERM).
-    rememberLog('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
-    resetHermesConnection()
-    return { ok: true, rebuilt: true }
-  }
-})
+ipcMain.handle('hermes:connection', async (_event, profile, options) => ensureBackend(profile, options))
 ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
   return { ok: true }

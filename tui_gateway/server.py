@@ -2104,6 +2104,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo = False
     info: dict = {
         "model": getattr(agent, "model", ""),
+        "provider": getattr(agent, "provider", ""),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
@@ -6475,6 +6476,11 @@ def _(rid, params: dict) -> dict:
             _write_config_key("agent.reasoning_effort", arg)
             if session and session.get("agent") is not None:
                 session["agent"].reasoning_config = parsed
+                _emit(
+                    "session.info",
+                    params.get("session_id", ""),
+                    _session_info(session["agent"], session),
+                )
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))

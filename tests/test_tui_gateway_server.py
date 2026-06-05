@@ -3593,8 +3593,9 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     fake_mod.get_mcp_status = lambda: fake_status
     monkeypatch.setitem(sys.modules, "tools.mcp_tool", fake_mod)
 
-    info = server._session_info(types.SimpleNamespace(tools=[], model=""))
+    info = server._session_info(types.SimpleNamespace(tools=[], model="", provider="openai-codex"))
 
+    assert info["provider"] == "openai-codex"
     assert info["mcp_servers"] == fake_status
 
 

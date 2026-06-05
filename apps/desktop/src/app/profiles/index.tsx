@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -28,6 +29,7 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeProfile, switchProfile } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayView } from '../overlays/overlay-view'
@@ -170,6 +172,14 @@ export function ProfilesView({
     }
   }, [p, pendingDelete, refresh])
 
+  const handleMakeDefault = useCallback(async (profile: ProfileInfo) => {
+    try {
+      await switchProfile(profile.name)
+    } catch (err) {
+      notifyError(err, `Failed to switch to ${profile.name}`)
+    }
+  }, [])
+
   return (
     <OverlayView closeLabel={p.close} onClose={onClose}>
       <section {...props} className="flex h-full min-w-0 flex-col overflow-hidden rounded-b-[0.9375rem] bg-background">
@@ -197,6 +207,7 @@ export function ProfilesView({
                     <li key={profile.name}>
                       <ProfileRow
                         active={selected?.name === profile.name}
+                        onMakeDefault={() => void handleMakeDefault(profile)}
                         onSelect={() => setSelectedName(profile.name)}
                         profile={profile}
                       />
@@ -266,28 +277,61 @@ export function ProfilesView({
   )
 }
 
-function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: () => void; profile: ProfileInfo }) {
+function ProfileRow({
+  active,
+  onMakeDefault,
+  onSelect,
+  profile
+}: {
+  active: boolean
+  onMakeDefault: () => void
+  onSelect: () => void
+  profile: ProfileInfo
+}) {
   const { t } = useI18n()
   const p = t.profiles
+  const running = useStore($activeProfile)
+  const isRunning = profile.name === running
 
   return (
-    <button
+    <div
       className={cn(
-        'flex w-full flex-col items-start gap-1 rounded-lg px-2.5 py-2 text-left transition-colors',
+        'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 transition-colors',
         active ? 'bg-accent text-foreground' : 'text-foreground/85 hover:bg-accent/60'
       )}
-      onClick={onSelect}
-      type="button"
     >
-      <span className="flex w-full items-center justify-between gap-2">
-        <span className="truncate text-sm font-medium">{profile.name}</span>
-        {profile.is_default && <span className="text-[0.6rem] text-primary">{p.default}</span>}
-      </span>
-      <span className="text-[0.66rem] text-muted-foreground">
-        {p.skills(profile.skill_count)}
-        {profile.has_env ? ` · ${p.env}` : ''}
-      </span>
-    </button>
+      <button
+        className="flex min-w-0 flex-1 flex-col items-start gap-1 text-left"
+        onClick={onSelect}
+        type="button"
+      >
+        <span className="flex w-full items-center justify-between gap-2">
+          <span className="truncate text-sm font-medium">{profile.name}</span>
+          {profile.is_default && <span className="text-[0.6rem] text-primary">{p.default}</span>}
+          {isRunning && (
+            <span className="text-[0.6rem] font-medium text-primary">Active</span>
+          )}
+        </span>
+        <span className="text-[0.66rem] text-muted-foreground">
+          {p.skills(profile.skill_count)}
+          {profile.has_env ? ` · ${p.env}` : ''}
+        </span>
+      </button>
+
+      {!isRunning && (
+        <Button
+          aria-label={`Make ${profile.name} the default profile`}
+          className="self-center"
+          onClick={onMakeDefault}
+          size="xs"
+          type="button"
+          variant="ghost"
+        >
+          <Codicon name="pass" size="0.75rem" />
+          <span>Make default</span>
+        </Button>
+      )}
+    </div>
   )
 }
 

@@ -436,11 +436,12 @@ def run_conversation(
         persist_user_message = _sanitize_surrogates(persist_user_message)
 
     # Defend against conversation-level prompt injection: strip known directive
-    # patterns before the message enters the model context.
+    # patterns before the message enters the model context. Only the model-facing
+    # copy is sanitized — persist_user_message preserves the user's original text
+    # for history/audit (so e.g. security researchers discussing injection
+    # techniques can still review what was actually sent).
     if isinstance(user_message, str):
         user_message = _sanitize_prompt_injection(user_message)
-    if isinstance(persist_user_message, str):
-        persist_user_message = _sanitize_prompt_injection(persist_user_message)
 
     # Store stream callback for _interruptible_api_call to pick up
     agent._stream_callback = stream_callback

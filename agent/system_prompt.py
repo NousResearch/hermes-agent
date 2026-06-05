@@ -58,6 +58,27 @@ def _ra():
     return run_agent
 
 
+def _terminal_hardline_guidance() -> str:
+    """Summarize terminal commands the runtime will never execute."""
+    try:
+        from tools.approval import HARDLINE_PATTERNS
+        descriptions = tuple(dict.fromkeys(description for _, description in HARDLINE_PATTERNS))
+    except Exception:
+        descriptions = ()
+    examples = "; ".join(descriptions)
+    suffix = f" Current hardline categories include: {examples}." if examples else ""
+    return (
+        "# Terminal hardline safety boundary\n"
+        "The terminal tool has an unconditional hardline blocklist. Commands "
+        "on that list cannot be executed via Hermes even with --yolo, /yolo, "
+        "approvals.mode=off, sudo, or cron approve mode. Do not claim you can "
+        "perform, schedule, or work around those blocked operations; tell the "
+        "user to run them manually outside the agent if they genuinely need "
+        "one of them."
+        f"{suffix}"
+    )
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered parts.
 
@@ -118,6 +139,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:
         tool_guidance.append(SKILLS_GUIDANCE)
+    if "terminal" in agent.valid_tool_names:
+        tool_guidance.append(_terminal_hardline_guidance())
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see

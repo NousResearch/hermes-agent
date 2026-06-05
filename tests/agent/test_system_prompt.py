@@ -55,3 +55,26 @@ class TestContextFileCwd:
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
+
+
+class TestTerminalHardlineGuidance:
+    def _stable_prompt(self, agent):
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+        ):
+            return build_system_prompt_parts(agent)["stable"]
+
+    def test_terminal_tool_adds_hardline_boundary(self):
+        stable = self._stable_prompt(_make_agent(valid_tool_names=["terminal"]))
+
+        assert "Terminal hardline safety boundary" in stable
+        assert "system shutdown/reboot" in stable
+        assert "cannot be executed via Hermes" in stable
+
+    def test_without_terminal_tool_omits_hardline_boundary(self):
+        stable = self._stable_prompt(_make_agent(valid_tool_names=[]))
+
+        assert "Terminal hardline safety boundary" not in stable

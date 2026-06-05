@@ -1,9 +1,10 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import { GatewayConnectionForm } from '@/components/gateway-connection-form'
 import { Button } from '@/components/ui/button'
 import type { DesktopConnectionConfig } from '@/global'
-import { AlertTriangle, FileText, Loader2, LogIn, RefreshCw, Wrench } from '@/lib/icons'
+import { AlertTriangle, FileText, Loader2, LogIn, RefreshCw, Settings2, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -12,24 +13,27 @@ import type { RemoteReauth } from './boot-failure-reauth'
 import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
 
 type BusyAction = 'local' | 'repair' | 'retry' | 'signin' | null
-
-// A remote gateway whose access cookie has lapsed (e.g. the dashboard
-// restarted on the remote box) boots into this overlay with a reauth-shaped
-// error. The local-recovery buttons (Retry resets the local bootstrap latch;
-// Repair re-runs the installer) are no-ops for that case — the only fix is to
-// re-establish the remote session. The detection + copy helpers live in
-// ./boot-failure-reauth so they're unit-testable without a React render.
+type Panel = 'actions' | 'remote-settings'
 
 // Recovery surface for a hard boot failure (gateway never came up, backend
 // exited during startup, bootstrap latched, …). Without this the app shell
 // renders dead — "gateway offline", no composer, only a toast — with no way
 // to retry, repair the install, switch the gateway, or find the logs.
+//
+// Two remote-gateway recovery paths layer on top of the local-recovery buttons:
+//   * Sign in — when the failure is a lapsed remote session (a reauth-shaped
+//     error: the URL is right but the cookie expired). Detection + copy live in
+//     ./boot-failure-reauth so they're unit-testable without a React render.
+//   * Edit remote gateway — an inline form to fix a wrong/unreachable URL or
+//     token, for when re-authenticating against the saved address can't help.
 export function BootFailureOverlay() {
   const boot = useStore($desktopBoot)
   const onboarding = useStore($desktopOnboarding)
   const [busy, setBusy] = useState<BusyAction>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
+  const [panel, setPanel] = useState<Panel>('actions')
+  const [hasRemoteConfig, setHasRemoteConfig] = useState(false)
   const [remoteReauth, setRemoteReauth] = useState<RemoteReauth | null>(null)
 
   const visible = Boolean(boot.error) && !boot.running
@@ -40,6 +44,8 @@ export function BootFailureOverlay() {
 
   useEffect(() => {
     if (!visible) {
+      setPanel('actions')
+
       return
     }
 
@@ -47,6 +53,17 @@ export function BootFailureOverlay() {
       ?.getRecentLogs()
       .then(res => setLogs(res.lines ?? []))
       .catch(() => undefined)
+
+    // Determine whether to show the "Edit remote gateway" shortcut.
+    void window.hermesDesktop
+      ?.getConnectionConfig()
+      .then(config => {
+        // Also show the button when env vars are forcing remote mode — the saved
+        // config may still read mode='local'/remoteUrl='' while the app launched
+        // against an env-supplied URL.
+        setHasRemoteConfig(config.mode === 'remote' || Boolean(config.remoteUrl.trim()) || config.envOverride)
+      })
+      .catch(() => setHasRemoteConfig(true)) // show the button on IPC error so the escape hatch is never hidden
   }, [visible])
 
   // Resolve whether this boot failure is a remote-gateway reauth so we can
@@ -172,12 +189,14 @@ export function BootFailureOverlay() {
           </div>
           <div>
             <h2 className="text-[0.9375rem] font-semibold tracking-tight">
-              {remoteReauth ? 'Remote gateway sign-in required' : "Hermes couldn't start"}
+              {remoteReauth && panel === 'actions' ? 'Remote gateway sign-in required' : "Hermes couldn't start"}
             </h2>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              {remoteReauth
-                ? 'Your remote gateway session has expired (the dashboard likely restarted). Sign in again to reconnect — nothing here deletes your chats or settings.'
-                : "The background gateway didn't come up. Try one of the recovery steps below — nothing here deletes your chats or settings."}
+              {panel === 'remote-settings'
+                ? 'Edit the remote gateway URL and token, then save and reconnect.'
+                : remoteReauth
+                  ? 'Your remote gateway session has expired (the dashboard likely restarted). Sign in again to reconnect — nothing here deletes your chats or settings.'
+                  : "The background gateway didn't come up. Try one of the recovery steps below — nothing here deletes your chats or settings."}
             </p>
           </div>
         </div>
@@ -187,57 +206,73 @@ export function BootFailureOverlay() {
             {boot.error}
           </div>
 
-          <div className="grid gap-2">
-            <div className="flex flex-wrap gap-2">
-              {remoteReauth ? (
-                <Button disabled={Boolean(busy)} onClick={() => void signInRemote()}>
-                  {busy === 'signin' ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                  {label}
-                </Button>
-              ) : (
-                <Button disabled={Boolean(busy)} onClick={() => void retry()}>
-                  {busy === 'retry' ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                  Retry
-                </Button>
-              )}
-              {!remoteReauth ? (
-                <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="outline">
-                  {busy === 'repair' ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
-                  Repair install
-                </Button>
-              ) : null}
-              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="outline">
-                {busy === 'local' ? <Loader2 className="size-4 animate-spin" /> : null}
-                Use local gateway
-              </Button>
-              <Button onClick={openLogs} variant="ghost">
-                <FileText className="size-4" />
-                Open logs
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {remoteReauth
-                ? 'Opens the gateway login window. Use “Use local gateway” to switch to the bundled backend instead.'
-                : 'Repair re-runs the installer and can take a few minutes on a fresh machine.'}
-            </p>
-          </div>
+          {panel === 'actions' ? (
+            <>
+              <div className="grid gap-2">
+                <div className="flex flex-wrap gap-2">
+                  {/* Primary action: re-authenticate a lapsed remote session, otherwise retry boot. */}
+                  {remoteReauth ? (
+                    <Button disabled={Boolean(busy)} onClick={() => void signInRemote()}>
+                      {busy === 'signin' ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+                      {label}
+                    </Button>
+                  ) : (
+                    <Button disabled={Boolean(busy)} onClick={() => void retry()}>
+                      {busy === 'retry' ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                      Retry
+                    </Button>
+                  )}
+                  {/* Fix a wrong/unreachable remote URL or token — complements sign-in, which only
+                      helps when the saved address is correct but the session lapsed. */}
+                  {hasRemoteConfig ? (
+                    <Button disabled={Boolean(busy)} onClick={() => setPanel('remote-settings')} variant="outline">
+                      <Settings2 className="size-4" />
+                      Edit remote gateway
+                    </Button>
+                  ) : null}
+                  {/* Repair re-runs the installer — irrelevant to a lapsed remote session, so hidden then. */}
+                  {!remoteReauth ? (
+                    <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="outline">
+                      {busy === 'repair' ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
+                      Repair install
+                    </Button>
+                  ) : null}
+                  <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="outline">
+                    {busy === 'local' ? <Loader2 className="size-4 animate-spin" /> : null}
+                    Use local gateway
+                  </Button>
+                  <Button onClick={openLogs} variant="ghost">
+                    <FileText className="size-4" />
+                    Open logs
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {remoteReauth
+                    ? 'Opens the gateway login window. Use “Use local gateway” to switch to the bundled backend instead.'
+                    : 'Repair re-runs the installer and can take a few minutes on a fresh machine.'}
+                </p>
+              </div>
 
-          {logs.length > 0 ? (
-            <div className="grid gap-2">
-              <button
-                className="self-start text-xs font-medium text-muted-foreground transition hover:text-foreground"
-                onClick={() => setShowLogs(v => !v)}
-                type="button"
-              >
-                {showLogs ? 'Hide' : 'Show'} recent logs
-              </button>
-              {showLogs ? (
-                <pre className="max-h-48 overflow-auto rounded-2xl border border-border bg-secondary/30 p-3 font-mono text-[0.7rem] leading-4 text-muted-foreground">
-                  {logs.slice(-40).join('')}
-                </pre>
+              {logs.length > 0 ? (
+                <div className="grid gap-2">
+                  <button
+                    className="self-start text-xs font-medium text-muted-foreground transition hover:text-foreground"
+                    onClick={() => setShowLogs(v => !v)}
+                    type="button"
+                  >
+                    {showLogs ? 'Hide' : 'Show'} recent logs
+                  </button>
+                  {showLogs ? (
+                    <pre className="max-h-48 overflow-auto rounded-2xl border border-border bg-secondary/30 p-3 font-mono text-[0.7rem] leading-4 text-muted-foreground">
+                      {logs.slice(-40).join('')}
+                    </pre>
+                  ) : null}
+                </div>
               ) : null}
-            </div>
-          ) : null}
+            </>
+          ) : (
+            <GatewayConnectionForm onBack={() => setPanel('actions')} />
+          )}
         </div>
       </div>
     </div>

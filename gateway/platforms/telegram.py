@@ -3539,6 +3539,72 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
             return
 
+        # --- Kanban mutation-gate callbacks (ka:action:callback_id) ---
+        if data.startswith("ka:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Invalid Kanban approval data.")
+                return
+            action = parts[1]  # a, d, x
+            callback_id = parts[2]
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to resolve Kanban approvals.")
+                logger.warning(
+                    "Telegram Kanban approval rejected callback=%s action=%s user=%s unauthorized",
+                    callback_id, action, caller_id,
+                )
+                return
+            user_display = getattr(query.from_user, "first_name", "User")
+            try:
+                from hermes_cli.kanban_approval import resolve_callback
+                result = resolve_callback(callback_id, action, actor=f"telegram:{caller_id}:{user_display}")
+            except Exception as exc:
+                logger.error("Telegram Kanban approval callback failed: %s", exc, exc_info=True)
+                await query.answer(text="Kanban approval failed.")
+                return
+
+            label_map = {
+                "approve": "✅ Approved",
+                "defer": "⏸ Deferred",
+                "dismiss": "❌ Dismissed",
+            }
+            label = label_map.get(result.action, "Resolved")
+            if result.already_resolved:
+                await query.answer(text=f"Already {result.status}.")
+            else:
+                await query.answer(text=f"{label}: {result.status}")
+            try:
+                await query.edit_message_text(
+                    text=(
+                        f"{label} by {_html.escape(str(user_display))}\n"
+                        f"Request: <code>{_html.escape(result.request_id)}</code>\n"
+                        f"Task: <code>{_html.escape(result.task_id)}</code>\n"
+                        f"Status: <code>{_html.escape(result.status)}</code>"
+                    ),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            logger.info(
+                "Telegram Kanban approval resolved request=%s task=%s action=%s user=%s status=%s already_resolved=%s exit_code=%s",
+                result.request_id,
+                result.task_id,
+                result.action,
+                user_display,
+                result.status,
+                result.already_resolved,
+                result.exit_code,
+            )
+            return
+
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return

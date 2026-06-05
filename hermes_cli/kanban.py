@@ -554,6 +554,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_block.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
     p_block.add_argument("--ids", nargs="+", default=None,
                          help="Additional task ids to block with the same reason (bulk mode)")
+    p_block.add_argument("--approval-required", action="store_true",
+                         help="Also create a Telegram-native Kanban approval request for this mutation gate")
+    p_block.add_argument("--approval-title", default=None,
+                         help="Short approval title (defaults to 'Approve Kanban task <id>')")
+    p_block.add_argument("--approval-message", default=None,
+                         help="Approval prompt body (defaults to the block reason)")
+    p_block.add_argument("--approval-command", default=None,
+                         help="JSON array command to run on approval (defaults to an audited kanban unblock)")
+    p_block.add_argument("--approval-ttl-seconds", type=int, default=3600,
+                         help="Approval request TTL in seconds (default 3600; capped at 86400)")
+    p_block.add_argument("--approval-no-send", action="store_true",
+                         help="Create request files without sending Telegram buttons (test/dry-run path)")
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
@@ -1941,6 +1953,14 @@ def _cmd_block(args: argparse.Namespace) -> int:
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
     failed: list[str] = []
+    approval_required = bool(getattr(args, "approval_required", False))
+    approval_command = None
+    if approval_required and getattr(args, "approval_command", None):
+        try:
+            approval_command = json.loads(args.approval_command)
+        except Exception as exc:
+            print(f"invalid --approval-command JSON: {exc}", file=sys.stderr)
+            return 2
     with kb.connect_closing() as conn:
         for tid in ids:
             if reason:
@@ -1953,8 +1973,32 @@ def _cmd_block(args: argparse.Namespace) -> int:
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
-            else:
-                print(f"Blocked {tid}" + (f": {reason}" if reason else ""))
+                continue
+            print(f"Blocked {tid}" + (f": {reason}" if reason else ""))
+            if approval_required:
+                try:
+                    from hermes_cli.kanban_approval import create_request
+                    title = args.approval_title or f"Approve Kanban task {tid}"
+                    message = args.approval_message or reason or "Mutation approval required before this Kanban task may continue."
+                    req = create_request(
+                        task_id=tid,
+                        title=title,
+                        message=message,
+                        command=approval_command,
+                        ttl_seconds=int(getattr(args, "approval_ttl_seconds", 3600) or 3600),
+                        send_telegram=not bool(getattr(args, "approval_no_send", False)),
+                    )
+                    kb.add_comment(
+                        conn,
+                        tid,
+                        author,
+                        f"KANBAN_APPROVAL_REQUEST: request={req['id']} callback={req.get('callback_id')} status=pending",
+                    )
+                    label = "existing" if req.get("deduped") else "created"
+                    print(f"Approval request {label} {req['id']} for {tid}")
+                except Exception as exc:
+                    failed.append(tid)
+                    print(f"approval request failed for {tid}: {exc}", file=sys.stderr)
     return 0 if not failed else 1
 
 

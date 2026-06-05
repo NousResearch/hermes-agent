@@ -608,6 +608,16 @@ def _handle_block(args: dict, **kw) -> str:
     reason = args.get("reason")
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")
+    mutation_approval_required = bool(args.get("mutation_approval_required"))
+    approval_title = args.get("approval_title") or f"Approve Kanban task {tid}"
+    approval_message = args.get("approval_message") or str(reason)
+    approval_command = args.get("approval_command")
+    if approval_command is not None and (
+        not isinstance(approval_command, list)
+        or not approval_command
+        or not all(isinstance(x, str) for x in approval_command)
+    ):
+        return tool_error("approval_command must be a non-empty array of strings")
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -623,7 +633,33 @@ def _handle_block(args: dict, **kw) -> str:
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            payload = {"task_id": tid, "run_id": run.id if run else None}
+            if mutation_approval_required:
+                try:
+                    from hermes_cli.kanban_approval import create_request
+                    req = create_request(
+                        task_id=tid,
+                        title=str(approval_title),
+                        message=str(approval_message),
+                        command=approval_command,
+                        send_telegram=not bool(args.get("approval_no_send")),
+                    )
+                    author = os.environ.get("HERMES_PROFILE") or "worker"
+                    kb.add_comment(
+                        conn,
+                        tid,
+                        author=author,
+                        body=(
+                            "KANBAN_APPROVAL_REQUEST: "
+                            f"request={req['id']} callback={req.get('callback_id')} status=pending"
+                        ),
+                    )
+                    payload["approval_request_id"] = req["id"]
+                    payload["approval_callback_id"] = req.get("callback_id")
+                    payload["approval_deduped"] = bool(req.get("deduped"))
+                except Exception as exc:
+                    return tool_error(f"kanban_block approval request failed: {exc}")
+            return _ok(**payload)
         finally:
             conn.close()
     except ValueError as e:
@@ -1094,6 +1130,34 @@ KANBAN_BLOCK_SCHEMA = {
                 ),
             },
             "board": _board_schema_prop(),
+            "mutation_approval_required": {
+                "type": "boolean",
+                "description": (
+                    "Set true only when the block is a production/config/auth/network/model/routing "
+                    "mutation gate that needs Chris's Telegram approval. Creates one durable "
+                    "Kanban approval request and native Telegram buttons; read-only blockers should leave this false."
+                ),
+            },
+            "approval_title": {
+                "type": "string",
+                "description": "Short Telegram approval title. Defaults to 'Approve Kanban task <task_id>'.",
+            },
+            "approval_message": {
+                "type": "string",
+                "description": "Exact approval scope shown in Telegram. Defaults to reason.",
+            },
+            "approval_command": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional command array to run after approval. Defaults to an audited "
+                    "`hermes kanban unblock --reason <approval proof> <task_id>`. Do not include secrets."
+                ),
+            },
+            "approval_no_send": {
+                "type": "boolean",
+                "description": "Testing only: create durable request files without sending Telegram buttons.",
+            },
         },
         "required": ["reason"],
     },

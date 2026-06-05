@@ -33,6 +33,7 @@ const {
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   cookiesHaveSession,
+  cookiesHaveLiveSession,
   normalizeRemoteBaseUrl,
   resolveAuthMode,
   resolveTestWsUrl,
@@ -3167,8 +3168,16 @@ function installMediaPermissions() {
 //   * WebSocket upgrades require a single-use ``?ticket=`` minted at
 //     ``POST /api/auth/ws-ticket`` (cookie-authed). The legacy ``?token=``
 //     path is unconditionally rejected by gated gateways.
-//   * Nous Portal contract v1 issues NO refresh token; the access cookie has
-//     a ~15-min TTL. On 401 we must re-run the login round trip.
+//   * Nous Portal now issues a 24h ROTATING, reuse-detected refresh token
+//     alongside the ~15-min access token (Portal NAS #293 / hermes #37247).
+//     Both are set as HttpOnly cookies (``hermes_session_at`` ~15 min,
+//     ``hermes_session_rt`` 24h). When the AT cookie lapses but the RT cookie
+//     is still alive, the gateway middleware transparently rotates a fresh AT
+//     on the next authenticated request — so connectivity must NOT be gated on
+//     the AT cookie alone. We probe liveness by actually minting a ws-ticket
+//     (which triggers that server-side refresh) and treat a real 401 as
+//     "needs re-login"; the AT-or-RT cookie presence check is only a cheap
+//     "is the user signed in at all?" gate / display signal.
 // ---------------------------------------------------------------------------
 
 const OAUTH_SESSION_PARTITION = 'persist:hermes-remote-oauth'
@@ -3179,8 +3188,9 @@ function getOauthSession() {
   return oauthSession
 }
 
-// Bare + prefixed variants of the access-token cookie live in
-// connection-config.cjs (cookiesHaveSession). See that module for details.
+// Bare + prefixed variants of the session cookies live in
+// connection-config.cjs (cookiesHaveSession / cookiesHaveLiveSession). See
+// that module for details.
 
 async function hasOauthSessionCookie(baseUrl) {
   const sess = getOauthSession()
@@ -3195,6 +3205,30 @@ async function hasOauthSessionCookie(baseUrl) {
     try {
       const cookies = await sess.cookies.get({ domain: parsed.hostname })
       return cookiesHaveSession(cookies)
+    } catch {
+      return false
+    }
+  }
+}
+
+// Like hasOauthSessionCookie, but returns true when EITHER a live access-token
+// cookie OR a (longer-lived) refresh-token cookie is present. This is the right
+// "is the user signed in at all?" check: an expired AT with a live RT is still
+// a connectable session because the gateway rotates a fresh AT server-side on
+// the next authenticated request. Gating on the AT alone forces a needless full
+// re-login every ~15 min. Used for the Settings "connected" indicator and as a
+// cheap early-out before attempting a network round-trip in resolveRemoteBackend.
+async function hasLiveOauthSession(baseUrl) {
+  const sess = getOauthSession()
+  if (!sess) return false
+  const parsed = new URL(baseUrl)
+  try {
+    const cookies = await sess.cookies.get({ url: baseUrl })
+    return cookiesHaveLiveSession(cookies)
+  } catch {
+    try {
+      const cookies = await sess.cookies.get({ domain: parsed.hostname })
+      return cookiesHaveLiveSession(cookies)
     } catch {
       return false
     }
@@ -3536,7 +3570,11 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   let remoteOauthConnected = false
   if (authMode === 'oauth' && remoteUrl) {
     try {
-      remoteOauthConnected = await hasOauthSessionCookie(remoteUrl)
+      // Display signal: treat a live RT cookie as "connected" even if the AT
+      // cookie has lapsed — the gateway refreshes the AT on the next request,
+      // so the session is still usable. The authoritative liveness check is
+      // the ws-ticket mint in resolveRemoteBackend at actual connect time.
+      remoteOauthConnected = await hasLiveOauthSession(remoteUrl)
     } catch {
       remoteOauthConnected = false
     }
@@ -3621,11 +3659,22 @@ async function resolveRemoteBackend() {
   const authMode = config.remote?.authMode === 'oauth' ? 'oauth' : 'token'
 
   if (authMode === 'oauth') {
-    // OAuth gateway: auth comes from the session cookie in the OAuth partition.
-    // Verify the cookie is present, then mint a single-use WS ticket (the
-    // gateway rejects ?token= in gated mode). A missing cookie / 401 means the
-    // user needs to (re-)log in via Settings → Gateway.
-    if (!(await hasOauthSessionCookie(baseUrl))) {
+    // OAuth gateway: auth comes from the session cookies in the OAuth
+    // partition. Liveness is NOT "is the access-token cookie present?" —
+    // Portal issues a 24h rotating refresh token (hermes #37247), and the
+    // gateway middleware transparently rotates a fresh ~15-min access token
+    // from it on the next authenticated request. So a session with an expired
+    // AT cookie but a live RT cookie is still perfectly connectable.
+    //
+    // We therefore:
+    //   1. cheap early-out ONLY when the jar holds NEITHER an AT nor an RT
+    //      cookie — a genuinely signed-out user — to avoid a pointless network
+    //      round-trip and give a clear "sign in" message.
+    //   2. otherwise probe liveness by actually minting a ws-ticket. That POST
+    //      carries the cookie jar (incl. the RT cookie); the gateway refreshes
+    //      the AT server-side and returns a ticket. A real 401 here means the
+    //      RT is also dead/revoked → genuine re-login needed.
+    if (!(await hasLiveOauthSession(baseUrl))) {
       const err = new Error(
         'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
           'Open Settings → Gateway and click "Sign in", or switch back to Local.'
@@ -3636,6 +3685,10 @@ async function resolveRemoteBackend() {
 
     let ticket
     try {
+      // This mint is the authoritative liveness check. If only the RT cookie
+      // is alive, the gateway rotates a fresh AT cookie back onto the partition
+      // via Set-Cookie (Electron's persistent session absorbs it), so the very
+      // next request is already re-authed — no user-visible re-login.
       ticket = await mintGatewayWsTicket(baseUrl)
     } catch (error) {
       const err = new Error(
@@ -4388,7 +4441,10 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''
   await clearOauthSession(baseUrl || undefined)
-  return { ok: true, connected: baseUrl ? await hasOauthSessionCookie(baseUrl) : false }
+  // Report against the SAME liveness notion the Settings indicator uses
+  // (AT-or-RT) so a logout that left any session cookie behind is reflected
+  // as still-connected rather than silently signed-out.
+  return { ok: true, connected: baseUrl ? await hasLiveOauthSession(baseUrl) : false }
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)

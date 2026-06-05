@@ -451,6 +451,65 @@ class TestCheckFunction:
 # ---------------------------------------------------------------------------
 
 class TestRunOnMcpLoop:
+    def test_normal_caller_runs_coroutine_on_mcp_loop(self):
+        """Non-loop callers can still synchronously run MCP loop work."""
+        import tools.mcp_tool as mcp
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+
+        old_loop = mcp._mcp_loop
+        old_thread = mcp._mcp_thread
+        mcp._mcp_loop = loop
+        mcp._mcp_thread = thread
+
+        async def _sample():
+            return "ok"
+
+        try:
+            assert mcp._run_on_mcp_loop(_sample, timeout=2) == "ok"
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            loop.close()
+            mcp._mcp_loop = old_loop
+            mcp._mcp_thread = old_thread
+
+    def test_same_loop_caller_fails_fast_without_creating_factory_coroutine(self):
+        """Same-loop callers fail fast instead of blocking the MCP loop."""
+        import tools.mcp_tool as mcp
+
+        created = threading.Event()
+
+        async def _sample():
+            created.set()
+            return "ok"
+
+        async def _call_from_loop():
+            with pytest.raises(RuntimeError, match="from its own thread"):
+                mcp._run_on_mcp_loop(_sample, timeout=2)
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+
+        old_loop = mcp._mcp_loop
+        old_thread = mcp._mcp_thread
+        mcp._mcp_loop = loop
+        mcp._mcp_thread = thread
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_call_from_loop(), loop)
+            future.result(timeout=2)
+            assert not created.is_set()
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            loop.close()
+            mcp._mcp_loop = old_loop
+            mcp._mcp_thread = old_thread
+
     def test_scheduler_failure_closes_factory_coroutine(self):
         """If run_coroutine_threadsafe raises, the factory's coroutine is closed."""
         import gc
@@ -3905,6 +3964,44 @@ class TestRegisterMcpServers:
 
         assert "mcp_my_server_tool1" in result
         _servers.pop("my_server", None)
+
+    def test_register_mcp_servers_same_loop_fails_fast(self):
+        import tools.mcp_tool as mcp
+
+        fake_config = {"same_loop": {"command": "npx", "args": ["test"]}}
+        discovered = threading.Event()
+
+        async def fake_register(name, cfg):
+            discovered.set()
+            return []
+
+        async def _call_from_loop():
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+                with pytest.raises(RuntimeError, match="from its own thread"):
+                    mcp.register_mcp_servers(fake_config)
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+
+        old_loop = mcp._mcp_loop
+        old_thread = mcp._mcp_thread
+        mcp._mcp_loop = loop
+        mcp._mcp_thread = thread
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_call_from_loop(), loop)
+            future.result(timeout=2)
+            assert not discovered.is_set()
+        finally:
+            mcp._servers.pop("same_loop", None)
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            loop.close()
+            mcp._mcp_loop = old_loop
+            mcp._mcp_thread = old_thread
 
     def test_logs_summary_on_success(self):
         from tools.mcp_tool import register_mcp_servers, _servers, _ensure_mcp_loop

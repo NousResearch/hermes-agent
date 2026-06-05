@@ -4677,6 +4677,8 @@ def run_conversation(
                 "transform_llm_output",
                 response_text=final_response,
                 session_id=agent.session_id or "",
+                user_message=original_user_message,
+                conversation_history=list(messages),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )

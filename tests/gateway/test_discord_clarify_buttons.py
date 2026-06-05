@@ -115,19 +115,39 @@ class TestClarifyChoiceViewConstruction:
         assert len(view.children) == 25
         assert "Other" in view.children[-1].label
 
-    def test_truncates_long_choice_label(self):
+    def test_long_choice_uses_compact_numbered_button_label(self):
         long_choice = "x" * 200
         view = ClarifyChoiceView(
             choices=[long_choice],
             clarify_id="cidZ",
             allowed_user_ids=set(),
         )
-        # 75 chars + 3 ellipsis chars in the body, plus "1. " prefix
+        # Long text belongs in the embed body/list, not in the native button
+        # label where Discord clients render it as a single truncated line.
         first_label = view.children[0].label
-        assert first_label.startswith("1. ")
-        assert first_label.endswith("...")
-        # Final label total <= 80 (Discord cap on button labels)
-        assert len(first_label) <= 80
+        assert first_label == "1"
+
+    def test_short_few_choices_get_vertical_button_rows(self):
+        view = ClarifyChoiceView(
+            choices=["alpha", "bravo", "charlie"],
+            clarify_id="cidRows",
+            allowed_user_ids=set(),
+        )
+
+        # Avoid side-by-side squeezing in Discord: with a small number of
+        # readable labels, put each choice on its own row and Other below.
+        assert [child.row for child in view.children] == [0, 1, 2, 3]
+
+    def test_zero_timeout_keeps_buttons_live_until_answered(self):
+        """When clarify timeout is disabled, Discord must not expire buttons first."""
+        view = ClarifyChoiceView(
+            choices=["wait"],
+            clarify_id="cidNoTimeout",
+            allowed_user_ids=set(),
+            timeout=0,
+        )
+
+        assert view.timeout is None
 
 
 # ===========================================================================
@@ -323,6 +343,55 @@ class TestDiscordSendClarify:
         assert isinstance(kwargs["view"], ClarifyChoiceView)
         # 3 choice buttons + 1 Other
         assert len(kwargs["view"].children) == 4
+
+    @pytest.mark.asyncio
+    async def test_multi_choice_embed_lists_full_choice_text(self):
+        adapter = _make_adapter(allowed_users={"42"})
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 123458
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+        long_choice = "긴 선택지라서 버튼 한 줄 안에 넣으면 오른쪽으로 잘리는 원문"
+
+        result = await adapter.send_clarify(
+            chat_id="9001",
+            question="Pick one",
+            choices=[long_choice, "짧은 선택지"],
+            clarify_id="cidFullText",
+            session_key="sk-FullText",
+        )
+
+        assert result.success is True
+        embed = channel.send.call_args.kwargs["embed"]
+        choices_field = next(field for field in embed.fields if field["name"] == "Choices")
+        assert f"1. {long_choice}" in choices_field["value"]
+        assert "Click a button number below" in choices_field["value"]
+
+    @pytest.mark.asyncio
+    async def test_multi_choice_view_uses_gateway_clarify_timeout(self, monkeypatch):
+        from tools import clarify_gateway as cm
+
+        monkeypatch.setattr(cm, "get_clarify_timeout", lambda: 0)
+        adapter = _make_adapter(allowed_users={"42"})
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 123457
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+
+        result = await adapter.send_clarify(
+            chat_id="9001",
+            question="Pick a color",
+            choices=["red", "green"],
+            clarify_id="cidNoTimeoutSend",
+            session_key="sk-NoTimeout",
+        )
+
+        assert result.success is True
+        view = channel.send.call_args.kwargs["view"]
+        assert isinstance(view, ClarifyChoiceView)
+        assert view.timeout is None
 
     @pytest.mark.asyncio
     async def test_open_ended_omits_view(self):

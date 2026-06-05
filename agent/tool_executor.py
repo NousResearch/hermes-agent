@@ -52,6 +52,63 @@ logger = logging.getLogger(__name__)
 _MAX_TOOL_WORKERS = 8
 
 
+def _runtime_halt_decision_for_tool_result(
+    function_name: str,
+    function_args: dict[str, Any],
+    function_result: Any,
+) -> ToolGuardrailDecision | None:
+    """Promote user-gated stop signals into a controlled turn halt.
+
+    These are not ordinary tool failures.  A terminal ``status=blocked`` means
+    a dangerous command was *not* approved/executed; a clarify no-response
+    sentinel means the user did *not* choose an option.  Letting the model see
+    either as just another tool result invites bypasses/defaulting on the next
+    API call, so stop the turn immediately and surface the blocker to the user.
+    """
+    if not isinstance(function_result, str):
+        return None
+    try:
+        data = json.loads(function_result)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    if function_name == "terminal" and data.get("status") == "blocked":
+        blocker = str(data.get("error") or "Terminal command was blocked.").strip()
+        message = (
+            "Terminal returned status=blocked; the command was not executed. "
+            "Do not rephrase, retry, or route around the approval/safety block. "
+            "Stop and ask the user for explicit approval or different instructions."
+        )
+        if blocker:
+            message += f" Blocker: {blocker}"
+        return ToolGuardrailDecision(
+            action="halt",
+            code="terminal_blocked_status",
+            message=message,
+            tool_name=function_name,
+            count=1,
+        )
+
+    if function_name == "clarify":
+        user_response = str(data.get("user_response") or "").strip()
+        if user_response.lower().startswith("[user did not respond"):
+            return ToolGuardrailDecision(
+                action="halt",
+                code="clarify_no_response",
+                message=(
+                    "The user did not respond to the clarify prompt. Do not choose "
+                    "a default, infer consent, or continue the workflow; wait for "
+                    "the user's answer."
+                ),
+                tool_name=function_name,
+                count=1,
+            )
+
+    return None
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
     import run_agent
@@ -581,6 +638,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             function_name, function_args, function_result, tool_duration, is_error, blocked = r
 
             if not blocked:
+                runtime_halt_decision = _runtime_halt_decision_for_tool_result(
+                    function_name,
+                    function_args,
+                    function_result,
+                )
+                if runtime_halt_decision is not None:
+                    agent._set_tool_guardrail_halt(runtime_halt_decision)
                 function_result = agent._append_guardrail_observation(
                     function_name,
                     function_args,
@@ -1128,6 +1192,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 duration_ms=int(tool_duration * 1000),
             )
         if not _execution_blocked:
+            runtime_halt_decision = _runtime_halt_decision_for_tool_result(
+                function_name,
+                function_args,
+                function_result,
+            )
+            if runtime_halt_decision is not None:
+                agent._set_tool_guardrail_halt(runtime_halt_decision)
             function_result = agent._append_guardrail_observation(
                 function_name,
                 function_args,
@@ -1212,6 +1283,26 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _fr_str = function_result if isinstance(function_result, str) else str(function_result)
                 response_preview = _fr_str[:agent.log_prefix_chars] + "..." if len(_fr_str) > agent.log_prefix_chars else _fr_str
                 print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
+
+        if agent._tool_guardrail_halt_decision is not None and i < len(assistant_message.tool_calls):
+            decision = agent._tool_guardrail_halt_decision
+            remaining = len(assistant_message.tool_calls) - i
+            agent._vprint(
+                f"{agent.log_prefix}⚠️ Hard stop: skipping {remaining} remaining tool call(s) after {decision.code}",
+                force=True,
+            )
+            for skipped_tc in assistant_message.tool_calls[i:]:
+                skipped_name = skipped_tc.function.name
+                messages.append(make_tool_result_message(
+                    skipped_name,
+                    (
+                        f"[Tool execution skipped — {skipped_name} was not started because "
+                        f"{decision.tool_name or function_name} produced a hard-stop result "
+                        f"({decision.code}).]"
+                    ),
+                    skipped_tc.id,
+                ))
+            break
 
         if agent._interrupt_requested and i < len(assistant_message.tool_calls):
             remaining = len(assistant_message.tool_calls) - i

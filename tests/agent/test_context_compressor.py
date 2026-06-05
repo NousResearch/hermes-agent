@@ -1088,6 +1088,26 @@ class TestSummaryPrefixNormalization:
         summary = ContextCompressor._with_summary_prefix(f"{SUMMARY_PREFIX}\ndid work")
         assert summary == f"{SUMMARY_PREFIX}\ndid work"
 
+    def test_structured_summary_gets_topic_title(self):
+        body = """## Active Task
+User asked: "handoff 파일 제목을 주제에 맞게 변경"
+
+## Goal
+Make handoff artifacts distinguishable.
+"""
+        summary = ContextCompressor._with_summary_prefix(body)
+        assert summary.startswith("[CONTEXT COMPACTION — handoff 파일 제목을 주제에 맞게 변경 — REFERENCE ONLY]")
+        assert summary.endswith(body.strip())
+
+    def test_titled_prefix_strips_and_detects(self):
+        body = "## Goal\nDiscord thread starter context"
+        titled = ContextCompressor._with_summary_prefix(body)
+        assert ContextCompressor._strip_summary_prefix(titled) == body
+        assert ContextCompressor._is_context_summary_content(titled) is True
+
+    def test_empty_summary_keeps_generic_prefix(self):
+        assert ContextCompressor._with_summary_prefix("") == SUMMARY_PREFIX
+
 
 class TestCompressWithClient:
     def test_system_content_list_gets_compression_note_without_crashing(self):

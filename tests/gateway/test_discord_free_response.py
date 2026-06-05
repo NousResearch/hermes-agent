@@ -114,6 +114,7 @@ def adapter(monkeypatch):
         "DISCORD_HISTORY_BACKFILL",
         "DISCORD_HISTORY_BACKFILL_LIMIT",
         "DISCORD_ALLOW_BOTS",
+        "DISCORD_CALL_ROLES",
     ):
         monkeypatch.delenv(_var, raising=False)
 
@@ -125,12 +126,13 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None, msg_type=None):
+def make_message(*, channel, content: str, mentions=None, role_mentions=None, msg_type=None):
     author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
     return SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
+        role_mentions=list(role_mentions or []),
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
@@ -348,6 +350,130 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
 
 
 @pytest.mark.asyncio
+async def test_discord_accepts_and_strips_call_role_mentions_when_required(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CALL_ROLES", "12345")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    role = SimpleNamespace(id=12345, name="Hermes 호출")
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="<@&12345> 이 알림 왜 떴어?",
+        role_mentions=[role],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "이 알림 왜 떴어?"
+
+
+@pytest.mark.asyncio
+async def test_discord_ignores_unconfigured_role_mention_when_required(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CALL_ROLES", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    role = SimpleNamespace(id=12345, name="Hermes 호출")
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="<@&12345> 이건 아직 호출벨이 아니다",
+        role_mentions=[role],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+def test_discord_configured_call_role_counts_as_self_mention_for_routing(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_CALL_ROLES", "12345")
+
+    role = SimpleNamespace(id=12345, name="Hermes 호출")
+    other_bot = SimpleNamespace(id=777, name="OtherBot", bot=True)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="<@&12345> <@777> 이 알림 왜 떴어?",
+        mentions=[other_bot],
+        role_mentions=[role],
+    )
+
+    assert adapter._message_mentions_self(message) is True
+
+
+@pytest.mark.asyncio
+async def test_discord_bot_author_call_role_invocation_passes_mentions_gate(adapter, monkeypatch):
+    """Bot-authored alerts can call Hermes with a configured role mention."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CALL_ROLES", "12345")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    intents = SimpleNamespace(
+        message_content=False,
+        dm_messages=False,
+        guild_messages=False,
+        members=False,
+        voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+    monkeypatch.setattr(adapter, "_run_post_connect_initialization", AsyncMock())
+    adapter._slash_commands = False
+
+    created = {}
+
+    class FakeBot:
+        def __init__(self, *, intents, allowed_mentions=None):
+            self.intents = intents
+            self.allowed_mentions = allowed_mentions
+            self.user = SimpleNamespace(id=999, name="Hermes")
+            self._events = {}
+            self.tree = SimpleNamespace(sync=AsyncMock(return_value=[]))
+
+        def event(self, fn):
+            self._events[fn.__name__] = fn
+            return fn
+
+        async def start(self, token):
+            if "on_ready" in self._events:
+                await self._events["on_ready"]()
+
+        async def close(self):
+            return None
+
+    def fake_bot_factory(*, command_prefix, intents, allowed_mentions=None, **_):
+        created["bot"] = FakeBot(intents=intents, allowed_mentions=allowed_mentions)
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+
+    assert await adapter.connect() is True
+
+    role = SimpleNamespace(id=12345, name="Hermes 호출")
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="<@&12345> 장애 알림 원문 기준으로 설명해줘",
+        role_mentions=[role],
+    )
+    message.author = SimpleNamespace(id=777, display_name="AlertBot", name="AlertBot", bot=True)
+
+    await created["bot"]._events["on_message"](message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "장애 알림 원문 기준으로 설명해줘"
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_discord_dms_ignore_mention_requirement(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
@@ -379,6 +505,33 @@ async def test_discord_auto_thread_enabled_by_default(adapter, monkeypatch):
     adapter._auto_create_thread.assert_awaited_once()
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "999"
+
+
+@pytest.mark.asyncio
+async def test_discord_call_role_invocation_auto_threads_like_direct_mention(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CALL_ROLES", "12345")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    role = SimpleNamespace(id=12345, name="Hermes 호출")
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123),
+        content="<@&12345> 알림 원문 기준으로 설명해줘",
+        role_mentions=[role],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "알림 원문 기준으로 설명해줘"
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "999"
 
@@ -636,6 +789,41 @@ async def test_discord_thread_require_mention_via_config_extra(adapter, monkeypa
 
     adapter.handle_message.assert_not_awaited()
 
+
+@pytest.mark.asyncio
+async def test_discord_call_role_invocation_in_thread_fetches_starter_context(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CALL_ROLES", "12345")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_HISTORY_BACKFILL", raising=False)
+
+    parent = FakeTextChannel(channel_id=222, name="ops-alerts")
+    starter = SimpleNamespace(
+        author=SimpleNamespace(id=55, display_name="AlertBot", name="AlertBot", bot=True),
+        clean_content="배포 실패: worker timeout exceeded",
+        content="배포 실패: worker timeout exceeded",
+        attachments=[],
+    )
+    parent.fetch_message = AsyncMock(return_value=starter)
+    thread = FakeThread(channel_id=333, name="alert triage", parent=parent)
+
+    role = SimpleNamespace(id=12345, name="Hermes 호출")
+    message = make_message(
+        channel=thread,
+        content="<@&12345> 이 알림 원문 기준으로 설명해줘",
+        role_mentions=[role],
+    )
+
+    await adapter._handle_message(message)
+
+    parent.fetch_message.assert_awaited_once_with(333)
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "이 알림 원문 기준으로 설명해줘"
+    assert event.channel_context is not None
+    assert "[Thread starter context]" in event.channel_context
+    assert "starter_author: AlertBot [bot]" in event.channel_context
+    assert "배포 실패: worker timeout exceeded" in event.channel_context
 
 
 @pytest.mark.asyncio

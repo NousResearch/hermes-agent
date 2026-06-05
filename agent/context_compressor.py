@@ -59,6 +59,9 @@ SUMMARY_PREFIX = (
     "The current session state (files, config, etc.) may reflect work "
     "described here — avoid repeating it:"
 )
+_SUMMARY_PREFIX_HEADER = "[CONTEXT COMPACTION — REFERENCE ONLY]"
+_SUMMARY_PREFIX_END_MARKER = "avoid repeating it:"
+_MAX_SUMMARY_TITLE_CHARS = 80
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
 # Handoff prefixes that shipped in earlier releases. A summary persisted under
@@ -1516,8 +1519,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
     @staticmethod
     def _strip_summary_prefix(summary: str) -> str:
-        """Return summary body without the current, legacy, or any historical
-        handoff prefix.
+        """Return summary body without the current, titled, legacy, or any
+        historical handoff prefix.
 
         Historical prefixes must be stripped too: a handoff persisted under an
         older prefix can be inherited into a resumed lineage (#35344), and if we
@@ -1528,18 +1531,85 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
             if text.startswith(prefix):
                 return text[len(prefix):].lstrip()
+
+        # Topic-specific compaction headers keep the same safety body but
+        # change the first bracketed label, e.g.:
+        #   [CONTEXT COMPACTION — Discord threading — REFERENCE ONLY] ...
+        # Strip them by the stable end marker rather than exact-string match.
+        if text.startswith("[CONTEXT COMPACTION"):
+            marker_idx = text.find(_SUMMARY_PREFIX_END_MARKER)
+            if marker_idx != -1:
+                return text[marker_idx + len(_SUMMARY_PREFIX_END_MARKER):].lstrip()
+            newline_idx = text.find("\n")
+            if newline_idx != -1:
+                return text[newline_idx + 1:].lstrip()
         return text
+
+    @staticmethod
+    def _summary_section(summary: str, heading: str) -> str:
+        """Extract a markdown section body from a structured summary."""
+        pattern = rf"(?ms)^##\s+{re.escape(heading)}\s*\n(.*?)(?=^##\s+|\Z)"
+        match = re.search(pattern, summary or "")
+        return match.group(1).strip() if match else ""
+
+    @staticmethod
+    def _clean_summary_title(raw: str) -> str:
+        """Return a Discord/file-title-safe compact topic string."""
+        text = (raw or "").strip()
+        if not text or text.startswith("["):
+            return ""
+        text = re.sub(r"`([^`]+)`", r"\1", text)
+        text = re.sub(r"^[-*+>]\s*", "", text)
+        text = re.sub(
+            r"^(?:User asked|User requested|사용자(?:가)?\s*(?:요청|질문|부탁))\s*[:：]\s*",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = text.strip().strip('"\'“”‘’<>[]()')
+        text = re.sub(r"[#*_\[\]]+", "", text)
+        text = re.sub(r"\s+", " ", text).strip(" -–—:：")
+        if not text or text.lower() in {"none", "none."}:
+            return ""
+        if len(text) > _MAX_SUMMARY_TITLE_CHARS:
+            text = text[: _MAX_SUMMARY_TITLE_CHARS - 1].rstrip() + "…"
+        return text
+
+    @classmethod
+    def _derive_summary_title(cls, summary: str) -> str:
+        """Derive a human-distinguishable topic from structured summary fields."""
+        body = cls._strip_summary_prefix(summary)
+        for heading in ("Active Task", "Goal"):
+            section = cls._summary_section(body, heading)
+            for line in section.splitlines():
+                title = cls._clean_summary_title(line)
+                if title:
+                    return title
+        return ""
+
+    @classmethod
+    def _prefix_with_title(cls, title: str) -> str:
+        title = cls._clean_summary_title(title)
+        if not title:
+            return SUMMARY_PREFIX
+        titled_header = f"[CONTEXT COMPACTION — {title} — REFERENCE ONLY]"
+        return SUMMARY_PREFIX.replace(_SUMMARY_PREFIX_HEADER, titled_header, 1)
 
     @classmethod
     def _with_summary_prefix(cls, summary: str) -> str:
         """Normalize summary text to the current compaction handoff format."""
         text = cls._strip_summary_prefix(summary)
-        return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
+        prefix = cls._prefix_with_title(cls._derive_summary_title(text))
+        return f"{prefix}\n{text}" if text else SUMMARY_PREFIX
 
     @staticmethod
     def _is_context_summary_content(content: Any) -> bool:
         text = _content_text_for_contains(content).lstrip()
-        if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
+        if (
+            text.startswith(SUMMARY_PREFIX)
+            or text.startswith(LEGACY_SUMMARY_PREFIX)
+            or text.startswith("[CONTEXT COMPACTION")
+        ):
             return True
         return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
 

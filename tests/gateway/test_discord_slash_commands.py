@@ -97,7 +97,17 @@ class FakeTree:
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    for key in (
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_AUTO_THREAD",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_REQUIRE_MENTION",
+        "DISCORD_CALL_ROLES",
+    ):
+        monkeypatch.delenv(key, raising=False)
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(
@@ -791,6 +801,29 @@ def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_AUTO_THREAD") == "true"
+
+
+def test_discord_call_roles_config_bridge(monkeypatch, tmp_path):
+    """discord.call_roles in config.yaml should be bridged to DISCORD_CALL_ROLES."""
+    import yaml
+    from pathlib import Path
+
+    hermes_dir = tmp_path / ".hermes"
+    hermes_dir.mkdir()
+    config_path = hermes_dir / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "discord": {"call_roles": [12345, "67890"]},
+    }))
+
+    monkeypatch.delenv("DISCORD_CALL_ROLES", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_CALL_ROLES") == "12345,67890"
 
 
 # ------------------------------------------------------------------

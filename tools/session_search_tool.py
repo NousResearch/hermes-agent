@@ -86,6 +86,28 @@ def _resolve_to_parent(db, session_id: str) -> str:
     return cur
 
 
+def _current_scope_key(db, current_session_id: str = None) -> Optional[str]:
+    """Return the active session's scope_key, walking parents as a fallback."""
+    if not current_session_id:
+        return None
+
+    visited = set()
+    cur = current_session_id
+    while cur and cur not in visited:
+        visited.add(cur)
+        try:
+            session = db.get_session(cur) or {}
+        except Exception as e:
+            logging.debug("Error resolving scope for %s: %s", cur, e, exc_info=True)
+            return None
+
+        scope_key = session.get("scope_key")
+        if isinstance(scope_key, str) and scope_key.strip():
+            return scope_key.strip()
+        cur = session.get("parent_session_id")
+    return None
+
+
 def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
     """Slim a message row for the tool response. Keeps content even if empty."""
     entry = {
@@ -107,13 +129,19 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+def _list_recent_sessions(
+    db,
+    limit: int,
+    current_session_id: str = None,
+    scope_key_filter: str = None,
+) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         sessions = db.list_sessions_rich(
             limit=limit + 5,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
+            scope_key_filter=scope_key_filter,
         )  # fetch extra so we can skip current
 
         current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
@@ -281,6 +309,7 @@ def _discover(
     limit: int,
     sort: Optional[str],
     current_session_id: str = None,
+    scope_key_filter: str = None,
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
@@ -293,6 +322,7 @@ def _discover(
             limit=50,  # widen so dedup-by-lineage can find distinct sessions
             offset=0,
             sort=sort,
+            scope_key_filter=scope_key_filter,
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
@@ -425,8 +455,14 @@ def session_search(
     limit = max(1, min(limit, 10))
 
     # Browse shape: no query → recent sessions.
+    scope_key_filter = _current_scope_key(db, current_session_id)
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        return _list_recent_sessions(
+            db,
+            limit,
+            current_session_id,
+            scope_key_filter=scope_key_filter,
+        )
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -447,6 +483,7 @@ def session_search(
         limit=limit,
         sort=sort_norm,
         current_session_id=current_session_id,
+        scope_key_filter=scope_key_filter,
     )
 
 
@@ -464,7 +501,9 @@ SESSION_SEARCH_SCHEMA = {
     "description": (
         "Search past sessions stored in the local session DB, or scroll inside one. "
         "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
-        "shape returns actual messages from the DB.\n\n"
+        "shape returns actual messages from the DB. When the active session has "
+        "a `scope_key`, discovery and browse default to that current scope; "
+        "sessions without a current scope preserve the legacy global search.\n\n"
         "THREE CALLING SHAPES\n\n"
         "  1) DISCOVERY — pass `query`:\n"
         "     session_search(query=\"auth refactor\", limit=3)\n"

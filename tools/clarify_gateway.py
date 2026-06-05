@@ -108,6 +108,9 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     for 10 minutes with zero activity touches and the gateway's inactivity
     watchdog kills the agent while the user is still typing.
 
+    ``timeout <= 0`` disables the response timeout: the wait ends only when
+    the user responds or the session is cancelled/cleared.
+
     Returns the resolved response string, or ``None`` on timeout.
     """
     with _lock:
@@ -120,13 +123,17 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     except Exception:  # pragma: no cover - optional
         touch_activity_if_due = None
 
-    deadline = time.monotonic() + max(timeout, 0.0)
+    timeout_value = float(timeout or 0.0)
+    deadline = None if timeout_value <= 0 else time.monotonic() + timeout_value
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
     while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        if entry.event.wait(timeout=min(1.0, remaining)):
+        wait_slice = 1.0
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            wait_slice = min(1.0, remaining)
+        if entry.event.wait(timeout=wait_slice):
             break
         if touch_activity_if_due is not None:
             touch_activity_if_due(activity_state, "waiting for user clarify response")
@@ -233,8 +240,10 @@ def get_clarify_timeout() -> int:
 
     Defaults to 600 (10 minutes) — long enough for the user to type a
     thoughtful response, short enough that an abandoned prompt eventually
-    unblocks the agent thread instead of pinning the running-agent guard
-    forever.
+    unblocks the agent thread instead of pinning the running-agent guard.
+
+    Set to 0 or any negative value to disable the response timeout; the
+    agent waits until the user responds or the session is cancelled/cleared.
 
     Reads ``agent.clarify_timeout`` from config.yaml.
     """
@@ -242,7 +251,7 @@ def get_clarify_timeout() -> int:
         from hermes_cli.config import load_config
         cfg = load_config() or {}
         agent_cfg = cfg.get("agent", {}) or {}
-        return int(agent_cfg.get("clarify_timeout", 600))
+        return max(int(agent_cfg.get("clarify_timeout", 600)), 0)
     except Exception:
         return 600
 

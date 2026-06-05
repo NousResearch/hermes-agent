@@ -866,8 +866,10 @@ DEFAULT_CONFIG = {
         # Maximum time (seconds) the gateway will block an agent waiting for
         # a clarify-tool response from the user.  Hit this and the agent
         # unblocks with "[user did not respond within Xm]" so it can adapt
-        # rather than pinning the running-agent guard forever.  CLI clarify
-        # blocks indefinitely (input() is synchronous) and ignores this.
+        # rather than pinning the running-agent guard forever.  Set 0 to
+        # disable this timeout and wait until the user responds or the
+        # session is cancelled/cleared. CLI clarify blocks indefinitely
+        # (input() is synchronous) and ignores this.
         "clarify_timeout": 600,
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the

@@ -92,6 +92,20 @@ class TestClarifyPrimitive:
         result = cm.wait_for_response("id5", timeout=0.2)
         assert result is None
 
+    def test_non_positive_timeout_waits_until_resolved(self):
+        """A disabled timeout must wait for the user's button/text response."""
+        from tools import clarify_gateway as cm
+
+        cm.register("id5-no-timeout", "sk5-no-timeout", "Q?", ["A"])
+
+        def resolver():
+            time.sleep(0.05)
+            cm.resolve_gateway_clarify("id5-no-timeout", "A")
+
+        threading.Thread(target=resolver).start()
+        result = cm.wait_for_response("id5-no-timeout", timeout=0)
+        assert result == "A"
+
     def test_resolve_unknown_id_returns_false(self):
         """resolve_gateway_clarify is idempotent on unknown ids."""
         from tools import clarify_gateway as cm
@@ -172,9 +186,9 @@ class TestClarifyPrimitive:
 
         timeout = cm.get_clarify_timeout()
         # Default 600s OR whatever is in the user's loaded config.
-        # Floor check: must be a positive int, not crashed.
+        # 0 means "wait indefinitely until user response/session cancellation".
         assert isinstance(timeout, int)
-        assert timeout > 0
+        assert timeout >= 0
 
 
 class TestGatewayTextIntercept:

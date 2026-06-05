@@ -353,3 +353,150 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def test_terminal_blocked_status_halts_run_conversation_without_second_api_call():
+    agent = _make_agent("terminal", max_iterations=10)
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("terminal", json.dumps({"command": "rm -rf /tmp/example"}), "c-blocked")],
+        ),
+        _mock_response(content="I continued even though approval was blocked", finish_reason="stop", tool_calls=None),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    blocked_result = json.dumps({
+        "output": "",
+        "exit_code": -1,
+        "error": "BLOCKED: Command timed out without user response. Silence is not consent.",
+        "status": "blocked",
+    })
+
+    with (
+        patch("run_agent.handle_function_call", return_value=blocked_result) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("run the dangerous command")
+
+    mock_hfc.assert_called_once()
+    assert result["api_calls"] == 1
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["code"] == "terminal_blocked_status"
+    assert "not executed" in result["final_response"]
+    assert "approval" in result["final_response"].lower()
+
+
+def test_terminal_blocked_status_halts_before_generic_warning_suffix_breaks_json_parse():
+    agent = _make_agent("terminal", max_iterations=10)
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("terminal", json.dumps({"command": "bad-1"}), "c-fail-1"),
+                _mock_tool_call("terminal", json.dumps({"command": "bad-2"}), "c-fail-2"),
+                _mock_tool_call("terminal", json.dumps({"command": "bad-3"}), "c-blocked"),
+            ],
+        ),
+        _mock_response(content="I continued after blocked status", finish_reason="stop", tool_calls=None),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    blocked_result = json.dumps({
+        "output": "",
+        "exit_code": -1,
+        "error": "BLOCKED: Command timed out without user response. Silence is not consent.",
+        "status": "blocked",
+    })
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            side_effect=[
+                json.dumps({"exit_code": 1, "error": "first failure"}),
+                json.dumps({"exit_code": 1, "error": "second failure"}),
+                blocked_result,
+            ],
+        ) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("run the dangerous command")
+
+    assert mock_hfc.call_count == 3
+    assert result["api_calls"] == 1
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["code"] == "terminal_blocked_status"
+    assert "not executed" in result["final_response"]
+
+
+def test_terminal_blocked_status_skips_remaining_sequential_tool_calls():
+    agent = _make_agent("terminal", "web_search", max_iterations=10)
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("terminal", json.dumps({"command": "rm -rf /tmp/example"}), "c-blocked"),
+                _mock_tool_call("web_search", json.dumps({"query": "should not run"}), "c-skipped"),
+            ],
+        ),
+        _mock_response(content="I continued after skipped tool", finish_reason="stop", tool_calls=None),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    blocked_result = json.dumps({
+        "output": "",
+        "exit_code": -1,
+        "error": "BLOCKED: Command timed out without user response. Silence is not consent.",
+        "status": "blocked",
+    })
+
+    with (
+        patch("run_agent.handle_function_call", return_value=blocked_result) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("run the dangerous command then search")
+
+    mock_hfc.assert_called_once()
+    tool_messages = [m for m in result["messages"] if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in tool_messages] == ["c-blocked", "c-skipped"]
+    assert "status" in tool_messages[0]["content"]
+    assert "was not started" in tool_messages[1]["content"]
+    assert result["api_calls"] == 1
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["code"] == "terminal_blocked_status"
+
+
+def test_clarify_no_response_halts_run_conversation_without_defaulting():
+    agent = _make_agent("clarify", max_iterations=10)
+    agent.clarify_callback = lambda question, choices: "[user did not respond within 10m]"
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("clarify", json.dumps({"question": "Pick an option", "choices": ["A", "B"]}), "c-clarify")],
+        ),
+        _mock_response(content="I picked A by default", finish_reason="stop", tool_calls=None),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("ask me first")
+
+    assert result["api_calls"] == 1
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["code"] == "clarify_no_response"
+    assert "did not respond" in result["final_response"]
+    assert "I picked A" not in result["final_response"]

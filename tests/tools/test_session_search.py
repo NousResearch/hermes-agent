@@ -58,6 +58,61 @@ def _seed_modpack_sessions(db):
     db._conn.commit()
 
 
+def _seed_scoped_recall_sessions(db):
+    """Create same-keyword sessions split across Discord thread scopes."""
+    now = int(time.time())
+
+    db.create_session(
+        "scope_a_current",
+        source="discord",
+        scope_key="discord:thread:A",
+        scope_kind="current_thread",
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+        (now - 4000, "Current Thread A", "scope_a_current"),
+    )
+    db.append_message("scope_a_current", role="user", content="needle active context")
+
+    db.create_session(
+        "scope_a_match",
+        source="discord",
+        scope_key="discord:thread:A",
+        scope_kind="current_thread",
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+        (now - 3000, "Thread A History", "scope_a_match"),
+    )
+    db.append_message("scope_a_match", role="user", content="needle from same Discord thread")
+
+    db.create_session(
+        "scope_b_match",
+        source="discord",
+        scope_key="discord:thread:B",
+        scope_kind="current_thread",
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+        (now - 2000, "Thread B History", "scope_b_match"),
+    )
+    db.append_message("scope_b_match", role="user", content="needle from other Discord thread")
+
+    db.create_session("legacy_match", source="discord")
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+        (now - 1000, "Legacy Unscoped History", "legacy_match"),
+    )
+    db.append_message("legacy_match", role="user", content="needle from legacy unscoped session")
+
+    db.create_session("unscoped_current", source="cli")
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+        (now, "Current Unscoped Session", "unscoped_current"),
+    )
+    db._conn.commit()
+
+
 # =========================================================================
 # Schema invariants
 # =========================================================================
@@ -97,6 +152,11 @@ class TestSchema:
         # The new design never calls an LLM
         desc = SESSION_SEARCH_SCHEMA["description"].lower()
         assert "no llm" in desc
+
+    def test_schema_description_mentions_scoped_defaults(self):
+        desc = SESSION_SEARCH_SCHEMA["description"].lower()
+        assert "current scope" in desc
+        assert "scope_key" in desc
 
 
 class TestHiddenSources:
@@ -140,6 +200,51 @@ class TestBrowseShape:
         result = json.loads(session_search(db=db))
         titles = [r.get("title") for r in result["results"]]
         assert any("Modpack" in (t or "") for t in titles)
+
+
+class TestScopedRecallDefaults:
+    def test_discovery_defaults_to_current_scope_when_current_session_has_scope(self, db):
+        _seed_scoped_recall_sessions(db)
+        result = json.loads(session_search(
+            query="needle",
+            limit=10,
+            db=db,
+            current_session_id="scope_a_current",
+        ))
+
+        sids = [r["session_id"] for r in result["results"]]
+        assert "scope_a_match" in sids
+        assert "scope_a_current" not in sids
+        assert "scope_b_match" not in sids
+        assert "legacy_match" not in sids
+
+    def test_browse_defaults_to_current_scope_when_current_session_has_scope(self, db):
+        _seed_scoped_recall_sessions(db)
+        result = json.loads(session_search(
+            limit=10,
+            db=db,
+            current_session_id="scope_a_current",
+        ))
+
+        sids = [r["session_id"] for r in result["results"]]
+        assert "scope_a_match" in sids
+        assert "scope_a_current" not in sids
+        assert "scope_b_match" not in sids
+        assert "legacy_match" not in sids
+
+    def test_discovery_preserves_global_search_when_current_session_has_no_scope(self, db):
+        _seed_scoped_recall_sessions(db)
+        result = json.loads(session_search(
+            query="needle",
+            limit=10,
+            db=db,
+            current_session_id="unscoped_current",
+        ))
+
+        sids = [r["session_id"] for r in result["results"]]
+        assert "scope_a_match" in sids
+        assert "scope_b_match" in sids
+        assert "legacy_match" in sids
 
 
 # =========================================================================

@@ -192,6 +192,77 @@ class SessionContext:
         }
 
 
+@dataclass(frozen=True)
+class SessionScope:
+    """Stable labels used to group/search gateway sessions by chat scope."""
+
+    chat_type: str
+    chat_id: Optional[str]
+    thread_id: Optional[str]
+    parent_chat_id: Optional[str]
+    guild_id: Optional[str]
+    scope_key: str
+    scope_kind: str
+
+    def to_db_kwargs(self) -> Dict[str, Optional[str]]:
+        return {
+            "chat_type": self.chat_type,
+            "chat_id": self.chat_id,
+            "thread_id": self.thread_id,
+            "parent_chat_id": self.parent_chat_id,
+            "guild_id": self.guild_id,
+            "scope_key": self.scope_key,
+            "scope_kind": self.scope_kind,
+        }
+
+
+def _scope_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    value = str(value)
+    return value or None
+
+
+def build_session_scope(source: SessionSource, *, session_key: str = "") -> SessionScope:
+    """Build logical scope metadata for a gateway session.
+
+    This intentionally does not change ``session_key``. It only records a
+    separate, query-friendly label so later search phases can prefer the
+    current Discord thread/channel without rewriting existing session routing.
+    """
+
+    platform = source.platform.value
+    chat_type = source.chat_type or "dm"
+    chat_id = _scope_value(source.chat_id)
+    thread_id = _scope_value(source.thread_id)
+    parent_chat_id = _scope_value(source.parent_chat_id)
+    guild_id = _scope_value(source.guild_id)
+
+    if thread_id:
+        scope_key = f"{platform}:thread:{thread_id}"
+        scope_kind = "current_thread"
+    elif chat_id:
+        if chat_type == "dm":
+            scope_key = f"{platform}:dm:{chat_id}"
+            scope_kind = "dm"
+        else:
+            scope_key = f"{platform}:channel:{chat_id}"
+            scope_kind = "channel"
+    else:
+        scope_key = session_key or f"{platform}:{chat_type}"
+        scope_kind = "session"
+
+    return SessionScope(
+        chat_type=chat_type,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        parent_chat_id=parent_chat_id,
+        guild_id=guild_id,
+        scope_key=scope_key,
+        scope_kind=scope_kind,
+    )
+
+
 _PII_SAFE_PLATFORMS = frozenset({
     Platform.WHATSAPP,
     Platform.SIGNAL,
@@ -865,6 +936,7 @@ class SessionStore:
         Creates a session record in SQLite when a new session starts.
         """
         session_key = self._generate_session_key(source)
+        scope = build_session_scope(source, session_key=session_key)
         now = _now()
 
         # SQLite calls are made outside the lock to avoid holding it during I/O.
@@ -937,6 +1009,8 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "session_key": session_key,
+                **scope.to_db_kwargs(),
             }
 
         # SQLite operations outside the lock
@@ -1163,7 +1237,22 @@ class SessionStore:
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
+                "session_key": session_key,
             }
+            if old_entry.origin:
+                db_create_kwargs.update(
+                    build_session_scope(old_entry.origin, session_key=session_key).to_db_kwargs()
+                )
+            else:
+                db_create_kwargs.update(
+                    chat_type=old_entry.chat_type,
+                    chat_id=None,
+                    thread_id=None,
+                    parent_chat_id=None,
+                    guild_id=None,
+                    scope_key=session_key,
+                    scope_kind="session",
+                )
 
         if self._db and db_end_session_id:
             try:

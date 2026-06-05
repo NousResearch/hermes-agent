@@ -4736,6 +4736,18 @@ class AIAgent:
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         tool = decision.tool_name or "a tool"
+        if decision.code == "terminal_blocked_status":
+            return (
+                "I stopped here because the terminal command was blocked and was not executed. "
+                "This is treated as an approval/safety boundary: I will not rephrase, retry, "
+                "or route around it without explicit user approval or different instructions."
+            )
+        if decision.code == "clarify_no_response":
+            return (
+                "I stopped here because the user did not respond to the clarification prompt. "
+                "I will not choose a default, infer consent, or continue the workflow until "
+                "the user answers."
+            )
         return (
             f"I stopped retrying {tool} because it hit the tool-call guardrail "
             f"({decision.code}) after {decision.count} repeated non-progressing "

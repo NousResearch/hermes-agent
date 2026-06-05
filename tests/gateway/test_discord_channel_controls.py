@@ -1,4 +1,4 @@
-"""Tests for Discord ignored_channels and no_thread_channels config."""
+"""Tests for Discord ignored_channels, free-response, and no_thread_channels config."""
 
 from types import SimpleNamespace
 from datetime import datetime, timezone
@@ -56,11 +56,25 @@ class FakeDMChannel:
 
 
 class FakeTextChannel:
-    def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
+    def __init__(
+        self,
+        channel_id: int = 1,
+        name: str = "general",
+        guild_name: str = "Hermes Server",
+        starter_message=None,
+    ):
         self.id = channel_id
         self.name = name
         self.guild = SimpleNamespace(name=guild_name)
         self.topic = None
+        self._starter_message = starter_message
+        self.fetch_message_calls = []
+
+    async def fetch_message(self, message_id: int):
+        self.fetch_message_calls.append(message_id)
+        if self._starter_message is None:
+            raise LookupError("missing starter message")
+        return self._starter_message
 
 
 class FakeThread:
@@ -72,9 +86,22 @@ class FakeThread:
         self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
         self.topic = None
 
+    async def history(self, *args, **kwargs):
+        if False:
+            yield None
+
 
 @pytest.fixture
 def adapter(monkeypatch):
+    for key in (
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_AUTO_THREAD",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_REQUIRE_MENTION",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
 
@@ -242,6 +269,101 @@ async def test_normal_channel_still_auto_threads(adapter, monkeypatch):
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_free_response_channel_without_mention_stays_direct(adapter, monkeypatch):
+    """Ambient messages in free-response channels should not spawn threads."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "800")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
+
+    message = make_message(channel=FakeTextChannel(channel_id=800), content="ambient hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_free_response_channel_with_mention_auto_threads(adapter, monkeypatch):
+    """Explicit bot mentions in free-response channels should create threads."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "800")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=800),
+        content="<@999> please help",
+        mentions=[adapter._client.user],
+    )
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_thread_mention_injects_parent_starter_message_context(adapter, monkeypatch):
+    """Mentioning Hermes in a manual thread should include the parent starter message."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+    starter_author = SimpleNamespace(
+        id=777,
+        display_name="Paperclip",
+        name="Paperclip",
+        bot=True,
+    )
+    starter_message = SimpleNamespace(
+        id=1509119932984721438,
+        content="ℹ️ [NOTICE][paperclip] Scheduled Handoff\n원문 알림 본문입니다.",
+        clean_content="ℹ️ [NOTICE][paperclip] Scheduled Handoff\n원문 알림 본문입니다.",
+        attachments=[],
+        author=starter_author,
+    )
+    parent = FakeTextChannel(
+        channel_id=1507899404466524260,
+        name="업무-접수",
+        starter_message=starter_message,
+    )
+    thread = FakeThread(
+        channel_id=1509119932984721438,
+        name="ℹ️ [NOTICE][paperclip] Scheduled Handoff",
+        parent=parent,
+    )
+    message = make_message(
+        channel=thread,
+        content="<@999> hermes 에서 가능한 작업인가?",
+        mentions=[adapter._client.user],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    context = event.channel_context or ""
+    assert parent.fetch_message_calls == [1509119932984721438]
+    assert "[Thread starter context]" in context
+    assert "channel: #업무-접수" in context
+    assert "thread: ℹ️ [NOTICE][paperclip] Scheduled Handoff" in context
+    assert "starter_author: Paperclip [bot]" in context
+    assert "원문 알림 본문입니다." in context
 
 
 @pytest.mark.asyncio

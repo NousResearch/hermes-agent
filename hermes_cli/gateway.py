@@ -2313,7 +2313,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
     detected_venv = _detect_venv_dir()
-    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / (".venv" if (PROJECT_ROOT / ".venv").is_dir() else "venv"))
 
     path_entries = _build_service_path_dirs()
     resolved_node = shutil.which("node")
@@ -3020,7 +3020,7 @@ def generate_launchd_plist() -> str:
     # the systemd unit), then capture the user's full shell PATH so every
     # user-installed tool (node, ffmpeg, …) is reachable.
     detected_venv = _detect_venv_dir()
-    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / (".venv" if (PROJECT_ROOT / ".venv").is_dir() else "venv"))
     # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
     # so it's explicitly in PATH even if the user's shell PATH changes later.
     priority_dirs = _build_service_path_dirs()

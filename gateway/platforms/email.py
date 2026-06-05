@@ -25,6 +25,7 @@ import imaplib
 import importlib
 import json
 import logging
+import mimetypes
 import os
 import re
 import smtplib
@@ -75,6 +76,24 @@ MAX_MESSAGE_LENGTH = 50_000
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 _PROTON_INITIAL_RECONNECT_DELAY_SECONDS = 5
 _PROTON_MAX_RECONNECT_DELAY_SECONDS = 300
+_DEFAULT_BLOCKED_ATTACHMENT_EXTS = {
+    ".env",
+    ".key",
+    ".pem",
+    ".p12",
+    ".pfx",
+    ".sqlite",
+    ".sqlite3",
+    ".db",
+}
+_DEFAULT_BLOCKED_ATTACHMENT_MIME_TYPES = {
+    "application/x-pem-file",
+    "application/x-pkcs12",
+}
+_SECRET_LIKE_FILENAME_RE = re.compile(
+    r"(^|[-_.])(secret|secrets|credential|credentials|token|password|passwd|private[_-]?key|id_rsa|auth)([-_.]|$)",
+    re.IGNORECASE,
+)
 
 
 class ProtonClient(Protocol):
@@ -118,18 +137,45 @@ class JsonProtonMailboxClient:
         to: str,
         subject: str,
         body: str,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
         **_: Any,
-    ) -> str:
+    ) -> dict[str, Any]:
         sent_id = f"json-proton-{uuid.uuid4().hex[:12]}"
         self.sent.append({
             "id": sent_id,
             "message_id": message_id,
             "to": to,
+            "cc": cc or [],
+            "bcc": bcc or [],
             "subject": subject,
             "body": body,
+            "attachments": attachments or [],
         })
         self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
-        return sent_id
+        return {"sent": True, "id": sent_id}
+
+    def send_email(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body: str,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        return self.send_reply(
+            message_id=kwargs.get("message_id"),
+            to=to,
+            subject=subject,
+            body=body,
+            cc=cc,
+            bcc=bcc,
+            attachments=attachments,
+        )
 
 
 def _load_proton_client() -> ProtonClient:
@@ -264,6 +310,164 @@ def _redact_email_for_log(address: str) -> str:
     return f"{local[:2]}***@{domain}"
 
 
+def _split_csv(value: str | None) -> list[str]:
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+
+def _normalise_email_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts: list[str] = []
+        for chunk in re.split(r"[,;\n]", value):
+            _name, addr = parseaddr(chunk.strip())
+            if addr:
+                parts.append(addr.lower())
+        return parts
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, Mapping):
+            raw = item.get("address") or item.get("Address") or item.get("email") or item.get("Email") or ""
+        else:
+            raw = str(item)
+        _name, addr = parseaddr(raw)
+        if addr:
+            result.append(addr.lower())
+    return result
+
+
+def _recipient_policy(
+    *,
+    to_addr: str,
+    cc: Any = None,
+    bcc: Any = None,
+) -> dict[str, Any]:
+    recipients = _normalise_email_list([to_addr]) + _normalise_email_list(cc) + _normalise_email_list(bcc)
+    unique = list(dict.fromkeys(recipients))
+    max_recipients = int(os.getenv("EMAIL_MAX_RECIPIENTS", "10"))
+    allowed = {"thomas@lfglabs.dev"}
+    allowed.update(_normalise_email_list(os.getenv("EMAIL_ALLOWED_RECIPIENTS")))
+    allowed.update(_normalise_email_list(os.getenv("EMAIL_ALLOWED_USERS")))
+    allowed.update(_normalise_email_list(os.getenv("EMAIL_OWNER_RECIPIENTS")))
+    allowed_domains = {d.strip().lower().lstrip("@") for d in _split_csv(os.getenv("EMAIL_ALLOWED_DOMAINS"))}
+    allow_unknown = os.getenv("EMAIL_ALLOW_UNKNOWN_RECIPIENTS", "").strip().lower() in {"1", "true", "yes", "on"}
+    kill_switch = os.getenv("EMAIL_OUTBOUND_DISABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+
+    rejected: list[str] = []
+    reason = ""
+    if kill_switch:
+        rejected = unique
+        reason = "outbound email is disabled by EMAIL_OUTBOUND_DISABLED"
+    elif len(unique) > max_recipients:
+        rejected = unique[max_recipients:]
+        reason = f"too many recipients: {len(unique)} > {max_recipients}"
+    else:
+        for recipient in unique:
+            domain = recipient.rsplit("@", 1)[-1] if "@" in recipient else ""
+            if recipient in allowed or domain in allowed_domains or allow_unknown:
+                continue
+            rejected.append(recipient)
+        if rejected:
+            reason = "recipient is not approved by outbound email policy"
+
+    accepted = [r for r in unique if r not in set(rejected)]
+    return {
+        "allowed": not rejected and bool(unique),
+        "accepted_recipients": accepted,
+        "rejected_recipients": rejected,
+        "failure_reason": reason,
+    }
+
+
+def _attachment_allowed_roots() -> list[Path]:
+    roots = [Path.cwd(), Path("/tmp")]
+    roots.extend(Path(p).expanduser() for p in _split_csv(os.getenv("EMAIL_ATTACHMENT_ALLOWED_ROOTS")))
+    return [root.resolve() for root in roots]
+
+
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _attachment_manifest(paths: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not paths:
+        return [], []
+    if isinstance(paths, (str, os.PathLike)):
+        raw_paths = [paths]
+    else:
+        raw_paths = list(paths)
+    max_count = int(os.getenv("EMAIL_MAX_ATTACHMENTS", "5"))
+    max_total = int(os.getenv("EMAIL_MAX_ATTACHMENT_BYTES", "10485760"))
+    blocked_exts = {e.lower() for e in (_split_csv(os.getenv("EMAIL_BLOCKED_ATTACHMENT_EXTS")) or _DEFAULT_BLOCKED_ATTACHMENT_EXTS)}
+    blocked_mimes = set(_split_csv(os.getenv("EMAIL_BLOCKED_ATTACHMENT_MIME_TYPES")) or _DEFAULT_BLOCKED_ATTACHMENT_MIME_TYPES)
+    roots = _attachment_allowed_roots()
+
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    total = 0
+    for raw in raw_paths:
+        path = Path(raw).expanduser().resolve()
+        filename = re.sub(r"[^A-Za-z0-9_. -]+", "_", path.name).strip() or "attachment"
+        guessed_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        item = {"path": str(path), "filename": filename, "content_type": guessed_type, "size": 0}
+        if len(accepted) >= max_count:
+            rejected.append({**item, "decision": "rejected", "reason": "too many attachments"})
+            continue
+        if not path.exists() or not path.is_file():
+            rejected.append({**item, "decision": "rejected", "reason": "attachment not found"})
+            continue
+        size = path.stat().st_size
+        item["size"] = size
+        suffix = path.suffix.lower()
+        if not any(_path_within(path, root) for root in roots):
+            rejected.append({**item, "decision": "rejected", "reason": "attachment path is outside approved roots"})
+            continue
+        if suffix in blocked_exts or guessed_type in blocked_mimes:
+            rejected.append({**item, "decision": "rejected", "reason": "attachment type is blocked"})
+            continue
+        if _SECRET_LIKE_FILENAME_RE.search(filename):
+            rejected.append({**item, "decision": "rejected", "reason": "attachment filename looks secret-bearing"})
+            continue
+        if total + size > max_total:
+            rejected.append({**item, "decision": "rejected", "reason": "total attachment size limit exceeded"})
+            continue
+        total += size
+        accepted.append({**item, "decision": "accepted"})
+    return accepted, rejected
+
+
+def _structured_proton_result(
+    raw_result: Any,
+    *,
+    accepted_recipients: list[str],
+    rejected_recipients: list[str],
+    attachments: list[dict[str, Any]],
+    rejected_attachments: list[dict[str, Any]],
+) -> dict[str, Any]:
+    result = dict(raw_result) if isinstance(raw_result, Mapping) else {}
+    message_id = (
+        result.get("id")
+        or result.get("message_id")
+        or result.get("MessageID")
+        or (str(raw_result) if raw_result is not None and not isinstance(raw_result, Mapping) else "")
+    )
+    sent = bool(result.get("sent", True)) and bool(message_id)
+    return {
+        "sent": sent,
+        "id": str(message_id) if message_id else "",
+        "message_id": str(message_id) if message_id else "",
+        "accepted_recipients": result.get("accepted_recipients", accepted_recipients),
+        "rejected_recipients": result.get("rejected_recipients", rejected_recipients),
+        "attachments": result.get("attachments", attachments),
+        "rejected_attachments": result.get("rejected_attachments", rejected_attachments),
+        "failure_reason": result.get("failure_reason", "" if sent else "Proton did not return a sent message id"),
+    }
+
+
 def _call_proton_outbound(
     method: Any,
     *,
@@ -272,12 +476,17 @@ def _call_proton_outbound(
     to_addr: str,
     subject: str,
     body: str,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+    is_html: bool = False,
 ) -> Any:
     attempts = [
-        {"message_id": message_id, "thread_id": thread_id, "to": to_addr, "subject": subject, "body": body},
-        {"message_id": message_id, "to": to_addr, "subject": subject, "body": body},
-        {"email_id": message_id, "thread_id": thread_id, "to": to_addr, "subject": subject, "body": body},
-        {"email_id": message_id, "to": to_addr, "subject": subject, "body": body},
+        {"message_id": message_id, "thread_id": thread_id, "to": to_addr, "subject": subject, "body": body, "cc": cc or [], "bcc": bcc or [], "attachments": attachments or [], "is_html": is_html},
+        {"message_id": message_id, "to": to_addr, "subject": subject, "body": body, "cc": cc or [], "bcc": bcc or [], "attachments": attachments or []},
+        {"email_id": message_id, "thread_id": thread_id, "to": to_addr, "subject": subject, "body": body, "attachments": attachments or []},
+        {"email_id": message_id, "to": to_addr, "subject": subject, "body": body, "attachments": attachments or []},
+        {"to": to_addr, "subject": subject, "body": body, "attachments": attachments or []},
         {"to": to_addr, "subject": subject, "body": body},
     ]
     last_error: TypeError | None = None
@@ -923,9 +1132,18 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        attachments: Any = None,
+        cc: Any = None,
+        bcc: Any = None,
     ) -> str:
         """Send an email through the configured Proton runtime."""
         client = self._proton_client or _load_proton_client()
+        policy = _recipient_policy(to_addr=to_addr, cc=cc, bcc=bcc)
+        if not policy["allowed"]:
+            raise RuntimeError(policy["failure_reason"])
+        attachment_manifest, rejected_attachments = _attachment_manifest(attachments)
+        if rejected_attachments:
+            raise RuntimeError(f"attachment rejected: {rejected_attachments[0]['reason']}")
         ctx = self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
@@ -943,8 +1161,20 @@ class EmailAdapter(BasePlatformAdapter):
                     to_addr=to_addr,
                     subject=subject,
                     body=body,
+                    cc=_normalise_email_list(cc),
+                    bcc=_normalise_email_list(bcc),
+                    attachments=attachment_manifest,
                 )
-                sent_id = str(result.get("id") if isinstance(result, Mapping) else result)
+                structured = _structured_proton_result(
+                    result,
+                    accepted_recipients=policy["accepted_recipients"],
+                    rejected_recipients=policy["rejected_recipients"],
+                    attachments=attachment_manifest,
+                    rejected_attachments=rejected_attachments,
+                )
+                if not structured["sent"]:
+                    raise RuntimeError(structured["failure_reason"])
+                sent_id = structured["message_id"]
                 logger.info("[Email] Sent Proton reply to %s (subject: %s)", _redact_email_for_log(to_addr), subject)
                 return sent_id
 
@@ -958,8 +1188,20 @@ class EmailAdapter(BasePlatformAdapter):
                     to_addr=to_addr,
                     subject=subject,
                     body=body,
+                    cc=_normalise_email_list(cc),
+                    bcc=_normalise_email_list(bcc),
+                    attachments=attachment_manifest,
                 )
-                sent_id = str(result.get("id") if isinstance(result, Mapping) else result)
+                structured = _structured_proton_result(
+                    result,
+                    accepted_recipients=policy["accepted_recipients"],
+                    rejected_recipients=policy["rejected_recipients"],
+                    attachments=attachment_manifest,
+                    rejected_attachments=rejected_attachments,
+                )
+                if not structured["sent"]:
+                    raise RuntimeError(structured["failure_reason"])
+                sent_id = structured["message_id"]
                 logger.info("[Email] Sent Proton email to %s (subject: %s)", _redact_email_for_log(to_addr), subject)
                 return sent_id
 
@@ -1086,6 +1328,9 @@ class EmailAdapter(BasePlatformAdapter):
         file_paths: List[str],
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
+        if self._provider == "proton":
+            return self._send_proton_email(to_addr, body, attachments=file_paths)
+
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
@@ -1167,6 +1412,9 @@ class EmailAdapter(BasePlatformAdapter):
         file_name: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
+        if self._provider == "proton":
+            return self._send_proton_email(to_addr, body, attachments=[file_path])
+
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr

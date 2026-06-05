@@ -767,6 +767,64 @@ class TestProtonEmailAdapter(unittest.TestCase):
             self.assertEqual(data["sent"][0]["body"], "toto")
             self.assertEqual(data["sent"][0]["subject"], "Re: Smoke")
 
+    def test_proton_send_blocks_unknown_recipient(self):
+        import asyncio
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            mailbox = self._write_mailbox(tmp, {"events": [], "messages": []})
+            adapter = self._make_adapter(mailbox, tmp / "seen.json", allowed="thomas@lfglabs.dev")
+
+            result = asyncio.run(adapter.send("outsider@example.com", "hello"))
+
+            self.assertFalse(result.success)
+            self.assertIn("not approved", result.error)
+            self.assertEqual(json.loads(mailbox.read_text(encoding="utf-8")).get("sent", []), [])
+
+    def test_proton_send_with_attachment_manifest(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            attachment = tmp / "hello-thomas.txt"
+            attachment.write_text("hello Thomas", encoding="utf-8")
+            mailbox = self._write_mailbox(tmp, {"events": [], "messages": []})
+            adapter = self._make_adapter(mailbox, tmp / "seen.json")
+
+            sent_id = adapter._send_proton_email(
+                "thomas@lfglabs.dev",
+                "body",
+                attachments=[str(attachment)],
+                cc=["thomas@lfglabs.dev"],
+                bcc=[],
+            )
+
+            data = json.loads(mailbox.read_text(encoding="utf-8"))
+            self.assertTrue(sent_id.startswith("json-proton-"))
+            self.assertEqual(data["sent"][0]["cc"], ["thomas@lfglabs.dev"])
+            self.assertEqual(data["sent"][0]["attachments"][0]["filename"], "hello-thomas.txt")
+            self.assertEqual(data["sent"][0]["attachments"][0]["content_type"], "text/plain")
+            self.assertEqual(data["sent"][0]["attachments"][0]["size"], len("hello Thomas"))
+
+    def test_proton_send_blocks_secret_like_attachment(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            attachment = tmp / "api-secret.txt"
+            attachment.write_text("do not send", encoding="utf-8")
+            mailbox = self._write_mailbox(tmp, {"events": [], "messages": []})
+            adapter = self._make_adapter(mailbox, tmp / "seen.json")
+
+            with self.assertRaisesRegex(RuntimeError, "filename looks secret-bearing"):
+                adapter._send_proton_email("thomas@lfglabs.dev", "body", attachments=[str(attachment)])
+
     def test_proton_poll_loop_retries_transient_failure(self):
         import asyncio
         from gateway.config import PlatformConfig
@@ -1225,9 +1283,61 @@ class TestSendEmailStandalone(unittest.TestCase):
                 )
 
             self.assertTrue(result["success"])
+            self.assertTrue(result["sent"])
+            self.assertEqual(result["accepted_recipients"], ["thomas@lfglabs.dev"])
             data = json.loads(mailbox.read_text(encoding="utf-8"))
             self.assertEqual(data["sent"][0]["to"], "thomas@lfglabs.dev")
             self.assertEqual(data["sent"][0]["body"], "Hello")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_email_tool_blocks_unapproved_proton_recipient(self):
+        import asyncio
+        import json
+        import tempfile
+        from pathlib import Path
+        from tools.send_message_tool import _send_email
+
+        with tempfile.TemporaryDirectory() as td:
+            mailbox = Path(td) / "mailbox.json"
+            mailbox.write_text(json.dumps({"events": [], "messages": []}), encoding="utf-8")
+            with patch.dict(os.environ, {
+                "EMAIL_PROVIDER": "proton",
+                "EMAIL_ADDRESS": "agent@thomas.md",
+                "PROTON_MAILBOX": str(mailbox),
+                "EMAIL_ALLOWED_RECIPIENTS": "thomas@lfglabs.dev",
+            }, clear=True):
+                result = asyncio.run(_send_email({}, "outsider@example.com", "Hello"))
+
+            self.assertFalse(result["success"])
+            self.assertEqual(result["rejected_recipients"], ["outsider@example.com"])
+            self.assertEqual(json.loads(mailbox.read_text(encoding="utf-8")).get("sent", []), [])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_email_tool_sends_media_as_proton_attachment(self):
+        import asyncio
+        import json
+        import tempfile
+        from pathlib import Path
+        from tools.send_message_tool import _send_email
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            attachment = tmp / "hello-thomas.txt"
+            attachment.write_text("hello Thomas", encoding="utf-8")
+            mailbox = tmp / "mailbox.json"
+            mailbox.write_text(json.dumps({"events": [], "messages": []}), encoding="utf-8")
+            with patch.dict(os.environ, {
+                "EMAIL_PROVIDER": "proton",
+                "EMAIL_ADDRESS": "agent@thomas.md",
+                "PROTON_MAILBOX": str(mailbox),
+                "EMAIL_ALLOWED_RECIPIENTS": "thomas@lfglabs.dev",
+            }, clear=True):
+                result = asyncio.run(_send_email({}, "thomas@lfglabs.dev", "Hello", [str(attachment)]))
+
+            self.assertTrue(result["success"])
+            self.assertEqual(result["attachments"][0]["filename"], "hello-thomas.txt")
+            data = json.loads(mailbox.read_text(encoding="utf-8"))
+            self.assertEqual(data["sent"][0]["attachments"][0]["size"], len("hello Thomas"))
 
 
 class TestSmtpConnectionCleanup(unittest.TestCase):

@@ -750,7 +750,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return last_result
 
     # --- Non-media platforms ---
-    if media_files and not message.strip():
+    if media_files and not message.strip() and platform != Platform.EMAIL:
         return {
             "error": (
                 f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
@@ -758,7 +758,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             )
         }
     warning = None
-    if media_files:
+    if media_files and platform != Platform.EMAIL:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
             "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
@@ -773,7 +773,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
-            result = await _send_email(pconfig.extra, chat_id, chunk)
+            result = await _send_email(pconfig.extra, chat_id, chunk, media_files if is_last else None)
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
         elif platform == Platform.MATRIX:
@@ -1281,7 +1281,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         return _error(f"Signal send failed: {e}")
 
 
-async def _send_email(extra, chat_id, message):
+async def _send_email(extra, chat_id, message, media_files=None):
     """Send email via the configured provider (one-shot, no persistent connection needed)."""
     import smtplib
     from email.mime.text import MIMEText
@@ -1290,21 +1290,72 @@ async def _send_email(extra, chat_id, message):
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
     if provider == "proton":
         try:
-            from gateway.platforms.email import _call_proton_outbound, _load_proton_client
+            from gateway.platforms.email import (
+                _attachment_manifest,
+                _call_proton_outbound,
+                _normalise_email_list,
+                _recipient_policy,
+                _structured_proton_result,
+                _load_proton_client,
+            )
 
             client = _load_proton_client()
+            policy = _recipient_policy(to_addr=chat_id)
+            if not policy["allowed"]:
+                return {
+                    "success": False,
+                    "sent": False,
+                    "platform": "email",
+                    "chat_id": chat_id,
+                    "accepted_recipients": policy["accepted_recipients"],
+                    "rejected_recipients": policy["rejected_recipients"],
+                    "error": policy["failure_reason"],
+                }
+            attachments, rejected_attachments = _attachment_manifest(media_files or [])
+            if rejected_attachments:
+                return {
+                    "success": False,
+                    "sent": False,
+                    "platform": "email",
+                    "chat_id": chat_id,
+                    "accepted_recipients": policy["accepted_recipients"],
+                    "rejected_recipients": policy["rejected_recipients"],
+                    "rejected_attachments": rejected_attachments,
+                    "error": rejected_attachments[0]["reason"],
+                }
             for method_name in ("send_email", "send_message", "send_reply", "reply_message"):
                 method = getattr(client, method_name, None)
                 if callable(method):
-                    _call_proton_outbound(
+                    raw_result = _call_proton_outbound(
                         method,
                         message_id=None,
                         thread_id=None,
                         to_addr=chat_id,
                         subject="Hermes Agent",
                         body=message,
+                        cc=_normalise_email_list(None),
+                        bcc=_normalise_email_list(None),
+                        attachments=attachments,
                     )
-                    return {"success": True, "platform": "email", "chat_id": chat_id}
+                    result = _structured_proton_result(
+                        raw_result,
+                        accepted_recipients=policy["accepted_recipients"],
+                        rejected_recipients=policy["rejected_recipients"],
+                        attachments=attachments,
+                        rejected_attachments=rejected_attachments,
+                    )
+                    return {
+                        "success": result["sent"],
+                        "sent": result["sent"],
+                        "platform": "email",
+                        "chat_id": chat_id,
+                        "message_id": result["message_id"],
+                        "accepted_recipients": result["accepted_recipients"],
+                        "rejected_recipients": result["rejected_recipients"],
+                        "attachments": result["attachments"],
+                        "rejected_attachments": result["rejected_attachments"],
+                        **({"error": result["failure_reason"]} if not result["sent"] else {}),
+                    }
             return {"error": "Email send failed: Proton outbound is not available in the configured client"}
         except Exception as e:
             return _error(f"Email send failed: {e}")

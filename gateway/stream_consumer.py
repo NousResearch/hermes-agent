@@ -2080,14 +2080,12 @@ class GatewayStreamConsumer:
         # lifecycle (init seed → cumulative updates → finish=true). The
         # adapter's send/edit_message paths are NOT touched in this mode.
         #
-        # Throttling: WeCom AI Bot caps replies at ~30 frames/min, so we
-        # additionally require ``_MIN_NEW_VISIBLE_CHARS`` of new content
-        # since the last successful push before sending an interim frame.
-        # This caps the per-turn frame count well below the rate ceiling
-        # while still feeling responsive (humans can't read faster than
-        # ~20 chars updating a few times per second).
+        # Throttling: WeCom AI Bot caps replies at ~30 frames/min per chat.
+        # With 15 concurrent users, we need ≤2 frames per turn on average
+        # to stay under the limit. 60 chars ≈ one short sentence, which
+        # produces 3-5 frames per turn — close to OpenClaw's block-level cadence.
         if self._use_native_streaming:
-            _MIN_NEW_VISIBLE_CHARS = 20
+            _MIN_NEW_VISIBLE_CHARS = 60
             new_visible_chars = len(text) - self._native_last_pushed_len
             if (
                 not finalize

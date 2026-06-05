@@ -48,7 +48,6 @@
  */
 
 const fs = require('node:fs')
-const path = require('node:path')
 
 /**
  * Rename an existing appOutDir to a backup so electron-builder gets a clean

@@ -415,6 +415,44 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_skills_prompt_avoids_hard_load_mandates(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "MUST load" not in result
+        assert "Err on the side of loading" not in result
+        assert "load the `hermes-agent` skill first" not in result
+        assert (
+            "Only proceed without loading a skill if genuinely none are relevant"
+            not in result
+        )
+
+    def test_skills_prompt_preserves_index_and_hermes_hint(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "core" / "hermes-agent"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: hermes-agent\ndescription: Hermes Agent workflow help\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "<available_skills>" in result
+        assert "- hermes-agent: Hermes Agent workflow help" in result
+        assert (
+            "For Hermes Agent configuration, setup, troubleshooting, or feature work"
+            in result
+        )
+        assert "reuse that context instead of loading it again" in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"
@@ -1644,5 +1682,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-

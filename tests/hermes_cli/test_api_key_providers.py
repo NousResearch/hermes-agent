@@ -598,6 +598,20 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "secondary"
         assert creds["source"] == "ZAI_API_KEY"
 
+    def test_resolve_modelscope_with_key(self, monkeypatch):
+        monkeypatch.setenv("MODELSCOPE_API_KEY", "ms-secret-key")
+        creds = resolve_api_key_provider_credentials("modelscope")
+        assert creds["provider"] == "modelscope"
+        assert creds["api_key"] == "ms-secret-key"
+        assert creds["base_url"] == "https://api-inference.modelscope.cn/v1"
+        assert creds["source"] == "MODELSCOPE_API_KEY"
+
+    def test_resolve_modelscope_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("MODELSCOPE_API_KEY", "ms-key")
+        monkeypatch.setenv("MODELSCOPE_BASE_URL", "https://custom.modelscope.cn/v1")
+        creds = resolve_api_key_provider_credentials("modelscope")
+        assert creds["base_url"] == "https://custom.modelscope.cn/v1"
+
 
 # =============================================================================
 # Runtime Provider Resolution tests
@@ -621,6 +635,15 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "kimi-coding"
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "kimi-key"
+
+    def test_runtime_modelscope(self, monkeypatch):
+        monkeypatch.setenv("MODELSCOPE_API_KEY", "ms-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="modelscope")
+        assert result["provider"] == "modelscope"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "ms-key"
+        assert "modelscope" in result["base_url"]
 
     def test_runtime_stepfun(self, monkeypatch):
         monkeypatch.setenv("STEPFUN_API_KEY", "stepfun-key")

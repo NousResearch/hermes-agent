@@ -315,7 +315,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
             ]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
 
@@ -366,7 +366,7 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
             return [multimodal_user, text_only_assistant]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
 
@@ -432,7 +432,7 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
         def close(self):
             closed_sids.append(self.sid)
 
-    def make_agent(sid, key, session_id=None):
+    def make_agent(sid, key, session_id=None, session_db=None):
         created_sids.append(sid)
         first_agent_started.set()
         assert agent_can_finish.wait(timeout=1)
@@ -547,7 +547,7 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
     monkeypatch.setattr(
         server,
         "_make_agent",
-        lambda _sid, key, session_id=None: types.SimpleNamespace(
+        lambda _sid, key, session_id=None, session_db=None: types.SimpleNamespace(
             model="test/model", session_id=session_id or key
         ),
     )
@@ -647,7 +647,7 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     monkeypatch.setattr(
         server,
         "_make_agent",
-        lambda _sid, key, session_id=None: types.SimpleNamespace(
+        lambda _sid, key, session_id=None, session_db=None: types.SimpleNamespace(
             model="test/model", session_id=session_id or key
         ),
     )

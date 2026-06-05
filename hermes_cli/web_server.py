@@ -1555,6 +1555,31 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
+def _normalize_exclude_sources(value: Any) -> List[str]:
+    """Coerce the display.session_list_exclude_sources config value to a list.
+
+    The config is normally a YAML list (``["tool", "cron"]``), but
+    ``hermes config set display.session_list_exclude_sources '["tool","cron"]'``
+    stores it as a JSON-ish string. Accept both — and a bare comma-separated
+    string — so a string value can't get iterated character-by-character into
+    a broken ``source NOT IN ('[', '"', 't', ...)`` query.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except (ValueError, TypeError):
+            parsed = [part.strip() for part in text.split(",")]
+        value = parsed if isinstance(parsed, list) else [parsed]
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
 @app.get("/api/sessions")
 async def get_sessions(
     limit: int = 20,
@@ -1592,15 +1617,29 @@ async def get_sessions(
             min_message_count = max(0, min_messages)
             archived_only = archived == "only"
             include_archived = archived == "include"
+            # Hide noisy/internal session sources (default: "tool" sub-agent
+            # runs) from the human-facing browser. Users can add "cron" here to
+            # also drop scheduled-job sessions, which can otherwise dominate the
+            # list. Hidden rows stay in the DB and remain full-text searchable.
+            exclude_sources = _normalize_exclude_sources(
+                cfg_get(
+                    load_config(),
+                    "display",
+                    "session_list_exclude_sources",
+                    default=["tool"],
+                )
+            )
             sessions = db.list_sessions_rich(
                 limit=limit,
                 offset=offset,
+                exclude_sources=exclude_sources,
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
             )
             total = db.session_count(
+                exclude_sources=exclude_sources,
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,

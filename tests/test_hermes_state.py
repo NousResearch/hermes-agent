@@ -1309,6 +1309,18 @@ class TestCounts:
         assert db.session_count(source="cli") == 2
         assert db.session_count(source="telegram") == 1
 
+    def test_session_count_exclude_sources(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cron")
+        db.create_session(session_id="s3", source="tool")
+        db.create_session(session_id="s4", source="telegram")
+        # Excluding cron + tool leaves cli + telegram.
+        assert db.session_count(exclude_sources=["cron", "tool"]) == 2
+        assert db.session_count(exclude_sources=["cron"]) == 3
+        # Empty / None means no exclusion.
+        assert db.session_count(exclude_sources=[]) == 4
+        assert db.session_count(exclude_sources=None) == 4
+
     def test_message_count_total(self, db):
         assert db.message_count() == 0
         db.create_session(session_id="s1", source="cli")

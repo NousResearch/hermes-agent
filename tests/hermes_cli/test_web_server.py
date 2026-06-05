@@ -297,6 +297,99 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
+    def test_get_sessions_forwards_exclude_sources_from_config(self, monkeypatch):
+        """display.session_list_exclude_sources must reach both the list query
+        and the total count so the desktop browser hides the configured
+        sources (e.g. cron) and pagination stays consistent."""
+        captured = {}
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, exclude_sources=None, **kwargs):
+                captured["list"] = exclude_sources
+                return []
+
+            def session_count(self, exclude_sources=None, **kwargs):
+                captured["count"] = exclude_sources
+                return 0
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr(
+            "hermes_cli.web_server.load_config",
+            lambda: {"display": {"session_list_exclude_sources": ["tool", "cron"]}},
+        )
+
+        resp = self.client.get("/api/sessions")
+        assert resp.status_code == 200
+        assert captured["list"] == ["tool", "cron"]
+        assert captured["count"] == ["tool", "cron"]
+
+    def test_get_sessions_exclude_sources_defaults_to_tool(self, monkeypatch):
+        """With no config override, the default excludes only ``tool`` so
+        internal sub-agent runs stay hidden (matching the TUI picker) while
+        every other source surfaces."""
+        captured = {}
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, exclude_sources=None, **kwargs):
+                captured["list"] = exclude_sources
+                return []
+
+            def session_count(self, exclude_sources=None, **kwargs):
+                captured["count"] = exclude_sources
+                return 0
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr("hermes_cli.web_server.load_config", lambda: {})
+
+        resp = self.client.get("/api/sessions")
+        assert resp.status_code == 200
+        assert captured["list"] == ["tool"]
+        assert captured["count"] == ["tool"]
+
+    def test_get_sessions_coerces_string_exclude_sources(self, monkeypatch):
+        """``hermes config set`` stores the list as a JSON-ish string. The
+        handler must coerce it to a real list so it isn't iterated
+        character-by-character into a broken NOT IN query."""
+        captured = {}
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, exclude_sources=None, **kwargs):
+                captured["list"] = exclude_sources
+                return []
+
+            def session_count(self, exclude_sources=None, **kwargs):
+                captured["count"] = exclude_sources
+                return 0
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr(
+            "hermes_cli.web_server.load_config",
+            lambda: {"display": {"session_list_exclude_sources": '["tool","cron"]'}},
+        )
+
+        resp = self.client.get("/api/sessions")
+        assert resp.status_code == 200
+        assert captured["list"] == ["tool", "cron"]
+        assert captured["count"] == ["tool", "cron"]
+
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route
         was missing entirely, so the desktop rename dialog got a 405)."""

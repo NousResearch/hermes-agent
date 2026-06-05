@@ -1346,6 +1346,13 @@ DEFAULT_CONFIG = {
         # when an exchange was tool-heavy. Set False to restore the legacy
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
+        # Session sources hidden from the desktop dashboard's session list
+        # (GET /api/sessions). Defaults to ["tool"] so internal sub-agent runs
+        # stay out of the human-facing browser, matching the TUI resume
+        # picker. Add "cron" here to also hide scheduled-job sessions, which
+        # can otherwise dominate the list for heavy cron users. Hidden rows
+        # remain in the DB and are still reachable via full-text search.
+        "session_list_exclude_sources": ["tool"],
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
         # Which interface bare `hermes` (and `hermes chat`) launches by default:
         #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)

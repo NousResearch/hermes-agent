@@ -868,9 +868,18 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    # Try macOS Keychain first (covers Claude Code >=2.1.114)
+    # Try macOS Keychain first (covers Claude Code >=2.1.114).
+    #
+    # Claude Code maintains the Keychain entry and the JSON file as two
+    # independent stores and can refresh one without the other (observed:
+    # a long IDE session rewrites the file while the Keychain entry keeps a
+    # now-expired token, or vice versa - see #21107). A strict
+    # "Keychain wins whenever it exists" rule returns the expired token and
+    # never consults the still-valid file, so resolution fails even though a
+    # usable credential is on disk. Prefer the Keychain only when its token is
+    # still valid; otherwise fall through to the file.
     kc_creds = _read_claude_code_credentials_from_keychain()
-    if kc_creds:
+    if kc_creds and is_claude_code_token_valid(kc_creds):
         return kc_creds
 
     # Fall back to JSON file
@@ -890,6 +899,11 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
                     }
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+
+    # Last resort: a present-but-expired Keychain entry is still better than
+    # nothing - the caller can attempt a refresh from its refresh token.
+    if kc_creds:
+        return kc_creds
 
     return None
 
@@ -974,10 +988,31 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
 
 
 def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
-    """Attempt to refresh an expired Claude Code OAuth token."""
-    refresh_token = creds.get("refreshToken", "")
+    """Attempt to refresh an expired Claude Code OAuth token.
+
+    Claude Code's OAuth refresh tokens are single-use: a successful refresh
+    rotates the pair and invalidates the old refresh token. Claude Code itself
+    also refreshes on its own schedule (IDE/CLI activity), so by the time
+    Hermes notices an expired token, Claude Code may have already rotated it.
+    POSTing our now-stale refresh token in that window races Claude Code and
+    fails with ``invalid_grant``.
+
+    So before refreshing, re-read the live credential sources. If Claude Code
+    has already produced a valid token, adopt it and skip the POST entirely.
+    Only fall back to refreshing ourselves when no fresh credential is found.
+    """
+    # Claude Code may have already refreshed - adopt its token rather than
+    # racing it with our (possibly already-rotated) refresh token.
+    current = read_claude_code_credentials()
+    if current and is_claude_code_token_valid(current):
+        access_token = current.get("accessToken", "")
+        if access_token:
+            logger.debug("Adopted Claude Code's already-refreshed OAuth token")
+            return access_token
+
+    refresh_token = (current or creds).get("refreshToken", "") or creds.get("refreshToken", "")
     if not refresh_token:
-        logger.debug("No refresh token available — cannot refresh")
+        logger.debug("No refresh token available - cannot refresh")
         return None
 
     try:

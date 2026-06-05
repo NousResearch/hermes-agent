@@ -246,6 +246,48 @@ class TestReadClaudeCodeCredentials:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert read_claude_code_credentials() is None
 
+    def test_falls_back_to_file_when_keychain_token_expired(self, tmp_path, monkeypatch):
+        # Keychain holds an EXPIRED token while the file holds a fresh one
+        # (the #21107 desync). The fresh file token must win.
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: {
+                "accessToken": "kc-expired",
+                "refreshToken": "kc-refresh",
+                "expiresAt": int(time.time() * 1000) - 3600_000,
+            },
+        )
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "file-fresh",
+                "refreshToken": "file-refresh",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            }
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        creds = read_claude_code_credentials()
+        assert creds is not None
+        assert creds["accessToken"] == "file-fresh"
+
+    def test_returns_expired_keychain_when_no_fresher_source(self, tmp_path, monkeypatch):
+        # Keychain holds an expired token and there is no usable file. Rather
+        # than returning None, hand back the expired keychain creds so the
+        # caller can attempt a refresh from its refresh token.
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: {
+                "accessToken": "kc-expired",
+                "refreshToken": "kc-refresh",
+                "expiresAt": int(time.time() * 1000) - 3600_000,
+            },
+        )
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        creds = read_claude_code_credentials()
+        assert creds is not None
+        assert creds["accessToken"] == "kc-expired"
+
 
 class TestIsClaudeCodeTokenValid:
     def test_valid_token(self):
@@ -351,9 +393,40 @@ class TestResolveAnthropicToken:
 
 
 class TestRefreshOauthToken:
+    @pytest.fixture(autouse=True)
+    def _no_existing_fresh_cc_token(self, monkeypatch):
+        # _refresh_oauth_token first re-reads the live credential sources and
+        # adopts an already-valid Claude Code token if one exists (skipping the
+        # POST). These tests exercise the POST fallback, so simulate "no fresh
+        # credential is currently available" by default.
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
+
     def test_returns_none_without_refresh_token(self):
         creds = {"accessToken": "expired", "refreshToken": "", "expiresAt": 0}
         assert _refresh_oauth_token(creds) is None
+
+    def test_adopts_already_refreshed_token_without_posting(self, monkeypatch):
+        # If Claude Code already rotated to a valid token, adopt it and never
+        # POST our (single-use, possibly already-rotated) refresh token.
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials",
+            lambda: {
+                "accessToken": "cc-fresh-token",
+                "refreshToken": "cc-fresh-refresh",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            },
+        )
+        stale = {
+            "accessToken": "old-token",
+            "refreshToken": "stale-refresh",
+            "expiresAt": int(time.time() * 1000) - 3600_000,
+        }
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            result = _refresh_oauth_token(stale)
+            mock_urlopen.assert_not_called()
+        assert result == "cc-fresh-token"
 
     def test_successful_refresh(self, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)

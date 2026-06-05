@@ -3500,6 +3500,11 @@ def _telegram_onboarding_request_sync(
             status_code=502,
             detail="Telegram setup service is unavailable. Try again shortly.",
         ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Telegram setup service is unavailable. Try again shortly.",
+        ) from exc
 
     try:
         parsed = response.json()

@@ -86,6 +86,14 @@ def test_configurable_toolsets_include_context_engine():
     assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
 
+def test_configurable_toolsets_include_kanban_default_off():
+    keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+
+    assert "kanban" in keys
+    assert "kanban" in _DEFAULT_OFF_TOOLSETS
+    assert "kanban" not in _get_platform_tools({}, "telegram")
+
+
 def test_get_platform_tools_active_context_engine_is_enabled_for_explicit_config():
     config = {
         "context": {"engine": "lcm"},
@@ -1453,4 +1461,3 @@ def test_apply_provider_selection_does_not_prompt_or_post_setup(monkeypatch):
     config = {}
     tools_config.apply_provider_selection("tts", "Microsoft Edge TTS", config)
     assert config["tts"]["provider"] == "edge"
-

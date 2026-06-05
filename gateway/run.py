@@ -1344,6 +1344,38 @@ def _compression_auto_reset_on_abort_platforms(user_config: Optional[dict]) -> s
     return {str(item).strip().lower() for item in raw if str(item).strip()}
 
 
+def _compression_auto_reset_message_limit_config(
+    user_config: Optional[dict],
+) -> tuple[int, set[str]]:
+    """Return the opt-in gateway session auto-reset limit and platforms.
+
+    ``hygiene_hard_message_limit`` preserves the historical behavior: attempt
+    compression first. This separate opt-in is for chatty messaging surfaces
+    where a very long transcript is itself a reliability smell, and rotating
+    before agent startup is safer than trying to replay/compress the whole
+    session again.
+    """
+    cfg = user_config if isinstance(user_config, dict) else {}
+    comp_cfg = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
+
+    try:
+        limit = int(comp_cfg.get("hygiene_auto_reset_message_limit") or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    if limit <= 0:
+        return 0, set()
+
+    raw = comp_cfg.get("hygiene_auto_reset_message_limit_platforms") or []
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",")]
+    if not isinstance(raw, (list, tuple, set)):
+        return 0, set()
+    platforms = {str(item).strip().lower() for item in raw if str(item).strip()}
+    if not platforms:
+        return 0, set()
+    return limit, platforms
+
+
 def _transient_auto_skills_for_event(event) -> list[str]:
     """Return turn-scoped skills to inject for matching gateway messages."""
     text = str(getattr(event, "text", "") or "")
@@ -9102,6 +9134,8 @@ class GatewayRunner:
             _hyg_api_key = None
             _hyg_data = {}
             _hyg_auto_reset_on_abort_platforms: set[str] = set()
+            _hyg_auto_reset_message_limit = 0
+            _hyg_auto_reset_message_limit_platforms: set[str] = set()
             try:
                 _hyg_data = _load_gateway_config()
                 if _hyg_data:
@@ -9142,6 +9176,10 @@ class GatewayRunner:
                         _hyg_auto_reset_on_abort_platforms = (
                             _compression_auto_reset_on_abort_platforms(_hyg_data)
                         )
+                        (
+                            _hyg_auto_reset_message_limit,
+                            _hyg_auto_reset_message_limit_platforms,
+                        ) = _compression_auto_reset_message_limit_config(_hyg_data)
 
                 try:
                     _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
@@ -9217,6 +9255,64 @@ class GatewayRunner:
                     # 85% * 1.4 = 119% of context — which exceeds the model's limit
                     # and prevented hygiene from ever firing for ~200K models (GLM-5).
 
+                _platform_value = (
+                    source.platform.value
+                    if getattr(source, "platform", None)
+                    else ""
+                ).lower()
+                _auto_reset_by_message_limit = (
+                    bool(session_key)
+                    and _platform_value in _hyg_auto_reset_message_limit_platforms
+                    and _hyg_auto_reset_message_limit > 0
+                    and _msg_count >= _hyg_auto_reset_message_limit
+                )
+                if _auto_reset_by_message_limit:
+                    logger.info(
+                        "Session hygiene: %s messages exceeds auto-reset limit "
+                        "%s for platform=%s — rotating before agent startup",
+                        _msg_count,
+                        _hyg_auto_reset_message_limit,
+                        _platform_value,
+                    )
+                    _hyg_meta = self._thread_metadata_for_source(
+                        source, self._reply_anchor_for_event(event)
+                    )
+                    try:
+                        _adapter = self.adapters.get(source.platform)
+                        if _adapter and source.chat_id:
+                            await _adapter.send(
+                                source.chat_id,
+                                (
+                                    "🔄 This chat had grown large enough to risk "
+                                    "slow or unreliable replies, so I rotated it "
+                                    "to a fresh Hermes session and will handle "
+                                    "your current message without the oversized "
+                                    "history."
+                                ),
+                                metadata=_hyg_meta,
+                            )
+                    except Exception as _werr:
+                        logger.warning(
+                            "Failed to deliver hygiene auto-reset notice to user: %s",
+                            _werr,
+                        )
+
+                    _new_entry = await self._auto_reset_session_boundary(
+                        session_key=session_key,
+                        source=source,
+                        reason="hygiene_message_limit",
+                    )
+                    if _new_entry is not None:
+                        session_entry = _new_entry
+                        history = []
+                        context_prompt += (
+                            "\n\n[System note: The previous Telegram session "
+                            "was automatically rotated because the gateway "
+                            "transcript exceeded the configured hygiene "
+                            "message limit. Treat the current user message as "
+                            "the start of a fresh conversation.]"
+                        )
+
                 # Hard safety valve: force compression if message count is
                 # extreme, regardless of token estimates.  This breaks the
                 # death spiral where API disconnects prevent token data
@@ -9232,7 +9328,7 @@ class GatewayRunner:
                     or _msg_count >= _HARD_MSG_LIMIT
                 )
 
-                if _needs_compress:
+                if _needs_compress and not _auto_reset_by_message_limit:
                     logger.info(
                         "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
                         "(threshold: %s%% of %s = %s tokens)",
@@ -16169,6 +16265,10 @@ class GatewayRunner:
         ("compression", "threshold"),
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
+        ("compression", "hygiene_hard_message_limit"),
+        ("compression", "hygiene_auto_reset_message_limit"),
+        ("compression", "hygiene_auto_reset_message_limit_platforms"),
+        ("compression", "hygiene_auto_reset_on_abort_platforms"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
         ("gateway", "agent"),

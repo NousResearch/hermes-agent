@@ -633,6 +633,8 @@ compression:
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
   hygiene_hard_message_limit: 400                   # Gateway safety valve — see below
+  hygiene_auto_reset_message_limit: 0               # Gateway auto-reset safety valve; 0 disables
+  hygiene_auto_reset_message_limit_platforms: []     # Platforms allowed to auto-reset at that limit
 
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
@@ -647,6 +649,8 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 :::
 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. Runaway sessions with thousands of messages can hit model context limits before the normal percent-of-context threshold fires; when message count crosses this ceiling, Hermes forces compression regardless of token usage. Default `400` — raise it for platforms where very long sessions are normal, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
+
+`hygiene_auto_reset_message_limit` is a stricter, opt-in gateway safety valve for chatty messaging platforms. When the current platform appears in `hygiene_auto_reset_message_limit_platforms` and the transcript reaches this message count, Hermes rotates to a fresh session before starting the agent, then answers the current message without replaying the oversized history. Default `0` disables it. This is useful for mobile chat surfaces where stale long-running context is more harmful than a fresh boundary.
 
 `protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
 

@@ -1058,6 +1058,8 @@ DEFAULT_CONFIG = {
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
+        "hygiene_auto_reset_message_limit": 0,  # opt-in gateway auto-/new threshold by message count; 0 disables
+        "hygiene_auto_reset_message_limit_platforms": [],  # gateway platforms allowed to auto-/new at the message limit
         "hygiene_auto_reset_on_abort_platforms": [],  # gateway platforms that should auto-/new if hygiene compression aborts
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt

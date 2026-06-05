@@ -295,3 +295,23 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_docker_extra_args_is_bridged_everywhere():
+    """Regression pin for ``terminal.docker_extra_args`` being silently ignored.
+
+    ``terminal.docker_extra_args`` in config.yaml specifies extra flags passed
+    verbatim to ``docker run``.  The key was present in the default config
+    schema (``hermes_cli/config.py``) and consumed by terminal_tool (via
+    ``_get_env_config`` → ``TERMINAL_DOCKER_EXTRA_ARGS`` →
+    ``_create_environment`` → ``DockerEnvironment(extra_args=...)``), but
+    never bridged from config.yaml to env vars in cli.py's env_mappings,
+    gateway/run.py's _terminal_env_map, or set_config_value's
+    _config_to_env_sync.  So ``terminal.docker_extra_args: '["--network=host"]'``
+    in config.yaml silently did nothing — the flags only took effect when set
+    via the TERMINAL_DOCKER_EXTRA_ARGS env var directly.  Issue #39615.
+    """
+    assert "docker_extra_args" in _cli_env_map_keys()
+    assert "docker_extra_args" in _gateway_env_map_keys()
+    assert "docker_extra_args" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_EXTRA_ARGS" in _terminal_tool_env_var_names()

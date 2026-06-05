@@ -5956,6 +5956,7 @@ def set_config_value(key: str, value: str):
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "terminal.docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+        "terminal.docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
         "terminal.docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
         "terminal.docker_env": "TERMINAL_DOCKER_ENV",
         # JSON-valued keys (terminal_tool parses these via json.loads). The user

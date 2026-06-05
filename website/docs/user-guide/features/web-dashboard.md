@@ -495,8 +495,8 @@ same auth gate as the rest of `/api/`.
 
 When the dashboard is bound to a public or non-loopback address — anything other than `127.0.0.1` / `localhost` — Hermes Agent engages an auth gate. Every request must carry a verified session cookie or it's bounced to the login page. Two providers ship in the box:
 
-- **[Username/password](#usernamepassword-provider-no-oauth-idp)** — the simplest way to put auth on a self-hosted / on-prem / homelab dashboard (and the recommended path for a [remote Hermes Desktop connection](#connecting-hermes-desktop-to-a-remote-backend)). No external identity provider.
-- **OAuth (Nous Portal)** — for hosted deployments (typically Fly.io) where the dashboard is reachable over the public internet.
+- **[Username/password](#usernamepassword-provider-no-oauth-idp)** — the simplest way to put auth on a self-hosted / on-prem / homelab dashboard (and the recommended path for a [remote Hermes Desktop connection](#connecting-hermes-desktop-to-a-remote-backend)). No external identity provider. **Use it only on a trusted network or behind a VPN — not for public-internet exposure.**
+- **OAuth (Nous Portal)** — for hosted deployments (typically Fly.io) and any dashboard reachable over the public internet. Every login is verified against your Nous account, so this is the provider suitable for internet-facing use.
 
 Operator-owned dashboards bound to loopback are unaffected — no auth, no login page.
 
@@ -523,6 +523,22 @@ If the gate would engage but **no** `DashboardAuthProvider` is registered (no No
 ### Default provider: Nous Research
 
 The bundled `plugins/dashboard_auth/nous` plugin is **always installed** and auto-loaded. It auto-registers a `DashboardAuthProvider` named `nous` when a client ID is configured.
+
+Because every login is verified against Nous Portal and protected by your Nous account, **the Nous provider is the one suitable for exposing a dashboard to the public internet.**
+
+#### Registering a dashboard
+
+To use the Nous provider you need an OAuth client ID (shape `agent:{id}`). There are two ways to get one:
+
+- **CLI — `hermes dashboard register`.** Run it on the host where the dashboard lives. It resolves your existing Nous login (run `hermes setup` first if you're not logged in), registers a self-hosted OAuth client with the Portal, and writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` into `~/.hermes/.env` for you. Optional flags: `--name` (a human-readable label, otherwise auto-generated), `--redirect-uri` (a public HTTPS callback URL for an internet-facing host), and `--portal-url` (override the Portal base URL, mainly for staging). Not available in managed/hosted installs, where the client ID is provisioned by the hosting platform.
+
+  ```bash
+  hermes dashboard register
+  # ✓ Registered dashboard "swift_falcon"
+  # …writes HERMES_DASHBOARD_OAUTH_CLIENT_ID to ~/.hermes/.env
+  ```
+
+- **GUI — the Local Dashboards page.** Open [`/local-dashboards`](https://portal.nousresearch.com/local-dashboards) in the Nous Portal to register, name, manage, and revoke self-hosted dashboards from the browser. Copy the resulting `agent:{id}` client ID into `HERMES_DASHBOARD_OAUTH_CLIENT_ID` (env) or `dashboard.oauth.client_id` (config.yaml). This is also where you revoke a dashboard registered via the CLI.
 
 #### Configuration
 
@@ -571,6 +587,10 @@ networks).
 If you don't want to wire up an OAuth identity provider — a self-hosted "just put a password on my dashboard" deployment — the bundled `plugins/dashboard_auth/basic` plugin registers a `DashboardAuthProvider` named `basic` that authenticates with a **username and password** instead of an OAuth redirect.
 
 It plugs into the same gate as the OAuth provider: the gate engages on a non-loopback bind without `--insecure`, the login page renders a credential form for this provider (instead of a "Log in with X" button), and everything downstream of login — session cookies, transparent refresh, WS tickets, logout, the audit log — is identical to the OAuth path. Sessions are stateless HMAC-signed tokens the provider mints itself, so there's **no database and no external IDP**. Password hashing uses stdlib `scrypt` (no third-party dependency).
+
+:::warning Use this on trusted networks only — not the public internet
+The username/password provider is intended for self-hosted / on-prem / homelab dashboards on a **trusted network**, or reachable only over a **VPN**. It protects a single shared credential with no external identity provider, MFA, or per-user accounts behind it, so it is **not suitable for exposing a dashboard directly to the public internet**. For an internet-facing dashboard, use the [Nous Research provider](#default-provider-nous-research) (or your own [self-hosted OIDC](#self-hosted-oidc-provider) / [custom OAuth](#custom-providers) provider) instead.
+:::
 
 #### Configuration
 

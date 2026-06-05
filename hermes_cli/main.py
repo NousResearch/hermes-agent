@@ -2610,6 +2610,8 @@ def select_provider_and_model(args=None):
                 "api_key": entry.get("api_key", ""),
                 "key_env": entry.get("key_env", ""),
                 "model": entry.get("model", ""),
+                "models": entry.get("models", {}),
+                "discover_models": entry.get("discover_models", True),
                 "api_mode": entry.get("api_mode", ""),
                 "provider_key": provider_key,
                 "api_key_ref": _lookup_ref(
@@ -4792,17 +4794,45 @@ def _model_flow_named_custom(config, provider_info):
         api_key = os.environ.get(key_env, "")
     config_api_key = _custom_provider_api_key_config_value(provider_info, api_key)
 
+    # Honor ``discover_models: false`` (default True) — when discovery is
+    # disabled, use the configured ``models:`` list verbatim and skip the
+    # live /models probe. This lets operators restrict the picker to the
+    # subset their plan actually serves instead of the endpoint's full
+    # catalog (#18726: Baidu Qianfan returns 100+ models for a 2-3 model
+    # plan). Same semantics as the slash-command picker (model_switch.py
+    # sections 3 & 4): default discovers, false keeps the explicit list.
+    discover = provider_info.get("discover_models", True)
+    if isinstance(discover, str):
+        discover = discover.lower() not in {"false", "no", "0"}
+    configured_models: list[str] = []
+    cfg_models = provider_info.get("models", {})
+    if isinstance(cfg_models, dict):
+        configured_models = [str(m) for m in cfg_models if str(m).strip()]
+    elif isinstance(cfg_models, list):
+        configured_models = [
+            str(m) for m in cfg_models if isinstance(m, str) and m.strip()
+        ]
+
     print(f"  Provider: {name}")
     print(f"  URL:      {base_url}")
     if saved_model:
         print(f"  Current:  {saved_model}")
     print()
 
-    print("Fetching available models...")
-    fetch_kwargs = {"timeout": 8.0}
-    if api_mode:
-        fetch_kwargs["api_mode"] = api_mode
-    models = fetch_api_models(api_key, base_url, **fetch_kwargs)
+    if not discover and configured_models:
+        # Discovery disabled with an explicit list — use it verbatim, no probe.
+        print(f"Using configured models (discover_models: false): {len(configured_models)}")
+        models = configured_models
+    else:
+        print("Fetching available models...")
+        fetch_kwargs = {"timeout": 8.0}
+        if api_mode:
+            fetch_kwargs["api_mode"] = api_mode
+        models = fetch_api_models(api_key, base_url, **fetch_kwargs)
+        # If the probe came back empty but the operator configured an explicit
+        # list, fall back to it rather than forcing manual entry.
+        if not models and configured_models:
+            models = configured_models
 
     if models:
         default_idx = 0

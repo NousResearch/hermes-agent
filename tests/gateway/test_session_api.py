@@ -416,7 +416,7 @@ async def test_session_endpoints_require_auth_when_key_configured(auth_adapter):
         resp = await cli.get("/api/sessions")
         assert resp.status == 401
         body = await resp.json()
-        assert body["error"]["code"] == "invalid_api_key"
+        assert body["error"]["code"] == "gateway_auth_failed"
 
         ok = await cli.get("/api/sessions", headers={"Authorization": "Bearer sk-test"})
         assert ok.status == 200

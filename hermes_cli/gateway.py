@@ -7,6 +7,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -3120,6 +3121,317 @@ def launchd_status(deep: bool = False):
 
 
 # =============================================================================
+# macOS Gateway Watchdog
+# =============================================================================
+
+def get_launchd_watchdog_label() -> str:
+    """Return the launchd label for the optional gateway watchdog."""
+    return f"{get_launchd_label()}.watchdog"
+
+
+def get_launchd_watchdog_plist_path() -> Path:
+    """Return the launchd plist path for the optional gateway watchdog."""
+    return _launchd_user_home() / "Library" / "LaunchAgents" / f"{get_launchd_watchdog_label()}.plist"
+
+
+def get_launchd_watchdog_script_path() -> Path:
+    """Return the installed shell script path for the optional gateway watchdog."""
+    return get_hermes_home() / "bin" / "hermes-gateway-watchdog.sh"
+
+
+def generate_launchd_watchdog_script(
+    *,
+    cpu_threshold: int = 80,
+) -> str:
+    """Generate a conservative macOS watchdog script for stuck gateway processes.
+
+    The watchdog intentionally does not start a missing gateway. It only
+    intervenes when the current profile's PID-file gateway process exists and
+    the same PID exceeds the CPU threshold in two consecutive watchdog runs.
+    """
+    hermes_home = str(get_hermes_home().resolve())
+    project_root = str(PROJECT_ROOT)
+    python_path = get_python_path()
+    profile_args = _profile_arg(hermes_home)
+
+    return f"""#!/bin/bash
+set -u
+
+HERMES_HOME={shlex.quote(hermes_home)}
+PROJECT_ROOT={shlex.quote(project_root)}
+HERMES_PYTHON={shlex.quote(python_path)}
+HERMES_PROFILE_ARGS={shlex.quote(profile_args)}
+CPU_THRESHOLD="${{HERMES_GATEWAY_WATCHDOG_CPU_THRESHOLD:-{int(cpu_threshold)}}}"
+PID_FILE="$HERMES_HOME/gateway.pid"
+LOG_FILE="$HERMES_HOME/logs/gateway-watchdog.log"
+HEARTBEAT_FILE="$HERMES_HOME/logs/gateway-watchdog.heartbeat.log"
+STATE_FILE="$HERMES_HOME/gateway-watchdog.state"
+
+export HERMES_HOME
+export PATH="$HERMES_HOME/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
+timestamp() {{
+  date "+%Y-%m-%d %H:%M:%S %Z"
+}}
+
+log() {{
+  mkdir -p "$HERMES_HOME/logs"
+  printf "%s %s\\n" "$(timestamp)" "$*" >> "$LOG_FILE"
+}}
+
+heartbeat() {{
+  mkdir -p "$HERMES_HOME/logs"
+  printf "%s %s\\n" "$(timestamp)" "$*" >> "$HEARTBEAT_FILE"
+  tail -n 50 "$HEARTBEAT_FILE" > "$HEARTBEAT_FILE.tmp" && mv "$HEARTBEAT_FILE.tmp" "$HEARTBEAT_FILE"
+}}
+
+gateway_pid() {{
+  [ -f "$PID_FILE" ] || return 0
+  sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' "$PID_FILE" | head -n 1
+}}
+
+gateway_cpu() {{
+  ps -o %cpu= -p "$1" | awk '{{print $1 + 0}}'
+}}
+
+process_matches_gateway() {{
+  ps -p "$1" -o command= 2>/dev/null | grep -Eq "hermes_cli\\.main gateway|hermes_cli/main\\.py gateway|hermes gateway|gateway/run\\.py"
+}}
+
+cpu_is_high() {{
+  awk -v cpu="$1" -v threshold="$CPU_THRESHOLD" 'BEGIN {{ exit !(cpu >= threshold) }}'
+}}
+
+pid="$(gateway_pid || true)"
+
+if [ -z "$pid" ]; then
+  heartbeat "ok: gateway not running; no action"
+  rm -f "$STATE_FILE"
+  exit 0
+fi
+
+if ! kill -0 "$pid" 2>/dev/null || ! process_matches_gateway "$pid"; then
+  heartbeat "ok: stale gateway pid=$pid; no action"
+  rm -f "$STATE_FILE"
+  exit 0
+fi
+
+cpu="$(gateway_cpu "$pid")"
+
+if ! cpu_is_high "$cpu"; then
+  heartbeat "ok: gateway pid=$pid cpu=${{cpu}}%"
+  rm -f "$STATE_FILE"
+  exit 0
+fi
+
+previous_pid=""
+previous_count=0
+if [ -f "$STATE_FILE" ]; then
+  read -r previous_pid previous_count < "$STATE_FILE" || true
+fi
+
+if [ "$previous_pid" = "$pid" ] && [ "${{previous_count:-0}}" -ge 1 ]; then
+  heartbeat "restart: gateway pid=$pid cpu=${{cpu}}% exceeded $CPU_THRESHOLD% twice"
+  log "Gateway PID $pid CPU ${{cpu}}% exceeded $CPU_THRESHOLD% twice; restarting"
+  kill "$pid" 2>/dev/null || true
+  sleep 5
+  if kill -0 "$pid" 2>/dev/null; then
+    log "Gateway PID $pid did not exit after SIGTERM; sending SIGKILL"
+    kill -9 "$pid" 2>/dev/null || true
+    sleep 2
+  fi
+
+  rm -f "$STATE_FILE"
+  cd "$PROJECT_ROOT" || exit 1
+  # shellcheck disable=SC2086
+  "$HERMES_PYTHON" -m hermes_cli.main $HERMES_PROFILE_ARGS gateway start >> "$LOG_FILE" 2>&1
+  log "Gateway restart command finished"
+else
+  heartbeat "warn: gateway pid=$pid cpu=${{cpu}}% exceeded $CPU_THRESHOLD% once"
+  printf "%s %s\\n" "$pid" "1" > "$STATE_FILE"
+  log "Gateway PID $pid CPU ${{cpu}}% exceeded $CPU_THRESHOLD% once; will recheck next run"
+fi
+"""
+
+
+def generate_launchd_watchdog_plist(
+    *,
+    interval: int = 300,
+    cpu_threshold: int = 80,
+) -> str:
+    """Generate the optional macOS launchd plist for the gateway watchdog."""
+    label = get_launchd_watchdog_label()
+    script_path = str(get_launchd_watchdog_script_path())
+    hermes_home = str(get_hermes_home().resolve())
+    log_dir = get_hermes_home() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>{script_path}</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>{int(interval)}</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HERMES_HOME</key>
+        <string>{hermes_home}</string>
+        <key>HERMES_GATEWAY_WATCHDOG_CPU_THRESHOLD</key>
+        <string>{int(cpu_threshold)}</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>{log_dir}/gateway-watchdog.launchd.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{log_dir}/gateway-watchdog.launchd.err.log</string>
+</dict>
+</plist>
+"""
+
+
+def launchd_watchdog_install(*, force: bool = False, interval: int = 300, cpu_threshold: int = 80):
+    if not is_macos():
+        print("Gateway watchdog is currently supported only on macOS launchd.")
+        sys.exit(1)
+
+    script_path = get_launchd_watchdog_script_path()
+    plist_path = get_launchd_watchdog_plist_path()
+    label = get_launchd_watchdog_label()
+
+    if plist_path.exists() and not force:
+        print(f"Gateway watchdog already installed at: {plist_path}")
+        print("Use --force to reinstall")
+        return
+
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(generate_launchd_watchdog_script(cpu_threshold=cpu_threshold), encoding="utf-8")
+    script_path.chmod(0o755)
+
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    plist_path.write_text(
+        generate_launchd_watchdog_plist(interval=interval, cpu_threshold=cpu_threshold),
+        encoding="utf-8",
+    )
+
+    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=30)
+    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+    subprocess.run(["launchctl", "kickstart", "-k", f"{_launchd_domain()}/{label}"], check=False, timeout=30)
+    print("✓ Gateway watchdog installed")
+    print(f"  Interval: {interval}s")
+    print(f"  CPU threshold: {cpu_threshold}% for two consecutive runs")
+    print("  Missing gateways are not started automatically.")
+
+
+def launchd_watchdog_uninstall():
+    if not is_macos():
+        print("Gateway watchdog is currently supported only on macOS launchd.")
+        sys.exit(1)
+
+    label = get_launchd_watchdog_label()
+    plist_path = get_launchd_watchdog_plist_path()
+    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=30)
+    if plist_path.exists():
+        plist_path.unlink()
+        print(f"✓ Removed {plist_path}")
+    print("✓ Gateway watchdog uninstalled")
+
+
+def launchd_watchdog_status():
+    if not is_macos():
+        print("Gateway watchdog is currently supported only on macOS launchd.")
+        sys.exit(1)
+
+    label = get_launchd_watchdog_label()
+    plist_path = get_launchd_watchdog_plist_path()
+    heartbeat_path = get_hermes_home() / "logs" / "gateway-watchdog.heartbeat.log"
+    event_log_path = get_hermes_home() / "logs" / "gateway-watchdog.log"
+
+    print(f"Watchdog plist: {plist_path}")
+    if not plist_path.exists():
+        print("✗ Gateway watchdog is not installed")
+        print("  Run: hermes gateway watchdog install")
+        return
+
+    result = subprocess.run(
+        ["launchctl", "print", f"{_launchd_domain()}/{label}"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode == 0:
+        print("✓ Gateway watchdog is loaded")
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("state =", "runs =", "last exit code =", "run interval =")):
+                print(f"  {stripped}")
+    else:
+        print("✗ Gateway watchdog is not loaded")
+        print("  Run: hermes gateway watchdog install --force")
+
+    if heartbeat_path.exists():
+        print()
+        print("Recent heartbeat:")
+        sys.stdout.flush()
+        subprocess.run(["tail", "-5", str(heartbeat_path)], timeout=10)
+    else:
+        print()
+        print("No heartbeat log yet.")
+
+    if event_log_path.exists():
+        print()
+        print("Recent watchdog events:")
+        sys.stdout.flush()
+        subprocess.run(["tail", "-10", str(event_log_path)], timeout=10)
+
+
+def launchd_watchdog_run_once(*, cpu_threshold: int = 80):
+    if not is_macos():
+        print("Gateway watchdog is currently supported only on macOS launchd.")
+        sys.exit(1)
+
+    script_path = get_launchd_watchdog_script_path()
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(generate_launchd_watchdog_script(cpu_threshold=cpu_threshold), encoding="utf-8")
+    script_path.chmod(0o755)
+    subprocess.run(["/bin/bash", str(script_path)], check=True, timeout=120)
+    print("✓ Gateway watchdog check completed")
+
+
+def gateway_watchdog_command(args):
+    action = getattr(args, "watchdog_command", None) or "status"
+    if action == "install":
+        launchd_watchdog_install(
+            force=getattr(args, "force", False),
+            interval=getattr(args, "interval", 300),
+            cpu_threshold=getattr(args, "cpu_threshold", 80),
+        )
+    elif action == "uninstall":
+        launchd_watchdog_uninstall()
+    elif action == "status":
+        launchd_watchdog_status()
+    elif action == "run-once":
+        launchd_watchdog_run_once(cpu_threshold=getattr(args, "cpu_threshold", 80))
+    else:
+        print(f"Unknown watchdog command: {action}")
+        sys.exit(1)
+
+
+# =============================================================================
 # Gateway Runner
 # =============================================================================
 
@@ -5163,6 +5475,10 @@ def _gateway_command_inner(args):
 
     if subcmd == "setup":
         gateway_setup()
+        return
+
+    if subcmd == "watchdog":
+        gateway_watchdog_command(args)
         return
 
     # Service management commands

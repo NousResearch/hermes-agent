@@ -11446,6 +11446,53 @@ def main():
     # gateway setup
     gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 
+    # gateway watchdog
+    gateway_watchdog = gateway_subparsers.add_parser(
+        "watchdog",
+        help="Manage the optional macOS gateway stuck-process watchdog",
+        description=(
+            "Install, remove, inspect, or run the optional macOS launchd "
+            "watchdog that restarts a gateway process only after sustained "
+            "high CPU across consecutive checks."
+        ),
+    )
+    gateway_watchdog_subparsers = gateway_watchdog.add_subparsers(dest="watchdog_command")
+    gateway_watchdog_install = gateway_watchdog_subparsers.add_parser(
+        "install",
+        help="Install the macOS launchd gateway watchdog",
+    )
+    gateway_watchdog_install.add_argument("--force", action="store_true", help="Force reinstall")
+    gateway_watchdog_install.add_argument(
+        "--interval",
+        type=int,
+        default=300,
+        help="Watchdog check interval in seconds (default: 300)",
+    )
+    gateway_watchdog_install.add_argument(
+        "--cpu-threshold",
+        type=int,
+        default=80,
+        help="CPU percentage threshold for stuck detection (default: 80)",
+    )
+    gateway_watchdog_subparsers.add_parser(
+        "uninstall",
+        help="Uninstall the macOS launchd gateway watchdog",
+    )
+    gateway_watchdog_subparsers.add_parser(
+        "status",
+        help="Show gateway watchdog status and recent heartbeat",
+    )
+    gateway_watchdog_run_once = gateway_watchdog_subparsers.add_parser(
+        "run-once",
+        help="Run one watchdog check immediately",
+    )
+    gateway_watchdog_run_once.add_argument(
+        "--cpu-threshold",
+        type=int,
+        default=80,
+        help="CPU percentage threshold for stuck detection (default: 80)",
+    )
+
     # gateway migrate-legacy
     gateway_migrate_legacy = gateway_subparsers.add_parser(
         "migrate-legacy",

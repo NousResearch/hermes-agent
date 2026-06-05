@@ -25,6 +25,14 @@ export interface SlashExecResponse {
   warning?: string
 }
 
+export interface SessionTitleResponse {
+  title?: string
+  // True when the session row isn't persisted yet and the title was queued
+  // to be applied on the first turn (see tui_gateway session.title handler).
+  pending?: boolean
+  session_key?: string
+}
+
 export interface ExecCommandDispatchResponse {
   type: 'exec' | 'plugin'
   output?: string

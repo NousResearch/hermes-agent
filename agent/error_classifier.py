@@ -825,7 +825,20 @@ def _classify_by_status(
         )
 
     if status_code == 429:
-        # Already checked long_context_tier above; this is a normal rate limit
+        # Already checked long_context_tier above. Some providers still use 429
+        # for terminal quota/billing exhaustion, so keep the same message-aware
+        # disambiguation used by 402 and message-only classification.
+        has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+        has_billing_pattern = any(p in error_msg for p in _BILLING_PATTERNS)
+        if has_usage_limit or has_billing_pattern:
+            has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
+            if not has_transient_signal:
+                return result_fn(
+                    FailoverReason.billing,
+                    retryable=False,
+                    should_rotate_credential=True,
+                    should_fallback=True,
+                )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,

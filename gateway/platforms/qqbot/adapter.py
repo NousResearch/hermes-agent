@@ -159,6 +159,10 @@ class QQAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     _TYPING_INPUT_SECONDS = 60  # input_notify duration reported to QQ
     _TYPING_DEBOUNCE_SECONDS = 50  # refresh before it expires
+    # QQ gateway sessions have a hard lifetime of roughly 30 minutes. Refresh
+    # slightly earlier so the existing reconnect/resume path runs before the
+    # server closes the connection with 4009.
+    SESSION_REFRESH_SECONDS = 1740.0
 
     @property
     def _log_tag(self) -> str:
@@ -223,6 +227,7 @@ class QQAdapter(BasePlatformAdapter):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._session_refresh_task: Optional[asyncio.Task] = None
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
@@ -355,6 +360,8 @@ class QQAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._heartbeat_task = None
+
+        self._stop_session_refresh()
 
         await self._cleanup()
         self._release_platform_lock()
@@ -682,7 +689,9 @@ class QQAdapter(BasePlatformAdapter):
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
 
-        while self._running and self._ws and not self._ws.closed:
+        while self._running and self._ws:
+            if self._ws.closed:
+                raise QQCloseError(1000, "WebSocket closed")
             msg = await self._ws.receive()
             if msg.type == aiohttp.WSMsgType.TEXT:
                 payload = self._parse_json(msg.data)
@@ -691,10 +700,10 @@ class QQAdapter(BasePlatformAdapter):
             elif msg.type in {aiohttp.WSMsgType.PING,}:
                 # aiohttp auto-replies with PONG
                 pass
-            elif msg.type == aiohttp.WSMsgType.CLOSE:
-                raise QQCloseError(msg.data, msg.extra)
+            elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING}:
+                raise QQCloseError(msg.data or 1000, msg.extra or "WebSocket closing")
             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
-                raise RuntimeError("WebSocket closed")
+                raise QQCloseError(msg.data or 1000, msg.extra or "WebSocket closed")
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).
@@ -785,6 +794,49 @@ class QQAdapter(BasePlatformAdapter):
             self._session_id = None
             self._last_seq = None
 
+    # ------------------------------------------------------------------
+    # Session refresh
+    # ------------------------------------------------------------------
+
+    def _start_session_refresh(self) -> None:
+        """Start a fresh proactive session-refresh timer."""
+        self._stop_session_refresh()
+        task = self._create_task(self._session_refresh_loop())
+        if task is not None:
+            task.add_done_callback(self._consume_session_refresh_result)
+            self._session_refresh_task = task
+
+    def _stop_session_refresh(self) -> None:
+        """Cancel the proactive session-refresh timer, if present."""
+        task = self._session_refresh_task
+        self._session_refresh_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            task.add_done_callback(self._consume_session_refresh_result)
+
+    def _consume_session_refresh_result(self, task: asyncio.Task) -> None:
+        """Consume timer cancellation/errors so refresh restarts do not leak tasks."""
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug("[%s] Session refresh task failed: %s", self._log_tag, exc)
+
+    async def _session_refresh_loop(self) -> None:
+        """Close the WebSocket before QQ's session lifetime expires."""
+        await asyncio.sleep(self.SESSION_REFRESH_SECONDS)
+        if not self._running:
+            return
+        ws = self._ws
+        if ws and not ws.closed:
+            logger.info(
+                "[%s] Session lifetime reached (%.0fs), refreshing via reconnect",
+                self._log_tag,
+                self.SESSION_REFRESH_SECONDS,
+            )
+            await ws.close(code=1000, message=b"session refresh")
+
     @staticmethod
     def _create_task(coro):
         """Schedule a coroutine, silently skipping if no event loop is running.
@@ -833,6 +885,7 @@ class QQAdapter(BasePlatformAdapter):
                 self._handle_ready(d)
             elif t == "RESUMED":
                 logger.info("[%s] Session resumed", self._log_tag)
+                self._start_session_refresh()
             elif t in {
                     "C2C_MESSAGE_CREATE",
                     "GROUP_AT_MESSAGE_CREATE",
@@ -883,6 +936,7 @@ class QQAdapter(BasePlatformAdapter):
         """Handle the READY event — store session_id for resume."""
         if isinstance(d, dict):
             self._session_id = d.get("session_id")
+            self._start_session_refresh()
             logger.info("[%s] Ready, session_id=%s", self._log_tag, self._session_id)
 
     # ------------------------------------------------------------------

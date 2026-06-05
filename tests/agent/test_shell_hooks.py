@@ -135,6 +135,7 @@ class TestSerializePayload:
                 "session_id": "sess-1",
                 "task_id": "t-1",
                 "tool_call_id": "c-1",
+                "transcript_path": "/tmp/session_sess-1.json",
             },
         )
         payload = json.loads(raw)
@@ -142,10 +143,12 @@ class TestSerializePayload:
         assert payload["tool_name"] == "terminal"
         assert payload["tool_input"] == {"command": "ls"}
         assert payload["session_id"] == "sess-1"
+        assert payload["transcript_path"] == "/tmp/session_sess-1.json"
         assert "cwd" in payload
         # task_id / tool_call_id end up under extra
         assert payload["extra"]["task_id"] == "t-1"
         assert payload["extra"]["tool_call_id"] == "c-1"
+        assert "transcript_path" not in payload["extra"]
 
     def test_args_not_dict_becomes_null(self):
         raw = shell_hooks._serialize_payload(

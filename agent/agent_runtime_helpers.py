@@ -62,6 +62,27 @@ def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
     return bool(memory_manager and memory_manager.has_tool(function_name))
 
 
+def tool_hook_transcript_path(agent: Any, messages: list | None = None) -> str:
+    """Return a transcript path only when tool hooks can consume it."""
+    if not messages:
+        return ""
+    try:
+        from hermes_cli.plugins import has_hook
+
+        if not (has_hook("pre_tool_call") or has_hook("post_tool_call")):
+            return ""
+    except Exception:
+        return ""
+
+    writer = getattr(agent, "_hook_transcript_path", None)
+    if not callable(writer):
+        return ""
+    try:
+        return writer(messages) or ""
+    except Exception:
+        return ""
+
+
 def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
     """
     Convert internal message format to trajectory format for saving.
@@ -1626,6 +1647,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     tools. Used by the concurrent execution path; the sequential path retains
     its own inline invocation for backward-compatible display handling.
     """
+    transcript_path = tool_hook_transcript_path(agent, messages)
+
     # Check plugin hooks for a block directive before executing anything.
     block_message: Optional[str] = None
     if not pre_tool_block_checked:
@@ -1639,6 +1662,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 tool_call_id=tool_call_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                transcript_path=transcript_path,
             )
         except Exception:
             pass
@@ -1658,6 +1682,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 status="blocked",
                 error_type="plugin_block",
                 error_message=block_message,
+                transcript_path=transcript_path,
             )
         except Exception:
             pass
@@ -1678,6 +1703,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 duration_ms=int((time.monotonic() - tool_start_time) * 1000),
+                transcript_path=transcript_path,
             )
         except Exception:
             pass
@@ -1760,6 +1786,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             skip_pre_tool_call_hook=True,
             enabled_toolsets=getattr(agent, "enabled_toolsets", None),
             disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+            transcript_path=transcript_path,
         )
 
 

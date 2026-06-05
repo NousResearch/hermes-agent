@@ -51,6 +51,7 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 tool_call_id="call-1",
                 session_id="session-1",
+                transcript_path="/tmp/session_session-1.json",
             )
 
         assert result == '{"ok":true}'
@@ -64,6 +65,7 @@ class TestHandleFunctionCall:
                 tool_call_id="call-1",
                 turn_id="",
                 api_request_id="",
+                transcript_path="/tmp/session_session-1.json",
             ),
             call(
                 "post_tool_call",
@@ -79,6 +81,7 @@ class TestHandleFunctionCall:
                 status="ok",
                 error_type=None,
                 error_message=None,
+                transcript_path="/tmp/session_session-1.json",
             ),
             call(
                 "transform_tool_result",

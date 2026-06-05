@@ -70,6 +70,7 @@ def _emit_terminal_post_tool_call(
     status: str | None = None,
     error_type: str | None = None,
     error_message: str | None = None,
+    transcript_path: str = "",
 ) -> None:
     try:
         from model_tools import _emit_post_tool_call_hook
@@ -86,6 +87,7 @@ def _emit_terminal_post_tool_call(
             status=status,
             error_type=error_type,
             error_message=error_message,
+            transcript_path=transcript_path,
         )
     except Exception:
         pass
@@ -185,6 +187,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     """
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
+    from agent.agent_runtime_helpers import tool_hook_transcript_path
+    transcript_path = tool_hook_transcript_path(agent, messages)
 
     # ── Pre-flight: interrupt check ──────────────────────────────────
     if agent._interrupt_requested:
@@ -268,6 +272,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 status="blocked",
                 error_type="tool_scope_block",
                 error_message=_ts_scope_block,
+                transcript_path=transcript_path,
             )
         else:
             try:
@@ -280,6 +285,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     tool_call_id=getattr(tool_call, "id", "") or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                    transcript_path=transcript_path,
                 )
             except Exception:
                 block_message = None
@@ -296,6 +302,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     status="blocked",
                     error_type="plugin_block",
                     error_message=block_message,
+                    transcript_path=transcript_path,
                 )
             else:
                 guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
@@ -312,6 +319,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         status="blocked",
                         error_type="guardrail_block",
                         error_message=getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy",
+                        transcript_path=transcript_path,
                     )
 
         # ── Checkpoint preflight (only for tools that will execute) ──
@@ -562,6 +570,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     status="cancelled",
                     error_type="keyboard_interrupt",
                     error_message="Tool execution cancelled by user interrupt",
+                    transcript_path=transcript_path,
                 )
             else:
                 function_result = f"Error executing tool '{name}': thread did not return a result"
@@ -575,6 +584,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     status="error",
                     error_type="thread_missing_result",
                     error_message=function_result,
+                    transcript_path=transcript_path,
                 )
             tool_duration = 0.0
         else:
@@ -689,6 +699,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
+    from agent.agent_runtime_helpers import tool_hook_transcript_path
+
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
@@ -717,6 +729,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             function_args = {}
         if not isinstance(function_args, dict):
             function_args = {}
+        transcript_path = tool_hook_transcript_path(agent, messages)
 
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
         # rationale, including the scope gate (the unwrap dispatches the
@@ -755,6 +768,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     tool_call_id=getattr(tool_call, "id", "") or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                    transcript_path=transcript_path,
                 )
             except Exception:
                 pass
@@ -853,6 +867,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 status="blocked",
                 error_type=_block_error_type,
                 error_message=_block_msg,
+                transcript_path=transcript_path,
             )
         elif _guardrail_block_decision is not None:
             # Tool blocked by tool-loop guardrail — synthesize exactly one
@@ -869,6 +884,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 status="blocked",
                 error_type="guardrail_block",
                 error_message=getattr(_guardrail_block_decision, "message", None) or "Tool blocked by guardrail policy",
+                transcript_path=transcript_path,
             )
         elif function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
@@ -1034,6 +1050,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     skip_pre_tool_call_hook=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                    transcript_path=transcript_path,
                 )
                 _spinner_result = function_result
             except KeyboardInterrupt:
@@ -1073,6 +1090,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     skip_pre_tool_call_hook=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                    transcript_path=transcript_path,
                 )
             except KeyboardInterrupt:
                 _emit_cancelled_terminal_post_tool_call(
@@ -1126,6 +1144,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 effective_task_id=effective_task_id,
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 duration_ms=int(tool_duration * 1000),
+                transcript_path=transcript_path,
             )
         if not _execution_blocked:
             function_result = agent._append_guardrail_observation(

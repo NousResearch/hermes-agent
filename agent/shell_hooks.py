@@ -34,6 +34,7 @@ Wire protocol
         "tool_name":       "terminal",
         "tool_input":      {"command": "rm -rf /"},
         "session_id":      "sess_abc123",
+        "transcript_path": "/home/user/.hermes/logs/session_sess_abc123.json",
         "cwd":             "/home/user/project",
         "extra":           {...}   # event-specific kwargs
     }
@@ -358,7 +359,13 @@ def _parse_single_entry(
 # Subprocess callback
 # ---------------------------------------------------------------------------
 
-_TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
+_TOP_LEVEL_PAYLOAD_KEYS = {
+    "tool_name",
+    "args",
+    "session_id",
+    "parent_session_id",
+    "transcript_path",
+}
 
 
 def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
@@ -476,6 +483,7 @@ def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> str:
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
         "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",
+        "transcript_path": kwargs.get("transcript_path") or "",
         "cwd": cwd,
         "extra": extras,
     }

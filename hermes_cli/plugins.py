@@ -1683,6 +1683,7 @@ def get_pre_tool_call_block_message(
     tool_call_id: str = "",
     turn_id: str = "",
     api_request_id: str = "",
+    transcript_path: str = "",
 ) -> Optional[str]:
     """Check ``pre_tool_call`` hooks for a blocking directive.
 
@@ -1709,6 +1710,7 @@ def get_pre_tool_call_block_message(
         tool_call_id=tool_call_id,
         turn_id=turn_id,
         api_request_id=api_request_id,
+        transcript_path=transcript_path,
     )
 
     for result in hook_results:

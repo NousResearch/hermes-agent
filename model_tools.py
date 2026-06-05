@@ -823,6 +823,7 @@ def _emit_post_tool_call_hook(
     status: Optional[str] = None,
     error_type: Optional[str] = None,
     error_message: Optional[str] = None,
+    transcript_path: str = "",
 ) -> None:
     """Emit the ``post_tool_call`` observer hook.
 
@@ -853,6 +854,7 @@ def _emit_post_tool_call_hook(
             status=status,
             error_type=error_type,
             error_message=error_message,
+            transcript_path=transcript_path,
         )
     except Exception as _hook_err:
         logger.debug("post_tool_call hook error: %s", _hook_err)
@@ -871,6 +873,7 @@ def handle_function_call(
     skip_pre_tool_call_hook: bool = False,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    transcript_path: str = "",
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -972,6 +975,7 @@ def handle_function_call(
                 skip_pre_tool_call_hook=skip_pre_tool_call_hook,
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                transcript_path=transcript_path,
             )
 
     try:
@@ -1000,6 +1004,7 @@ def handle_function_call(
                     tool_call_id=tool_call_id or "",
                     turn_id=turn_id or "",
                     api_request_id=api_request_id or "",
+                    transcript_path=transcript_path,
                 )
             except Exception as _hook_err:
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
@@ -1018,6 +1023,7 @@ def handle_function_call(
                     status="blocked",
                     error_type="plugin_block",
                     error_message=block_message,
+                    transcript_path=transcript_path,
                 )
                 return result
 
@@ -1101,6 +1107,7 @@ def handle_function_call(
             turn_id=turn_id,
             api_request_id=api_request_id,
             duration_ms=duration_ms,
+            transcript_path=transcript_path,
         )
 
         # Generic tool-result canonicalization seam: plugins receive the

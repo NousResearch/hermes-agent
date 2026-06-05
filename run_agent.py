@@ -2148,35 +2148,18 @@ class AIAgent:
             return redacted
         return content
 
-    def _save_session_log(self, messages: List[Dict[str, Any]] = None):
-        """Optional per-session JSON snapshot writer.
-
-        Gated by ``sessions.write_json_snapshots`` (default False).  state.db
-        is the canonical message store; this writer exists only for users
-        whose external tooling consumes ``~/.hermes/sessions/session_{sid}.json``
-        directly.  When the flag is off this is a fast no-op.
-
-        When enabled, rewrites the snapshot after every persistence point with
-        the full message list (assistant content normalized via
-        ``_clean_session_content`` to convert REASONING_SCRATCHPAD to think
-        tags).  The truncation guard ("don't overwrite a larger log with
-        fewer messages") is preserved so resume + branch don't clobber a
-        fuller existing snapshot.
-        """
-        if not getattr(self, "_session_json_enabled", False):
-            return
-        messages = messages or self._session_messages
-        if not messages:
-            return
-
+    def _session_log_path(self) -> Optional[Path]:
         # Re-derive the target path each call so /branch and /compress
         # session-id changes land in the right file without any re-point
         # bookkeeping at the call sites.
         try:
-            log_file = self.logs_dir / f"session_{self.session_id}.json"
+            if not self.session_id:
+                return None
+            return self.logs_dir / f"session_{self.session_id}.json"
         except Exception:
-            return
+            return None
 
+    def _write_session_log_snapshot(self, log_file: Path, messages: List[Dict[str, Any]]) -> bool:
         try:
             cleaned = []
             for msg in messages:
@@ -2205,7 +2188,7 @@ class AIAgent:
                             "Skipping session log overwrite: existing has %d messages, current has %d",
                             existing_count, len(cleaned),
                         )
-                        return
+                        return True
                 except Exception:
                     pass  # corrupted existing file — allow the overwrite
 
@@ -2228,10 +2211,51 @@ class AIAgent:
                 indent=2,
                 default=str,
             )
+            return True
 
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
+            return False
+
+    def _hook_transcript_path(self, messages: List[Dict[str, Any]] = None) -> str:
+        """Write and return a JSON transcript path for tool-hook consumers."""
+        messages = messages or self._session_messages
+        if not messages:
+            return ""
+        log_file = self._session_log_path()
+        if log_file is None:
+            return ""
+        if self._write_session_log_snapshot(log_file, messages):
+            return str(log_file)
+        return str(log_file) if log_file.exists() else ""
+
+    def _save_session_log(self, messages: List[Dict[str, Any]] = None):
+        """Optional per-session JSON snapshot writer.
+
+        Gated by ``sessions.write_json_snapshots`` (default False).  state.db
+        is the canonical message store; this writer exists only for users
+        whose external tooling consumes ``~/.hermes/sessions/session_{sid}.json``
+        directly.  When the flag is off this is a fast no-op.
+
+        When enabled, rewrites the snapshot after every persistence point with
+        the full message list (assistant content normalized via
+        ``_clean_session_content`` to convert REASONING_SCRATCHPAD to think
+        tags).  The truncation guard ("don't overwrite a larger log with
+        fewer messages") is preserved so resume + branch don't clobber a
+        fuller existing snapshot.
+        """
+        if not getattr(self, "_session_json_enabled", False):
+            return
+        messages = messages or self._session_messages
+        if not messages:
+            return
+
+        log_file = self._session_log_path()
+        if log_file is None:
+            return
+
+        self._write_session_log_snapshot(log_file, messages)
 
 
     def interrupt(self, message: str = None) -> None:

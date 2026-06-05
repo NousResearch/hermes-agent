@@ -522,6 +522,23 @@ class TestPreToolCallBlocking:
         )
         assert get_pre_tool_call_block_message("todo", {}, task_id="t1") == "blocked by plugin"
 
+    def test_transcript_path_forwarded_to_hook(self, monkeypatch):
+        captured = {}
+
+        def _capture(hook_name, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _capture)
+
+        assert get_pre_tool_call_block_message(
+            "todo",
+            {},
+            task_id="t1",
+            transcript_path="/tmp/session_s1.json",
+        ) is None
+        assert captured["transcript_path"] == "/tmp/session_s1.json"
+
     def test_invalid_returns_are_ignored(self, monkeypatch):
         """Various malformed hook returns should not trigger a block."""
         monkeypatch.setattr(

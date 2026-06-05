@@ -2468,8 +2468,31 @@ class TestConcurrentToolExecution:
                 skip_pre_tool_call_hook=True,
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=agent.disabled_toolsets,
+                transcript_path="",
             )
             assert result == "result"
+
+    def test_invoke_tool_passes_transcript_path_to_handle_function_call(self, agent, monkeypatch):
+        """Tool hooks should receive the transcript path generated from messages."""
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: name == "pre_tool_call")
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        agent._hook_transcript_path = MagicMock(return_value="/tmp/session_agent.json")
+        messages = [{"role": "user", "content": "check repo"}]
+
+        with patch("run_agent.handle_function_call", return_value="result") as mock_hfc:
+            result = agent._invoke_tool(
+                "web_search",
+                {"q": "test"},
+                "task-1",
+                messages=messages,
+            )
+
+        assert result == "result"
+        agent._hook_transcript_path.assert_called_once_with(messages)
+        assert mock_hfc.call_args.kwargs["transcript_path"] == "/tmp/session_agent.json"
 
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")

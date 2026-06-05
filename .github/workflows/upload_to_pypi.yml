@@ -65,11 +65,13 @@ jobs:
         run: |
           mkdir -p hermes_cli/tui_dist
           cp ui-tui/dist/entry.js hermes_cli/tui_dist/entry.js
+          printf '{"type":"module"}\n' > hermes_cli/tui_dist/package.json
 
       - name: Verify frontend assets exist
         run: |
           test -f hermes_cli/web_dist/index.html || { echo "ERROR: web_dist not built"; exit 1; }
           test -f hermes_cli/tui_dist/entry.js || { echo "ERROR: tui_dist not built"; exit 1; }
+          test -f hermes_cli/tui_dist/package.json || { echo "ERROR: tui_dist package.json not built"; exit 1; }
 
       - name: Bundle install scripts into wheel
         run: |

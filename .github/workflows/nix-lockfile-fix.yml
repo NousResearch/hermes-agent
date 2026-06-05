@@ -32,7 +32,7 @@ jobs:
   # so Nix builds never stay broken.
   #
   # Safety invariants:
-  #   1. The fix commit only touches nix/*.nix files, which are NOT in
+  #   1. The fix commit only touches nix/lib.nix, which is NOT in
   #      the paths filter above, so this cannot re-trigger itself.
   #   2. An explicit file-whitelist check before commit aborts if
   #      fix-lockfiles ever modifies unexpected files.
@@ -75,9 +75,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Ensure only nix files were modified — prevents accidental
+          # Ensure only nix/lib.nix was modified — prevents accidental
           # self-triggering if fix-lockfiles ever touches package files.
-          unexpected="$(git diff --name-only | grep -Ev '^nix/(tui|web)\.nix$' || true)"
+          unexpected="$(git diff --name-only | grep -Fxv 'nix/lib.nix' || true)"
           if [ -n "$unexpected" ]; then
             echo "::error::Unexpected modified files: $unexpected"
             exit 1
@@ -89,7 +89,7 @@ jobs:
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add nix/tui.nix nix/web.nix
+          git add nix/lib.nix
           git commit -m "fix(nix): auto-refresh npm lockfile hashes" \
             -m "Source: $GITHUB_SHA" \
             -m "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -214,9 +214,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # fix-lockfiles should only refresh the shared npmDepsHash in
+          # nix/lib.nix. Abort if it ever modifies anything else.
+          unexpected="$(git diff --name-only | grep -Fxv 'nix/lib.nix' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "::error::Unexpected modified files: $unexpected"
+            exit 1
+          fi
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add nix/tui.nix nix/web.nix
+          git add nix/lib.nix
           git commit -m "fix(nix): refresh npm lockfile hashes"
           git push
 

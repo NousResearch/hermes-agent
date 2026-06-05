@@ -15593,6 +15593,11 @@ Examples:
         "--no-open", action="store_true", help="Don't open browser automatically"
     )
     dashboard_parser.add_argument(
+        "--tui",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    dashboard_parser.add_argument(
         "--insecure",
         action="store_true",
         help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",

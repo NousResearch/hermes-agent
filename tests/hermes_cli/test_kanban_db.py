@@ -1972,6 +1972,51 @@ def test_autopilot_state_persists_parent_scope_and_dry_run_tick(kanban_home, mon
     assert sibling_task.status == "ready"
 
 
+def test_autopilot_origin_binds_parent_and_children_notify_subscriptions(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_STRICT_READY_GATE", "true")
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name in {"alice", "verifier"})
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="autopilot parent", triage=True)
+        child = kb.create_task(conn, title="autopilot child", body="structured child", assignee="alice", goal_mode=True)
+        conn.execute(
+            "UPDATE tasks SET admission_snapshot = ? WHERE id = ?",
+            (json.dumps({"ready_contract": _structured_ready_contract()}), child),
+        )
+        kb.link_tasks(conn, parent, child, relation_type="hierarchy")
+
+        state = kb.set_autopilot_enabled(
+            conn,
+            parent_task_ref=parent,
+            mode="dry_run",
+            origin_platform="discord",
+            origin_chat_id="chat-1",
+            origin_thread_id="thread-1",
+            origin_user_id="user-1",
+            notifier_profile="default",
+        )
+        res = kb.autopilot_tick(conn)
+        subs = {row["task_id"]: row for row in kb.list_notify_subs(conn)}
+        events = [ev for ev in kb.list_events(conn, parent) if ev.kind == "autopilot_progress"]
+
+    assert state["origin"] == {
+        "platform": "discord",
+        "chat_id": "chat-1",
+        "thread_id": "thread-1",
+        "user_id": "user-1",
+        "notifier_profile": "default",
+    }
+    assert [item[0] for item in res.spawned] == [child]
+    assert set(subs) == {parent, child}
+    assert all(row["platform"] == "discord" for row in subs.values())
+    assert all(row["chat_id"] == "chat-1" for row in subs.values())
+    assert all(row["thread_id"] == "thread-1" for row in subs.values())
+    assert all(row["notifier_profile"] == "default" for row in subs.values())
+    assert events and events[-1].payload["spawned"] == [child]
+
+
+
 def test_autopilot_pause_resume_preserves_dry_run_mode(kanban_home):
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="autopilot parent", triage=True)
@@ -2220,6 +2265,9 @@ def test_autopilot_tick_rolls_up_parent_review_ready_when_children_are_review_re
     assert {item["task_id"] for item in parent_task.closeout_evidence["children"]} == {first, second}
     assert parent_task.closeout_evidence["verification"]["allowed"] is True
     assert state["last_decision"] == "parent_review_ready"
+    assert state["enabled"] is False
+    assert state["mode"] == "off"
+    assert state["paused_reason"] == "parent_review_ready"
     assert any(event.kind == "autopilot_parent_review_ready" for event in events)
 
 

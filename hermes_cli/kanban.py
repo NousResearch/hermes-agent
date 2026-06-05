@@ -700,6 +700,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_ap_on.add_argument("--max-concurrent", type=int, default=1)
     p_ap_on.add_argument("--max-dispatches-per-tick", type=int, default=1)
     p_ap_on.add_argument("--dry-run", action="store_true", help="Store dry-run mode and run a side-effect-free tick")
+    p_ap_on.add_argument("--origin-platform", default=None, help=argparse.SUPPRESS)
+    p_ap_on.add_argument("--origin-chat-id", default=None, help=argparse.SUPPRESS)
+    p_ap_on.add_argument("--origin-thread-id", default=None, help=argparse.SUPPRESS)
+    p_ap_on.add_argument("--origin-user-id", default=None, help=argparse.SUPPRESS)
+    p_ap_on.add_argument("--notifier-profile", default=None, help=argparse.SUPPRESS)
     p_ap_on.add_argument("--json", action="store_true")
     p_ap_status = ap_sub.add_parser("status", help="Show durable Autopilot state and grouped parent report")
     p_ap_status.add_argument("parent_task_id", nargs="?", default=None)
@@ -2517,6 +2522,11 @@ def _cmd_autopilot(args: argparse.Namespace) -> int:
                     max_concurrent=getattr(args, "max_concurrent", 1),
                     max_dispatches_per_tick=getattr(args, "max_dispatches_per_tick", 1),
                     owner_session=os.environ.get("HERMES_SESSION_ID"),
+                    origin_platform=getattr(args, "origin_platform", None),
+                    origin_chat_id=getattr(args, "origin_chat_id", None),
+                    origin_thread_id=getattr(args, "origin_thread_id", None),
+                    origin_user_id=getattr(args, "origin_user_id", None),
+                    notifier_profile=getattr(args, "notifier_profile", None),
                 )
                 res = kb.autopilot_tick(
                     conn,

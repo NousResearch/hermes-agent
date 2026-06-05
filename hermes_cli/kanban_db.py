@@ -1640,6 +1640,11 @@ CREATE TABLE IF NOT EXISTS kanban_autopilot_state (
     last_tick_at            INTEGER,
     last_decision           TEXT,
     last_error              TEXT,
+    origin_platform         TEXT,
+    origin_chat_id          TEXT,
+    origin_thread_id        TEXT,
+    origin_user_id          TEXT,
+    notifier_profile        TEXT,
     created_at              INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at              INTEGER NOT NULL DEFAULT (unixepoch())
 );
@@ -2269,6 +2274,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             last_tick_at            INTEGER,
             last_decision           TEXT,
             last_error              TEXT,
+            origin_platform         TEXT,
+            origin_chat_id          TEXT,
+            origin_thread_id        TEXT,
+            origin_user_id          TEXT,
+            notifier_profile        TEXT,
             created_at              INTEGER NOT NULL DEFAULT (unixepoch()),
             updated_at              INTEGER NOT NULL DEFAULT (unixepoch())
         )
@@ -2296,6 +2306,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         ("parent_task_id", "parent_task_id TEXT"),
         ("max_dispatches_per_tick", "max_dispatches_per_tick INTEGER NOT NULL DEFAULT 1"),
         ("last_error", "last_error TEXT"),
+        ("origin_platform", "origin_platform TEXT"),
+        ("origin_chat_id", "origin_chat_id TEXT"),
+        ("origin_thread_id", "origin_thread_id TEXT"),
+        ("origin_user_id", "origin_user_id TEXT"),
+        ("notifier_profile", "notifier_profile TEXT"),
     ):
         if column not in autopilot_cols:
             _add_column_if_missing(conn, "kanban_autopilot_state", column, ddl)
@@ -2986,6 +3001,7 @@ def _autopilot_state_row_to_dict(
             "last_tick_at": None,
             "last_decision": None,
             "last_error": None,
+            "origin": None,
         }
     parent_task_id = row["parent_task_id"] if "parent_task_id" in row.keys() else None
     return {
@@ -3001,6 +3017,13 @@ def _autopilot_state_row_to_dict(
         "last_tick_at": row["last_tick_at"],
         "last_decision": row["last_decision"],
         "last_error": row["last_error"] if "last_error" in row.keys() else None,
+        "origin": {
+            "platform": row["origin_platform"],
+            "chat_id": row["origin_chat_id"],
+            "thread_id": row["origin_thread_id"],
+            "user_id": row["origin_user_id"],
+            "notifier_profile": row["notifier_profile"],
+        } if "origin_platform" in row.keys() and row["origin_platform"] and row["origin_chat_id"] else None,
     }
 
 
@@ -3023,6 +3046,11 @@ def set_autopilot_enabled(
     max_concurrent: int = 1,
     max_dispatches_per_tick: int = 1,
     owner_session: Optional[str] = None,
+    origin_platform: Optional[str] = None,
+    origin_chat_id: Optional[str] = None,
+    origin_thread_id: Optional[str] = None,
+    origin_user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
 ) -> dict[str, Any]:
     """Enable a durable parent-scoped Autopilot run for one board.
 
@@ -3046,8 +3074,9 @@ def set_autopilot_enabled(
             INSERT INTO kanban_autopilot_state (
                 board, enabled, mode, parent_task_id, max_concurrent,
                 max_dispatches_per_tick, paused_reason, owner_session,
-                last_decision, last_error, created_at, updated_at
-            ) VALUES (?, 1, ?, ?, ?, ?, NULL, ?, 'enabled', NULL, ?, ?)
+                last_decision, last_error, origin_platform, origin_chat_id,
+                origin_thread_id, origin_user_id, notifier_profile, created_at, updated_at
+            ) VALUES (?, 1, ?, ?, ?, ?, NULL, ?, 'enabled', NULL, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(board) DO UPDATE SET
                 enabled=1,
                 mode=excluded.mode,
@@ -3058,6 +3087,11 @@ def set_autopilot_enabled(
                 owner_session=excluded.owner_session,
                 last_decision='enabled',
                 last_error=NULL,
+                origin_platform=excluded.origin_platform,
+                origin_chat_id=excluded.origin_chat_id,
+                origin_thread_id=excluded.origin_thread_id,
+                origin_user_id=excluded.origin_user_id,
+                notifier_profile=excluded.notifier_profile,
                 updated_at=excluded.updated_at
             """,
             (
@@ -3067,6 +3101,11 @@ def set_autopilot_enabled(
                 max_concurrent,
                 max_dispatches_per_tick,
                 owner_session,
+                origin_platform,
+                origin_chat_id,
+                origin_thread_id,
+                origin_user_id,
+                notifier_profile,
                 now,
                 now,
             ),
@@ -3080,10 +3119,47 @@ def set_autopilot_enabled(
                 "mode": mode,
                 "max_concurrent": max_concurrent,
                 "max_dispatches_per_tick": max_dispatches_per_tick,
+                "origin_bound": bool(origin_platform and origin_chat_id),
             },
         )
     return get_autopilot_state(conn, board=board)
 
+
+
+def _autopilot_subscription_targets(conn: sqlite3.Connection, parent_task_id: str) -> list[str]:
+    """Return parent + hierarchy descendants for parent Autopilot notifications."""
+    task_ids = [parent_task_id]
+    for child_id in sorted(hierarchy_descendant_ids(conn, parent_task_id)):
+        if child_id not in task_ids:
+            task_ids.append(child_id)
+    return task_ids
+
+
+def ensure_autopilot_origin_subscriptions(conn: sqlite3.Connection, *, board: str = DEFAULT_BOARD) -> dict[str, Any]:
+    """Bind a stored Autopilot origin to parent/child terminal notifications.
+
+    This is intentionally subscription/accounting only. It does not claim, spawn,
+    merge, deploy, restart, or mutate external systems. The gateway notifier
+    remains the delivery owner.
+    """
+    state = get_autopilot_state(conn, board=board)
+    parent_task_id = state.get("parent_task_id")
+    origin = state.get("origin") or {}
+    if not parent_task_id or not origin.get("platform") or not origin.get("chat_id"):
+        return {"subscribed": [], "reason": "missing_origin"}
+    subscribed: list[str] = []
+    for task_id in _autopilot_subscription_targets(conn, str(parent_task_id)):
+        add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform=str(origin.get("platform")),
+            chat_id=str(origin.get("chat_id")),
+            thread_id=str(origin.get("thread_id") or "") or None,
+            user_id=str(origin.get("user_id") or "") or None,
+            notifier_profile=str(origin.get("notifier_profile") or "") or None,
+        )
+        subscribed.append(task_id)
+    return {"subscribed": subscribed, "reason": "origin_bound"}
 
 def set_autopilot_paused(
     conn: sqlite3.Connection,
@@ -3793,6 +3869,22 @@ def autopilot_tick(
                 apply=True,
             )
         selected_task_id = res.spawned[0][0] if res.spawned else None
+        try:
+            ensure_autopilot_origin_subscriptions(conn, board=board)
+        except Exception:
+            pass
+        report = autopilot_parent_report(conn, parent_task_id)
+        spawned_task_ids = [task_id for task_id, _assignee, _workspace in res.spawned]
+        parent_rollup_status = parent_rollup.get("status") if parent_rollup else None
+        if spawned_task_ids or parent_rollup_status in {"transitioned", "already_review_ready"}:
+            _append_event(conn, parent_task_id, "autopilot_progress", {
+                "board": board,
+                "spawned": spawned_task_ids,
+                "parent_rollup_status": parent_rollup_status,
+                "nextRequiredChild": report.get("nextRequiredChild"),
+                "remainingChildren": report.get("remainingChildren"),
+                "parentScopeComplete": report.get("parentScopeComplete"),
+            })
         if parent_rollup and parent_rollup.get("status") in {"transitioned", "already_review_ready"}:
             decision = "select"
             reason = "parent_review_ready"
@@ -3826,10 +3918,16 @@ def autopilot_tick(
             conn.execute(
                 """
                 UPDATE kanban_autopilot_state
-                   SET last_tick_at = ?, last_decision = ?, last_error = NULL, updated_at = ?
+                   SET last_tick_at = ?,
+                       last_decision = ?,
+                       last_error = NULL,
+                       enabled = CASE WHEN ? = 'parent_review_ready' THEN 0 ELSE enabled END,
+                       mode = CASE WHEN ? = 'parent_review_ready' THEN 'off' ELSE mode END,
+                       paused_reason = CASE WHEN ? = 'parent_review_ready' THEN 'parent_review_ready' ELSE paused_reason END,
+                       updated_at = ?
                  WHERE board = ?
                 """,
-                (now, reason, now, board),
+                (now, reason, reason, reason, reason, now, board),
             )
         return res
     except Exception as exc:

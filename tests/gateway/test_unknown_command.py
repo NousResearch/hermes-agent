@@ -171,7 +171,11 @@ async def test_autopilot_slash_dispatches_parent_scoped_kanban(monkeypatch):
     result = await runner._handle_message(_make_event("/autopilot on t_parent --dry-run"))
 
     assert result == "Spawned:      1"
-    assert seen["text"] == "autopilot on t_parent --dry-run"
+    assert seen["text"].startswith("autopilot on t_parent --dry-run")
+    assert "--origin-platform telegram" in seen["text"]
+    assert "--origin-chat-id c1" in seen["text"]
+    assert "--origin-user-id u1" in seen["text"]
+    assert "--notifier-profile default" in seen["text"]
     runner._run_agent.assert_not_called()
 
 

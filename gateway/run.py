@@ -4928,7 +4928,7 @@ class GatewayRunner:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
 
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "autopilot_progress", "autopilot_parent_review_ready")
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -5119,6 +5119,18 @@ class GatewayRunner:
                             if ev.payload and ev.payload.get("reason"):
                                 reason = f": {str(ev.payload['reason'])[:160]}"
                             msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                        elif kind == "autopilot_progress":
+                            payload = ev.payload or {}
+                            remaining = payload.get("remainingChildren") or []
+                            spawned = payload.get("spawned") or []
+                            next_child = payload.get("nextRequiredChild")
+                            msg = (
+                                f"▶ Autopilot parent {sub['task_id']} progress"
+                                f" — spawned={len(spawned)} remaining={len(remaining)}"
+                                + (f" next={next_child}" if next_child else "")
+                            )
+                        elif kind == "autopilot_parent_review_ready":
+                            msg = f"✔ Autopilot parent {sub['task_id']} review_ready package assembled"
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
@@ -5409,10 +5421,13 @@ class GatewayRunner:
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
 
-        Gated by `kanban.dispatch_in_gateway` in config.yaml (default True).
-        When true, the gateway hosts the single dispatcher for this profile:
-        no separate `hermes kanban daemon` process needed. When false, the
-        loop exits immediately and an external daemon is expected.
+        Gated by `kanban.dispatch_in_gateway` in config.yaml (default True)
+        for normal ready-queue dispatch. Explicit parent-scoped Autopilot state
+        still ticks through this watcher even when normal dispatch is disabled,
+        so `/autopilot on <parent>` does not degrade into a one-shot command
+        that requires the operator to poll/recover manually. Autopilot still
+        uses the existing Kanban dispatcher substrate for worker claims/spawns;
+        it does not create a second worker owner.
 
         Each tick calls :func:`kanban_db.dispatch_once` inside
         ``asyncio.to_thread`` so the SQLite WAL lock never blocks the
@@ -5444,11 +5459,13 @@ class GatewayRunner:
             logger.warning("kanban dispatcher: cannot load config (%s); disabled", exc)
             return
         kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-        if not kanban_cfg.get("dispatch_in_gateway", True):
+        normal_dispatch_enabled = bool(kanban_cfg.get("dispatch_in_gateway", True))
+        if not normal_dispatch_enabled:
             logger.info(
-                "kanban dispatcher: disabled via config kanban.dispatch_in_gateway=false"
+                "kanban dispatcher: normal ready-queue dispatch disabled via config "
+                "kanban.dispatch_in_gateway=false; parent-scoped Autopilot controller "
+                "ticks remain enabled when explicitly armed"
             )
-            return
 
         try:
             from hermes_cli import kanban_db as _kb
@@ -5655,6 +5672,8 @@ class GatewayRunner:
                         default_assignee=default_assignee,
                         max_in_progress_per_profile=max_in_progress_per_profile,
                     )
+                if not normal_dispatch_enabled:
+                    return None
                 return _kb.dispatch_once(
                     conn,
                     board=slug,
@@ -10071,7 +10090,23 @@ class GatewayRunner:
         # Delegate to the Kanban-native Autopilot control plane.  This is not
         # an LLM rewrite: the command stores/reuses durable state and hands
         # ticks to the existing dispatcher substrate.
-        command = "autopilot " + " ".join(shlex.quote(tok) for tok in tokens)
+        origin_tokens = list(tokens)
+        if tokens and tokens[0] == "on":
+            source = event.source
+            platform = getattr(source, "platform", None)
+            platform_str = (platform.value if hasattr(platform, "value") else str(platform or "")).lower()
+            chat_id = str(getattr(source, "chat_id", "") or "")
+            thread_id = str(getattr(source, "thread_id", "") or "")
+            user_id = str(getattr(source, "user_id", "") or "")
+            if platform_str and chat_id:
+                origin_tokens.extend(["--origin-platform", platform_str, "--origin-chat-id", chat_id])
+                if thread_id:
+                    origin_tokens.extend(["--origin-thread-id", thread_id])
+                if user_id:
+                    origin_tokens.extend(["--origin-user-id", user_id])
+                notifier_profile = getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name()
+                origin_tokens.extend(["--notifier-profile", notifier_profile])
+        command = "autopilot " + " ".join(shlex.quote(tok) for tok in origin_tokens)
         try:
             output = await asyncio.to_thread(run_slash, command)
         except Exception as exc:  # pragma: no cover - defensive

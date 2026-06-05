@@ -3551,7 +3551,8 @@ def test_cli_daemon_help_marks_deprecated():
 # ---------------------------------------------------------------------------
 
 def test_gateway_dispatcher_watcher_respects_config_flag_off(monkeypatch):
-    """dispatch_in_gateway=false -> watcher exits fast, no loop."""
+    """dispatch_in_gateway=false disables normal dispatch but leaves the watcher
+    available for explicit parent-scoped Autopilot ticks."""
     import asyncio
     from gateway.run import GatewayRunner
     import hermes_cli.config as _cfg_mod
@@ -3563,6 +3564,15 @@ def test_gateway_dispatcher_watcher_respects_config_flag_off(monkeypatch):
         _cfg_mod, "load_config",
         lambda: {"kanban": {"dispatch_in_gateway": False}},
     )
+
+    async def _sleep(_delay):
+        # New behavior: the watcher no longer exits at config load time; it
+        # stays alive so explicitly armed parent Autopilot can continue. Stop
+        # it after the startup delay so the test observes the config path
+        # without running a persistent loop.
+        runner._running = False
+
+    monkeypatch.setattr(asyncio, "sleep", _sleep)
     asyncio.run(
         asyncio.wait_for(
             runner._kanban_dispatcher_watcher(),
@@ -3588,9 +3598,8 @@ def test_gateway_dispatcher_watcher_respects_env_override(monkeypatch):
 
 
 def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
-    """Truthy env value doesn't force-enable — config still decides.
-    (We only treat explicit falses as an override; unset or truthy
-    defers to config.)"""
+    """Truthy env value doesn't force-enable normal dispatch — config still
+    decides, while explicit parent Autopilot can keep the watcher alive."""
     import asyncio
     from gateway.run import GatewayRunner
     import hermes_cli.config as _cfg_mod
@@ -3603,8 +3612,13 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
 
     runner = object.__new__(GatewayRunner)
     runner._running = True
-    # config says false, env is truthy — watcher should still exit
-    # (because config is authoritative when env isn't a falsey override).
+    # config says false, env is truthy — normal dispatch remains disabled,
+    # but the watcher remains alive for explicit parent Autopilot. Stop it
+    # after startup sleep so this unit test does not wait forever.
+    async def _sleep(_delay):
+        runner._running = False
+
+    monkeypatch.setattr(asyncio, "sleep", _sleep)
     asyncio.run(
         asyncio.wait_for(
             runner._kanban_dispatcher_watcher(),

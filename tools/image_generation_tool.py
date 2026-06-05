@@ -1030,6 +1030,39 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     return json.dumps(result)
 
 
+def _dispatch_to_plugin_provider_with_name(
+    prompt: str,
+    aspect_ratio: str,
+    provider_name: str,
+):
+    """Like ``_dispatch_to_plugin_provider`` but forces a specific provider."""
+    configured_model = _read_configured_image_model()
+    try:
+        from agent.image_gen_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        provider = get_provider(provider_name)
+    except Exception as exc:
+        logger.debug("image_gen fallback dispatch skipped: %s", exc)
+        return None
+
+    if provider is None or not provider.is_available():
+        return None
+
+    try:
+        kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+        if configured_model:
+            kwargs["model"] = configured_model
+        result = provider.generate(**kwargs)
+    except Exception as exc:
+        logger.debug("image_gen fallback provider '%s' raised: %s", provider_name, exc)
+        return None
+    if not isinstance(result, dict):
+        return None
+    return json.dumps(result)
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
@@ -1042,10 +1075,38 @@ def _handle_image_generate(args, **kw):
     if dispatched is not None:
         return dispatched
 
-    return image_generate_tool(
+    result_json = image_generate_tool(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
     )
+    try:
+        result = json.loads(result_json)
+    except json.JSONDecodeError:
+        return result_json
+    if result.get("success"):
+        return result_json
+
+    err = (result.get("error") or "").lower()
+    balance_markers = ("balance", "credit", "payment", "insufficient", "402", "403")
+    if any(m in err for m in balance_markers):
+        for fallback_provider in ("openai", "openai-codex", "xai"):
+            fallback = _dispatch_to_plugin_provider_with_name(
+                prompt, aspect_ratio, fallback_provider,
+            )
+            if fallback is None:
+                continue
+            try:
+                fb = json.loads(fallback)
+            except json.JSONDecodeError:
+                continue
+            if fb.get("success"):
+                logger.info(
+                    "image_generate: FAL failed (%s); fell back to %s",
+                    result.get("error", "?")[:80],
+                    fallback_provider,
+                )
+                return fallback
+    return result_json
 
 
 registry.register(

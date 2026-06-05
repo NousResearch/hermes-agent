@@ -36,6 +36,7 @@ import hashlib
 import hmac
 import json
 import logging
+import mimetypes
 import os
 import socket as _socket
 import re
@@ -69,6 +70,20 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+_ARTIFACT_PREVIEW_BYTES = 4_096
+_ARTIFACT_MAX_PREVIEW_FILE_BYTES = 256 * 1024
+_ARTIFACT_BLOCKED_SEGMENTS = frozenset({
+    ".env",
+    ".git",
+    ".infisical",
+    ".ssh",
+    ".venv",
+    "credentials",
+    "keys",
+    "node_modules",
+    "secrets",
+    "venv",
+})
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -879,6 +894,135 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------
+    # Artifact workspace helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _artifact_roots() -> Dict[str, Path]:
+        roots: Dict[str, Path] = {}
+        raw = os.environ.get("API_SERVER_ARTIFACT_ROOTS", "")
+        for item in raw.split(","):
+            item = item.strip()
+            if not item or "=" not in item:
+                continue
+            name, path = item.split("=", 1)
+            name = re.sub(r"[^A-Za-z0-9_.-]", "", name.strip())
+            if not name:
+                continue
+            roots[name] = Path(path.strip()).expanduser().resolve()
+        return roots
+
+    @staticmethod
+    def _artifact_type(path: Path) -> str:
+        suffix = path.suffix.lower()
+        if path.is_dir():
+            return "directory"
+        if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
+            return "image"
+        if suffix in {".mp4", ".mov", ".webm", ".mkv"}:
+            return "video"
+        if suffix in {".mp3", ".wav", ".ogg", ".m4a", ".flac"}:
+            return "audio"
+        if suffix in {".txt", ".md", ".json", ".yaml", ".yml", ".csv", ".log", ".html"}:
+            return "document"
+        return "file"
+
+    @staticmethod
+    def _artifact_preview(path: Path) -> str:
+        if path.is_dir() or path.stat().st_size > 64_000:
+            return ""
+        if APIServerAdapter._artifact_type(path) != "document":
+            return ""
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")[:1_000]
+        except OSError:
+            return ""
+
+    def _resolve_artifact_path(self, virtual_path: str) -> tuple[Optional[str], Optional[Path], Optional["web.Response"]]:
+        roots = self._artifact_roots()
+        clean = (virtual_path or "").strip().strip("/")
+        if not clean:
+            return None, None, None
+        root_name, _, rel = clean.partition("/")
+        root = roots.get(root_name)
+        if root is None:
+            return None, None, web.json_response({"error": "Unknown artifact root"}, status=404)
+        try:
+            target = (root / rel).resolve() if rel else root
+            target.relative_to(root)
+        except (OSError, ValueError):
+            return None, None, web.json_response({"error": "Invalid artifact path"}, status=400)
+        return root_name, target, None
+
+    @staticmethod
+    def _artifact_item(root_name: str, root: Path, path: Path) -> Dict[str, Any]:
+        rel = path.relative_to(root).as_posix()
+        virtual = root_name if rel == "." else f"{root_name}/{rel}"
+        stat = path.stat()
+        return {
+            "name": path.name or root_name,
+            "path": virtual,
+            "kind": "directory" if path.is_dir() else "file",
+            "size": 0 if path.is_dir() else stat.st_size,
+            "mtime": stat.st_mtime,
+            "artifactType": APIServerAdapter._artifact_type(path),
+            "preview": APIServerAdapter._artifact_preview(path),
+        }
+
+    async def _handle_list_artifacts(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        roots = self._artifact_roots()
+        requested = request.query.get("path", "")
+        if not requested:
+            items = [
+                self._artifact_item(name, root, root)
+                for name, root in sorted(roots.items())
+                if root.exists() and root.is_dir()
+            ]
+            return web.json_response({"object": "hermes.artifacts.list", "items": items})
+
+        root_name, target, err = self._resolve_artifact_path(requested)
+        if err:
+            return err
+        assert root_name is not None and target is not None
+        roots_map = self._artifact_roots()
+        root = roots_map[root_name]
+        if not target.exists():
+            return web.json_response({"error": "Artifact path not found"}, status=404)
+        if target.is_file():
+            return web.json_response({"object": "hermes.artifacts.list", "items": [self._artifact_item(root_name, root, target)]})
+        items = []
+        for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            if child.name.startswith("."):
+                continue
+            try:
+                items.append(self._artifact_item(root_name, root, child))
+            except OSError:
+                continue
+        return web.json_response({"object": "hermes.artifacts.list", "items": items})
+
+    async def _handle_get_artifact(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        artifact_path = request.match_info.get("artifact_path", "")
+        root_name, target, err = self._resolve_artifact_path(artifact_path)
+        if err:
+            return err
+        assert root_name is not None and target is not None
+        roots = self._artifact_roots()
+        root = roots[root_name]
+        if not target.exists():
+            return web.json_response({"error": "Artifact path not found"}, status=404)
+        if request.query.get("metadata"):
+            return web.json_response(self._artifact_item(root_name, root, target))
+        if target.is_dir():
+            return web.json_response({"error": "Artifact path is a directory"}, status=400)
+        return web.FileResponse(path=target)
+
+    # ------------------------------------------------------------------
     # Session header helpers
     # ------------------------------------------------------------------
 
@@ -1155,8 +1299,200 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "artifacts": {"method": "GET", "path": "/api/artifacts"},
+                "artifact": {"method": "GET", "path": "/api/artifacts/{artifact_path}"},
             },
         })
+
+    @staticmethod
+    def _artifact_segment_allowed(segment: str) -> bool:
+        """Block hidden/secret/cache-ish names from artifact browsing."""
+        if not segment:
+            return False
+        lowered = segment.lower()
+        if lowered in {".", ".."}:
+            return False
+        if lowered in _ARTIFACT_BLOCKED_SEGMENTS:
+            return False
+        if lowered.startswith("."):
+            return False
+        return True
+
+    def _artifact_roots(self) -> Dict[str, Path]:
+        """Resolve configured artifact roots as virtual-root name -> path."""
+        raw_roots = os.getenv("API_SERVER_ARTIFACT_ROOTS", "").strip()
+        roots: Dict[str, Path] = {}
+        if raw_roots:
+            for raw_item in raw_roots.split(","):
+                item = raw_item.strip()
+                if not item:
+                    continue
+                if "=" in item:
+                    raw_name, raw_path = item.split("=", 1)
+                    name = raw_name.strip()
+                    path_str = raw_path.strip()
+                else:
+                    path_str = item
+                    name = Path(path_str).name.strip()
+                if not name or not path_str or not self._artifact_segment_allowed(name):
+                    continue
+                path = Path(path_str).expanduser().resolve()
+                if path.exists() and path.is_dir():
+                    roots[name] = path
+
+        if roots:
+            return roots
+
+        single_root = os.getenv("API_SERVER_ARTIFACT_ROOT", "").strip() or os.getenv("HERMES_ARTIFACT_ROOT", "").strip()
+        if single_root:
+            path = Path(single_root).expanduser().resolve()
+            if path.exists() and path.is_dir():
+                return {"artifacts": path}
+
+        cwd = Path.cwd()
+        for name in ("outputs", "reports"):
+            candidate = (cwd / name).resolve()
+            if candidate.exists() and candidate.is_dir():
+                roots[name] = candidate
+        return roots
+
+    def _artifact_metadata(self, path: Path, virtual_path: str) -> Dict[str, Any]:
+        """Return BAEL-compatible metadata for artifact list/detail responses."""
+        stat = path.stat()
+        is_dir = path.is_dir()
+        mime_type = "inode/directory" if is_dir else (mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+        kind = "directory" if is_dir else "file"
+        artifact_type = "binary"
+        if is_dir:
+            artifact_type = "folder"
+        elif mime_type.startswith("image/"):
+            artifact_type = "image"
+        elif mime_type.startswith("video/"):
+            artifact_type = "video"
+        elif mime_type.startswith("audio/"):
+            artifact_type = "audio"
+        elif mime_type.startswith("text/") or mime_type in {"application/json", "application/pdf"}:
+            artifact_type = "document"
+
+        preview = ""
+        if not is_dir and stat.st_size <= _ARTIFACT_MAX_PREVIEW_FILE_BYTES and artifact_type == "document":
+            try:
+                preview = path.read_text(encoding="utf-8", errors="replace")[:_ARTIFACT_PREVIEW_BYTES]
+            except Exception:
+                preview = ""
+
+        return {
+            "artifactType": artifact_type,
+            "kind": kind,
+            "mimeType": mime_type,
+            "modifiedAt": int(stat.st_mtime),
+            "name": path.name,
+            "path": virtual_path,
+            "preview": preview,
+            "size": int(stat.st_size),
+        }
+
+    def _resolve_artifact_path(self, raw_path: str) -> tuple[Optional[Path], Optional[str], Optional[Path], Optional["web.Response"]]:
+        """Resolve and validate a virtual artifact path against configured roots."""
+        virtual_path = (raw_path or "").strip().strip("/")
+        if not virtual_path:
+            return None, None, None, web.json_response(_openai_error("Invalid artifact path"), status=400)
+
+        parts = [part for part in virtual_path.split("/") if part]
+        if not parts:
+            return None, None, None, web.json_response(_openai_error("Invalid artifact path"), status=400)
+
+        root_name = parts[0]
+        if not self._artifact_segment_allowed(root_name):
+            return None, None, None, web.json_response(_openai_error("Invalid artifact path"), status=400)
+
+        roots = self._artifact_roots()
+        root = roots.get(root_name)
+        if root is None:
+            return None, None, None, web.json_response(_openai_error("Artifact root not found"), status=404)
+
+        rel_parts = parts[1:]
+        if any(not self._artifact_segment_allowed(part) for part in rel_parts):
+            return None, None, None, web.json_response(_openai_error("Invalid artifact path"), status=400)
+
+        candidate = root.joinpath(*rel_parts).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return None, None, None, web.json_response(_openai_error("Artifact path must be within configured root directory"), status=400)
+
+        return root, root_name, candidate, None
+
+    async def _handle_list_artifacts(self, request: "web.Request") -> "web.Response":
+        """GET /api/artifacts — list artifact roots or a root-relative directory."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        roots = self._artifact_roots()
+        if not roots:
+            return web.json_response({"object": "hermes.artifacts.list", "items": []})
+
+        raw_path = (request.query.get("path") or "").strip().strip("/")
+        if not raw_path:
+            items = []
+            for root_name, root_path in roots.items():
+                if not self._artifact_segment_allowed(root_name):
+                    continue
+                items.append(self._artifact_metadata(root_path, root_name))
+            items.sort(key=lambda item: item["path"])
+            return web.json_response({"object": "hermes.artifacts.list", "items": items})
+
+        root, root_name, target, err = self._resolve_artifact_path(raw_path)
+        if err:
+            return err
+        if root is None or root_name is None or target is None:
+            return web.json_response(_openai_error("Failed to resolve artifact path", err_type="server_error"), status=500)
+
+        if not target.exists():
+            return web.json_response(_openai_error("Artifact path not found"), status=404)
+        if not target.is_dir():
+            return web.json_response(_openai_error("Artifact path is not a directory"), status=400)
+
+        items = []
+        for child in target.iterdir():
+            if not self._artifact_segment_allowed(child.name):
+                continue
+            try:
+                resolved_child = child.resolve()
+                resolved_child.relative_to(root)
+            except Exception:
+                continue
+            virtual_child = f"{root_name}/{child.relative_to(root).as_posix()}"
+            items.append(self._artifact_metadata(child, virtual_child))
+        items.sort(key=lambda item: item["path"])
+        return web.json_response({"object": "hermes.artifacts.list", "items": items})
+
+    async def _handle_get_artifact(self, request: "web.Request") -> "web.Response":
+        """GET /api/artifacts/{artifact_path} — return file bytes or metadata JSON."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        artifact_path = request.match_info.get("artifact_path", "")
+        root, root_name, target, err = self._resolve_artifact_path(artifact_path)
+        if err:
+            return err
+        if root is None or root_name is None or target is None:
+            return web.json_response(_openai_error("Failed to resolve artifact path", err_type="server_error"), status=500)
+
+        if not target.exists():
+            return web.json_response(_openai_error("Artifact not found"), status=404)
+
+        metadata_mode = _coerce_request_bool(request.query.get("metadata"), default=False)
+        virtual_path = f"{root_name}/{target.relative_to(root).as_posix()}"
+        if metadata_mode:
+            return web.json_response(self._artifact_metadata(target, virtual_path))
+
+        if target.is_dir():
+            return web.json_response(_openai_error("Artifact is a directory; use /api/artifacts"), status=400)
+
+        return web.FileResponse(target)
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.
@@ -4108,7 +4444,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
+            self._app.router.add_get("/api/artifacts", self._handle_list_artifacts)
+            self._app.router.add_get("/api/artifacts/{artifact_path:.+}", self._handle_get_artifact)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
+            self._app.router.add_get("/api/artifacts", self._handle_list_artifacts)
+            self._app.router.add_get("/api/artifacts/{artifact_path:.+}", self._handle_get_artifact)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)
             self._app.router.add_get("/api/sessions/{session_id}", self._handle_get_session)

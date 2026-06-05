@@ -180,6 +180,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -389,9 +390,51 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
+            sender_aliases = expand_whatsapp_aliases(sender_id)
+            static_allowed = set()
+            for allowed in self._allow_from:
+                static_allowed.update(expand_whatsapp_aliases(allowed))
+            if sender_aliases & static_allowed:
+                return True
+            if sender_aliases & self._dynamic_allowed_users():
+                return True
+            return False
         # "open" — all DMs allowed
         return True
+
+    def _dynamic_allowed_users(self) -> set[str]:
+        """Return WhatsApp contacts authorized by outbound messages.
+
+        The Baileys bridge persists dynamic customer authorizations in
+        ``whatsapp/session/dynamic-allowed-users.json`` whenever Zeus/Sophie
+        sends an outbound message. The Python gateway must honor the same file
+        as the bridge; otherwise customer replies can pass bridge intake and
+        still be dropped before the agent sees them.
+        """
+        raw_session_path = str(self.config.extra.get("session_path") or os.getenv("WHATSAPP_SESSION_PATH", "")).strip()
+        if raw_session_path:
+            session_path = Path(raw_session_path)
+        else:
+            try:
+                from hermes_constants import get_hermes_home
+                session_path = get_hermes_home() / "whatsapp" / "session"
+            except Exception:
+                session_path = Path.home() / ".hermes" / "whatsapp" / "session"
+        path = session_path / "dynamic-allowed-users.json"
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return set()
+        except Exception as exc:
+            logger.debug("[%s] Failed to read dynamic WhatsApp allowlist %s: %s", self.name, path, exc)
+            return set()
+        values = raw if isinstance(raw, list) else []
+        aliases: set[str] = set()
+        for value in values:
+            normalized = normalize_whatsapp_identifier(str(value or ""))
+            if normalized:
+                aliases.update(expand_whatsapp_aliases(normalized))
+        return aliases
 
     def _is_group_allowed(self, chat_id: str) -> bool:
         """Check whether a group chat should be processed."""
@@ -967,6 +1010,46 @@ class WhatsAppAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
+
+    def _reactions_enabled(self) -> bool:
+        """Return whether WhatsApp processing-start reactions are enabled."""
+        configured = self.config.extra.get("reactions") if getattr(self.config, "extra", None) else None
+        if configured is None:
+            configured = os.getenv("WHATSAPP_REACTIONS", "true")
+        return str(configured).strip().lower() not in {"false", "0", "no", "off"}
+
+    def _reaction_emoji(self) -> str:
+        """Emoji used to acknowledge inbound WhatsApp messages immediately."""
+        configured = self.config.extra.get("reaction_emoji") if getattr(self.config, "extra", None) else None
+        return str(configured or os.getenv("WHATSAPP_REACTION_EMOJI", "👩🏻")).strip() or "👩🏻"
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """React to inbound WhatsApp messages as soon as processing starts."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not (chat_id and message_id and self._running and self._http_session):
+            return
+        try:
+            import aiohttp
+            payload = {
+                "chatId": chat_id,
+                "messageId": message_id,
+                "emoji": self._reaction_emoji(),
+            }
+            sender_id = getattr(event.source, "user_id", None)
+            if sender_id:
+                payload["senderId"] = sender_id
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/react",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug("[%s] WhatsApp reaction failed: %s", self.name, await resp.text())
+        except Exception as exc:
+            logger.debug("[%s] WhatsApp reaction failed: %s", self.name, exc)
 
     async def edit_message(
         self,

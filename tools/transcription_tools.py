@@ -134,6 +134,25 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
     return is_truthy_value(enabled, default=True)
 
 
+def warmup_stt_backend() -> None:
+    """Pre-load the configured STT backend so first voice note is not delayed."""
+    if not is_stt_enabled():
+        return
+    stt_config = _load_stt_config()
+    provider = (stt_config.get("provider") or DEFAULT_PROVIDER).strip().lower()
+    if provider == "local":
+        model_name = _normalize_local_model(
+            (stt_config.get("local") or {}).get("model")
+        )
+        logger.info("Warming local STT model '%s'...", model_name)
+        _load_local_whisper_model(model_name)
+        logger.info("Local STT model '%s' ready", model_name)
+    elif provider == "openai" and _has_openai_audio_backend():
+        logger.info("OpenAI STT backend configured (no model preload needed)")
+    else:
+        logger.debug("STT warmup skipped for provider=%s", provider)
+
+
 def _has_openai_audio_backend() -> bool:
     """Return True when OpenAI audio can use config credentials, env credentials, or the managed gateway."""
     try:

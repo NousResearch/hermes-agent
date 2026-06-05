@@ -6496,6 +6496,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_factory(args):
+    """SitioUno Software Factory orchestration state."""
+    from hermes_cli.factory import factory_command
+
+    return factory_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -12375,7 +12382,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "dump", "factory", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
@@ -13678,6 +13685,14 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # factory command — SitioUno Software Factory state/progress DB
+    # =========================================================================
+    from hermes_cli.factory import add_parser as _build_factory_parser
+
+    factory_parser = _build_factory_parser(subparsers)
+    factory_parser.set_defaults(func=cmd_factory)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

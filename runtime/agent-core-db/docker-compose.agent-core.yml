@@ -1,0 +1,27 @@
+services:
+  agent-postgres:
+    image: postgres:16-alpine
+    container_name: agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${AGENT_DB_ADMIN_USER:-agent_admin}
+      POSTGRES_PASSWORD: ${AGENT_DB_ADMIN_PASSWORD:?AGENT_DB_ADMIN_PASSWORD is required}
+      POSTGRES_DB: ${AGENT_DB_NAME:-zeus_agent}
+    volumes:
+      - agent_core_postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${AGENT_DB_HOST_BIND:-127.0.0.1}:${AGENT_DB_HOST_PORT:-55430}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AGENT_DB_ADMIN_USER:-agent_admin} -d ${AGENT_DB_NAME:-zeus_agent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - agent-core
+
+volumes:
+  agent_core_postgres_data:
+
+networks:
+  agent-core:
+    name: agent-core

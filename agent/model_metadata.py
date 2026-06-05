@@ -1135,13 +1135,17 @@ def _model_name_suggests_kimi(model: str) -> bool:
 def _model_name_suggests_minimax_m3(model: str) -> bool:
     """Return True if the model name looks like MiniMax M3.
 
-    Catches ``MiniMax-M3``, ``minimax/minimax-m3``, and similar variants
-    across surfaces (native MiniMax-M3, OpenRouter/Nous minimax/minimax-m3).
-    Used as a guard against stale cache entries seeded by pre-catalog builds
-    that resolved M3 via the generic ``minimax`` catch-all (204,800) before
-    the ``minimax-m3`` (1M) entry existed in DEFAULT_CONTEXT_LENGTHS.
+    Catches ``MiniMax-M3``, ``minimax/minimax-m3``, ``minimax_m3`` and
+    similar variants across surfaces (native MiniMax-M3, OpenRouter/Nous
+    minimax/minimax-m3).  Used as a guard against stale cache entries seeded
+    by pre-catalog builds that resolved M3 via the generic ``minimax``
+    catch-all (204,800) before the ``minimax-m3`` (1M) entry existed in
+    DEFAULT_CONTEXT_LENGTHS.
     """
-    return "minimax-m3" in model.lower()
+    import re
+
+    normalized = re.sub(r"[^a-z0-9]+", "", model.lower())
+    return "minimaxm3" in normalized
 
 
 def _model_name_suggests_grok_4_3(model: str) -> bool:
@@ -1733,6 +1737,11 @@ def get_model_context_length(
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx
+    if str(effective_provider).startswith("minimax") and _model_name_suggests_minimax_m3(model):
+        # MiniMax's own docs list M3 as 1M context (512K is max output). Keep
+        # this curated provider-specific override ahead of models.dev, whose
+        # catalog may expose the output cap as context for some MiniMax entries.
+        return DEFAULT_CONTEXT_LENGTHS["minimax-m3"]
     # 5e. Ollama native /api/show probe — runs for ANY provider with a
     # base_url, not just ollama-cloud.  Ollama-compatible servers expose
     # this endpoint regardless of hostname (local Ollama, Ollama Cloud,

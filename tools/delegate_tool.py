@@ -1032,6 +1032,13 @@ def _build_child_agent(
         effective_api_mode = override_api_mode
     elif effective_provider != _parent_provider:
         effective_api_mode = None  # force re-derivation from provider's defaults
+        # Same principle applies to base_url: if the child's provider differs
+        # from the parent's, the inherited base_url would send requests to the
+        # wrong endpoint.  Clear it so AIAgent.__init__ resolves the correct
+        # base_url from the child's provider configuration at construction time.
+        # See SiteOneTech/hermes-agent-original#1 / delegate_task deepseek 404.
+        if override_base_url is None:
+            effective_base_url = None
     else:
         effective_api_mode = getattr(parent_agent, "api_mode", None)
     effective_acp_command = override_acp_command or getattr(

@@ -28,7 +28,7 @@ import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
-import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { expandWhatsAppIdentifiers, matchesAllowedUser, normalizeWhatsAppIdentifier, parseAllowedUsers } from './allowlist.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -62,6 +62,56 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
+const DYNAMIC_ALLOWED_USERS_FILE = path.join(SESSION_DIR, 'dynamic-allowed-users.json');
+const DYNAMIC_ALLOWED_USERS = loadDynamicAllowedUsers();
+
+function loadDynamicAllowedUsers() {
+  if (!existsSync(DYNAMIC_ALLOWED_USERS_FILE)) return new Set();
+  try {
+    const parsed = JSON.parse(readFileSync(DYNAMIC_ALLOWED_USERS_FILE, 'utf8'));
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.map(normalizeWhatsAppIdentifier).filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
+function persistDynamicAllowedUsers() {
+  try {
+    mkdirSync(SESSION_DIR, { recursive: true });
+    writeFileSync(
+      DYNAMIC_ALLOWED_USERS_FILE,
+      JSON.stringify(Array.from(DYNAMIC_ALLOWED_USERS).sort(), null, 2),
+      'utf8',
+    );
+  } catch (err) {
+    console.warn('[bridge] Failed to persist dynamic WhatsApp allowlist:', err.message);
+  }
+}
+
+function authorizeOutboundChat(chatId) {
+  const normalized = normalizeWhatsAppIdentifier(chatId);
+  if (!normalized || normalized.includes('@g.us') || normalized === 'status') return;
+
+  let changed = false;
+  const aliases = expandWhatsAppIdentifiers(normalized, SESSION_DIR);
+  for (const alias of aliases) {
+    if (alias && !DYNAMIC_ALLOWED_USERS.has(alias)) {
+      DYNAMIC_ALLOWED_USERS.add(alias);
+      changed = true;
+    }
+  }
+  if (changed) persistDynamicAllowedUsers();
+}
+
+function matchesDynamicAllowedUser(senderId) {
+  if (!DYNAMIC_ALLOWED_USERS || DYNAMIC_ALLOWED_USERS.size === 0) return false;
+  const aliases = expandWhatsAppIdentifiers(senderId, SESSION_DIR);
+  for (const alias of aliases) {
+    if (DYNAMIC_ALLOWED_USERS.has(alias)) return true;
+  }
+  return false;
+}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -301,7 +351,7 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR) && !matchesDynamicAllowedUser(senderId)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',
@@ -511,6 +561,7 @@ app.post('/send', async (req, res) => {
         await sleep(CHUNK_DELAY_MS);
       }
     }
+    authorizeOutboundChat(chatId);
 
     res.json({
       success: true,
@@ -551,6 +602,30 @@ app.post('/edit', async (req, res) => {
     }
 
     res.json({ success: true, messageIds });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// React to an inbound message. Used as an immediate "we are reading this"
+// acknowledgement before the Python agent finishes processing the turn.
+app.post('/react', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, messageId, emoji, senderId } = req.body;
+  if (!chatId || !messageId || !emoji) {
+    return res.status(400).json({ error: 'chatId, messageId, and emoji are required' });
+  }
+
+  try {
+    const key = { id: messageId, fromMe: false, remoteJid: chatId };
+    if (senderId && chatId.endsWith('@g.us')) {
+      key.participant = senderId;
+    }
+    await sendWithTimeout(chatId, { react: { text: emoji, key } });
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -645,6 +720,7 @@ app.post('/send-media', async (req, res) => {
     const sent = await sendWithTimeout(chatId, msgPayload);
 
     trackSentMessageId(sent);
+    authorizeOutboundChat(chatId);
 
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {

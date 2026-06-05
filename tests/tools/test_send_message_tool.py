@@ -33,6 +33,7 @@ from tools.send_message_tool import (
     _send_signal,
     _send_telegram,
     _send_to_platform,
+    _send_whatsapp,
     send_message_tool,
 )
 # Discord helpers moved to the plugin in #24325.  Import from the new path
@@ -439,6 +440,111 @@ class TestSendMessageTool:
         assert "error" in result
         assert leaked not in result["error"]
         assert "access_token=***" in result["error"]
+
+
+class _FakeAiohttpResponse:
+    def __init__(self, status=200, payload=None, text=""):
+        self.status = status
+        self._payload = payload or {"messageId": "msg-1"}
+        self._text = text
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def json(self):
+        return self._payload
+
+    async def text(self):
+        return self._text
+
+
+class _FakeAiohttpSession:
+    posts = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def post(self, url, *, json, timeout):
+        self.__class__.posts.append({"url": url, "json": json, "timeout": timeout})
+        return _FakeAiohttpResponse(payload={"messageId": f"msg-{len(self.__class__.posts)}"})
+
+
+class TestSendWhatsAppMediaDelivery:
+    def test_whatsapp_e164_target_is_converted_to_baileys_jid(self, monkeypatch):
+        _FakeAiohttpSession.posts = []
+        monkeypatch.setitem(
+            sys.modules,
+            "aiohttp",
+            SimpleNamespace(ClientSession=_FakeAiohttpSession, ClientTimeout=lambda **kw: kw),
+        )
+
+        result = asyncio.run(_send_whatsapp({"bridge_port": 3000}, "+13059274824", "Prueba"))
+
+        assert result["success"] is True
+        assert _FakeAiohttpSession.posts[0]["url"] == "http://localhost:3000/send"
+        assert _FakeAiohttpSession.posts[0]["json"]["chatId"] == "13059274824@s.whatsapp.net"
+
+    def test_whatsapp_media_uses_send_media_with_caption(self, tmp_path, monkeypatch):
+        image_path = tmp_path / "photo.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+        _FakeAiohttpSession.posts = []
+        monkeypatch.setitem(
+            sys.modules,
+            "aiohttp",
+            SimpleNamespace(ClientSession=_FakeAiohttpSession, ClientTimeout=lambda **kw: kw),
+        )
+
+        result = asyncio.run(
+            _send_whatsapp(
+                {"bridge_port": 3000},
+                "120697238081658@lid",
+                "Aquí va la imagen",
+                media_files=[(str(image_path), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "msg-1"
+        assert len(_FakeAiohttpSession.posts) == 1
+        post = _FakeAiohttpSession.posts[0]
+        assert post["url"] == "http://localhost:3000/send-media"
+        assert post["json"] == {
+            "chatId": "120697238081658@lid",
+            "filePath": str(image_path),
+            "mediaType": "image",
+            "caption": "Aquí va la imagen",
+        }
+
+    def test_whatsapp_media_only_does_not_call_text_send(self, tmp_path, monkeypatch):
+        image_path = tmp_path / "photo.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+        _FakeAiohttpSession.posts = []
+        monkeypatch.setitem(
+            sys.modules,
+            "aiohttp",
+            SimpleNamespace(ClientSession=_FakeAiohttpSession, ClientTimeout=lambda **kw: kw),
+        )
+
+        result = asyncio.run(
+            _send_to_platform(
+                Platform.WHATSAPP,
+                SimpleNamespace(extra={"bridge_port": 3000}),
+                "120697238081658@lid",
+                "",
+                media_files=[(str(image_path), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert len(_FakeAiohttpSession.posts) == 1
+        assert _FakeAiohttpSession.posts[0]["url"] == "http://localhost:3000/send-media"
+        assert "caption" not in _FakeAiohttpSession.posts[0]["json"]
 
 
 class TestSendTelegramMediaDelivery:

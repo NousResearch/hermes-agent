@@ -37,6 +37,8 @@ _HERMES_CORE_TOOLS = [
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
     "vision_analyze", "image_generate",
+    # MiniMax Token Plan CLI (gated on mmx being installed/authenticated)
+    "minimax_cli_status", "minimax_text_chat", "minimax_image_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -128,6 +130,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "minimax_cli": {
+        "description": "Official MiniMax Token Plan CLI tools for text, image generation, and quota checks",
+        "tools": ["minimax_cli_status", "minimax_text_chat", "minimax_image_generate"],
+        "includes": []
+    },
+
     "video_gen": {
         "description": (
             "Video generation tools. Single ``video_generate`` tool covers "
@@ -184,7 +192,120 @@ TOOLSETS = {
         "tools": ["cronjob"],
         "includes": []
     },
-    
+
+    "factory": {
+        "description": "SitioUno Software Factory project, lane, task, gate, and status tools",
+        "tools": [
+            "factory_project_create", "factory_lane_create",
+            "factory_task_create", "factory_gate_record", "factory_status",
+        ],
+        "includes": []
+    },
+
+    "calendar": {
+        "description": "Agent-native calendar and booking tools backed by a self-hosted scheduler",
+        "tools": [
+            "calendar_status", "calendar_create_actor", "calendar_find_actor_by_metadata",
+            "calendar_create_calendar", "calendar_find_calendar_by_metadata",
+            "calendar_create_service", "calendar_find_service_by_metadata",
+            "calendar_add_actor_to_service", "calendar_add_busy_calendar",
+            "calendar_find_availability", "calendar_create_event", "calendar_block_time",
+            "calendar_list_events", "calendar_update_event", "calendar_cancel_event",
+            "calendar_raw_request",
+        ],
+        "includes": []
+    },
+
+    "crm": {
+        "description": "Agent-native CRM backed by the shared Agent Core DB",
+        "tools": [
+            "crm_status", "crm_organization_upsert", "crm_contact_upsert",
+            "crm_opportunity_upsert", "crm_product_upsert", "crm_quote_create",
+            "crm_invoice_create", "crm_relationship_upsert",
+            "crm_interaction_record", "crm_follow_up_create",
+            "crm_customer_timeline", "crm_search", "crm_twenty_sync",
+            "crm_twenty_raw_request",
+        ],
+        "includes": []
+    },
+
+    "customer_service": {
+        "description": "Restricted customer-facing ATC toolset for Sophie/front-office agents: no shell, files, memory, cron, delegation, calendar mutation, sales execution, quotes/invoices, raw CRM adapters, or privileged operator tools",
+        "tools": [
+            "web_search", "web_extract", "clarify",
+            "crm_status", "crm_organization_upsert", "crm_contact_upsert",
+            "crm_opportunity_upsert", "crm_interaction_record",
+            "crm_follow_up_create", "crm_customer_timeline", "crm_search",
+            "customer_intent_raise",
+        ],
+        "includes": []
+    },
+
+    "customer_intents": {
+        "description": "Zeus/supervisor tools for processing customer-service escalation intents raised by Sophie",
+        "tools": ["customer_intent_list", "customer_intent_update"],
+        "includes": []
+    },
+
+    "voice": {
+        "description": "Agent-native voice/telephony core backed by the shared Agent Core DB, with Vapi as the first provider adapter",
+        "tools": [
+            "voice_status", "voice_assistant_create", "voice_assistant_list",
+            "voice_phone_number_list", "voice_call_start", "voice_call_get",
+            "voice_call_event_record", "voice_vapi_raw_request",
+        ],
+        "includes": []
+    },
+
+    "sales": {
+        "description": "Agent-native commercial/sales core: catalog, inventory, quotes, orders, invoices, and payment requests",
+        "tools": [
+            "sales_status", "sales_product_upsert", "sales_inventory_adjust",
+            "sales_quote_create", "sales_order_create", "sales_invoice_create",
+            "sales_payment_request_create", "sales_customer_workspace_create",
+        ],
+        "includes": []
+    },
+
+    "notifications": {
+        "description": "Provider-neutral notification adapters for email, marketing, and business notifications",
+        "tools": ["notification_status", "notification_email_send"],
+        "includes": []
+    },
+
+    "signature": {
+        "description": "Agent-native e-signature core: document requests, signers, signature capture, audit events, and approval hashes",
+        "tools": [
+            "signature_status", "signature_template_upsert", "signature_request_create",
+            "signature_request_get", "signature_event_record", "signature_approval_hash_create",
+        ],
+        "includes": []
+    },
+
+    "accounting": {
+        "description": "Agent-native accounting-lite core: payment receipts, bank/cash accounts, income/expense journal, and accountant exports",
+        "tools": [
+            "accounting_status", "accounting_account_upsert", "accounting_receipt_create",
+            "accounting_receipt_get", "accounting_journal_entry_create", "accounting_export_create",
+        ],
+        "includes": []
+    },
+
+    "fitness": {
+        "description": "Agent-native personal fitness coach core: profiles, goals, food database/cache, nutrition, exercises, routines, workouts, body metrics, check-ins, and progress summaries",
+        "tools": [
+            "fitness_status", "fitness_profile_upsert", "fitness_goal_upsert",
+            "fitness_food_upsert", "fitness_food_search",
+            "fitness_nutrition_log_create", "fitness_nutrition_day_summary",
+            "fitness_exercise_upsert", "fitness_exercise_search",
+            "fitness_routine_create", "fitness_routine_get",
+            "fitness_workout_session_create", "fitness_workout_set_log", "fitness_workout_finish",
+            "fitness_body_metric_log_create", "fitness_checkin_create",
+            "fitness_progress_summary", "fitness_coach_review",
+        ],
+        "includes": []
+    },
+
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
         "tools": ["send_message"],

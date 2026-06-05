@@ -749,6 +749,22 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- WhatsApp: native media attachment support via local bridge ---
+    if platform == Platform.WHATSAPP and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_whatsapp(
+                pconfig.extra,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else [],
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
@@ -1074,15 +1090,80 @@ async def _send_slack(token, chat_id, message, thread_ts=None):
         return _error(f"Slack send failed: {e}")
 
 
-async def _send_whatsapp(extra, chat_id, message):
-    """Send via the local WhatsApp bridge HTTP API."""
+async def _send_whatsapp(extra, chat_id, message, media_files=None):
+    """Send via the local WhatsApp bridge HTTP API.
+
+    Text uses /send. Local MEDIA attachments use /send-media so images,
+    videos, audio, and documents arrive as native WhatsApp attachments.
+    When text and media are both present, the text is sent as the caption
+    on the first media item instead of a separate message.
+    """
     try:
         import aiohttp
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    media_files = media_files or []
+
+    def _normalize_whatsapp_target(value):
+        raw = str(value or "").strip()
+        e164 = _E164_TARGET_RE.fullmatch(raw)
+        if e164:
+            return f"{e164.group(1)}@s.whatsapp.net"
+        if raw.isdigit():
+            return f"{raw}@s.whatsapp.net"
+        return raw
+
+    chat_id = _normalize_whatsapp_target(chat_id)
+
+    def _media_type_for_path(path, is_voice=False):
+        ext = os.path.splitext(path)[1].lower()
+        if ext in _IMAGE_EXTS:
+            return "image"
+        if ext in _VIDEO_EXTS:
+            return "video"
+        if ext in _VOICE_EXTS or ext in _AUDIO_EXTS or is_voice:
+            return "audio"
+        return "document"
+
     try:
         bridge_port = extra.get("bridge_port", 3000)
         async with aiohttp.ClientSession() as session:
+            last_message_id = None
+
+            if media_files:
+                for index, (media_path, is_voice) in enumerate(media_files):
+                    if not os.path.exists(media_path):
+                        return _error(f"WhatsApp media file not found: {media_path}")
+                    payload = {
+                        "chatId": chat_id,
+                        "filePath": media_path,
+                        "mediaType": _media_type_for_path(media_path, is_voice),
+                    }
+                    if message.strip() and index == 0:
+                        payload["caption"] = message
+                    if payload["mediaType"] == "document":
+                        payload["fileName"] = os.path.basename(media_path)
+
+                    async with session.post(
+                        f"http://localhost:{bridge_port}/send-media",
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=120),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            last_message_id = data.get("messageId")
+                            continue
+                        body = await resp.text()
+                        return _error(f"WhatsApp bridge media error ({resp.status}): {body}")
+
+                return {
+                    "success": True,
+                    "platform": "whatsapp",
+                    "chat_id": chat_id,
+                    "message_id": last_message_id,
+                }
+
             async with session.post(
                 f"http://localhost:{bridge_port}/send",
                 json={"chatId": chat_id, "message": message},

@@ -102,6 +102,30 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def _has_configured_provider_credentials() -> bool:
+    """Return True when provider credentials are available in the process env."""
+    env_path = HERMES_HOME / ".env"
+    if env_path.exists() and _has_provider_env_config(env_path.read_text(encoding="utf-8")):
+        return True
+    from hermes_cli.config import get_env_value
+
+    for key in _PROVIDER_ENV_HINTS:
+        if get_env_value(key):
+            return True
+    try:
+        from hermes_cli.auth import get_anthropic_key
+
+        if get_anthropic_key():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _runtime_secrets_path() -> Path:
+    return HERMES_HOME / "runtime-secrets.env"
+
+
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
@@ -188,8 +212,8 @@ def check_warn(text: str, detail: str = ""):
 def check_fail(text: str, detail: str = ""):
     print(f"  {color('✗', Colors.RED)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
-def check_info(text: str):
-    print(f"    {color('→', Colors.CYAN)} {text}")
+def check_info(text: str, detail: str = ""):
+    print(f"    {color('→', Colors.CYAN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
 
 def _section(title: str) -> None:
@@ -608,10 +632,16 @@ def run_doctor(args):
         # defaults to the system locale — which crashes on non-UTF-8 Windows
         # locales (e.g. GBK) as soon as the file contains any non-ASCII byte.
         content = env_path.read_text(encoding="utf-8")
-        if _has_provider_env_config(content):
-            check_ok("API key or custom endpoint configured")
+        if _has_configured_provider_credentials():
+            runtime_path = _runtime_secrets_path()
+            if runtime_path.exists():
+                check_ok("API key or custom endpoint configured", "(from Infisical runtime-secrets.env)")
+            else:
+                check_ok("API key or custom endpoint configured")
         else:
             check_warn(f"No API key found in {_DHH}/.env")
+            if _runtime_secrets_path().exists():
+                check_info(f"Secrets may be in {_DHH}/runtime-secrets.env — run doctor again after gateway sync")
             issues.append("Run 'hermes setup' to configure API keys")
     else:
         # Also check project root as fallback
@@ -1958,6 +1988,41 @@ def run_doctor(args):
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
+
+    _section("Integration API Keys")
+    from hermes_cli.config import get_env_value
+    from hermes_cli.env_loader import format_secret_source_suffix
+
+    _integration_keys: list[tuple[str, str | tuple[str, ...]]] = [
+        ("Tavily (web search)", "TAVILY_API_KEY"),
+        ("ElevenLabs (TTS)", "ELEVENLABS_API_KEY"),
+        ("FAL (image/video gen)", "FAL_KEY"),
+        ("Honcho (memory plugin)", "HONCHO_API_KEY"),
+        ("GitHub (skills hub)", "GITHUB_TOKEN"),
+    ]
+
+    def _env_ref_value(env_ref: str | tuple[str, ...]) -> str:
+        if isinstance(env_ref, tuple):
+            for candidate in env_ref:
+                value = get_env_value(candidate) or os.environ.get(candidate, "")
+                if value:
+                    return value
+            return ""
+        return get_env_value(env_ref) or os.environ.get(env_ref, "")
+
+    for label, env_ref in _integration_keys:
+        names = env_ref if isinstance(env_ref, tuple) else (env_ref,)
+        value = _env_ref_value(env_ref)
+        suffix = format_secret_source_suffix(names[0])
+        if value:
+            check_ok(label, f"(configured{suffix})")
+        else:
+            check_warn(label, "(not configured)")
+
+    if _runtime_secrets_path().exists():
+        check_ok("Infisical runtime secrets file", f"({_DHH}/runtime-secrets.env)")
+    else:
+        check_info(f"Infisical runtime secrets file (not present — optional {_DHH}/runtime-secrets.env)")
     
     _section("Skills Hub")
     hub_dir = HERMES_HOME / "skills" / ".hub"

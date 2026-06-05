@@ -78,6 +78,8 @@ def format_secret_source_suffix(env_var: str) -> str:
         return ""
     if source == "bitwarden":
         return " (from Bitwarden)"
+    if source == "infisical":
+        return " (from Infisical)"
     # Generic fallback — future-proofing for additional secret sources
     # (e.g. 1Password, HashiCorp Vault) without having to update every
     # call site.
@@ -241,6 +243,22 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
+
+    runtime_env = home_path / "runtime-secrets.env"
+    if runtime_env.exists():
+        _sanitize_env_file_if_needed(runtime_env)
+        before_values = {
+            k: os.environ.get(k)
+            for k in os.environ
+            if any(k.endswith(s) for s in _CREDENTIAL_SUFFIXES)
+        }
+        _load_dotenv_with_fallback(runtime_env, override=True)
+        loaded.append(runtime_env)
+        for key, value in os.environ.items():
+            if not value or not any(key.endswith(s) for s in _CREDENTIAL_SUFFIXES):
+                continue
+            if before_values.get(key) != value or key not in before_values:
+                _SECRET_SOURCES[key] = "infisical"
 
     _apply_external_secret_sources(home_path)
 

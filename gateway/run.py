@@ -42,7 +42,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List, Union
+from typing import Awaitable, Callable, Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -55,6 +55,12 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.nutanix_answer_shadow import (
+    decide_delivery_action as _nutanix_decide_delivery_action,
+    enforcement_enabled_from_config as _nutanix_enforcement_enabled_from_config,
+    maybe_run_shadow_verification as _nutanix_shadow_maybe_run,
+    shadow_enabled_from_config as _nutanix_shadow_enabled_from_config,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -317,6 +323,252 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text
+
+
+def _read_nutanix_shadow_report(report_path: str | None) -> dict[str, Any] | None:
+    if not report_path:
+        return None
+    try:
+        return json.loads(Path(report_path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.debug("Nutanix answer verifier report read failed: %s", exc)
+        return None
+
+
+def _nutanix_answer_identity() -> str:
+    raw = (
+        os.environ.get("NX_AGENT_IDENTITY")
+        or os.environ.get("NUTANIX_RAG_IDENTITY")
+        or os.environ.get("HERMES_PROFILE")
+        or ""
+    ).strip().lower().replace("-", "_")
+    if raw in {"nx_shield", "nxshield"}:
+        return "nx_shield"
+    return raw or "hermes"
+
+
+def _nutanix_max_regenerations_from_config(config: dict[str, Any] | None) -> int:
+    raw_env = os.environ.get("NUTANIX_ANSWER_VERIFIER_MAX_REGENERATIONS")
+    if raw_env is not None:
+        try:
+            return max(0, min(1, int(str(raw_env).strip())))
+        except (TypeError, ValueError):
+            return 0
+    cfg = config or {}
+    try:
+        rag = cfg.get("rag") if isinstance(cfg, dict) else None
+        av = rag.get("answer_verification") if isinstance(rag, dict) else None
+        if isinstance(av, dict):
+            return max(0, min(1, int(av.get("max_regenerations", 0))))
+    except (TypeError, ValueError):
+        return 0
+    except Exception:
+        return 0
+    return 0
+
+
+def _run_nutanix_answer_verifier_gate(
+    *,
+    config: dict[str, Any] | None,
+    query: str,
+    answer: str,
+    messages: list[dict[str, Any]],
+    source: Any,
+    session_id: str,
+) -> dict[str, Any]:
+    """Run optional Nutanix answer verification at the gateway boundary.
+
+    Shadow mode always leaves delivery unchanged. If enforcement is explicitly
+    enabled, this call-site uses a fallback-only policy: unsafe or missing
+    verification sends conservative evidence fallback rather than attempting an
+    unimplemented regenerate loop inside the gateway.
+    """
+    result: dict[str, Any] = {
+        "delivery_response": answer,
+        "delivery_action": "unchanged",
+        "shadow_report_path": None,
+    }
+    try:
+        shadow_enabled = _nutanix_shadow_enabled_from_config(config)
+        enforce_enabled = _nutanix_enforcement_enabled_from_config(config)
+        if not shadow_enabled and not enforce_enabled:
+            return result
+        platform = getattr(getattr(source, "platform", ""), "value", getattr(source, "platform", ""))
+        report_path = _nutanix_shadow_maybe_run(
+            enabled=bool(shadow_enabled or enforce_enabled),
+            query=query,
+            answer=answer,
+            messages=messages or [],
+            identity=_nutanix_answer_identity(),
+            session_id=session_id,
+            platform=str(platform or ""),
+            chat_id=str(getattr(source, "chat_id", "") or ""),
+        )
+        result["shadow_report_path"] = report_path
+        if report_path:
+            logger.info("Nutanix answer verifier shadow report written: %s", report_path)
+        if not enforce_enabled:
+            return result
+        if not report_path:
+            result["delivery_reason"] = "no_rag_evidence_report"
+            logger.info(
+                "Nutanix answer verifier produced no report: reason=no_rag_evidence_report "
+                "shadow_enabled=%s enforce_enabled=%s message_count=%s",
+                shadow_enabled,
+                enforce_enabled,
+                len(messages or []),
+            )
+            return result
+        report = _read_nutanix_shadow_report(report_path)
+        max_regenerations = _nutanix_max_regenerations_from_config(config)
+        revision_attempted = max_regenerations <= 0
+        decision = _nutanix_decide_delivery_action(
+            enforce_enabled=True,
+            verification=(report or {}).get("verification") if isinstance(report, dict) else None,
+            query=query,
+            evidence=(report or {}).get("evidence", []) if isinstance(report, dict) else [],
+            revision_attempted=revision_attempted,
+            draft_answer=answer,
+        )
+        result["delivery_action"] = decision.get("action", "unchanged")
+        result["delivery_reason"] = decision.get("reason", "")
+        if decision.get("revision_prompt"):
+            result["revision_prompt"] = str(decision.get("revision_prompt") or "")
+        if decision.get("action") == "send_evidence_fallback" and decision.get("fallback_answer"):
+            result["delivery_response"] = str(decision["fallback_answer"])
+        return result
+    except Exception as exc:
+        logger.info(
+            "Nutanix answer verifier gateway gate skipped after error: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        logger.debug("Nutanix answer verifier gateway gate traceback", exc_info=True)
+        return result
+
+
+async def _run_nutanix_answer_verifier_gate_with_revision(
+    *,
+    config: dict[str, Any] | None,
+    query: str,
+    answer: str,
+    messages: list[dict[str, Any]],
+    source: Any,
+    session_id: str,
+    revision_runner: Callable[[str], Awaitable[dict[str, Any] | str]] | None = None,
+) -> dict[str, Any]:
+    """Run Nutanix verifier with at most one injected revision attempt.
+
+    The live gateway can keep ``max_regenerations`` at 0 for fallback-only
+    behavior. When explicitly set to 1 and a ``revision_runner`` is provided,
+    this wrapper verifies the draft, asks for exactly one revision on
+    ``REWRITE_REQUIRED``, verifies the revised answer against the same current
+    turn RAG evidence, then either sends the revised answer or fail-closes to an
+    evidence fallback.
+    """
+    first = _run_nutanix_answer_verifier_gate(
+        config=config,
+        query=query,
+        answer=answer,
+        messages=messages,
+        source=source,
+        session_id=session_id,
+    )
+    if first.get("delivery_action") != "request_revision":
+        return first
+
+    if _nutanix_max_regenerations_from_config(config) <= 0 or revision_runner is None:
+        first["delivery_action"] = "send_evidence_fallback"
+        first["delivery_reason"] = "revision_requested_but_runner_unavailable"
+        report = _read_nutanix_shadow_report(first.get("shadow_report_path"))
+        decision = _nutanix_decide_delivery_action(
+            enforce_enabled=True,
+            verification=(report or {}).get("verification") if isinstance(report, dict) else None,
+            query=query,
+            evidence=(report or {}).get("evidence", []) if isinstance(report, dict) else [],
+            revision_attempted=True,
+            draft_answer=answer,
+        )
+        if decision.get("fallback_answer"):
+            first["delivery_response"] = str(decision["fallback_answer"])
+        return first
+
+    revision_prompt = str(first.get("revision_prompt") or "").strip()
+    if not revision_prompt:
+        first["delivery_action"] = "send_evidence_fallback"
+        first["delivery_reason"] = "missing_revision_prompt"
+        return first
+
+    try:
+        revision_result = await asyncio.wait_for(revision_runner(revision_prompt), timeout=120)
+    except Exception as exc:
+        logger.info(
+            "Nutanix answer verifier revision attempt failed: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        first["delivery_action"] = "send_evidence_fallback"
+        first["delivery_reason"] = "revision_runner_failed"
+        report = _read_nutanix_shadow_report(first.get("shadow_report_path"))
+        decision = _nutanix_decide_delivery_action(
+            enforce_enabled=True,
+            verification=(report or {}).get("verification") if isinstance(report, dict) else None,
+            query=query,
+            evidence=(report or {}).get("evidence", []) if isinstance(report, dict) else [],
+            revision_attempted=True,
+            draft_answer=answer,
+        )
+        if decision.get("fallback_answer"):
+            first["delivery_response"] = str(decision["fallback_answer"])
+        return first
+
+    if isinstance(revision_result, dict):
+        revised_answer = str(revision_result.get("final_response") or revision_result.get("delivery_response") or "").strip()
+    else:
+        revised_answer = str(revision_result or "").strip()
+    if not revised_answer:
+        first["delivery_action"] = "send_evidence_fallback"
+        first["delivery_reason"] = "empty_revision_response"
+        return first
+
+    try:
+        platform = getattr(getattr(source, "platform", ""), "value", getattr(source, "platform", ""))
+        revised_report_path = _nutanix_shadow_maybe_run(
+            enabled=True,
+            query=query,
+            answer=revised_answer,
+            messages=messages or [],
+            identity=_nutanix_answer_identity(),
+            session_id=f"{session_id}_revision",
+            platform=str(platform or ""),
+            chat_id=str(getattr(source, "chat_id", "") or ""),
+        )
+    except Exception as exc:
+        logger.info(
+            "Nutanix answer verifier revised-answer report failed: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        revised_report_path = None
+
+    revised_report = _read_nutanix_shadow_report(revised_report_path)
+    decision = _nutanix_decide_delivery_action(
+        enforce_enabled=True,
+        verification=(revised_report or {}).get("verification") if isinstance(revised_report, dict) else None,
+        query=query,
+        evidence=(revised_report or {}).get("evidence", []) if isinstance(revised_report, dict) else [],
+        revision_attempted=True,
+        draft_answer=revised_answer,
+    )
+    result = dict(first)
+    result["revision_report_path"] = revised_report_path
+    result["delivery_action"] = decision.get("action", "unchanged")
+    result["delivery_reason"] = decision.get("reason", "")
+    if decision.get("action") == "send_original":
+        result["delivery_response"] = revised_answer
+    elif decision.get("action") == "send_evidence_fallback" and decision.get("fallback_answer"):
+        result["delivery_response"] = str(decision["fallback_answer"])
+    return result
 
 
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
@@ -3034,16 +3286,13 @@ class GatewayRunner:
         """Load ephemeral prefill messages from config or env var.
         
         Checks HERMES_PREFILL_MESSAGES_FILE env var first, then falls back to
-        the top-level prefill_messages_file key in ~/.hermes/config.yaml.
-        agent.prefill_messages_file is accepted as a legacy fallback.
+        the prefill_messages_file key in ~/.hermes/config.yaml.
         Relative paths are resolved from ~/.hermes/.
         """
         file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
         if not file_path:
             cfg = _load_gateway_runtime_config()
             file_path = str(cfg.get("prefill_messages_file", "") or "")
-            if not file_path:
-                file_path = str(cfg_get(cfg, "agent", "prefill_messages_file", default="") or "")
         if not file_path:
             return []
         path = Path(file_path).expanduser()
@@ -3807,7 +4056,6 @@ class GatewayRunner:
                     "on_session_finalize",
                     session_id=getattr(agent, "session_id", None),
                     platform="gateway",
-                    reason="shutdown",
                 )
             except Exception:
                 pass
@@ -4156,7 +4404,7 @@ class GatewayRunner:
         {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
     )
 
-    def _schedule_resume_pending_sessions(self, platform=None) -> int:
+    def _schedule_resume_pending_sessions(self) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
         ``resume_pending`` already preserves the transcript AND the existing
@@ -4169,15 +4417,7 @@ class GatewayRunner:
         Adapters that are not yet ready (adapter missing from
         ``self.adapters``) are skipped silently; their sessions stay
         ``resume_pending`` and will auto-resume on the next real user
-        message, or when the platform reconnects — the reconnect watcher
-        calls this again scoped to that ``platform``.
-
-        ``platform`` (a ``Platform``) restricts the pass to sessions that
-        originated on that platform.  The reconnect path passes it so a
-        platform coming back online retries only its own sessions and never
-        re-touches another platform's in-flight recoveries.  Sessions whose
-        agent is already running are skipped regardless, so a session
-        scheduled at startup is never resumed a second time.
+        message, or on the next gateway startup.
         """
         window = _auto_continue_freshness_window()
         try:
@@ -4189,7 +4429,6 @@ class GatewayRunner:
                     and not entry.suspended
                     and entry.origin is not None
                     and entry.resume_reason in self._AUTO_RESUME_REASONS
-                    and (platform is None or entry.origin.platform == platform)
                 ]
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
@@ -4200,11 +4439,6 @@ class GatewayRunner:
         for entry in candidates:
             marker = entry.last_resume_marked_at or entry.updated_at
             if marker is not None and (now - marker).total_seconds() > window:
-                continue
-
-            # Already being resumed (e.g. scheduled at startup and still
-            # in-flight) — don't synthesize a second continuation turn.
-            if entry.session_key in self._running_agents:
                 continue
 
             source = entry.origin
@@ -5054,7 +5288,6 @@ class GatewayRunner:
                                 "on_session_finalize",
                                 session_id=entry.session_id,
                                 platform=_platform,
-                                reason="session_expired",
                             )
                         except Exception:
                             pass
@@ -5402,12 +5635,10 @@ class GatewayRunner:
                             if ev.payload and ev.payload.get("summary"):
                                 payload_summary = str(ev.payload["summary"])
                             if payload_summary:
-                                lines = payload_summary.strip().splitlines()
-                                h = lines[0][:200] if lines else payload_summary[:200]
+                                h = payload_summary.strip().splitlines()[0][:200]
                                 handoff = f"\n{h}"
                             elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
+                                r = task.result.strip().splitlines()[0][:160]
                                 handoff = f"\n{r}"
                             msg = (
                                 f"✔ {tag}Kanban {sub['task_id']} done"
@@ -5755,14 +5986,7 @@ class GatewayRunner:
             logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
             return
 
-        try:
-            interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
-        except (ValueError, TypeError):
-            logger.warning(
-                "kanban dispatcher: invalid dispatch_interval_seconds=%r, using default 60",
-                kanban_cfg.get("dispatch_interval_seconds"),
-            )
-            interval = 60.0
+        interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
         interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
         # Read max_spawn config to limit concurrent kanban tasks
@@ -6295,21 +6519,6 @@ class GatewayRunner:
                             await build_channel_directory(self.adapters)
                         except Exception:
                             pass
-
-                        # A platform that was offline at gateway startup never
-                        # got its restart-interrupted sessions auto-resumed —
-                        # the startup pass skips sessions whose adapter isn't
-                        # connected yet. Now that it's back, retry the
-                        # auto-resume scoped to this platform so recovery
-                        # doesn't silently wait for a manual user message.
-                        try:
-                            self._schedule_resume_pending_sessions(platform=platform)
-                        except Exception:
-                            logger.debug(
-                                "resume-pending reschedule after %s reconnect failed",
-                                platform.value,
-                                exc_info=True,
-                            )
                     # Check if the failure is non-retryable
                     elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
                         self._update_platform_runtime_status(
@@ -6987,38 +7196,6 @@ class GatewayRunner:
             return False
         return bool(getattr(adapter, "enforces_own_access_policy", False))
 
-    def _adapter_dm_policy(self, platform: Optional[Platform]) -> str:
-        """Best-effort read of an own-policy adapter's effective DM policy.
-
-        Returns the lowercased ``dm_policy`` (``"open"`` / ``"allowlist"`` /
-        ``"disabled"`` / ``"pairing"``) for *platform*, or ``""`` when unknown.
-        Prefers the live adapter's resolved ``_dm_policy`` — which already folds
-        in both ``config.extra`` and the ``<PLATFORM>_DM_POLICY`` env var (the
-        env var is not always bridged back into ``config.extra``) — and falls
-        back to ``config.extra`` for bare runners built without a live adapter.
-
-        Used by ``_is_user_authorized`` to carve ``dm_policy: pairing`` out of
-        the adapter-trust shortcut: in pairing mode the adapter forwards the DM
-        so the gateway can run its pairing handshake, so "reached the gateway"
-        must not be read as "authorized".
-        """
-        if not platform:
-            return ""
-        adapters = getattr(self, "adapters", None) or {}
-        adapter = adapters.get(platform)
-        policy = getattr(adapter, "_dm_policy", None) if adapter is not None else None
-        if policy is None:
-            config = getattr(self, "config", None)
-            platform_cfg = (
-                config.platforms.get(platform)
-                if config is not None and hasattr(config, "platforms")
-                else None
-            )
-            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
-            if isinstance(extra, dict):
-                policy = extra.get("dm_policy")
-        return str(policy or "").strip().lower()
-
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -7166,20 +7343,7 @@ class GatewayRunner:
             # env-only default-deny below, which would silently break
             # `dm_policy: open` and config-only allowlists. (#34515)
             if self._adapter_enforces_own_access_policy(source.platform):
-                # Exception: `dm_policy: pairing` does NOT authorize at intake.
-                # The adapter forwards the DM precisely so the gateway can run
-                # its pairing handshake (issue a code, consult the pairing
-                # store). The pairing-store approval check above already ran and
-                # returned False for this sender, so blanket-trusting the
-                # adapter here would silently turn pairing mode into open
-                # access. Fall through to default-deny so the unpaired sender is
-                # offered a pairing code instead. (Pairing is DM-only; group
-                # traffic keeps the adapter-trust path.)
-                if not (
-                    source.chat_type == "dm"
-                    and self._adapter_dm_policy(source.platform) == "pairing"
-                ):
-                    return True
+                return True
             # No allowlists configured -- check global allow-all flag
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 
@@ -8524,14 +8688,18 @@ class GatewayRunner:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
             return _agent_result
         finally:
-            # Unconditional release covers every exit path. _release_running_agent_state
-            # is idempotent (pop-on-absent is harmless) and, called without a
-            # run_generation guard, always clears the slot regardless of which
-            # generation it holds. This evicts the zombie left when session_reset
-            # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
-            # inside _run_agent returns False, and the old sentinel-only check here
-            # missed the leftover real agent — locking the session out forever (#28686).
-            self._release_running_agent_state(_quick_key)
+            # If _run_agent replaced the sentinel with a real agent and
+            # then cleaned it up, this is a no-op.  If we exited early
+            # (exception, command fallthrough, etc.) the sentinel must
+            # not linger or the session would be permanently locked out.
+            if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
+                self._release_running_agent_state(_quick_key)
+            else:
+                # Agent path already cleaned _running_agents; make sure
+                # the paired metadata dicts are gone too.
+                self._running_agents_ts.pop(_quick_key, None)
+                if hasattr(self, "_busy_ack_ts"):
+                    self._busy_ack_ts.pop(_quick_key, None)
 
     async def _prepare_inbound_message_text(
         self,
@@ -9532,6 +9700,42 @@ class GatewayRunner:
                 agent_result, response, history_len=len(history),
             )
             response = _sanitize_gateway_final_response(source.platform, response)
+            async def _nutanix_revision_runner(prompt: str) -> dict[str, Any]:
+                revision_context = (
+                    context_prompt
+                    + "\n\n[System note: This is a verifier-driven answer revision. "
+                    + "Answer only the original user question, using the supplied retrieved evidence and verifier feedback. "
+                    + "Do not call tools unless the prompt explicitly requires fresh evidence.]"
+                )
+                return await self._run_agent(
+                    prompt,
+                    revision_context,
+                    [],
+                    source,
+                    session_entry.session_id,
+                    session_key=session_key,
+                    run_generation=run_generation,
+                    event_message_id=None,
+                    channel_prompt=None,
+                )
+
+            _nutanix_verifier_gate = await _run_nutanix_answer_verifier_gate_with_revision(
+                config=_load_gateway_config(),
+                query=message_text,
+                answer=response,
+                messages=agent_messages,
+                source=source,
+                session_id=session_entry.session_id,
+                revision_runner=_nutanix_revision_runner,
+            )
+            response = _nutanix_verifier_gate.get("delivery_response", response)
+            if _nutanix_verifier_gate.get("delivery_action") not in {None, "unchanged"}:
+                logger.info(
+                    "Nutanix answer verifier delivery action: %s reason=%s report=%s",
+                    _nutanix_verifier_gate.get("delivery_action"),
+                    _nutanix_verifier_gate.get("delivery_reason", ""),
+                    _nutanix_verifier_gate.get("shadow_report_path"),
+                )
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
@@ -10028,12 +10232,6 @@ class GatewayRunner:
         # Get existing session key
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
-        # Evict the running-agent slot now that the generation is bumped. The
-        # in-flight run's own guarded release (run_generation=old) will return
-        # False and leave its dead agent behind; clearing here keeps the slot
-        # from becoming a zombie that silently drops all later messages (#28686).
-        # Idempotent, so the run's finally calling it again is harmless.
-        self._release_running_agent_state(session_key)
 
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
@@ -10085,19 +10283,12 @@ class GatewayRunner:
         # previous conversation must not survive the reset.
         self._clear_session_boundary_security_state(session_key)
 
-        _old_sid = old_entry.session_id if old_entry else None
-
         # Fire plugin on_session_finalize hook (session boundary)
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _invoke_hook(
-                "on_session_finalize",
-                session_id=_old_sid,
-                platform=source.platform.value if source.platform else "",
-                reason="new_session",
-                old_session_id=_old_sid,
-                new_session_id=new_entry.session_id if new_entry else None,
-            )
+            _old_sid = old_entry.session_id if old_entry else None
+            _invoke_hook("on_session_finalize", session_id=_old_sid,
+                         platform=source.platform.value if source.platform else "")
         except Exception:
             pass
 
@@ -10166,14 +10357,8 @@ class GatewayRunner:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _new_sid = new_entry.session_id if new_entry else None
-            _invoke_hook(
-                "on_session_reset",
-                session_id=_new_sid,
-                platform=source.platform.value if source.platform else "",
-                reason="new_session",
-                old_session_id=_old_sid,
-                new_session_id=_new_sid,
-            )
+            _invoke_hook("on_session_reset", session_id=_new_sid,
+                         platform=source.platform.value if source.platform else "")
         except Exception:
             pass
 
@@ -13956,17 +14141,12 @@ class GatewayRunner:
 
         parent_session_id = current_entry.session_id
 
-        # Create the new session with parent link.
-        # Persist a stable ``_branched_from`` marker in model_config so
-        # list_sessions_rich() keeps the branch visible in /resume and
-        # /sessions even after the parent is reopened and re-ended with a
-        # different end_reason (e.g. tui_shutdown overwriting 'branched').
+        # Create the new session with parent link
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
-                model_config={"_branched_from": parent_session_id},
                 parent_session_id=parent_session_id,
             )
         except Exception as e:
@@ -15149,15 +15329,10 @@ class GatewayRunner:
 
         if not adapter or not chat_id:
             logger.warning("Update watcher: cannot resolve adapter/chat_id, falling back to completion-only")
-            # Fall back to completion-only: wait for the exit code and send the
-            # final notification. _send_update_notification re-resolves the
-            # adapter on every call, so when the target platform is still
-            # reconnecting it returns False and keeps the markers. Keep polling
-            # until it actually delivers (returns True) instead of giving up
-            # after the first completion check — otherwise a platform that
-            # reconnects a few seconds after completion never gets notified.
+            # Fall back to old behavior: wait for exit code and send final notification
             while (pending_path.exists() or claimed_path.exists()) and loop.time() < deadline:
-                if exit_code_path.exists() and await self._send_update_notification():
+                if exit_code_path.exists():
+                    await self._send_update_notification()
                     return
                 await asyncio.sleep(poll_interval)
             if (pending_path.exists() or claimed_path.exists()) and not exit_code_path.exists():
@@ -15370,24 +15545,6 @@ class GatewayRunner:
             # Resolve adapter
             platform = Platform(platform_str)
             adapter = self.adapters.get(platform)
-
-            if not adapter and chat_id:
-                # The update finished, but the target platform has not
-                # reconnected yet (common right after the restart that
-                # `hermes update` triggers). Treating "adapter missing" as a
-                # definitive skip would delete the markers and silently lose the
-                # completion notification — the user never learns whether the
-                # update succeeded or timed out. Preserve the markers instead so
-                # a later retry (the watcher poll loop, or the next gateway
-                # startup) can deliver the result once the adapter is back.
-                logger.info(
-                    "Update notification deferred: %s adapter not connected yet",
-                    platform_str,
-                )
-                cleanup = False
-                active_pending_path = pending_path
-                claimed_path.replace(pending_path)
-                return False
 
             if adapter and chat_id:
                 metadata = self._thread_metadata_for_target(
@@ -17024,47 +17181,6 @@ class GatewayRunner:
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
 
-        # ── Discord voice "verbal ack before tool calls" ────────────────
-        # When the bot is in a voice channel with the continuous mixer
-        # installed (discord.voice_fx.enabled), speak a short phrase ("let me
-        # look into that") over the ambient idle bed on the FIRST tool call of
-        # the turn.  Fires from tool_start_callback (independent of the
-        # tool-progress text gate), at most once per turn.  No-op on every
-        # other platform / when not in a voice channel.
-        _voice_ack_fired = [False]
-        _voice_ack_guild: List[Optional[int]] = [None]
-        if source.platform == Platform.DISCORD:
-            _va = self.adapters.get(Platform.DISCORD)
-            # source.chat_id is the linked text channel; resolve the guild whose
-            # voice connection is bound to it (mirrors DiscordAdapter.play_tts).
-            _vtc = getattr(_va, "_voice_text_channels", None)
-            if isinstance(_vtc, dict) and hasattr(_va, "voice_mixer_active"):
-                for _gid, _tc in _vtc.items():
-                    if str(_tc) == str(source.chat_id) and _va.voice_mixer_active(_gid):
-                        _voice_ack_guild[0] = _gid
-                        break
-        _voice_ack_loop = asyncio.get_running_loop()
-
-        def voice_ack_callback(call_id, tool_name, args):
-            """tool_start_callback: speak a one-time ack in the voice channel."""
-            if _voice_ack_fired[0] or _voice_ack_guild[0] is None:
-                return
-            if not _run_still_current():
-                return
-            _voice_ack_fired[0] = True
-            _adapter = self.adapters.get(Platform.DISCORD)
-            if _adapter is None or not hasattr(_adapter, "play_ack_in_voice"):
-                return
-            try:
-                safe_schedule_threadsafe(
-                    _adapter.play_ack_in_voice(_voice_ack_guild[0]),
-                    _voice_ack_loop,
-                    logger=logger,
-                    log_message="voice ack scheduling error",
-                )
-            except Exception as _ack_err:
-                logger.debug("voice ack schedule failed: %s", _ack_err)
-
         # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
         # that implements ``delete_message``). When enabled via
         # ``display.platforms.<platform>.cleanup_progress: true``, message IDs
@@ -17875,11 +17991,6 @@ class GatewayRunner:
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
-            # Discord voice verbal-ack hook (fires once per turn on first tool
-            # call; armed only when in a voice channel with the mixer running).
-            agent.tool_start_callback = (
-                voice_ack_callback if _voice_ack_guild[0] is not None else None
-            )
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
@@ -19374,7 +19485,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     tick_count = 0
     while not stop_event.is_set():
         try:
-            cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
+            cron_tick(verbose=False, adapters=adapters, loop=loop)
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
 

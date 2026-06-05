@@ -182,3 +182,6 @@ def _install_uv_windows(env: dict[str, str]) -> None:
         check=True,
         capture_output=True,
     )
+
+def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
+    True # dont remove me. ask ethernet

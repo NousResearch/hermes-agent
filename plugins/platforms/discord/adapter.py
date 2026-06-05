@@ -143,6 +143,13 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"true", "1", "yes", "on"}
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -195,10 +202,7 @@ def _build_allowed_mentions():
         return None
 
     def _b(name: str, default: bool) -> bool:
-        raw = os.getenv(name, "").strip().lower()
-        if not raw:
-            return default
-        return raw in {"true", "1", "yes", "on"}
+        return _env_bool(name, default)
 
     return discord.AllowedMentions(
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
@@ -4429,6 +4433,15 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return None
 
+    def _approval_mention_content(self) -> Optional[str]:
+        """Return user mentions for approval prompts when explicitly enabled."""
+        if not _env_bool("DISCORD_APPROVAL_MENTIONS", False):
+            return None
+        user_ids = sorted(uid for uid in self._allowed_user_ids if str(uid).isdigit())
+        if not user_ids:
+            return None
+        return " ".join(f"<@{uid}>" for uid in user_ids)
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -4469,7 +4482,20 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
             )
 
-            msg = await channel.send(embed=embed, view=view)
+            send_kwargs = {"embed": embed, "view": view}
+            mention_content = self._approval_mention_content()
+            if mention_content:
+                send_kwargs["content"] = mention_content
+                allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
+                if allowed_mentions_cls is not None:
+                    send_kwargs["allowed_mentions"] = allowed_mentions_cls(
+                        users=True,
+                        roles=False,
+                        everyone=False,
+                        replied_user=False,
+                    )
+
+            msg = await channel.send(**send_kwargs)
             view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
 
@@ -6646,6 +6672,12 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         if isinstance(allowed_users_cfg, list):
             allowed_users_cfg = ",".join(str(v) for v in allowed_users_cfg)
         os.environ["DISCORD_ALLOWED_USERS"] = str(allowed_users_cfg)
+    approval_mentions_cfg = (
+        discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
+        else platform_extra_cfg.get("approval_mentions")
+    )
+    if approval_mentions_cfg is not None and not os.getenv("DISCORD_APPROVAL_MENTIONS"):
+        os.environ["DISCORD_APPROVAL_MENTIONS"] = str(approval_mentions_cfg).lower()
     frc = discord_cfg.get("free_response_channels")
     if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
         if isinstance(frc, list):

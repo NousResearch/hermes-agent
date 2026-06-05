@@ -1945,6 +1945,10 @@ DEFAULT_CONFIG = {
         # real memory cost. Default 32 MiB matches the historical hardcoded
         # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
+        # When True, Discord approval prompts mention numeric allowed users so
+        # owners notice approval requests in shared channels/threads. Env override:
+        # DISCORD_APPROVAL_MENTIONS. Default false avoids surprise pings.
+        "approval_mentions": False,
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and
@@ -3252,6 +3256,13 @@ OPTIONAL_ENV_VARS = {
     "DISCORD_REPLY_TO_MODE": {
         "description": "Discord reply threading mode: 'off' (no reply references), 'first' (reply on first message only, default), 'all' (reply on every chunk)",
         "prompt": "Discord reply mode (off/first/all)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "DISCORD_APPROVAL_MENTIONS": {
+        "description": "Mention numeric DISCORD_ALLOWED_USERS in Discord command approval prompts (true/false)",
+        "prompt": "Mention allowed users in Discord approval prompts? (true/false)",
         "url": None,
         "password": False,
         "category": "messaging",

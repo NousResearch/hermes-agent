@@ -1196,6 +1196,39 @@ setup_venv() {
     log_success "Virtual environment ready (Python $PYTHON_VERSION)"
 }
 
+verify_dashboard_deps() {
+    local dashboard_python=""
+    if [ "$USE_VENV" = true ]; then
+        dashboard_python="$INSTALL_DIR/venv/bin/python"
+    else
+        dashboard_python="$PYTHON_PATH"
+    fi
+
+    if [ ! -x "$dashboard_python" ]; then
+        log_warn "Could not find Python for dashboard dependency check: $dashboard_python"
+        return 0
+    fi
+
+    # A stale/corrupt uv cache can leave uvicorn metadata present while
+    # subpackages are missing. Probe the dashboard path that needs them.
+    if "$dashboard_python" -c 'import fastapi, uvicorn; from uvicorn.supervisors import ChangeReload' >/dev/null 2>&1; then
+        log_success "Dashboard imports verified"
+        return 0
+    fi
+
+    log_warn "fastapi/uvicorn not importable or uvicorn subpackage is corrupt -- hermes dashboard may not work."
+    log_info "Attempting pip repair of uvicorn to bypass stale uv cache..."
+    if "$dashboard_python" -m pip install --force-reinstall --no-cache-dir 'uvicorn[standard]==0.41.0'; then
+        if "$dashboard_python" -c 'import fastapi, uvicorn; from uvicorn.supervisors import ChangeReload' >/dev/null 2>&1; then
+            log_success "uvicorn repaired; hermes dashboard should now work."
+        else
+            log_warn "uvicorn repair completed, but dashboard imports still failed. Run manually: $dashboard_python -m pip install --force-reinstall --no-cache-dir 'uvicorn[standard]==0.41.0'"
+        fi
+    else
+        log_warn "Could not repair uvicorn. Run manually: $dashboard_python -m pip install --force-reinstall --no-cache-dir 'uvicorn[standard]==0.41.0'"
+    fi
+}
+
 install_deps() {
     log_info "Installing dependencies..."
 
@@ -1336,6 +1369,7 @@ install_deps() {
         # gracefully when stdout/stderr aren't terminals.
         if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
             log_success "Main package installed (hash-verified via uv.lock)"
+            verify_dashboard_deps
             log_success "All dependencies installed"
             return 0
         fi
@@ -1446,6 +1480,8 @@ PY
     fi
 
     log_success "Main package installed"
+
+    verify_dashboard_deps
 
     log_success "All dependencies installed"
 }

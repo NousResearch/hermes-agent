@@ -4137,6 +4137,18 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+
+            # Hermes <-> Desktop thin adapter boundary.
+            # ONLY integration point allowed per hermes-upstream-compatibility-plan.md §3/5 and factory/contracts/hermes-upstream-compatibility.yml.
+            # All Agente-specific logic (tool discovery, workflows/routines, BYOK, WhatsApp, IPC proxy) lives exclusively in gateway/agente_desktop_adapter/.
+            # Do not add other desktop routes/handlers here. Enables clean upstream syncs.
+            try:
+                from gateway.agente_desktop_adapter import register_agente_desktop_routes
+                register_agente_desktop_routes(self._app)
+            except ImportError:
+                # upstream-only build — no companion routes or registrations
+                pass
+
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the

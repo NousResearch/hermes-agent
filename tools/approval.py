@@ -1066,6 +1066,22 @@ def check_dangerous_command(command: str, env_type: str,
             ),
         }
 
+    # Guard: never enter blocking input() prompt when there's no approval
+    # callback registered. A missing callback in a gateway/exec context
+    # would otherwise block the calling thread for timeout_seconds.
+    if approval_callback is None:
+        return {
+            "approved": False,
+            "status": "approval_required",
+            "pattern_key": pattern_key,
+            "command": command,
+            "description": description,
+            "message": (
+                f"⚠️ This command is potentially dangerous ({description}). "
+                f"Approval required but no interactive handler is available in this context."
+            ),
+        }
+
     choice = prompt_dangerous_approval(command, description,
                                        approval_callback=approval_callback)
 
@@ -1467,6 +1483,22 @@ def check_all_command_guards(command: str, env_type: str,
         session_key=session_key,
         surface="cli",
     )
+    # Guard: never enter blocking input() prompt when there's no approval
+    # callback registered. A missing callback in a gateway/exec context
+    # would otherwise block the calling thread for timeout_seconds.
+    if approval_callback is None:
+        return {
+            "approved": False,
+            "status": "approval_required",
+            "pattern_key": primary_key,
+            "command": command,
+            "description": combined_desc,
+            "message": (
+                f"⚠️ {combined_desc}. "
+                f"Approval required but no interactive handler is available in this context."
+            ),
+        }
+
     choice = prompt_dangerous_approval(command, combined_desc,
                                        allow_permanent=not has_tirith,
                                        approval_callback=approval_callback)

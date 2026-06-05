@@ -1570,3 +1570,74 @@ class TestApprovalTimeoutIsNotConsent:
         assert last_post.get("choice") == "timeout", (
             f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
         )
+
+
+class TestApprovalCallbackGuard:
+    """Missing approval_callback must return approval_required instead of blocking on input()."""
+
+    def setup_method(self):
+        from tools import approval as mod
+        self._session_snapshot = set(mod._session_approved.get(mod.get_current_session_key(), set()))
+        self._yolo_snapshot = set(mod._session_yolo)
+        self._perm_snapshot = set(mod._permanent_approved)
+
+    def teardown_method(self):
+        from tools import approval as mod
+        session_key = mod.get_current_session_key()
+        mod._session_approved[session_key] = set(self._session_snapshot)
+        mod._session_yolo = set(self._yolo_snapshot)
+        mod._permanent_approved = set(self._perm_snapshot)
+
+    def test_check_dangerous_command_requires_callback_to_prompt(self, monkeypatch):
+        from tools import approval as mod
+
+        session_key = mod.get_current_session_key()
+        mod._session_approved[session_key] = set()
+        mod._session_yolo = set()
+        mod._permanent_approved = set()
+
+        monkeypatch.setattr(mod, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setenv("HERMES_EXEC_ASK", "")
+        monkeypatch.setattr(mod, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(mod, "detect_dangerous_command", lambda cmd: (True, "rm_test_key", "delete"))
+
+        result = mod.check_dangerous_command(
+            "rm -rf /tmp/test",
+            "local",
+            approval_callback=None,
+        )
+
+        assert result["approved"] is False
+        assert result.get("status") == "approval_required"
+        assert "pattern_key" in result
+        assert "command" in result
+        assert "description" in result
+        assert "Approval required but no interactive handler" in result.get("message", "")
+
+    def test_check_all_command_guards_requires_callback_to_prompt(self, monkeypatch):
+        from tools import approval as mod
+
+        session_key = mod.get_current_session_key()
+        mod._session_approved[session_key] = set()
+        mod._session_yolo = set()
+        mod._permanent_approved = set()
+
+        monkeypatch.setattr(mod, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(mod, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setenv("HERMES_EXEC_ASK", "")
+        monkeypatch.setattr(mod, "detect_dangerous_command", lambda cmd: (True, "rm_test_key", "delete"))
+
+        result = mod.check_all_command_guards(
+            "rm -rf /tmp/test",
+            "local",
+            approval_callback=None,
+        )
+
+        assert result["approved"] is False
+        assert result.get("status") == "approval_required"
+        assert "pattern_key" in result
+        assert "command" in result
+        assert "description" in result
+        assert "Approval required but no interactive handler" in result.get("message", "")

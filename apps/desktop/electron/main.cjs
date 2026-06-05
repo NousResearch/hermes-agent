@@ -3922,6 +3922,16 @@ function configuredRemoteProfileNames() {
   return Object.keys(config.profiles || {}).filter(name => profileRemoteOverride(config, name))
 }
 
+// True when the app is in app-global remote mode (Settings → "All profiles" →
+// Remote, or the env override): a SINGLE remote backend serves every profile via
+// ?profile=. Distinct from per-profile overrides — here there's one host for all.
+function globalRemoteActive() {
+  if (process.env.HERMES_DESKTOP_REMOTE_URL) {
+    return true
+  }
+  return readDesktopConnectionConfig().mode === 'remote'
+}
+
 // GET a profile's resolved backend (remote pool or local primary), parsed JSON.
 async function fetchJsonForProfile(profile, path) {
   return requestJsonForProfile(profile, path, 'GET')
@@ -4762,19 +4772,35 @@ async function interceptSessionRequestForRemote(request) {
   }
 
   // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile
-  // (mutations); route to the remote sans profile param — it serves its own
-  // state.db, with no cross-profile semantics.
+  // (mutations). Two remote shapes:
+  //  - per-profile override: route to that profile's own remote, sans profile
+  //    param (it serves its own state.db natively).
+  //  - global remote mode: ONE backend serves every profile via ?profile=, so
+  //    route there and KEEP the profile param so it opens the right state.db.
   if (/^\/api\/sessions\/[^/]+(\/messages)?$/.test(pathname)) {
     const profile = (searchParams.get('profile') || request.profile || '').trim()
-    if (!profile || !profileHasRemoteOverride(profile)) {
+    if (!profile) {
       return undefined
     }
-    if (method === 'GET') {
-      return fetchJsonForProfile(profile, pathname)
+    if (profileHasRemoteOverride(profile)) {
+      if (method === 'GET') {
+        return fetchJsonForProfile(profile, pathname)
+      }
+      const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
+      if (body) delete body.profile
+      return requestJsonForProfile(profile, pathname, method, body)
     }
-    const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
-    if (body) delete body.profile
-    return requestJsonForProfile(profile, pathname, method, body)
+    if (globalRemoteActive()) {
+      // Single global backend: keep ?profile= so it opens the right state.db.
+      const sep = pathname.includes('?') ? '&' : '?'
+      const path = `${pathname}${sep}profile=${encodeURIComponent(profile)}`
+      if (method === 'GET') {
+        return fetchJsonForProfile(null, path)
+      }
+      const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
+      return requestJsonForProfile(null, path, method, body)
+    }
+    return undefined
   }
 
   return undefined

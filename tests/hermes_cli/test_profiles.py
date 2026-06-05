@@ -202,6 +202,17 @@ class TestCreateProfile:
             / "SKILL.md"
         ).read_text() == "---\nname: installed-skill\n---\n"
 
+    def test_profile_wrapper_sets_default_oneshot_timeout(self, profile_env):
+        from hermes_cli.profiles import create_wrapper_script
+
+        wrapper = create_wrapper_script("coder")
+
+        assert wrapper is not None
+        text = wrapper.read_text()
+        assert 'if [ "$1" = "-z" ] || [ "$1" = "--oneshot" ]; then' in text
+        assert ': ${HERMES_ONESHOT_TIMEOUT_SECONDS:=900}' in text
+        assert 'exec hermes -p coder "$@"' in text
+
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"

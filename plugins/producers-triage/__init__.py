@@ -60,6 +60,148 @@ def run_sanitizer(text: str) -> str:
         return text
 
 
+def _event_text(event: Any) -> str:
+    return str(getattr(event, "text", None) or getattr(event, "content", None) or "")
+
+
+def _event_source(event: Any) -> Any:
+    return getattr(event, "source", None)
+
+
+def _event_author(event: Any) -> str:
+    source = _event_source(event)
+    return str(
+        getattr(event, "author", None)
+        or getattr(source, "user_name", None)
+        or getattr(source, "user_id", None)
+        or "unknown"
+    )
+
+
+def _event_channel_id(event: Any) -> str:
+    source = _event_source(event)
+    return str(getattr(event, "channel_id", None) or getattr(source, "chat_id", None) or "")
+
+
+def _event_message_id(event: Any) -> str | None:
+    source = _event_source(event)
+    value = getattr(event, "message_id", None) or getattr(source, "message_id", None)
+    return str(value) if value else None
+
+
+async def _send_reply(event: Any, gateway: Any | None, text: str) -> None:
+    """Reply from a pre_gateway_dispatch hook without relying on adapter-specific helpers."""
+    reply_fn = getattr(event, "reply", None)
+    if callable(reply_fn):
+        maybe = reply_fn(text)
+        if hasattr(maybe, "__await__"):
+            await maybe
+        return
+
+    source = _event_source(event)
+    if gateway is None or source is None:
+        logger.warning("producers-triage reply dropped: gateway/source unavailable")
+        return
+
+    adapter = getattr(gateway, "adapters", {}).get(getattr(source, "platform", None))
+    if adapter is None:
+        logger.warning("producers-triage reply dropped: adapter unavailable for %s", getattr(source, "platform", None))
+        return
+
+    metadata = None
+    thread_id = getattr(source, "thread_id", None)
+    if thread_id:
+        metadata = {"thread_id": str(thread_id)}
+    await adapter.send(
+        str(getattr(source, "chat_id", _event_channel_id(event))),
+        text,
+        reply_to=_event_message_id(event),
+        metadata=metadata,
+    )
+
+
+_FIELD_ALIASES = {
+    "prompt": {"prompt", "промпт"},
+    "goal_or_genre": {"goal", "цель", "жанр", "genre", "mood", "вайб", "style", "стиль"},
+    "failure_mode": {"failure", "problem", "issue", "проблема", "сломалось", "не нравится", "что не нравится", "что не так"},
+}
+
+
+def _normalize_field_key(key: str) -> str | None:
+    norm = re.sub(r"\s+", " ", key.strip().lower())
+    for canonical, aliases in _FIELD_ALIASES.items():
+        if norm in aliases:
+            return canonical
+    return None
+
+
+def _extract_prompt_doctor_fields(text: str) -> dict[str, str]:
+    extracted = {"prompt": "", "goal_or_genre": "", "failure_mode": ""}
+    for line in text.splitlines():
+        match = re.match(r"^\s*([^:=\n]{2,40})\s*[:=]\s*(.*?)\s*$", line)
+        if not match:
+            continue
+        canonical = _normalize_field_key(match.group(1))
+        if canonical and match.group(2).strip():
+            extracted[canonical] = match.group(2).strip()
+    return extracted
+
+
+def _is_producers_profile() -> bool:
+    try:
+        from hermes_constants import get_hermes_home
+        return get_hermes_home().name == "producers"
+    except Exception as exc:
+        logger.warning("producers-triage profile check failed: %s", exc)
+        return False
+
+
+def _should_intercept(event: Any) -> bool:
+    if not _is_producers_profile():
+        return False
+    raw_text = _event_text(event).strip()
+    norm_text = raw_text.lower()
+    if not norm_text:
+        return False
+    channel_id = _event_channel_id(event)
+    triggers = (
+        "кработ согласие",
+        "кработ отказ",
+        "почини промпт",
+        "разбери промпт",
+        "разбери prompt",
+        "prompt doctor",
+        "кработ вопросы",
+        "кработ оживи",
+        "кработ вовлечение",
+        "кработ статус роста",
+        "кработ статус канала",
+        "кработ метрики",
+        "кработ рост",
+        "кработ каналы",
+        "кработ очередь",
+        "кработ кандидаты",
+        "кработ некст",
+        "кработ следующий",
+        "кработ запости",
+    )
+    return channel_id == CHANNELS["help"] or any(trigger in norm_text for trigger in triggers)
+
+
+def _pre_gateway_dispatch_hook(**kwargs: Any) -> dict[str, Any] | None:
+    event = kwargs.get("event")
+    if event is None or not _should_intercept(event):
+        return None
+    gateway = kwargs.get("gateway") or kwargs.get("runner")
+    session_store = kwargs.get("session_store")
+    asyncio.create_task(pre_gateway_dispatch(event=event, gateway=gateway, session_store=session_store))
+    return {"action": "skip", "reason": "producers-triage-fast-path"}
+
+
+def register(ctx: Any) -> None:
+    ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch_hook)
+
+
 def load_consent_db() -> dict:
     if not CONSENT_FILE.is_file():
         return {}
@@ -370,45 +512,86 @@ def trigger_posting(count: int = 1) -> dict[str, Any]:
 
 async def pre_gateway_dispatch(
     event: MessageEvent,
-    runner: GatewayRunner,
+    runner: GatewayRunner | None = None,
+    gateway: GatewayRunner | None = None,
+    session_store: Any | None = None,
 ) -> dict[str, Any] | None:
     """Fast-path handler for explicit triage commands and intakes.
 
     Intercepts consent/help/GitDB tool review patterns.
     """
     # Verify we run in producers profile context
-    from hermes_constants import get_hermes_home
-    if get_hermes_home().name != "producers":
+    if not _is_producers_profile():
         return None
 
-    raw_text = (event.content or "").strip()
+    active_gateway = gateway or runner
+    raw_text = _event_text(event).strip()
     norm_text = raw_text.lower()
-    author = event.author or "unknown"
-    channel_id = event.channel_id
+    author = _event_author(event)
+    channel_id = _event_channel_id(event)
 
     # 1. User Consent Commands
     if "кработ согласие" in norm_text:
         set_user_consent(author, True, channel_id)
         reply = run_sanitizer(f"запомнил, {author} - теперь твои наработки из #аудио-наработки будут попадать в еженедельный дайджест")
-        await event.reply(reply)
+        await _send_reply(event, active_gateway, reply)
         return {"action": "skip"}
 
     if "кработ отказ" in norm_text:
         set_user_consent(author, False, channel_id)
         reply = run_sanitizer(f"понял, {author} - исключил твои наработки из дайджестов")
-        await event.reply(reply)
+        await _send_reply(event, active_gateway, reply)
         return {"action": "skip"}
 
+    # 1.5 Prompt Doctor Command Triage & Fast-Path Fallback
+    # Triggers on explicit prompt doctor commands (e.g. "кработ почини промпт", "кработ prompt doctor")
+    if "почини промпт" in norm_text or "разбери промпт" in norm_text or "разбери prompt" in norm_text or "prompt doctor" in norm_text:
+        # Check if we have prompt doctor specs
+        from .prompt_doctor_fallback import run_prompt_doctor_offline
+
+        extracted = _extract_prompt_doctor_fields(raw_text)
+        prompt_val = extracted.get("prompt", "")
+        goal_val = extracted.get("goal_or_genre", "")
+        failure_val = extracted.get("failure_mode", "")
+
+        # If we didn't extract fields through strict key-value notation, try parsing with regex fallback
+        if not prompt_val or not goal_val or not failure_val:
+            # Simple regex search: look for text block after trigger phrases
+            clean_cmd = re.sub(r"(?is)@?krabot\s+(?:почини промпт|разбери промпт|разбери prompt|prompt doctor)\s*[:=]?", "", raw_text).strip()
+            # If the user sent a plain text list separated by commas, newlines or semicolons, guess parts:
+            parts = [p.strip() for p in re.split(r"[\n;]", clean_cmd) if p.strip()]
+            if len(parts) >= 3:
+                prompt_val = parts[0]
+                goal_val = parts[1]
+                failure_val = parts[2]
+            elif len(parts) == 2:
+                prompt_val = parts[0]
+                goal_val = parts[1]
+                failure_val = "generic"
+            elif len(parts) == 1:
+                prompt_val = parts[0]
+                goal_val = "ambient electronic"
+                failure_val = "muddy sound"
+
+        # If we have some inputs, execute the offline fallback immediately!
+        if prompt_val:
+            diag_output = run_prompt_doctor_offline(prompt_val, goal_val, failure_val)
+            await _send_reply(event, active_gateway, run_sanitizer(diag_output))
+            return {"action": "skip"}
+        else:
+            await _send_reply(event, active_gateway, run_sanitizer("пожалуйста, пришли параметры промпта в формате:\nпромпт: [текст]\nцель: [жанр/вайб]\nпроблема: [что сломалось]"))
+            return {"action": "skip"}
+
     if "кработ вопросы" in norm_text or "кработ оживи" in norm_text or "кработ вовлечение" in norm_text:
-        await event.reply(format_human_questions_reply())
+        await _send_reply(event, active_gateway, format_human_questions_reply())
         return {"action": "skip"}
 
     if "кработ статус роста" in norm_text or "кработ статус канала" in norm_text:
-        await event.reply(format_growth_status_reply())
+        await _send_reply(event, active_gateway, format_growth_status_reply())
         return {"action": "skip"}
 
     if "кработ метрики" in norm_text or "кработ рост" in norm_text or "кработ каналы" in norm_text:
-        await event.reply(format_growth_metrics_reply())
+        await _send_reply(event, active_gateway, format_growth_metrics_reply())
         return {"action": "skip"}
 
     # 2. GitDB Tools Review Commands (kra queue/next/approve/reject/post)
@@ -417,7 +600,7 @@ async def pre_gateway_dispatch(
     if "кработ очередь" in norm_text or "кработ кандидаты" in norm_text:
         pending = get_pending_candidates()
         if not pending:
-            await event.reply("очередь кандидатов пуста")
+            await _send_reply(event, active_gateway, "очередь кандидатов пуста")
             return {"action": "skip"}
 
         reply_lines = [f"в очереди {len(pending)} кандидатов - вот первые 5:"]
@@ -426,24 +609,24 @@ async def pre_gateway_dispatch(
             lang = c.get("language", "unknown")
             reply_lines.append(f"{i}- **{c['full_name']}** ({lang}, {stars} stars)")
         reply_lines.append("\nпоказать карточку следующего: `кработ некст`\nзапостить: `кработ запости [число]`")
-        await event.reply(run_sanitizer("\n".join(reply_lines)))
+        await _send_reply(event, active_gateway, run_sanitizer("\n".join(reply_lines)))
         return {"action": "skip"}
 
     if "кработ некст" in norm_text or "кработ следующий" in norm_text:
         pending = get_pending_candidates()
         if not pending:
-            await event.reply("очередь кандидатов пуста")
+            await _send_reply(event, active_gateway, "очередь кандидатов пуста")
             return {"action": "skip"}
 
         next_c = pending[0]
         card = next_c.get("card", "")
         # Present candidate card directly
-        await event.reply(run_sanitizer(f"следующий кандидат в очереди:\n\n{card}"))
+        await _send_reply(event, active_gateway, run_sanitizer(f"следующий кандидат в очереди:\n\n{card}"))
         return {"action": "skip"}
 
     if "кработ запости" in norm_text:
         if not is_admin:
-            await event.reply("команда доступна только администраторам")
+            await _send_reply(event, active_gateway, "команда доступна только администраторам")
             return {"action": "skip"}
 
         count = 1
@@ -453,10 +636,10 @@ async def pre_gateway_dispatch(
 
         pending = get_pending_candidates()
         if not pending:
-            await event.reply("нечего постить, очередь пуста")
+            await _send_reply(event, active_gateway, "нечего постить, очередь пуста")
             return {"action": "skip"}
 
-        await event.reply(run_sanitizer(f"запускаю публикацию кандидатов ({count} шт)-"))
+        await _send_reply(event, active_gateway, run_sanitizer(f"запускаю публикацию кандидатов ({count} шт)-"))
 
         # Trigger background posting task to not block gateway response
         loop = asyncio.get_running_loop()
@@ -466,12 +649,12 @@ async def pre_gateway_dispatch(
             if res.get("ok"):
                 # Run notification safely
                 asyncio.run_coroutine_threadsafe(
-                    event.reply(run_sanitizer(f"публикация завершена успешно:\n{res['output']}")),
+                    _send_reply(event, active_gateway, run_sanitizer(f"публикация завершена успешно:\n{res['output']}")),
                     loop
                 )
             else:
                 asyncio.run_coroutine_threadsafe(
-                    event.reply(run_sanitizer(f"ошибка при публикации: {res['error']}")),
+                    _send_reply(event, active_gateway, run_sanitizer(f"ошибка при публикации: {res['error']}")),
                     loop
                 )
 
@@ -537,13 +720,13 @@ async def pre_gateway_dispatch(
             if not sync_res.get("ok"):
                 logger.warning(f"Vikunja sync failed during help intake: {sync_res.get('error')}")
 
-            await event.reply(run_sanitizer(ack_msg))
+            await _send_reply(event, active_gateway, run_sanitizer(ack_msg))
             return {"action": "skip"}
 
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to create bd issue during help intake: {e.stderr or e.stdout}")
             # Do not throw, fallback to normal flow or skip
-            await event.reply(run_sanitizer("возникли проблемы с созданием тикета - я записал ошибку в логи"))
+            await _send_reply(event, active_gateway, run_sanitizer("возникли проблемы с созданием тикета - я записал ошибку в логи"))
             return {"action": "skip"}
 
     return None

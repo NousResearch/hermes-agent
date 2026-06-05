@@ -678,6 +678,26 @@ def test_oneshot_fails_closed_on_agent_exception(monkeypatch, capsys):
     assert "not a TTY" in captured.err
 
 
+def test_oneshot_timeout_fails_closed_without_silent_hang(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import time
+    import hermes_cli.oneshot as oneshot_mod
+
+    monkeypatch.setenv("HERMES_ONESHOT_TIMEOUT_SECONDS", "0.01")
+
+    def _hang(*_args, **_kwargs):
+        time.sleep(30)
+        return "late"
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", _hang)
+
+    assert oneshot_mod.run_oneshot("hello") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "timed out after" in captured.err
+    assert "without a final response" in captured.err
+
+
 def test_oneshot_reraises_keyboard_interrupt(monkeypatch):
     _stub_plugin_discovery(monkeypatch)
     import hermes_cli.oneshot as oneshot_mod

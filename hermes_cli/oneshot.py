@@ -23,11 +23,48 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
+
+
+class _OneshotTimeout(Exception):
+    """Raised when non-interactive oneshot execution exceeds its timeout."""
+
+    def __init__(self, seconds: float):
+        self.seconds = seconds
+        super().__init__(f"timed out after {seconds:g}s")
+
+
+def _parse_oneshot_timeout() -> float | None:
+    """Return the configured oneshot timeout in seconds, or None when off.
+
+    ``hermes -z`` intentionally suppresses intermediate tool/status output, so
+    a blocked agent can otherwise look like a silent hang forever.  The timeout
+    is opt-in through env so normal oneshot semantics stay backward-compatible,
+    while profile wrappers (for example ``redops-hermes``) can fail closed.
+    """
+    raw = (
+        os.getenv("HERMES_ONESHOT_TIMEOUT_SECONDS")
+        or os.getenv("HERMES_ONESHOT_TIMEOUT")
+        or ""
+    ).strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        sys.stderr.write(
+            "hermes -z: ignoring invalid HERMES_ONESHOT_TIMEOUT_SECONDS="
+            f"{raw!r}; expected seconds.\n"
+        )
+        return None
+    if seconds <= 0:
+        return None
+    return seconds
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -176,10 +213,21 @@ def run_oneshot(
     real_stdout = sys.stdout
     real_stderr = sys.stderr
     devnull = open(os.devnull, "w", encoding="utf-8")
+    timeout_seconds = _parse_oneshot_timeout()
 
     response: Optional[str] = None
     failure: BaseException | None = None
+    old_alarm_handler = None
+
+    def _timeout_handler(_signum, _frame):
+        assert timeout_seconds is not None
+        raise _OneshotTimeout(timeout_seconds)
+
     try:
+        if timeout_seconds is not None:
+            old_alarm_handler = signal.getsignal(signal.SIGALRM)
+            signal.signal(signal.SIGALRM, _timeout_handler)
+            signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
         with redirect_stdout(devnull), redirect_stderr(devnull):
             try:
                 response = _run_agent(
@@ -192,13 +240,17 @@ def run_oneshot(
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
                 # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
-                # KeyboardInterrupt, SystemExit, etc.) so we can surface it on
-                # the real stderr instead of crashing past the redirect with a
-                # traceback that the caller never sees. A silent exit in a
-                # cron / SSH / subprocess context is the worst failure mode.
-                # See #30623.
+                # KeyboardInterrupt, SystemExit, timeout alarms, etc.) so we
+                # can surface it on the real stderr instead of crashing past the
+                # redirect with a traceback that the caller never sees. A silent
+                # exit/hang in a cron / SSH / subprocess context is the worst
+                # failure mode. See #30623.
                 failure = exc
     finally:
+        if timeout_seconds is not None:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            if old_alarm_handler is not None:
+                signal.signal(signal.SIGALRM, old_alarm_handler)
         try:
             devnull.close()
         except Exception:
@@ -209,7 +261,14 @@ def run_oneshot(
         # (Ctrl-C / explicit sys.exit() inside the agent).
         if isinstance(failure, (KeyboardInterrupt, SystemExit)):
             raise failure
-        real_stderr.write(f"hermes -z: agent failed: {failure}\n")
+        if isinstance(failure, _OneshotTimeout):
+            real_stderr.write(
+                "hermes -z: timed out after "
+                f"{failure.seconds:g}s without a final response. "
+                "Set HERMES_ONESHOT_TIMEOUT_SECONDS=0 to disable.\n"
+            )
+        else:
+            real_stderr.write(f"hermes -z: agent failed: {failure}\n")
         real_stderr.flush()
         return 1
 

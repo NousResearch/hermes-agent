@@ -223,6 +223,22 @@ class TestRateLimiting:
             mgr.sync()
         assert upload.call_count == 1
 
+    def test_failed_sync_does_not_start_rate_limit_window(self, tmp_files):
+        mgr = FileSyncManager(
+            get_files_fn=_make_get_files(tmp_files),
+            upload_fn=MagicMock(side_effect=RuntimeError("upload failed")),
+            delete_fn=MagicMock(),
+            sync_interval=10.0,
+        )
+
+        mgr.sync(force=True)
+
+        good_upload = MagicMock()
+        mgr._upload_fn = good_upload
+        mgr.sync()
+
+        assert good_upload.call_count == 3, "failed sync should not suppress the next retry"
+
 
 class TestEdgeCases:
     def test_empty_file_list(self):

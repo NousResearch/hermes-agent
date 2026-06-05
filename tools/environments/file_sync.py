@@ -207,7 +207,6 @@ class FileSyncManager:
         except Exception as exc:
             self._synced_files = prev_files
             self._pushed_hashes = prev_hashes
-            self._last_sync_time = time.monotonic()
             logger.warning("file_sync: sync failed, rolled back state: %s", exc)
 
     # ------------------------------------------------------------------

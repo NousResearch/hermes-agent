@@ -871,6 +871,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
   const lastEditorSelectionRef = useRef<ComposerSelectionSnapshot | null>(null)
+  const editorFocusedOnceRef = useRef(false)
   const dragDepthRef = useRef(0)
   const [dragActive, setDragActive] = useState(false)
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
@@ -890,13 +891,19 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
   const focusEditor = useCallback(() => {
     const editor = editorRef.current
+    const selection = editor ? captureComposerSelection(editor) || lastEditorSelectionRef.current : null
 
     focusComposerInput(editor)
 
     if (editor) {
-      placeCaretEnd(editor)
+      if (restoreComposerSelection(editor, selection)) {
+        lastEditorSelectionRef.current = selection
+      } else if (!editorFocusedOnceRef.current) {
+        placeCaretEnd(editor)
+      }
     }
 
+    editorFocusedOnceRef.current = true
     markActiveComposer('edit')
   }, [])
 

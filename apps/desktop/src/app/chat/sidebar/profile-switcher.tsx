@@ -20,22 +20,20 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
-import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import {
   $activeGatewayProfile,
   $profileColors,
-  $profileCreateRequest,
   $profileOrder,
   $profiles,
   $profileScope,
@@ -88,8 +86,6 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 // overflow (edit the default profile's SOUL.md); the colored named squares
 // and the default↔all toggle only appear once a second profile exists.
 export function ProfileRail() {
-  const { t } = useI18n()
-  const p = t.profiles
   const profiles = useStore($profiles)
   const scope = useStore($profileScope)
   const gatewayProfile = useStore($activeGatewayProfile)
@@ -185,20 +181,6 @@ export function ProfileRail() {
     void refreshActiveProfile()
   }, [])
 
-  // Open the create dialog when the `profile.create` hotkey fires (the dialog
-  // state lives here, so the global keybind bumps a request atom we watch).
-  const createRequest = useStore($profileCreateRequest)
-  const lastCreateRef = useRef(createRequest)
-
-  useEffect(() => {
-    if (createRequest === lastCreateRef.current) {
-      return
-    }
-
-    lastCreateRef.current = createRequest
-    setCreateOpen(true)
-  }, [createRequest])
-
   return (
     <div aria-label="Profiles" className="flex items-center gap-0.5" data-slot="profile-rail" role="tablist">
       {/* One button toggles default ↔ all: home face when scoped to a profile,
@@ -211,21 +193,16 @@ export function ProfileRail() {
           <ProfilePill
             active={isAll || onDefault}
             glyph={isAll ? 'layers' : 'home'}
-            label={onDefault ? p.showAllProfiles : p.switchToProfile(defaultProfile.name)}
+            label={onDefault ? 'Show all profiles' : `Switch to ${defaultProfile.name}`}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
           />
         ) : (
-          <ProfilePill active={isAll} glyph="layers" label={p.allProfiles} onSelect={() => setShowAllProfiles(true)} />
+          <ProfilePill active={isAll} glyph="layers" label="All profiles" onSelect={() => setShowAllProfiles(true)} />
         ))}
 
       {/* Single-profile: the active default's home icon next to the create +. */}
       {!multiProfile && defaultProfile && (
-        <ProfilePill
-          active
-          glyph="home"
-          label={defaultProfile.name}
-          onSelect={() => selectProfile(defaultProfile.name)}
-        />
+        <ProfilePill active glyph="home" label={defaultProfile.name} onSelect={() => selectProfile(defaultProfile.name)} />
       )}
 
       <div
@@ -262,9 +239,9 @@ export function ProfileRail() {
           </DndContext>
         )}
 
-        <Tip label={p.newProfile}>
+        <Tip label="New profile">
           <button
-            aria-label={p.newProfile}
+            aria-label="New profile"
             className="grid size-5 shrink-0 place-items-center rounded-[3px] text-(--ui-text-tertiary) opacity-55 transition hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100"
             onClick={() => setCreateOpen(true)}
             type="button"
@@ -360,12 +337,12 @@ const LONG_PRESS_MS = 450
 // context-menu triggers via nested asChild Slots, so a single element keeps the
 // dnd listeners, hover tip, and right-click menu.
 function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, onSelect }: ProfileSquareProps) {
-  const { t } = useI18n()
-  const p = t.profiles
   const hue = color ?? 'var(--ui-text-quaternary)'
   const [pickerOpen, setPickerOpen] = useState(false)
   const pressTimer = useRef<null | number>(null)
   const suppressClick = useRef(false)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const [pickerAnchor, setPickerAnchor] = useState<{ x: number; y: number } | null>(null)
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
     id: label,
@@ -379,8 +356,6 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
     }
   }
 
-  // A real drag (movement past the dnd threshold) cancels the pending hold, so a
-  // reorder never doubles as a color pick. Also tidy up on unmount.
   useEffect(() => {
     if (isDragging) {
       clearPress()
@@ -392,85 +367,82 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
   const ring = active ? `inset 0 0 0 1.5px ${hue}` : ''
   const lift = isDragging ? '0 6px 16px -4px rgb(0 0 0 / 0.4)' : ''
 
+  const openPicker = () => {
+    if (buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect()
+      setPickerAnchor({ x: rect.left, y: rect.top })
+    }
+    setPickerOpen(true)
+    triggerHaptic('selection')
+  }
+
   const pickColor = (next: null | string) => {
     onRecolor(next)
     setPickerOpen(false)
+    setPickerAnchor(null)
     triggerHaptic('selection')
   }
 
   return (
-    <Popover onOpenChange={setPickerOpen} open={pickerOpen}>
+    <>
       <ContextMenu>
         <TooltipProvider delayDuration={0}>
           <Tooltip>
-            <PopoverAnchor asChild>
-              <ContextMenuTrigger asChild>
-                <TooltipTrigger asChild>
-                  <button
-                    className={cn(
-                      'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
-                      active ? 'opacity-100' : 'opacity-55',
-                      isDragging && 'z-10 cursor-grabbing opacity-100'
-                    )}
-                    ref={setNodeRef}
-                    style={{
-                      backgroundColor: profileColorSoft(hue, active ? 30 : 22),
-                      boxShadow: [ring, lift].filter(Boolean).join(', ') || undefined,
-                      color: color ?? undefined,
-                      // Glide the dragged square between snapped cells with a little
-                      // overshoot (no scale — the overflow-x strip would clip it).
-                      transform: base,
-                      transition: isDragging ? DRAG_TRANSITION : transition
-                    }}
-                    type="button"
-                    {...attributes}
-                    {...listeners}
-                    aria-label={label}
-                    aria-pressed={active}
-                    // Hold-to-recolor rides alongside the dnd pointer listener (call
-                    // it first so drag tracking still arms), then a timer opens the
-                    // picker and flags the trailing click so it doesn't also select.
-                    onClick={() => {
-                      if (suppressClick.current) {
-                        suppressClick.current = false
-
-                        return
-                      }
-
-                      onSelect()
-                    }}
-                    onPointerCancel={clearPress}
-                    onPointerDown={event => {
-                      listeners?.onPointerDown?.(event)
-
-                      if (event.button !== 0) {
-                        return
-                      }
-
+            <ContextMenuTrigger asChild>
+              <TooltipTrigger asChild>
+                <button
+                  className={cn(
+                    'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                    active ? 'opacity-100' : 'opacity-55',
+                    isDragging && 'z-10 cursor-grabbing opacity-100'
+                  )}
+                  ref={node => {
+                    setNodeRef(node)
+                    ;(buttonRef as React.MutableRefObject<HTMLButtonElement | null>).current = node
+                  }}
+                  style={{
+                    backgroundColor: profileColorSoft(hue, active ? 30 : 22),
+                    boxShadow: [ring, lift].filter(Boolean).join(', ') || undefined,
+                    color: color ?? undefined,
+                    transform: base,
+                    transition: isDragging ? DRAG_TRANSITION : transition
+                  }}
+                  type="button"
+                  {...attributes}
+                  {...listeners}
+                  aria-label={label}
+                  aria-pressed={active}
+                  onClick={() => {
+                    if (suppressClick.current) {
                       suppressClick.current = false
-                      clearPress()
-                      pressTimer.current = window.setTimeout(() => {
-                        suppressClick.current = true
-                        triggerHaptic('success')
-                        setPickerOpen(true)
-                      }, LONG_PRESS_MS)
-                    }}
-                    onPointerLeave={clearPress}
-                    onPointerUp={clearPress}
-                  >
-                    {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
-                  </button>
-                </TooltipTrigger>
-              </ContextMenuTrigger>
-            </PopoverAnchor>
+                      return
+                    }
+                    onSelect()
+                  }}
+                  onPointerCancel={clearPress}
+                  onPointerDown={event => {
+                    listeners?.onPointerDown?.(event)
+                    if (event.button !== 0) return
+                    suppressClick.current = false
+                    clearPress()
+                    pressTimer.current = window.setTimeout(() => {
+                      suppressClick.current = true
+                      openPicker()
+                    }, LONG_PRESS_MS)
+                  }}
+                  onPointerLeave={clearPress}
+                  onPointerUp={clearPress}
+                >
+                  {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                </button>
+              </TooltipTrigger>
+            </ContextMenuTrigger>
             <TooltipContent>{label}</TooltipContent>
           </Tooltip>
         </TooltipProvider>
 
-        {/* The rail sits at the very bottom, so pad off the chrome (esp. the
-            statusbar) — Radix then flips the menu up instead of squishing it. */}
         <ContextMenuContent
-          aria-label={p.actionsFor(label)}
+          aria-label={`Actions for ${label}`}
           className="w-40"
           collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
           // Menu close refocuses the trigger — which doubles as the popover
@@ -478,13 +450,13 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
           // Suppress the refocus and the picker survives.
           onCloseAutoFocus={event => event.preventDefault()}
         >
-          <ContextMenuItem onSelect={() => setPickerOpen(true)}>
+          <ContextMenuItem onSelect={openPicker}>
             <Codicon name="symbol-color" size="0.875rem" />
-            <span>{p.color}</span>
+            <span>Color…</span>
           </ContextMenuItem>
           <ContextMenuItem onSelect={onRename}>
             <Codicon name="edit" size="0.875rem" />
-            <span>{p.rename}</span>
+            <span>Rename</span>
           </ContextMenuItem>
           <ContextMenuItem
             className="text-destructive focus:text-destructive"
@@ -492,26 +464,53 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
             variant="destructive"
           >
             <Codicon name="trash" size="0.875rem" />
-            <span>{t.common.delete}</span>
+            <span>Delete</span>
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
 
-      <PopoverContent
-        aria-label={p.colorFor(label)}
-        className="w-auto p-2"
-        collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
-        side="top"
-      >
-        <ColorSwatches
-          clearIcon="sync"
-          clearLabel={p.autoColor}
-          onChange={pickColor}
-          swatches={PROFILE_SWATCHES}
-          swatchLabel={p.setColor}
-          value={color}
-        />
-      </PopoverContent>
-    </Popover>
+      {pickerOpen && pickerAnchor && createPortal(
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => { setPickerOpen(false); setPickerAnchor(null) }}
+          />
+          <div
+            className="fixed z-50 w-auto rounded-lg border bg-(--ui-bg) p-2 shadow-lg"
+            style={{
+              left: pickerAnchor.x,
+              top: pickerAnchor.y - 8,
+              transform: 'translateY(-100%)'
+            }}
+          >
+            <div className="grid grid-cols-6 gap-1.5">
+              {PROFILE_SWATCHES.map(swatch => (
+                <button
+                  aria-label={`Set color ${swatch}`}
+                  className="size-5 rounded-full transition-transform hover:scale-110"
+                  key={swatch}
+                  onClick={() => pickColor(swatch)}
+                  style={{
+                    backgroundColor: swatch,
+                    boxShadow: swatch === color ? '0 0 0 2px var(--ui-bg-elevated), 0 0 0 3.5px currentColor' : undefined,
+                    color: swatch
+                  }}
+                  type="button"
+                />
+              ))}
+            </div>
+            <button
+              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md py-1 text-xs text-(--ui-text-tertiary) transition hover:bg-(--ui-control-hover-background) hover:text-foreground"
+              onClick={() => pickColor(null)}
+              type="button"
+            >
+              <Codicon name="sync" size="0.75rem" />
+              Auto
+            </button>
+          </div>
+        </>,
+        document.body
+      )}
+    </>
   )
 }

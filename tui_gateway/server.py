@@ -430,6 +430,12 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             worker.close()
     except Exception:
         pass
+    try:
+        mgr = session.get("_loop_manager")
+        if mgr:
+            mgr.shutdown()
+    except Exception:
+        pass
 
 
 def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") -> None:
@@ -964,6 +970,30 @@ def _start_agent_build(sid: str, session: dict) -> None:
             ready.set()
 
     threading.Thread(target=_build, daemon=True).start()
+
+
+def _make_tui_dispatch(session: dict, sid: str):
+    """Return a dispatch callback that injects loop prompts via _run_prompt_submit.
+
+    The callback returns True if the prompt was submitted, False if the
+    session is busy and the ticker should retry next tick.
+    """
+    def _dispatch(prompt: str) -> bool:
+        with session["history_lock"]:
+            if session.get("running"):
+                return False
+            session["running"] = True
+        try:
+            _emit("message.start", sid)
+            _run_prompt_submit(None, sid, session, prompt)
+            return True
+        except Exception:
+            logger.warning("Loop dispatch failed for session %s", sid, exc_info=True)
+            with session["history_lock"]:
+                session["running"] = False
+            _emit("message.end", sid, {"error": "loop dispatch failed"})
+            return False
+    return _dispatch
 
 
 def _sess_nowait(params, rid):
@@ -2934,6 +2964,19 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     except Exception:
         # Defer hard-failure to slash.exec; chat still works without slash worker.
         _sessions[sid]["slash_worker"] = None
+    # Ensure loop manager for this session (idempotent).
+    # The slash_worker persisted state to SessionDB; this
+    # LoopManager with TUI dispatch picks up the ticking.
+    if "_loop_manager" not in _sessions.get(sid, {}):
+        try:
+            from hermes_cli.loop import LoopManager
+            lk = _sessions[sid].get("session_key") or sid
+            _sessions[sid]["_loop_manager"] = LoopManager(
+                session_id=lk,
+                dispatch=_make_tui_dispatch(_sessions[sid], sid),
+            )
+        except ImportError:
+            pass
     try:
         from tools.approval import register_gateway_notify, load_permanent_allowlist
 
@@ -6707,6 +6750,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "plan",
         "goal",
         "undo",
+        "loop",
     }
 )
 
@@ -7091,6 +7135,94 @@ def _(rid, params: dict) -> dict:
             rid,
             {"type": "send", "notice": notice, "message": state.goal},
         )
+
+    if name == "loop":
+        if not session:
+            return _err(rid, 4001, "no active session")
+        try:
+            from hermes_cli.loop import LoopManager, _parse_loop_command, format_interval
+        except Exception as exc:
+            return _err(rid, 5030, f"loop unavailable: {exc}")
+
+        sid_key = session.get("session_key") or ""
+        if not sid_key:
+            return _err(rid, 4001, "no session key")
+
+        # Use the session's existing loop manager (with TUI dispatch)
+        # or create one if it doesn't exist yet.
+        mgr = session.get("_loop_manager")
+        if mgr is None or getattr(mgr, "session_id", None) != sid_key:
+            mgr = LoopManager(
+                session_id=sid_key,
+                dispatch=_make_tui_dispatch(session, params.get("session_id", "")),
+            )
+            session["_loop_manager"] = mgr
+
+        parsed = _parse_loop_command(arg)
+        action = parsed["action"]
+
+        if action == "status":
+            return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+
+        if action == "pause_all":
+            paused = mgr.pause()
+            if not paused:
+                return _ok(rid, {"type": "exec", "output": "No active loops."})
+            ids = ", ".join(f"#{s.id}" for s in paused)
+            return _ok(rid, {"type": "exec", "output": f"⏸ Paused: {ids}"})
+
+        if action == "pause":
+            paused = mgr.pause(uid=parsed["uid"])
+            if not paused:
+                return _ok(rid, {"type": "exec", "output": f"No loop #{parsed['uid']}."})
+            return _ok(rid, {"type": "exec", "output": f"⏸ Loop #{parsed['uid']} paused: {paused[0].prompt}"})
+
+        if action == "resume_all":
+            resumed = mgr.resume()
+            if not resumed:
+                return _ok(rid, {"type": "exec", "output": "No paused loops."})
+            ids = ", ".join(f"#{s.id}" for s in resumed)
+            return _ok(rid, {"type": "exec", "output": f"▶ Resumed: {ids}"})
+
+        if action == "resume":
+            resumed = mgr.resume(uid=parsed["uid"])
+            if not resumed:
+                return _ok(rid, {"type": "exec", "output": f"No loop #{parsed['uid']}."})
+            return _ok(rid, {"type": "exec", "output": f"▶ Loop #{parsed['uid']} resumed: {resumed[0].prompt}"})
+
+        if action == "clear_all":
+            count = mgr.clear()
+            if count:
+                return _ok(rid, {"type": "exec", "output": f"✓ {count} loop(s) cleared."})
+            return _ok(rid, {"type": "exec", "output": "No active loops."})
+
+        if action == "clear":
+            count = mgr.clear(uid=parsed["uid"])
+            if count:
+                return _ok(rid, {"type": "exec", "output": f"✓ Loop #{parsed['uid']} cleared."})
+            return _ok(rid, {"type": "exec", "output": f"No loop #{parsed['uid']}."})
+
+        if action == "set":
+            try:
+                state = mgr.add(
+                    parsed["prompt"],
+                    interval_seconds=parsed["interval"],
+                )
+            except ValueError as exc:
+                return _err(rid, 4004, f"invalid loop: {exc}")
+
+            interval_str = format_interval(state.interval_seconds)
+            notice = (
+                f"⊙ Loop #{state.id} set: every {interval_str} → {state.prompt}\n"
+                "Controls: /loop list · /loop pause · /loop resume · /loop clear"
+            )
+            return _ok(
+                rid,
+                {"type": "exec", "output": notice},
+            )
+
+        if action == "error":
+            return _err(rid, 4004, parsed.get("message", "invalid /loop command"))
 
     if name == "undo":
         # /undo [N]: back up N user turns (default 1), soft-delete the

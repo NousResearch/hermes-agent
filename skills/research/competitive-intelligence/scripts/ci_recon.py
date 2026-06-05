@@ -10,7 +10,7 @@ validate <url>
 
 save_report <slug>
     Read a markdown report from stdin and save it atomically under
-    ~/.hermes/competitive-intelligence/<slug>/<ISO-date>/.
+    ~/.hermes/competitive-intelligence/<slug>/<ISO-datetime>/.
     Prints the saved path to stdout.
 
 export_html <slug>
@@ -40,6 +40,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 import urllib.robotparser
 from datetime import datetime, timezone
@@ -58,8 +59,24 @@ def _hermes_home() -> Path:
     return Path.home() / ".hermes"
 
 
+def _safe_slug(slug: str) -> str:
+    """Sanitize slug to prevent path traversal and filesystem issues.
+
+    Dots are intentionally excluded — they enable '..' traversal sequences
+    even after stripping leading dots.
+    """
+    # Allow only alphanumeric, dash, underscore (no dots)
+    safe = re.sub(r"[^\w\-]", "_", slug.strip())
+    # Strip leading underscores/dashes (handles inputs like '___etc')
+    safe = re.sub(r"^[_\-]+", "", safe)
+    # Collapse repeated separators
+    safe = re.sub(r"[_\-]{2,}", "-", safe)
+    safe = safe[:80].rstrip("-_") or "report"
+    return safe
+
+
 def _find_latest_report_dir(slug: str) -> Optional[Path]:
-    base = _hermes_home() / "competitive-intelligence" / slug
+    base = _hermes_home() / "competitive-intelligence" / _safe_slug(slug)
     if not base.exists():
         return None
     dirs = sorted(
@@ -105,6 +122,7 @@ def cmd_validate(url: str) -> int:
             result["accessible"] = True
     except urllib.error.HTTPError as exc:
         result["status_code"] = exc.code
+        # Treat redirects as accessible; content gate check is the agent's job
         if exc.code in (301, 302, 303, 307, 308):
             result["accessible"] = True
         else:
@@ -118,8 +136,7 @@ def cmd_validate(url: str) -> int:
         print(json.dumps(result, indent=2))
         return 1
 
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
+    parsed = urllib.parse.urlparse(url)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
 
     rp = urllib.robotparser.RobotFileParser()
@@ -128,7 +145,10 @@ def cmd_validate(url: str) -> int:
         rp.read()
         allowed = rp.can_fetch(_USER_AGENT, url) or rp.can_fetch("*", url)
         result["robots_allows_crawl"] = bool(allowed)
+        if not result["robots_allows_crawl"]:
+            result["error"] = "robots.txt disallows crawling for this user-agent"
     except Exception:  # noqa: BLE001
+        # Unreachable robots.txt → assume allowed (common convention)
         result["robots_allows_crawl"] = True
 
     print(json.dumps(result, indent=2))
@@ -140,13 +160,15 @@ def cmd_validate(url: str) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_save_report(slug: str) -> int:
+    slug = _safe_slug(slug)
     report_md = sys.stdin.read()
     if not report_md.strip():
         print("ERROR: no report content received on stdin", file=sys.stderr)
         return 1
 
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    out_dir = _hermes_home() / "competitive-intelligence" / slug / date_str
+    # Include time in directory name to avoid same-day overwrites
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
+    out_dir = _hermes_home() / "competitive-intelligence" / slug / ts
     out_dir.mkdir(parents=True, exist_ok=True)
 
     meta = {
@@ -172,7 +194,7 @@ _HTML_TEMPLATE = """\
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Competitive Intelligence — {slug}</title>
+<title>Competitive Intelligence — {slug_title}</title>
 <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
@@ -208,6 +230,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .badge.high{{background:#d4edda;color:#155724}}
 .badge.med{{background:#fff3cd;color:#856404}}
 .badge.low{{background:#fde8cc;color:#7a4000}}
+.cdn-warn{{color:#856404;background:#fff3cd;padding:10px 16px;border-radius:6px;margin-bottom:20px;font-size:.88rem;border:1px solid #ffc107}}
 noscript pre{{white-space:pre-wrap;word-wrap:break-word;padding:32px;line-height:1.6;font-size:.9rem}}
 @media print{{
   #sidebar{{display:none}}
@@ -224,7 +247,7 @@ noscript pre{{white-space:pre-wrap;word-wrap:break-word;padding:32px;line-height
 </head>
 <body>
 <aside id="sidebar">
-  <div id="brand">⚡ Hermès CI</div>
+  <div id="brand">&#9889; Herm&egrave;s CI</div>
   <div id="toc-title">Contents</div>
   <ul id="toc"></ul>
   <div id="meta">
@@ -235,14 +258,28 @@ noscript pre{{white-space:pre-wrap;word-wrap:break-word;padding:32px;line-height
 <main id="content">
   <div id="report"></div>
 </main>
-<noscript><pre>{escaped_md}</pre></noscript>
+<noscript>
+  <pre>{escaped_md}</pre>
+</noscript>
 <script>
 const src = {json_md};
-document.getElementById('report').innerHTML = marked.parse(src);
+try {{
+  document.getElementById('report').innerHTML = marked.parse(src);
+}} catch (e) {{
+  const el = document.getElementById('report');
+  const warn = document.createElement('p');
+  warn.className = 'cdn-warn';
+  warn.textContent = '⚠ Markdown renderer unavailable (CDN unreachable or JS disabled). Showing raw markdown.';
+  const pre = document.createElement('pre');
+  pre.style.cssText = 'white-space:pre-wrap;font-size:.9rem;line-height:1.7;padding:20px;background:#f8f9fa;border-radius:6px';
+  pre.textContent = src;
+  el.appendChild(warn);
+  el.appendChild(pre);
+}}
 
 // Build sidebar TOC
 const toc = document.getElementById('toc');
-document.querySelectorAll('#report h2, #report h3').forEach((h, i) => {{
+document.querySelectorAll('#report h2, #report h3').forEach(function(h, i) {{
   const id = 'sec-' + i;
   h.id = id;
   const li = document.createElement('li');
@@ -255,16 +292,16 @@ document.querySelectorAll('#report h2, #report h3').forEach((h, i) => {{
 }});
 
 // Confidence badges
-document.querySelectorAll('#report p, #report li, #report td').forEach(el => {{
+document.querySelectorAll('#report p, #report li, #report td').forEach(function(el) {{
   el.innerHTML = el.innerHTML
-    .replace(/\[H\]/g, '<span class="badge high" title="High confidence — direct evidence">H</span>')
-    .replace(/\[M\]/g, '<span class="badge med"  title="Medium confidence — indirect signals">M</span>')
-    .replace(/\[L\]/g, '<span class="badge low"  title="Low confidence — inference only">L</span>');
+    .replace(/\[H\]/g, '<span class="badge high" title="High — direct evidence">H</span>')
+    .replace(/\[M\]/g, '<span class="badge med"  title="Medium — indirect signals">M</span>')
+    .replace(/\[L\]/g, '<span class="badge low"  title="Low — inference only">L</span>');
 }});
 
 // Collapsible H2 sections
-document.querySelectorAll('#report h2').forEach(h2 => {{
-  h2.addEventListener('click', () => {{
+document.querySelectorAll('#report h2').forEach(function(h2) {{
+  h2.addEventListener('click', function() {{
     const collapsed = h2.classList.toggle('collapsed');
     let el = h2.nextElementSibling;
     while (el && el.tagName !== 'H2') {{
@@ -275,8 +312,8 @@ document.querySelectorAll('#report h2').forEach(h2 => {{
 }});
 
 // Smooth scroll for TOC links
-document.querySelectorAll('#toc a').forEach(a => {{
-  a.addEventListener('click', e => {{
+document.querySelectorAll('#toc a').forEach(function(a) {{
+  a.addEventListener('click', function(e) {{
     e.preventDefault();
     const target = document.querySelector(a.getAttribute('href'));
     if (target) target.scrollIntoView({{behavior: 'smooth', block: 'start'}});
@@ -289,6 +326,7 @@ document.querySelectorAll('#toc a').forEach(a => {{
 
 
 def cmd_export_html(slug: str) -> int:
+    slug = _safe_slug(slug)
     out_dir = _find_latest_report_dir(slug)
     if not out_dir:
         print(f"ERROR: no saved report found for slug {slug!r}", file=sys.stderr)
@@ -298,7 +336,7 @@ def cmd_export_html(slug: str) -> int:
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     rendered = _HTML_TEMPLATE.format(
-        slug=slug,
+        slug_title=html.escape(slug),
         slug_escaped=html.escape(slug),
         date=html.escape(date_str),
         json_md=json.dumps(content),
@@ -315,7 +353,22 @@ def cmd_export_html(slug: str) -> int:
 # export_pdf
 # ---------------------------------------------------------------------------
 
+def _try_pdf_tool(args: list[str], label: str) -> Optional[Path]:
+    """Run a PDF conversion command; return output path on success, None on failure."""
+    pdf_path = Path(args[-1])
+    r = subprocess.run(args, capture_output=True)
+    if r.returncode == 0 and pdf_path.exists() and pdf_path.stat().st_size > 0:
+        return pdf_path
+    stderr = r.stderr.decode(errors="replace").strip()
+    if stderr:
+        print(f"{label} failed: {stderr}", file=sys.stderr)
+    else:
+        print(f"{label} failed (exit {r.returncode})", file=sys.stderr)
+    return None
+
+
 def cmd_export_pdf(slug: str) -> int:
+    slug = _safe_slug(slug)
     out_dir = _find_latest_report_dir(slug)
     if not out_dir:
         print(f"ERROR: no saved report found for slug {slug!r}", file=sys.stderr)
@@ -324,64 +377,71 @@ def cmd_export_pdf(slug: str) -> int:
     md_path = out_dir / "report.md"
     pdf_path = out_dir / "report.pdf"
 
-    # Ensure HTML artifact exists for wkhtmltopdf fallback
+    # Ensure HTML artifact exists (needed by wkhtmltopdf)
     html_path = out_dir / "report.html"
     if not html_path.exists():
-        cmd_export_html(slug)
+        if cmd_export_html(slug) != 0:
+            print("WARNING: could not generate HTML for PDF conversion", file=sys.stderr)
 
-    # 1. Try wkhtmltopdf (HTML → PDF, no LaTeX dependency)
-    if shutil.which("wkhtmltopdf"):
-        r = subprocess.run(
+    # 1. wkhtmltopdf (HTML → PDF, no LaTeX dependency)
+    if shutil.which("wkhtmltopdf") and html_path.exists():
+        result = _try_pdf_tool(
             ["wkhtmltopdf", "--quiet", str(html_path), str(pdf_path)],
-            capture_output=True,
+            "wkhtmltopdf",
         )
-        if r.returncode == 0 and pdf_path.exists():
-            print(str(pdf_path))
+        if result:
+            print(str(result))
             return 0
 
-    # 2. Try pandoc (markdown → PDF)
+    # 2. pandoc with wkhtmltopdf engine
     if shutil.which("pandoc"):
-        # Try with wkhtmltopdf engine first (no LaTeX needed)
-        r = subprocess.run(
+        result = _try_pdf_tool(
             ["pandoc", str(md_path), "-o", str(pdf_path), "--pdf-engine=wkhtmltopdf"],
-            capture_output=True,
+            "pandoc (wkhtmltopdf engine)",
         )
-        if r.returncode == 0 and pdf_path.exists():
-            print(str(pdf_path))
+        if result:
+            print(str(result))
             return 0
-        # Try default engine (may use pdflatex/xelatex if installed)
-        r = subprocess.run(
+        # pandoc with default engine (may use pdflatex/xelatex if installed)
+        result = _try_pdf_tool(
             ["pandoc", str(md_path), "-o", str(pdf_path)],
-            capture_output=True,
+            "pandoc (default engine)",
         )
-        if r.returncode == 0 and pdf_path.exists():
-            print(str(pdf_path))
+        if result:
+            print(str(result))
             return 0
 
-    # 3. Try weasyprint (Python package — may or may not be installed)
-    if shutil.which("weasyprint"):
-        r = subprocess.run(
+    # 3. weasyprint (Python package, may or may not be installed)
+    if shutil.which("weasyprint") and html_path.exists():
+        result = _try_pdf_tool(
             ["weasyprint", str(html_path), str(pdf_path)],
-            capture_output=True,
+            "weasyprint",
         )
-        if r.returncode == 0 and pdf_path.exists():
-            print(str(pdf_path))
+        if result:
+            print(str(result))
             return 0
 
-    # 4. Fallback — return the HTML and advise browser print
-    print(
-        f"WARNING: No PDF tool found (tried wkhtmltopdf, pandoc, weasyprint).\n"
-        f"HTML report is at: {html_path}\n"
-        f"To create a PDF: open that file in a browser → File → Print → Save as PDF.",
-        file=sys.stderr,
-    )
-    print(str(html_path))
-    return 0  # HTML is a usable substitute; don't hard-fail
+    # 4. Fallback — HTML is a usable substitute
+    if html_path.exists():
+        print(
+            "WARNING: No PDF tool found (tried wkhtmltopdf, pandoc, weasyprint).\n"
+            f"HTML report saved at: {html_path}\n"
+            "To create a PDF: open in browser → File → Print → Save as PDF.",
+            file=sys.stderr,
+        )
+        print(str(html_path))
+        return 0
+
+    print("ERROR: could not produce PDF or HTML output", file=sys.stderr)
+    return 1
 
 
 # ---------------------------------------------------------------------------
 # export_csv
 # ---------------------------------------------------------------------------
+
+_TABLE_SEP_RE = re.compile(r"^\|[-|: ]*-[-|: ]*\|")  # requires at least one dash
+
 
 def _parse_markdown_tables(content: str) -> list[tuple[str, list[list[str]]]]:
     """Return (heading_slug, rows) for every markdown table in content."""
@@ -392,32 +452,29 @@ def _parse_markdown_tables(content: str) -> list[tuple[str, list[list[str]]]]:
     i = 0
 
     while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
+        stripped = lines[i].strip()
 
-        # Track nearest preceding heading for naming
         if re.match(r"^#{1,4}\s", stripped):
             text = re.sub(r"^#+\s*", "", stripped)
             slug = re.sub(r"[^\w\s-]", "", text).strip().lower()
             slug = re.sub(r"[\s_]+", "_", slug)[:40].rstrip("_")
             current_heading = slug or "table"
 
-        # Detect table start: a line of cells followed by a separator line
         if stripped.startswith("|") and i + 1 < len(lines):
             sep = lines[i + 1].strip()
-            if re.match(r"^\|[-|: ]+\|$", sep):
+            if _TABLE_SEP_RE.match(sep):
                 rows: list[list[str]] = []
                 j = i
                 while j < len(lines) and lines[j].strip().startswith("|"):
                     row_stripped = lines[j].strip()
-                    if re.match(r"^\|[-|: ]+\|$", row_stripped):
+                    if _TABLE_SEP_RE.match(row_stripped):
                         j += 1
-                        continue  # skip separator row
+                        continue
                     cells = [c.strip() for c in row_stripped.split("|")[1:-1]]
                     rows.append(cells)
                     j += 1
 
-                if len(rows) >= 2:  # header + at least one data row
+                if len(rows) >= 2:
                     count = heading_count.get(current_heading, 0)
                     heading_count[current_heading] = count + 1
                     name = current_heading if count == 0 else f"{current_heading}_{count + 1}"
@@ -431,6 +488,7 @@ def _parse_markdown_tables(content: str) -> list[tuple[str, list[list[str]]]]:
 
 
 def cmd_export_csv(slug: str) -> int:
+    slug = _safe_slug(slug)
     out_dir = _find_latest_report_dir(slug)
     if not out_dir:
         print(f"ERROR: no saved report found for slug {slug!r}", file=sys.stderr)

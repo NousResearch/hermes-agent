@@ -68,6 +68,8 @@ export interface NodeFileChange {
   diff: string
   truncated: boolean
   isArtifact: boolean
+  isBinary?: boolean
+  previewable?: boolean
 }
 
 export interface WorkflowEdge {

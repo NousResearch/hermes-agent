@@ -416,7 +416,64 @@ def test_node_file_changes_collect_untracked_output_file(tmp_path, monkeypatch):
     assert changes[0].path == "outputs/result.txt"
     assert changes[0].status == "added"
     assert changes[0].isArtifact
+    assert not changes[0].isBinary
+    assert changes[0].previewable
     assert "+line one" in changes[0].diff
+
+
+def test_node_file_changes_omit_binary_untracked_preview(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+    from hermes_cli import workflow_api as wf
+
+    def fake_git(_root, *args):
+        if args and args[0] == "status":
+            return "?? outputs/image.png"
+        return ""
+
+    monkeypatch.setattr(wf, "_git", fake_git)
+
+    project = wf._create_project(wf.ProjectCreateRequest(name="Binary Workflow", root=str(tmp_path / "binary")))
+    wf._register_project(project)
+    image = tmp_path / "binary" / "outputs" / "image.png"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"\x89PNG\r\n\x1a\n\x00binary")
+
+    changes = wf._collect_node_file_changes(project, before_paths=set())
+
+    assert len(changes) == 1
+    assert changes[0].path == "outputs/image.png"
+    assert changes[0].isArtifact
+    assert changes[0].isBinary
+    assert not changes[0].previewable
+    assert changes[0].diff == ""
+
+
+def test_node_file_changes_omit_git_binary_diff_preview(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+    from hermes_cli import workflow_api as wf
+
+    def fake_git(_root, *args):
+        if args and args[0] == "status":
+            return " M outputs/blob.bin"
+        if args and args[0] == "diff":
+            return "Binary files a/outputs/blob.bin and b/outputs/blob.bin differ\n"
+        return ""
+
+    monkeypatch.setattr(wf, "_git", fake_git)
+
+    project = wf._create_project(wf.ProjectCreateRequest(name="Binary Diff Workflow", root=str(tmp_path / "binary-diff")))
+    wf._register_project(project)
+
+    changes = wf._collect_node_file_changes(project, before_paths={"outputs/blob.bin"})
+
+    assert len(changes) == 1
+    assert changes[0].path == "outputs/blob.bin"
+    assert changes[0].status == "modified"
+    assert changes[0].isBinary
+    assert not changes[0].previewable
+    assert changes[0].diff == ""
 
 
 def test_workflow_project_actions_archive_and_remove_history(tmp_path, monkeypatch):

@@ -83,6 +83,8 @@ class NodeFileChange(BaseModel):
     diff: str = ""
     truncated: bool = False
     isArtifact: bool = False
+    isBinary: bool = False
+    previewable: bool = True
 
 
 class WorkflowNode(BaseModel):
@@ -3088,7 +3090,7 @@ def _collect_node_file_changes(project: WorkflowProject, before_paths: set[str])
         if rel_path in before_paths and not _is_artifact_path(rel_path):
             continue
         status = _file_change_status(entry["code"])
-        diff, truncated = _file_change_diff(project, rel_path, status)
+        diff, truncated, is_binary, previewable = _file_change_diff(project, rel_path, status)
         changes.append(
             NodeFileChange(
                 path=rel_path,
@@ -3096,6 +3098,8 @@ def _collect_node_file_changes(project: WorkflowProject, before_paths: set[str])
                 diff=diff,
                 truncated=truncated,
                 isArtifact=_is_artifact_path(rel_path),
+                isBinary=is_binary,
+                previewable=previewable,
             )
         )
         if len(changes) >= 80:
@@ -3115,26 +3119,91 @@ def _file_change_status(code: str) -> str:
     return "changed"
 
 
-def _file_change_diff(project: WorkflowProject, rel_path: str, status: str) -> tuple[str, bool]:
+def _file_change_diff(project: WorkflowProject, rel_path: str, status: str) -> tuple[str, bool, bool, bool]:
     if status in {"modified", "deleted", "renamed", "changed"}:
         try:
             diff = _git(project.root, "diff", "--", rel_path)
             if diff:
-                return _truncate_diff(diff)
+                if _is_git_binary_diff(diff):
+                    return "", False, True, False
+                truncated_diff, truncated = _truncate_diff(diff)
+                return truncated_diff, truncated, False, True
         except HTTPException:
             pass
     return _file_preview_as_diff(Path(project.root) / rel_path)
 
 
-def _file_preview_as_diff(path: Path, limit: int = 12000) -> tuple[str, bool]:
+_BINARY_PREVIEW_EXTENSIONS = {
+    ".7z",
+    ".avi",
+    ".bin",
+    ".bmp",
+    ".db",
+    ".dll",
+    ".doc",
+    ".docx",
+    ".dylib",
+    ".exe",
+    ".gif",
+    ".gz",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".pdf",
+    ".png",
+    ".ppt",
+    ".pptx",
+    ".pyc",
+    ".sqlite",
+    ".so",
+    ".tar",
+    ".tif",
+    ".tiff",
+    ".wasm",
+    ".wav",
+    ".webp",
+    ".xls",
+    ".xlsx",
+    ".zip",
+}
+
+
+def _file_preview_as_diff(path: Path, limit: int = 12000) -> tuple[str, bool, bool, bool]:
+    if _is_likely_binary_path(path):
+        return "", False, True, False
+
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        with path.open("rb") as handle:
+            payload = handle.read(limit + 1)
     except Exception:
-        return ("Binary or unreadable file preview omitted.", False)
-    truncated = len(text) > limit
-    preview = text[:limit]
-    diff = "\n".join(f"+{line}" for line in preview.splitlines())
-    return (diff + ("\n... diff truncated ..." if truncated else ""), truncated)
+        return "", False, True, False
+
+    if _looks_binary(payload):
+        return "", False, True, False
+
+    try:
+        text = payload[:limit].decode("utf-8")
+    except UnicodeDecodeError:
+        return "", False, True, False
+
+    truncated = len(payload) > limit
+    diff = "\n".join(f"+{line}" for line in text.splitlines())
+    return diff + ("\n... diff truncated ..." if truncated else ""), truncated, False, True
+
+
+def _is_likely_binary_path(path: Path) -> bool:
+    return path.suffix.lower() in _BINARY_PREVIEW_EXTENSIONS
+
+
+def _looks_binary(payload: bytes) -> bool:
+    return b"\x00" in payload
+
+
+def _is_git_binary_diff(diff: str) -> bool:
+    return "GIT binary patch" in diff or re.search(r"^Binary files .+ differ$", diff, re.MULTILINE) is not None
 
 
 def _truncate_diff(diff: str, limit: int = 16000) -> tuple[str, bool]:

@@ -192,6 +192,7 @@ function WorkflowWorkbench() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [autoFollowRunNode, setAutoFollowRunNode] = useState(true)
   const [drawerMode, setDrawerMode] = useState<DrawerMode>('task')
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
   const [streamExpanded, setStreamExpanded] = useState(false)
@@ -216,6 +217,7 @@ function WorkflowWorkbench() {
     if (requestedProjectId && requestedProjectId !== activeProjectId) {
       setActiveProjectId(requestedProjectId)
       setSelectedNodeId(null)
+      setAutoFollowRunNode(true)
       setStreamEvents([])
       latestEventTimestampRef.current = undefined
 
@@ -225,6 +227,7 @@ function WorkflowWorkbench() {
     if (requestNewProject && activeProjectId) {
       setActiveProjectId(null)
       setSelectedNodeId(null)
+      setAutoFollowRunNode(true)
       setStreamEvents([])
       latestEventTimestampRef.current = undefined
 
@@ -332,12 +335,29 @@ function WorkflowWorkbench() {
   )
 
   const activeRun = bundle?.latestRun ?? null
+  const runtimeNodeId = useMemo(() => latestWorkflowRuntimeNodeId(activeRun, streamEvents), [activeRun, streamEvents])
+  const runtimeNode = useMemo(
+    () => workflow?.nodes.find(node => node.id === runtimeNodeId) ?? null,
+    [runtimeNodeId, workflow]
+  )
 
   useEffect(() => {
     if (selectedNode && selectedNode.id !== selectedNodeId) {
       setSelectedNodeId(selectedNode.id)
     }
   }, [selectedNode, selectedNodeId])
+
+  useEffect(() => {
+    if (!autoFollowRunNode || !runtimeNode || selectedNodeId === runtimeNode.id) {
+      return
+    }
+
+    setSelectedNodeId(runtimeNode.id)
+
+    if (activeRun?.status === 'waiting_user_confirm') {
+      setDrawerMode('task')
+    }
+  }, [activeRun?.status, autoFollowRunNode, runtimeNode, selectedNodeId])
 
   useEffect(() => {
     if (!workflow) {
@@ -371,6 +391,7 @@ function WorkflowWorkbench() {
       dispatchWorkflowProjectsChanged({ action: 'created', project: data.project })
       setActiveProjectId(data.project.id)
       setSelectedNodeId(data.workflow.nodes[0]?.id ?? null)
+      setAutoFollowRunNode(true)
       setDrawerMode('task')
       setStreamEvents([])
       latestEventTimestampRef.current = undefined
@@ -388,6 +409,7 @@ function WorkflowWorkbench() {
       }))
       dispatchWorkflowProjectsChanged({ action: 'updated', project: data.project })
       setSelectedNodeId(data.workflow.nodes[0]?.id ?? null)
+      setAutoFollowRunNode(true)
       await invalidateProject(data.project.id)
     }
   })
@@ -533,6 +555,15 @@ function WorkflowWorkbench() {
     [saveWorkflowMutation, workflow]
   )
 
+  const followRuntimeNode = useCallback(() => {
+    setAutoFollowRunNode(true)
+
+    if (runtimeNode) {
+      setSelectedNodeId(runtimeNode.id)
+      setDrawerMode('task')
+    }
+  }, [runtimeNode])
+
   const visibleEvents = useMemo(() => {
     if (!filterSelectedNode || !selectedNode) {
       return streamEvents
@@ -565,7 +596,10 @@ function WorkflowWorkbench() {
             executionMode={executionMode}
             onModeChange={setExecutionMode}
             onPause={() => activeRun && pauseMutation.mutate(activeRun.id)}
-            onRun={() => runMutation.mutate()}
+            onRun={() => {
+              setAutoFollowRunNode(true)
+              runMutation.mutate()
+            }}
             onStop={() => activeRun && stopMutation.mutate(activeRun.id)}
             project={bundle?.project ?? null}
             selectedNode={selectedNode}
@@ -577,7 +611,14 @@ function WorkflowWorkbench() {
                 active={drawerMode}
                 onToggle={setDrawerMode}
               />
-              <WorkflowStatusOverlay activeRun={activeRun} executionMode={executionMode} selectedNode={selectedNode} workflow={workflow} />
+              <WorkflowStatusOverlay
+                activeRun={activeRun}
+                executionMode={executionMode}
+                onFollowRuntimeNode={followRuntimeNode}
+                runtimeNode={runtimeNode}
+                selectedNode={selectedNode}
+                workflow={workflow}
+              />
           {bundleQuery.isLoading || projectsQuery.isLoading ? (
             <WorkbenchLoading />
           ) : workflow && workflow.nodes.length > 0 ? (
@@ -597,6 +638,7 @@ function WorkflowWorkbench() {
               onConnect={onConnect}
               onEdgesChange={onEdgesChange}
               onNodeClick={(_event, node) => {
+                setAutoFollowRunNode(false)
                 setSelectedNodeId(node.id)
                 setDrawerMode('task')
               }}
@@ -665,7 +707,11 @@ function WorkflowWorkbench() {
               referencesMutation.mutate(next)
             }}
             onClose={() => setDrawerMode('task')}
-            onNodeAction={(action, nodeId, runId) => nodeActionMutation.mutate({ action, nodeId, runId })}
+            onNodeAction={(action, nodeId, runId) => {
+              setAutoFollowRunNode(true)
+              setSelectedNodeId(nodeId)
+              nodeActionMutation.mutate({ action, nodeId, runId })
+            }}
             onOpenFile={openPath}
             onSaveNode={saveNodeConfig}
             onSelectFile={setSelectedFilePath}
@@ -781,11 +827,15 @@ function WorkflowPageTitlebar({
 function WorkflowStatusOverlay({
   activeRun,
   executionMode,
+  onFollowRuntimeNode,
+  runtimeNode,
   selectedNode,
   workflow
 }: {
   activeRun: ProjectBundle['latestRun']
   executionMode: ExecutionMode
+  onFollowRuntimeNode: () => void
+  runtimeNode: WorkflowNode | null
   selectedNode: WorkflowNode | null
   workflow: Workflow | null
 }) {
@@ -794,6 +844,7 @@ function WorkflowStatusOverlay({
   const waiting = activeRun?.status === 'waiting_user_confirm'
   const completed = workflow ? workflow.nodes.filter(node => node.status === 'completed').length : 0
   const total = workflow?.nodes.length ?? 0
+  const displayedNode = runtimeNode ?? selectedNode
 
   return (
     <div className="workflow-status-overlay" aria-label="Workflow execution status">
@@ -801,7 +852,13 @@ function WorkflowStatusOverlay({
       <span>{activeRun ? runStatusLabel(copy, activeRun.status) : copy.notRun}</span>
       <span>{total ? `${completed}/${total}` : '0/0'}</span>
       <span>{activeRun ? copy.mode[activeRun.mode] : copy.mode[executionMode]}</span>
-      <strong title={selectedNode?.title ?? undefined}>{selectedNode ? selectedNode.title : copy.noNodeSelected}</strong>
+      {runtimeNode ? (
+        <button className="workflow-status-overlay__node" onClick={onFollowRuntimeNode} title={runtimeNode.title} type="button">
+          <strong>{runtimeNode.title}</strong>
+        </button>
+      ) : (
+        <strong title={displayedNode?.title ?? undefined}>{displayedNode ? displayedNode.title : copy.noNodeSelected}</strong>
+      )}
     </div>
   )
 }
@@ -1131,12 +1188,14 @@ function TaskDetailDrawer({
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [referencesOpen, setReferencesOpen] = useState(false)
   const [changesOpen, setChangesOpen] = useState(true)
+  const [openFilePreviews, setOpenFilePreviews] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     setDraft(node)
     setSkillsOpen(false)
     setReferencesOpen(false)
     setChangesOpen(true)
+    setOpenFilePreviews(new Set())
   }, [node])
 
   if (!node) {
@@ -1175,6 +1234,20 @@ function TaskDetailDrawer({
     }
 
     updateDraft({ references: [...new Set([...references, path])] })
+  }
+
+  const toggleFilePreview = (changeKey: string) => {
+    setOpenFilePreviews(current => {
+      const next = new Set(current)
+
+      if (next.has(changeKey)) {
+        next.delete(changeKey)
+      } else {
+        next.add(changeKey)
+      }
+
+      return next
+    })
   }
 
   return (
@@ -1367,21 +1440,55 @@ function TaskDetailDrawer({
         {changesOpen && (
           <div className="workflow-file-changes">
             {fileChanges.length ? (
-              fileChanges.map(change => (
-                <div className="workflow-file-change" key={`${change.status}-${change.path}`}>
-                  <div className="workflow-file-change__header">
-                    <span>
-                      <strong>{change.path}</strong>
-                      <small>{change.status}{change.isArtifact ? ' · artifact' : ''}{change.truncated ? ' · truncated' : ''}</small>
-                    </span>
-                    <Button onClick={() => onOpenFile(resolveProjectPath(root, change.path))} size="xs" type="button" variant="outline">
-                      <Codicon name="go-to-file" size="0.8125rem" />
-                      {copy.open}
-                    </Button>
+              fileChanges.map(change => {
+                const changeKey = `${change.status}-${change.path}`
+                const canPreview = fileChangeCanPreview(change)
+                const previewOpen = openFilePreviews.has(changeKey)
+                const meta = [
+                  change.status,
+                  change.isArtifact ? 'artifact' : null,
+                  change.truncated ? 'truncated' : null,
+                  change.isBinary ? copy.binaryFile : null
+                ].filter(Boolean).join(' · ')
+
+                return (
+                  <div className="workflow-file-change" key={changeKey}>
+                    <div className="workflow-file-change__header">
+                      <button
+                        aria-expanded={canPreview ? previewOpen : undefined}
+                        className="workflow-file-change__summary"
+                        disabled={!canPreview}
+                        onClick={() => canPreview && toggleFilePreview(changeKey)}
+                        type="button"
+                      >
+                        <Codicon name={canPreview ? (previewOpen ? 'chevron-down' : 'chevron-right') : 'circle-slash'} size="0.8125rem" />
+                        <span>
+                          <strong>{change.path}</strong>
+                          <small>{meta}</small>
+                        </span>
+                      </button>
+                      <div className="workflow-file-change__actions">
+                        {canPreview && (
+                          <Button onClick={() => toggleFilePreview(changeKey)} size="xs" type="button" variant="ghost">
+                            {previewOpen ? copy.hidePreview : copy.preview}
+                          </Button>
+                        )}
+                        <Button onClick={() => onOpenFile(resolveProjectPath(root, change.path))} size="xs" type="button" variant="outline">
+                          <Codicon name="go-to-file" size="0.8125rem" />
+                          {copy.open}
+                        </Button>
+                      </div>
+                    </div>
+                    {previewOpen && canPreview ? (
+                      <pre>{change.diff || copy.noDiff}</pre>
+                    ) : !canPreview ? (
+                      <div className="workflow-file-change__notice">
+                        {change.isBinary ? copy.binaryPreviewOmitted : copy.noTextPreviewAvailable}
+                      </div>
+                    ) : null}
                   </div>
-                  <pre>{change.diff || copy.noDiff}</pre>
-                </div>
-              ))
+                )
+              })
             ) : (
               <div className="workflow-muted">{copy.fileChangeReviewEmpty}</div>
             )}
@@ -2252,6 +2359,37 @@ function mergeEvents(previous: StreamEvent[], incoming: StreamEvent[]): StreamEv
   }
 
   return [...byId.values()].sort((a, b) => a.timestamp - b.timestamp).slice(-500)
+}
+
+const FOLLOWABLE_RUN_STATUSES = new Set(['running', 'waiting_user_confirm', 'paused'])
+const RUNTIME_EVENT_TYPES = new Set<StreamEvent['type']>(['node_status', 'approval'])
+
+function latestWorkflowRuntimeNodeId(activeRun: ProjectBundle['latestRun'], events: StreamEvent[]): string | null {
+  if (activeRun?.currentNodeId) {
+    return activeRun.currentNodeId
+  }
+
+  if (!activeRun || !FOLLOWABLE_RUN_STATUSES.has(activeRun.status)) {
+    return null
+  }
+
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+
+    if (!event.nodeId || !RUNTIME_EVENT_TYPES.has(event.type)) {
+      continue
+    }
+
+    if (!event.runId || event.runId === activeRun.id) {
+      return event.nodeId
+    }
+  }
+
+  return null
+}
+
+function fileChangeCanPreview(change: WorkflowNode['fileChanges'][number]): boolean {
+  return change.previewable !== false && !change.isBinary && Boolean(change.diff)
 }
 
 type WorkflowTranscriptItem =

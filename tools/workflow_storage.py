@@ -2,14 +2,11 @@
 
 A *workflow* is an ordered, declarative description of work that fires
 when a trigger event is observed. Hermes is the canonical writer; UI
-surfaces (agente-desktop) read the on-disk YAML files as the source of
-truth.
+surfaces read the on-disk YAML files as the source of truth.
 
 Workflows live as one YAML file per workflow under
-``<HERMES_HOME>/workflows/<id>.yaml``. When ``AGENTE_BOUND_FOLDER`` is
-set in the environment, a mirror copy is also written under
-``<bound>/office/workflows/<id>.yaml`` so the desktop shell can show it
-without an IPC round-trip.
+``<HERMES_HOME>/workflows/<id>.yaml``. Companion integrations may mirror
+copies for UI surfaces (best-effort, see adapter layer).
 
 Workflow record shape::
 
@@ -62,18 +59,10 @@ def workflows_dir() -> Path:
 
 
 def bound_workflows_dir() -> Optional[Path]:
-    """If ``AGENTE_BOUND_FOLDER`` is set, return its ``office/workflows/`` dir."""
-    bound = os.environ.get("AGENTE_BOUND_FOLDER", "").strip()
-    if not bound:
-        return None
-    path = Path(bound) / "office" / "workflows"
-    try:
-        path.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        # Best-effort: a missing bound folder must never block the canonical
-        # write under HERMES_HOME.
-        return None
-    return path
+    """Deprecated stub (mirror logic lives in adapter for isolation).
+    Returns None; companion writes are applied via post-save wrapper.
+    """
+    return None
 
 
 def _workflow_path(root: Path, workflow_id: str) -> Path:
@@ -189,22 +178,12 @@ def save_workflow(record: Dict[str, Any]) -> Dict[str, Any]:
     """Persist a workflow atomically. Returns the normalized record.
 
     Always writes the canonical copy under ``<HERMES_HOME>/workflows/``.
-    When ``AGENTE_BOUND_FOLDER`` is configured, also mirrors the file to
-    ``<bound>/office/workflows/`` so the desktop shell sees it without an
-    IPC round-trip. Mirror write failures are best-effort.
+    Companion mirroring (when configured) is applied by the adapter layer
+    after this returns (best-effort).
     """
     normalized = _validate_record(record)
     canonical = _workflow_path(workflows_dir(), normalized["id"])
     _atomic_write_yaml(canonical, normalized)
-
-    bound = bound_workflows_dir()
-    if bound is not None:
-        try:
-            _atomic_write_yaml(_workflow_path(bound, normalized["id"]), normalized)
-        except OSError:
-            # Best-effort mirror — desktop will pick it up next time HERMES_HOME
-            # is scanned.
-            pass
     return normalized
 
 

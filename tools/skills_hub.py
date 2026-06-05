@@ -3282,7 +3282,7 @@ def _load_skill_frontmatter(skill_id: str) -> Optional[Dict[str, Any]]:
     """Resolve ``skill_id`` to its parsed SKILL.md frontmatter, or None.
 
     Accepts bare names ("summarise-doc") and qualified plugin-style names
-    ("agente-desktop:summarise-doc").  For qualified IDs the namespace
+    ("example-plugin:summarise-doc").  For qualified IDs the namespace
     prefix is stripped before matching against the local skills index so
     callers can pass either form without knowing the index structure.
     """

@@ -4,7 +4,7 @@ All ten tools share two extra fields beyond the standard OpenAI function-tool
 schema:
 
 * ``label_he`` — Hebrew label used by the Hermes /api/tools registry surface
-  per [[hermes-agent-202606-001]]. Operator-facing UI in agente-desktop reads
+  per [[hermes-agent-202606-001]]. Operator-facing UI reads
   this verbatim.
 * ``category`` — coarse grouping (always ``"web"`` for this plugin).
 """

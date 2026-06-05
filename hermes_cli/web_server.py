@@ -76,8 +76,8 @@ _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # Filename inside HERMES_HOME used to expose _SESSION_TOKEN to local
-# sidecar consumers (e.g. the agente-desktop Electron main process which
-# calls protected /api/providers/oauth/* endpoints on behalf of the user).
+# sidecar consumers (e.g. companion processes which call protected
+# /api/providers/oauth/* endpoints on behalf of the user).
 # Symmetric with how Hermes already exposes other per-process state under
 # ~/.hermes/.  See hermes-202606-001.
 _SESSION_TOKEN_FILENAME = "session_token"
@@ -4660,10 +4660,10 @@ def start_server(
     app.state.bound_host = host
     app.state.bound_port = port
 
-    # Expose the session token to local sidecar consumers (e.g. the
-    # agente-desktop Electron main process calling /api/providers/oauth/*
-    # on the user's behalf).  Written before listen() so a fast-attaching
-    # consumer never races with the HTTP server coming up.
+    # Expose the session token to local sidecar consumers (e.g. companion
+    # processes calling /api/providers/oauth/* on the user's behalf).
+    # Written before listen() so a fast-attaching consumer never races
+    # with the HTTP server coming up.
     # Path-only, file-perms-only exposure — never on the wire.
     # See hermes-202606-001.
     try:

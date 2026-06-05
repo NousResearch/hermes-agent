@@ -102,6 +102,9 @@ def test_resolve_dispatch_url_explicit(hermes_env, monkeypatch):
 
 def test_resolve_dispatch_url_base_fallback(hermes_env, monkeypatch):
     monkeypatch.setenv("AGENTE_DESKTOP_BASE_URL", "http://desktop:9090/")
+    # Companion AGENTE support is provided by adapter patch (core resolve is HERMES-only).
+    from gateway.agente_desktop_adapter import workflow_routine_bridge as br
+    br._patch_cron_workflow_dispatch()
     from cron.workflow_dispatch import resolve_dispatch_url
     assert resolve_dispatch_url() == "http://desktop:9090/api/workflow-runs"
 

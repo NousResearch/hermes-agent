@@ -4,7 +4,7 @@ Workflow rules are per-user automation rules that match incoming connector
 messages and decide whether to spawn a ticket. Hermes is the canonical
 writer for these rules — they live as one JSON record per rule under
 ``<HERMES_HOME>/workflow-rules/<id>.json`` and any other surface (e.g.
-the agente-desktop PGLite cache) is a read-side projection that Hermes
+the companion PGLite cache) is a read-side projection that Hermes
 owns.
 
 Rule record shape::

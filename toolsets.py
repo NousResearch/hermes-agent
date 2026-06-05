@@ -161,8 +161,7 @@ TOOLSETS = {
             "Workflow + routine primitives: save_workflow persists a YAML "
             "describing what happens when a trigger fires; create_routine "
             "schedules a cron tick that fires a workflow. Files live under "
-            "<HERMES_HOME>/workflows/ and <HERMES_HOME>/routines/, mirrored "
-            "to $AGENTE_BOUND_FOLDER/office/ when configured. Supersedes "
+            "<HERMES_HOME>/workflows/ and <HERMES_HOME>/routines/. Supersedes "
             "the deprecated save_workflow_rule store."
         ),
         "tools": ["save_workflow", "create_routine"],

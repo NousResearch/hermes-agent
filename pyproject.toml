@@ -194,7 +194,7 @@ gateway = ["assets/**/*"]
 # Bundled plugin manifests — without these, `get_bundled_plugins_dir()`
 # scans the pip-installed wheel and finds zero `plugin.yaml` files, so
 # the loader registers nothing. Wildcard ships plugin.yaml + README/etc.
-# for every bundled plugin (kanban, google_meet, agente_desktop, ...).
+# for every bundled plugin (kanban, google_meet, ...).
 "plugins" = ["**/plugin.yaml", "**/*.md", "**/*.yaml", "**/*.json"]
 
 [tool.setuptools.packages.find]

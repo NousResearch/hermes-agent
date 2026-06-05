@@ -6,21 +6,20 @@ scheduler must delegate execution to the workflow engine instead of
 spawning a plain LLM prompt subprocess.
 
 This module owns the delegation step. It is intentionally minimal: the
-workflow engine itself lives on the agente-desktop side (per
-hermes_delegation_rule, Hermes owns execution semantics; the desktop
-shell hosts the engine and persistent workflow definitions). Hermes
-reaches the engine over the loopback HTTP control channel used by the
-desktop ``/v1/runs`` plumbing.
+workflow engine may be hosted externally; Hermes reaches it over the
+loopback HTTP control channel.
 
 Resolution order for the dispatch endpoint:
 
 1. ``HERMES_WORKFLOW_DISPATCH_URL`` env var (full URL).
-2. ``AGENTE_DESKTOP_BASE_URL`` env var + ``/api/workflow-runs``.
-3. ``None`` — caller falls back to the legacy prompt-spawn path so
+2. ``None`` — caller falls back to the legacy prompt-spawn path so
    pre-routine-workflow installs keep working unchanged.
 
+Companion resolution (e.g. via companion base URL env) is patched in by
+the adapter layer at startup so core stays free of companion specifics.
+
 The dispatch payload is intentionally small (workflow_id + job_id +
-optional trigger context). The desktop side is responsible for
+optional trigger context). The engine side is responsible for
 resolving the workflow definition, building the run, and persisting
 state — this module never inspects workflow contents.
 """
@@ -45,9 +44,8 @@ def resolve_dispatch_url() -> Optional[str]:
     explicit = (os.getenv("HERMES_WORKFLOW_DISPATCH_URL") or "").strip()
     if explicit:
         return explicit
-    base = (os.getenv("AGENTE_DESKTOP_BASE_URL") or "").strip().rstrip("/")
-    if base:
-        return f"{base}/api/workflow-runs"
+    # Companion support is injected via adapter patch
+    # into this module's resolve_dispatch_url at register time.
     return None
 
 
@@ -128,7 +126,7 @@ def dispatch_workflow_runs(
     routine_workflow_arch aims to prevent.
 
     Side effects: emits one POST per workflow_id. The workflow engine
-    (agente-desktop) is responsible for the actual execution; this
+    side is responsible for the actual execution; this
     function does NOT wait for the run to finish.
     """
     dispatch_url = resolve_dispatch_url()
@@ -138,7 +136,7 @@ def dispatch_workflow_runs(
     if not dispatch_url:
         err = (
             "no workflow dispatch URL configured — set "
-            "HERMES_WORKFLOW_DISPATCH_URL or AGENTE_DESKTOP_BASE_URL"
+            "HERMES_WORKFLOW_DISPATCH_URL (companion support via adapter)"
         )
         logger.warning("Cron job '%s': %s", job_name, err)
         return False, "", err

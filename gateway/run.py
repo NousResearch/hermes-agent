@@ -12278,8 +12278,8 @@ class GatewayRunner:
         from hermes_cli.config import is_managed, format_managed_message
 
         if sys.platform == "win32":
-            logger.warning("Hermes self-update is not supported on Windows; install/upgrade via the bundled Agente Desktop installer.")
-            return "✗ Self-update is not supported on Windows. Use the Agente Desktop installer to upgrade."
+            logger.warning("Hermes self-update is not supported on Windows; install/upgrade via the bundled companion app installer.")
+            return "✗ Self-update is not supported on Windows. Use the companion app installer to upgrade."
 
         # Block non-messaging platforms (API server, webhooks, ACP)
         platform = event.source.platform

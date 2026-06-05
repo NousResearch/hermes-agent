@@ -7,9 +7,8 @@ When the cron expression fires, the routine emits a
 workflow + routine pair operators author from chat.
 
 Routines live as one YAML file per routine under
-``<HERMES_HOME>/routines/<id>.yaml`` and — when ``AGENTE_BOUND_FOLDER``
-is set — are mirrored under ``<bound>/office/routines/<id>.yaml`` for
-desktop visibility. The Hermes cron module is the actual scheduler:
+``<HERMES_HOME>/routines/<id>.yaml``. Companion visibility mirrors (when configured) are applied by the adapter layer.
+The Hermes cron module is the actual scheduler:
 ``tools/workflow_routine_tools.py`` calls ``cron.jobs.create_job`` with
 ``workflow_ids=[workflow_id]`` so existing cron infrastructure (PID,
 state file, scheduler) handles execution.
@@ -50,15 +49,8 @@ def routines_dir() -> Path:
 
 
 def bound_routines_dir() -> Optional[Path]:
-    bound = os.environ.get("AGENTE_BOUND_FOLDER", "").strip()
-    if not bound:
-        return None
-    path = Path(bound) / "office" / "routines"
-    try:
-        path.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return None
-    return path
+    """Deprecated stub (mirror logic in adapter)."""
+    return None
 
 
 def _routine_path(root: Path, routine_id: str) -> Path:
@@ -140,13 +132,7 @@ def save_routine(record: Dict[str, Any]) -> Dict[str, Any]:
     normalized = _validate_record(record)
     canonical = _routine_path(routines_dir(), normalized["id"])
     _atomic_write_yaml(canonical, normalized)
-
-    bound = bound_routines_dir()
-    if bound is not None:
-        try:
-            _atomic_write_yaml(_routine_path(bound, normalized["id"]), normalized)
-        except OSError:
-            pass
+    # Companion mirror (if any) applied via adapter patch on this function.
     return normalized
 
 

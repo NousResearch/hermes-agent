@@ -1,6 +1,6 @@
 name: email
 version: 0.1.0
-description: "Gmail connector — 5 tools (list_emails, read_email, draft_reply, send_email, mark_email) implemented as a thin subprocess wrapper over the bundled `gws` (googleworkspace/cli) binary. OAuth, token storage, and refresh are owned entirely by gws. Resolves the binary via AGENTE_GWS_BIN env var (set by the desktop shell) with a PATH fallback."
+description: "Gmail connector — 5 tools (list_emails, read_email, draft_reply, send_email, mark_email) implemented as a thin subprocess wrapper over the bundled `gws` (googleworkspace/cli) binary. OAuth, token storage, and refresh are owned entirely by gws. Resolves the binary via companion-provided GWS bin env with a PATH fallback."
 author: NousResearch
 kind: backend
 scopes:

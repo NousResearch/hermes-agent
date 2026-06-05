@@ -1,10 +1,9 @@
-"""documents plugin — register filesystem files as agente-desktop document sources.
+"""documents plugin — register filesystem files as companion document sources.
 
 Exposes a single tool, ``register_document_source(file_path, source_type?,
 metadata?)``, which the agent calls *before* ``link_document_to_client``.
-The desktop owns the PGLite ``document_sources`` table; this plugin is a
-thin IPC client per the Hermes boundary policy
-(see project_hermes_boundary_policy in agente-meta memory).
+The companion owns the PGLite ``document_sources`` table; this plugin is a
+thin IPC client per the Hermes boundary policy.
 
 Hebrew operator label: "רישום מסמך כמקור"  (category: documents).
 """
@@ -55,7 +54,7 @@ def register(ctx) -> None:
             check_fn=check_documents_requirements,
             emoji=emoji,
             description=(
-                "Register a file as a desktop document_source and return its "
+                "Register a file as a companion document_source and return its "
                 f"UUID. (label_he={LABEL_HE!r}, category={CATEGORY!r})"
             ),
         )

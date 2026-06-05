@@ -1,7 +1,7 @@
 name: calendar
 version: 0.1.0
 description: "Calendar connector — thin subprocess wrapper over the bundled gws (Google Workspace CLI) binary. Read + write Google Calendar events. OAuth + token storage owned entirely by gws; this plugin never touches credentials. Hebrew/RTL titles preserved verbatim."
-author: agente.dev
+author: companion
 kind: standalone
 platforms:
   - linux

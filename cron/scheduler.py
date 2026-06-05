@@ -1051,7 +1051,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     elif workflow_ids:
         logger.warning(
             "Job '%s': workflow_ids=%s set but no dispatch URL configured "
-            "(HERMES_WORKFLOW_DISPATCH_URL / AGENTE_DESKTOP_BASE_URL); "
+            "(HERMES_WORKFLOW_DISPATCH_URL or companion); "
             "falling back to legacy prompt-spawn path",
             job_name, workflow_ids,
         )

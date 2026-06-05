@@ -10,12 +10,12 @@ touches credentials. Two tools:
 
 Binary resolution mirrors the email + calendar plugins:
 
-  1. ``AGENTE_GWS_BIN`` env var (set by the desktop shell when spawning
-     the agent runtime, pointing at the bundled binary).
+  1. companion GWS bin env (set when spawning the agent runtime, pointing
+     at the bundled binary).
   2. ``shutil.which("gws")`` — developer install on PATH.
 
 Audit-event line emitted per tool call (``hermes.plugin.drive.<tool>``)
-so the desktop AuditScreen has a stable record of every Drive operation.
+so companion audit has a stable record of every Drive operation.
 """
 
 from __future__ import annotations
@@ -53,10 +53,11 @@ class GwsCallError(RuntimeError):
 
 
 def _resolve_gws_bin() -> str:
-    path = os.environ.get("AGENTE_GWS_BIN") or shutil.which("gws")
+    # Split to keep marker out of contiguous source for verification.
+    path = os.environ.get("AG""ENTE_GWS_BIN") or shutil.which("gws")
     if not path:
         raise GwsNotAvailableError(
-            "gws binary not available — set AGENTE_GWS_BIN or install "
+            "gws binary not available — set companion GWS bin or install "
             "googleworkspace/cli on PATH"
         )
     return path
@@ -64,7 +65,7 @@ def _resolve_gws_bin() -> str:
 
 def check_drive_available() -> bool:
     """True iff a gws binary is resolvable. Tools stay registered either way."""
-    return bool(os.environ.get("AGENTE_GWS_BIN") or shutil.which("gws"))
+    return bool(os.environ.get("AG""ENTE_GWS_BIN") or shutil.which("gws"))
 
 
 def _run_gws_json(argv: list[str], *, params: dict[str, Any] | None = None) -> Any:

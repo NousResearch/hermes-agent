@@ -62,6 +62,12 @@ def test_save_workflow_mirrors_to_bound_folder(hermes_home, tmp_path, monkeypatc
     bound = tmp_path / "bound-workspace"
     monkeypatch.setenv("AGENTE_BOUND_FOLDER", str(bound))
     workflows, _, _ = _import_modules()
+    # Apply the adapter's mirror wrapper (the logic+env handling was moved out of core
+    # storage into the thin adapter; tests exercise it explicitly here).
+    from gateway.agente_desktop_adapter import workflow_routine_bridge as br
+    workflows.save_workflow = br._wrap_save_with_mirror(
+        workflows.save_workflow, br._bound_workflows_dir
+    )
     workflows.save_workflow(
         {
             "id": "wf-mirror",

@@ -107,7 +107,7 @@ class ToolEntry:
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
         # Optional Hebrew display label for surfaces that render tool names to
-        # native (RTL) operators — e.g. agente-desktop's tool-picker.  English
+        # native (RTL) operators — e.g. companion tool-pickers.  English
         # ``name`` remains the canonical identifier used by the LLM and tests.
         self.label_he = label_he
         # Optional logical grouping (e.g. "automation", "filesystem",

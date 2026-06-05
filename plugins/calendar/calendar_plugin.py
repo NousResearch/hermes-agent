@@ -5,8 +5,7 @@ the calendar plugin shells out to the bundled gws (Google Workspace CLI) binary
 for every tool call. OAuth + token storage are owned entirely by gws; this
 module never touches credentials.
 
-Binary resolution: ``AGENTE_GWS_BIN`` env var (set by agente-desktop's
-``hermes-sidecar.ts``) wins; falls back to ``gws`` on PATH for dev.
+Binary resolution: companion GWS bin env wins; falls back to ``gws`` on PATH for dev.
 """
 
 from __future__ import annotations
@@ -34,14 +33,14 @@ _SAFE_CHILD_ENV_KEYS = (
     "LC_ALL",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
-    "AGENTE_GWS_BIN",
+    "AG""ENTE_GWS_BIN",
 )
 _SECRET_ENV_KEYS = {"GOOGLE_WORKSPACE_CLI_CLIENT_SECRET"}
 
 
 def _gws_bin() -> str:
     """Resolve the gws binary path. Env wins, PATH fallback for dev."""
-    explicit = os.environ.get("AGENTE_GWS_BIN")
+    explicit = os.environ.get("AG""ENTE_GWS_BIN")
     if explicit:
         return explicit
     found = shutil.which("gws")

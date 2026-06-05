@@ -55,7 +55,7 @@ class AgentExecuteRequest(BaseModel):
         description=(
             "Skill identifier: either a bare skill name "
             "('summarise-doc') or a qualified plugin skill "
-            "('agente-desktop:summarise-doc')."
+            "('example-plugin:summarise-doc')."
         ),
     )
     inputs: JobInputs = Field(

@@ -12,7 +12,7 @@ from typing import Any, Dict
 REGISTER_DOCUMENT_SOURCE_SCHEMA: Dict[str, Any] = {
     "name": "register_document_source",
     "description": (
-        "Register a file on disk as an agente-desktop document_source and "
+        "Register a file on disk as a companion document_source and "
         "return the newly-allocated UUID. Required before calling "
         "link_document_to_client, which takes a document_source UUID. "
         "The file MUST already exist on disk under a connected folder root "

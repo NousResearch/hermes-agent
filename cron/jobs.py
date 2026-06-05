@@ -505,7 +505,7 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
 def _normalize_workflow_ids(workflow_ids: Optional[Any]) -> Optional[List[str]]:
     """Normalize an optional ``workflow_ids`` passthrough field.
 
-    This is a pure passthrough used by upstream consumers (e.g. agente-desktop)
+    This is a pure passthrough used by upstream consumers (e.g. companion UIs)
     to associate a cron routine with one or more workflow records. The cron
     layer does not validate that referenced workflows exist — owners handle
     stale references at render time (e.g. a muted "(deleted workflow)" chip).

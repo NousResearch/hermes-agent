@@ -12,7 +12,7 @@ enumerating ``source`` per entry (``workspace-pack`` | ``hermes-skill`` |
 The legacy text manifest ``~/.hermes/skills/.bundled_manifest``
 (``name:hash`` per line, consumed by ``tools/skill_usage.py``) is owned
 by ``tools/skills_sync.py`` and is left untouched here.  This seeder
-adds the *source-classified* sidecar that the agente-desktop catalog
+adds the *source-classified* sidecar that companion catalogs
 (intake ``hermes-202606-006``) needs for read-only bundled-vs-hub-vs-user
 grouping.  Desktop never writes ``~/.hermes/skills/*`` directly
 (desktop boundary policy 2026-05-23); that is why this seeder runs from

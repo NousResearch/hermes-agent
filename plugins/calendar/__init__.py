@@ -100,7 +100,7 @@ def check_calendar_requirements() -> bool:
     """Plugin can register on any platform — gws ships as part of the bundle.
 
     Resolution failures surface at tool-call time as a typed error rather than
-    refusing to register the surface (so the desktop UI can still show the
+    refusing to register the surface (so companion UI can still show the
     connector and explain why it is unauthenticated).
     """
     return True

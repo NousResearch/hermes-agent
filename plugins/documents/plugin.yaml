@@ -1,6 +1,6 @@
 name: documents
 version: 0.1.0
-description: "Register filesystem files as agente-desktop document sources so they can be linked to clients. Calls the desktop IPC `documents:register` endpoint over HTTP — the desktop owns the PGLite document_sources table. Returns the new document UUID so the agent can hand it to link_document_to_client. Honors the Hermes boundary policy: this plugin never touches PGLite directly."
+description: "Register filesystem files as companion document sources so they can be linked to clients. Calls the companion IPC `documents:register` endpoint over HTTP — the companion owns the PGLite document_sources table. Returns the new document UUID so the agent can hand it to link_document_to_client. Honors the Hermes boundary policy: this plugin never touches PGLite directly."
 author: agente
 kind: standalone
 platforms:

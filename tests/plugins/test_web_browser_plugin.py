@@ -121,10 +121,10 @@ def test_navigate_consults_approval_with_browse_url_command():
          _stub_binary(), \
          patch("plugins.web_browser.web_browser_plugin.subprocess.run",
                return_value=_completed(stdout='{"url":"https://x"}')):
-        wbp.handle_browser_navigate({"url": "https://www.agente.dev"})
+        wbp.handle_browser_navigate({"url": "https://example.com"})
 
-    assert captured["command"] == "browse https://www.agente.dev"
-    assert "agente.dev" in captured["description"]
+    assert captured["command"] == "browse https://example.com"
+    assert "example.com" in captured["description"]
 
 
 def test_denied_approval_skips_subprocess():

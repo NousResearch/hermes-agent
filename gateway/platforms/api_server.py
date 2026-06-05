@@ -15,9 +15,6 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
-- GET  /api/tools                  — list Hermes tools for Desktop discovery
-- POST /api/tools/{tool_name}      — execute one Hermes tool from Desktop
-- POST /rpc                        — JSON-RPC bridge for Desktop auth/approval calls
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
@@ -310,80 +307,6 @@ def _json_rpc_error(rid: Any, code: int, message: str) -> Dict[str, Any]:
         "id": rid,
         "error": {"code": code, "message": message},
     }
-
-
-def _stable_desktop_id(prefix: str, value: Any) -> str:
-    """Derive a Hermes-safe ID from Desktop-facing free text."""
-    raw = str(value or "").strip()
-    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10] if raw else uuid.uuid4().hex[:10]
-    base = re.sub(r"[^A-Za-z0-9_-]+", "-", raw.lower()).strip("-_")
-    if not base:
-        return f"{prefix}-{digest}"
-    return f"{prefix}-{base[:80]}-{digest}"
-
-
-def _normalize_desktop_action_step(step: Any) -> Dict[str, Any]:
-    if not isinstance(step, dict):
-        return {"kind": str(step)}
-    clone = dict(step)
-    kind = (
-        clone.get("kind")
-        or clone.get("action")
-        or clone.get("tool")
-        or clone.get("toolName")
-        or clone.get("name")
-    )
-    if isinstance(kind, str) and kind.strip():
-        clone["kind"] = kind.strip()
-    return clone
-
-
-def _normalize_desktop_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    """Accept the Desktop HTTP proxy schema while preserving native Hermes schemas."""
-    if tool_name == "save_workflow" and (
-        "name" in args or "description" in args or "steps" in args
-    ):
-        name = args.get("name_he") or args.get("name") or args.get("id") or "workflow"
-        trigger = args.get("trigger")
-        trigger_kind = args.get("trigger_kind") or args.get("triggerKind")
-        if isinstance(trigger, dict):
-            trigger_kind = trigger.get("kind") or trigger_kind
-        steps = args.get("actions")
-        if steps is None:
-            steps = args.get("steps")
-        if isinstance(steps, list):
-            actions = [_normalize_desktop_action_step(step) for step in steps]
-        else:
-            actions = []
-        return {
-            **args,
-            "id": args.get("id") or _stable_desktop_id("wf", name),
-            "name_he": name,
-            "description_he": args.get("description_he") or args.get("description") or "",
-            "trigger_kind": trigger_kind or "manual",
-            "triage_keywords_he": args.get("triage_keywords_he") or args.get("triageKeywordsHe"),
-            "actions": actions,
-        }
-
-    if tool_name == "create_routine" and (
-        "name" in args or "cron" in args or "schedule" in args or "timezone" in args
-    ):
-        name = args.get("name_he") or args.get("name") or args.get("workflow_id") or "routine"
-        cron_schedule = args.get("cron_schedule") or args.get("cron") or args.get("schedule")
-        return {
-            **args,
-            "id": args.get("id") or _stable_desktop_id("rt", name),
-            "name_he": name,
-            "cron_schedule": cron_schedule,
-            "natural_language_schedule_he": (
-                args.get("natural_language_schedule_he")
-                or args.get("naturalLanguageScheduleHe")
-                or args.get("timezone")
-                or ""
-            ),
-        }
-
-    return args
 
 
 def check_api_server_requirements() -> bool:
@@ -936,13 +859,6 @@ class APIServerAdapter(BasePlatformAdapter):
         user_config = _load_gateway_config()
         if enabled_toolsets_override is None:
             enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
-
-            # Auto-activate the agente-desktop toolset when Electron IPC env vars are present.
-            # This matches the existing plugin activation contract documented in
-            # plugins/agente_desktop/__init__.py.
-            if os.environ.get("AGENTE_TOOL_PORT") and os.environ.get("AGENTE_TOOL_SECRET"):
-                if "agente-desktop" not in enabled_toolsets:
-                    enabled_toolsets = sorted(set(enabled_toolsets) | {"agente-desktop"})
         else:
             enabled_toolsets = list(enabled_toolsets_override)
 
@@ -1072,114 +988,6 @@ class APIServerAdapter(BasePlatformAdapter):
         discover_builtin_tools()
         return registry
 
-    async def _handle_list_tools(self, request: "web.Request") -> "web.Response":
-        """GET /api/tools — Desktop-facing Hermes tool discovery."""
-        auth_err = self._check_auth(request)
-        if auth_err is not None:
-            return auth_err
-
-        try:
-            registry = self._ensure_tool_registry_loaded()
-            definitions = registry.get_definitions(set(registry.get_all_tool_names()), quiet=True)
-            tools: List[Dict[str, Any]] = []
-            for definition in definitions:
-                if not isinstance(definition, dict):
-                    continue
-                function = definition.get("function")
-                if not isinstance(function, dict):
-                    continue
-                name = str(function.get("name") or "")
-                if not name:
-                    continue
-                entry = registry.get_entry(name)
-                item: Dict[str, Any] = {
-                    "name": name,
-                    "description": str(function.get("description") or ""),
-                    "parameters": _json_safe_metadata(function.get("parameters") or {}),
-                    "definition": _json_safe_metadata(definition),
-                }
-                if entry is not None:
-                    item["toolset"] = str(entry.toolset or "")
-                    if entry.label_he:
-                        item["label_he"] = str(entry.label_he)
-                    if entry.category:
-                        item["category"] = str(entry.category)
-                tools.append(item)
-            return web.json_response({"tools": tools})
-        except Exception as exc:
-            logger.exception("[api_server] tool discovery failed: %s", exc)
-            return web.json_response(
-                {"error": {"message": "Failed to discover tools", "code": "tools_discovery_failed"}},
-                status=500,
-            )
-
-    async def _handle_dispatch_tool(self, request: "web.Request") -> "web.Response":
-        """POST /api/tools/{tool_name} — Desktop-facing direct tool dispatch."""
-        auth_err = self._check_auth(request)
-        if auth_err is not None:
-            return auth_err
-
-        tool_name = str(request.match_info.get("tool_name") or "").strip()
-        if not tool_name:
-            return web.json_response(
-                {"error": {"message": "tool_name required", "code": "tool_name_required"}},
-                status=400,
-            )
-
-        try:
-            body = await request.json()
-        except Exception:
-            return web.json_response(
-                {"error": {"message": "Invalid JSON body", "code": "invalid_json"}},
-                status=400,
-            )
-        if body is None:
-            body = {}
-        if not isinstance(body, dict):
-            return web.json_response(
-                {"error": {"message": "JSON body must be an object", "code": "invalid_json"}},
-                status=400,
-            )
-
-        arguments = body.get("arguments")
-        if arguments is None:
-            arguments = body.get("args")
-        if arguments is None:
-            arguments = {k: v for k, v in body.items() if k != "tool_name"}
-        if not isinstance(arguments, dict):
-            return web.json_response(
-                {"error": {"message": "Tool arguments must be an object", "code": "invalid_arguments"}},
-                status=400,
-            )
-
-        try:
-            registry = self._ensure_tool_registry_loaded()
-            if registry.get_entry(tool_name) is None:
-                return web.json_response(
-                    {"error": {"message": f"Unknown tool: {tool_name}", "code": "unknown_tool"}},
-                    status=404,
-                )
-
-            normalized_args = _normalize_desktop_tool_args(tool_name, arguments)
-            from model_tools import handle_function_call
-
-            raw_result = handle_function_call(
-                tool_name,
-                normalized_args,
-                task_id=f"api-tools-{uuid.uuid4().hex}",
-            )
-            try:
-                result = json.loads(raw_result)
-            except Exception:
-                result = {"result": raw_result}
-            return web.json_response(_json_safe_metadata(result))
-        except Exception as exc:
-            logger.exception("[api_server] tool dispatch failed for %s: %s", tool_name, exc)
-            return web.json_response(
-                {"error": {"message": f"Tool execution failed: {exc}", "code": "tool_execution_failed"}},
-                status=500,
-            )
-
     def _load_tui_rpc_server(self):
         from tui_gateway import server as tui_server
 
@@ -1238,7 +1046,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return _json_rpc_ok(body.get("id"), {})
 
     async def _handle_rpc(self, request: "web.Request") -> "web.Response":
-        """POST /rpc — JSON-RPC bridge for Desktop auth and prompt responses."""
+        """POST /rpc — JSON-RPC bridge for auth, approvals, and prompt responses (BYOK flows supported via aliases)."""
         auth_err = self._check_auth(request)
         if auth_err is not None:
             return auth_err
@@ -1306,7 +1114,7 @@ class APIServerAdapter(BasePlatformAdapter):
         schema (if any), execute it under a bounded timeout, and validate
         the result against the output schema (if any).  Every failure
         path returns ``AgentExecuteResponse`` with ``status="error"`` and
-        a structured ``errors`` list — the desktop UI branches on the
+        a structured ``errors`` list — companion UIs branch on the
         stable ``code`` field instead of parsing free-form messages.
         """
         auth_err = self._check_auth(request)
@@ -3172,12 +2980,9 @@ class APIServerAdapter(BasePlatformAdapter):
             if repeat is not None:
                 kwargs["repeat"] = repeat
             # Forward workflow_ids so routine → cron → workflow dispatch
-            # works end-to-end. The Desktop ScheduleDispatcher posts a
-            # top-level ``workflow_ids`` list (per
-            # ``electron/main/routines-ipc.ts``); without this passthrough
-            # the cron scheduler's workflow-dispatch branch never sees
-            # them and silently falls back to the legacy prompt-spawn
-            # path (hermes-cron-e2e-005).
+            # works end-to-end. Companion callers may post a top-level
+            # ``workflow_ids`` list; without this passthrough the cron
+            # scheduler's workflow-dispatch branch falls back to legacy.
             workflow_ids = body.get("workflow_ids")
             if workflow_ids is not None:
                 kwargs["workflow_ids"] = workflow_ids
@@ -4096,11 +3901,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_post("/v1/agent/execute_skill", self._handle_execute_skill)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
-            # Desktop compatibility endpoints. Electron probes these before
-            # registering Hermes-owned tools and uses /rpc for BYOK + prompts.
-            self._app.router.add_get("/api/tools", self._handle_list_tools)
-            self._app.router.add_post("/api/tools/{tool_name}", self._handle_dispatch_tool)
-            self._app.router.add_post("/rpc", self._handle_rpc)
+            # Companion compatibility routes (/api/tools, /rpc) are now registered
+            # exclusively via the single hook below (see adapter package).
+            # No ad-hoc companion code remains in this file except the call site.
 
             # Wire the default agent runner for /v1/agent/execute_skill.
             # This must happen after the router is set up so the adapter
@@ -4150,14 +3953,16 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
-            # SINGLE INTEGRATION POINT for Agente Desktop compatibility.
-            # See gateway/agente_desktop_adapter/ (plan + contract).
-            # This must remain the *only* Agente-specific call site in upstream paths.
+            # SINGLE INTEGRATION POINT for companion compatibility.
+            # See adapter package (plan + contract).
+            # This is the *only* companion-specific call site allowed in core upstream paths.
+            # All route adds, handlers, normalizers, auto-activation, mirroring, IPC proxy,
+            # BYOK, workflow/routine, WhatsApp/ticket, etc. live exclusively inside the adapter.
             try:
                 from gateway.agente_desktop_adapter import register_agente_desktop_routes
                 register_agente_desktop_routes(self._app)
             except ImportError:
-                # upstream-only build
+                # upstream-only build — no companion routes or registrations
                 pass
 
             # Start background sweep to clean up orphaned (unconsumed) run streams

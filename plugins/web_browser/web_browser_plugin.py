@@ -7,7 +7,7 @@ Each handler:
    Hermes' single source of truth for the approval.request prompt-flow gate.
    (Per /tmp/hermes-protocol-research.md the approval.request payload is
    ``{command, description}`` — we pass exactly those, so the operator sees
-   "browse https://www.agente.dev" and can pick once/session/always/deny.)
+   "browse https://example.com" and can pick once/session/always/deny.)
 3. Runs the subprocess with a bounded timeout, parses ``--json`` stdout, and
    returns a structured dict.
 

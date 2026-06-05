@@ -1,21 +1,18 @@
 """save_workflow + create_routine tools — the canonical pivot away from
 the per-rule ``save_workflow_rule`` store (deprecated, see
-hermes-agent-202606-028 / desktop-202606-514).
+hermes-agent-202606-028).
 
 NORTH_STAR primitives are three: **connector**, **workflow**, **routine**.
 There is no standalone "rule" any more. Operators authoring automation
 from chat compose one ``save_workflow`` call (the *what*) plus optionally
-one ``create_routine`` call (the *when*), and the desktop shell renders
-them as first-class entities.
+one ``create_routine`` call (the *when*).
 
-Both tools persist YAML files under HERMES_HOME (canonical) AND
-mirror to ``$AGENTE_BOUND_FOLDER/office/{workflows,routines}/`` so the
-agente-desktop main process can pick them up without an IPC round-trip.
+Both tools persist YAML files under HERMES_HOME (canonical). Companion
+mirrors for UI surfaces are applied by the adapter layer (best effort).
 
 create_routine additionally schedules a real Hermes cron job via
 ``cron.jobs.create_job`` with ``workflow_ids=[workflow_id]``. When the
-cron fires, the existing cron scheduler raises the equivalent of a
-``schedule_triggered`` event the desktop bridge consumes.
+cron fires, the scheduler may delegate to workflow dispatch.
 """
 
 from __future__ import annotations
@@ -66,9 +63,8 @@ def save_workflow_handler(
 SAVE_WORKFLOW_SCHEMA = {
     "name": "save_workflow",
     "description": (
-        "Persist a workflow YAML under <HERMES_HOME>/workflows/<id>.yaml "
-        "(and mirror to $AGENTE_BOUND_FOLDER/office/workflows/<id>.yaml when "
-        "configured). A workflow declares what should happen when its "
+        "Persist a workflow YAML under <HERMES_HOME>/workflows/<id>.yaml . "
+        "A workflow declares what should happen when its "
         "trigger fires: an optional triage step that matches incoming "
         "events against Hebrew keywords, followed by an ordered list of "
         "actions (e.g. create_ticket). Pair with create_routine to wire a "
@@ -229,9 +225,8 @@ CREATE_ROUTINE_SCHEMA = {
         "save_workflow: save_workflow declares the *what*, create_routine "
         "declares the *when*. On every cron tick, Hermes raises a "
         "schedule_triggered event that the bound workflow_id consumes. "
-        "Persists a YAML under <HERMES_HOME>/routines/<id>.yaml (mirrored "
-        "to $AGENTE_BOUND_FOLDER/office/routines/ when configured) AND "
-        "registers a real Hermes cron job."
+        "Persists a YAML under <HERMES_HOME>/routines/<id>.yaml AND "
+        "registers a real Hermes cron job. Companion mirrors applied by adapter."
     ),
     "parameters": {
         "type": "object",

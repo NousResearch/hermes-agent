@@ -2,7 +2,7 @@
 
 These mirror the ``gws calendar`` CLI surface. Each schema also carries a
 ``label_he`` (Hebrew label for operator-facing surfaces) and a ``category``
-field consumed by the agente-desktop tool palette.
+field consumed by the companion tool palette.
 """
 
 from __future__ import annotations

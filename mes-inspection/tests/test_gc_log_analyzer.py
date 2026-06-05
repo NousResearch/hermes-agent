@@ -209,3 +209,15 @@ class TestGcLogAnalyzerFetch:
         analyzer.fetch_gc_log()
         cmd = mock_exec.run.call_args[0][0]
         assert "/u01/app/mes-app/logs/gc.log" in cmd
+
+    @patch("scripts.gc_log_analyzer.create_executor")
+    def test_fetch_gc_log_escapes_shell_injection(self, mock_create):
+        mock_executor = MagicMock()
+        mock_create.return_value = mock_executor
+        mock_executor.run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        )
+        analyzer = GcLogAnalyzer({"host": "10.0.0.1", "gc_log_path": "/tmp/gc.log"})
+        analyzer.fetch_gc_log(start_time="'; rm -rf / #")
+        cmd_arg = mock_executor.run.call_args[0][0]
+        assert "rm -rf" not in cmd_arg or "'" in cmd_arg or "\\'" in cmd_arg

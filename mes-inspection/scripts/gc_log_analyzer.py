@@ -1,6 +1,7 @@
 """GC 日志分析器 — 通过 SSH 获取远程 JVM GC 日志并解析指标。"""
 
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,6 +98,8 @@ class GcLogEntry:
 class GcLogAnalyzer:
     """GC 日志分析器 — 通过 SSH 获取并解析远程 JVM GC 日志。"""
 
+    SSH_TIMEOUT = 60
+
     def __init__(self, config: Dict[str, Any]):
         self.config = config
 
@@ -107,7 +110,7 @@ class GcLogAnalyzer:
         executor = create_executor(self.config)
         log_path = self.config.get("gc_log_path", DEFAULT_GC_LOG_PATH)
         cmd = self._build_fetch_cmd(log_path, start_time, end_time)
-        result = executor.run(cmd, timeout=60)
+        result = executor.run(cmd, timeout=self.SSH_TIMEOUT)
         if result.returncode != 0:
             return []
         return self._parse_lines(result.stdout)
@@ -115,11 +118,12 @@ class GcLogAnalyzer:
     def _build_fetch_cmd(
         self, log_path: str, start_time: str = None, end_time: str = None
     ) -> str:
+        # shlex.quote 防止命令注入（用户输入通过 sed 模式拼接到 shell）
         if start_time and end_time:
-            return f"sed -n '/{start_time}/,/{end_time}/p' {log_path}"
+            return f"sed -n '/{shlex.quote(start_time)}/,/{shlex.quote(end_time)}/p' {shlex.quote(log_path)}"
         if start_time:
-            return f"sed -n '/{start_time}/,$p' {log_path}"
-        return f"tail -n {MAX_LINES} {log_path}"
+            return f"sed -n '/{shlex.quote(start_time)}/,$p' {shlex.quote(log_path)}"
+        return f"tail -n {MAX_LINES} {shlex.quote(log_path)}"
 
     @staticmethod
     def _parse_lines(raw: str) -> List[GcLogEntry]:
@@ -174,5 +178,6 @@ class GcLogAnalyzer:
     ) -> Dict[str, Any]:
         """完整分析流程：获取→过滤→汇总。"""
         entries = self.fetch_gc_log(start_time, end_time)
+        # sed 做粗筛（远程减少传输量），filter_by_time 做本地精确过滤（更可靠）
         entries = self.filter_by_time(entries, start_time, end_time)
         return self.summarize(entries)

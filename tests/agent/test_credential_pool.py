@@ -2998,3 +2998,104 @@ def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypat
     tokens = auth_payload["providers"]["openai-codex"].get("tokens", {})
     assert tokens.get("access_token") == "old-access-token"
     assert tokens.get("refresh_token") == "old-refresh-token"
+
+
+def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
+    """Regression for #19566: stale rotation writes keep concurrent entries."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-A",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-A",
+                    },
+                    {
+                        "id": "cred-B",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-B",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import read_credential_pool, write_credential_pool
+
+    pool = load_pool("anthropic")
+    assert {entry.id for entry in pool.entries()} == {"cred-A", "cred-B"}
+
+    disk_snapshot = read_credential_pool("anthropic")
+    disk_snapshot.append(
+        {
+            "id": "cred-C",
+            "label": "added-concurrently",
+            "auth_type": "api_key",
+            "priority": 2,
+            "source": "manual",
+            "access_token": "sk-C",
+        }
+    )
+    write_credential_pool("anthropic", disk_snapshot)
+
+    pool.mark_exhausted_and_rotate(status_code=429)
+
+    final = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    final_ids = [entry["id"] for entry in final["credential_pool"]["anthropic"]]
+    assert set(final_ids) == {"cred-A", "cred-B", "cred-C"}
+    persisted_a = next(
+        entry
+        for entry in final["credential_pool"]["anthropic"]
+        if entry["id"] == "cred-A"
+    )
+    assert persisted_a["last_status"] == "exhausted"
+
+
+def test_remove_index_does_not_resurrect_via_disk_merge(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-A",
+                        "label": "keep",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-A",
+                    },
+                    {
+                        "id": "cred-B",
+                        "label": "drop",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-B",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    pool.remove_index(2)
+
+    final = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    final_ids = [entry["id"] for entry in final["credential_pool"]["anthropic"]]
+    assert final_ids == ["cred-A"]

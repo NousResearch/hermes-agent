@@ -60,6 +60,13 @@ export interface DesktopOnboardingState {
   providers: null | OAuthProvider[]
   reason: null | string
   requested: boolean
+  /** True when the user explicitly chose "I'll choose a provider later" on the
+   *  first-run picker. Persisted to localStorage so the blocking overlay never
+   *  re-nags on subsequent launches — the user can connect a provider any time
+   *  from Settings → Providers (or the model picker's "Add provider"). Distinct
+   *  from `configured`: the app still has no usable provider, so chat won't work
+   *  until one is connected; we just stop forcing the choice up front. */
+  firstRunSkipped: boolean
   /** True when the user explicitly opened the provider selector to add /
    *  switch providers from an already-configured app (e.g. via the model
    *  picker's "Add provider" button). Forces the overlay to show the picker
@@ -73,6 +80,7 @@ export interface OnboardingContext {
 }
 
 const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
+const SKIP_CACHE_KEY = 'hermes-onboarding-skipped-v1'
 const POLL_MS = 2000
 const COPY_FLASH_MS = 1500
 const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
@@ -105,6 +113,34 @@ function writeCachedConfigured(value: boolean) {
   }
 }
 
+function readCachedSkipped(): boolean {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  try {
+    return window.localStorage.getItem(SKIP_CACHE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeCachedSkipped(value: boolean) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  try {
+    if (value) {
+      window.localStorage.setItem(SKIP_CACHE_KEY, '1')
+    } else {
+      window.localStorage.removeItem(SKIP_CACHE_KEY)
+    }
+  } catch {
+    // localStorage unavailable — degrade silently.
+  }
+}
+
 const INITIAL: DesktopOnboardingState = {
   configured: readCachedConfigured(),
   flow: { status: 'idle' },
@@ -112,6 +148,7 @@ const INITIAL: DesktopOnboardingState = {
   providers: null,
   reason: null,
   requested: false,
+  firstRunSkipped: readCachedSkipped(),
   manual: false
 }
 
@@ -398,6 +435,9 @@ export function closeManualOnboarding() {
 export function completeDesktopOnboarding() {
   clearPoll()
   writeCachedConfigured(true)
+  // A real provider is now connected, so any earlier "choose later" skip is
+  // moot — clear it so the flag never lingers in a configured install.
+  writeCachedSkipped(false)
   $desktopOnboarding.set({
     configured: true,
     flow: { status: 'idle' },
@@ -405,8 +445,21 @@ export function completeDesktopOnboarding() {
     providers: null,
     reason: null,
     requested: false,
+    firstRunSkipped: false,
     manual: false
   })
+}
+
+// "I'll choose a provider later" on the first-run picker. Persists the skip so
+// the blocking overlay never re-nags on future launches, and dismisses it now
+// so the user lands in the app. Chat won't work until a provider is connected
+// (from Settings → Providers or the model picker's "Add provider") — this only
+// stops forcing the choice up front. Distinct from completeDesktopOnboarding,
+// which marks the app actually configured.
+export function dismissFirstRunOnboarding() {
+  clearPoll()
+  writeCachedSkipped(true)
+  patch({ firstRunSkipped: true, requested: false, manual: false, flow: { status: 'idle' } })
 }
 
 export function setOnboardingMode(mode: OnboardingMode) {

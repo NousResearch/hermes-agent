@@ -11,6 +11,7 @@ from tools.credential_files import (
     clear_credential_files,
     get_credential_file_mounts,
     get_cache_directory_mounts,
+    get_scripts_directory_mount,
     get_skills_directory_mount,
     iter_cache_files,
     iter_skills_files,
@@ -99,6 +100,31 @@ class TestRegisterCredentialFiles:
         assert missing == []
         mounts = get_credential_file_mounts()
         assert "real.json" in mounts[0]["container_path"]
+
+
+class TestScriptsDirectoryMount:
+    def test_creates_and_returns_mount(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            mounts = get_scripts_directory_mount()
+
+        assert len(mounts) == 1
+        assert mounts[0]["host_path"] == str(hermes_home / "scripts")
+        assert mounts[0]["container_path"] == "/root/.hermes/scripts"
+        # The host scripts dir must be created so the agent can write cron
+        # scripts into it from inside the sandbox (rw mount).
+        assert (hermes_home / "scripts").is_dir()
+
+    def test_custom_container_base(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            mounts = get_scripts_directory_mount(container_base="/home/user/.hermes")
+
+        assert mounts[0]["container_path"] == "/home/user/.hermes/scripts"
 
 
 class TestSkillsDirectoryMount:

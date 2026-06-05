@@ -244,6 +244,18 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
             f"Script path escapes the scripts directory via traversal: {raw!r}"
         )
 
+    # Fail fast at the create/edit boundary instead of at run time: the
+    # host-side cron runner only executes scripts that physically exist under
+    # HERMES_HOME/scripts/.  Tell the agent exactly where to put it (that dir
+    # is mounted read-write into the sandbox, so it can write there directly).
+    if not (scripts_dir / raw).is_file():
+        return (
+            f"Script not found: {raw!r}. Write the script to "
+            f"~/.hermes/scripts/{raw} first (inside the sandbox this is "
+            f"/root/.hermes/scripts/{raw} — the scripts directory is mounted "
+            f"read-write, so create it there directly), then create the job."
+        )
+
     return None
 
 

@@ -374,6 +374,28 @@ def get_cache_directory_mounts(
     return mounts
 
 
+def get_scripts_directory_mount(
+    container_base: str = "/root/.hermes",
+) -> List[Dict[str, str]]:
+    """Return a read-write mount entry for the cron scripts directory.
+
+    Script-based (``no_agent``) cron jobs are executed host-side from
+    ``HERMES_HOME/scripts/``.  Mounting that directory read-write into the
+    sandbox lets the agent author the script at ``~/.hermes/scripts/<name>``
+    where the host runner will actually find it — closing the gap where a
+    script written into the ephemeral workspace was invisible to cron.
+
+    The directory is created if missing so the bind mount always succeeds.
+    """
+    hermes_home = _resolve_hermes_home()
+    scripts_dir = hermes_home / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    return [{
+        "host_path": str(scripts_dir),
+        "container_path": f"{container_base.rstrip('/')}/scripts",
+    }]
+
+
 def to_agent_visible_cache_path(
     host_path: str,
     container_base: str = "/root/.hermes",

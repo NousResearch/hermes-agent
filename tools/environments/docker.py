@@ -407,6 +407,7 @@ class DockerEnvironment(BaseEnvironment):
                 get_credential_file_mounts,
                 get_skills_directory_mount,
                 get_cache_directory_mounts,
+                get_scripts_directory_mount,
             )
 
             for mount_entry in get_credential_file_mounts():
@@ -446,6 +447,21 @@ class DockerEnvironment(BaseEnvironment):
                     "Docker: mounting cache dir %s -> %s",
                     cache_mount["host_path"],
                     cache_mount["container_path"],
+                )
+
+            # Mount the cron scripts directory read-write (no :ro) so the agent
+            # can author scripts at ~/.hermes/scripts/ where the host-side cron
+            # runner executes them.  This is the one writable host mount; treat
+            # the scripts dir as a trust boundary accordingly.
+            for scripts_mount in get_scripts_directory_mount():
+                volume_args.extend([
+                    "-v",
+                    f"{scripts_mount['host_path']}:{scripts_mount['container_path']}",
+                ])
+                logger.info(
+                    "Docker: mounting scripts dir (rw) %s -> %s",
+                    scripts_mount["host_path"],
+                    scripts_mount["container_path"],
                 )
         except Exception as e:
             logger.debug("Docker: could not load credential file mounts: %s", e)

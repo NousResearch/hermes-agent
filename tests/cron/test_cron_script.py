@@ -222,6 +222,8 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        # Script must exist under scripts/ at create time (new fail-fast contract).
+        (cron_env / "scripts" / "monitor.py").write_text("print('ok')\n")
         result = json.loads(cronjob(
             action="create",
             schedule="every 1h",
@@ -242,6 +244,7 @@ class TestCronjobToolScript:
         ))
         job_id = create_result["job_id"]
 
+        (cron_env / "scripts" / "new_script.py").write_text("print('ok')\n")
         update_result = json.loads(cronjob(
             action="update",
             job_id=job_id,
@@ -254,6 +257,7 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "some_script.py").write_text("print('ok')\n")
         create_result = json.loads(cronjob(
             action="create",
             schedule="every 1h",
@@ -274,6 +278,7 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "data_collector.py").write_text("print('ok')\n")
         cronjob(
             action="create",
             schedule="every 1h",
@@ -441,6 +446,7 @@ class TestCronjobToolScriptValidation:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "monitor.py").write_text("print('ok')\n")
         result = json.loads(cronjob(
             action="create",
             schedule="every 1h",
@@ -449,6 +455,22 @@ class TestCronjobToolScriptValidation:
         ))
         assert result["success"] is True
         assert result["job"]["script"] == "monitor.py"
+
+    def test_create_with_missing_script_rejected(self, cron_env, monkeypatch):
+        """Creating a job whose script is not yet on disk fails fast with a
+        message telling the agent where to write it."""
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="monitor.py",
+        ))
+        assert result["success"] is False
+        assert "monitor.py" in result["error"]
+        assert "~/.hermes/scripts/" in result["error"]
 
     def test_update_with_absolute_script_rejected(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
@@ -474,6 +496,7 @@ class TestCronjobToolScriptValidation:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "monitor.py").write_text("print('ok')\n")
         create_result = json.loads(cronjob(
             action="create",
             schedule="every 1h",

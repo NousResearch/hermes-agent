@@ -135,6 +135,28 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     assert f"{project_dir}:/workspace" in run_args_str
 
 
+def test_scripts_dir_mounted_read_write(monkeypatch, tmp_path):
+    """The host ``scripts/`` dir is bind-mounted read-write so the agent can
+    author cron scripts inside the sandbox that the host-side cron runner later
+    executes from ``HERMES_HOME/scripts/``."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env()
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    args = run_calls[0][0]
+    v_specs = [args[i + 1] for i, a in enumerate(args) if a == "-v" and i + 1 < len(args)]
+
+    rw_spec = f"{hermes_home / 'scripts'}:/root/.hermes/scripts"
+    # Exact token match: a read-only mount would be "...:ro" and would NOT equal rw_spec.
+    assert rw_spec in v_specs, f"expected rw scripts mount, got {v_specs}"
+
+
 def test_auto_mount_disabled_by_default(monkeypatch, tmp_path):
     """Host cwd should not be mounted unless the caller explicitly opts in."""
     project_dir = tmp_path / "my-project"

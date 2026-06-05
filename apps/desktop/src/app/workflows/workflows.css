@@ -70,7 +70,6 @@
   background: color-mix(in srgb, var(--ui-bg-chrome) 86%, var(--ui-chat-surface-background));
   padding: 0 0.75rem;
   padding-left: max(0.75rem, calc(var(--titlebar-content-inset, 0rem) + 0.5rem));
-  -webkit-app-region: drag;
 }
 
 .workflow-menu-bar__menus,
@@ -108,7 +107,6 @@
   background: var(--ui-chat-surface-background);
   padding: 0.5rem calc(var(--titlebar-tools-right, 0.75rem) + var(--titlebar-tools-width, 0rem) + 0.75rem) 0.5rem
     max(0.75rem, var(--titlebar-content-inset, 0rem));
-  -webkit-app-region: drag;
 }
 
 .workflow-execution-toolbar__identity {
@@ -321,33 +319,34 @@
 }
 
 .workflow-center {
-  --workflow-canvas-bg: var(--ui-chat-surface-background);
-  --workflow-canvas-dot: color-mix(in srgb, var(--ui-text-quaternary) 34%, transparent);
-  --workflow-edge: color-mix(in srgb, var(--ui-text-tertiary) 58%, transparent);
+  --workflow-canvas-bg: color-mix(in srgb, var(--ui-chat-surface-background) 90%, var(--ui-sidebar-surface-background));
+  --workflow-canvas-dot: color-mix(in srgb, var(--ui-text-quaternary) 42%, transparent);
+  --workflow-edge: color-mix(in srgb, var(--ui-text-tertiary) 66%, transparent);
   --workflow-edge-selected: var(--ui-blue);
   --workflow-edge-feedback: color-mix(in srgb, var(--ui-red) 62%, var(--ui-yellow));
-  --workflow-edge-label-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 94%, var(--ui-chat-surface-background));
-  --workflow-edge-label-border: var(--ui-stroke-tertiary);
-  --workflow-edge-label-text: var(--ui-text-secondary);
-  --workflow-panel-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 94%, var(--ui-chat-surface-background));
-  --workflow-panel-border: var(--ui-stroke-tertiary);
+  --workflow-edge-label-bg: color-mix(in srgb, var(--ui-bg-editor) 94%, var(--workflow-canvas-bg));
+  --workflow-edge-label-border: color-mix(in srgb, var(--ui-text-tertiary) 18%, var(--ui-stroke-tertiary));
+  --workflow-edge-label-text: color-mix(in srgb, var(--ui-text-primary) 74%, transparent);
+  --workflow-panel-bg: color-mix(in srgb, var(--ui-bg-editor) 94%, var(--workflow-canvas-bg));
+  --workflow-panel-border: color-mix(in srgb, var(--ui-text-tertiary) 18%, var(--ui-stroke-tertiary));
   --workflow-panel-shadow: 0 0.375rem 1rem color-mix(in srgb, var(--ui-base) 9%, transparent);
-  --workflow-node-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 92%, var(--ui-chat-surface-background));
-  --workflow-node-bg-selected: color-mix(in srgb, var(--ui-blue) 7%, var(--workflow-node-bg));
-  --workflow-node-border: color-mix(in srgb, var(--ui-stroke-secondary) 84%, var(--ui-text-tertiary));
+  --workflow-node-bg: color-mix(in srgb, var(--ui-bg-editor) 96%, var(--workflow-canvas-bg));
+  --workflow-node-bg-selected: color-mix(in srgb, var(--ui-blue) 8%, var(--workflow-node-bg));
+  --workflow-node-border: color-mix(in srgb, var(--ui-text-tertiary) 20%, var(--ui-stroke-secondary));
   --workflow-node-border-selected: var(--ui-blue);
   --workflow-node-title: var(--ui-text-primary);
-  --workflow-node-description: var(--ui-text-secondary);
-  --workflow-node-muted: var(--ui-text-tertiary);
+  --workflow-node-description: color-mix(in srgb, var(--ui-text-primary) 72%, transparent);
+  --workflow-node-muted: color-mix(in srgb, var(--ui-text-primary) 52%, transparent);
   --workflow-node-shadow:
     0 0.125rem 0.75rem color-mix(in srgb, var(--ui-base) 12%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 62%, transparent) inset;
+    0 0 0 1px color-mix(in srgb, var(--ui-bg-editor) 70%, transparent) inset;
   --workflow-node-selected-shadow:
     0 0 0 0.125rem color-mix(in srgb, var(--ui-blue) 24%, transparent),
     0 0.5rem 1.25rem color-mix(in srgb, var(--ui-base) 18%, transparent);
   --workflow-handle-border: var(--workflow-node-bg);
-  --workflow-minimap-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 88%, var(--ui-chat-surface-background));
-  --workflow-minimap-mask: color-mix(in srgb, var(--ui-chat-surface-background) 62%, transparent);
+  --workflow-minimap-bg: color-mix(in srgb, var(--ui-bg-editor) 90%, var(--workflow-canvas-bg));
+  --workflow-minimap-mask: color-mix(in srgb, var(--workflow-canvas-bg) 58%, transparent);
+  --workflow-minimap-node-stroke: color-mix(in srgb, var(--ui-text-primary) 30%, transparent);
   --workflow-controls-bg: var(--workflow-panel-bg);
   --workflow-pill-success-bg: color-mix(in srgb, var(--ui-green) 13%, var(--ui-bg-card));
   --workflow-pill-success-fg: var(--ui-green);
@@ -374,29 +373,30 @@
 
 :root[data-hermes-mode='dark'] .workflow-center,
 .dark .workflow-center {
-  --workflow-canvas-bg: color-mix(in srgb, var(--ui-chat-surface-background) 92%, var(--ui-bg-editor));
-  --workflow-canvas-dot: color-mix(in srgb, var(--ui-text-quaternary) 52%, transparent);
-  --workflow-edge: color-mix(in srgb, var(--ui-text-secondary) 50%, transparent);
-  --workflow-edge-label-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 88%, var(--ui-chat-surface-background));
-  --workflow-edge-label-border: color-mix(in srgb, var(--ui-text-tertiary) 26%, var(--ui-stroke-secondary));
-  --workflow-edge-label-text: color-mix(in srgb, var(--ui-text-primary) 78%, transparent);
-  --workflow-panel-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 90%, var(--ui-chat-surface-background));
-  --workflow-panel-border: color-mix(in srgb, var(--ui-text-tertiary) 22%, var(--ui-stroke-secondary));
+  --workflow-canvas-bg: color-mix(in srgb, var(--ui-chat-surface-background) 80%, var(--ui-sidebar-surface-background));
+  --workflow-canvas-dot: color-mix(in srgb, var(--ui-text-quaternary) 62%, transparent);
+  --workflow-edge: color-mix(in srgb, var(--ui-text-secondary) 62%, transparent);
+  --workflow-edge-label-bg: color-mix(in srgb, var(--ui-bg-editor) 86%, var(--workflow-canvas-bg));
+  --workflow-edge-label-border: color-mix(in srgb, var(--ui-text-tertiary) 32%, var(--ui-stroke-secondary));
+  --workflow-edge-label-text: color-mix(in srgb, var(--ui-text-primary) 84%, transparent);
+  --workflow-panel-bg: color-mix(in srgb, var(--ui-bg-editor) 88%, var(--workflow-canvas-bg));
+  --workflow-panel-border: color-mix(in srgb, var(--ui-text-tertiary) 30%, var(--ui-stroke-secondary));
   --workflow-panel-shadow: 0 0.5rem 1.125rem color-mix(in srgb, var(--ui-chat-surface-background) 76%, transparent);
-  --workflow-node-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 84%, var(--ui-text-primary) 5%);
-  --workflow-node-bg-selected: color-mix(in srgb, var(--ui-blue) 13%, var(--workflow-node-bg));
-  --workflow-node-border: color-mix(in srgb, var(--ui-text-tertiary) 28%, var(--ui-stroke-secondary));
+  --workflow-node-bg: color-mix(in srgb, var(--ui-bg-editor) 88%, var(--ui-text-primary) 6%);
+  --workflow-node-bg-selected: color-mix(in srgb, var(--ui-blue) 16%, var(--workflow-node-bg));
+  --workflow-node-border: color-mix(in srgb, var(--ui-text-tertiary) 36%, var(--ui-stroke-secondary));
   --workflow-node-title: var(--ui-text-primary);
-  --workflow-node-description: color-mix(in srgb, var(--ui-text-primary) 82%, transparent);
-  --workflow-node-muted: color-mix(in srgb, var(--ui-text-primary) 62%, transparent);
+  --workflow-node-description: color-mix(in srgb, var(--ui-text-primary) 86%, transparent);
+  --workflow-node-muted: color-mix(in srgb, var(--ui-text-primary) 68%, transparent);
   --workflow-node-shadow:
     0 0.25rem 0.875rem color-mix(in srgb, var(--ui-chat-surface-background) 82%, transparent),
     0 0 0 1px color-mix(in srgb, var(--ui-text-primary) 7%, transparent) inset;
   --workflow-node-selected-shadow:
     0 0 0 0.125rem color-mix(in srgb, var(--ui-blue) 36%, transparent),
     0 0.625rem 1.5rem color-mix(in srgb, var(--ui-chat-surface-background) 88%, transparent);
-  --workflow-minimap-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 88%, var(--ui-chat-surface-background));
-  --workflow-minimap-mask: color-mix(in srgb, var(--workflow-canvas-bg) 54%, transparent);
+  --workflow-minimap-bg: color-mix(in srgb, var(--ui-bg-editor) 88%, var(--workflow-canvas-bg));
+  --workflow-minimap-mask: color-mix(in srgb, var(--workflow-canvas-bg) 48%, transparent);
+  --workflow-minimap-node-stroke: color-mix(in srgb, var(--ui-text-primary) 38%, transparent);
   --workflow-pill-success-bg: color-mix(in srgb, var(--ui-green) 20%, var(--workflow-node-bg));
   --workflow-pill-success-fg: color-mix(in srgb, var(--ui-green) 72%, var(--ui-text-primary));
   --workflow-pill-warning-bg: color-mix(in srgb, var(--ui-yellow) 24%, var(--workflow-node-bg));
@@ -424,6 +424,10 @@
 .workflow-flow .react-flow__renderer,
 .workflow-flow .react-flow__pane {
   background: transparent;
+}
+
+.workflow-flow .react-flow__node {
+  color: var(--workflow-node-title);
 }
 
 .workflow-flow .react-flow__edge-path,
@@ -602,6 +606,11 @@
 
 .workflow-minimap .react-flow__minimap-mask {
   fill: var(--workflow-minimap-mask);
+}
+
+.workflow-minimap .react-flow__minimap-node {
+  stroke: var(--workflow-minimap-node-stroke);
+  stroke-width: 1;
 }
 
 .workflow-controls {

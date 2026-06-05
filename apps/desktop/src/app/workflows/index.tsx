@@ -61,6 +61,7 @@ import {
 } from '@/hermes'
 import { cn } from '@/lib/utils'
 import { $workflowLanguage } from '@/store/workflow-language'
+import { useTheme } from '@/themes/context'
 import type { ModelOptionsResponse, SkillInfo } from '@/types/hermes'
 import type {
   ExecutionMode,
@@ -185,6 +186,7 @@ export function WorkflowsView() {
 
 function WorkflowWorkbench() {
   const workflowLanguage = useStore($workflowLanguage)
+  const { resolvedMode } = useTheme()
   const copy = workflowCopyFor(workflowLanguage)
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -581,7 +583,7 @@ function WorkflowWorkbench() {
           ) : workflow && workflow.nodes.length > 0 ? (
             <ReactFlow
               className="workflow-flow"
-              colorMode="system"
+              colorMode={resolvedMode}
               connectOnClick={false}
               edges={flowEdges}
               elementsSelectable

@@ -1029,6 +1029,17 @@ def _run_review_fork(
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
     review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
+    # Dynamic memory-provider tools (e.g. Honcho's honcho_* set) are injected
+    # by the active MemoryManager at AIAgent init time, not by any static
+    # toolset definition. The review fork inherits the same provider
+    # configuration, so whitelist those tool names too without widening beyond
+    # the parent's live memory tool surface.
+    _memory_manager = getattr(agent, "_memory_manager", None)
+    if _memory_manager is not None:
+        try:
+            review_whitelist |= set(_memory_manager.get_all_tool_names())
+        except Exception:
+            pass
     extra_list = ", ".join(sorted(configured_extra_tools))
     deny_extra = f" Configured extra tools also allowed: {extra_list}." if configured_extra_tools else ""
     prompt_extra = f" Exception — these configured tools are also allowed: {extra_list}." if configured_extra_tools else ""

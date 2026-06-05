@@ -49,11 +49,7 @@ def test_tool_schema_promotes_staged_implement_as_default_channel():
     assert "candidate work only" in description
     assert "not that the task is complete" in description
     assert "verify the diff" in description
-    assert schema["parameters"]["properties"]["dirty_baseline_policy"]["enum"] == [
-        "require-clean",
-        "allow-listed-owned",
-        "fail-on-overlap",
-    ]
+    assert schema["parameters"]["properties"]["dirty_baseline_policy"]["enum"] == ["require-clean"]
 
 
 def test_empty_scope_is_rejected(tmp_path):
@@ -155,19 +151,22 @@ def test_dirty_worktree_rejects_without_runner_call(tmp_path, monkeypatch):
 
     assert result["status"] == "dirty_worktree"
     assert result["dirty_check"]["is_clean"] is False
+    assert result["dirty_check"]["dirty_count"] == 1
+    assert result["dirty_check"]["dirty_paths"] == ["dirty.txt"]
+    assert result["dirty_baseline_policy"] == "require-clean"
     assert result["runner_exit_code"] is None
     assert calls == []
 
 
 @pytest.mark.parametrize("dirty_policy", ["allow-listed-owned", "fail-on-overlap"])
-def test_non_require_clean_dirty_policy_is_passed_to_runner(tmp_path, monkeypatch, dirty_policy):
+def test_non_require_clean_dirty_policy_is_rejected_without_runner_call(tmp_path, monkeypatch, dirty_policy):
     repo = _clean_repo(tmp_path)
     (repo / "README.md").write_text("dirty owned\n", encoding="utf-8")
-    captured = {}
+    calls = []
 
     def fake_runner(argv):
-        captured["argv"] = argv
-        return SimpleNamespace(returncode=0, stdout=json.dumps({"status": "completed"}), stderr="")
+        calls.append(argv)
+        raise AssertionError("runner should not be invoked")
 
     monkeypatch.setattr(tool, "_run_runner", fake_runner)
 
@@ -177,13 +176,10 @@ def test_non_require_clean_dirty_policy_is_passed_to_runner(tmp_path, monkeypatc
         dirty_baseline_policy=dirty_policy,
     )
 
-    assert result["status"] == "ready_for_review"
-    assert result["dirty_check"]["is_clean"] is False
-    plan_path = Path(result["stage_plan_path"])
-    plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    assert plan["dirty_baseline_policy"] == dirty_policy
-    assert plan["slices"][0]["dirty_baseline_policy"] == dirty_policy
-    assert "--plan-file" in captured["argv"]
+    assert result["status"] == "unsupported_dirty_policy"
+    assert result["dirty_baseline_policy"] == dirty_policy
+    assert result["runner_exit_code"] is None
+    assert calls == []
 
 
 def test_runner_argv_and_plan_generation(tmp_path, monkeypatch):

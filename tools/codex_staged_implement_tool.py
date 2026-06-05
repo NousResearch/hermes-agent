@@ -11,7 +11,7 @@ from tools.registry import registry
 
 _ALLOWED_VERIFY_IDS = {"diff-check", "none"}
 _SUPPORTED_CONTINUE_POLICY = "stop-on-review-needed"
-_SUPPORTED_DIRTY_POLICIES = {"require-clean", "allow-listed-owned", "fail-on-overlap"}
+_SUPPORTED_DIRTY_POLICIES = {"require-clean"}
 _DANGER_PARTS = {
     ".git",
     ".hg",
@@ -79,6 +79,7 @@ def _base_result(
     resolved_workdir: str | None = None,
     git_head: str | None = None,
     resolved_allowlist: dict[str, list[str]] | None = None,
+    dirty_baseline_policy: str | None = None,
     dirty_check: dict[str, Any] | None = None,
     stage_plan_path: str | None = None,
     raw_dir: str | None = None,
@@ -114,6 +115,7 @@ def _base_result(
         "resolved_workdir": resolved_workdir,
         "git_head": git_head,
         "resolved_allowlist": resolved_allowlist or {"files": [], "globs": []},
+        "dirty_baseline_policy": dirty_baseline_policy,
         "dirty_check": dirty_check or {"is_clean": None, "porcelain_count": None},
         "stage_plan_path": stage_plan_path,
         "raw_dir": raw_dir,
@@ -244,9 +246,17 @@ def _validate_scope(args: dict[str, Any], repo: Path) -> tuple[dict[str, list[st
 def _dirty_check(repo: Path) -> dict[str, Any]:
     proc = _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
     lines = [line for line in proc.stdout.splitlines() if line]
+    paths: list[str] = []
+    for line in lines:
+        raw_path = line[3:] if len(line) > 3 else line
+        if " -> " in raw_path:
+            raw_path = raw_path.split(" -> ", 1)[1]
+        paths.append(raw_path.strip())
     return {
         "is_clean": proc.returncode == 0 and not lines,
         "porcelain_count": len(lines),
+        "dirty_count": len(paths),
+        "dirty_paths": paths,
     }
 
 
@@ -521,7 +531,7 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
 
     dirty_policy = args.get("dirty_baseline_policy", "require-clean")
     if dirty_policy not in _SUPPORTED_DIRTY_POLICIES:
-        return _json_result(_base_result(status="unsupported_dirty_policy"))
+        return _json_result(_base_result(status="unsupported_dirty_policy", dirty_baseline_policy=dirty_policy))
 
     verify_ids = args.get("verify_cmd_ids", ["diff-check"])
     if verify_ids is None:
@@ -566,6 +576,7 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
                 resolved_workdir=resolved_workdir,
                 git_head=git_head,
                 resolved_allowlist=allowlist,
+                dirty_baseline_policy=dirty_policy,
                 dirty_check=dirty,
                 verification_policy=verification_policy,
             )
@@ -588,6 +599,7 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
                 resolved_workdir=resolved_workdir,
                 git_head=git_head,
                 resolved_allowlist=allowlist,
+                dirty_baseline_policy=dirty_policy,
                 dirty_check=dirty,
                 runner_exit_code=None,
                 verification_policy=verification_policy,
@@ -613,6 +625,7 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
                 resolved_workdir=resolved_workdir,
                 git_head=git_head,
                 resolved_allowlist=allowlist,
+                dirty_baseline_policy=dirty_policy,
                 dirty_check=dirty,
                 stage_plan_path=str(plan_path),
                 raw_dir=str(raw_dir),
@@ -637,6 +650,7 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
                 resolved_workdir=resolved_workdir,
                 git_head=git_head,
                 resolved_allowlist=allowlist,
+                dirty_baseline_policy=dirty_policy,
                 dirty_check=dirty,
                 stage_plan_path=str(plan_path),
                 raw_dir=str(raw_dir),
@@ -673,6 +687,7 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
             resolved_workdir=resolved_workdir,
             git_head=git_head,
             resolved_allowlist=allowlist,
+            dirty_baseline_policy=dirty_policy,
             dirty_check=dirty,
             stage_plan_path=str(plan_path),
             raw_dir=str(raw_dir),
@@ -745,8 +760,8 @@ _SCHEMA = {
             },
             "dirty_baseline_policy": {
                 "type": "string",
-                "enum": ["require-clean", "allow-listed-owned", "fail-on-overlap"],
-                "description": "Dirty baseline policy passed through to the guarded stage runner.",
+                "enum": ["require-clean"],
+                "description": "Dirty baseline policy. Phase 13 v1 is fail-closed and only supports clean worktrees.",
             },
         },
         "required": ["workdir", "task"],

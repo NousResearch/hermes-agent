@@ -51,31 +51,47 @@ jobs:
           # restart-looping) and the proxy answers GET /health on :11435
           # (network_mode: host, so it's on the host's localhost). Fail the
           # deploy if either never comes up.
+          #
+          # Timeout is generous (10min): on this host the stage2 ownership
+          # fix of the /opt/data volume dominates boot, and 02/03 (profile
+          # reconcile + :11435 proxy seed) only run after it. A short window
+          # false-reds a healthy-but-slow boot -- see run 26993003489, where
+          # at T+2min boot was still in 01-hermes-setup and the proxy hadn't
+          # seeded yet. Better to wait out a slow boot than cry wolf.
           probe() {
             curl -fsS -m 5 -o /dev/null "$1" 2>/dev/null \
               || wget -q -T 5 -O /dev/null "$1" 2>/dev/null
           }
           health_ok=""
-          for i in $(seq 1 24); do   # up to 24 * 5s = 120s
+          for i in $(seq 1 120); do   # up to 120 * 5s = 600s (10min)
             running=$(docker inspect -f '{{.State.Running}}' hermes 2>/dev/null || echo false)
             restarting=$(docker inspect -f '{{.State.Restarting}}' hermes 2>/dev/null || echo false)
             if [ "$running" = "true" ] && [ "$restarting" = "false" ] \
                && probe http://127.0.0.1:11435/health; then
               health_ok=1
-              echo "health-gate: container running and :11435 /health OK (attempt $i)"
+              echo "health-gate: container running and :11435 /health OK (attempt $i / ~$((i*5))s)"
               break
             fi
-            echo "health-gate: not ready (attempt $i: running=$running restarting=$restarting) -- retrying in 5s"
+            # Every ~30s show boot progress (last container log line) so a
+            # slow-but-advancing boot is visibly distinct from a stuck one.
+            if [ $((i % 6)) -eq 1 ]; then
+              last=$(docker logs --tail 1 hermes 2>&1 | tr -d '\r' || true)
+              echo "health-gate: not ready (attempt $i: running=$running restarting=$restarting) boot@[$last]"
+            fi
             sleep 5
           done
 
           if [ -z "$health_ok" ]; then
-            echo "health-gate: FAILED -- bots unhealthy after deploy. Diagnostics:"
+            echo "health-gate: FAILED -- :11435 never came up within 600s. Diagnostics:"
             docker ps -a --filter name=hermes || true
-            echo "--- last 80 log lines (hermes) ---"
-            docker logs --tail 80 hermes 2>&1 || true
-            echo "--- s6 runtime service states ---"
-            docker exec hermes sh -c 'for s in /run/service/*/; do printf "%s " "$s"; s6-svstat "$s" 2>/dev/null || echo "(no svstat)"; done' 2>&1 || true
+            echo "--- full boot log (hermes, tail 200) ---"
+            docker logs --tail 200 hermes 2>&1 || true
+            echo "--- did the boot hooks run? (markers in log) ---"
+            docker logs hermes 2>&1 | grep -iE 'cont-init.*0[23]-|reconcile|seed-services' || echo "(no 02/03 hook markers seen -- boot likely never reached them)"
+            echo "--- /opt/data/services (what 03 has to seed from) ---"
+            docker exec hermes sh -c 'ls -la /opt/data/services 2>&1 || echo "(absent -- nothing to seed; proxy def missing from volume)"' 2>&1 || true
+            echo "--- /run/service (what actually got seeded) ---"
+            docker exec hermes sh -c 'ls -1 /run/service 2>&1' 2>&1 || true
             exit 1
           fi
 

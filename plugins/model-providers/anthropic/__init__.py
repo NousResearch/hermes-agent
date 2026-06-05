@@ -41,7 +41,7 @@ class AnthropicProfile(ProviderProfile):
 
 anthropic = AnthropicProfile(
     name="anthropic",
-    aliases=("claude", "claude-oauth", "claude-code"),
+    aliases=("claude", "claude-oauth"),
     api_mode="anthropic_messages",
     env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
     base_url="https://api.anthropic.com",

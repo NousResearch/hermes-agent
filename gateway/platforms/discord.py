@@ -31,6 +31,44 @@ _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 
+
+def _summarize_exec_approval(command: str, description: str = "") -> str:
+    """Return a short human-facing summary for Discord exec approval prompts."""
+    cmd = (command or "").strip()
+    desc = (description or "").strip()
+    lower = cmd.lower()
+
+    if "rm -rf" in lower or lower.startswith("rm "):
+        action = "ファイルやフォルダを削除する操作です。"
+    elif "git push" in lower:
+        action = "GitHubなどのリモートへ変更を送る操作です。"
+    elif "git pull" in lower or "git fetch" in lower:
+        action = "GitHubなどから最新情報を取得する操作です。"
+    elif "git reset" in lower or "git checkout" in lower:
+        action = "Gitの作業状態やブランチを変更する操作です。"
+    elif "systemctl" in lower or "service " in lower or "hermes gateway restart" in lower:
+        action = "サービスやGatewayの起動状態を変更する操作です。"
+    elif "sudo" in lower:
+        action = "管理者権限が関わる可能性のある操作です。"
+    elif "python" in lower or "pytest" in lower or "npm test" in lower:
+        action = "スクリプトやテストを実行する操作です。"
+    elif "curl" in lower or "wget" in lower:
+        action = "外部URLへアクセスする操作です。"
+    elif "|" in cmd:
+        action = "複数のコマンドをつないで実行する操作です。"
+    else:
+        action = "シェルコマンドを実行する操作です。"
+
+    reason = desc if desc else "安全確認が必要なコマンドとして検出されました。"
+    if len(reason) > 220:
+        reason = reason[:217] + "..."
+
+    return (
+        f"何をするか: {action}\n"
+        f"なぜ確認が必要か: {reason}\n"
+        "判断: 内容に問題なければ「許可」。不明・危険に見える場合は「拒否」を押してください。"
+    )
+
 try:
     import discord
     from discord import Message as DiscordMessage, Intents
@@ -812,6 +850,21 @@ class DiscordAdapter(BasePlatformAdapter):
                             return
 
                 await self._handle_message(message)
+
+            @self._client.listen("on_interaction")
+            async def on_article_approval_button(interaction: discord.Interaction):
+                try:
+                    await adapter_self._handle_article_approval_interaction(interaction)
+                except Exception as exc:
+                    logger.exception("[%s] Article approval interaction failed: %s", adapter_self.name, exc)
+                    try:
+                        if not interaction.response.is_done():
+                            await interaction.response.send_message(
+                                "記事確認ボタンの処理に失敗しました。リノ側で確認します。",
+                                ephemeral=True,
+                            )
+                    except Exception:
+                        logger.debug("[%s] Could not notify article button failure", adapter_self.name)
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
@@ -2401,6 +2454,114 @@ class DiscordAdapter(BasePlatformAdapter):
         return await self._reject_slash(
             interaction, command_text, reason=reason or "unauthorized",
         )
+
+    def _parse_article_approval_custom_id(
+        self, custom_id: str,
+    ) -> Optional[Tuple[str, str, str]]:
+        """Parse AI Company article approval button custom IDs."""
+        if not custom_id:
+            return None
+        action_map = {
+            "article_publish_approve": "approve",
+            "article_publish_revise": "revise",
+            "article_delete_draft": "delete",
+        }
+        parts = custom_id.split(":", 2)
+        action = action_map.get(parts[0])
+        if not action:
+            return None
+        management_id = parts[1] if len(parts) > 1 else ""
+        slug = parts[2] if len(parts) > 2 else ""
+        return action, management_id, slug
+
+    async def _handle_article_approval_interaction(
+        self, interaction: "discord.Interaction",
+    ) -> bool:
+        """Handle raw Discord buttons emitted by AI Company article packaging."""
+        data = getattr(interaction, "data", None) or {}
+        parsed = self._parse_article_approval_custom_id(str(data.get("custom_id") or ""))
+        if parsed is None:
+            return False
+
+        action, management_id, slug = parsed
+        if not await self._check_slash_authorization(interaction, f"article_button {action}"):
+            return True
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        script = os.getenv(
+            "AICOMPANY_ARTICLE_BUTTON_HANDLER",
+            "/home/hermes/GH_AICompany2.0/scripts/content/article/handle-article-approval-button.py",
+        )
+        message_id = str(getattr(getattr(interaction, "message", None), "id", "") or "")
+        user_id = str(getattr(getattr(interaction, "user", None), "id", "") or "")
+        cmd = [
+            sys.executable,
+            script,
+            "--action",
+            action,
+            "--management-id",
+            management_id,
+            "--slug",
+            slug,
+            "--discord-message-id",
+            message_id,
+            "--user-id",
+            user_id,
+        ]
+
+        def _run_handler() -> subprocess.CompletedProcess:
+            return subprocess.run(
+                cmd,
+                text=True,
+                capture_output=True,
+                timeout=180,
+                cwd=os.getenv("AICOMPANY_PROJECT_DIR", "/home/hermes/GH_AICompany2.0"),
+            )
+
+        result = await asyncio.to_thread(_run_handler)
+        raw_output = (result.stdout or result.stderr or "").strip()
+        try:
+            payload = json.loads(raw_output) if raw_output else {}
+        except Exception:
+            payload = {"ok": False, "error": raw_output or "button handler returned no output"}
+
+        if result.returncode != 0 or not payload.get("ok", False):
+            error = payload.get("error") or raw_output or "不明なエラー"
+            await interaction.edit_original_response(
+                content=f"処理できませんでした。\n{error}",
+            )
+            return True
+
+        user_message = str(payload.get("user_message") or "処理しました。")
+        target = payload.get("target") or {}
+        title = target.get("記事タイトル") or slug or management_id
+        message = getattr(interaction, "message", None)
+        if message is not None:
+            status_text = {
+                "approve": "公開済み",
+                "revise": "修正待ち",
+                "delete": "削除済み",
+            }.get(action, "処理済み")
+            publication = payload.get("publication") or {}
+            public_url = publication.get("public_url") or ""
+            lines = [
+                f"【記事確認】{status_text}",
+                "",
+                f"対象: {title}",
+            ]
+            if public_url:
+                lines.append(f"公開URL: {public_url}")
+            if action == "delete":
+                lines.append("Googleドキュメントと記事SEO管理の対象行を整理しました。")
+            elif action == "revise":
+                lines.append("修正指示待ちにしました。")
+            try:
+                await message.edit(content="\n".join(lines), view=None)
+            except Exception as exc:
+                logger.debug("[%s] Could not edit article approval message: %s", self.name, exc)
+
+        await interaction.edit_original_response(content=user_message)
+        return True
 
     async def _reject_slash(
         self, interaction: "discord.Interaction", command_text: str, *, reason: str,
@@ -4048,15 +4209,23 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            # Discord embed description limit is 4096; show full command up to that
-            max_desc = 4088
-            cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
+            # Discord embed description limit is 4096; keep the human summary first.
+            approval_summary = _summarize_exec_approval(command, description)
+            max_cmd = 2600
+            cmd_display = command if len(command) <= max_cmd else command[: max_cmd - 3] + "..."
             embed = discord.Embed(
-                title="⚠️ Command Approval Required",
-                description=f"```\n{cmd_display}\n```",
+                title="⚠️ 実行許可が必要です",
+                description=(
+                    f"{approval_summary}\n\n"
+                    f"コマンド:\n```\n{cmd_display}\n```"
+                ),
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="Reason", value=description, inline=False)
+            embed.add_field(
+                name="ボタンの意味",
+                value="許可: 今回だけ実行 / セッション許可: 同じ会話中は許可 / 常に許可: 今後も許可 / 拒否: 実行しない",
+                inline=False,
+            )
 
             view = ExecApprovalView(
                 session_key=session_key,
@@ -5036,13 +5205,13 @@ def _define_discord_view_classes() -> None:
             """Resolve the approval via the gateway approval queue and update the embed."""
             if self.resolved:
                 await interaction.response.send_message(
-                    "This approval has already been resolved~", ephemeral=True
+                    "この許可依頼はすでに処理済みです", ephemeral=True
                 )
                 return
 
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized to approve commands~", ephemeral=True
+                    "この操作を許可できる権限がありません", ephemeral=True
                 )
                 return
 
@@ -5052,7 +5221,7 @@ def _define_discord_view_classes() -> None:
             embed = interaction.message.embeds[0] if interaction.message.embeds else None
             if embed:
                 embed.color = color
-                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+                embed.set_footer(text=f"{label}: {interaction.user.display_name}")
 
             # Disable all buttons
             for child in self.children:
@@ -5071,29 +5240,29 @@ def _define_discord_view_classes() -> None:
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc)
 
-        @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
+        @discord.ui.button(label="許可", style=discord.ButtonStyle.green)
         async def allow_once(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
+            await self._resolve(interaction, "once", discord.Color.green(), "今回だけ許可")
 
-        @discord.ui.button(label="Allow Session", style=discord.ButtonStyle.grey)
+        @discord.ui.button(label="セッション許可", style=discord.ButtonStyle.grey)
         async def allow_session(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "session", discord.Color.blue(), "Approved for session")
+            await self._resolve(interaction, "session", discord.Color.blue(), "このセッションで許可")
 
-        @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
+        @discord.ui.button(label="常に許可", style=discord.ButtonStyle.blurple)
         async def allow_always(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "always", discord.Color.purple(), "Approved permanently")
+            await self._resolve(interaction, "always", discord.Color.purple(), "常に許可")
 
-        @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
+        @discord.ui.button(label="拒否", style=discord.ButtonStyle.red)
         async def deny(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "deny", discord.Color.red(), "Denied")
+            await self._resolve(interaction, "deny", discord.Color.red(), "拒否")
 
         async def on_timeout(self):
             """Handle view timeout -- disable buttons and mark as expired."""
@@ -5144,12 +5313,12 @@ def _define_discord_view_classes() -> None:
         ):
             if self.resolved:
                 await interaction.response.send_message(
-                    "This prompt has already been resolved~", ephemeral=True,
+                    "この確認依頼はすでに処理済みです", ephemeral=True,
                 )
                 return
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized to answer this prompt~", ephemeral=True,
+                    "この確認に回答できる権限がありません", ephemeral=True,
                 )
                 return
 
@@ -5158,7 +5327,7 @@ def _define_discord_view_classes() -> None:
             embed = interaction.message.embeds[0] if interaction.message.embeds else None
             if embed:
                 embed.color = color
-                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+                embed.set_footer(text=f"{label}: {interaction.user.display_name}")
 
             for child in self.children:
                 child.disabled = True
@@ -5182,23 +5351,23 @@ def _define_discord_view_classes() -> None:
             except Exception as exc:
                 logger.error("Discord slash-confirm resolve failed: %s", exc, exc_info=True)
 
-        @discord.ui.button(label="Approve Once", style=discord.ButtonStyle.green)
+        @discord.ui.button(label="今回だけ許可", style=discord.ButtonStyle.green)
         async def approve_once(
             self, interaction: discord.Interaction, button: discord.ui.Button,
         ):
-            await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
+            await self._resolve(interaction, "once", discord.Color.green(), "今回だけ許可")
 
-        @discord.ui.button(label="Always Approve", style=discord.ButtonStyle.blurple)
+        @discord.ui.button(label="今後も許可", style=discord.ButtonStyle.blurple)
         async def approve_always(
             self, interaction: discord.Interaction, button: discord.ui.Button,
         ):
-            await self._resolve(interaction, "always", discord.Color.purple(), "Always approved")
+            await self._resolve(interaction, "always", discord.Color.purple(), "今後も許可")
 
-        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
+        @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.red)
         async def cancel(
             self, interaction: discord.Interaction, button: discord.ui.Button,
         ):
-            await self._resolve(interaction, "cancel", discord.Color.greyple(), "Cancelled")
+            await self._resolve(interaction, "cancel", discord.Color.greyple(), "キャンセル")
 
         async def on_timeout(self):
             self.resolved = True
@@ -5237,12 +5406,12 @@ def _define_discord_view_classes() -> None:
         ):
             if self.resolved:
                 await interaction.response.send_message(
-                    "Already answered~", ephemeral=True
+                    "すでに回答済みです", ephemeral=True
                 )
                 return
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
+                    "この操作を実行できる権限がありません", ephemeral=True
                 )
                 return
 
@@ -5252,7 +5421,7 @@ def _define_discord_view_classes() -> None:
             embed = interaction.message.embeds[0] if interaction.message.embeds else None
             if embed:
                 embed.color = color
-                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+                embed.set_footer(text=f"{label}: {interaction.user.display_name}")
 
             for child in self.children:
                 child.disabled = True
@@ -5403,7 +5572,7 @@ def _define_discord_view_classes() -> None:
         async def _on_provider_selected(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
+                    "この操作を実行できる権限がありません", ephemeral=True
                 )
                 return
 
@@ -5437,7 +5606,7 @@ def _define_discord_view_classes() -> None:
                 return
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
+                    "この操作を実行できる権限がありません", ephemeral=True
                 )
                 return
 
@@ -5474,7 +5643,7 @@ def _define_discord_view_classes() -> None:
         async def _on_back(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
+                    "この操作を実行できる権限がありません", ephemeral=True
                 )
                 return
 
@@ -5588,7 +5757,7 @@ def _define_discord_view_classes() -> None:
                 return
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized to answer this prompt~", ephemeral=True,
+                    "この確認に回答できる権限がありません", ephemeral=True,
                 )
                 return
 
@@ -5656,7 +5825,7 @@ def _define_discord_view_classes() -> None:
                 return
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized to answer this prompt~", ephemeral=True,
+                    "この確認に回答できる権限がありません", ephemeral=True,
                 )
                 return
 

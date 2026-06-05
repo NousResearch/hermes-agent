@@ -89,6 +89,40 @@ try {
 }
 
 # ============================================================================
+# 8.3 short-path normalization
+# ============================================================================
+# When the Windows user-profile folder name contains a space (e.g.
+# "First Last"), Windows generates an 8.3 short alias for it (e.g. FIRST~1.LAS)
+# and may expose %TEMP%/%TMP% in that short form:
+#   C:\Users\FIRST~1.LAS\AppData\Local\Temp
+# PowerShell's FileSystem provider mishandles the "~1.ext" component when such a
+# path is handed to a provider cmdlet like `Tee-Object -FilePath` /
+# `Out-File -FilePath`, throwing:
+#   "An object at the specified path C:\Users\FIRST~1.LAS does not exist."
+# Every Node/Electron build+install stage streams its log to %TEMP% via
+# Tee-Object, so they all abort with that error, while the Python/uv stages --
+# which never write a side log to %TEMP% through a provider cmdlet -- complete
+# fine. Expanding %TEMP%/%TMP% back to their long form once, up front, lets
+# every downstream cmdlet (and child process) see a path the provider can
+# resolve. (GH: Windows desktop installer fails at Node/Electron stages.)
+
+function ConvertTo-LongPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    # Only 8.3 short names carry a tilde+digit ("~1"); skip the COM round-trip
+    # for ordinary long paths.
+    if ($Path -notmatch '~\d') { return $Path }
+    try {
+        $fso = New-Object -ComObject Scripting.FileSystemObject
+        if ($fso.FolderExists($Path)) { return $fso.GetFolder($Path).Path }
+        if ($fso.FileExists($Path))   { return $fso.GetFile($Path).Path }
+    } catch {
+        # COM unavailable / locked-down host: fall back to the original path.
+    }
+    return $Path
+}
+
+# ============================================================================
 # Configuration
 # ============================================================================
 

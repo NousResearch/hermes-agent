@@ -8041,7 +8041,7 @@ def _update_via_zip(args):
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
         venv_dir = _resolve_venv_dir()
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_dir)} if venv_dir else os.environ
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_dir)} if venv_dir else {**os.environ}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -10569,7 +10569,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         if uv_bin:
             venv_dir = _resolve_venv_dir()
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_dir)} if venv_dir else os.environ
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_dir)} if venv_dir else {**os.environ}
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)

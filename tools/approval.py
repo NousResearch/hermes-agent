@@ -1580,6 +1580,11 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
+
+    # Permanent allowlist — respects "Always" from previous approvals.
+    if is_approved(session_key, pattern_key):
+        return {"approved": True, "message": None}
+
     # Built only now (past the early-return gates) so the common non-approval
     # paths don't pay to copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"

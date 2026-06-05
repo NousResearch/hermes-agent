@@ -394,3 +394,16 @@ def test_env_scrub_no_log_when_nothing_dropped(caplog):
             is_windows=False,
         )
     assert "dropped" not in "\n".join(r.getMessage() for r in caplog.records)
+
+
+def test_guard_permanent_allowlist_auto_approves(gw_session):
+    """When execute_code is in the permanent allowlist (user clicked "Always"),
+    check_execute_code_guard must auto-approve without prompting."""
+    A.approve_permanent("execute_code")
+    try:
+        res = A.check_execute_code_guard("import os; print(1)", "local")
+        assert res["approved"] is True
+        assert res["message"] is None
+    finally:
+        with A._lock:
+            A._permanent_approved.discard("execute_code")

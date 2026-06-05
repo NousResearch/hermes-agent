@@ -2568,6 +2568,82 @@ def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
     assert len(server._sessions["sid"]["attached_images"]) == 1
 
 
+def test_prompt_submit_attaches_image_marker_natively(monkeypatch, tmp_path):
+    """A prompt-level image marker should become native multimodal input.
+
+    Desktop/TUI clients can send text that already contains
+    ``[Image attached at: /path]`` while the session's attached_images queue is
+    empty. Vision-capable models should see that image on the first API call
+    instead of needing a vision_analyze tool round-trip.
+    """
+    img = tmp_path / "screen.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    captured = {}
+
+    class _Agent:
+        model = "MiniMax-M3"
+        provider = "minimax-cn"
+        base_url = ""
+        api_key = ""
+        api_mode = "anthropic_messages"
+
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            captured["prompt"] = prompt
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    import agent.auxiliary_client as aux_client
+    import agent.image_routing as image_routing
+    import hermes_cli.config as config
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(aux_client, "_read_main_provider", lambda: "minimax-cn")
+    monkeypatch.setattr(aux_client, "_read_main_model", lambda: "MiniMax-M3")
+    monkeypatch.setattr(config, "load_config", lambda: {})
+    monkeypatch.setattr(
+        image_routing, "decide_image_input_mode", lambda *args, **kwargs: "native"
+    )
+
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": (
+                        "[1 image] What do you see in this image?\n\n"
+                        f"[Image attached at: {img}]"
+                    ),
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    prompt = captured["prompt"]
+    assert isinstance(prompt, list)
+    assert prompt[0]["type"] == "text"
+    assert f"[Image attached at: {img}]" in prompt[0]["text"]
+    assert prompt[1]["type"] == "image_url"
+    assert prompt[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
 def test_commands_catalog_surfaces_quick_commands(monkeypatch):
     monkeypatch.setattr(
         server,

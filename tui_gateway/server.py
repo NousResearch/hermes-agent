@@ -4402,6 +4402,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             cols = session.get("cols", 80)
             streamer = make_stream_renderer(cols)
             prompt = text
+            run_images = list(images)
 
             if isinstance(prompt, str) and "@" in prompt:
                 from agent.context_references import preprocess_context_references
@@ -4440,7 +4441,20 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # "text"   → pre-analyze with vision_analyze and prepend the text.
             # See agent/image_routing.py for the full decision table.
             run_message: Any = prompt
-            if images:
+            image_urls: list[str] = []
+            if not run_images and isinstance(prompt, str):
+                try:
+                    from agent.image_routing import extract_image_refs
+
+                    _prompt_image_paths, _prompt_image_urls = extract_image_refs(prompt)
+                    run_images = list(_prompt_image_paths)
+                    image_urls = list(_prompt_image_urls)
+                except Exception as _img_ref_exc:
+                    print(
+                        f"[tui_gateway] image reference extraction failed: {_img_ref_exc}",
+                        file=sys.stderr,
+                    )
+            if run_images or image_urls:
                 try:
                     from agent.image_routing import (
                         decide_image_input_mode,
@@ -4471,7 +4485,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     try:
                         _parts, _skipped = build_native_content_parts(
                             prompt,
-                            images,
+                            run_images,
+                            image_urls=image_urls or None,
                         )
                         if _skipped:
                             print(
@@ -4481,15 +4496,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         if any(p.get("type") == "image_url" for p in _parts):
                             run_message = _parts
                         else:
-                            run_message = _enrich_with_attached_images(prompt, images)
+                            run_message = _enrich_with_attached_images(prompt, run_images)
                     except Exception as _img_exc:
                         print(
                             f"[tui_gateway] native attach failed, falling back to text: {_img_exc}",
                             file=sys.stderr,
                         )
-                        run_message = _enrich_with_attached_images(prompt, images)
+                        run_message = _enrich_with_attached_images(prompt, run_images)
                 else:
-                    run_message = _enrich_with_attached_images(prompt, images)
+                    run_message = _enrich_with_attached_images(prompt, run_images)
 
             def _stream(delta):
                 with session["history_lock"]:

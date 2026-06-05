@@ -1614,6 +1614,13 @@ class WeComAdapter(BasePlatformAdapter):
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
 
+        # Mark delivered BEFORE any await so _keep_typing cannot race and open
+        # an orphan stream while send() is blocked awaiting the WS reply.
+        # The mark is set synchronously here; if send fails it's still set
+        # (conservative: better to suppress an extra typing than to leak one).
+        _chat_key = str(chat_id).strip()
+        self._stream_delivered_chats.add(_chat_key)
+
         try:
             # If we have an active stream for this chat, finalize it with the
             # content — this closes the typing animation and delivers the text
@@ -1626,6 +1633,7 @@ class WeComAdapter(BasePlatformAdapter):
                 self._active_stream_id is not None
                 and self._active_stream_chat_id == chat_id.strip()
             ):
+                logger.info("[%s] send(): closing active stream %s for chat %s", self.name, self._active_stream_id, chat_id)
                 finish_content = content.strip() if content else ""
                 if not finish_content:
                     finish_content = "✅"  # minimal visible char to close typing
@@ -1909,24 +1917,19 @@ class WeComAdapter(BasePlatformAdapter):
         if not chat:
             return
         if self._active_stream_id is not None:
-            # Already streaming — typing indicator is already showing.
+            logger.info("[%s] send_typing: skip (stream %s already active)", self.name, self._active_stream_id)
             return
         if chat in self._stream_expired_chats:
+            logger.info("[%s] send_typing: skip (chat %s expired)", self.name, chat)
             return
-        # Guard: once send() has already finalized the stream for this chat
-        # (within the same turn), don't re-open a new one. _keep_typing can
-        # race with send() and fire send_typing *after* the reply was
-        # already delivered — the resulting orphan stream would never get
-        # closed because no further send() call comes in this turn.
         if chat in self._stream_delivered_chats:
+            logger.info("[%s] send_typing: skip (chat %s already delivered)", self.name, chat)
             return
+        logger.info("[%s] send_typing: opening stream for chat %s", self.name, chat)
         try:
             await self.send_stream_frame("", chat_id=chat)
         except Exception as exc:
-            # Best-effort — typing failure must not propagate to the caller.
-            logger.debug(
-                "[%s] send_typing best-effort failed: %s", self.name, exc,
-            )
+            logger.info("[%s] send_typing failed: %s", self.name, exc)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return minimal chat info."""

@@ -3385,6 +3385,7 @@ def _write_platform_enabled(platform_id: str, enabled: bool) -> None:
 
 
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
+_TELEGRAM_ONBOARDING_USER_AGENT = f"HermesDashboard/{__version__}"
 _TELEGRAM_USER_ID_RE = re.compile(r"^\d+$")
 
 
@@ -3457,27 +3458,32 @@ def _telegram_onboarding_request_sync(
     body: dict[str, Any] | None = None,
     bearer_token: str | None = None,
 ) -> dict[str, Any]:
-    data = None
-    headers = {"Accept": "application/json"}
+    import httpx
+
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": _TELEGRAM_ONBOARDING_USER_AGENT,
+    }
+    request_kwargs: dict[str, Any] = {}
     if body is not None:
-        data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
+        request_kwargs["json"] = body
     if bearer_token:
         headers["Authorization"] = f"Bearer {bearer_token}"
 
-    request = urllib.request.Request(
-        f"{_telegram_onboarding_base_url()}{path}",
-        data=data,
-        headers=headers,
-        method=method,
-    )
+    url = f"{_telegram_onboarding_base_url()}{path}"
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            payload = response.read()
-    except urllib.error.HTTPError as exc:
-        payload = exc.read()
+        with httpx.Client(timeout=httpx.Timeout(10.0)) as client:
+            response = client.request(
+                method,
+                url,
+                headers=headers,
+                **request_kwargs,
+            )
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
         try:
-            parsed = json.loads(payload.decode("utf-8"))
+            parsed = exc.response.json()
         except Exception:
             parsed = {}
         error = str(parsed.get("error") or parsed.get("status") or "")
@@ -3485,18 +3491,18 @@ def _telegram_onboarding_request_sync(
             error,
             "Telegram setup service returned an error.",
         )
-        status_code = 404 if exc.code == 404 else 502
+        status_code = 404 if exc.response.status_code == 404 else 502
         if error in {"expired", "claimed"}:
             status_code = 410
         raise HTTPException(status_code=status_code, detail=detail) from exc
-    except Exception as exc:
+    except httpx.RequestError as exc:
         raise HTTPException(
             status_code=502,
             detail="Telegram setup service is unavailable. Try again shortly.",
         ) from exc
 
     try:
-        parsed = json.loads(payload.decode("utf-8"))
+        parsed = response.json()
     except Exception as exc:
         raise HTTPException(
             status_code=502,

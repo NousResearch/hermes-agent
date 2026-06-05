@@ -64,6 +64,29 @@ from utils import base_url_host_matches, env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+def _system_prompt_header_value(system_prompt: str, label: str) -> Optional[str]:
+    prefix = f"{label}:"
+    for line in reversed(system_prompt.splitlines()):
+        if line.startswith(prefix):
+            return line[len(prefix):].strip() or None
+    return None
+
+
+def _stored_system_prompt_matches_runtime(agent: Any, system_prompt: str) -> bool:
+    """Return False when a stored prompt advertises a stale runtime header."""
+    checks = (
+        ("Model", getattr(agent, "model", "") or ""),
+        ("Provider", getattr(agent, "provider", "") or ""),
+    )
+    for label, current in checks:
+        stored = _system_prompt_header_value(system_prompt, label)
+        if stored is None:
+            continue
+        if stored != str(current).strip():
+            return False
+    return True
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -233,6 +256,10 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
       * ``empty``  — row exists, ``system_prompt`` column is the empty
         string.  Indicates a previous-turn write that ran but stored
         nothing (silent persistence bug).  Always warns.
+      * ``stale_runtime_header`` — row exists with a prompt whose saved
+        ``Model:`` or ``Provider:`` header no longer matches the live agent
+        runtime. Warns and rebuilds once so resumed sessions do not
+        advertise the wrong serving model.
       * ``present`` — row exists with a usable prompt → reused verbatim.
 
     Read or write failures against the session DB log at WARNING (not
@@ -256,6 +283,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 else:
                     stored_prompt = raw_prompt
                     stored_state = "present"
+                    if not _stored_system_prompt_matches_runtime(agent, stored_prompt):
+                        stored_prompt = None
+                        stored_state = "stale_runtime_header"
         except Exception as exc:
             logger.warning(
                 "Session DB get_session failed for system-prompt restore "
@@ -281,6 +311,13 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             "the rebuild persists. Investigate the previous turn's "
             "update_system_prompt write path.",
             agent.session_id, stored_state,
+        )
+    elif conversation_history and stored_state == "stale_runtime_header":
+        logger.warning(
+            "Stored system prompt for session %s has a stale model/provider "
+            "header; rebuilding from scratch this turn so the prompt matches "
+            "the active runtime. Prefix cache will miss for this turn.",
+            agent.session_id,
         )
 
     # First turn of a new session (or recovering from a broken stored

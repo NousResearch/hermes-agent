@@ -29,6 +29,7 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent._cached_system_prompt = None
     agent.session_id = "test-session-id"
     agent.model = "test-model"
+    agent.provider = "test-provider"
     agent.platform = "cli"
     agent._session_db = session_db
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
@@ -56,6 +57,24 @@ class TestStoredPromptReuse:
         db.update_system_prompt.assert_not_called()
         # No warnings on the happy path
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_present_row_with_matching_runtime_header_is_reused(self):
+        """A current Model/Provider header does not break prompt reuse."""
+        stored = (
+            "You are Hermes Agent.\n\n"
+            "Conversation started: Friday, June 05, 2026\n"
+            "Model: test-model\n"
+            "Provider: test-provider"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+        db.update_system_prompt.assert_not_called()
 
     def test_present_row_with_unicode_preserved(self):
         """Non-ASCII bytes in the stored prompt are not mangled."""
@@ -170,6 +189,44 @@ class TestSilentFailureWarnings:
             "update_system_prompt failed" in m and "database is locked" in m
             for m in warnings
         ), f"Expected write-failure warning, got: {warnings}"
+
+    @pytest.mark.parametrize(
+        "stored_prompt",
+        [
+            (
+                "You are Hermes Agent.\n\n"
+                "Conversation started: Friday, June 05, 2026\n"
+                "Model: old-model\n"
+                "Provider: test-provider"
+            ),
+            (
+                "You are Hermes Agent.\n\n"
+                "Conversation started: Friday, June 05, 2026\n"
+                "Model: test-model\n"
+                "Provider: old-provider"
+            ),
+        ],
+    )
+    def test_stale_runtime_header_rebuilds_and_persists(self, stored_prompt, caplog):
+        """A stored prompt with stale Model/Provider lines must not be reused."""
+        rebuilt = (
+            "You are Hermes Agent.\n\n"
+            "Conversation started: Friday, June 05, 2026\n"
+            "Model: test-model\n"
+            "Provider: test-provider"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored_prompt}
+        agent = _make_agent(session_db=db, prebuilt_prompt=rebuilt)
+
+        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == rebuilt
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.update_system_prompt.assert_called_once_with(agent.session_id, rebuilt)
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("stale model/provider header" in m for m in warnings)
 
     def test_no_history_with_null_row_does_not_warn(self, caplog):
         """First turn (no history) hitting a null row is not surprising — no warn."""

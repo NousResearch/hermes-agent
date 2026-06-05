@@ -429,7 +429,9 @@ API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 When CORS is enabled:
 - **Preflight responses** include `Access-Control-Max-Age: 600` (10 minute cache)
 - **SSE streaming responses** include CORS headers so browser EventSource clients work correctly
+- **Allowed methods** are `GET, POST, PATCH, DELETE, OPTIONS` — `PATCH` covers the `PATCH /api/sessions/{id}` and `PATCH /api/jobs/{id}` endpoints
 - **`Idempotency-Key`** is an allowed request header — clients can send it for deduplication (responses are cached by key for 5 minutes)
+- **`X-Hermes-Session-Id`** and **`X-Hermes-Session-Key`** are allowed request headers and exposed on responses (`Access-Control-Expose-Headers`), so browser JS can both send them and read the echoed values
 
 Most documented frontends such as Open WebUI connect server-to-server and do not need CORS at all.
 

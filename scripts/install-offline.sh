@@ -204,14 +204,25 @@ ok "源码已解压到 $INSTALL_DIR"
 step "7/10 创建 Python 虚拟环境"
 
 cd "$INSTALL_DIR"
-UV_PYTHON="$VENV_DIR/bin/python"
-uv venv venv --python "$PYTHON_VERSION"
+
+# 禁止 uv 自动下载 Python，使用系统已安装的版本
+export UV_PYTHON_DOWNLOADS=never
+
+# 找到系统 Python 完整路径
+SYSTEM_PYTHON=$(command -v "$PYTHON_BIN")
+sub "使用系统 Python: $SYSTEM_PYTHON"
+
+uv venv venv --python "$SYSTEM_PYTHON"
 export VIRTUAL_ENV="$INSTALL_DIR"
-export UV_PYTHON
+export UV_PYTHON="$VENV_DIR/bin/python"
 ok "虚拟环境已创建: $VENV_DIR"
 
 # ── 8. 安装 Python 依赖 ─────────────────────────────────────────────────────
 step "8/10 安装 Python 依赖 (离线模式)"
+
+# 确保 uv 不会尝试联网下载任何东西
+export UV_PYTHON_DOWNLOADS=never
+export UV_NO_SYNC=1
 
 WHEEL_DIR="$SCRIPT_DIR/python-wheels"
 if [[ ! -d "$WHEEL_DIR" ]] || [[ -z "$(ls "$WHEEL_DIR"/*.whl 2>/dev/null)" ]]; then

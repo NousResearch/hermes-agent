@@ -241,7 +241,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'memory.provider': ['', 'builtin', 'honcho'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
-  'tts.openai.voice': ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']
+  'tts.openai.voice': ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
+  'updates.non_interactive_local_changes': ['stash', 'discard']
 }
 
 export const FIELD_LABELS: Record<string, string> = {
@@ -309,7 +310,8 @@ export const FIELD_LABELS: Record<string, string> = {
   'delegation.max_iterations': 'Subagent Turn Limit',
   'delegation.max_concurrent_children': 'Parallel Subagents',
   'delegation.child_timeout_seconds': 'Subagent Timeout',
-  'delegation.reasoning_effort': 'Subagent Reasoning Effort'
+  'delegation.reasoning_effort': 'Subagent Reasoning Effort',
+  'updates.non_interactive_local_changes': 'In-App Update Local Changes'
 }
 
 export const FIELD_DESCRIPTIONS: Record<string, string> = {
@@ -336,7 +338,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = {
   'voice.auto_tts': 'Automatically speak assistant responses.',
   'stt.enabled': 'Enable local or provider-backed speech transcription.',
   'stt.elevenlabs.language_code': 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.',
-  'agent.max_turns': 'Upper bound for tool-calling turns before Hermes stops a run.'
+  'agent.max_turns': 'Upper bound for tool-calling turns before Hermes stops a run.',
+  'updates.non_interactive_local_changes':
+    'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.'
 }
 
 // Curated desktop config surface: only fields a user might tune from the app.
@@ -449,7 +453,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'delegation.max_iterations',
       'delegation.max_concurrent_children',
       'delegation.child_timeout_seconds',
-      'delegation.reasoning_effort'
+      'delegation.reasoning_effort',
+      'updates.non_interactive_local_changes'
     ]
   }
 ]

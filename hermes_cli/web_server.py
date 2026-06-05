@@ -439,6 +439,16 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Reasoning effort for delegated subagents",
         "options": ["", "low", "medium", "high"],
     },
+    "updates.non_interactive_local_changes": {
+        "type": "select",
+        "description": (
+            "When the chat app / gateway updates Hermes (no terminal prompt), "
+            "what to do with uncommitted local source edits. 'stash' keeps them "
+            "and re-applies them after the update; 'discard' throws them away. "
+            "Terminal updates always ask, regardless of this setting."
+        ),
+        "options": ["stash", "discard"],
+    },
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
@@ -455,6 +465,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "code_execution": "agent",
     "prompt_caching": "agent",
     "goals": "agent",
+    "updates": "general",
     # Only `telegram.reactions` currently lives under telegram — fold it in
     # with the other messaging-platform config (discord) so it isn't an
     # orphan tab of one field.

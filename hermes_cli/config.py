@@ -2275,6 +2275,22 @@ DEFAULT_CONFIG = {
         # disable backups entirely, set ``pre_update_backup: false`` above
         # rather than ``backup_keep: 0``.
         "backup_keep": 5,
+        # What `hermes update` does with uncommitted local changes to the
+        # source tree when it runs NON-interactively — i.e. triggered from
+        # the desktop/chat app or the gateway, where there's no TTY to answer
+        # a restore prompt. Interactive (terminal) updates are unaffected:
+        # they always stash the changes and ask whether to restore, exactly
+        # as they always have.
+        #   "stash"   — auto-stash the changes, pull, then auto-restore them
+        #               on top of the updated code (the safe default; nothing
+        #               is ever lost — conflicts are preserved in a git stash).
+        #   "discard" — auto-stash the changes and throw the stash away after
+        #               the pull. Use this only if you never intend to keep
+        #               local edits to the source tree on this machine.
+        #               Stash-and-drop (not `reset --hard` + `clean -fd`) so
+        #               ignored paths — node_modules, venv, build outputs —
+        #               are never touched.
+        "non_interactive_local_changes": "stash",
     },
 
     # Language Server Protocol — semantic diagnostics from real
@@ -2404,7 +2420,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 26,
+    "_config_version": 27,
 }
 
 # =============================================================================
@@ -3959,7 +3975,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming",
+    "sessions", "streaming", "updates",
 }
 
 # Valid fields inside a custom_providers list entry

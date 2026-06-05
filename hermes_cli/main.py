@@ -8148,59 +8148,6 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     return stash_ref
 
 
-def _clean_managed_worktree(git_cmd: list[str], cwd: Path) -> bool:
-    """Discard working-tree dirt on an explicitly managed checkout.
-
-    On a Desktop/bootstrap-managed install the user never edits the source
-    tree, so any "dirty" state is pure git artifact: CRLF renormalization, npm
-    lockfile churn, or files left behind when a directory was deleted upstream
-    (e.g. apps/bootstrap-installer/). Stashing that dirt and re-applying it
-    after a pull is actively dangerous — the stash/restore cycle has been
-    observed to clobber freshly-pulled source files (apps/desktop/ deletion →
-    "[UNRESOLVED_ENTRY] Cannot resolve entry module index.html").
-
-    For an explicitly managed checkout the correct move is to throw the dirt
-    away with ``git reset --hard HEAD`` + ``git clean -fd`` (mirroring
-    install.ps1's update path), NOT preserve it. Ordinary source checkouts,
-    including upstream-origin checkouts, keep the stash machinery because
-    their local edits may be intentional.
-
-    Returns True if the tree was cleaned (or was already clean), False on
-    a git failure (caller should fall back to the stash path).
-    """
-    status = subprocess.run(
-        git_cmd + ["status", "--porcelain"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
-    if status.returncode != 0:
-        return False
-    if not status.stdout.strip():
-        return True
-
-    print("→ Discarding working-tree changes on managed clone before update...")
-    reset = subprocess.run(
-        git_cmd + ["reset", "--hard", "HEAD"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
-    if reset.returncode != 0:
-        return False
-    # Drop untracked files too (e.g. orphaned build artifacts), but never
-    # touch ignored paths — node_modules, venv, build outputs, and the like
-    # are expensive to rebuild and not git-artifact dirt.
-    subprocess.run(
-        git_cmd + ["clean", "-fd"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
-    return True
-
-
-
 def _resolve_stash_selector(
     git_cmd: list[str], cwd: Path, stash_ref: str
 ) -> Optional[str]:
@@ -8341,6 +8288,54 @@ def _restore_stashed_changes(
     return True
 
 
+def _discard_stashed_changes(
+    git_cmd: list[str],
+    cwd: Path,
+    stash_ref: str,
+) -> bool:
+    """Throw away a stash created before an update, without applying it.
+
+    Used only on a NON-interactive update when the user has set
+    ``updates.non_interactive_local_changes: discard`` — i.e. they've opted out
+    of keeping local source edits on this machine. Drops the stash entry
+    instead of re-applying it, so the working tree stays clean at the freshly
+    pulled HEAD. Unlike ``git reset --hard`` + ``git clean -fd``, this only
+    affects what was stashed (tracked changes + the untracked files we
+    explicitly captured) — ignored paths like node_modules/venv/build outputs
+    are never touched, since they were never stashed.
+
+    Returns True if the stash was dropped, False on a git failure (in which
+    case the stash is left in place for safety).
+    """
+    stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
+    if stash_selector is None:
+        print(
+            "⚠ Configured to discard local changes on non-interactive update, "
+            "but Hermes couldn't find the stash entry to drop."
+        )
+        _print_stash_cleanup_guidance(stash_ref)
+        return False
+
+    drop = subprocess.run(
+        git_cmd + ["stash", "drop", stash_selector],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if drop.returncode != 0:
+        print(
+            "⚠ Configured to discard local changes, but Hermes couldn't drop "
+            "the saved stash entry."
+        )
+        if drop.stderr.strip():
+            print(f"  {drop.stderr.strip().splitlines()[0]}")
+        _print_stash_cleanup_guidance(stash_ref, stash_selector)
+        return False
+
+    print("→ Discarded local source changes (updates.non_interactive_local_changes=discard).")
+    return True
+
+
 # =========================================================================
 # Fork detection and upstream management for `hermes update`
 # =========================================================================
@@ -8353,7 +8348,6 @@ OFFICIAL_REPO_URLS = {
 }
 OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
-MANAGED_CHECKOUT_MARKERS = (".hermes-bootstrap-complete",)
 
 
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -8387,19 +8381,6 @@ def _is_fork(origin_url: Optional[str]) -> bool:
         if normalized == official_normalized:
             return False
     return True
-
-
-def _is_managed_update_checkout(origin_url: Optional[str], cwd: Path) -> bool:
-    """Return True when this official checkout is safe to clean destructively.
-
-    The destructive clean path is only safe for checkouts Hermes explicitly
-    owns. An official ``origin`` alone is not enough proof: contributors can
-    also work from upstream-origin source checkouts with intentional local
-    files.
-    """
-    if not origin_url or _is_fork(origin_url):
-        return False
-    return any((cwd / marker).is_file() for marker in MANAGED_CHECKOUT_MARKERS)
 
 
 def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
@@ -10156,6 +10137,30 @@ def _cmd_update_impl(args, gateway_mode: bool):
     )
     assume_yes = bool(getattr(args, "yes", False))
 
+    # Whether this update is running without a human at the keyboard.
+    # Interactive terminal updates always stash-and-ask (unchanged behavior);
+    # only non-interactive updates (desktop/chat app, gateway, `--yes`) consult
+    # the `updates.non_interactive_local_changes` config setting to decide
+    # whether to auto-restore stashed local source changes or throw them away.
+    _non_interactive_update = (
+        gateway_mode
+        or assume_yes
+        or not (sys.stdin.isatty() and sys.stdout.isatty())
+    )
+    discard_local_changes = False
+    if _non_interactive_update:
+        try:
+            from hermes_cli.config import load_config
+
+            _update_cfg = (load_config() or {}).get("updates", {})
+            if isinstance(_update_cfg, dict):
+                _mode = str(_update_cfg.get("non_interactive_local_changes", "stash")).lower()
+                discard_local_changes = _mode == "discard"
+        except Exception as exc:
+            # Never let a config read failure change the safe default.
+            logger.debug("Could not read updates.non_interactive_local_changes: %s", exc)
+            discard_local_changes = False
+
     print("⚕ Updating Hermes Agent...")
     print()
 
@@ -10217,21 +10222,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # On Windows, Git-for-Windows defaults to core.autocrlf=true, which
-    # renormalizes the repo's LF-only text files to CRLF in the working tree.
-    # On a managed, never-user-edited clone that makes tracked files read as
-    # "locally modified", which forces an autostash on every update (and the
-    # stash/restore cycle can clobber source files — see _stash_local_changes_
-    # if_needed below). Pin autocrlf=false so the dirt is never created. This
-    # mirrors what install.ps1's update path already does (PR #38239).
-    if sys.platform == "win32" and git_dir.exists():
-        subprocess.run(
-            git_cmd + ["config", "core.autocrlf", "false"],
-            cwd=PROJECT_ROOT,
-            check=False,
-            capture_output=True,
-        )
-
     # Discard npm lockfile churn before any stash/branch logic. npm rewrites
     # tracked package-lock.json files non-deterministically at install/build
     # time (platform-specific optional deps, ideallyInert annotations, etc.),
@@ -10241,12 +10231,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # lockfile churn) update with a clean tree.
     _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
 
-    # Detect if we're updating from a fork, and whether this official-origin
-    # checkout has an explicit Hermes-owned marker that makes destructive
-    # worktree cleanup safe.
+    # Detect if we're updating from a fork (before any branch logic)
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
-    is_managed_checkout = _is_managed_update_checkout(origin_url, PROJECT_ROOT)
 
     if is_fork:
         print("⚠ Updating from fork:")
@@ -10312,15 +10299,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 else f"branch '{current_branch}'"
             )
             print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
-            # Stash before checkout so uncommitted work isn't lost — but on an
-            # explicitly managed checkout there's nothing to preserve, so
-            # discard git-artifact dirt instead (a dirty tree would otherwise
-            # block the checkout). Other checkouts keep the stash so their
-            # edits survive.
-            if is_managed_checkout and _clean_managed_worktree(git_cmd, PROJECT_ROOT):
-                auto_stash_ref = None
-            else:
-                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            # Stash before checkout so uncommitted work isn't lost
+            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
             checkout_result = subprocess.run(
                 git_cmd + ["checkout", branch],
                 cwd=PROJECT_ROOT,
@@ -10354,17 +10334,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         print(f"  {track_result.stderr.strip().splitlines()[0]}")
                     sys.exit(1)
         else:
-            # On an explicitly managed checkout the user never edits the
-            # source tree, so any dirt is git artifact (CRLF, lockfile churn,
-            # upstream-deleted dirs). Throw it away rather than stash/restore
-            # it — the stash/restore cycle has clobbered freshly-pulled source
-            # (apps/desktop/ → "[UNRESOLVED_ENTRY] index.html"). Other
-            # checkouts fall through to the stash path so their intentional
-            # edits survive.
-            if is_managed_checkout and _clean_managed_worktree(git_cmd, PROJECT_ROOT):
-                auto_stash_ref = None
-            else:
-                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
         prompt_for_restore = (
             auto_stash_ref is not None
@@ -10516,6 +10486,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
                     )
                     print(f"  Restore manually with: git stash apply")
+                elif discard_local_changes:
+                    # Non-interactive update + user opted into discarding local
+                    # source edits (updates.non_interactive_local_changes:
+                    # discard). Throw the stash away instead of re-applying it.
+                    _discard_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                    )
                 else:
                     _restore_stashed_changes(
                         git_cmd,

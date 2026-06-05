@@ -1,6 +1,8 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
+import sqlite3
+from typing import Any, cast
 import pytest
 from unittest.mock import MagicMock
 
@@ -430,6 +432,74 @@ class TestPluginMemoryDiscovery:
         """load_memory_provider returns None for unknown names."""
         from plugins.memory import load_memory_provider
         assert load_memory_provider("nonexistent_provider") is None
+
+    def test_holographic_store_sets_explicit_busy_timeout(self, tmp_path):
+        """Holographic SQLite connections wait for writer locks before failing."""
+        from plugins.memory.holographic.store import MemoryStore
+
+        store = MemoryStore(tmp_path / "memory_store.db")
+
+        assert store._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 60000
+
+    def test_holographic_fact_store_retries_locked_database(self, monkeypatch):
+        """fact_store rolls back and retries transient SQLite writer locks."""
+        from plugins.memory.holographic import HolographicMemoryProvider
+        import plugins.memory.holographic as holographic
+
+        class LockedThenOkStore:
+            def __init__(self):
+                self.calls = 0
+                self.rollbacks = 0
+
+            def add_fact(self, *_args, **_kwargs):
+                self.calls += 1
+                if self.calls < 3:
+                    raise sqlite3.OperationalError("database is locked")
+                return 42
+
+            def rollback(self):
+                self.rollbacks += 1
+
+        monkeypatch.setattr(holographic.time, "sleep", lambda _seconds: None)
+        provider = HolographicMemoryProvider(config={})
+        store = LockedThenOkStore()
+        cast(Any, provider)._store = store
+
+        result = json.loads(provider.handle_tool_call("fact_store", {"action": "add", "content": "retry me"}))
+
+        assert result == {"fact_id": 42, "status": "added"}
+        assert store.calls == 3
+        assert store.rollbacks == 2
+
+    def test_holographic_fact_feedback_retries_locked_database(self, monkeypatch):
+        """fact_feedback uses the same lock retry path as fact_store writes."""
+        from plugins.memory.holographic import HolographicMemoryProvider
+        import plugins.memory.holographic as holographic
+
+        class LockedThenOkStore:
+            def __init__(self):
+                self.calls = 0
+                self.rollbacks = 0
+
+            def record_feedback(self, *_args, **_kwargs):
+                self.calls += 1
+                if self.calls < 2:
+                    raise sqlite3.OperationalError("database is locked")
+                return {"fact_id": 42, "helpful_count": 1}
+
+            def rollback(self):
+                self.rollbacks += 1
+
+        monkeypatch.setattr(holographic.time, "sleep", lambda _seconds: None)
+        provider = HolographicMemoryProvider(config={})
+        store = LockedThenOkStore()
+        cast(Any, provider)._store = store
+
+        result = json.loads(provider.handle_tool_call("fact_feedback", {"action": "helpful", "fact_id": 42}))
+
+        assert result == {"fact_id": 42, "helpful_count": 1}
+        assert store.calls == 2
+        assert store.rollbacks == 1
 
 
 class TestUserInstalledProviderDiscovery:

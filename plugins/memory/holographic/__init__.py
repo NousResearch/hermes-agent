@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
@@ -341,7 +342,21 @@ class HolographicMemoryProvider(MemoryProvider):
         except KeyError as exc:
             return tool_error(f"Missing required argument: {exc}")
         except Exception as exc:
-            return tool_error(str(exc))
+            message = str(exc)
+            if "database is locked" in message.lower():
+                retry = int(args.get("_lock_retry", 0))
+                if retry < 5:
+                    try:
+                        current_store = getattr(self, "_store", None)
+                        if current_store is not None:
+                            current_store.rollback()
+                    except Exception:
+                        pass
+                    time.sleep(min(0.5 * (2 ** retry), 5.0))
+                    retry_args = dict(args)
+                    retry_args["_lock_retry"] = retry + 1
+                    return self._handle_fact_store(retry_args)
+            return tool_error(message)
 
     def _handle_fact_feedback(self, args: dict) -> str:
         try:
@@ -352,7 +367,21 @@ class HolographicMemoryProvider(MemoryProvider):
         except KeyError as exc:
             return tool_error(f"Missing required argument: {exc}")
         except Exception as exc:
-            return tool_error(str(exc))
+            message = str(exc)
+            if "database is locked" in message.lower():
+                retry = int(args.get("_lock_retry", 0))
+                if retry < 5:
+                    try:
+                        current_store = getattr(self, "_store", None)
+                        if current_store is not None:
+                            current_store.rollback()
+                    except Exception:
+                        pass
+                    time.sleep(min(0.5 * (2 ** retry), 5.0))
+                    retry_args = dict(args)
+                    retry_args["_lock_retry"] = retry + 1
+                    return self._handle_fact_feedback(retry_args)
+            return tool_error(message)
 
     # -- Auto-extraction (on_session_end) ------------------------------------
 

@@ -115,11 +115,23 @@ class MemoryStore:
         self._conn: sqlite3.Connection = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
-            timeout=10.0,
+            timeout=60.0,
         )
         self._lock = threading.RLock()
         self._conn.row_factory = sqlite3.Row
+        # Make cross-process writer contention wait instead of failing fast.
+        # The sqlite3 connect timeout is not always reflected on reused
+        # connections, so set the pragma explicitly as well.
+        self._conn.execute("PRAGMA busy_timeout = 60000")
         self._init_db()
+
+    def rollback(self) -> None:
+        """Rollback any pending transaction after an interrupted/locked write."""
+        with self._lock:
+            try:
+                self._conn.rollback()
+            except sqlite3.Error:
+                pass
 
     # ------------------------------------------------------------------
     # Initialisation

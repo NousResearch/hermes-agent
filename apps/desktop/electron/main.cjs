@@ -1073,6 +1073,16 @@ function findGitBash() {
     candidates.push(path.join(localAppData, 'hermes', 'git', 'usr', 'bin', 'bash.exe'))
   }
 
+  // Try locating relative to git.exe on PATH (covers custom installation paths)
+  const gitPath = findOnPath('git')
+  if (gitPath) {
+    const gitDir = path.dirname(gitPath)
+    candidates.push(path.join(gitDir, '..', 'bin', 'bash.exe'))
+    candidates.push(path.join(gitDir, '..', 'usr', 'bin', 'bash.exe'))
+    candidates.push(path.join(gitDir, 'bin', 'bash.exe'))
+    candidates.push(path.join(gitDir, 'usr', 'bin', 'bash.exe'))
+  }
+
   // Standard Git for Windows install locations.
   candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'))
   candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'))

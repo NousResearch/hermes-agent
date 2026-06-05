@@ -273,6 +273,18 @@ def _find_bash() -> str:
     if found:
         return found
 
+    git_path = shutil.which("git")
+    if git_path:
+        git_dir = os.path.dirname(git_path)
+        for candidate in (
+            os.path.join(git_dir, "..", "bin", "bash.exe"),
+            os.path.join(git_dir, "..", "usr", "bin", "bash.exe"),
+            os.path.join(git_dir, "bin", "bash.exe"),
+            os.path.join(git_dir, "usr", "bin", "bash.exe"),
+        ):
+            if os.path.isfile(candidate):
+                return candidate
+
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),

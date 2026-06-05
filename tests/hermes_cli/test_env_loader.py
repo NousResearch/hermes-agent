@@ -1,7 +1,9 @@
 import importlib
 import os
 import sys
+from pathlib import Path
 
+import hermes_constants
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
@@ -84,6 +86,51 @@ def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
     assert loaded == [env_file]
     assert os.getenv("GLM_API_KEY") == "abc"
     assert os.getenv("OPENAI_API_KEY") == "sk-123"
+
+
+def test_no_hermes_home_falls_back_to_localappdata_on_windows(tmp_path, monkeypatch):
+    """Parameterless load on native Windows reads %LOCALAPPDATA%\\hermes\\.env.
+
+    Regression for the fallback that hardcoded ``Path.home() / ".hermes"`` and
+    so missed the keys ``install.ps1`` writes under ``%LOCALAPPDATA%\\hermes``.
+    """
+    local_appdata = tmp_path / "LocalAppData"
+    win_home = local_appdata / "hermes"
+    win_home.mkdir(parents=True)
+    (win_home / ".env").write_text("WIN_ENV_MARKER=from-localappdata\n", encoding="utf-8")
+    # A ~/.hermes/.env that must be IGNORED on native Windows.
+    legacy_home = tmp_path / "Home" / ".hermes"
+    legacy_home.mkdir(parents=True)
+    (legacy_home / ".env").write_text("WIN_ENV_MARKER=from-userprofile\n", encoding="utf-8")
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("WIN_ENV_MARKER", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
+    monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+
+    loaded = load_hermes_dotenv()
+
+    assert loaded == [win_home / ".env"]
+    assert os.getenv("WIN_ENV_MARKER") == "from-localappdata"
+
+
+def test_no_hermes_home_falls_back_to_dot_hermes_on_posix(tmp_path, monkeypatch):
+    """Parameterless load on POSIX still resolves to ~/.hermes/.env."""
+    home = tmp_path / "Home"
+    posix_home = home / ".hermes"
+    posix_home.mkdir(parents=True)
+    (posix_home / ".env").write_text("POSIX_ENV_MARKER=from-dot-hermes\n", encoding="utf-8")
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("POSIX_ENV_MARKER", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(hermes_constants.sys, "platform", "linux")
+
+    loaded = load_hermes_dotenv()
+
+    assert loaded == [posix_home / ".env"]
+    assert os.getenv("POSIX_ENV_MARKER") == "from-dot-hermes"
 
 
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):

@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+from hermes_constants import get_hermes_home
 from utils import atomic_replace
 
 
@@ -216,15 +217,20 @@ def load_hermes_dotenv(
 ) -> list[Path]:
     """Load Hermes environment files with user config taking precedence.
 
+    When ``hermes_home`` is not passed, the user env directory is resolved via
+    :func:`hermes_constants.get_hermes_home`, so native Windows installs read
+    ``%LOCALAPPDATA%\\hermes\\.env`` instead of ``~/.hermes/.env`` (where
+    ``install.ps1`` never writes keys).
+
     Behavior:
-    - `~/.hermes/.env` overrides stale shell-exported values when present.
+    - the user `.env` overrides stale shell-exported values when present.
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
     """
     loaded: list[Path] = []
 
-    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    home_path = Path(hermes_home) if hermes_home else get_hermes_home()
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
+  appendReasoningPart,
   chatMessageText,
   preserveLocalAssistantErrors,
   renderMediaTags,
@@ -140,6 +141,19 @@ describe('renderMediaTags', () => {
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
+  })
+})
+
+describe('appendReasoningPart', () => {
+  it('continues the previous reasoning block across an intervening tool call', () => {
+    const first = appendReasoningPart([], 'I should inspect ')
+    const withTool = upsertToolPart(first, { name: 'terminal', tool_id: 'tool-1' }, 'running')
+    const resumed = appendReasoningPart(withTool, 'the repo before editing.')
+
+    expect(resumed.map(part => part.type)).toEqual(['reasoning', 'tool-call'])
+    expect((resumed[0] as Extract<ChatMessagePart, { type: 'reasoning' }>).text).toBe(
+      'I should inspect the repo before editing.'
+    )
   })
 })
 

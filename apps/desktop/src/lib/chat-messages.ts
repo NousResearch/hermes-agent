@@ -205,12 +205,15 @@ export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string)
 
 export function appendReasoningPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
   const next = [...parts]
-  const last = next.at(-1)
 
-  if (last?.type === 'reasoning') {
-    next[next.length - 1] = { ...last, text: `${last.text}${delta}` }
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    const part = next[index]
 
-    return next
+    if (part?.type === 'reasoning') {
+      next[index] = { ...part, text: `${part.text}${delta}` }
+
+      return next
+    }
   }
 
   next.push(reasoningPart(delta))

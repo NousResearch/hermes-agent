@@ -13667,9 +13667,16 @@ def main():
     cron_resume.add_argument("job_id", help="Job ID to resume")
 
     cron_run = cron_subparsers.add_parser(
-        "run", help="Run a job on the next scheduler tick"
+        "run", help="Run a job on the next scheduler tick (or now with --wait)"
     )
     cron_run.add_argument("job_id", help="Job ID to trigger")
+    cron_run.add_argument(
+        "--wait",
+        action="store_true",
+        help="Run the job synchronously NOW and stream until it completes, "
+             "instead of marking it due for the next scheduler tick. "
+             "Ideal for verifying slow jobs in the foreground.",
+    )
     _add_accept_hooks_flag(cron_run)
 
     cron_remove = cron_subparsers.add_parser(

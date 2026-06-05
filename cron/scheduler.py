@@ -196,7 +196,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, get_job
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -2036,6 +2036,103 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+def _process_one_job(job: dict, *, verbose: bool = True, adapters=None, loop=None) -> dict:
+    """Run one job end-to-end: execute → save → deliver → mark.
+
+    Shared by the scheduler tick (parallel/sequential passes) and by
+    ``run_job_now`` (synchronous single-job execution for ``cron run --wait``).
+    Returns a structured result dict; callers that only need a truthiness
+    signal can read ``result["processed"]``.
+    """
+    try:
+        success, output, final_response, error = run_job(job)
+
+        output_file = save_job_output(job["id"], output)
+        if verbose:
+            logger.info("Output saved to: %s", output_file)
+
+        # Deliver the final response to the origin/target chat.
+        # If the agent responded with [SILENT], skip delivery (but
+        # output is already saved above).  Failed jobs always deliver.
+        deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+        # Treat whitespace-only final responses the same as empty
+        # responses: do not deliver a blank message, and let the
+        # empty-response guard below mark the run as a soft failure.
+        should_deliver = bool(deliver_content.strip())
+        if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+            should_deliver = False
+
+        delivery_error = None
+        if should_deliver:
+            try:
+                delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+            except Exception as de:
+                delivery_error = str(de)
+                logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+        # Treat empty final_response as a soft failure so last_status
+        # is not "ok" — the agent ran but produced nothing useful.
+        # (issue #8585)
+        if success and not final_response.strip():
+            success = False
+            error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+        mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        return {
+            "processed": True,
+            "success": success,
+            "job_id": job["id"],
+            "final_response": final_response,
+            "error": error,
+            "delivery_error": delivery_error,
+            "output_file": output_file,
+        }
+
+    except Exception as e:
+        logger.error("Error processing job %s: %s", job['id'], e)
+        mark_job_run(job["id"], False, str(e))
+        return {
+            "processed": False,
+            "success": False,
+            "job_id": job["id"],
+            "final_response": "",
+            "error": str(e),
+            "delivery_error": None,
+            "output_file": None,
+        }
+
+
+def run_job_now(job_id: str, *, verbose: bool = True, adapters=None, loop=None) -> dict:
+    """Run a single job synchronously to completion, in the calling thread.
+
+    Unlike ``tick()``, this does NOT consult the due-list or advance
+    ``next_run_at`` — it runs the named job right now regardless of schedule,
+    using the exact same execute → save → deliver → mark pipeline. Backs the
+    ``hermes cron run <id> --wait`` CLI flag so slow jobs can be verified to
+    completion in the foreground.
+
+    Returns the structured result dict from ``_process_one_job``, or a
+    ``{"success": False, "error": "... not found"}`` dict if the id is unknown.
+    """
+    job = get_job(job_id)
+    if not job:
+        return {
+            "processed": False,
+            "success": False,
+            "job_id": job_id,
+            "final_response": "",
+            "error": f"Job not found: {job_id}",
+            "delivery_error": None,
+            "output_file": None,
+        }
+    if verbose:
+        logger.info("Running job '%s' (%s) synchronously now", job.get("name", job_id), job_id)
+    # Preserve scheduler-scoped ContextVar state, mirroring the tick passes.
+    _ctx = contextvars.copy_context()
+    return _ctx.run(_process_one_job, job, verbose=verbose, adapters=adapters, loop=loop)
+
+
 def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
     """
     Check and run all due jobs.
@@ -2115,47 +2212,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
-            try:
-                success, output, final_response, error = run_job(job)
-
-                output_file = save_job_output(job["id"], output)
-                if verbose:
-                    logger.info("Output saved to: %s", output_file)
-
-                # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                # Treat whitespace-only final responses the same as empty
-                # responses: do not deliver a blank message, and let the
-                # empty-response guard below mark the run as a soft failure.
-                should_deliver = bool(deliver_content.strip())
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                    should_deliver = False
-
-                delivery_error = None
-                if should_deliver:
-                    try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-                    except Exception as de:
-                        delivery_error = str(de)
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-                # Treat empty final_response as a soft failure so last_status
-                # is not "ok" — the agent ran but produced nothing useful.
-                # (issue #8585)
-                if success and not final_response.strip():
-                    success = False
-                    error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
-
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-                return True
-
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
-                return False
+            return _process_one_job(
+                job, verbose=verbose, adapters=adapters, loop=loop,
+            )["processed"]
 
         # Partition due jobs: jobs with a per-job workdir and/or profile touch
         # process-global runtime state inside run_job. Workdir jobs temporarily

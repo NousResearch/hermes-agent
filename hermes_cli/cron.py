@@ -154,6 +154,36 @@ def cron_tick():
     tick(verbose=True)
 
 
+def cron_run_now(job_id: str) -> int:
+    """Run a single job synchronously to completion and report the outcome.
+
+    Backs `hermes cron run <id> --wait`. Runs the job right now (regardless of
+    schedule) using the scheduler's full execute → save → deliver → mark
+    pipeline, then prints success/failure with the delivered response.
+    """
+    from cron.scheduler import run_job_now
+
+    print(color(f"Running job {job_id} now (synchronous, streaming to logs)…", Colors.CYAN))
+    result = run_job_now(job_id, verbose=True)
+
+    job_id = result.get("job_id", job_id)
+    if result.get("success"):
+        print(color(f"✓ Job {job_id} completed", Colors.GREEN))
+        if result.get("output_file"):
+            print(f"  Output: {result['output_file']}")
+        if result.get("delivery_error"):
+            print(color(f"  ⚠ Delivered with error: {result['delivery_error']}", Colors.YELLOW))
+        final = (result.get("final_response") or "").strip()
+        if final:
+            preview = final if len(final) <= 800 else final[:800] + "…"
+            print()
+            print(preview)
+        return 0
+
+    print(color(f"✗ Job {job_id} failed: {result.get('error', 'unknown error')}", Colors.RED))
+    return 1
+
+
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
@@ -356,6 +386,8 @@ def cron_command(args):
         return _job_action("resume", args.job_id, "Resumed")
 
     if subcmd == "run":
+        if getattr(args, "wait", False):
+            return cron_run_now(args.job_id)
         return _job_action("run", args.job_id, "Triggered")
 
     if subcmd in {"remove", "rm", "delete"}:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import logging
 import os
@@ -35,6 +36,8 @@ QUEUE_FILE = PRODUCERS_DIR / "gitdb_tools_queue.json"
 POST_STATE_FILE = PRODUCERS_DIR / "gitdb_tools_post_state.json"
 SANITY_SCRIPT = PRODUCERS_DIR / "scripts" / "public_text_sanitizer.py"
 GROWTH_ACTIONS_FILE = PRODUCERS_DIR / "discord_channel_growth_actions.json"
+GROWTH_STATUS_POST_STATE_FILE = PRODUCERS_DIR / "discord_growth_status_post_state.json"
+COMMUNITY_POST_GUARD_SCRIPT = PRODUCERS_DIR / "scripts" / "community_post_guard.py"
 HUMAN_QUESTIONS_FILE = PRODUCERS_DIR / "discord_human_questions.json"
 HUMAN_QUESTIONS_SCRIPT = PRODUCERS_DIR / "scripts" / "discord_human_questions.py"
 
@@ -161,6 +164,90 @@ def load_growth_actions() -> dict[str, Any]:
         return json.loads(GROWTH_ACTIONS_FILE.read_text())
     except Exception:
         return {}
+
+
+def load_growth_status_post_state() -> dict[str, Any]:
+    if not GROWTH_STATUS_POST_STATE_FILE.is_file():
+        return {}
+    try:
+        return json.loads(GROWTH_STATUS_POST_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _load_python_module(path: Path, name: str):
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location(name, path)
+        if not spec or not spec.loader:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception as e:
+        logger.warning(f"Failed to load module {path}: {e}")
+        return None
+
+
+def load_post_guard_decision() -> dict[str, Any]:
+    mod = _load_python_module(COMMUNITY_POST_GUARD_SCRIPT, "community_post_guard_runtime")
+    if not mod:
+        return {"allowed": False, "reason": "community post guard unavailable"}
+    try:
+        return mod.decide_post_allowed().as_dict()
+    except Exception as e:
+        return {"allowed": False, "reason": f"community post guard failed: {e}"}
+
+
+def _format_ratio(value: Any) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except Exception:
+        return "unknown"
+
+
+def _short_hash(value: Any) -> str:
+    text = str(value or "")
+    return text[:12] if text else "none"
+
+
+def format_growth_status_reply() -> str:
+    metrics = load_growth_actions()
+    totals = (metrics.get("totals") or {}) if metrics else {}
+    actions = metrics.get("priority_actions", []) if metrics else []
+    guard = load_post_guard_decision()
+    weekly_state = load_growth_status_post_state()
+
+    allowed = bool(guard.get("allowed"))
+    guard_state = "разрешен" if allowed else "заблокирован"
+    ratio = _format_ratio(guard.get("human_ratio", totals.get("human_ratio")))
+    min_ratio = _format_ratio(guard.get("min_human_ratio", 0.55))
+    streak = guard.get("consecutive_healthy", 0)
+    min_streak = guard.get("min_consecutive_healthy", 2)
+    mode = weekly_state.get("last_mode") or "нет записи"
+    posted_at = weekly_state.get("last_posted_at") or "нет записи"
+    message_id = weekly_state.get("last_message_id") or "нет message id"
+    digest = _short_hash(weekly_state.get("last_report_hash"))
+
+    next_action = "кработ вопросы"
+    if allowed:
+        next_action = "мягко разморозить один ручной пост и проверить ответ людей"
+
+    lines = [
+        "статус роста:",
+        f"guard: {guard_state} - {guard.get('reason', 'без причины')}",
+        f"human ratio: {ratio} из {min_ratio}",
+        f"здоровая серия: {streak} из {min_streak}",
+        f"сообщения: {totals.get('recent_messages', 0)} - люди {totals.get('recent_human', 0)} - боты {totals.get('recent_bot', 0)}",
+        f"weekly report: {mode} - hash: {digest} - message: {message_id}",
+        f"last weekly: {posted_at}",
+        f"следующее действие: {next_action}",
+    ]
+    if not allowed:
+        lines.append("автопостинг не трогать, пока ratio не держится выше порога два замера подряд")
+    return run_sanitizer("\n".join(lines))
 
 
 def load_human_questions() -> dict[str, Any]:
@@ -314,6 +401,10 @@ async def pre_gateway_dispatch(
 
     if "кработ вопросы" in norm_text or "кработ оживи" in norm_text or "кработ вовлечение" in norm_text:
         await event.reply(format_human_questions_reply())
+        return {"action": "skip"}
+
+    if "кработ статус роста" in norm_text or "кработ статус канала" in norm_text:
+        await event.reply(format_growth_status_reply())
         return {"action": "skip"}
 
     if "кработ метрики" in norm_text or "кработ рост" in norm_text or "кработ каналы" in norm_text:

@@ -40,6 +40,8 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+_OBSERVED_CHANNEL_THREAD_ID = "observed-channel-context"
+
 # ---------------------------------------------------------------------------
 # Lazy import: BasePlatformAdapter and friends live in the main repo.
 # We import at function/class level to avoid import errors when the plugin
@@ -516,11 +518,11 @@ class IRCAdapter(BasePlatformAdapter):
         channel_prompt = None
         source_user_id = user_id
         source_user_name = user_name
+        source_thread_id = None
         if observe_group_context and chat_type == "group":
             event_text = self._irc_observe_attributed_text(text, user_id, user_name)
             channel_prompt = self._irc_observe_channel_prompt()
-            source_user_id = None
-            source_user_name = None
+            source_thread_id = _OBSERVED_CHANNEL_THREAD_ID
 
         source = self.build_source(
             chat_id=chat_id,
@@ -528,6 +530,7 @@ class IRCAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=source_user_id,
             user_name=source_user_name,
+            thread_id=source_thread_id,
         )
 
         event = MessageEvent(
@@ -577,6 +580,7 @@ class IRCAdapter(BasePlatformAdapter):
                 chat_type="group",
                 user_id=None,
                 user_name=None,
+                thread_id=_OBSERVED_CHANNEL_THREAD_ID,
             )
             session_entry = store.get_or_create_session(source)
             store.append_to_transcript(

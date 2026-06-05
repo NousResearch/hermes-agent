@@ -286,6 +286,7 @@ class TestIRCAdapterMessageParsing:
         assert store.sources[0].chat_id == "#test"
         assert store.sources[0].chat_type == "group"
         assert store.sources[0].user_id is None
+        assert store.sources[0].thread_id == "observed-channel-context"
         assert len(store.messages) == 1
         session_id, message, skip_db = store.messages[0]
         assert session_id == "session-irc"
@@ -312,8 +313,34 @@ class TestIRCAdapterMessageParsing:
         assert event.text == "[alice|alice]\nsummarize this"
         assert event.source.chat_id == "#test"
         assert event.source.chat_type == "group"
-        assert event.source.user_id is None
+        assert event.source.user_id == "alice"
+        assert event.source.thread_id == "observed-channel-context"
         assert "observed IRC channel context" in event.channel_prompt
+
+    @pytest.mark.asyncio
+    async def test_addressed_observed_channel_message_preserves_auth_user_and_shared_session(self, adapter):
+        from gateway.session import build_session_key
+
+        store = _FakeSessionStore()
+        handled = []
+
+        async def capture_event(event):
+            handled.append(event)
+
+        adapter._session_store = store
+        adapter.observe_unmentioned_group_messages = True
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = capture_event
+
+        await adapter._handle_line(":bob!u@host PRIVMSG #test :background")
+        await adapter._handle_line(":alice!u@host PRIVMSG #test :hermes: summarize")
+
+        assert len(store.sources) == 1
+        assert len(handled) == 1
+        observed_source = store.sources[0]
+        addressed_source = handled[0].source
+        assert addressed_source.user_id == "alice"
+        assert build_session_key(observed_source) == build_session_key(addressed_source)
 
     @pytest.mark.asyncio
     async def test_handle_dm(self, adapter):

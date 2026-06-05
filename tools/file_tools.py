@@ -1482,12 +1482,18 @@ def _handle_read_file(args, **kw):
 
 def _handle_write_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    if not args.get("path") or not isinstance(args.get("path"), str):
+    # Accept skill_manage-style aliases: file_path → path, file_content → content.
+    # Canonical names win when both are present; an explicit empty-string content
+    # is preserved (do not fall back to the alias in that case).  Mirrors the
+    # alias handling added to skill_manage in #35741.  Ref: issue #39964.
+    path = args.get("path") or args.get("file_path") or ""
+    content = args["content"] if "content" in args else args.get("file_content")
+    if not path or not isinstance(path, str):
         return tool_error(
             "write_file: missing required field 'path'. Re-emit the tool call with "
             "both 'path' and 'content' set."
         )
-    if "content" not in args:
+    if content is None:
         return tool_error(
             "write_file: missing required field 'content'. The tool call included a "
             "path but no content argument — this is almost always a dropped-arg bug "
@@ -1495,13 +1501,13 @@ def _handle_write_file(args, **kw):
             "payload, or use execute_code with hermes_tools.write_file() for very "
             "large files."
         )
-    if not isinstance(args["content"], str):
+    if not isinstance(content, str):
         return tool_error(
             f"write_file: 'content' must be a string, got "
-            f"{type(args['content']).__name__}."
+            f"{type(content).__name__}."
         )
     return write_file_tool(
-        path=args["path"], content=args["content"], task_id=tid,
+        path=path, content=content, task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
     )
 

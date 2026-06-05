@@ -9,7 +9,7 @@ import json
 import logging
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Union
 
 from hermes_constants import display_hermes_home
@@ -444,7 +444,6 @@ def _normalize_deliver_param(value: Any) -> Optional[str]:
     text = str(value).strip()
     return text or None
 
-
 def _validate_cron_base_url(
     provider: Optional[Any], base_url: Optional[Any]
 ) -> Optional[str]:
@@ -525,43 +524,69 @@ def _validate_cron_base_url(
     )
 
 
-def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
-    """Validate a cron job script path at the API boundary.
+def _validate_cron_script_path(script: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Normalize and validate a cron job script path at the API boundary.
 
     Scripts must be relative paths that resolve within HERMES_HOME/scripts/.
     Absolute paths and ~ expansion are rejected to prevent arbitrary script
     execution via prompt injection.
 
-    Returns an error string if blocked, else None (valid).
+    Returns ``(normalized_path, error)``. Empty/None script values return
+    ``(None, None)`` so callers can clear the field.
     """
-    if not script or not script.strip():
-        return None  # empty/None = clearing the field, always OK
+    if script is None:
+        return None, None
 
     from hermes_constants import get_hermes_home
 
-    raw = script.strip()
+    raw = str(script).strip()
+    if not raw:
+        return None, None  # empty = clearing the field, always OK
 
     # Reject absolute paths and ~ expansion at the API boundary.
     # Only relative paths within ~/.hermes/scripts/ are allowed.
-    if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
-        return (
+    if (
+        raw.startswith(("/", "\\", "~"))
+        or (len(raw) >= 2 and raw[1] == ":")
+        or PureWindowsPath(raw).is_absolute()
+    ):
+        return None, (
             f"Script path must be relative to ~/.hermes/scripts/. "
             f"Got absolute or home-relative path: {raw!r}. "
             f"Place scripts in ~/.hermes/scripts/ and use just the filename."
         )
 
-    # Validate containment after resolution
+    normalized = raw.replace("\\", "/")
+    if normalized.startswith("./scripts/"):
+        normalized = normalized[len("./scripts/"):]
+    elif normalized.startswith("scripts/"):
+        normalized = normalized[len("scripts/"):]
+
     from tools.path_security import validate_within_dir
 
-    scripts_dir = get_hermes_home() / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    containment_error = validate_within_dir(scripts_dir / raw, scripts_dir)
-    if containment_error:
-        return (
+    if ".." in Path(normalized).parts:
+        return None, (
             f"Script path escapes the scripts directory via traversal: {raw!r}"
         )
 
-    return None
+    scripts_dir = get_hermes_home() / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    candidate = scripts_dir / normalized
+    containment_error = validate_within_dir(candidate, scripts_dir)
+    if containment_error:
+        return None, (
+            f"Script path escapes the scripts directory via traversal: {raw!r}"
+        )
+
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        return None, (
+            f"Script path not found under ~/.hermes/scripts/: {raw!r}. "
+            f"Place the script in ~/.hermes/scripts/ and use its relative path."
+        )
+
+    normalized_relative = resolved.relative_to(scripts_dir.resolve()).as_posix()
+    return normalized_relative, None
 
 
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -685,8 +710,9 @@ def cronjob(
             #     (and irrelevant to execution).
             #   - no_agent=False (default) → at least one of prompt/skills must
             #     be set, same as before.
+            script_value = _normalize_optional_job_value(script)
             if _no_agent:
-                if not script:
+                if not script_value:
                     return tool_error(
                         "create with no_agent=True requires a script — "
                         "the script is the job.",
@@ -699,9 +725,9 @@ def cronjob(
                 if scan_error:
                     return tool_error(scan_error, success=False)
 
-            # Validate script path before storing
-            if script:
-                script_error = _validate_cron_script_path(script)
+            normalized_script = None
+            if script_value:
+                normalized_script, script_error = _validate_cron_script_path(script_value)
                 if script_error:
                     return tool_error(script_error, success=False)
 
@@ -734,7 +760,7 @@ def cronjob(
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
-                script=_normalize_optional_job_value(script),
+                script=normalized_script,
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
@@ -886,11 +912,10 @@ def cronjob(
                 return tool_error(base_url_error, success=False)
             if script is not None:
                 # Pass empty string to clear an existing script
-                if script:
-                    script_error = _validate_cron_script_path(script)
-                    if script_error:
-                        return tool_error(script_error, success=False)
-                updates["script"] = _normalize_optional_job_value(script) if script else None
+                normalized_script, script_error = _validate_cron_script_path(script)
+                if script_error:
+                    return tool_error(script_error, success=False)
+                updates["script"] = normalized_script
             if context_from is not None:
                 # Empty string / empty list clears the field; otherwise validate
                 # each referenced job exists before storing. Normalized to a list

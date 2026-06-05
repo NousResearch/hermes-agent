@@ -121,6 +121,30 @@ class TestGmiModelCatalog:
 
         assert provider_model_ids("gmi") == list(_PROVIDER_MODELS["gmi"])
 
+    def test_provider_model_ids_falls_back_to_static_models_without_generic_refetch(self, monkeypatch):
+        class GenericGmiProfile:
+            auth_type = "api_key"
+            base_url = "https://api.gmi-serving.com/v1"
+            fallback_models = []
+
+            @staticmethod
+            def fetch_models(api_key):
+                return ["unexpected-live-model"]
+
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            lambda provider_id: {
+                "provider": provider_id,
+                "api_key": "gmi-live-key",
+                "base_url": "https://api.gmi-serving.com/v1",
+                "source": "GMI_API_KEY",
+            },
+        )
+        monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda api_key, base_url: None)
+        monkeypatch.setattr("providers.get_provider_profile", lambda provider: GenericGmiProfile())
+
+        assert provider_model_ids("gmi") == list(_PROVIDER_MODELS["gmi"])
+
 
 class TestGmiProvidersModule:
     def test_overlay_exists(self):

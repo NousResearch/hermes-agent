@@ -6010,7 +6010,7 @@ def _client_is_closed(client: Any) -> bool:
     for obj in candidates:
         if obj is None:
             continue
-        if getattr(obj, "is_closed", False) is True:
+        if bool(getattr(obj, "is_closed", False)):
             return True
     return False
 

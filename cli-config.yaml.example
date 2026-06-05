@@ -1165,3 +1165,47 @@ display:
 #   # default — works on Fly.io out of the box).
 #   #
 #   #   public_url: "https://example.com/hermes"
+
+# =============================================================================
+# External Secret Sources
+# =============================================================================
+# Hermes can pull API keys from a secret manager at startup instead of
+# storing them in plaintext in ~/.hermes/.env.
+#
+# Two backends are supported:
+#   - Bitwarden Secrets Manager (bws CLI)
+#   - 1Password Service Accounts (onepassword-sdk)
+#
+# Both are fail-safe: a missing binary, expired auth, or bad reference
+# produces a one-line warning and Hermes continues with whatever
+# credentials .env already had.
+#
+#secrets:
+#
+#  # Bitwarden Secrets Manager
+#  # bitwarden:
+#  #   enabled: true
+#  #   access_token_env: BWS_ACCESS_TOKEN
+#  #   project_id: "your-project-uuid"
+#  #   override_existing: false
+#  #   cache_ttl_seconds: 300
+#  #   auto_install: true          # auto-download bws if missing
+#  #   server_url: ""              # EU Cloud / self-hosted
+#
+#  # 1Password Service Account (onepassword-sdk)
+#  # Uses the Python SDK — no op CLI daemon needed.
+#  # onepassword:
+#  #   enabled: true
+#  #   token_env: OP_SERVICE_ACCOUNT_TOKEN
+#  #
+#  #   # Mode A: Auto-discovery (zero per-secret config)
+#  #   vault: "Private"
+#  #   auto_discover: true
+#  #
+#  #   # Mode B: Explicit mapping (auditable, like Bitwarden)
+#  #   env:
+#  #     OPENAI_API_KEY: "op://Private/OpenAI/api key"
+#  #     ANTHROPIC_API_KEY: "op://Private/Anthropic/credential"
+#  #
+#  #   override_existing: false
+#  #   cache_ttl_seconds: 300

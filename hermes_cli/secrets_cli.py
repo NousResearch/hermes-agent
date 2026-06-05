@@ -574,3 +574,488 @@ def _resolve_server_url(
                 )
             return custom
         console.print(f"  [red]Out of range — pick 1-{custom_idx}.[/red]")
+
+
+# ===========================================================================
+# 1Password Service Account — CLI handlers
+# ===========================================================================
+
+
+def register_onepassword_cli(parent_parser: argparse.ArgumentParser) -> None:
+    """Attach the ``onepassword`` subcommand tree to ``hermes secrets``."""
+    sub = parent_parser.add_subparsers(dest="secrets_op_command")
+
+    setup = sub.add_parser(
+        "setup",
+        help="Interactive setup: verify SDK, test auth, enable",
+    )
+    setup.set_defaults(func=cmd_onepassword_setup)
+
+    status = sub.add_parser(
+        "status",
+        help="Show config + SDK availability + token presence",
+    )
+    status.set_defaults(func=cmd_onepassword_status)
+
+    sync = sub.add_parser(
+        "sync",
+        help="Fetch secrets from 1Password and show what would be applied",
+    )
+    sync.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually export secrets into os.environ",
+    )
+    sync.set_defaults(func=cmd_onepassword_sync)
+
+    disable = sub.add_parser(
+        "disable",
+        help="Turn off the 1Password integration",
+    )
+    disable.set_defaults(func=cmd_onepassword_disable)
+
+    list_vaults = sub.add_parser(
+        "list-vaults",
+        help="List vaults the service account can access",
+    )
+    list_vaults.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+    )
+    list_vaults.set_defaults(func=cmd_onepassword_list_vaults)
+
+
+def cmd_onepassword_setup(args: argparse.Namespace) -> int:
+    """Interactive wizard for 1Password integration setup."""
+    import getpass
+    import sys as _sys
+
+    console = Console()
+    cfg = load_config()
+    op_cfg = (cfg.setdefault("secrets", {})
+                 .setdefault("onepassword", {}))
+    token_env = op_cfg.get("token_env", "OP_SERVICE_ACCOUNT_TOKEN")
+    vault = op_cfg.get("vault", "")
+
+    console.print(
+        Panel.fit(
+            "[bold]1Password Service Account setup[/bold]\n\n"
+            "This backend uses the [cyan]onepassword-sdk[/cyan] Python package\n"
+            "instead of the ``op`` CLI daemon.  The SDK authenticates directly\n"
+            "via the 1Password REST API — no background daemon needed.\n\n"
+            "To get a service account token:\n"
+            "  1Password web → Developers → Service Accounts →\n"
+            "  Create service account → grant vault access → copy token\n\n"
+            "The token (starts with [cyan]ops_[/cyan]) is stored in .env\n"
+            "and used by the Python SDK to authenticate.",
+            border_style="green",
+        )
+    )
+
+    # Step 1: Check SDK
+    console.print()
+    console.print("[bold]Step 1[/bold]  Check onepassword-sdk")
+    try:
+        from agent.secret_sources.onepassword import apply_onepassword_secrets  # noqa: F401
+        console.print("  [green]✓[/green] onepassword-sdk is installed")
+    except ImportError:
+        console.print(
+            "  [red]✗[/red] onepassword-sdk not found. Install:\n"
+            f"    uv pip install --python {_sys.executable} onepassword-sdk"
+        )
+        return 1
+
+    # Step 2: Token
+    console.print()
+    console.print(
+        f"[bold]Step 2[/bold]  Provide your service account token "
+        f"({token_env})"
+    )
+    existing_token = os.environ.get(token_env, "").strip()
+    if existing_token:
+        console.print(
+            f"  [green]✓[/green] {token_env} is already set "
+            f"({len(existing_token)} chars)"
+        )
+        token = existing_token
+    else:
+        token = getpass.getpass(f"  Paste token ({token_env}): ").strip()
+        if not token:
+            console.print("  [red]Empty token, aborting.[/red]")
+            return 1
+        save_env_value(token_env, token)
+        os.environ[token_env] = token
+        console.print(
+            f"  [green]✓[/green] stored in {get_env_path()} as {token_env}"
+        )
+
+    # Step 3: Choose mapping mode
+    console.print()
+    console.print("[bold]Step 3[/bold]  Choose mapping mode")
+    console.print(
+        "  [1] Auto-discovery — scan a vault and map credential fields "
+        "→ env vars automatically"
+    )
+    console.print(
+        "  [2] Explicit mapping — list each env var → op:// reference "
+        "in config.yaml"
+    )
+    console.print("  [3] Both — explicit + auto-discovery (explicit wins on conflicts)")
+
+    choice = console.input("  Pick 1-3 [1]: ").strip() or "1"
+    if choice not in ("1", "2", "3"):
+        console.print("  [red]Invalid choice.[/red]")
+        return 1
+
+    auto_discover = choice in ("1", "3")
+
+    # Step 4: Vault selection (for auto-discover mode)
+    selected_vault = ""
+    if auto_discover:
+        console.print()
+        console.print("[bold]Step 4[/bold]  Pick a vault")
+        selected_vault = _pick_onepassword_vault(token, token_env, vault, console)
+        if selected_vault is None:
+            return 1
+
+    # Step 5: Test fetch
+    console.print()
+    console.print(
+        f"[bold]Step {'5' if auto_discover else '4'}[/bold]  Test fetch"
+    )
+    try:
+        from agent.secret_sources.onepassword import apply_onepassword_secrets
+    except ImportError:
+        console.print("  [red]SDK import failed unexpectedly.[/red]")
+        return 1
+
+    env_refs: dict = {}
+    result = apply_onepassword_secrets(
+        enabled=True,
+        token_env=token_env,
+        vault=selected_vault,
+        override_existing=True,
+        cache_ttl_seconds=0,  # Bypass cache for setup test
+        auto_discover=auto_discover,
+        env_refs=env_refs,
+    )
+
+    if result.error:
+        console.print(f"  [red]✗ Fetch failed: {result.error}[/red]")
+        return 1
+
+    if not result.secrets:
+        console.print(
+            "  [yellow]No secrets found.[/yellow]  "
+            "Check that the vault contains items with credential fields "
+            "(Concealed, Password, or API Credential types)."
+        )
+    else:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Env Var", style="cyan")
+        table.add_column("Status")
+        for key in sorted(result.secrets):
+            if os.environ.get(key):
+                status = (
+                    "[yellow]already set (will be overwritten)[/yellow]"
+                )
+            else:
+                status = "[green]new[/green]"
+            table.add_row(key, status)
+        console.print(table)
+    for w in result.warnings:
+        console.print(f"  [yellow]warning:[/yellow] {w}")
+
+    # Save config
+    op_cfg["enabled"] = True
+    op_cfg["token_env"] = token_env
+    if selected_vault:
+        op_cfg["vault"] = selected_vault
+    op_cfg["auto_discover"] = auto_discover
+    op_cfg.setdefault("override_existing", True)
+    op_cfg.setdefault("cache_ttl_seconds", 300)
+    save_config(cfg)
+
+    console.print()
+    console.print(
+        "[green]✓ 1Password integration is enabled.[/green]  "
+        "Secrets will be pulled at the start of every Hermes process."
+    )
+    console.print(
+        "  Status:  [cyan]hermes secrets onepassword status[/cyan]\n"
+        "  Sync:    [cyan]hermes secrets onepassword sync[/cyan]\n"
+        "  Disable: [cyan]hermes secrets onepassword disable[/cyan]"
+    )
+    return 0
+
+
+def cmd_onepassword_status(args: argparse.Namespace) -> int:
+    """Show 1Password integration status."""
+    console = Console()
+    cfg = load_config()
+    op_cfg = (cfg.get("secrets") or {}).get("onepassword") or {}
+
+    enabled = bool(op_cfg.get("enabled"))
+    token_env = op_cfg.get("token_env", "OP_SERVICE_ACCOUNT_TOKEN")
+    vault = op_cfg.get("vault", "")
+    token_set = bool(os.environ.get(token_env))
+
+    def _yn(val: bool) -> str:
+        return "[green]yes[/green]" if val else "[red]no[/red]"
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("", style="bold")
+    table.add_column("")
+    table.add_row("Enabled",        _yn(enabled))
+    table.add_row("Token env var",  token_env)
+    table.add_row("Token in env",   _yn(token_set))
+    table.add_row("Vault",          vault or "(not set)")
+    table.add_row("Auto-discover",  _yn(bool(op_cfg.get("auto_discover", False))))
+    table.add_row("Explicit env",   str(len(op_cfg.get("env") or {})))
+    table.add_row("Override",       _yn(bool(op_cfg.get("override_existing", False))))
+    table.add_row("Cache TTL (s)",  str(op_cfg.get("cache_ttl_seconds", 300)))
+
+    sdk_ok = False
+    try:
+        from agent.secret_sources.onepassword import apply_onepassword_secrets  # noqa: F401
+        sdk_ok = True
+    except ImportError:
+        pass
+    table.add_row("SDK installed",  _yn(sdk_ok))
+
+    console.print(
+        Panel(table, title="1Password Service Account", border_style="green")
+    )
+
+    if not enabled:
+        console.print(
+            "\n  Run [cyan]hermes secrets onepassword setup[/cyan] to enable."
+        )
+        return 0
+    if not token_set:
+        console.print(
+            f"\n  [yellow]Enabled but {token_env} is not set — "
+            "Hermes will skip 1Password on next startup.[/yellow]"
+        )
+    if not vault and not op_cfg.get("env"):
+        console.print(
+            "\n  [yellow]Enabled but no vault or env mapping configured "
+            "— nothing to fetch.[/yellow]"
+        )
+    return 0
+
+
+def cmd_onepassword_sync(args: argparse.Namespace) -> int:
+    """Fetch 1Password secrets now."""
+    import sys as _sys
+
+    console = Console()
+    cfg = load_config()
+    op_cfg = (cfg.get("secrets") or {}).get("onepassword") or {}
+
+    if not op_cfg.get("enabled"):
+        console.print(
+            "[yellow]1Password integration is disabled. Run "
+            "`hermes secrets onepassword setup` first.[/yellow]"
+        )
+        return 1
+
+    token_env = op_cfg.get("token_env", "OP_SERVICE_ACCOUNT_TOKEN")
+    token = os.environ.get(token_env, "").strip()
+    if not token:
+        console.print(f"[red]{token_env} is not set.[/red]")
+        return 1
+
+    try:
+        from agent.secret_sources.onepassword import apply_onepassword_secrets
+    except ImportError:
+        console.print(
+            "[red]onepassword-sdk not installed.[/red] Install with:\n"
+            f"  uv pip install --python {_sys.executable} onepassword-sdk"
+        )
+        return 1
+
+    result = apply_onepassword_secrets(
+        enabled=True,
+        token_env=token_env,
+        vault=op_cfg.get("vault", ""),
+        override_existing=True,
+        cache_ttl_seconds=0,  # Bypass cache for explicit sync
+        auto_discover=bool(op_cfg.get("auto_discover", False)),
+        env_refs=op_cfg.get("env") or {},
+    )
+
+    if result.error:
+        console.print(f"[red]{result.error}[/red]")
+        return 1
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Env Var", style="cyan")
+    table.add_column("Action")
+    for name in sorted(result.secrets):
+        if name in result.applied:
+            table.add_row(name, "[green]exported[/green]")
+        elif name in result.skipped:
+            table.add_row(name, "[dim]skipped[/dim]")
+    console.print(table)
+    for w in result.warnings:
+        console.print(f"[yellow]warning:[/yellow] {w}")
+
+    if not args.apply:
+        console.print(
+            "\n  This was a dry-run. Secrets are picked up automatically "
+            "on the next [cyan]hermes[/cyan] invocation. "
+            "Re-run with [cyan]--apply[/cyan] to export now."
+        )
+    else:
+        console.print(
+            f"\n  [green]Exported {len(result.applied)} secret(s).[/green]"
+        )
+    return 0
+
+
+def cmd_onepassword_disable(args: argparse.Namespace) -> int:
+    """Disable the 1Password integration."""
+    console = Console()
+    cfg = load_config()
+    op_cfg = (cfg.setdefault("secrets", {}).setdefault("onepassword", {}))
+    op_cfg["enabled"] = False
+    save_config(cfg)
+    console.print(
+        "[green]✓ 1Password integration disabled.[/green]  "
+        "Re-enable with [cyan]hermes secrets onepassword setup[/cyan]."
+    )
+    return 0
+
+
+def cmd_onepassword_list_vaults(args: argparse.Namespace) -> int:
+    """List vaults accessible to the service account."""
+    import asyncio
+    import sys as _sys
+
+    console = Console()
+    token = os.environ.get("OP_SERVICE_ACCOUNT_TOKEN", "").strip()
+    if not token:
+        console.print(
+            "[red]OP_SERVICE_ACCOUNT_TOKEN is not set.[/red]"
+        )
+        return 1
+
+    try:
+        from onepassword import Client
+        from onepassword.types import VaultGetParams
+    except ImportError:
+        console.print(
+            "[red]onepassword-sdk not installed.[/red]"
+        )
+        return 1
+
+    async def _list() -> list:
+        client = await Client.authenticate(
+            auth=token,
+            integration_name="Hermes Agent (CLI)",
+            integration_version="1.0.0",
+        )
+        vaults = await client.vaults.list()
+        result = []
+        for v in vaults:
+            full = await client.vaults.get(
+                vault_id=v.id, vault_params=VaultGetParams()
+            )
+            result.append({
+                "id": full.id,
+                "name": full.title,
+                "description": full.description,
+                "item_count": full.active_item_count,
+            })
+        return result
+
+    try:
+        vaults = asyncio.run(_list())
+    except Exception as exc:
+        console.print(f"[red]Error listing vaults: {exc}[/red]")
+        return 1
+
+    if args.format == "json":
+        console.print(json.dumps(vaults, indent=2))
+    else:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Name", style="cyan")
+        table.add_column("Items", justify="right")
+        table.add_column("ID", style="dim")
+        for v in vaults:
+            table.add_row(v["name"], str(v["item_count"]), v["id"])
+        console.print(table)
+        console.print(f"\n  {len(vaults)} vault(s) accessible.")
+    return 0
+
+
+def _pick_onepassword_vault(
+    token: str,
+    token_env: str,
+    default: str,
+    console: Console,
+) -> Optional[str]:
+    """Let the user pick a vault interactively."""
+    import asyncio
+
+    try:
+        from onepassword import Client
+        from onepassword.types import VaultGetParams
+    except ImportError:
+        console.print("  [red]onepassword-sdk not installed.[/red]")
+        return None
+
+    async def _list() -> list:
+        client = await Client.authenticate(
+            auth=token,
+            integration_name="Hermes Agent Setup",
+            integration_version="1.0.0",
+        )
+        vaults = await client.vaults.list()
+        result = []
+        for v in vaults:
+            full = await client.vaults.get(
+                vault_id=v.id, vault_params=VaultGetParams()
+            )
+            result.append({
+                "id": full.id,
+                "name": full.title,
+                "item_count": full.active_item_count,
+            })
+        return result
+
+    try:
+        vaults = asyncio.run(_list())
+    except Exception as exc:
+        console.print(f"  [red]Failed to list vaults: {exc}[/red]")
+        return None
+
+    if not vaults:
+        console.print("  [yellow]No vaults accessible with this token.[/yellow]")
+        return None
+
+    console.print(f"  Found {len(vaults)} vault(s):")
+    for i, v in enumerate(vaults):
+        marker = " ← default" if v["name"] == default else ""
+        console.print(
+            f"    [{i + 1}] {v['name']} ({v['item_count']} items){marker}"
+        )
+
+    choice_s = console.input(
+        f"  Pick 1-{len(vaults)}"
+        + (f" [{1}]: " if vaults else ": ")
+    ).strip()
+
+    idx = 1
+    if choice_s:
+        try:
+            idx = int(choice_s)
+        except ValueError:
+            pass
+
+    if 1 <= idx <= len(vaults):
+        return vaults[idx - 1]["name"]
+
+    return vaults[0]["name"] if vaults else None

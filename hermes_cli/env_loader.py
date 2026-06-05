@@ -248,7 +248,7 @@ def load_hermes_dotenv(
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:
-    """Pull secrets from external sources (currently Bitwarden) into env.
+    """Pull secrets from external sources (Bitwarden, 1Password) into env.
 
     Runs AFTER dotenv loads so .env values are visible (we use them to
     locate the access token) but BEFORE the rest of Hermes reads
@@ -274,6 +274,12 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     except Exception:  # noqa: BLE001 — config errors must not block startup
         return
 
+    _apply_bitwarden(cfg, home_path)
+    _apply_onepassword(cfg, home_path)
+
+
+def _apply_bitwarden(cfg: dict, home_path: Path) -> None:
+    """Apply Bitwarden secrets if configured."""
     bw_cfg = (cfg or {}).get("bitwarden") or {}
     if not bw_cfg.get("enabled"):
         return
@@ -319,6 +325,55 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     for warn in result.warnings:
         print(
             f"  Bitwarden Secrets Manager: {warn}",
+            file=sys.stderr,
+        )
+
+
+def _apply_onepassword(cfg: dict, home_path: Path) -> None:
+    """Apply 1Password secrets if configured.
+
+    Uses the ``onepassword-sdk`` Python package instead of the ``op`` CLI
+    daemon.  The SDK authenticates directly via the 1Password REST API
+    and does not require a background daemon.
+    """
+    op_cfg = (cfg or {}).get("onepassword") or {}
+    if not op_cfg.get("enabled"):
+        return
+
+    try:
+        from agent.secret_sources.onepassword import apply_onepassword_secrets
+    except ImportError:
+        return
+
+    result = apply_onepassword_secrets(
+        enabled=True,
+        token_env=op_cfg.get("token_env", "OP_SERVICE_ACCOUNT_TOKEN"),
+        vault=op_cfg.get("vault", ""),
+        override_existing=bool(op_cfg.get("override_existing", False)),
+        cache_ttl_seconds=float(op_cfg.get("cache_ttl_seconds", 300)),
+        auto_discover=bool(op_cfg.get("auto_discover", False)),
+        env_refs=op_cfg.get("env") or {},
+        home_path=home_path,
+    )
+
+    if result.applied:
+        _sanitize_loaded_credentials()
+        for name in result.applied:
+            _SECRET_SOURCES[name] = "onepassword"
+        print(
+            f"  1Password: applied {len(result.applied)} "
+            f"secret{'s' if len(result.applied) != 1 else ''} "
+            f"({', '.join(sorted(result.applied))})",
+            file=sys.stderr,
+        )
+    if result.error:
+        print(
+            f"  1Password: {result.error}",
+            file=sys.stderr,
+        )
+    for warn in result.warnings:
+        print(
+            f"  1Password: {warn}",
             file=sys.stderr,
         )
 

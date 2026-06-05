@@ -322,6 +322,17 @@ TOOLSETS = {
         "includes": []
     },
 
+    "onepassword": {
+        "description": "1Password vault access via SDK (no op CLI daemon needed)",
+        "tools": [
+            "onepassword_list_vaults",
+            "onepassword_list_items",
+            "onepassword_get_item",
+            "onepassword_resolve_field",
+        ],
+        "includes": [],
+    },
+
 
     # Scenario-specific toolsets
     

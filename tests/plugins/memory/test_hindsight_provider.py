@@ -20,6 +20,7 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _ensure_local_api_proxy_bypass,
     _load_config,
     _build_embedded_profile_env,
     _normalize_retain_tags,
@@ -42,6 +43,7 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "no_proxy",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -191,6 +193,58 @@ class TestSchemas:
 
 
 class TestConfig:
+    def test_loopback_api_url_extends_no_proxy(self, monkeypatch):
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1099")
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1099")
+        monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:1099")
+        monkeypatch.setenv("NO_PROXY", "example.com")
+
+        _ensure_local_api_proxy_bypass("http://127.0.0.1:8888")
+
+        entries = os.environ["NO_PROXY"].split(",")
+        assert entries[:1] == ["example.com"]
+        assert "localhost" in entries
+        assert "127.0.0.1" in entries
+        assert "::1" in entries
+        assert os.environ["no_proxy"] == os.environ["NO_PROXY"]
+
+    def test_loopback_api_url_adds_exact_loopback_host(self, monkeypatch):
+        monkeypatch.setenv("NO_PROXY", "localhost")
+
+        _ensure_local_api_proxy_bypass("http://127.0.0.42:8888")
+
+        entries = os.environ["NO_PROXY"].split(",")
+        assert "127.0.0.42" in entries
+
+    def test_initialize_bypasses_proxy_for_local_external_api_url(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({
+            "mode": "local_external",
+            "api_url": "http://localhost:8888",
+        }))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1099")
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1099")
+        monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:1099")
+
+        p = HindsightMemoryProvider()
+        p.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+
+        entries = os.environ["NO_PROXY"].split(",")
+        assert p._api_url == "http://localhost:8888"
+        assert "localhost" in entries
+        assert "127.0.0.1" in entries
+
+    def test_non_loopback_api_url_does_not_change_no_proxy(self, monkeypatch):
+        monkeypatch.setenv("NO_PROXY", "example.com")
+        monkeypatch.delenv("no_proxy", raising=False)
+
+        _ensure_local_api_proxy_bypass("https://api.hindsight.vectorize.io")
+
+        assert os.environ["NO_PROXY"] == "example.com"
+        assert "no_proxy" not in os.environ
+
     def test_default_values(self, provider):
         assert provider._auto_retain is True
         assert provider._auto_recall is True

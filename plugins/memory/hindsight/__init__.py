@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import ipaddress
 import importlib
 import json
 import logging
@@ -39,6 +40,7 @@ import threading
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
@@ -97,6 +99,66 @@ def _check_local_runtime() -> tuple[bool, str | None]:
         return True, None
     except Exception as exc:
         return False, str(exc)
+
+
+def _is_loopback_url(api_url: str) -> bool:
+    """Return True when *api_url* points at localhost or a loopback IP."""
+    try:
+        host = urlparse(api_url).hostname
+    except Exception:
+        return False
+    if not host:
+        return False
+
+    normalized = host.rstrip(".").lower()
+    if normalized == "localhost":
+        return True
+
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _split_no_proxy(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.replace(";", ",").split(",") if item.strip()]
+
+
+def _ensure_local_api_proxy_bypass(api_url: str) -> None:
+    """Ensure env-proxy HTTP clients bypass local Hindsight API endpoints.
+
+    Hindsight's generated aiohttp client uses trust_env=True, so process-level
+    HTTP(S)/ALL_PROXY variables can intercept localhost requests unless
+    NO_PROXY is set. Keep the change narrow: only add loopback bypass entries
+    when the configured Hindsight API URL itself is loopback.
+    """
+    if not _is_loopback_url(api_url):
+        return
+
+    host = urlparse(api_url).hostname or ""
+    required = ["localhost", "127.0.0.1", "::1"]
+    normalized_host = host.rstrip(".").lower()
+    if normalized_host and normalized_host not in {item.lower() for item in required}:
+        required.append(normalized_host)
+
+    merged: list[str] = []
+    seen: set[str] = set()
+    for entry in (
+        _split_no_proxy(os.environ.get("NO_PROXY"))
+        + _split_no_proxy(os.environ.get("no_proxy"))
+        + required
+    ):
+        key = entry.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(entry)
+
+    value = ",".join(merged)
+    os.environ["NO_PROXY"] = value
+    os.environ["no_proxy"] = value
 
 
 # ---------------------------------------------------------------------------
@@ -1144,6 +1206,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._api_key = self._config.get("apiKey") or self._config.get("api_key") or os.environ.get("HINDSIGHT_API_KEY", "")
         default_url = _DEFAULT_LOCAL_URL if self._mode in {"local_embedded", "local_external"} else _DEFAULT_API_URL
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
+        _ensure_local_api_proxy_bypass(self._api_url)
         self._llm_base_url = self._config.get("llm_base_url", "")
 
         banks = cfg_get(self._config, "banks", "hermes", default={})

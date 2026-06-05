@@ -170,6 +170,34 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
         assert "Unknown command" not in result
 
 
+@pytest.mark.asyncio
+async def test_clear_gateway_alias_dispatches_reset(monkeypatch):
+    """Gateway /clear should reset the session instead of hitting CLI-only clear."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/clear leaked through to the agent")
+    )
+    runner._is_telegram_topic_root_lobby = lambda _source: False
+    runner._handle_reset_command = AsyncMock(return_value="reset done")
+
+    async def _confirm_and_execute(**kwargs):
+        return await kwargs["execute"]()
+
+    runner._maybe_confirm_destructive_slash = _confirm_and_execute
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/clear"))
+
+    assert result == "reset done"
+    runner._handle_reset_command.assert_awaited_once()
+    runner._run_agent.assert_not_called()
+
+
 # ------------------------------------------------------------------
 # command:<name> decision hook — deny / handled / rewrite
 # ------------------------------------------------------------------

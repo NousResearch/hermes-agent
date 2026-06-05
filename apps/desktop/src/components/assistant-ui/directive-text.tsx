@@ -8,7 +8,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
 
-const HERMES_REF_TYPES = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal'] as const
+const HERMES_REF_TYPES = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal', 'session'] as const
 type HermesRefType = (typeof HERMES_REF_TYPES)[number]
 
 /** Single source of truth for chip icon glyphs (Tabler outline @ 24×24).
@@ -38,7 +38,12 @@ const ICON_PATHS: Record<HermesRefType, string[]> = {
   ],
   tool: ['M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5'],
   line: ['M5 9l14 0', 'M5 15l14 0', 'M11 4l-4 16', 'M17 4l-4 16'],
-  terminal: ['M5 7l5 5l-5 5', 'M12 19l7 0']
+  terminal: ['M5 7l5 5l-5 5', 'M12 19l7 0'],
+  session: [
+    'M8 9h8',
+    'M8 13h6',
+    'M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3z'
+  ]
 }
 
 const ICON_FALLBACK = ['M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0', 'M16 12v1.5a2.5 2.5 0 0 0 5 0v-1.5a9 9 0 1 0 -5.5 8.28']
@@ -98,7 +103,7 @@ const DirectiveIcon: FC<{ type: string }> = ({ type }) => (
  * raw HTML composer chips in `rich-editor.ts`. Neutral subtle wash + plain
  * muted-foreground text so chips read as quiet tags on any bubble color. */
 export const DIRECTIVE_CHIP_CLASS =
-  'mx-0.5 inline-flex max-w-56 items-center gap-1 rounded px-1.5 py-0.5 align-[0.02em] text-[0.86em] font-normal leading-none bg-[color-mix(in_srgb,currentColor_8%,transparent)] text-muted-foreground'
+  'mx-0.5 inline-flex max-w-56 items-center gap-1 rounded px-1.5 py-0.5 align-middle text-[0.86em] font-normal leading-none bg-[color-mix(in_srgb,currentColor_8%,transparent)] text-muted-foreground'
 
 /**
  * Parses our composer's `@type:value` references into directive segments
@@ -113,7 +118,7 @@ export const DIRECTIVE_CHIP_CLASS =
 const CANONICAL_DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/g
 
 const HERMES_DIRECTIVE_RE = new RegExp(
-  '@(file|folder|url|image|tool|line|terminal):(' + '`[^`\\n]+`' + '|"[^"\\n]+"' + "|'[^'\\n]+'" + '|\\S+' + ')',
+  '@(file|folder|url|image|tool|line|terminal|session):(' + '`[^`\\n]+`' + '|"[^"\\n]+"' + "|'[^'\\n]+'" + '|\\S+' + ')',
   'g'
 )
 
@@ -261,6 +266,14 @@ function shortLabel(type: HermesRefType, id: string): string {
     } catch {
       return id
     }
+  }
+
+  // `@session:<profile>/<id>` — show a short id; the composer chip carries the
+  // friendly title, but once sent the wire form only has the id.
+  if (type === 'session') {
+    const sid = id.split('/').filter(Boolean).pop() || id
+
+    return sid.length > 10 ? `${sid.slice(0, 8)}…` : sid
   }
 
   const tail = id.split(/[\\/]/).filter(Boolean).pop()

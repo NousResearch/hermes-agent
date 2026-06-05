@@ -7820,10 +7820,19 @@ def _kill_stale_dashboard_processes(
     exclude: set[int] | None = None
     raw_pid = os.environ.get("HERMES_DESKTOP_CHILD_PID")
     if raw_pid:
-        try:
-            exclude = {int(raw_pid)}
-        except (ValueError, TypeError):
-            pass
+        # The desktop may manage several backends (one per active profile) and
+        # passes them comma-separated; a lone int still parses for back-compat.
+        parsed: set[int] = set()
+        for part in raw_pid.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                parsed.add(int(part))
+            except (ValueError, TypeError):
+                pass
+        if parsed:
+            exclude = parsed
 
     pids = _find_stale_dashboard_pids(exclude_pids=exclude)
     if not pids:
@@ -8020,20 +8029,12 @@ def _update_via_zip(args):
     # individually so update does not silently strip working capabilities.
     print("→ Updating Python dependencies...")
 
-    from hermes_cli.managed_uv import ensure_uv, rebuild_venv, update_managed_uv
+    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
     # Keep managed uv current — runs `uv self update` if we already have one.
     update_managed_uv()
 
-    uv_bin, fresh_bootstrap = ensure_uv()
-    # First-time managed uv install on an existing checkout: the old venv
-    # may point to a Python without FTS5.  Rebuild it so the new managed
-    # uv provides a fresh interpreter with FTS5 guaranteed.
-    if fresh_bootstrap and uv_bin:
-        if not rebuild_venv(uv_bin, PROJECT_ROOT / "venv"):
-            raise RuntimeError(
-                "venv rebuild failed; aborting update before dependency install"
-            )
+    uv_bin = ensure_uv()
 
     pip_cmd = [sys.executable, "-m", "pip"]
     if not uv_bin:
@@ -8686,48 +8687,6 @@ def _venv_scripts_dir() -> Path | None:
         return None
     scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
     return scripts if scripts.is_dir() else None
-
-
-def _wait_for_interpreter_venv_ready(*, timeout: float = 15.0) -> bool:
-    """Ensure the venv hosting ``sys.executable`` has an intact ``pyvenv.cfg``.
-
-    During ``hermes update`` the managed-uv path can rebuild the project venv
-    (``rebuild_venv`` → ``shutil.rmtree`` + ``uv venv``) before the
-    desktop-rebuild and profile-skills-sync steps run. Both of those steps
-    spawn a child process with ``sys.executable``. If they fire while the venv
-    is mid-rewrite, the interpreter launcher finds the venv directory but no
-    ``pyvenv.cfg`` yet and aborts with the bare stderr line
-    ``No pyvenv.cfg file`` — surfacing as a spurious "Desktop build failed" /
-    "sync failed" on an update that otherwise succeeded.
-
-    A venv's ``pyvenv.cfg`` sits one level up from the interpreter's ``bin`` /
-    ``Scripts`` dir. If ``sys.executable`` is NOT a venv interpreter (no
-    sibling marker dir, e.g. a system Python on PATH), there is nothing to
-    wait for and we return True immediately. Otherwise we poll briefly for the
-    marker to (re)appear — the rewrite window is short — and return whether
-    it's present. Best-effort: never raises, callers proceed regardless.
-    """
-    try:
-        exe = Path(sys.executable).resolve()
-    except Exception:
-        return True
-
-    venv_dir = exe.parent.parent  # .../venv/{bin,Scripts}/python -> .../venv
-    bin_dir = venv_dir / ("Scripts" if _is_windows() else "bin")
-    if not bin_dir.is_dir():
-        # Not a venv-hosted interpreter — pyvenv.cfg is irrelevant.
-        return True
-
-    cfg = venv_dir / "pyvenv.cfg"
-    if cfg.is_file():
-        return True
-
-    deadline = _time.monotonic() + max(0.0, timeout)
-    while _time.monotonic() < deadline:
-        if cfg.is_file():
-            return True
-        _time.sleep(0.25)
-    return cfg.is_file()
 
 
 def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
@@ -10124,7 +10083,7 @@ def _cmd_update_pip(args):
     # Keep managed uv current before using it.
     update_managed_uv()
 
-    uv, _fresh_bootstrap = ensure_uv()
+    uv = ensure_uv()
     in_venv = sys.prefix != sys.base_prefix
     # pipx-managed installs live under .../pipx/venvs/<name>/...
     pipx_managed = "pipx" in sys.prefix.split(os.sep)
@@ -10218,7 +10177,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 return
             print("✗ Not a git repository. Please reinstall:")
             print(
-                "  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+                "  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
             )
             sys.exit(1)
 
@@ -10566,20 +10525,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
         print("→ Updating Python dependencies...")
-        from hermes_cli.managed_uv import ensure_uv, rebuild_venv, update_managed_uv
+        from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
         # Keep managed uv current — runs `uv self update` if we already have one.
         update_managed_uv()
 
-        uv_bin, fresh_bootstrap = ensure_uv()
-        # First-time managed uv install on an existing checkout: the old venv
-        # may point to a Python without FTS5.  Rebuild it so the new managed
-        # uv provides a fresh interpreter with FTS5 guaranteed.
-        if fresh_bootstrap and uv_bin:
-            if not rebuild_venv(uv_bin, PROJECT_ROOT / "venv"):
-                raise RuntimeError(
-                    "venv rebuild failed; aborting update before dependency install"
-                )
+        uv_bin = ensure_uv()
 
         pip_cmd = [sys.executable, "-m", "pip"]
         if not uv_bin:
@@ -10642,18 +10593,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
         if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
-            # The Python-dependency step above may have rebuilt the venv that
-            # hosts sys.executable. Wait for its pyvenv.cfg to settle before
-            # spawning, or the child interpreter aborts with "No pyvenv.cfg
-            # file" and the rebuild spuriously "fails" on a successful update.
-            _wait_for_interpreter_venv_ready()
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Stream the build output live (long Electron builds otherwise
             # look hung). On the rare nonzero exit, retry once after waiting
             # again for the venv — this covers a still-settling rebuild window
             # the first wait didn't fully catch.
             build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
-            if build_result.returncode != 0 and _wait_for_interpreter_venv_ready():
+            if build_result.returncode != 0:
                 build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
@@ -10710,10 +10656,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if all_profiles:
                 print()
                 print("→ Syncing bundled skills to all profiles...")
-                # seed_profile_skills spawns sys.executable; if the venv was
-                # just rebuilt above, wait for pyvenv.cfg before the loop so
-                # the children don't abort with "No pyvenv.cfg file".
-                _wait_for_interpreter_venv_ready()
                 for p in all_profiles:
                     try:
                         r = seed_profile_skills(p.path, quiet=True)

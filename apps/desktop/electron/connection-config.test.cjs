@@ -21,6 +21,7 @@ const {
   cookiesHaveSession,
   normalizeRemoteBaseUrl,
   resolveAuthMode,
+  resolveTestWsUrl,
   tokenPreview
 } = require('./connection-config.cjs')
 
@@ -158,4 +159,53 @@ test('tokenPreview returns set for short tokens', () => {
 
 test('tokenPreview returns a masked suffix for long tokens', () => {
   assert.equal(tokenPreview('abcdefghijklmnop'), '...klmnop')
+})
+
+// --- resolveTestWsUrl ---
+//
+// The "Test remote" button must exercise the same WS transport the app uses,
+// and must FAIL (not skip) when an OAuth session can't mint a ws-ticket — that
+// is the exact false-positive PR #39098 set out to eliminate.
+
+test('resolveTestWsUrl (token mode) builds a ?token= URL the WS probe can use', async () => {
+  const url = await resolveTestWsUrl('https://gw.example.com', 'token', 'tok123')
+  assert.equal(url, 'wss://gw.example.com/api/ws?token=tok123')
+})
+
+test('resolveTestWsUrl (token mode, no token) returns null — genuine skip', async () => {
+  assert.equal(await resolveTestWsUrl('https://gw.example.com', 'token', null), null)
+})
+
+test('resolveTestWsUrl (oauth, mint ok) builds a ?ticket= URL', async () => {
+  const url = await resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
+    mintTicket: async () => 'tkt-9'
+  })
+  assert.equal(url, 'wss://gw.example.com/api/ws?ticket=tkt-9')
+})
+
+test('resolveTestWsUrl (oauth, mint FAILS) throws — must NOT skip WS validation', async () => {
+  await assert.rejects(
+    () =>
+      resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
+        mintTicket: async () => {
+          throw new Error('401 ticket mint failed')
+        }
+      }),
+    err => {
+      // Actionable, points the user at re-auth, and preserves the cause + flag
+      // the boot overlay uses to offer a sign-in prompt.
+      assert.match(err.message, /WebSocket ticket/i)
+      assert.match(err.message, /sign in again/i)
+      assert.equal(err.needsOauthLogin, true)
+      assert.ok(err.cause instanceof Error)
+      return true
+    }
+  )
+})
+
+test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {
+  await assert.rejects(
+    () => resolveTestWsUrl('https://gw.example.com', 'oauth', null),
+    /mintTicket function is required/
+  )
 })

@@ -76,11 +76,10 @@ class TestEnsureUv:
         _make_executable(tmp_path / "bin" / "uv")
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
             from hermes_cli.managed_uv import ensure_uv
-            path, fresh = ensure_uv()
+            path = ensure_uv()
             assert path == str(tmp_path / "bin" / "uv")
-            assert fresh is False
 
-    def test_installs_if_missing_sets_bootstrap_flag(self, tmp_path):
+    def test_installs_if_missing(self, tmp_path):
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv._install_uv") as mock_install:
             # Simulate the installer creating the binary
@@ -89,127 +88,16 @@ class TestEnsureUv:
             mock_install.side_effect = fake_install
 
             from hermes_cli.managed_uv import ensure_uv
-            path, fresh = ensure_uv()
+            path = ensure_uv()
             assert path == str(tmp_path / "bin" / "uv")
-            assert fresh is True
             mock_install.assert_called_once()
 
-    def test_install_failure_returns_none_false(self, tmp_path):
+    def test_install_failure_returns_none(self, tmp_path):
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv._install_uv", side_effect=RuntimeError("network down")):
             from hermes_cli.managed_uv import ensure_uv
-            path, fresh = ensure_uv()
+            path = ensure_uv()
             assert path is None
-            assert fresh is False
-
-
-# ---------------------------------------------------------------------------
-# rebuild_venv
-# ---------------------------------------------------------------------------
-
-class TestRebuildVenv:
-    def test_moves_old_venv_aside_and_creates_new(self, tmp_path):
-        """The old venv is moved aside to <venv>.old (never rmtree'd in place),
-        uv is invoked with --clear, the moved-aside backup is removed on
-        success, and the rebuilt interpreter is reported."""
-        venv_dir = tmp_path / "venv"
-        venv_dir.mkdir()
-        (venv_dir / "old_file").write_text("stale")
-
-        uv_bin = str(tmp_path / "bin" / "uv")
-        call_log: list[list[str]] = []
-
-        def fake_run(cmd, **kwargs):
-            call_log.append(list(cmd))
-            m = MagicMock(returncode=0, stderr="", stdout="")
-            if len(cmd) >= 2 and cmd[1] == "venv":
-                # Simulate uv creating the venv dir with a python interpreter
-                bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
-                bin_dir.mkdir(parents=True, exist_ok=True)
-                python_name = "python.exe" if os.name == "nt" else "python"
-                (bin_dir / python_name).write_text("#!/bin/sh\necho Python 3.11.0")
-            elif "--version" in cmd:
-                m.stdout = "Python 3.11.0"
-            return m
-
-        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run):
-            from hermes_cli.managed_uv import rebuild_venv
-            result = rebuild_venv(uv_bin, venv_dir)
-
-        assert result is True
-        # uv venv was invoked exactly once, always with --clear.
-        venv_calls = [c for c in call_log if len(c) >= 2 and c[1] == "venv"]
-        assert len(venv_calls) == 1, f"expected 1 venv call, got {venv_calls}"
-        assert "--clear" in venv_calls[0]
-        # The moved-aside backup is cleaned up after a successful rebuild.
-        assert not (tmp_path / "venv.old").exists()
-
-    def test_aborts_without_deleting_when_venv_in_use(self, tmp_path):
-        """If os.replace fails (Windows file lock — venv in use), we must abort
-        cleanly WITHOUT deleting the venv and WITHOUT invoking uv."""
-        venv_dir = tmp_path / "venv"
-        venv_dir.mkdir()
-        (venv_dir / "locked") .write_text("held open")
-        uv_bin = str(tmp_path / "bin" / "uv")
-        call_log: list[list[str]] = []
-
-        def fake_run(cmd, **kwargs):
-            call_log.append(list(cmd))
-            return MagicMock(returncode=0, stderr="", stdout="")
-
-        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
-             patch("hermes_cli.managed_uv.os.replace", side_effect=OSError("in use")):
-            from hermes_cli.managed_uv import rebuild_venv
-            result = rebuild_venv(uv_bin, venv_dir)
-
-        assert result is False
-        # venv left fully intact, uv never invoked.
-        assert venv_dir.exists() and (venv_dir / "locked").exists()
-        assert [c for c in call_log if len(c) >= 2 and c[1] == "venv"] == []
-
-    def test_restores_backup_when_rebuild_fails(self, tmp_path):
-        """If uv venv exits non-zero, the moved-aside venv is restored so we
-        never leave Hermes with no venv at all."""
-        venv_dir = tmp_path / "venv"
-        venv_dir.mkdir()
-        (venv_dir / "marker").write_text("original")
-        uv_bin = str(tmp_path / "bin" / "uv")
-
-        def fake_run(cmd, **kwargs):
-            return MagicMock(returncode=1, stderr="boom", stdout="")
-
-        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run):
-            from hermes_cli.managed_uv import rebuild_venv
-            result = rebuild_venv(uv_bin, venv_dir)
-
-        assert result is False
-        # Original venv restored from the .old backup.
-        assert venv_dir.exists() and (venv_dir / "marker").read_text() == "original"
-        assert not (tmp_path / "venv.old").exists()
-
-    def test_rebuild_failure_returns_false(self, tmp_path):
-        venv_dir = tmp_path / "venv"
-        uv_bin = str(tmp_path / "bin" / "uv")
-
-        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1, stderr="nope")
-            from hermes_cli.managed_uv import rebuild_venv
-            result = rebuild_venv(uv_bin, venv_dir)
-            assert result is False
-
-    def test_rebuild_success_without_python_returns_false(self, tmp_path):
-        """uv can exit 0 yet leave no interpreter; that must not count as success
-        (guard adapted from #38511)."""
-        venv_dir = tmp_path / "venv"
-        uv_bin = str(tmp_path / "bin" / "uv")
-
-        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            from hermes_cli.managed_uv import rebuild_venv
-            result = rebuild_venv(uv_bin, venv_dir)
-            assert result is False
-            # Returned before the `python --version` probe ran (only the uv venv call).
-            assert mock_run.call_count == 1
 
 
 # ---------------------------------------------------------------------------

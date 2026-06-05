@@ -29,19 +29,14 @@ def _patch_managed_uv(request):
         return shutil.which("uv")
 
     def _fake_ensure_uv():
-        path = shutil.which("uv")
-        return (path, False)  # never freshly bootstrapped in tests
+        return shutil.which("uv")
 
     def _fake_update_managed_uv():
         return None  # never actually self-update in tests
 
-    def _fake_rebuild_venv(*args, **kwargs):
-        return True  # no-op in tests
-
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
-         patch("hermes_cli.managed_uv.rebuild_venv", side_effect=_fake_rebuild_venv):
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
         yield
 
 def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch, tmp_path):
@@ -421,41 +416,6 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
     assert len(install_cmds) == 1
     assert ".[all]" in install_cmds[0]
-
-
-def test_cmd_update_aborts_when_fresh_managed_uv_rebuild_fails(monkeypatch, tmp_path):
-    """A failed fresh managed-uv venv rebuild must not continue into pip install
-    (guard adapted from #38511)."""
-    _setup_update_mocks(monkeypatch, tmp_path)
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
-
-    recorded = []
-
-    def fake_run(cmd, **kwargs):
-        recorded.append(cmd)
-        # Tolerant matching: the update flow's exact git invocations vary by
-        # checkout, so key off the verb. Branch detection must return a real name
-        # and rev-list a parseable count, or the flow aborts early before it ever
-        # reaches the venv rebuild this test exercises.
-        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git":
-            if "rev-parse" in cmd:
-                return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-            if "rev-list" in cmd:
-                return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-            if "pull" in cmd:
-                return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
-
-    with patch("hermes_cli.managed_uv.ensure_uv", return_value=("/usr/bin/uv", True)), \
-         patch("hermes_cli.managed_uv.rebuild_venv", return_value=False), \
-         pytest.raises(RuntimeError, match="venv rebuild failed"):
-        hermes_main.cmd_update(SimpleNamespace())
-
-    install_cmds = [c for c in recorded if "pip" in c and "install" in c]
-    assert install_cmds == []
 
 
 def test_install_with_optional_fallback_honors_custom_group(monkeypatch):

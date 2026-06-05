@@ -612,11 +612,12 @@ def load_cli_config() -> Dict[str, Any]:
         "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
         "docker_image": "TERMINAL_DOCKER_IMAGE",
         "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-        "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-        "modal_image": "TERMINAL_MODAL_IMAGE",
-        "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-        # SSH config
-        "ssh_host": "TERMINAL_SSH_HOST",
+            "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+            "modal_image": "TERMINAL_MODAL_IMAGE",
+            "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+            "daytona_orphan_reaper": "TERMINAL_DAYTONA_ORPHAN_REAPER",
+            # SSH config
+            "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",

@@ -992,6 +992,8 @@ _cleanup_running = False
 # calls for parallel subagents won't re-trigger the sweep.
 _docker_orphan_reaper_ran = False
 _docker_orphan_reaper_lock = threading.Lock()
+_daytona_orphan_reaper_ran = False
+_daytona_orphan_reaper_lock = threading.Lock()
 
 
 def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
@@ -1057,6 +1059,50 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
     except Exception as e:
         # Never fail the env-creation path because of a janitor problem.
         logger.debug("Docker orphan reaper raised: %s", e)
+
+
+def _maybe_reap_daytona_orphans(
+    container_config: Dict[str, Any],
+    current_task_id: str,
+) -> None:
+    """Run the Daytona orphan reaper once per process, if enabled."""
+    global _daytona_orphan_reaper_ran
+    if not container_config.get("daytona_orphan_reaper", True):
+        return
+    if _daytona_orphan_reaper_ran:
+        return
+    with _daytona_orphan_reaper_lock:
+        if _daytona_orphan_reaper_ran:
+            return
+        _daytona_orphan_reaper_ran = True
+
+    try:
+        lifetime = int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300"))
+    except (TypeError, ValueError):
+        lifetime = 300
+    lifetime = max(60, lifetime)
+    max_age = lifetime * 2
+
+    try:
+        from tools.environments.daytona import (
+            reap_orphan_sandboxes, _get_active_profile_name,
+        )
+    except ImportError:
+        return
+    try:
+        profile = _get_active_profile_name()
+        stopped = reap_orphan_sandboxes(
+            max_age_seconds=max_age,
+            current_task_id=current_task_id,
+            profile_filter=profile,
+        )
+        if stopped:
+            logger.info(
+                "Daytona orphan reaper stopped %d stale sandbox(es) for profile %s",
+                stopped, profile,
+            )
+    except Exception as e:
+        logger.debug("Daytona orphan reaper raised: %s", e)
 
 
 # Per-task environment overrides registry.
@@ -1375,6 +1421,9 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_orphan_reaper": os.getenv(
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
+        "daytona_orphan_reaper": os.getenv(
+            "TERMINAL_DAYTONA_ORPHAN_REAPER", "true"
+        ).lower() in {"true", "1", "yes"},
     }
 
 
@@ -1514,6 +1563,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     elif env_type == "daytona":
         # Lazy import so daytona SDK is only required when backend is selected.
         from tools.environments.daytona import DaytonaEnvironment as _DaytonaEnvironment
+        _maybe_reap_daytona_orphans(cc, task_id)
         return _DaytonaEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=int(cpu), memory=memory, disk=disk,
@@ -2214,6 +2264,7 @@ def terminal_tool(
                                 "docker_network": config.get("docker_network", True),
                                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
                                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+                                "daytona_orphan_reaper": config.get("daytona_orphan_reaper", True),
                             }
 
                         local_config = None

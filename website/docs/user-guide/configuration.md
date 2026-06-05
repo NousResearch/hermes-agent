@@ -362,11 +362,14 @@ terminal:
   container_memory: 5120           # MB → converted to GiB
   container_disk: 10240            # MB → converted to GiB (max 10 GiB)
   container_persistent: true       # Stop/resume instead of delete
+  daytona_orphan_reaper: true      # Reconcile stale sandboxes at startup
 ```
 
 **Required:** `DAYTONA_API_KEY` environment variable.
 
-**Persistence:** When enabled, sandboxes are stopped (not deleted) on cleanup and resumed on next session. Sandbox names follow the pattern `hermes-{task_id}`.
+**Persistence:** When enabled, sandboxes are stopped (not deleted) on cleanup and resumed on next session. Reuse is scoped to the exact Hermes profile and task labels, and resumed sandboxes receive fresh owner labels before they start. New sandbox names are unique; labels are the canonical identity.
+
+**Startup reconciliation:** Once per Python process, Hermes checks sandboxes in the active profile that are older than `2 × terminal.lifetime_seconds` with a 60-second minimum. It stops a sandbox only when its profile, task ID, and positive owner PID labels are complete and that PID is definitively dead. The current task, recent sandboxes, stopped or archived sandboxes, live owners, unknown PID states, SDK errors, and unreadable metadata are left untouched. The action is stop, never delete, so the persistent filesystem remains available. Profileless legacy sandboxes aren't reused or reaped. Set `terminal.daytona_orphan_reaper: false` to disable the sweep.
 
 **Disk limit:** Daytona enforces a 10 GiB maximum. Requests above this are capped with a warning.
 

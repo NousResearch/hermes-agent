@@ -39,6 +39,43 @@ from utils import base_url_host_matches, base_url_hostname
 logger = logging.getLogger(__name__)
 
 
+_STREAM_UNSUPPORTED_PHRASE_GROUPS: tuple[tuple[str, ...], ...] = (
+    (r"stream", r"not supported"),
+    (r"streaming", r"not supported"),
+    (r"streaming", r"not available"),
+    (r"streaming", r"not enabled"),
+    (r"stream", r"unsupported"),
+    (r"does not support", r"stream"),
+    (r"doesn't support", r"stream"),
+    (r"cannot stream",),
+    (r"streaming is disabled",),
+)
+
+
+def _compile_phrase(part: str) -> "re.Pattern[str]":
+    # Word boundaries keep "stream"/"streaming" from matching inside
+    # "downstream"/"upstream", which would misclassify unrelated errors.
+    if part in ("stream", "streaming"):
+        return re.compile(r"\bstream(?:ing)?\b")
+    return re.compile(r"\b" + re.escape(part) + r"\b")
+
+
+_STREAM_UNSUPPORTED_COMPILED: tuple[tuple[re.Pattern[str], ...], ...] = tuple(
+    tuple(_compile_phrase(part) for part in group)
+    for group in _STREAM_UNSUPPORTED_PHRASE_GROUPS
+)
+
+
+def is_stream_unsupported_error(error: BaseException) -> bool:
+    """Return True when a provider error means streaming itself is unsupported."""
+    msg = str(error).lower()
+    if not msg:
+        return False
+    return any(
+        all(pat.search(msg) for pat in group) for group in _STREAM_UNSUPPORTED_COMPILED
+    )
+
+
 def _ra():
     """Lazy ``run_agent`` reference.
 
@@ -2253,11 +2290,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "try again in a moment."
                         )
                     else:
-                        _err_lower = str(e).lower()
-                        _is_stream_unsupported = (
-                            "stream" in _err_lower
-                            and "not supported" in _err_lower
-                        )
+                        _is_stream_unsupported = is_stream_unsupported_error(e)
                         if _is_stream_unsupported:
                             agent._disable_streaming = True
                             agent._safe_print(

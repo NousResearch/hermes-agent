@@ -1476,6 +1476,7 @@ class APIServerAdapter(BasePlatformAdapter):
             fork_id,
             "api_server",
             model=source.get("model"),
+            model_config={"_branched_from": source_id},
             system_prompt=source.get("system_prompt"),
             parent_session_id=source_id,
         )

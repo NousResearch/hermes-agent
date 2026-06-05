@@ -1482,12 +1482,25 @@ def _handle_read_file(args, **kw):
 
 def _handle_write_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    if not args.get("path") or not isinstance(args.get("path"), str):
+    # Accept `file_path`/`file_content` as aliases for `path`/`content`. The
+    # skill_manage tool's write_file action uses the `file_*` names, so models
+    # routinely carry that naming across to this tool (and vice versa) — a
+    # cross-tool footgun that otherwise rejects a fully-formed call and costs a
+    # wasted turn. Treat the synonyms as equivalent; the canonical names win
+    # when both are present.
+    path = args.get("path")
+    if not path:
+        path = args.get("file_path")
+    content = args.get("content")
+    if content is None:
+        content = args.get("file_content")
+
+    if not path or not isinstance(path, str):
         return tool_error(
             "write_file: missing required field 'path'. Re-emit the tool call with "
             "both 'path' and 'content' set."
         )
-    if "content" not in args:
+    if content is None:
         return tool_error(
             "write_file: missing required field 'content'. The tool call included a "
             "path but no content argument — this is almost always a dropped-arg bug "
@@ -1495,13 +1508,13 @@ def _handle_write_file(args, **kw):
             "payload, or use execute_code with hermes_tools.write_file() for very "
             "large files."
         )
-    if not isinstance(args["content"], str):
+    if not isinstance(content, str):
         return tool_error(
             f"write_file: 'content' must be a string, got "
-            f"{type(args['content']).__name__}."
+            f"{type(content).__name__}."
         )
     return write_file_tool(
-        path=args["path"], content=args["content"], task_id=tid,
+        path=path, content=content, task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
     )
 

@@ -3660,6 +3660,8 @@ def complete_task(
             )
         if cur.rowcount != 1:
             return False
+        if isinstance(metadata, dict):
+            _persist_scratch_completion_artifacts(conn, task_id, metadata)
         run_id = _end_run(
             conn, task_id,
             outcome="completed", status="done",
@@ -3745,6 +3747,143 @@ def complete_task(
 # Workspace / tmux cleanup
 # ---------------------------------------------------------------------------
 
+def _persist_scratch_completion_artifacts(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: dict,
+) -> None:
+    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+    raw_artifacts = metadata.get("artifacts")
+    if not isinstance(raw_artifacts, (list, tuple)):
+        return
+
+    row = conn.execute(
+        "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
+        return
+
+    workspace = Path(row["workspace_path"]).expanduser()
+    is_managed, board = _managed_scratch_path_info(workspace)
+    if not is_managed:
+        return
+
+    try:
+        workspace_root = workspace.resolve()
+    except OSError:
+        return
+
+    attachment_dir = task_attachments_dir(task_id, board=board)
+    persisted: list[str] = []
+    used_destinations: set[Path] = set()
+    changed = False
+
+    for item in raw_artifacts:
+        artifact = str(item).strip() if isinstance(item, str) else ""
+        if not artifact:
+            continue
+        src = Path(artifact).expanduser()
+        try:
+            resolved_src = src.resolve()
+        except OSError:
+            persisted.append(artifact)
+            continue
+
+        if not src.is_file() or not resolved_src.is_relative_to(workspace_root):
+            persisted.append(artifact)
+            continue
+
+        try:
+            attachment_dir.mkdir(parents=True, exist_ok=True)
+            dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
+            shutil.copy2(resolved_src, dest)
+        except Exception as exc:
+            _log.debug(
+                "Failed to persist completion artifact for task %s: %s",
+                task_id,
+                exc,
+            )
+            persisted.append(artifact)
+            continue
+
+        used_destinations.add(dest)
+        persisted.append(str(dest))
+        changed = True
+
+    if changed:
+        metadata["artifacts"] = persisted
+
+
+def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> Path:
+    """Return a non-conflicting path under ``directory`` for ``filename``."""
+    safe_name = Path(filename).name or "artifact"
+    candidate = directory / safe_name
+    if candidate not in used and not candidate.exists():
+        return candidate
+
+    stem = Path(safe_name).stem or "artifact"
+    suffix = Path(safe_name).suffix
+    idx = 1
+    while True:
+        candidate = directory / f"{stem}_{idx}{suffix}"
+        if candidate not in used and not candidate.exists():
+            return candidate
+        idx += 1
+
+
+def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
+    """Return whether *p* is managed scratch storage and the matching board."""
+    try:
+        p_abs = p.resolve(strict=False)
+    except OSError:
+        return False, None
+    roots: list[tuple[Path, Optional[str]]] = []
+    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    if override:
+        try:
+            roots.append((Path(override).expanduser().resolve(strict=False), None))
+        except OSError:
+            pass
+    try:
+        home = kanban_home()
+    except OSError:
+        home = None
+    if home is not None:
+        try:
+            roots.append(((home / "kanban" / "workspaces").resolve(strict=False), DEFAULT_BOARD))
+        except OSError:
+            pass
+        try:
+            boards_parent = (home / "kanban" / "boards").resolve(strict=False)
+        except OSError:
+            boards_parent = None
+        if boards_parent is not None:
+            try:
+                entries = list(boards_parent.iterdir())
+            except OSError:
+                entries = []
+            for entry in entries:
+                try:
+                    if not entry.is_dir():
+                        continue
+                except OSError:
+                    continue
+                try:
+                    roots.append(((entry / "workspaces").resolve(strict=False), entry.name))
+                except OSError:
+                    continue
+    for root, board in roots:
+        if p_abs == root:
+            continue
+        try:
+            if p_abs.is_relative_to(root):
+                return True, board
+        except ValueError:
+            continue
+    return False, None
+
+
 def _is_managed_scratch_path(p: Path) -> bool:
     """Return True iff *p* is a strict descendant of a kanban-managed scratch root.
 
@@ -3770,54 +3909,8 @@ def _is_managed_scratch_path(p: Path) -> bool:
     real source tree can otherwise pair with ``workspace_kind='scratch'`` and
     cause task completion to delete user data (#28818).
     """
-    try:
-        p_abs = p.resolve(strict=False)
-    except OSError:
-        return False
-    roots: list[Path] = []
-    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
-    if override:
-        try:
-            roots.append(Path(override).expanduser().resolve(strict=False))
-        except OSError:
-            pass
-    try:
-        home = kanban_home()
-    except OSError:
-        home = None
-    if home is not None:
-        try:
-            roots.append((home / "kanban" / "workspaces").resolve(strict=False))
-        except OSError:
-            pass
-        try:
-            boards_parent = (home / "kanban" / "boards").resolve(strict=False)
-        except OSError:
-            boards_parent = None
-        if boards_parent is not None:
-            try:
-                entries = list(boards_parent.iterdir())
-            except OSError:
-                entries = []
-            for entry in entries:
-                try:
-                    if not entry.is_dir():
-                        continue
-                except OSError:
-                    continue
-                try:
-                    roots.append((entry / "workspaces").resolve(strict=False))
-                except OSError:
-                    continue
-    for root in roots:
-        if p_abs == root:
-            continue
-        try:
-            if p_abs.is_relative_to(root):
-                return True
-        except ValueError:
-            continue
-    return False
+    is_managed, _board = _managed_scratch_path_info(p)
+    return is_managed
 
 
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:

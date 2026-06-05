@@ -1351,20 +1351,15 @@ function isShimLocked(shimPath) {
 // only signals the direct child, so on Windows a backend `hermes.exe` that
 // spawned its own grandchildren (a `hermes` REPL, a pty terminal session, the
 // gateway) would survive and keep the venv shim locked. taskkill /T /F reaps
-// the whole tree synchronously. POSIX uses SIGKILL on the negative pgid where
-// possible, falling back to a plain kill.
+// the whole tree synchronously. Windows-only: this is called solely from the
+// Windows shim-unlock path, and the backend is NOT spawned detached (so it's
+// not a process-group leader — a POSIX negative-pgid kill would be meaningless
+// here anyway). POSIX teardown stays with the existing before-quit SIGTERM.
 function forceKillProcessTree(pid) {
+  if (!IS_WINDOWS) return
   if (!Number.isInteger(pid) || pid <= 0) return
   try {
-    if (IS_WINDOWS) {
-      execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
-    } else {
-      try {
-        process.kill(-pid, 'SIGKILL')
-      } catch {
-        process.kill(pid, 'SIGKILL')
-      }
-    }
+    execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
   } catch {
     // Already gone, or no permission — best effort; the unlock wait below is
     // the real gate.
@@ -1381,7 +1376,15 @@ function forceKillProcessTree(pid) {
 // a half-applied install (ryanc's update.log). Here we tree-kill the primary +
 // pool backends and poll the shim until it's writable (or a bounded timeout),
 // so by the time we spawn the updater the lock is genuinely gone.
+//
+// Windows-only: the venv-shim mandatory lock is a Windows phenomenon. On
+// macOS/Linux there's no REPLACE-on-running-exe block, the existing before-quit
+// SIGTERM + app.quit() teardown already works (the macOS path is flawless), and
+// aggressively SIGKILL-ing the backend here would be an untested behavior change
+// for no benefit. So we no-op off Windows and leave that path exactly as it was.
 async function releaseBackendLockForUpdate(updateRoot) {
+  if (!IS_WINDOWS) return { unlocked: true }
+
   // Collect every backend PID the desktop owns: primary window backend + pool.
   const pids = []
   if (hermesProcess && Number.isInteger(hermesProcess.pid)) pids.push(hermesProcess.pid)
@@ -1399,8 +1402,6 @@ async function releaseBackendLockForUpdate(updateRoot) {
   }
   stopAllPoolBackends()
   for (const pid of pids) forceKillProcessTree(pid)
-
-  if (!IS_WINDOWS) return { unlocked: true }
 
   const shim = venvHermesShimPath(updateRoot)
   const deadlineMs = Date.now() + 15000

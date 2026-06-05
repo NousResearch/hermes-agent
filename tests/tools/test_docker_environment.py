@@ -786,6 +786,84 @@ def test_reuse_falls_back_to_fresh_run_when_start_fails(monkeypatch):
     assert run_invocations, "fallback to fresh docker run must happen on start failure"
 
 
+def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
+    """When ``docker run`` fails (e.g. exit 125), the partially-created
+    container must be removed by name.
+
+    Docker can create the container object before failing to start it,
+    leaving a stale ``Created`` container. The exited-only orphan reaper
+    (``reap_orphan_containers``, ``status=exited``) never catches a
+    ``Created`` orphan, so without this cleanup it leaks permanently.
+    Regression for #7439. Salvage of #7440 (@Tranquil-Flow).
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    cleanup_calls = []
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "ps":
+                # No reusable container -> fall through to a fresh `docker run`.
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if sub == "run":
+                raise subprocess.CalledProcessError(
+                    125, cmd, output="", stderr="docker: Error response from daemon"
+                )
+            if sub == "rm":
+                cleanup_calls.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        _make_dummy_env()
+
+    assert len(cleanup_calls) == 1, "docker rm should be called once for the orphaned container"
+    rm_cmd = cleanup_calls[0]
+    assert rm_cmd[1] == "rm" and rm_cmd[2] == "-f"
+    assert rm_cmd[3].startswith("hermes-"), "should remove the container by its generated name"
+
+
+def test_docker_run_timeout_cleans_up_orphaned_container(monkeypatch):
+    """When ``docker run`` times out (e.g. slow image pull), the
+    partially-created container must be removed. Salvage of #7440
+    (@Tranquil-Flow); regression for #7439.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    cleanup_calls = []
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "ps":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if sub == "run":
+                raise subprocess.TimeoutExpired(cmd, 120)
+            if sub == "rm":
+                cleanup_calls.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _make_dummy_env()
+
+    assert len(cleanup_calls) == 1, "docker rm should be called once for the orphaned container"
+    rm_cmd = cleanup_calls[0]
+    assert rm_cmd[1] == "rm" and rm_cmd[2] == "-f"
+    assert rm_cmd[3].startswith("hermes-"), "should remove the container by its generated name"
+
+
 def test_no_reuse_when_persist_across_processes_disabled(monkeypatch):
     """Opt-out path: ``persist_across_processes=False`` skips the ps probe
     entirely and always starts a fresh container, matching the pre-fix

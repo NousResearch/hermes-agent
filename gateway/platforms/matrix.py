@@ -804,6 +804,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._device_id: str = config.extra.get("device_id", "") or os.getenv(
             "MATRIX_DEVICE_ID", ""
         )
+        self._device_id_unverified: bool = False
 
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
@@ -1036,6 +1037,12 @@ class MatrixAdapter(BasePlatformAdapter):
         self, client: Any, local_ed25519: str
     ) -> bool:
         """Re-query the server after share_keys() and verify our ed25519 key matches."""
+        if not client.device_id or self._device_id_unverified:
+            logger.warning(
+                "Matrix: skipping post-upload key verification — "
+                "device_id not yet established"
+            )
+            return True
         try:
             resp = await client.query_keys({client.mxid: [client.device_id]})
             dk = getattr(resp, "device_keys", {}) or {}
@@ -1062,6 +1069,12 @@ class MatrixAdapter(BasePlatformAdapter):
         Returns True if keys are valid or were successfully re-uploaded.
         Returns False if verification fails (caller should refuse E2EE).
         """
+        if not client.device_id or self._device_id_unverified:
+            logger.warning(
+                "Matrix: skipping device key verification — "
+                "device_id not yet established"
+            )
+            return True
         try:
             resp = await client.query_keys({client.mxid: [client.device_id]})
         except Exception as exc:
@@ -1136,6 +1149,16 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Connect to the Matrix homeserver and start syncing."""
+        # Disconnect any existing client cleanly before reconnecting.
+        # The gateway reconnect watcher creates a new adapter instance
+        # without calling disconnect() on the old one, which can leave
+        # multiple OlmMachine handles on the same crypto store.
+        if self._client is not None:
+            try:
+                await self.disconnect()
+            except Exception as exc:
+                logger.warning("Matrix: error disconnecting before reconnect: %s", exc)
+
         from mautrix.api import HTTPAPI
         from mautrix.client import Client
         from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
@@ -1185,6 +1208,43 @@ class MatrixAdapter(BasePlatformAdapter):
                 effective_device_id = self._device_id or resolved_device_id
                 if effective_device_id:
                     client.device_id = effective_device_id
+
+                if not client.device_id:
+                    # whoami didn't return a device_id (valid per the Matrix
+                    # spec — only user_id is guaranteed).  Try to discover
+                    # it via /keys/query with an empty device list, which
+                    # returns all devices for the user.  If there is exactly
+                    # one device we can safely use its ID; otherwise the
+                    # device ID is unresolvable and key verification must
+                    # be skipped (see _device_id_unverified).
+                    try:
+                        dev_resp = await client.query_keys({client.mxid: []})
+                        all_devices = (
+                            (getattr(dev_resp, "device_keys", {}) or {})
+                            .get(str(client.mxid)) or {}
+                        )
+                        if len(all_devices) == 1:
+                            client.device_id = next(iter(all_devices))
+                        elif len(all_devices) == 0:
+                            logger.warning(
+                                "Matrix: no devices found for %s — "
+                                "key verification will be skipped",
+                                client.mxid,
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "Matrix: device list query failed: %s", exc
+                        )
+
+                if not client.device_id:
+                    logger.warning(
+                        "Matrix: device_id could not be resolved for %s. "
+                        "Set MATRIX_DEVICE_ID for full key verification. "
+                        "E2EE will proceed without server-side device "
+                        "key confirmation.",
+                        client.mxid,
+                    )
+                    self._device_id_unverified = True
 
                 logger.info(
                     "Matrix: using access token for %s%s",

@@ -107,7 +107,8 @@ export const en: Translations = {
     label: 'Language',
     description: 'Choose the language for the desktop interface.',
     saving: 'Saving language…',
-    saveError: 'Language update failed'
+    saveError: 'Language update failed',
+    switchTo: 'Switch language'
   },
 
   settings: {
@@ -119,8 +120,13 @@ export const en: Translations = {
     exportFailed: 'Export failed',
     resetFailed: 'Reset failed',
     nav: {
+      providers: 'Providers',
+      providerAccounts: 'Accounts',
+      providerApiKeys: 'API keys',
       gateway: 'Gateway',
       apiKeys: 'Tools & Keys',
+      keysTools: 'Tools',
+      keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
       about: 'About'
@@ -521,8 +527,7 @@ export const en: Translations = {
     editTitle: 'Edit cron job',
     createTitle: 'New cron job',
     editDesc: 'Update the schedule, prompt, or delivery target. Changes apply on next run.',
-    createDesc:
-      'Schedule a prompt to run automatically. Use cron syntax or a natural phrase like "every 15 minutes".',
+    createDesc: 'Schedule a prompt to run automatically. Use cron syntax or a natural phrase like "every 15 minutes".',
     nameLabel: 'Name',
     namePlaceholder: 'Morning briefing',
     promptLabel: 'Prompt',

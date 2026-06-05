@@ -101,7 +101,8 @@ export const zh: Translations = {
     label: '语言',
     description: '选择桌面界面的语言。',
     saving: '正在保存语言…',
-    saveError: '语言更新失败'
+    saveError: '语言更新失败',
+    switchTo: '切换语言'
   },
 
   settings: {
@@ -113,8 +114,13 @@ export const zh: Translations = {
     exportFailed: '导出失败',
     resetFailed: '重置失败',
     nav: {
+      providers: '提供方',
+      providerAccounts: '账号',
+      providerApiKeys: 'API 密钥',
       gateway: '网关',
       apiKeys: '工具与密钥',
+      keysTools: '工具',
+      keysSettings: '设置',
       mcp: 'MCP',
       archivedChats: '已归档对话',
       about: '关于'
@@ -478,8 +484,7 @@ export const zh: Translations = {
     platformIntro: {
       telegram:
         '在 Telegram 中,与 @BotFather 对话,运行 /newbot,复制它给你的令牌。然后从 @userinfobot 获取你的数字用户 ID。',
-      discord:
-        '打开 Discord 开发者门户,创建应用,添加 Bot,然后复制其令牌。用正确的权限范围把机器人邀请到你的服务器。',
+      discord: '打开 Discord 开发者门户,创建应用,添加 Bot,然后复制其令牌。用正确的权限范围把机器人邀请到你的服务器。',
       slack: '创建 Slack 应用,启用 Socket Mode,安装到你的工作区,然后复制 bot 令牌和 app 级令牌。',
       mattermost: '在你的 Mattermost 服务器上,创建机器人账户或个人访问令牌,然后在此粘贴服务器 URL 和令牌。',
       matrix: '用机器人账户登录你的 homeserver,然后复制访问令牌、用户 ID 和 homeserver URL。',
@@ -495,7 +500,8 @@ export const zh: Translations = {
       wecom_callback: '设置一个企业微信自建应用,暴露其回调 URL,并提供 corp ID、secret、agent ID 和 AES key。',
       weixin: '登录微信公众平台,复制 AppID 和 Token,并把消息回调 URL 指向 Hermes。',
       qqbot: '在 QQ 开放平台(q.qq.com)注册一个应用,复制 App ID 和 Client Secret。',
-      api_server: '把 Hermes 暴露为兼容 OpenAI 的 API。设置一个鉴权密钥,然后把 Open WebUI / LobeChat 等指向 host:port。',
+      api_server:
+        '把 Hermes 暴露为兼容 OpenAI 的 API。设置一个鉴权密钥,然后把 Open WebUI / LobeChat 等指向 host:port。',
       webhook: '运行一个 HTTP 服务器,供其他工具(GitHub、GitLab、自定义应用)POST。用 secret 验证签名。'
     }
   },

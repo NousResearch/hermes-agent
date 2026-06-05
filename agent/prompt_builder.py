@@ -445,7 +445,7 @@ def _build_sticker_tag_hint() -> str:
     """Dynamically scan sticker directories and build tag hint for prompt."""
     import glob as _glob
     moods: set[str] = set()
-    for _base in [os.path.expanduser('~/.hermes/stickers'), os.path.expanduser('~/.hermes/output/stickers')]:
+    for _base in [os.path.expanduser('~/.hermes/stickers')]:
         if not os.path.isdir(_base):
             continue
         for _entry in os.listdir(_base):

@@ -24,11 +24,8 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Sticker directories — both scanned dynamically
-STICKER_DIRS = [
-    os.path.expanduser("~/.hermes/stickers"),        # new: subdirs by mood
-    os.path.expanduser("~/.hermes/output/stickers"),  # old: flat files
-]
+# Sticker base directory — all stickers stored as subdirectories by mood
+STICKER_DIR = os.path.expanduser("~/.hermes/stickers")
 TAG_PATTERN = re.compile(r"%([一-鿿]+)%")
 
 # Probability of actually sending a sticker (0.0 = never, 1.0 = always)
@@ -36,42 +33,26 @@ SEND_PROBABILITY = 0.5
 
 
 def _discover_moods() -> dict[str, list[str]]:
-    """Dynamically scan all sticker directories and build mood → files map.
+    """Dynamically scan sticker directory and build mood -> files map.
 
-    Returns dict of mood_name → list of image file paths.
-    Mood names come from directory names (new) or filename prefixes (old).
+    Returns dict of mood_name -> list of image file paths.
+    Each subdirectory under STICKER_DIR is a mood category.
     """
     moods: dict[str, list[str]] = {}
     image_exts = (".jpg", ".jpeg", ".gif", ".png", ".webp")
 
-    for base_dir in STICKER_DIRS:
-        if not os.path.isdir(base_dir):
+    if not os.path.isdir(STICKER_DIR):
+        return moods
+
+    for entry in os.listdir(STICKER_DIR):
+        subdir = os.path.join(STICKER_DIR, entry)
+        if not os.path.isdir(subdir):
             continue
-
-        # Check for subdirectories (new structure)
-        for entry in os.listdir(base_dir):
-            subdir = os.path.join(base_dir, entry)
-            if os.path.isdir(subdir):
-                files = []
-                for ext in image_exts:
-                    files.extend(glob.glob(os.path.join(subdir, f"*{ext}")))
-                if files:
-                    moods.setdefault(entry, []).extend(files)
-
-        # Check for flat files with mood prefix (old structure: mood_N.ext)
-        for fname in os.listdir(base_dir):
-            fpath = os.path.join(base_dir, fname)
-            if not os.path.isfile(fpath):
-                continue
-            _, ext = os.path.splitext(fname)
-            if ext.lower() not in image_exts:
-                continue
-            # Extract mood from filename: "加油_2.gif" → "加油"
-            parts = fname.rsplit(".", 1)[0]  # remove extension
-            if "_" in parts:
-                mood = parts.rsplit("_", 1)[0]  # take prefix before last _
-                if mood:
-                    moods.setdefault(mood, []).append(fpath)
+        files = []
+        for ext in image_exts:
+            files.extend(glob.glob(os.path.join(subdir, f"*{ext}")))
+        if files:
+            moods[entry] = files
 
     return moods
 

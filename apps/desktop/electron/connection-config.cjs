@@ -65,6 +65,59 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
   return `${wsScheme}://${parsed.host}${prefix}/api/ws?ticket=${encodeURIComponent(ticket)}`
 }
 
+/**
+ * Build the WS URL the renderer would connect with, so the connection test can
+ * exercise the same transport the app actually uses.
+ *
+ * The OAuth ticket-minter is injected (`mintTicket(baseUrl) -> Promise<ticket>`)
+ * so this stays electron-free and unit-testable; main.cjs passes the real
+ * `mintGatewayWsTicket`.
+ *
+ * Return semantics:
+ *   - token mode + token   → ws(s)://…/api/ws?token=…
+ *   - token mode, no token → null  (genuine skip; nothing to authenticate with)
+ *   - oauth, mint ok       → ws(s)://…/api/ws?ticket=…
+ *   - oauth, mint fails    → THROWS  (NOT a skip)
+ *
+ * The oauth-mint-failure throw is the important case: the real boot path
+ * (resolveRemoteBackend in main.cjs) treats a mint failure as a hard
+ * "session expired" auth error and refuses to connect. Swallowing it here
+ * would re-introduce the exact false-positive this test exists to catch —
+ * HTTP /api/status passes, the test reports "reachable", then the renderer
+ * can't authenticate /api/ws and boot dies with "Could not connect".
+ *
+ * @param {string} baseUrl
+ * @param {'token'|'oauth'} authMode
+ * @param {string|null} token
+ * @param {{ mintTicket: (baseUrl: string) => Promise<string> }} deps
+ * @returns {Promise<string|null>}
+ */
+async function resolveTestWsUrl(baseUrl, authMode, token, deps = {}) {
+  if (authMode === 'oauth') {
+    const mintTicket = deps.mintTicket
+    if (typeof mintTicket !== 'function') {
+      throw new Error('resolveTestWsUrl: a mintTicket function is required in OAuth mode.')
+    }
+    let ticket
+    try {
+      ticket = await mintTicket(baseUrl)
+    } catch (error) {
+      const err = new Error(
+        'Reached the gateway over HTTP, but could not mint a WebSocket ticket for the OAuth session ' +
+          '(it may have expired). Open Settings → Gateway and sign in again.'
+      )
+      err.needsOauthLogin = true
+      err.cause = error
+      throw err
+    }
+    return buildGatewayWsUrlWithTicket(baseUrl, ticket)
+  }
+  if (!token) {
+    return null
+  }
+  return buildGatewayWsUrl(baseUrl, token)
+}
+
 function tokenPreview(value) {
   const raw = String(value || '')
 
@@ -114,5 +167,6 @@ module.exports = {
   cookiesHaveSession,
   normalizeRemoteBaseUrl,
   resolveAuthMode,
+  resolveTestWsUrl,
   tokenPreview
 }

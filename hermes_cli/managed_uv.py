@@ -72,6 +72,9 @@ class _UvResult(str):
     Missing uv is the empty string (falsy) instead of ``None`` so legacy
     2-target call sites can still unpack a failure without raising, while
     ``if not uv_bin`` keeps working for single-value callers.
+
+    POSIX only. This wrapper is **never** returned on Windows — see
+    ``ensure_uv()`` for why the ``__iter__`` override is unsafe there.
     """
 
     fresh_bootstrap: bool
@@ -88,17 +91,11 @@ class _UvResult(str):
         return iter(((str(self) or None), self.fresh_bootstrap))
 
 
-def ensure_uv() -> "_UvResult":
-    """Return the managed uv path, installing it first if necessary.
-
-    Returns a :class:`_UvResult` (a ``str`` subclass) that is both usable
-    directly as the path and unpackable as ``(path, fresh_bootstrap)`` for
-    older call sites. On failure the result is falsy (``""``) — never raises —
-    so callers can fall back to pip gracefully.
-    """
+def _ensure_uv_path() -> Optional[str]:
+    """Resolve the managed uv path, installing it if necessary (plain ``str``/``None``)."""
     existing = resolve_uv()
     if existing:
-        return _UvResult(existing)
+        return existing
 
     target = managed_uv_path()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -110,7 +107,7 @@ def ensure_uv() -> "_UvResult":
     except Exception as exc:
         logger.warning("Managed uv install failed: %s", exc)
         print(f"  ✗ Failed to install managed uv: {exc}")
-        return _UvResult(None)
+        return None
 
     # Verify
     result = resolve_uv()
@@ -124,6 +121,37 @@ def ensure_uv() -> "_UvResult":
         print(f"  ✓ Managed uv installed ({version})")
     else:
         print("  ✗ Managed uv install appeared to succeed but binary not found")
+    return result
+
+
+def ensure_uv():
+    """Return the managed uv path, installing it first if necessary.
+
+    On **POSIX** the result is a :class:`_UvResult` (a ``str`` subclass) that is
+    both usable directly as the path *and* unpackable as
+    ``(path, fresh_bootstrap)`` for older call sites parked on a 2-tuple
+    release — see :class:`_UvResult` for the update-boundary rationale.
+
+    On **Windows** we deliberately return a plain ``str``/``None`` instead.
+    ``subprocess`` there serializes the argv via ``subprocess.list2cmdline``,
+    which iterates every entry *as a string* (``for c in arg``). The dependency
+    installer passes uv straight into the command list (``[uv_bin, "pip", ...]``),
+    so a ``_UvResult`` — whose ``__iter__`` yields ``(path, fresh_bootstrap)``
+    rather than characters — would inject the bool into the command line and
+    crash the install with ``TypeError: sequence item 1: expected str instance,
+    bool found``. A plain ``str`` matches the historical Windows contract and is
+    subprocess-safe. (A single value cannot satisfy both 2-target unpacking and
+    Windows char-iteration: both use the iterator protocol, with contradictory
+    results.)
+
+    On failure the result is falsy — never raises — so callers can fall back to
+    pip gracefully.
+    """
+    result = _ensure_uv_path()
+    if platform.system() == "Windows":
+        # See docstring: a str subclass with an overridden __iter__ is unsafe as
+        # a Windows subprocess argument. Hand back the plain path (or None).
+        return result
     return _UvResult(result)
 
 

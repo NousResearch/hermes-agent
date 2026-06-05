@@ -90,6 +90,42 @@ export const $approvalRequest = approval.$active
 export const setApprovalRequest = approval.set
 export const clearApprovalRequest = approval.clear
 
+const $approvalInlineCounts = atom<Record<string, number>>({})
+
+export const $approvalInlineVisible = computed(
+  [$approvalInlineCounts, $activeSessionId],
+  (counts, activeId) => (counts[keyFor(activeId)] ?? 0) > 0
+)
+
+export function registerApprovalInline(sessionId: string | null): () => void {
+  const key = keyFor(sessionId)
+  let active = true
+
+  $approvalInlineCounts.set({
+    ...$approvalInlineCounts.get(),
+    [key]: ($approvalInlineCounts.get()[key] ?? 0) + 1
+  })
+
+  return () => {
+    if (!active) {
+      return
+    }
+
+    active = false
+    const counts = $approvalInlineCounts.get()
+    const nextCount = Math.max(0, (counts[key] ?? 0) - 1)
+    const next = { ...counts }
+
+    if (nextCount === 0) {
+      delete next[key]
+    } else {
+      next[key] = nextCount
+    }
+
+    $approvalInlineCounts.set(next)
+  }
+}
+
 export const $sudoRequest = sudo.$active
 export const setSudoRequest = sudo.set
 export const clearSudoRequest = sudo.clear
@@ -103,6 +139,7 @@ export const clearSecretRequest = secret.clear
 export function clearAllPrompts(sessionId?: string | null): void {
   if (sessionId === undefined) {
     approval.reset()
+    $approvalInlineCounts.set({})
     sudo.reset()
     secret.reset()
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  $approvalInlineVisible,
   $approvalRequest,
   $secretRequest,
   $sudoRequest,
@@ -8,6 +9,7 @@ import {
   clearApprovalRequest,
   clearSecretRequest,
   clearSudoRequest,
+  registerApprovalInline,
   setApprovalRequest,
   setSecretRequest,
   setSudoRequest
@@ -52,6 +54,15 @@ describe('approval prompt store', () => {
     clearApprovalRequest('s1')
 
     expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('tracks whether an inline approval control is mounted for the active session', () => {
+    const unregister = registerApprovalInline('s1')
+
+    expect($approvalInlineVisible.get()).toBe(true)
+
+    unregister()
+    expect($approvalInlineVisible.get()).toBe(false)
   })
 })
 

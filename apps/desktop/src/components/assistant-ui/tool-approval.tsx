@@ -1,7 +1,7 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
-import { type FC, useCallback, useEffect, useState } from 'react'
+import { type FC, type ReactNode, useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -17,7 +17,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { ChevronDown, Loader2 } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { $approvalRequest, type ApprovalRequest, clearApprovalRequest } from '@/store/prompts'
+import { $approvalRequest, type ApprovalRequest, clearApprovalRequest, registerApprovalInline } from '@/store/prompts'
 
 import type { ToolPart } from './tool-fallback-model'
 
@@ -46,7 +46,17 @@ export const PendingToolApproval: FC<{ part: ToolPart }> = ({ part }) => {
     return null
   }
 
-  return <ApprovalBar request={request} />
+  return (
+    <ApprovalInlinePresence sessionId={request.sessionId}>
+      <ApprovalBar request={request} />
+    </ApprovalInlinePresence>
+  )
+}
+
+const ApprovalInlinePresence: FC<{ children: ReactNode; sessionId: string | null }> = ({ children, sessionId }) => {
+  useEffect(() => registerApprovalInline(sessionId), [sessionId])
+
+  return children
 }
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)

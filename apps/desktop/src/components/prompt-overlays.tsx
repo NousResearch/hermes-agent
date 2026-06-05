@@ -17,21 +17,120 @@ import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Loader2, Lock } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { $secretRequest, $sudoRequest, clearSecretRequest, clearSudoRequest } from '@/store/prompts'
+import {
+  $approvalInlineVisible,
+  $approvalRequest,
+  $secretRequest,
+  $sudoRequest,
+  clearApprovalRequest,
+  clearSecretRequest,
+  clearSudoRequest
+} from '@/store/prompts'
 
-// Renders the modal mid-turn prompts the gateway raises and waits on: sudo
-// password and skill secret capture. (Dangerous-command / execute_code approval
-// is rendered INLINE on the pending tool row instead — see
-// components/assistant-ui/tool-approval.tsx — so it reads like an inline "Run"
-// affordance rather than a blocking modal.) Each Python-side caller blocks the
-// agent thread until the matching `*.respond` RPC lands; without a renderer the
-// agent stalls until its timeout and the tool is BLOCKED (the bug this fixes —
-// desktop handled clarify.request but not these). Any close path (Esc, backdrop
-// click) funnels through Radix's single `onOpenChange(false)` and maps to a
-// refusal, so silence is never mistaken for consent, matching the TUI. We
-// deliberately do NOT add onEscapeKeyDown / onInteractOutside handlers — they'd
-// fire a second `*.respond` alongside onOpenChange (double-send) or block the
-// backdrop-dismiss path.
+// Renders modal mid-turn prompts the gateway raises and waits on. Sudo password
+// and skill secret capture are always modal. Dangerous-command / execute_code
+// approval is normally rendered INLINE on the pending tool row (see
+// components/assistant-ui/tool-approval.tsx), but this overlay provides a
+// fallback when no inline approval control is mounted. Each Python-side caller
+// blocks until the matching `*.respond` RPC lands; without a visible renderer
+// the agent stalls until its timeout and the tool is BLOCKED. Any close path
+// (Esc, backdrop click) funnels through Radix's single `onOpenChange(false)` and
+// maps to a refusal, so silence is never mistaken for consent, matching the TUI.
+// We deliberately do NOT add onEscapeKeyDown / onInteractOutside handlers —
+// they'd fire a second `*.respond` alongside onOpenChange (double-send) or block
+// the backdrop-dismiss path.
+
+type ApprovalChoice = 'once' | 'session' | 'deny'
+
+function ApprovalFallbackDialog() {
+  const request = useStore($approvalRequest)
+  const inlineVisible = useStore($approvalInlineVisible)
+  const gateway = useStore($gateway)
+  const [submitting, setSubmitting] = useState<ApprovalChoice | null>(null)
+
+  useEffect(() => {
+    setSubmitting(null)
+  }, [request?.sessionId, request?.command])
+
+  const send = useCallback(
+    async (choice: ApprovalChoice) => {
+      if (!request) {
+        return
+      }
+
+      if (!gateway) {
+        notifyError(new Error('Hermes gateway is not connected'), 'Could not send approval response')
+
+        return
+      }
+
+      setSubmitting(choice)
+
+      try {
+        await gateway.request<{ resolved?: boolean }>('approval.respond', {
+          choice,
+          session_id: request.sessionId ?? undefined
+        })
+        triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
+        clearApprovalRequest(request.sessionId)
+      } catch (error) {
+        notifyError(error, 'Could not send approval response')
+        setSubmitting(null)
+      }
+    },
+    [gateway, request]
+  )
+
+  const onOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open && !submitting && request) {
+        void send('deny')
+      }
+    },
+    [request, send, submitting]
+  )
+
+  if (!request || inlineVisible) {
+    return null
+  }
+
+  return (
+    <Dialog onOpenChange={onOpenChange} open>
+      <DialogContent className="max-w-xl" showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle>Command approval required</DialogTitle>
+          <DialogDescription>
+            Hermes is waiting for permission to run this local command. Review it before continuing.
+          </DialogDescription>
+        </DialogHeader>
+
+        {request.command.trim() && (
+          <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-2.5 py-2 font-mono text-xs leading-snug text-foreground">
+            {request.command.trim()}
+          </pre>
+        )}
+
+        {request.description && (
+          <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {request.description}
+          </p>
+        )}
+
+        <DialogFooter>
+          <Button disabled={submitting !== null} onClick={() => void send('deny')} variant="ghost">
+            {submitting === 'deny' ? <Loader2 className="size-3.5 animate-spin" /> : 'Reject'}
+          </Button>
+          <Button disabled={submitting !== null} onClick={() => void send('session')} variant="outline">
+            {submitting === 'session' ? <Loader2 className="size-3.5 animate-spin" /> : 'Allow this session'}
+          </Button>
+          <Button disabled={submitting !== null} onClick={() => void send('once')}>
+            {submitting === 'once' ? <Loader2 className="size-3.5 animate-spin" /> : 'Run once'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 function SudoDialog() {
   const request = useStore($sudoRequest)
@@ -230,6 +329,7 @@ function SecretDialog() {
 export function PromptOverlays() {
   return (
     <>
+      <ApprovalFallbackDialog />
       <SudoDialog />
       <SecretDialog />
     </>

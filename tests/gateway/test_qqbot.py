@@ -465,6 +465,22 @@ class TestReadyHandling:
         })
         assert adapter._session_id == "sess_abc123"
 
+    def test_ready_sync_dispatch_does_not_leak_refresh_coroutine(self, recwarn):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+
+        adapter._dispatch_payload({
+            "op": 0, "t": "READY",
+            "s": 1,
+            "d": {"session_id": "sess_abc123"},
+        })
+
+        coroutine_warnings = [
+            warning for warning in recwarn
+            if issubclass(warning.category, RuntimeWarning)
+            and "coroutine" in str(warning.message)
+        ]
+        assert coroutine_warnings == []
+
     def test_resumed_preserves_session(self):
         adapter = self._make_adapter(app_id="a", client_secret="b")
         adapter._session_id = "old_sess"
@@ -478,8 +494,12 @@ class TestReadyHandling:
 
     @pytest.mark.asyncio
     async def test_ready_starts_session_refresh_task(self):
+        class FakeWebSocket:
+            closed = False
+
         adapter = self._make_adapter(app_id="a", client_secret="b")
         adapter.SESSION_REFRESH_SECONDS = 60.0
+        adapter._ws = FakeWebSocket()
 
         adapter._dispatch_payload({
             "op": 0, "t": "READY",
@@ -495,8 +515,12 @@ class TestReadyHandling:
 
     @pytest.mark.asyncio
     async def test_resumed_restarts_session_refresh_task(self):
+        class FakeWebSocket:
+            closed = False
+
         adapter = self._make_adapter(app_id="a", client_secret="b")
         adapter.SESSION_REFRESH_SECONDS = 60.0
+        adapter._ws = FakeWebSocket()
 
         adapter._dispatch_payload({
             "op": 0, "t": "READY",
@@ -522,8 +546,15 @@ class TestReadyHandling:
 
     @pytest.mark.asyncio
     async def test_disconnect_cancels_session_refresh_task(self):
+        class FakeWebSocket:
+            closed = False
+
+            async def close(self):
+                self.closed = True
+
         adapter = self._make_adapter(app_id="a", client_secret="b")
         adapter.SESSION_REFRESH_SECONDS = 60.0
+        adapter._ws = FakeWebSocket()
         adapter._dispatch_payload({
             "op": 0, "t": "READY",
             "s": 1,
@@ -556,10 +587,66 @@ class TestReadyHandling:
         ws = FakeWebSocket()
         adapter._ws = ws
 
-        await adapter._session_refresh_loop()
+        await adapter._session_refresh_loop(ws)
 
         assert ws.closed is True
         assert ws.close_kwargs == {"code": 1000, "message": b"session refresh"}
+
+    @pytest.mark.asyncio
+    async def test_session_refresh_loop_ignores_replaced_websocket(self):
+        class FakeWebSocket:
+            closed = False
+
+            def __init__(self):
+                self.close_called = False
+
+            async def close(self, **_kwargs):
+                self.close_called = True
+                self.closed = True
+
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter.SESSION_REFRESH_SECONDS = 0
+        adapter._running = True
+        stale_ws = FakeWebSocket()
+        current_ws = FakeWebSocket()
+        adapter._ws = current_ws
+
+        await adapter._session_refresh_loop(stale_ws)
+
+        assert stale_ws.close_called is False
+        assert current_ws.close_called is False
+
+    @pytest.mark.asyncio
+    async def test_start_session_refresh_without_websocket_is_noop(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter.SESSION_REFRESH_SECONDS = 0
+        adapter._ws = None
+
+        adapter._start_session_refresh()
+
+        assert adapter._session_refresh_task is None
+
+    @pytest.mark.asyncio
+    async def test_session_refresh_loop_none_websocket_is_noop(self):
+        class FakeWebSocket:
+            closed = False
+
+            def __init__(self):
+                self.close_called = False
+
+            async def close(self, **_kwargs):
+                self.close_called = True
+                self.closed = True
+
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter.SESSION_REFRESH_SECONDS = 0
+        adapter._running = True
+        current_ws = FakeWebSocket()
+        adapter._ws = current_ws
+
+        await adapter._session_refresh_loop(None)
+
+        assert current_ws.close_called is False
 
     @pytest.mark.asyncio
     async def test_read_events_closed_websocket_raises_close_error(self):

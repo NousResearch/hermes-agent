@@ -801,7 +801,10 @@ class QQAdapter(BasePlatformAdapter):
     def _start_session_refresh(self) -> None:
         """Start a fresh proactive session-refresh timer."""
         self._stop_session_refresh()
-        task = self._create_task(self._session_refresh_loop())
+        ws = self._ws
+        if ws is None:
+            return
+        task = self._create_task(self._session_refresh_loop(ws))
         if task is not None:
             task.add_done_callback(self._consume_session_refresh_result)
             self._session_refresh_task = task
@@ -823,13 +826,14 @@ class QQAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[%s] Session refresh task failed: %s", self._log_tag, exc)
 
-    async def _session_refresh_loop(self) -> None:
+    async def _session_refresh_loop(self, ws: Optional[aiohttp.ClientWebSocketResponse] = None) -> None:
         """Close the WebSocket before QQ's session lifetime expires."""
         await asyncio.sleep(self.SESSION_REFRESH_SECONDS)
         if not self._running:
             return
-        ws = self._ws
-        if ws and not ws.closed:
+        if ws is None or ws is not self._ws:
+            return
+        if not ws.closed:
             logger.info(
                 "[%s] Session lifetime reached (%.0fs), refreshing via reconnect",
                 self._log_tag,
@@ -848,6 +852,7 @@ class QQAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
             return loop.create_task(coro)
         except RuntimeError:
+            coro.close()
             return None
 
     def _dispatch_payload(self, payload: Dict[str, Any]) -> None:

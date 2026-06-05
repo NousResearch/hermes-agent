@@ -3699,6 +3699,7 @@ class SlackAdapter(BasePlatformAdapter):
         user_id: str,
         is_thread_reply: bool,
         team_id: str = "",
+        chat_type: str = "group",
     ) -> bool:
         """Return True if the bot should wake on an un-mentioned message.
 
@@ -3725,6 +3726,7 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts=event_thread_ts,
             user_id=user_id,
             team_id=team_id,
+            chat_type=chat_type,
         ):
             return True
         # 4th check: bot-initiated thread via direct chat.postMessage.
@@ -4030,6 +4032,7 @@ class SlackAdapter(BasePlatformAdapter):
                     user_id=user_id,
                     team_id=team_id,
                     is_thread_reply=is_thread_reply,
+                    chat_type="dm" if is_dm else "group",
                 ):
                     return
 
@@ -4079,6 +4082,7 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts=event_thread_ts,
             user_id=user_id,
             team_id=team_id,
+            chat_type="dm" if is_dm else "group",
         )
         if is_thread_reply and not has_active_thread_session:
             thread_context = await self._fetch_thread_context(
@@ -5832,6 +5836,8 @@ class SlackAdapter(BasePlatformAdapter):
         thread_ts: str,
         user_id: str,
         team_id: str = "",
+        *,
+        chat_type: str = "group",
     ) -> Optional[str]:
         """Build the backing session key for a Slack thread.
 
@@ -5839,6 +5845,14 @@ class SlackAdapter(BasePlatformAdapter):
         construction — avoids the bug where manual key building didn't
         respect ``thread_sessions_per_user`` and ``group_sessions_per_user``
         settings correctly.
+
+        Args:
+            chat_type: The session chat type — ``"dm"`` for IM/MPIM
+                conversations, ``"group"`` for channels.  Must come from
+                the event-derived ``channel_type`` (``"im"``/``"mpim"``
+                → ``"dm"``) rather than being inferred from the channel
+                ID prefix, because MPIM IDs start with ``"G"``, not
+                ``"D"``.
         """
         session_store = getattr(self, "_session_store", None)
         if not session_store:
@@ -5849,7 +5863,7 @@ class SlackAdapter(BasePlatformAdapter):
             source = SessionSource(
                 platform=Platform.SLACK,
                 chat_id=channel_id,
-                chat_type="group",
+                chat_type=chat_type,
                 user_id=user_id,
                 thread_id=thread_ts,
                 scope_id=team_id or None,
@@ -5985,11 +5999,21 @@ class SlackAdapter(BasePlatformAdapter):
         thread_ts: str,
         user_id: str,
         team_id: str = "",
+        *,
+        chat_type: str = "group",
     ) -> bool:
         """Check if there's an active session for a thread.
 
         Used to determine if thread replies without @mentions should be
         processed (they should if there's an active session).
+
+        Args:
+            chat_type: The session chat type — ``"dm"`` for IM/MPIM
+                conversations, ``"group"`` for channels.  Must come from
+                the event-derived ``channel_type`` (``"im"``/``"mpim"``
+                → ``"dm"``) rather than being inferred from the channel
+                ID prefix, because MPIM IDs start with ``"G"``, not
+                ``"D"``.
         """
         session_store = getattr(self, "_session_store", None)
         if not session_store:
@@ -6001,14 +6025,14 @@ class SlackAdapter(BasePlatformAdapter):
             source = SessionSource(
                 platform=Platform.SLACK,
                 chat_id=channel_id,
-                chat_type="group",
+                chat_type=chat_type,
                 user_id=user_id,
                 thread_id=thread_ts,
                 scope_id=team_id or None,
             )
 
             session_key = self._build_thread_session_key(
-                channel_id, thread_ts, user_id, team_id=team_id
+                channel_id, thread_ts, user_id, team_id=team_id, chat_type=chat_type
             )
             if not session_key:
                 return False

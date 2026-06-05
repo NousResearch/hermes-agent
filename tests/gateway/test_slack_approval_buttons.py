@@ -980,6 +980,115 @@ class TestSessionKeyFix:
         assert result is False
 
 
+class TestSessionKeyChatType:
+    """Test that _has_active_session_for_thread passes event-derived chat_type.
+
+    Regression for #39527: the old code hardcoded ``chat_type="group"``,
+    which produced wrong session keys for DM and MPIM threads.  The fix
+    passes the event-derived ``chat_type`` so ``build_session_key()``
+    constructs the correct key for every channel type.
+    """
+
+    def test_dm_thread_session_found(self):
+        """IM channel (D-prefix) with an active DM session is found."""
+        adapter = _make_adapter()
+        mock_store = MagicMock()
+        # DM sessions key: agent:main:slack:dm:D_CHANNEL:thread_ts
+        mock_store._entries = {
+            "agent:main:slack:dm:D0DMCHANNEL:2000.0": MagicMock()
+        }
+        mock_store._ensure_loaded = MagicMock()
+        mock_store.config = MagicMock()
+        mock_store.config.group_sessions_per_user = True
+        mock_store.config.thread_sessions_per_user = False
+        adapter._session_store = mock_store
+
+        result = adapter._has_active_session_for_thread(
+            channel_id="D0DMCHANNEL",
+            thread_ts="2000.0",
+            user_id="U_USER",
+            chat_type="dm",
+        )
+        assert result is True
+
+    def test_dm_thread_not_found_with_group_type(self):
+        """Without chat_type='dm', a DM session key would not match.
+
+        This is the exact bug that the old ``hardcoded "group"`` code caused:
+        the lookup builds ``group:…`` while the real session is ``dm:…``.
+        """
+        adapter = _make_adapter()
+        mock_store = MagicMock()
+        mock_store._entries = {
+            "agent:main:slack:dm:D0DMCHANNEL:2000.0": MagicMock()
+        }
+        mock_store._ensure_loaded = MagicMock()
+        mock_store.config = MagicMock()
+        mock_store.config.group_sessions_per_user = True
+        mock_store.config.thread_sessions_per_user = False
+        adapter._session_store = mock_store
+
+        # Default chat_type="group" should NOT find the DM session
+        result = adapter._has_active_session_for_thread(
+            channel_id="D0DMCHANNEL",
+            thread_ts="2000.0",
+            user_id="U_USER",
+        )
+        assert result is False
+
+    def test_mpim_thread_session_found(self):
+        """MPIM channel (G-prefix, treated as DM) with an active session is found.
+
+        MPIM channel IDs start with "G", not "D", so inferring chat_type
+        from the prefix would incorrectly classify this as "group".
+        """
+        adapter = _make_adapter()
+        mock_store = MagicMock()
+        # MPIM sessions key: agent:main:slack:dm:G_MPIM_CHANNEL:thread_ts
+        mock_store._entries = {
+            "agent:main:slack:dm:G0MPIMCHANNEL:3000.0": MagicMock()
+        }
+        mock_store._ensure_loaded = MagicMock()
+        mock_store.config = MagicMock()
+        mock_store.config.group_sessions_per_user = True
+        mock_store.config.thread_sessions_per_user = False
+        adapter._session_store = mock_store
+
+        result = adapter._has_active_session_for_thread(
+            channel_id="G0MPIMCHANNEL",
+            thread_ts="3000.0",
+            user_id="U_USER",
+            chat_type="dm",  # event-derived: mpim → dm
+        )
+        assert result is True
+
+    def test_mpim_thread_not_found_with_group_type(self):
+        """Without passing chat_type='dm', MPIM sessions are invisible.
+
+        This is the specific case the reviewer flagged: the old D-prefix
+        heuristic would classify G-prefixed MPIM channels as "group",
+        missing the DM session.
+        """
+        adapter = _make_adapter()
+        mock_store = MagicMock()
+        mock_store._entries = {
+            "agent:main:slack:dm:G0MPIMCHANNEL:3000.0": MagicMock()
+        }
+        mock_store._ensure_loaded = MagicMock()
+        mock_store.config = MagicMock()
+        mock_store.config.group_sessions_per_user = True
+        mock_store.config.thread_sessions_per_user = False
+        adapter._session_store = mock_store
+
+        # Default chat_type="group" → builds group key → no match
+        result = adapter._has_active_session_for_thread(
+            channel_id="G0MPIMCHANNEL",
+            thread_ts="3000.0",
+            user_id="U_USER",
+        )
+        assert result is False
+
+
 # ===========================================================================
 # Thread engagement — bot-started threads & mentioned threads
 # ===========================================================================

@@ -86,9 +86,10 @@ would do or plan to do without actually doing it.
 - GitHub: alice-dev
 
 # Layer 7: Skills index
-## Skills (mandatory)
-Before replying, scan the skills below. If one clearly matches
-your task, load it with skill_view(name) and follow its instructions.
+## Skills (targeted, mandatory when triggered)
+Before replying, scan the skills below. Load a skill only when its trigger
+or description materially matches the task. Prefer specific skills and
+lightweight meta-skills over broad context-bloating skill bundles.
 ...
 <available_skills>
   software-development:

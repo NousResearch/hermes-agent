@@ -1246,17 +1246,19 @@ def build_skills_system_prompt(
                     index_lines.append(f"    - {name}")
 
         result = (
-            "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
+            "## Skills (targeted, mandatory when triggered)\n"
+            "Before replying, scan the skills below. Load a skill with skill_view(name) only "
+            "when its trigger or description materially matches the task, a requested workflow, "
+            "or a prerequisite you must satisfy. Prefer the most specific applicable skill(s); "
+            "do not load broad or mega-skills just because they are loosely related. If a "
+            "meta-skill matches, load that lightweight routing skill first, then load only the "
+            "targeted subordinate skills it says are needed. Avoid context bloat: more skill "
+            "text is not automatically better.\n"
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
+            "and proven workflows that outperform general-purpose approaches. Use them when "
+            "they change what you would do, define a required convention, or cover a non-trivial "
+            "workflow. Do not load a skill for trivial tasks or routine tool use unless the skill "
+            "description clearly makes it mandatory for that task.\n"
             "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
             "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
@@ -1271,7 +1273,7 @@ def build_skills_system_prompt(
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            "Proceed without loading a skill when none materially match the task."
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────

@@ -265,6 +265,26 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_skills_guidance_requires_targeted_loading(self, monkeypatch, tmp_path):
+        """Prompt should prevent context-bloating loads of loosely related skills."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "targeted, mandatory when triggered" in result
+        assert "materially matches the task" in result
+        assert "do not load broad or mega-skills" in result
+        assert "meta-skill" in result
+        assert "context bloat" in result
+        assert "Err on the side of loading" not in result
+        assert "even partially relevant" not in result
+        assert "context you don't need" not in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

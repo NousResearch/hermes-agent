@@ -28,6 +28,7 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
+const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -3477,8 +3478,7 @@ function fetchJsonViaOauthSession(url, options = {}) {
       useSessionCookies: true,
       redirect: 'follow'
     })
-    request.setHeader('Content-Type', 'application/json')
-    if (body) request.setHeader('Content-Length', String(body.length))
+    setJsonRequestHeaders(request)
 
     let timedOut = false
     const timer = setTimeout(() => {

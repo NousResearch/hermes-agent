@@ -3,7 +3,15 @@ import { atom, computed } from 'nanostores'
 import { getProfiles, setApiRequestProfile } from '@/hermes'
 import { resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { queryClient } from '@/lib/query-client'
-import { arraysEqual, persistBoolean, persistStringArray, storedBoolean, storedStringArray } from '@/lib/storage'
+import {
+  arraysEqual,
+  persistBoolean,
+  persistStringArray,
+  persistStringRecord,
+  storedBoolean,
+  storedStringArray,
+  storedStringRecord
+} from '@/lib/storage'
 import { $gateway } from '@/store/gateway'
 import { setConnection } from '@/store/session'
 import type { ProfileInfo } from '@/types/hermes'
@@ -60,6 +68,30 @@ export function sortByProfileOrder<T extends { name: string }>(items: T[], order
 
     return ra != null ? -1 : rb != null ? 1 : a.name.localeCompare(b.name)
   })
+}
+
+// ── Rail colors ────────────────────────────────────────────────────────────
+// Optional per-profile color override (long-press a rail square to pick). Absent
+// names fall back to the deterministic hue from profileColor(); a local-only
+// cosmetic preference, so single-profile users never touch it.
+const PROFILE_COLORS_STORAGE_KEY = 'hermes.desktop.profileColors'
+
+export const $profileColors = atom<Record<string, string>>(storedStringRecord(PROFILE_COLORS_STORAGE_KEY))
+
+$profileColors.subscribe(value => persistStringRecord(PROFILE_COLORS_STORAGE_KEY, value))
+
+// Set (or, with null, clear) a profile's color override.
+export function setProfileColor(name: string, color: null | string): void {
+  const key = normalizeProfileKey(name)
+  const next = { ...$profileColors.get() }
+
+  if (color) {
+    next[key] = color
+  } else {
+    delete next[key]
+  }
+
+  $profileColors.set(next)
 }
 
 interface ActiveProfileResponse {

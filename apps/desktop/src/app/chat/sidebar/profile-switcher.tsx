@@ -25,12 +25,14 @@ import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { triggerHaptic } from '@/lib/haptics'
-import { profileColor, profileColorSoft } from '@/lib/profile-color'
+import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import {
   $activeGatewayProfile,
+  $profileColors,
   $profileOrder,
   $profiles,
   $profileScope,
@@ -38,6 +40,7 @@ import {
   normalizeProfileKey,
   refreshActiveProfile,
   selectProfile,
+  setProfileColor,
   setProfileOrder,
   setShowAllProfiles,
   sortByProfileOrder
@@ -85,6 +88,7 @@ export function ProfileRail() {
   const scope = useStore($profileScope)
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
+  const colors = useStore($profileColors)
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -215,10 +219,11 @@ export function ProfileRail() {
                 {named.map(profile => (
                   <ProfileSquare
                     active={!isAll && normalizeProfileKey(profile.name) === activeKey}
-                    color={profileColor(profile.name)}
+                    color={resolveProfileColor(profile.name, colors)}
                     key={profile.name}
                     label={profile.name}
                     onDelete={() => setPendingDelete(profile)}
+                    onRecolor={color => setProfileColor(profile.name, color)}
                     onRename={() => setPendingRename(profile)}
                     onSelect={() => selectProfile(profile.name)}
                   />
@@ -306,9 +311,14 @@ interface ProfileSquareProps {
   color: null | string
   label: string
   onSelect: () => void
+  onRecolor: (color: null | string) => void
   onRename: () => void
   onDelete: () => void
 }
+
+// Hold this long without moving (a drag would have started first) to open the
+// color picker — the "hard press" gesture, distinct from tap-to-select.
+const LONG_PRESS_MS = 450
 
 // A profile *is* its colored square — no icon-button chrome. Soft profile-tint
 // fill + the initial in the full color; the active one pops to full opacity with
@@ -317,71 +327,165 @@ interface ProfileSquareProps {
 // right-click to rename/delete. The button carries both the tooltip and
 // context-menu triggers via nested asChild Slots, so a single element keeps the
 // dnd listeners, hover tip, and right-click menu.
-function ProfileSquare({ active, color, label, onSelect, onRename, onDelete }: ProfileSquareProps) {
+function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, onSelect }: ProfileSquareProps) {
   const hue = color ?? 'var(--ui-text-quaternary)'
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const pressTimer = useRef<null | number>(null)
+  const suppressClick = useRef(false)
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
     id: label,
     transition: RAIL_TRANSITION
   })
 
+  const clearPress = () => {
+    if (pressTimer.current != null) {
+      clearTimeout(pressTimer.current)
+      pressTimer.current = null
+    }
+  }
+
+  // A real drag (movement past the dnd threshold) cancels the pending hold, so a
+  // reorder never doubles as a color pick. Also tidy up on unmount.
+  useEffect(() => {
+    if (isDragging) {
+      clearPress()
+    }
+  }, [isDragging])
+  useEffect(() => clearPress, [])
+
   const base = CSS.Transform.toString(transform)
   const ring = active ? `inset 0 0 0 1.5px ${hue}` : ''
   const lift = isDragging ? '0 6px 16px -4px rgb(0 0 0 / 0.4)' : ''
 
-  return (
-    <ContextMenu>
-      <TooltipProvider delayDuration={0}>
-        <Tooltip>
-          <ContextMenuTrigger asChild>
-            <TooltipTrigger asChild>
-              <button
-                className={cn(
-                  'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
-                  active ? 'opacity-100' : 'opacity-55',
-                  isDragging && 'z-10 cursor-grabbing opacity-100'
-                )}
-                onClick={onSelect}
-                ref={setNodeRef}
-                style={{
-                  backgroundColor: profileColorSoft(hue, active ? 30 : 22),
-                  boxShadow: [ring, lift].filter(Boolean).join(', ') || undefined,
-                  color: color ?? undefined,
-                  // Glide the dragged square between snapped cells with a little
-                  // overshoot (no scale — the overflow-x strip would clip it).
-                  transform: base,
-                  transition: isDragging ? DRAG_TRANSITION : transition
-                }}
-                type="button"
-                {...attributes}
-                {...listeners}
-                aria-label={label}
-                aria-pressed={active}
-              >
-                {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
-              </button>
-            </TooltipTrigger>
-          </ContextMenuTrigger>
-          <TooltipContent>{label}</TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+  const pickColor = (next: null | string) => {
+    onRecolor(next)
+    setPickerOpen(false)
+    triggerHaptic('selection')
+  }
 
-      {/* The rail sits at the very bottom, so pad off the chrome (esp. the
-          statusbar) — Radix then flips the menu up instead of squishing it. */}
-      <ContextMenuContent
-        aria-label={`Actions for ${label}`}
-        className="w-40"
+  return (
+    <Popover onOpenChange={setPickerOpen} open={pickerOpen}>
+      <ContextMenu>
+        <TooltipProvider delayDuration={0}>
+          <Tooltip>
+            <PopoverAnchor asChild>
+              <ContextMenuTrigger asChild>
+                <TooltipTrigger asChild>
+                  <button
+                    className={cn(
+                      'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                      active ? 'opacity-100' : 'opacity-55',
+                      isDragging && 'z-10 cursor-grabbing opacity-100'
+                    )}
+                    ref={setNodeRef}
+                    style={{
+                      backgroundColor: profileColorSoft(hue, active ? 30 : 22),
+                      boxShadow: [ring, lift].filter(Boolean).join(', ') || undefined,
+                      color: color ?? undefined,
+                      // Glide the dragged square between snapped cells with a little
+                      // overshoot (no scale — the overflow-x strip would clip it).
+                      transform: base,
+                      transition: isDragging ? DRAG_TRANSITION : transition
+                    }}
+                    type="button"
+                    {...attributes}
+                    {...listeners}
+                    aria-label={label}
+                    aria-pressed={active}
+                    // Hold-to-recolor rides alongside the dnd pointer listener (call
+                    // it first so drag tracking still arms), then a timer opens the
+                    // picker and flags the trailing click so it doesn't also select.
+                    onClick={() => {
+                      if (suppressClick.current) {
+                        suppressClick.current = false
+
+                        return
+                      }
+
+                      onSelect()
+                    }}
+                    onPointerCancel={clearPress}
+                    onPointerDown={event => {
+                      listeners?.onPointerDown?.(event)
+
+                      if (event.button !== 0) {
+                        return
+                      }
+
+                      suppressClick.current = false
+                      clearPress()
+                      pressTimer.current = window.setTimeout(() => {
+                        suppressClick.current = true
+                        triggerHaptic('success')
+                        setPickerOpen(true)
+                      }, LONG_PRESS_MS)
+                    }}
+                    onPointerLeave={clearPress}
+                    onPointerUp={clearPress}
+                  >
+                    {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                  </button>
+                </TooltipTrigger>
+              </ContextMenuTrigger>
+            </PopoverAnchor>
+            <TooltipContent>{label}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+
+        {/* The rail sits at the very bottom, so pad off the chrome (esp. the
+            statusbar) — Radix then flips the menu up instead of squishing it. */}
+        <ContextMenuContent
+          aria-label={`Actions for ${label}`}
+          className="w-40"
+          collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
+        >
+          <ContextMenuItem onSelect={() => setPickerOpen(true)}>
+            <Codicon name="symbol-color" size="0.875rem" />
+            <span>Color…</span>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={onRename}>
+            <Codicon name="edit" size="0.875rem" />
+            <span>Rename</span>
+          </ContextMenuItem>
+          <ContextMenuItem className="text-destructive focus:text-destructive" onSelect={onDelete} variant="destructive">
+            <Codicon name="trash" size="0.875rem" />
+            <span>Delete</span>
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+
+      <PopoverContent
+        aria-label={`Color for ${label}`}
+        className="w-auto p-2"
         collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
+        side="top"
       >
-        <ContextMenuItem onSelect={onRename}>
-          <Codicon name="edit" size="0.875rem" />
-          <span>Rename</span>
-        </ContextMenuItem>
-        <ContextMenuItem className="text-destructive focus:text-destructive" onSelect={onDelete} variant="destructive">
-          <Codicon name="trash" size="0.875rem" />
-          <span>Delete</span>
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+        <div className="grid grid-cols-6 gap-1.5">
+          {PROFILE_SWATCHES.map(swatch => (
+            <button
+              aria-label={`Set color ${swatch}`}
+              className="size-5 rounded-full transition-transform hover:scale-110"
+              key={swatch}
+              onClick={() => pickColor(swatch)}
+              style={{
+                backgroundColor: swatch,
+                boxShadow: swatch === color ? '0 0 0 2px var(--ui-bg-elevated), 0 0 0 3.5px currentColor' : undefined,
+                color: swatch
+              }}
+              type="button"
+            />
+          ))}
+        </div>
+        <button
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md py-1 text-xs text-(--ui-text-tertiary) transition hover:bg-(--ui-control-hover-background) hover:text-foreground"
+          onClick={() => pickColor(null)}
+          type="button"
+        >
+          <Codicon name="sync" size="0.75rem" />
+          Auto
+        </button>
+      </PopoverContent>
+    </Popover>
   )
 }

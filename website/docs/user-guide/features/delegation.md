@@ -14,10 +14,12 @@ The `delegate_task` tool spawns child AIAgent instances with isolated context, r
 delegate_task(
     goal="Debug why tests fail",
     context="Error: assertion in test_foo.py line 42",
+    skills=["systematic-debugging"],
     toolsets=["terminal", "file"]
 )
 ```
 
+Top-level `skills` is also optional. When present, Hermes preloads those skills into the child through the same canonical loading path used by CLI `--skills`, and missing skill names fail the delegation call instead of being ignored.
 ## Parallel Batch
 
 Up to 3 concurrent subagents by default (configurable, no hard ceiling):

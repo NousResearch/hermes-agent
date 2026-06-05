@@ -1,0 +1,87 @@
+name: Diagnose Contabo (read-only)
+
+# Read-only host inspection. Does NOT build, recreate, or restart anything --
+# safe to run against a live container. Manually triggered only.
+#
+# Purpose: confirm the root cause of the :11435 proxy lock contention seen in
+# the gated deploy (run 26993292468): "s6-log: fatal: unable to lock
+# /opt/data/logs/claude-proxy/lock: Resource busy". Hypothesis is that the
+# hermes-dashboard container -- same image, same /init, same ~/.hermes volume
+# -- also runs 02/03 cont-init hooks and starts a SECOND claude-proxy whose
+# s6-log fights the gateway container's for the same volume-backed lock.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect server (read-only)
+        env:
+          SSH_KEY: ${{ secrets.HERMES_SSH_KEY }}
+          HOST_KEY: ${{ secrets.HERMES_HOST_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$HOST_KEY" >> ~/.ssh/known_hosts
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+              -o TCPKeepAlive=yes -o ConnectTimeout=30 \
+              -i ~/.ssh/id_ed25519 root@5.189.159.195 'bash -s' <<'REMOTE'
+          # No `set -e`: a failing probe must not abort the rest of the report.
+          set -uo pipefail
+
+          echo "================ containers ================"
+          docker ps -a --filter name=hermes
+
+          LOCK="$HOME/.hermes/logs/claude-proxy/lock"
+          echo
+          echo "================ claude-proxy log lock ($LOCK) ================"
+          ls -la "$LOCK" 2>&1 || echo "(lock file absent)"
+          echo "-- holders (fuser) --"
+          fuser -v "$LOCK" 2>&1 || echo "(fuser found nothing / unavailable)"
+          echo "-- holders (lsof) --"
+          lsof "$LOCK" 2>&1 || echo "(lsof found nothing / unavailable)"
+
+          # Map every s6-log process on the host to its owning container via
+          # the cgroup path (host PID namespace sees both containers' procs).
+          echo
+          echo "================ s6-log processes -> container (host view) ================"
+          for pid in $(pgrep -x s6-log 2>/dev/null) $(pgrep -f 's6-log' 2>/dev/null); do
+            [ -d "/proc/$pid" ] || continue
+            cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+            case "$cmd" in
+              *claude-proxy*) ;;
+              *) continue ;;
+            esac
+            cg=$(grep -hoE 'docker[-/][0-9a-f]{12,}' "/proc/$pid/cgroup" 2>/dev/null | head -1)
+            echo "pid=$pid cgroup=${cg:-?} cmd=$cmd"
+          done
+
+          # Per-container view: who has claude-proxy / gateway-* seeded and live?
+          for c in hermes hermes-dashboard; do
+            echo
+            echo "================ [$c] /run/service ================"
+            docker exec "$c" sh -c 'ls -1 /run/service 2>&1' 2>&1 \
+              || { echo "($c not running or exec failed)"; continue; }
+            echo "-- [$c] claude-proxy supervise status --"
+            docker exec "$c" sh -c '
+              command -v s6-svstat >/dev/null 2>&1 || PATH="/command:/package/admin/s6/command:$PATH"
+              s6-svstat /run/service/claude-proxy 2>&1
+              s6-svstat /run/service/claude-proxy/log 2>&1
+            ' 2>&1 || true
+            echo "-- [$c] proxy / gateway / s6-log processes --"
+            docker exec "$c" sh -c 'ps -eo pid,args 2>/dev/null | grep -iE "claude_proxy|claude-proxy|s6-log|gateway run" | grep -v grep' 2>&1 \
+              || echo "(none / ps unavailable)"
+          done
+
+          echo
+          echo "================ :11435 health (host) ================"
+          curl -fsS -m 5 http://127.0.0.1:11435/health 2>&1 && echo "  <- :11435 OK" \
+            || echo "  <- :11435 NOT answering"
+
+          echo
+          echo "diagnose: done (nothing was changed)"
+          REMOTE

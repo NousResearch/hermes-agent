@@ -29,8 +29,12 @@ import json
 import logging
 import mimetypes
 import os
+import shutil
+import signal
+import subprocess
 import tempfile
 import threading
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -46,6 +50,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _TIMEOUT = 30.0
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
+_OPENVIKING_STARTUP_TIMEOUT = 30.0
+_OPENVIKING_STARTUP_POLL_INTERVAL = 0.5
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 # Maps the viking_remember `category` enum to a viking:// subdirectory.
 # Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
@@ -84,6 +91,10 @@ def _atexit_commit_sessions():
     _last_active_provider = None
     try:
         provider.on_session_end([])
+    except Exception:
+        pass  # best-effort at shutdown time
+    try:
+        provider.shutdown()
     except Exception:
         pass  # best-effort at shutdown time
 
@@ -422,6 +433,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
+        self._server_proc: Optional[subprocess.Popen] = None
+        self._auto_started_server = False
 
     @property
     def name(self) -> str:
@@ -481,8 +494,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 account=self._account, user=self._user, agent=self._agent,
             )
             if not self._client.health():
-                logger.warning("OpenViking server at %s is not reachable", self._endpoint)
-                self._client = None
+                if not self._auto_start_server():
+                    logger.warning("OpenViking server at %s is not reachable", self._endpoint)
+                    self._client = None
         except ImportError:
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None
@@ -490,6 +504,78 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Register as the last active provider for atexit safety net
         global _last_active_provider
         _last_active_provider = self
+
+    def _auto_start_port(self) -> Optional[int]:
+        parsed = urlparse(self._endpoint)
+        if parsed.scheme != "http":
+            return None
+        host = (parsed.hostname or "").strip().lower()
+        if host not in _LOOPBACK_HOSTS:
+            return None
+        return parsed.port or 80
+
+    @staticmethod
+    def _openviking_server_command() -> Optional[List[str]]:
+        server = shutil.which("openviking-server")
+        if server:
+            return [server]
+        uvx = shutil.which("uvx")
+        if uvx:
+            return [uvx, "--from", "openviking", "openviking-server"]
+        uv = shutil.which("uv")
+        if uv:
+            return [uv, "tool", "run", "--from", "openviking", "openviking-server"]
+        return None
+
+    def _auto_start_server(self) -> bool:
+        """Start a local OpenViking server for loopback endpoints."""
+        port = self._auto_start_port()
+        if port is None:
+            return False
+
+        command = self._openviking_server_command()
+        if not command:
+            logger.warning(
+                "OpenViking server at %s is not reachable and no "
+                "openviking-server/uvx/uv command was found",
+                self._endpoint,
+            )
+            return False
+
+        try:
+            proc = subprocess.Popen(
+                [*command, "--port", str(port)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+        except Exception as exc:
+            logger.warning("Failed to auto-start OpenViking server: %s", exc)
+            return False
+
+        self._server_proc = proc
+        self._auto_started_server = True
+
+        deadline = time.monotonic() + _OPENVIKING_STARTUP_TIMEOUT
+        while True:
+            if self._client and self._client.health():
+                logger.info("OpenViking server auto-started at %s", self._endpoint)
+                return True
+            if proc.poll() is not None:
+                logger.warning(
+                    "Auto-started OpenViking server exited before becoming healthy"
+                )
+                self._stop_auto_started_server()
+                return False
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Timed out waiting for OpenViking server at %s", self._endpoint
+                )
+                self._stop_auto_started_server()
+                return False
+            time.sleep(_OPENVIKING_STARTUP_POLL_INTERVAL)
 
     def system_prompt_block(self) -> str:
         if not self._client:
@@ -689,10 +775,39 @@ class OpenVikingMemoryProvider(MemoryProvider):
         for t in (self._sync_thread, self._prefetch_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
+        self._stop_auto_started_server()
         # Clear atexit reference so it doesn't double-commit
         global _last_active_provider
         if _last_active_provider is self:
             _last_active_provider = None
+
+    def _stop_auto_started_server(self) -> None:
+        proc = self._server_proc
+        if not self._auto_started_server or proc is None:
+            return
+        self._server_proc = None
+        self._auto_started_server = False
+        if proc.poll() is not None:
+            return
+        killpg = getattr(os, "killpg", None)
+        try:
+            if killpg is not None:
+                killpg(proc.pid, signal.SIGTERM)
+            else:
+                proc.terminate()
+            proc.wait(timeout=5.0)
+        except Exception:
+            try:
+                if killpg is not None:
+                    killpg(proc.pid, signal.SIGKILL)
+                else:
+                    proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=5.0)
+            except Exception:
+                pass
 
     # -- Tool implementations ------------------------------------------------
 

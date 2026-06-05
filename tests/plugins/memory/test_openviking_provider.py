@@ -420,3 +420,248 @@ def test_viking_client_health_sends_auth_headers(monkeypatch):
     assert client.health() is True
     assert captured["url"] == "https://example.com/health"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
+
+
+def test_initialize_auto_starts_local_server_when_health_fails(monkeypatch):
+    from plugins.memory import openviking as ov_mod
+
+    monkeypatch.delenv("OPENVIKING_ENDPOINT", raising=False)
+    clients = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            clients.append((args, kwargs))
+            self._health_results = [False, True]
+
+        def health(self):
+            return self._health_results.pop(0)
+
+    class FakeProc:
+        pid = 1234
+
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    fake_proc = FakeProc()
+    popen_calls = []
+    signals = []
+
+    def fake_popen(*args, **kwargs):
+        popen_calls.append((args, kwargs))
+        return fake_proc
+
+    monkeypatch.setattr(ov_mod, "_VikingClient", FakeClient)
+    monkeypatch.setattr(
+        ov_mod.shutil,
+        "which",
+        lambda name: "/bin/openviking-server" if name == "openviking-server" else None,
+    )
+    monkeypatch.setattr(ov_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        ov_mod.os,
+        "killpg",
+        lambda pid, sig: signals.append((pid, sig)),
+        raising=False,
+    )
+
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1")
+
+    assert len(clients) == 1
+    assert provider._client is not None
+    assert provider._auto_started_server is True
+    assert popen_calls[0][0][0] == ["/bin/openviking-server", "--port", "1933"]
+    assert popen_calls[0][1]["start_new_session"] is True
+
+    provider.shutdown()
+
+    assert signals == [(1234, ov_mod.signal.SIGTERM)]
+    assert fake_proc.terminated is False
+    assert fake_proc.killed is False
+
+
+def test_initialize_does_not_auto_start_non_loopback_endpoint(monkeypatch):
+    from plugins.memory import openviking as ov_mod
+
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://openviking.example.com:1933")
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def health(self):
+            return False
+
+    def fail_popen(*args, **kwargs):
+        raise AssertionError("remote OpenViking endpoint must not spawn local server")
+
+    monkeypatch.setattr(ov_mod, "_VikingClient", FakeClient)
+    monkeypatch.setattr(ov_mod.subprocess, "Popen", fail_popen)
+
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1")
+
+    assert provider._client is None
+    assert provider._auto_started_server is False
+
+
+def test_atexit_commit_sessions_stops_auto_started_server(monkeypatch):
+    from plugins.memory import openviking as ov_mod
+
+    class FakeProvider:
+        def __init__(self):
+            self.committed = False
+            self.shutdown_called = False
+
+        def on_session_end(self, messages):
+            self.committed = messages == []
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+    provider = FakeProvider()
+    monkeypatch.setattr(ov_mod, "_last_active_provider", provider)
+
+    ov_mod._atexit_commit_sessions()
+
+    assert provider.committed is True
+    assert provider.shutdown_called is True
+    assert ov_mod._last_active_provider is None
+
+
+def test_stop_auto_started_server_terminates_process_group(monkeypatch):
+    from plugins.memory import openviking as ov_mod
+
+    class FakeProc:
+        pid = 1234
+
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+            self.waited = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            self.waited = True
+            return 0
+
+    signals = []
+    monkeypatch.setattr(
+        ov_mod.os,
+        "killpg",
+        lambda pid, sig: signals.append((pid, sig)),
+        raising=False,
+    )
+
+    provider = OpenVikingMemoryProvider()
+    provider._auto_started_server = True
+    proc = FakeProc()
+    provider._server_proc = proc
+
+    provider._stop_auto_started_server()
+
+    assert signals == [(1234, ov_mod.signal.SIGTERM)]
+    assert proc.waited is True
+    assert proc.terminated is False
+    assert proc.killed is False
+    assert provider._auto_started_server is False
+    assert provider._server_proc is None
+
+
+def test_stop_auto_started_server_kills_process_group_after_timeout(monkeypatch):
+    from plugins.memory import openviking as ov_mod
+
+    class FakeProc:
+        pid = 1234
+
+        def __init__(self):
+            self.wait_count = 0
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            self.wait_count += 1
+            if self.wait_count == 1:
+                raise ov_mod.subprocess.TimeoutExpired(cmd="openviking-server", timeout=timeout)
+            return 0
+
+    signals = []
+    monkeypatch.setattr(
+        ov_mod.os,
+        "killpg",
+        lambda pid, sig: signals.append((pid, sig)),
+        raising=False,
+    )
+
+    proc = FakeProc()
+    provider = OpenVikingMemoryProvider()
+    provider._auto_started_server = True
+    provider._server_proc = proc
+
+    provider._stop_auto_started_server()
+
+    assert signals == [
+        (1234, ov_mod.signal.SIGTERM),
+        (1234, ov_mod.signal.SIGKILL),
+    ]
+    assert proc.wait_count == 2
+
+
+def test_openviking_server_command_uses_uvx_fallback(monkeypatch):
+    from plugins.memory import openviking as ov_mod
+
+    def fake_which(name):
+        if name == "uvx":
+            return "/bin/uvx"
+        return None
+
+    monkeypatch.setattr(ov_mod.shutil, "which", fake_which)
+
+    assert OpenVikingMemoryProvider._openviking_server_command() == [
+        "/bin/uvx",
+        "--from",
+        "openviking",
+        "openviking-server",
+    ]
+
+
+def test_openviking_server_command_uses_uv_fallback(monkeypatch):
+    from plugins.memory import openviking as ov_mod
+
+    def fake_which(name):
+        if name == "uv":
+            return "/bin/uv"
+        return None
+
+    monkeypatch.setattr(ov_mod.shutil, "which", fake_which)
+
+    assert OpenVikingMemoryProvider._openviking_server_command() == [
+        "/bin/uv",
+        "tool",
+        "run",
+        "--from",
+        "openviking",
+        "openviking-server",
+    ]

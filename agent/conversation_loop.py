@@ -1220,6 +1220,25 @@ def run_conversation(
                 # unless the active provider needs it) so the fallback request
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
+
+                # --- NEW HOOK INJECTION ---
+                try:
+                    from hermes_cli.plugins import has_hook, invoke_hook as _invoke_hook
+                    if has_hook("override_api_request"):
+                        _mock_responses = _invoke_hook(
+                            "override_api_request",
+                            api_messages=api_messages,
+                            agent=agent,
+                            task_id=effective_task_id,
+                        )
+                        _valid_mocks = [m for m in _mock_responses if m is not None]
+                        if _valid_mocks:
+                            response = _valid_mocks[0]
+                            break  # Short-circuit! Skip the LLM API call entirely.
+                except Exception:
+                    pass
+                # -------------------------
+
                 api_kwargs = agent._build_api_kwargs(api_messages)
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)

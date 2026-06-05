@@ -137,6 +137,7 @@ VALID_HOOKS: Set[str] = {
     "pre_llm_call",
     "post_llm_call",
     "pre_api_request",
+    "override_api_request",
     "post_api_request",
     "api_request_error",
     "on_session_start",

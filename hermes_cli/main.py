@@ -10033,6 +10033,96 @@ def _run_pre_update_backup(args) -> None:
     print()
 
 
+def _pause_windows_gateway_for_update(
+    gateway_mode: bool = False,
+) -> dict[str, bool] | None:
+    """Stop the current-profile Windows gateway before mutating the venv.
+
+    When the gateway is running from the same venv that ``hermes update``
+    is about to rewrite, imported extension modules such as
+    ``tornado/speedups.pyd`` stay file-locked on Windows and the dependency
+    update fails with ``Access is denied``. Return a small resume token when
+    we actually stopped a live gateway so the caller can bring it back after
+    the update, or on early process exit via ``atexit``.
+    """
+    if gateway_mode or not _is_windows():
+        return None
+
+    try:
+        from hermes_cli import gateway_windows
+    except Exception as exc:
+        logger.debug("Windows gateway pause skipped (import failed): %s", exc)
+        return None
+
+    try:
+        if not gateway_windows.is_installed():
+            return None
+    except Exception as exc:
+        logger.debug("Windows gateway pause skipped (install probe failed): %s", exc)
+        return None
+
+    try:
+        running_pids = list(gateway_windows._gateway_pids())
+    except Exception as exc:
+        logger.debug("Windows gateway pause skipped (PID probe failed): %s", exc)
+        return None
+
+    if not running_pids:
+        return None
+
+    print("→ Stopping Windows gateway before updating Python dependencies...")
+    try:
+        gateway_windows.stop()
+    except Exception as exc:
+        logger.debug("Windows gateway stop before update failed: %s", exc)
+        print(
+            "  ⚠ Failed to stop the Windows gateway cleanly; continuing update."
+        )
+        print(
+            "    If dependency install still hits 'Access is denied', run "
+            "`hermes gateway stop` and retry."
+        )
+        return None
+
+    return {"resume_needed": True}
+
+
+def _resume_windows_gateway_after_update(
+    resume_token: dict[str, bool] | None,
+) -> None:
+    """Restart a Windows gateway that we paused for the update.
+
+    Idempotent: callers may invoke this explicitly at the end of a successful
+    update and also register it with ``atexit`` as an early-exit safety net.
+    """
+    if not resume_token or not resume_token.get("resume_needed"):
+        return
+
+    resume_token["resume_needed"] = False
+    if not _is_windows():
+        return
+
+    try:
+        from hermes_cli import gateway_windows
+    except Exception as exc:
+        logger.debug("Windows gateway resume skipped (import failed): %s", exc)
+        return
+
+    try:
+        if gateway_windows._gateway_pids():
+            return
+    except Exception as exc:
+        logger.debug("Windows gateway resume PID probe failed: %s", exc)
+
+    print()
+    print("→ Restarting Windows gateway stopped for update...")
+    try:
+        gateway_windows.start()
+    except Exception as exc:
+        logger.debug("Windows gateway restart after update failed: %s", exc)
+        print(f"  ⚠ Failed to restart the Windows gateway automatically: {exc}")
+
+
 def _discard_lockfile_churn(git_cmd, repo_root):
     """Restore tracked ``package-lock.json`` files that npm dirtied locally.
 
@@ -10574,6 +10664,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
+        windows_gateway_resume = _pause_windows_gateway_for_update(
+            gateway_mode=gateway_mode
+        )
+        if windows_gateway_resume:
+            import atexit as _atexit
+
+            _atexit.register(
+                _resume_windows_gateway_after_update, windows_gateway_resume
+            )
+
         print("→ Updating Python dependencies...")
         from hermes_cli.managed_uv import ensure_uv, rebuild_venv, update_managed_uv
 
@@ -11488,6 +11588,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         except Exception as e:
             logger.debug("Gateway restart during update failed: %s", e)
+
+        _resume_windows_gateway_after_update(windows_gateway_resume)
 
         # Warn if legacy Hermes gateway unit files are still installed.
         # When both hermes.service (from a pre-rename install) and the

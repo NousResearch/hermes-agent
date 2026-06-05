@@ -8,6 +8,7 @@ Windows-specific code paths can be exercised on any host.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -118,6 +119,54 @@ def test_detect_concurrent_is_noop_off_windows(_winp, tmp_path):
     assert cli_main._detect_concurrent_hermes_instances(tmp_path) == []
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_windows_gateway_for_update_stops_running_gateway(_winp, monkeypatch, capsys):
+    """Running Windows gateways must be stopped before venv package rewrites."""
+    import hermes_cli.gateway_windows as gateway_windows
+
+    calls = []
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [4242])
+    monkeypatch.setattr(gateway_windows, "stop", lambda: calls.append("stop"))
+
+    token = cli_main._pause_windows_gateway_for_update(gateway_mode=False)
+
+    assert token == {"resume_needed": True}
+    assert calls == ["stop"]
+    assert "Stopping Windows gateway before updating Python dependencies" in capsys.readouterr().out
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_windows_gateway_for_update_ignores_uninstalled_gateway(_winp, monkeypatch):
+    """Do not stop/restart manual foreground runs outside the installed service path."""
+    import hermes_cli.gateway_windows as gateway_windows
+
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [4242])
+    monkeypatch.setattr(gateway_windows, "stop", lambda: (_ for _ in ()).throw(AssertionError("stop should not run")))
+
+    assert cli_main._pause_windows_gateway_for_update(gateway_mode=False) is None
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_resume_windows_gateway_after_update_starts_only_when_still_stopped(_winp, monkeypatch, capsys):
+    """Resume helper should restart once, then become a no-op."""
+    import hermes_cli.gateway_windows as gateway_windows
+
+    calls = []
+    pid_reads = iter([[], [777]])
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: next(pid_reads))
+    monkeypatch.setattr(gateway_windows, "start", lambda: calls.append("start"))
+
+    token = {"resume_needed": True}
+    cli_main._resume_windows_gateway_after_update(token)
+    cli_main._resume_windows_gateway_after_update(token)
+
+    assert calls == ["start"]
+    assert token["resume_needed"] is False
+    assert "Restarting Windows gateway stopped for update" in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # Parent-chain exclusion (issue #30768 follow-up — the setuptools .exe
 # launcher on Windows is a separate native process that spawns python.exe;
@@ -225,6 +274,64 @@ def test_detect_concurrent_still_finds_unrelated_other_hermes(_winp, tmp_path):
         result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
 
     assert result == [(sibling_pid, "hermes.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_cmd_update_pauses_windows_gateway_before_dependency_update(_winp, tmp_path):
+    """The Windows gateway pause must happen before the venv/site-packages rewrite."""
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    args = SimpleNamespace(
+        check=False,
+        gateway=False,
+        yes=False,
+        force=False,
+        backup=False,
+        no_backup=True,
+    )
+
+    events = []
+
+    def fake_pause(gateway_mode=False):
+        events.append(("pause", gateway_mode))
+        return None
+
+    def fake_install(*args, **kwargs):
+        events.append(("deps", None))
+        raise RuntimeError("stop after dependency step")
+
+    with patch.object(cli_main, "PROJECT_ROOT", project), \
+         patch.object(cli_main, "_run_pre_update_backup"), \
+         patch.object(cli_main, "_discard_lockfile_churn"), \
+         patch.object(cli_main, "_get_origin_url", return_value="https://github.com/NousResearch/hermes-agent.git"), \
+         patch.object(cli_main, "_is_fork", return_value=False), \
+         patch.object(cli_main, "_capture_head_sha", return_value="abc123"), \
+         patch.object(cli_main, "_validate_critical_files_syntax", return_value=(True, None, None)), \
+         patch.object(cli_main, "_clear_bytecode_cache", return_value=0), \
+         patch.object(cli_main, "_sync_with_upstream_if_needed"), \
+         patch.object(cli_main, "_pause_windows_gateway_for_update", side_effect=fake_pause), \
+         patch.object(cli_main, "_install_python_dependencies_with_optional_fallback", side_effect=fake_install), \
+         patch("hermes_cli.backup.create_quick_snapshot", return_value="snap-1"), \
+         patch("hermes_cli.managed_uv.update_managed_uv"), \
+         patch("hermes_cli.managed_uv.ensure_uv", return_value=("/usr/bin/uv", False)), \
+         patch("hermes_cli.managed_uv.rebuild_venv", return_value=True), \
+         patch.object(cli_main.subprocess, "run") as mock_run:
+        def _fake_run(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-parse" in joined and "--verify" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = _fake_run
+
+        with pytest.raises(RuntimeError, match="stop after dependency step"):
+            cli_main._cmd_update_impl(args, gateway_mode=False)
+
+    assert events == [("pause", False), ("deps", None)]
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)

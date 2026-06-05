@@ -224,7 +224,21 @@ def load_hermes_dotenv(
     """
     loaded: list[Path] = []
 
-    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    if hermes_home:
+        home_path = Path(hermes_home)
+    else:
+        # No explicit home: resolve through get_hermes_home() rather than
+        # reading os.environ["HERMES_HOME"] directly.  get_hermes_home()
+        # also honors the context-local override that profile-scoped cron
+        # jobs install via set_hermes_home_override() — those jobs leave
+        # HERMES_HOME pointing at the scheduler root, so a direct env read
+        # reloaded the root .env with override=True and stomped the
+        # profile's freshly-loaded MCP credentials.  It also gives the
+        # platform-native default (%LOCALAPPDATA%\hermes on Windows)
+        # instead of a hardcoded ~/.hermes.
+        from hermes_constants import get_hermes_home
+
+        home_path = get_hermes_home()
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 

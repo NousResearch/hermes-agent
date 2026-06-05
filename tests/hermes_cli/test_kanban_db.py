@@ -2856,6 +2856,44 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
 # ---------------------------------------------------------------------------
 
 
+def test_default_spawn_scopes_cli_flag_to_chat_subcommand(
+    kanban_home, monkeypatch, tmp_path
+):
+    """Kanban workers are non-TTY children, so ``--cli`` must be scoped to chat.
+
+    Regression for detached dispatcher workers under TUI-default configs:
+    ``hermes chat -q`` can select TUI and write ``hermes-tui: no TTY`` before
+    reaching kanban tools. A global ``hermes --cli chat -q`` wrapper is not
+    sufficient; the working launch shape is ``hermes ... chat --cli -q``.
+    """
+    captured: dict[str, object] = {}
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return FakeProc()
+
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["/bin/hermes"])
+    monkeypatch.setattr(kb.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda home: False)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="worker", assignee="default")
+        task = kb.get_task(conn, tid)
+    assert task is not None
+
+    pid = kb._default_spawn(task, str(tmp_path), board="default")
+
+    assert pid == 4242
+    cmd = captured["cmd"]
+    assert isinstance(cmd, list)
+    chat_index = cmd.index("chat")
+    assert cmd[chat_index : chat_index + 4] == ["chat", "--cli", "-q", f"work kanban task {tid}"]
+
+
 def test_resolve_hermes_argv_prefers_path_shim(monkeypatch):
     """When `hermes` is on PATH, use the shim — preserves familiar ps output."""
     import shutil

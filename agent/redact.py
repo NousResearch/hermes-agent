@@ -76,6 +76,7 @@ _PREFIX_PATTERNS = [
     r"ghs_[A-Za-z0-9]{10,}",            # GitHub server-to-server token
     r"ghr_[A-Za-z0-9]{10,}",            # GitHub refresh token
     r"xox[baprs]-[A-Za-z0-9-]{10,}",    # Slack tokens
+    r"1//[A-Za-z0-9_-]{10,}",           # Google OAuth refresh tokens
     r"AIza[A-Za-z0-9_-]{30,}",          # Google API keys
     r"pplx-[A-Za-z0-9]{10,}",           # Perplexity
     r"fal_[A-Za-z0-9_-]{10,}",          # Fal.ai
@@ -104,6 +105,7 @@ _PREFIX_PATTERNS = [
     r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
+    r"ya29\.[A-Za-z0-9_-]{10,}",        # Google OAuth access tokens
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name

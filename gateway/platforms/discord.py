@@ -3085,6 +3085,148 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
+    def _build_task_slash_payload(self, interaction: discord.Interaction, prompt: str) -> Dict[str, str]:
+        """Build the canonical kanban payload for the GootHands /task command."""
+        normalized = re.sub(r"\s+", " ", (prompt or "").strip())
+        if not normalized:
+            raise ValueError("prompt is required")
+
+        title = normalized if len(normalized) <= 60 else normalized[:59].rstrip() + "…"
+        user = getattr(interaction, "user", None)
+        channel = getattr(interaction, "channel", None)
+        channel_name = getattr(channel, "name", None) or str(getattr(interaction, "channel_id", "") or "")
+        guild = getattr(channel, "guild", None) or getattr(interaction, "guild", None)
+        if guild and getattr(guild, "name", None) and channel_name:
+            channel_name = f"{guild.name} / #{channel_name}"
+        user_name = (
+            getattr(user, "display_name", None)
+            or getattr(user, "name", None)
+            or "Discord user"
+        )
+        user_id = str(getattr(user, "id", "") or "")
+
+        body = (
+            "Discordの /task から登録された依頼です。\n\n"
+            "依頼内容:\n"
+            f"{(prompt or '').strip()}\n\n"
+            "登録元:\n"
+            "- Platform: Discord\n"
+            f"- User: {user_name}" + (f" ({user_id})" if user_id else "") + "\n"
+            f"- Channel: {channel_name}\n\n"
+            "運用方針:\n"
+            "- 初期担当は operations-orchestrator。\n"
+            "- 外部送信、公開、削除、GitHub push/PR、VPS変更などは、必要に応じてオーナー確認へ戻す。\n"
+        )
+
+        return {
+            "title": title,
+            "body": body,
+            "created_by": user_name,
+            "user_id": user_id,
+        }
+
+    @staticmethod
+    def _format_task_slash_status(status: str) -> str:
+        mapping = {
+            "ready": "実行待ち",
+            "running": "作業中",
+            "todo": "待機中",
+            "triage": "整理中",
+            "blocked": "確認待ち",
+            "done": "完了",
+            "failed": "失敗",
+            "crashed": "停止",
+            "timed_out": "時間切れ",
+        }
+        return mapping.get(status, status or "-")
+
+    async def _handle_task_slash(self, interaction: discord.Interaction, prompt: str) -> None:
+        """Create an AI Company kanban task from an explicit Discord /task command."""
+        command_text = "/task"
+        if not await self._check_slash_authorization(interaction, command_text):
+            return
+
+        try:
+            payload = self._build_task_slash_payload(interaction, prompt)
+        except ValueError:
+            await interaction.response.send_message(
+                "依頼内容を入力してください。例: `/task GoodHandsサイトの文言を確認する`",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        def _create_task() -> Dict[str, str]:
+            from hermes_cli import kanban_db as kb
+
+            board = (
+                os.getenv("HERMES_TASK_KANBAN_BOARD")
+                or os.getenv("HERMES_KANBAN_BOARD")
+                or "ai-company-2-0"
+            )
+            assignee = os.getenv("HERMES_TASK_DEFAULT_ASSIGNEE", "operations-orchestrator")
+            interaction_id = str(getattr(interaction, "id", "") or "")
+            idempotency_key = (
+                f"discord-task:{interaction_id}" if interaction_id else None
+            )
+
+            conn = kb.connect(board=board)
+            try:
+                task_id = kb.create_task(
+                    conn,
+                    title=payload["title"],
+                    body=payload["body"],
+                    assignee=assignee,
+                    created_by=payload["created_by"],
+                    workspace_kind="scratch",
+                    idempotency_key=idempotency_key,
+                    initial_status="running",
+                    board=board,
+                )
+                task = kb.get_task(conn, task_id)
+
+                channel = getattr(interaction, "channel", None)
+                thread_id = str(getattr(interaction, "channel_id", "") or "") if isinstance(channel, discord.Thread) else None
+                chat_id = str(getattr(interaction, "channel_id", "") or "")
+                if chat_id:
+                    kb.add_notify_sub(
+                        conn,
+                        task_id=task_id,
+                        platform="discord",
+                        chat_id=chat_id,
+                        thread_id=thread_id,
+                        user_id=payload["user_id"] or None,
+                        notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                    )
+                return {
+                    "id": task_id,
+                    "title": getattr(task, "title", payload["title"]),
+                    "assignee": getattr(task, "assignee", assignee) or assignee,
+                    "status": getattr(task, "status", "ready"),
+                }
+            finally:
+                conn.close()
+
+        try:
+            task_data = await asyncio.to_thread(_create_task)
+        except Exception as exc:
+            logger.exception("[%s] Failed to create kanban task from /task", self.name)
+            await interaction.edit_original_response(
+                content=f"タスク作成に失敗しました。\n{exc}",
+            )
+            return
+
+        await interaction.edit_original_response(
+            content=(
+                "タスクを追加しました。\n\n"
+                f"ID: `{task_data['id']}`\n"
+                f"タスク: {task_data['title']}\n"
+                f"担当: {task_data['assignee']}\n"
+                f"状態: {self._format_task_slash_status(task_data['status'])}"
+            ),
+        )
+
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
         if not self._client:
@@ -3126,6 +3268,11 @@ class DiscordAdapter(BasePlatformAdapter):
         @tree.command(name="status", description="Show Hermes session status")
         async def slash_status(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/status", "Status sent~")
+
+        @tree.command(name="task", description="Create an AI Company kanban task")
+        @discord.app_commands.describe(prompt="タスク化したい依頼内容")
+        async def slash_task(interaction: discord.Interaction, prompt: str):
+            await self._handle_task_slash(interaction, prompt)
 
         @tree.command(name="sethome", description="Set this chat as the home channel")
         async def slash_sethome(interaction: discord.Interaction):

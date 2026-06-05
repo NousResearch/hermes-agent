@@ -158,6 +158,99 @@ async def test_registers_native_restart_slash_command(adapter):
     )
 
 
+@pytest.mark.asyncio
+async def test_registers_task_slash_command(adapter):
+    adapter._handle_task_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    assert "task" in adapter._client.tree.commands
+
+    interaction = SimpleNamespace()
+    await adapter._client.tree.commands["task"](interaction, prompt="請求書の確認をお願いします")
+
+    adapter._handle_task_slash.assert_awaited_once_with(
+        interaction,
+        "請求書の確認をお願いします",
+    )
+
+
+@pytest.mark.asyncio
+async def test_task_slash_rejects_empty_prompt(adapter):
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(send_message=AsyncMock()),
+    )
+
+    await adapter._handle_task_slash(interaction, "   ")
+
+    interaction.response.send_message.assert_awaited_once()
+    args, kwargs = interaction.response.send_message.await_args
+    assert "依頼内容を入力してください" in args[0]
+    assert kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_task_slash_creates_kanban_task(adapter, monkeypatch):
+    fake_conn = MagicMock()
+    fake_conn.close = MagicMock()
+    created = {}
+
+    def fake_connect(*, board=None):
+        created["board"] = board
+        return fake_conn
+
+    def fake_create_task(conn, **kwargs):
+        created["conn"] = conn
+        created["kwargs"] = kwargs
+        return "t_123abc456def"
+
+    def fake_get_task(conn, task_id):
+        return SimpleNamespace(
+            id=task_id,
+            title="請求書の確認をお願いします",
+            assignee="operations-orchestrator",
+            status="ready",
+        )
+
+    fake_add_notify_sub = MagicMock()
+    monkeypatch.setattr("hermes_cli.kanban_db.connect", fake_connect)
+    monkeypatch.setattr("hermes_cli.kanban_db.create_task", fake_create_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.get_task", fake_get_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.add_notify_sub", fake_add_notify_sub)
+    monkeypatch.delenv("HERMES_TASK_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_TASK_DEFAULT_ASSIGNEE", raising=False)
+
+    adapter._active_profile_name = MagicMock(return_value="rino")
+    interaction = SimpleNamespace(
+        id=987654,
+        channel_id=12345,
+        channel=SimpleNamespace(
+            name="リノ",
+            guild=SimpleNamespace(name="DEGs"),
+        ),
+        guild=SimpleNamespace(name="DEGs"),
+        user=SimpleNamespace(id=67890, display_name="内田さん", name="uchida"),
+        response=SimpleNamespace(defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
+    )
+
+    await adapter._handle_task_slash(interaction, "請求書の確認をお願いします")
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    assert created["board"] == "ai-company-2-0"
+    assert created["kwargs"]["title"] == "請求書の確認をお願いします"
+    assert created["kwargs"]["assignee"] == "operations-orchestrator"
+    assert created["kwargs"]["idempotency_key"] == "discord-task:987654"
+    assert "Discordの /task から登録された依頼です。" in created["kwargs"]["body"]
+    fake_add_notify_sub.assert_called_once()
+
+    interaction.edit_original_response.assert_awaited_once()
+    args, kwargs = interaction.edit_original_response.await_args
+    assert "タスクを追加しました。" in kwargs["content"]
+    assert "t_123abc456def" in kwargs["content"]
+    assert "operations-orchestrator" in kwargs["content"]
+    assert "実行待ち" in kwargs["content"]
+
+
 # ------------------------------------------------------------------
 # Auto-registration from COMMAND_REGISTRY
 # ------------------------------------------------------------------
@@ -980,4 +1073,3 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
-

@@ -12,12 +12,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger
-} from '@/components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { triggerHaptic } from '@/lib/haptics'
 import { ChevronDown, Loader2 } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
@@ -39,7 +34,7 @@ import type { ToolPart } from './tool-fallback-model'
 // approval at a time, so the single pending row of those tools IS the row that
 // raised it. The command/description text comes from `$approvalRequest` (the
 // event payload), which is the only place that data reliably exists.
-const APPROVAL_TOOLS = new Set(['terminal', 'execute_code'])
+export const APPROVAL_TOOLS = new Set(['terminal', 'execute_code'])
 
 // Canonical gateway choices (ui-tui/src/components/prompts.tsx).
 type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
@@ -86,7 +81,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
           session_id: request.sessionId ?? undefined
         })
         triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
-        clearApprovalRequest()
+        clearApprovalRequest(request.sessionId)
       } catch (error) {
         notifyError(error, 'Could not send approval response')
         setSubmitting(null)

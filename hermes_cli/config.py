@@ -1482,6 +1482,34 @@ DEFAULT_CONFIG = {
             "client_id": "",  # agent:{instance_id} — Portal provisions this
             "portal_url": "",  # blank → use plugin default (production Portal)
         },
+        # Username/password gate configuration — read by the bundled
+        # ``dashboard_auth/basic`` plugin (a self-hosted "just put a
+        # password on my dashboard" provider that needs no OAuth IDP).
+        # The plugin registers a password provider when ``username`` plus
+        # either ``password_hash`` (preferred — no plaintext at rest) or
+        # ``password`` (plaintext, hashed in-memory at load) are set. Each
+        # key is overridable by an env var
+        # (``HERMES_DASHBOARD_BASIC_AUTH_USERNAME`` /
+        # ``_PASSWORD_HASH`` / ``_PASSWORD`` / ``_SECRET`` /
+        # ``_TTL_SECONDS``), env winning when non-empty. Leave ``username``
+        # empty (the default) to keep the plugin a no-op — loopback /
+        # ``--insecure`` operators and OAuth users are unaffected.
+        #
+        # ``secret`` is the HMAC key used to sign the stateless session
+        # tokens this provider mints. When empty, a random per-process key
+        # is generated — fine for a single process, but sessions then
+        # don't survive a restart or span multiple workers. Set an
+        # explicit ``secret`` (32+ random bytes, base64/hex/raw) for
+        # stable multi-worker / restart-surviving sessions. Compute a
+        # ``password_hash`` with
+        # ``python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('PW'))"``.
+        "basic_auth": {
+            "username": "",  # blank → plugin no-op (no password provider)
+            "password_hash": "",  # scrypt$... (preferred — no plaintext at rest)
+            "password": "",  # plaintext fallback (hashed in-memory at load)
+            "secret": "",  # token-signing key; blank → random per-process
+            "session_ttl_seconds": 0,  # 0 → plugin default (12h)
+        },
         # Public URL override (env: ``HERMES_DASHBOARD_PUBLIC_URL``).
         # When set, this is the complete authority — scheme + host +
         # optional path prefix (e.g. ``https://example.com/hermes``) —
@@ -5930,6 +5958,11 @@ def set_config_value(key: str, value: str):
         "terminal.docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
         "terminal.docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
         "terminal.docker_env": "TERMINAL_DOCKER_ENV",
+        # JSON-valued keys (terminal_tool parses these via json.loads). The user
+        # passes JSON on the CLI, so str(value) below already yields valid JSON —
+        # same as terminal.docker_env. cli.py and gateway/run.py bridge these too.
+        "terminal.docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+        "terminal.docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
         # terminal.cwd intentionally excluded — CLI resolves at runtime,
         # gateway bridges it in gateway/run.py. Persisting to .env causes
         # stale values to poison child processes.

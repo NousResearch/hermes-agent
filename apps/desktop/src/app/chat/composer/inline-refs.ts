@@ -5,6 +5,49 @@ import type { DroppedFile } from '../hooks/use-composer-actions'
 
 import { composerPlainText, escapeHtml, placeCaretEnd, refChipHtml } from './rich-editor'
 
+/** A chip to insert: a raw `@kind:value` string, or a typed value + display label. */
+export type InlineRefInput = string | { kind: string; label?: string; value: string }
+
+/** MIME for an in-app session drag (sidebar row → composer). */
+export const HERMES_SESSION_MIME = 'application/x-hermes-session'
+
+export interface SessionDragPayload {
+  id: string
+  profile: string
+  title: string
+}
+
+export function writeSessionDrag(transfer: DataTransfer, payload: SessionDragPayload) {
+  transfer.setData(HERMES_SESSION_MIME, JSON.stringify(payload))
+  transfer.effectAllowed = 'copy'
+}
+
+export function dragHasSession(transfer: DataTransfer | null) {
+  return Boolean(transfer) && Array.from(transfer!.types || []).includes(HERMES_SESSION_MIME)
+}
+
+export function readSessionDrag(transfer: DataTransfer | null): null | SessionDragPayload {
+  const raw = transfer?.getData(HERMES_SESSION_MIME)
+
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<SessionDragPayload>
+
+    return parsed.id ? { id: parsed.id, profile: parsed.profile || 'default', title: parsed.title || '' } : null
+  } catch {
+    return null
+  }
+}
+
+/** Build a `@session:<profile>/<id>` chip. Value carries the metadata the agent
+ * needs to resolve the link (session_search); label shows the friendly title. */
+export function sessionInlineRef({ id, profile, title }: SessionDragPayload): InlineRefInput {
+  return { kind: 'session', label: title || `chat ${id.slice(0, 8)}`, value: `${profile || 'default'}/${id}` }
+}
+
 export function dragHasAttachments(transfer: DataTransfer | null, pathsMime: string) {
   if (!transfer) {
     return false
@@ -40,13 +83,17 @@ export function droppedFileInlineRef(candidate: DroppedFile, cwd: string | null 
   return `@${kind}:${formatRefValue(rel)}`
 }
 
-export function insertInlineRefsIntoEditor(editor: HTMLDivElement, refs: readonly string[]) {
+export function insertInlineRefsIntoEditor(editor: HTMLDivElement, refs: readonly InlineRefInput[]) {
   if (!refs.length) {
     return null
   }
 
   const refsHtml = refs
     .map(ref => {
+      if (typeof ref !== 'string') {
+        return refChipHtml(ref.kind, ref.value, ref.label)
+      }
+
       const match = ref.match(/^@([^:]+):(.+)$/)
 
       return match ? refChipHtml(match[1], match[2]) : escapeHtml(ref)

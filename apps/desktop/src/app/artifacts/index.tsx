@@ -5,7 +5,6 @@ import { useNavigate } from 'react-router-dom'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import {
   Pagination,
@@ -17,6 +16,7 @@ import {
   PaginationPrevious
 } from '@/components/ui/pagination'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
+import { Tip } from '@/components/ui/tooltip'
 import { getSessionMessages, listSessions } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
@@ -25,7 +25,9 @@ import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { PAGE_INSET_NEG_X, PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
 import { sessionRoute } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -372,14 +374,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
 
-  const [refreshing, setRefreshing] = useState(false)
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(() => new Set())
   const [imagePage, setImagePage] = useState(1)
   const [filePage, setFilePage] = useState(1)
 
   const refreshArtifacts = useCallback(async () => {
-    setRefreshing(true)
-
     try {
       const sessions = (await listSessions(30, 1)).sessions
       const results = await Promise.allSettled(sessions.map(session => getSessionMessages(session.id)))
@@ -398,10 +397,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     } catch (err) {
       notifyError(err, 'Artifacts failed to load')
       setArtifacts([])
-    } finally {
-      setRefreshing(false)
     }
   }, [])
+
+  useRefreshHotkey(refreshArtifacts)
 
   useEffect(() => {
     void refreshArtifacts()
@@ -502,7 +501,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   return (
     <PageSearchShell
       {...props}
-      filters={
+      onSearchChange={setQuery}
+      searchHidden={counts.all === 0}
+      searchPlaceholder="Search artifacts..."
+      searchValue={query}
+      tabs={
         <>
           <TextTab active={kindFilter === 'all'} onClick={() => setKindFilter('all')}>
             All <TextTabMeta>({counts.all})</TextTabMeta>
@@ -518,23 +521,6 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           </TextTab>
         </>
       }
-      onSearchChange={setQuery}
-      searchPlaceholder="Search artifacts..."
-      searchTrailingAction={
-        <Button
-          aria-label={refreshing ? 'Refreshing artifacts' : 'Refresh artifacts'}
-          className="text-(--ui-text-tertiary) hover:bg-transparent hover:text-foreground"
-          disabled={refreshing}
-          onClick={() => void refreshArtifacts()}
-          size="icon-xs"
-          title={refreshing ? 'Refreshing artifacts' : 'Refresh artifacts'}
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name="refresh" size="0.875rem" spinning={refreshing} />
-        </Button>
-      }
-      searchValue={query}
     >
       {!artifacts ? (
         <PageLoader label="Indexing recent session artifacts" />
@@ -549,10 +535,16 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         </div>
       ) : (
         <div className="h-full overflow-y-auto">
-          <div className="flex flex-col gap-3 px-2 pb-2">
+          <div className={cn('flex flex-col gap-3 pb-2', PAGE_INSET_X)}>
             {visibleImageArtifacts.length > 0 && (
               <section className="flex flex-col">
-                <div className="sticky top-0 z-10 -mx-2 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
+                <div
+                  className={cn(
+                    'sticky top-0 z-10 flex h-7 items-center gap-3 overflow-x-auto bg-background',
+                    PAGE_INSET_NEG_X,
+                    PAGE_INSET_X
+                  )}
+                >
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
                     itemLabel="images"
@@ -578,7 +570,13 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
             {visibleFileArtifacts.length > 0 && (
               <section className="flex flex-col">
-                <div className="sticky top-0 z-10 -mx-2 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
+                <div
+                  className={cn(
+                    'sticky top-0 z-10 flex h-7 items-center gap-3 overflow-x-auto bg-background',
+                    PAGE_INSET_NEG_X,
+                    PAGE_INSET_X
+                  )}
+                >
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
                     itemLabel={itemsLabel(kindFilter)}
@@ -588,7 +586,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     total={visibleFileArtifacts.length}
                   />
                 </div>
-                <div className="overflow-x-auto rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) shadow-sm">
+                <div className="overflow-x-auto rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
                   <ArtifactTable artifacts={pagedFileArtifacts} ctx={cellCtx} filter={kindFilter} />
                 </div>
               </section>
@@ -660,11 +658,7 @@ interface ArtifactImageCardProps {
 
 function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: ArtifactImageCardProps) {
   return (
-    <article
-      className={cn(
-        'group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) shadow-sm'
-      )}
-    >
+    <article className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
       <div
         className={cn(
           'relative flex h-40 w-full items-center justify-center overflow-hidden border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-1.5',
@@ -674,7 +668,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
         {!failedImage && (
           <ZoomableImage
             alt={artifact.label}
-            className="max-h-40 max-w-full cursor-zoom-in rounded-md object-contain shadow-sm"
+            className="max-h-40 max-w-full cursor-zoom-in rounded-md object-contain"
             containerClassName="max-h-full"
             decoding="async"
             loading="lazy"
@@ -702,7 +696,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
         </div>
 
         <div className="flex flex-wrap gap-1.5">
-          <Button onClick={() => onOpenChat(artifact.sessionId)} size="xs" type="button" variant="outline">
+          <Button onClick={() => onOpenChat(artifact.sessionId)} size="xs" type="button" variant="textStrong">
             <FolderOpen className="size-3" />
             Chat
           </Button>
@@ -741,12 +735,8 @@ function ArtifactCellAction({
 
   return (
     <button
-      className={cn(
-        'flex h-full w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) font-normal text-(--ui-text-secondary) no-underline underline-offset-4 decoration-current/20 transition-colors hover:text-foreground hover:underline',
-        'cursor-pointer'
-      )}
+      className="flex h-full w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) font-normal text-(--ui-text-secondary) no-underline underline-offset-4 decoration-current/20 transition-colors hover:text-foreground hover:underline"
       onClick={onClick}
-      title={title}
       type="button"
     >
       {children}
@@ -784,15 +774,16 @@ function LocationCell({ artifact }: { artifact: ArtifactRecord; ctx: CellCtx }) 
 
   return (
     <div className="group/location flex min-w-0 items-center gap-1.5">
-      <div
-        className={cn(
-          'min-w-0 flex-1 truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)',
-          isLink ? 'font-normal' : 'font-mono'
-        )}
-        title={artifact.value}
-      >
-        {value}
-      </div>
+      <Tip label={artifact.value}>
+        <div
+          className={cn(
+            'min-w-0 flex-1 truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)',
+            isLink ? 'font-normal' : 'font-mono'
+          )}
+        >
+          {value}
+        </div>
+      </Tip>
       <CopyButton
         appearance="icon"
         buttonSize="icon-xs"
@@ -863,7 +854,7 @@ function ArtifactTable({
           ))}
         </tr>
       </thead>
-      <tbody className="divide-y divide-(--ui-stroke-quaternary)">
+      <tbody>
         {artifacts.map(artifact => (
           <tr className="group/artifact" key={artifact.id}>
             {ARTIFACT_COLUMNS.map(col => {

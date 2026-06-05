@@ -76,11 +76,10 @@ class TestEnsureUv:
         _make_executable(tmp_path / "bin" / "uv")
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
             from hermes_cli.managed_uv import ensure_uv
-            path, fresh = ensure_uv()
+            path = ensure_uv()
             assert path == str(tmp_path / "bin" / "uv")
-            assert fresh is False
 
-    def test_installs_if_missing_sets_bootstrap_flag(self, tmp_path):
+    def test_installs_if_missing(self, tmp_path):
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv._install_uv") as mock_install:
             # Simulate the installer creating the binary
@@ -89,61 +88,16 @@ class TestEnsureUv:
             mock_install.side_effect = fake_install
 
             from hermes_cli.managed_uv import ensure_uv
-            path, fresh = ensure_uv()
+            path = ensure_uv()
             assert path == str(tmp_path / "bin" / "uv")
-            assert fresh is True
             mock_install.assert_called_once()
 
-    def test_install_failure_returns_none_false(self, tmp_path):
+    def test_install_failure_returns_none(self, tmp_path):
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv._install_uv", side_effect=RuntimeError("network down")):
             from hermes_cli.managed_uv import ensure_uv
-            path, fresh = ensure_uv()
+            path = ensure_uv()
             assert path is None
-            assert fresh is False
-
-
-# ---------------------------------------------------------------------------
-# rebuild_venv
-# ---------------------------------------------------------------------------
-
-class TestRebuildVenv:
-    def test_removes_old_venv_and_creates_new(self, tmp_path):
-        venv_dir = tmp_path / "venv"
-        venv_dir.mkdir()
-        (venv_dir / "old_file").write_text("stale")
-
-        uv_bin = str(tmp_path / "bin" / "uv")
-
-        def fake_run(cmd, **kwargs):
-            m = MagicMock(returncode=0)
-            if cmd[1] == "venv":
-                # Simulate uv creating the venv dir
-                venv_dir.mkdir(exist_ok=True)
-                bin_dir = venv_dir / "bin"
-                bin_dir.mkdir(parents=True, exist_ok=True)
-                (bin_dir / "python").write_text("#!/bin/sh\necho Python 3.11.0")
-            elif "--version" in cmd:
-                m.stdout = "Python 3.11.0"
-            return m
-
-        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
-             patch("hermes_cli.managed_uv.shutil.rmtree") as mock_rmtree:
-            from hermes_cli.managed_uv import rebuild_venv
-            result = rebuild_venv(uv_bin, venv_dir)
-            assert result is True
-            mock_rmtree.assert_called_once_with(venv_dir, ignore_errors=True)
-
-    def test_rebuild_failure_returns_false(self, tmp_path):
-        venv_dir = tmp_path / "venv"
-        uv_bin = str(tmp_path / "bin" / "uv")
-
-        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
-             patch("hermes_cli.managed_uv.shutil.rmtree"):
-            mock_run.return_value = MagicMock(returncode=1, stderr="nope")
-            from hermes_cli.managed_uv import rebuild_venv
-            result = rebuild_venv(uv_bin, venv_dir)
-            assert result is False
 
 
 # ---------------------------------------------------------------------------

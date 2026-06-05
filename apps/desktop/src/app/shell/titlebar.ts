@@ -12,8 +12,11 @@ export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 24
 // (traffic lights are hidden). Matches the right-cluster's 0.75rem padding.
 export const TITLEBAR_EDGE_INSET = 14
 
+// Titlebar palette only. All sizing/radius/cursor/centering come from the
+// shared <Button size="icon-titlebar"> (used polymorphically via asChild) —
+// Button is the single source of button styling.
 export const titlebarButtonClass =
-  'h-[var(--titlebar-control-height)] w-[var(--titlebar-control-size)] cursor-pointer rounded-md text-muted-foreground/85 transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground'
+  'text-muted-foreground/85 hover:bg-(--ui-control-hover-background) hover:text-foreground'
 
 export const titlebarHeaderBaseClass =
   'pointer-events-none relative z-3 flex h-(--titlebar-height) shrink-0 items-center justify-start gap-3 border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-[max(0.75rem,var(--titlebar-content-inset,0rem))]'

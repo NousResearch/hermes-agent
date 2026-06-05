@@ -204,6 +204,76 @@ def test_unknown_adapter_does_not_crash_trust_check(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Layer 2b: `dm_policy: pairing` is NOT blanket-trusted
+# ---------------------------------------------------------------------------
+#
+# Regression: WeCom/Weixin document ``dm_policy: pairing`` and declare
+# ``enforces_own_access_policy=True``, but their intake helper only special-cases
+# ``disabled`` / ``allowlist`` — ``pairing`` falls through and forwards the DM so
+# the gateway can run its pairing handshake. With no env allowlist, the
+# adapter-trust shortcut above then authorized *every* unpaired sender, silently
+# degrading pairing mode to open access. The shortcut must skip pairing-mode DMs
+# so an unpaired sender falls through to default-deny (and gets a pairing code).
+
+
+@pytest.mark.parametrize("platform", [Platform.WECOM, Platform.WEIXIN])
+def test_pairing_dm_policy_not_blanket_authorized(monkeypatch, platform):
+    """An unpaired sender in ``dm_policy: pairing`` is NOT authorized."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={platform: PlatformConfig(enabled=True, extra={"dm_policy": "pairing"})}
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+    # pairing_store.is_approved already returns False (set in _make_runner).
+
+    assert runner._is_user_authorized(_source(platform)) is False
+
+
+def test_pairing_dm_policy_authorizes_paired_user(monkeypatch):
+    """Once approved in the pairing store, the sender authorizes normally."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.WECOM: PlatformConfig(enabled=True, extra={"dm_policy": "pairing"})}
+    )
+    runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
+    runner.pairing_store.is_approved.return_value = True
+
+    assert runner._is_user_authorized(_source(Platform.WECOM)) is True
+
+
+def test_pairing_carveout_reads_adapter_when_env_set(monkeypatch):
+    """Env-only ``WECOM_DM_POLICY=pairing`` (absent from config.extra) is honored.
+
+    The adapter resolves ``dm_policy`` from the env var, so its ``_dm_policy`` is
+    authoritative even when ``config.extra`` is empty. The carve-out must read
+    that, not just config.
+    """
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.WECOM: PlatformConfig(enabled=True, extra={})}
+    )
+    runner, adapter = _make_runner(Platform.WECOM, config, enforces=True)
+    adapter._dm_policy = "pairing"  # as the adapter would resolve from the env var
+
+    assert runner._is_user_authorized(_source(Platform.WECOM)) is False
+
+
+def test_pairing_dm_policy_group_chat_still_trusted(monkeypatch):
+    """Pairing is DM-only — group traffic keeps the adapter-trust path."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.WECOM: PlatformConfig(
+                enabled=True, extra={"dm_policy": "pairing", "group_policy": "open"}
+            )
+        }
+    )
+    runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(Platform.WECOM, chat_type="group")) is True
+
+
+# ---------------------------------------------------------------------------
 # Layer 3: unauthorized-DM behavior reads config dm_policy
 # ---------------------------------------------------------------------------
 

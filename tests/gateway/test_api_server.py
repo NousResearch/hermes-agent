@@ -621,12 +621,20 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
 
 @pytest.fixture
 def adapter():
-    return _make_adapter()
+    adapter = _make_adapter()
+    try:
+        yield adapter
+    finally:
+        adapter._response_store.close()
 
 
 @pytest.fixture
 def auth_adapter():
-    return _make_adapter(api_key="sk-secret")
+    adapter = _make_adapter(api_key="sk-secret")
+    try:
+        yield adapter
+    finally:
+        adapter._response_store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -3457,6 +3465,7 @@ class TestConversationParameter:
     @pytest.mark.asyncio
     async def test_conversation_reuse_after_eviction_no_404(self, adapter):
         """After eviction clears a conversation mapping, reusing that name starts fresh (no 404)."""
+        adapter._response_store.close()
         adapter._response_store = ResponseStore(max_size=1)
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:

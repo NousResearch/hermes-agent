@@ -6744,6 +6744,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         _stub_urlopen(monkeypatch, ok=False)
         with (
+            patch("platform.system", return_value="Linux"),
             patch(
                 "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False
             ),

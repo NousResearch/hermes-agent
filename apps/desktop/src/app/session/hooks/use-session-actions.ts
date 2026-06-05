@@ -453,15 +453,31 @@ export function useSessionActions({
         clearComposerDraft()
         clearComposerAttachments()
 
-        void requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
-          .then(usage => {
-            if (isCurrentResume() && usage) {
-              setCurrentUsage(current => ({ ...current, ...usage }))
-            }
-          })
-          .catch(() => undefined)
+        try {
+          const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
 
-        return
+          if (!isCurrentResume()) {
+            return
+          }
+
+          if (usage) {
+            setCurrentUsage(current => ({ ...current, ...usage }))
+          }
+
+          return
+        } catch {
+          // The cached runtime id was minted by a prior backend instance. A
+          // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
+          // and respawned across a profile swap mints fresh ids, so this mapping
+          // now 404s ("session not found"). Drop it and fall through to a full
+          // resume that rebinds a live runtime id.
+          if (!isCurrentResume()) {
+            return
+          }
+
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+        }
       }
 
       setFreshDraftReady(false)

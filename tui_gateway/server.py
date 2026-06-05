@@ -678,10 +678,24 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
         worker = None
         notify_registered = False
+        home_token = None
+        profile_home = current.get("profile_home")
         try:
             tokens = _set_session_context(key)
+            # Build against the session's profile (global-remote): bind its
+            # HERMES_HOME so config/skills/model resolve to it, and hand the
+            # agent that profile's db so turns persist to the right state.db.
+            session_db = None
+            if profile_home:
+                home_token = set_hermes_home_override(profile_home)
+                try:
+                    from hermes_state import SessionDB
+
+                    session_db = SessionDB(db_path=Path(profile_home) / "state.db")
+                except Exception:
+                    session_db = None
             try:
-                agent = _make_agent(sid, key)
+                agent = _make_agent(sid, key, session_db=session_db)
             finally:
                 _clear_session_context(tokens)
 
@@ -725,6 +739,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
             current["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
             with _sessions_lock:
                 replaced = _sessions.get(sid) is not current
             if replaced:
@@ -850,7 +866,22 @@ def _ensure_session_db_row(session: dict) -> None:
     key = session.get("session_key")
     if not key:
         return
-    db = _get_db()
+    # Persist into the session's own profile db (global remote mode), not the
+    # launch profile's — otherwise the row lands in the wrong state.db, the
+    # unified list mis-tags it, and resume 404s ("session not found").
+    profile_home = session.get("profile_home")
+    if profile_home:
+        from hermes_state import SessionDB
+
+        try:
+            db = SessionDB(db_path=Path(profile_home) / "state.db")
+        except Exception:
+            logger.debug("failed to open profile db for session row", exc_info=True)
+            return
+        close_db = True
+    else:
+        db = _get_db()
+        close_db = False
     if db is None:
         return
     try:
@@ -862,6 +893,12 @@ def _ensure_session_db_row(session: dict) -> None:
         )
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)
+    finally:
+        if close_db:
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 def _set_session_cwd(session: dict, cwd: str) -> str:
@@ -2960,6 +2997,13 @@ def _(rid, params: dict) -> dict:
     resolved_cwd = _completion_cwd(params)
     _enable_gateway_prompts()
 
+    # ``profile`` (app-global remote mode): a new chat started under a non-launch
+    # profile must build its agent + persist against THAT profile's home/state.db,
+    # not the dashboard's launch profile. Stored on the session so _start_agent_build
+    # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
+    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+
     ready = threading.Event()
     now = time.time()
 
@@ -2981,6 +3025,7 @@ def _(rid, params: dict) -> dict:
             "inflight_turn": None,
             "last_active": now,
             "pending_title": title or None,
+            "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False,
             "session_key": key,
             "show_reasoning": _load_show_reasoning(),

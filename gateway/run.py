@@ -15304,6 +15304,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         asked to deliver (#20834). Only ``MEDIA:`` directives — the explicit
         attachment contract — trigger post-stream uploads.
         """
+        logger.info("[DEBUG] _deliver_media_from_response called: response=%r chat=%s", response[:100], event.source.chat_id)
         from pathlib import Path
         from urllib.parse import quote as _quote
 

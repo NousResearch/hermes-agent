@@ -1646,6 +1646,16 @@ class WeComAdapter(BasePlatformAdapter):
         if not reply_req_id and chat_id in self._last_chat_req_ids:
             reply_req_id = self._last_chat_req_ids[chat_id]
 
+        # When native streaming was/is active for this chat, media MUST go
+        # through the proactive send path (aibot_send_msg), NOT passive reply
+        # (aibot_respond_msg). This mirrors the official OpenClaw plugin:
+        #   "replyMedia（被动回复）无法覆盖 replyStream 发出的 thinking 流式消息，
+        #    因此所有媒体统一走 aibot_send_msg 主动发送。"
+        # The reply_req_id is "owned" by the stream — using it for media
+        # causes the server to either ignore it or never ack.
+        if self._active_stream_id is not None or chat_id in self._stream_expired_chats:
+            reply_req_id = None  # force proactive send
+
         try:
             upload_result = await self._upload_media_bytes(
                 prepared["data"],
@@ -1868,6 +1878,7 @@ class WeComAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         del kwargs
+        logger.info("[%s] send_document called: chat=%s file=%s", self.name, chat_id, file_path)
         return await self._send_media_source(
             chat_id=chat_id,
             media_source=file_path,

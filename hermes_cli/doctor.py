@@ -1469,7 +1469,7 @@ def run_doctor(args):
             # For workspace-scoped audits run from PROJECT_ROOT the
             # node_modules check must use the workspace root; standalone dirs
             # (whatsapp-bridge) check their own node_modules.
-            check_dir = npm_dir if audit_extra else npm_dir
+            check_dir = PROJECT_ROOT if audit_extra else npm_dir
             if not (check_dir / "node_modules").exists():
                 continue
             try:

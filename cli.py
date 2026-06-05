@@ -9113,6 +9113,8 @@ class HermesCLI:
             self._handle_voice_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
+        elif canonical == "indicator":
+            self._handle_indicator_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
@@ -10271,6 +10273,55 @@ class HermesCLI:
             _cprint(f"  {_DIM}{behavior}{_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
+
+    def _handle_indicator_command(self, cmd: str):
+        """Handle /indicator — pick the TUI busy-indicator style.
+
+        Usage:
+            /indicator              Show the current busy-indicator style
+            /indicator status       Show the current busy-indicator style
+            /indicator kaomoji      Kaomoji faces (default)
+            /indicator emoji        Emoji faces
+            /indicator unicode      Braille spinner
+            /indicator ascii        Plain ASCII spinner
+
+        The choice is persisted to ``display.tui_status_indicator`` and read
+        by the Ink TUI (``hermes --tui``). Keep the styles aligned with
+        ``INDICATOR_STYLES`` in ``ui-tui/src/app/interfaces.ts`` and
+        ``_INDICATOR_STYLES`` in ``tui_gateway/server.py`` — all three
+        validate against the same shape so the command, the gateway, and the
+        live render agree.
+        """
+        styles = ("ascii", "emoji", "kaomoji", "unicode")
+        default = "kaomoji"
+        usage = "/indicator [kaomoji|emoji|unicode|ascii]"
+
+        def _current() -> str:
+            raw = str((self.config.get("display") or {}).get(
+                "tui_status_indicator", "")).strip().lower()
+            return raw if raw in styles else default
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip().lower() == "status":
+            _cprint(f"  {_ACCENT}TUI busy-indicator style: {_current()}{_RST}")
+            _cprint(f"  {_DIM}Usage: {usage}{_RST}")
+            return
+
+        arg = parts[1].strip().lower()
+        if arg not in styles:
+            _cprint(f"  {_DIM}(._.) Unknown indicator: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: {usage}{_RST}")
+            return
+
+        # Mirror into the in-memory config so a follow-up `/indicator status`
+        # reflects the change within the same session (save_config_value only
+        # writes to disk).
+        self.config.setdefault("display", {})["tui_status_indicator"] = arg
+        if save_config_value("display.tui_status_indicator", arg):
+            _cprint(f"  {_ACCENT}✓ TUI busy-indicator style set to '{arg}' (saved to config){_RST}")
+            _cprint(f"  {_DIM}Applies to the Ink TUI (hermes --tui).{_RST}")
+        else:
+            _cprint(f"  {_ACCENT}✓ TUI busy-indicator style set to '{arg}' (session only){_RST}")
 
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""

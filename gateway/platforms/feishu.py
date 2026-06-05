@@ -395,6 +395,11 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    # Skill auto-loading: chat_id -> skill name or list of skill names.
+    # Resolved at MessageEvent construction time, then consumed by run.py:8648.
+    chat_skills: Dict[str, str | list[str]] = field(default_factory=dict)
+    # Default skill loaded for any chat_id that has no explicit entry in chat_skills.
+    default_skill: Optional[str | list[str]] = None
 
 
 @dataclass
@@ -1573,6 +1578,8 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            chat_skills=extra.get("chat_skills", {}),
+            default_skill=extra.get("default_skill"),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1605,6 +1612,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._chat_skills: Dict[str, str | list[str]] = settings.chat_skills
+        self._default_skill: Optional[str | list[str]] = settings.default_skill
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -3098,6 +3107,14 @@ class FeishuAdapter(BasePlatformAdapter):
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
         )
+        # Resolve auto_skill: per-chat override → default fallback (mirrors Telegram).
+        # Fall back to None if settings were never applied (e.g. test mocks).
+        _chat_skills: Dict = getattr(self, "_chat_skills", {})
+        _default_skill = getattr(self, "_default_skill", None)
+        _auto_skill: Optional[str | list[str]] = (
+            _chat_skills.get(chat_id) or _default_skill
+        )
+
         normalized = MessageEvent(
             text=text,
             message_type=inbound_type,
@@ -3109,6 +3126,7 @@ class FeishuAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
             timestamp=datetime.now(),
+            auto_skill=_auto_skill,
         )
         await self._dispatch_inbound_event(normalized)
 

@@ -1235,6 +1235,18 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     safe_name = safe_name.replace("\x00", "").strip()
     if not safe_name or safe_name in {".", ".."}:
         safe_name = "document"
+    # Truncate to keep total filename within 255 bytes (extfs limit).
+    # Prefix "doc_{12hex}_" = 25 bytes; reserve 10 bytes of margin.
+    MAX_NAME_LEN = 225
+    if len(safe_name.encode("utf-8")) > MAX_NAME_LEN:
+        # Preserve extension by truncating the stem, then reattach extension
+        stem = Path(safe_name).stem
+        ext = Path(safe_name).suffix
+        max_stem_len = MAX_NAME_LEN - len(ext.encode("utf-8"))
+        if max_stem_len > 0:
+            safe_name = stem.encode("utf-8")[:max_stem_len].decode("utf-8", errors="replace") + ext
+        else:
+            safe_name = safe_name.encode("utf-8")[:MAX_NAME_LEN].decode("utf-8", errors="replace")
     cached_name = f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
     filepath = cache_dir / cached_name
     # Final safety check: ensure path stays inside cache dir

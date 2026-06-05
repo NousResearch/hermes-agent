@@ -209,6 +209,13 @@ Success criteria:
 - Command exits without provider/model errors
 - For code tasks: expected files changed and tests pass
 
+## Raymond Wiki Shared Layer
+
+Raymond Wiki PR work uses the same executor-neutral rule set as Codex. Read the shared reference first and keep this skill limited to OpenCode runtime, session, and process handling.
+
+- Shared reference: [Raymond Wiki PR Shared Execution Rules](/home/ubuntu/.hermes/skills/autonomous-ai-agents/references/raymond-wiki-pr-execution-shared.md)
+- Do not duplicate the checklist, rework causes, or report minimum fields here.
+
 ## Rules
 
 1. Prefer `opencode run` for one-shot automation — it's simpler and doesn't need pty.

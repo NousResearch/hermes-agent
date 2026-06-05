@@ -1898,6 +1898,14 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
+        # Redact secrets from error messages before delivery to user chat.
+        # Provider errors can contain API key fragments, bearer tokens, or
+        # endpoint URLs with embedded credentials (COD-301).
+        try:
+            from agent.redact import redact_sensitive_text
+            error_msg = redact_sensitive_text(error_msg)
+        except Exception:
+            pass
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         
         output = f"""# Cron Job: {job_name} (FAILED)

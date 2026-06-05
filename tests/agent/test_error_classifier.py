@@ -398,6 +398,21 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
 
+    def test_502_with_unknown_variant_is_non_retryable(self):
+        e = MockAPIError(
+            "unknown variant `image_url`, expected `text`",
+            status_code=502,
+            body={
+                "error": {
+                    "message": "unknown variant `image_url`, expected `text`",
+                }
+            },
+        )
+        result = classify_api_error(e, provider="gemini", model="gemini-2.0-flash")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
     def test_502_plain_bad_gateway_still_retryable(self):
         """A genuine 502 with no request-validation signal stays retryable."""
         e = MockAPIError("Bad Gateway", status_code=502)

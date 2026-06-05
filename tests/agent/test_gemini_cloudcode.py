@@ -568,6 +568,32 @@ class TestBuildGeminiRequest:
             "role": "model", "parts": [{"text": "hello"}],
         }
 
+    def test_image_url_content_translates_to_inline_data(self):
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+
+        req = build_gemini_request(messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe this"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/png;base64,aGVsbG8=",
+                    },
+                },
+            ],
+        }])
+
+        parts = req["contents"][0]["parts"]
+        assert parts[0] == {"text": "describe this"}
+        assert parts[1] == {
+            "inlineData": {
+                "mimeType": "image/png",
+                "data": "aGVsbG8=",
+            },
+        }
+        assert all("image_url" not in part for part in parts)
+
     def test_system_instruction_separated(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
 

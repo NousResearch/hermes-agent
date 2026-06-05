@@ -268,6 +268,7 @@ _REQUEST_VALIDATION_PATTERNS = [
     "invalid_request_error",
     "unknown_parameter",
     "unsupported_parameter",
+    "unknown variant",
 ]
 
 # OpenRouter aggregator policy-block patterns.

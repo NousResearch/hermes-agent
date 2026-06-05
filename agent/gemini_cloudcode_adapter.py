@@ -28,6 +28,7 @@ reverse-engineered from the opencode-gemini-auth and clawdbot implementations.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -81,6 +82,58 @@ def _coerce_content_to_text(content: Any) -> str:
                     logger.debug("Dropping multimodal part (not yet supported): %s", p.get("type"))
         return "\n".join(pieces)
     return str(content)
+
+
+def _image_part_to_inline_data(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    ptype = part.get("type")
+    if ptype == "image_url":
+        image_data = part.get("image_url") or {}
+        url = image_data.get("url") if isinstance(image_data, dict) else str(image_data)
+    elif ptype == "input_image":
+        url = part.get("image_url") or ""
+    else:
+        return None
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return None
+    try:
+        header, encoded = url.split(",", 1)
+        mime = header.split(":", 1)[1].split(";", 1)[0]
+        raw = base64.b64decode(encoded)
+    except Exception:
+        return None
+    return {
+        "inlineData": {
+            "mimeType": mime,
+            "data": base64.b64encode(raw).decode("ascii"),
+        }
+    }
+
+
+def _content_to_gemini_parts(content: Any) -> List[Dict[str, Any]]:
+    if isinstance(content, str):
+        return [{"text": content}] if content else []
+    if not isinstance(content, list):
+        text = str(content) if content is not None else ""
+        return [{"text": text}] if text else []
+
+    parts: List[Dict[str, Any]] = []
+    for p in content:
+        if isinstance(p, str):
+            if p:
+                parts.append({"text": p})
+            continue
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text" and isinstance(p.get("text"), str):
+            parts.append({"text": p["text"]})
+            continue
+        inline = _image_part_to_inline_data(p)
+        if inline is not None:
+            parts.append(inline)
+            continue
+        if p.get("type") in {"image_url", "input_image", "input_audio"}:
+            logger.debug("Dropping unsupported multimodal part: %s", p.get("type"))
+    return parts
 
 
 def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
@@ -157,9 +210,7 @@ def _build_gemini_contents(
         gemini_role = _ROLE_MAP_OPENAI_TO_GEMINI.get(role, "user")
         parts: List[Dict[str, Any]] = []
 
-        text = _coerce_content_to_text(msg.get("content"))
-        if text:
-            parts.append({"text": text})
+        parts.extend(_content_to_gemini_parts(msg.get("content")))
 
         # Assistant messages can carry tool_calls
         tool_calls = msg.get("tool_calls") or []

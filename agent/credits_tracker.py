@@ -147,6 +147,29 @@ class CreditsState:
         return max(0.0, min(1.0, used / self.subscription_limit_micros))
 
 
+# ── AgentNotice (out-of-band notice payload; driver-agnostic) ────────────────
+
+
+@dataclass
+class AgentNotice:
+    """A structured, driver-agnostic out-of-band notice.
+
+    The agent fires these via ``AIAgent.notice_callback`` (and clears them via
+    ``notice_clear_callback``); each driver renders it its own way — the TUI as a
+    status-bar override, the CLI as a console line, etc. v1 credits notices are all
+    ``kind="sticky"``; ``kind``/``ttl_ms`` are kept fully expressive so a future
+    config/slash-command can switch them to TTL without touching the policy (a
+    single default seam — see L4).
+    """
+
+    text: str
+    level: str = "info"            # info | warn | error | success
+    kind: str = "sticky"           # sticky | ttl
+    ttl_ms: Optional[int] = None   # honored only when kind == "ttl"
+    key: Optional[str] = None      # dedupe / fired-once-latch / clear key
+    id: Optional[str] = None
+
+
 # ── parse_credits_headers ────────────────────────────────────────────────────
 
 

@@ -2092,6 +2092,24 @@ def _agent_cbs(sid: str) -> dict:
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),
+        # Credits/notice spine (L1): an AgentNotice fired by the agent becomes a
+        # notification.show WS event; a recovery clear becomes notification.clear.
+        # Snake_case payload to match the existing gateway-event convention.
+        "notice_callback": lambda n: _emit(
+            "notification.show",
+            sid,
+            {
+                "text": n.text,
+                "level": n.level,
+                "kind": n.kind,
+                "ttl_ms": n.ttl_ms,
+                "key": n.key,
+                "id": n.id,
+            },
+        ),
+        "notice_clear_callback": lambda key: _emit(
+            "notification.clear", sid, {"key": key}
+        ),
         "clarify_callback": lambda q, c: _block(
             "clarify.request", sid, {"question": q, "choices": c}
         ),

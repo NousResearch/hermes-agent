@@ -379,6 +379,8 @@ class AIAgent:
         interim_assistant_callback: callable = None,
         tool_gen_callback: callable = None,
         status_callback: callable = None,
+        notice_callback: callable = None,
+        notice_clear_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
@@ -449,6 +451,8 @@ class AIAgent:
             interim_assistant_callback=interim_assistant_callback,
             tool_gen_callback=tool_gen_callback,
             status_callback=status_callback,
+            notice_callback=notice_callback,
+            notice_clear_callback=notice_clear_callback,
             max_tokens=max_tokens,
             reasoning_config=reasoning_config,
             service_tier=service_tier,
@@ -794,6 +798,27 @@ class AIAgent:
                 self.status_callback("warn", message)
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
+
+    def _emit_notice(self, notice) -> None:
+        """Fire a structured ``AgentNotice`` to the active driver (TUI / CLI).
+
+        Driver-agnostic: the bound ``notice_callback`` renders it however that
+        driver does (TUI status-bar override, CLI console line). Swallows all
+        callback errors — a notice must NEVER break the agent loop (D-D fail-open).
+        """
+        if self.notice_callback:
+            try:
+                self.notice_callback(notice)
+            except Exception:
+                logger.debug("notice_callback error in _emit_notice", exc_info=True)
+
+    def _emit_notice_clear(self, key: str) -> None:
+        """Clear a previously-fired sticky notice by ``key`` (e.g. on recovery)."""
+        if self.notice_clear_callback:
+            try:
+                self.notice_clear_callback(key)
+            except Exception:
+                logger.debug("notice_clear_callback error in _emit_notice_clear", exc_info=True)
 
     # ── Buffered retry/fallback status ────────────────────────────────────
     # Retry and fallback chains were flooding the CLI/gateway with status

@@ -3903,6 +3903,7 @@ class TestRunConversation:
     def test_glm_prompt_exceeds_max_length_triggers_compression(self, agent):
         """GLM/Z.AI uses 'Prompt exceeds max length' for context overflow."""
         self._setup_agent(agent)
+        agent.compression_enabled = True  # this test verifies overflow→compression fires
         err_400 = Exception(
             "Error code: 400 - {'error': {'code': '1261', 'message': 'Prompt exceeds max length'}}"
         )
@@ -3937,6 +3938,7 @@ class TestRunConversation:
         to the generic 128K fallback tier.
         """
         self._setup_agent(agent)
+        agent.compression_enabled = True  # this test verifies overflow→compression fires
         agent.provider = "minimax"
         agent.model = "MiniMax-M2.7-highspeed"
         agent.base_url = "https://api.minimax.io/anthropic"
@@ -3982,6 +3984,7 @@ class TestRunConversation:
         rely on compression — see #33669 / PR #33826.
         """
         self._setup_agent(agent)
+        agent.compression_enabled = True  # this test verifies overflow→compression fires
         agent.provider = "openrouter"
         agent.model = "some/unknown-model"
         agent.base_url = "https://openrouter.ai/api/v1"

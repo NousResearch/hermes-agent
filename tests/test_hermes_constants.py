@@ -129,6 +129,23 @@ class TestNormalizeWindowsMsysPath:
 
         assert str(result) == r"C:\Users\kevin\AppData\Local\hermes"
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("/c/Users/kevin/AppData/Local/hermes", r"C:\Users\kevin\AppData\Local\hermes"),
+            ("/C/Users/kevin/AppData/Local/hermes", r"C:\Users\kevin\AppData\Local\hermes"),
+            ("/cygdrive/c/Users/kevin/AppData/Local/hermes", r"C:\Users\kevin\AppData\Local\hermes"),
+            ("/mnt/c/Users/kevin/AppData/Local/hermes", r"C:\Users\kevin\AppData\Local\hermes"),
+            ("/c", "C:\\"),
+        ],
+    )
+    def test_translates_raw_msys_paths_on_windows(self, raw, expected, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+
+        result = normalize_windows_msys_path(raw)
+
+        assert str(result) == expected
+
     def test_preserves_regular_windows_path(self, monkeypatch):
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
 
@@ -147,6 +164,13 @@ class TestNormalizeWindowsMsysPath:
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", r"C:\c\Users\kevin\AppData\Local")
         monkeypatch.setenv("HERMES_HOME", r"C:\c\Users\kevin\AppData\Local\hermes\profiles\coder")
+
+        assert str(get_default_hermes_root()) == r"C:\Users\kevin\AppData\Local\hermes"
+
+    def test_default_root_handles_raw_msys_profile_path(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("LOCALAPPDATA", "/c/Users/kevin/AppData/Local")
+        monkeypatch.setenv("HERMES_HOME", "/c/Users/kevin/AppData/Local/hermes/profiles/coder")
 
         assert str(get_default_hermes_root()) == r"C:\Users\kevin\AppData\Local\hermes"
 
@@ -343,4 +367,3 @@ class TestSecureParentDir:
         secure_parent_dir(link_target)
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
-

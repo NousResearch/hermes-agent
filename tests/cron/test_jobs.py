@@ -43,6 +43,24 @@ def test_cron_paths_unmangle_windows_hermes_home(monkeypatch):
         importlib.reload(jobs_mod)
 
 
+def test_cron_paths_translate_raw_msys_hermes_home(monkeypatch):
+    import cron.jobs as jobs_mod
+    import hermes_constants
+
+    original_platform = hermes_constants.sys.platform
+    monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+    monkeypatch.setenv("HERMES_HOME", "/c/Users/kevin/AppData/Local/hermes")
+
+    reloaded = importlib.reload(jobs_mod)
+    try:
+        assert str(reloaded.HERMES_DIR) == r"C:\Users\kevin\AppData\Local\hermes"
+        assert "/c/Users" not in str(reloaded.JOBS_FILE)
+    finally:
+        monkeypatch.setattr(hermes_constants.sys, "platform", original_platform)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        importlib.reload(jobs_mod)
+
+
 # =========================================================================
 # parse_duration
 # =========================================================================

@@ -8,6 +8,7 @@ import os
 import sys
 import sysconfig
 import ntpath
+import re
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -52,16 +53,22 @@ def _get_platform_default_hermes_home() -> Path:
 
 
 def normalize_windows_msys_path(path: str | Path) -> Path:
-    """Collapse MSYS/git-bash ``C:\\c\\...`` path mangling on native Windows.
+    """Translate MSYS/git-bash path forms to native Windows paths.
 
-    Native CPython launched from git-bash/MSYS can see Win32 paths rewritten as
-    ``C:\\c\\Users\\...``.  The duplicate drive-letter segment creates a second
-    Hermes tree.  Only collapse the exact drive-letter duplicate pattern.
+    Native CPython launched from git-bash/MSYS can see paths as ``/c/...``,
+    ``/cygdrive/c/...``, or already-mangled ``C:\\c\\...``.  These variants can
+    create a second Hermes tree.  Only translate exact drive-letter patterns.
     """
     if sys.platform != "win32":
         return Path(path)
 
     raw = os.fspath(path)
+    raw_match = re.match(r"^/(?:([a-zA-Z])|(?:cygdrive|mnt)/([a-zA-Z]))(?:/(.*))?$", raw)
+    if raw_match:
+        drive = (raw_match.group(1) or raw_match.group(2)).upper()
+        rest = (raw_match.group(3) or "").replace("/", "\\")
+        return Path(f"{drive}:\\{rest}" if rest else f"{drive}:\\")
+
     drive, tail = ntpath.splitdrive(raw)
     if len(drive) != 2 or drive[1] != ":":
         return Path(path)

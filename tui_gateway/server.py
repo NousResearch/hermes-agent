@@ -6897,6 +6897,7 @@ def _(rid, params: dict) -> dict:
                 "meta": to_plain_text(c.display_meta) if c.display_meta else "",
             }
             for c in completer.get_completions(doc, None)
+            if c.text != "provider"
         ][:30]
         text_lower = text.lower()
         extras = [

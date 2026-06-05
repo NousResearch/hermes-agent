@@ -12,6 +12,7 @@ Environment variables:
     EMAIL_ADDRESS       — Email address for the agent
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
+    EMAIL_IMAP_TIMEOUT  — IMAP socket timeout in seconds (default: 60)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
 """
 
@@ -23,6 +24,7 @@ import os
 import re
 import smtplib
 import ssl
+import time
 import uuid
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
@@ -255,6 +257,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
         self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
         self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+        self._imap_timeout = int(os.getenv("EMAIL_IMAP_TIMEOUT", "60"))
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -297,7 +300,7 @@ class EmailAdapter(BasePlatformAdapter):
         """Connect to the IMAP server and start polling for new messages."""
         try:
             # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=self._imap_timeout)
             imap.login(self._address, self._password)
             _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
@@ -361,14 +364,37 @@ class EmailAdapter(BasePlatformAdapter):
         for msg_data in messages:
             await self._dispatch_message(msg_data)
 
+    def _imap_connect_with_retry(self, attempts: int = 3) -> Optional[imaplib.IMAP4_SSL]:
+        """Open an authenticated IMAP connection, retrying transient failures.
+
+        Gmail intermittently throttles or drops connections (read timeouts, EOF
+        on SELECT, server-side "System Error"). Retrying connection setup with
+        exponential backoff means only a sustained outage logs at error level.
+        """
+        delay = 2.0
+        for attempt in range(1, attempts + 1):
+            try:
+                imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=self._imap_timeout)
+                imap.login(self._address, self._password)
+                _send_imap_id(imap)
+                return imap
+            except Exception as e:
+                if attempt == attempts:
+                    logger.error("[Email] IMAP connect failed after %d attempts: %s", attempts, e)
+                    return None
+                logger.warning("[Email] IMAP connect attempt %d/%d failed: %s; retrying in %.0fs", attempt, attempts, e, delay)
+                time.sleep(delay)
+                delay *= 2
+        return None
+
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
+        imap = self._imap_connect_with_retry()
+        if imap is None:
+            return results
         try:
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
-                imap.login(self._address, self._password)
-                _send_imap_id(imap)
                 imap.select("INBOX")
 
                 status, data = imap.uid("search", None, "UNSEEN")

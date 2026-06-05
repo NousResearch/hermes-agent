@@ -1203,5 +1203,62 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         mock_imap.xatom.assert_called_once()
 
 
+class TestImapConnectRetry(unittest.TestCase):
+    """IMAP connect retry/backoff and configurable socket timeout."""
+
+    def _make_adapter(self, imap_timeout="60"):
+        from gateway.config import PlatformConfig
+        env = {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_IMAP_PORT": "993",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_SMTP_PORT": "587",
+            "EMAIL_IMAP_TIMEOUT": imap_timeout,
+        }
+        with patch.dict(os.environ, env):
+            from gateway.platforms.email import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_imap_timeout_configurable_from_env(self):
+        self.assertEqual(self._make_adapter(imap_timeout="90")._imap_timeout, 90)
+
+    def test_connect_succeeds_first_attempt(self):
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap) as ctor, \
+                patch("gateway.platforms.email._send_imap_id"):
+            result = adapter._imap_connect_with_retry()
+        self.assertIs(result, mock_imap)
+        self.assertEqual(ctor.call_count, 1)
+        mock_imap.login.assert_called_once()
+
+    def test_connect_retries_transient_then_succeeds(self):
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        outcomes = [OSError("read operation timed out"), OSError("EOF"), mock_imap]
+
+        def ctor_side_effect(*args, **kwargs):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with patch("imaplib.IMAP4_SSL", side_effect=ctor_side_effect), \
+                patch("gateway.platforms.email._send_imap_id"), \
+                patch("gateway.platforms.email.time.sleep") as mock_sleep:
+            result = adapter._imap_connect_with_retry(attempts=3)
+        self.assertIs(result, mock_imap)
+        self.assertEqual(mock_sleep.call_count, 2)
+
+    def test_connect_returns_none_after_exhausting_attempts(self):
+        adapter = self._make_adapter()
+        with patch("imaplib.IMAP4_SSL", side_effect=OSError("connection reset")), \
+                patch("gateway.platforms.email.time.sleep"):
+            result = adapter._imap_connect_with_retry(attempts=3)
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()

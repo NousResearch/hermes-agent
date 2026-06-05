@@ -688,6 +688,20 @@ def run_conversation(
                     break  # Under threshold or anti-thrash guard stopped it
 
     # Plugin hook: pre_llm_call
+    # Re-register shell hooks from config before every invocation.
+    # model_tools.py calls discover_plugins() at import time which
+    # clears _hooks via discover_and_load(force=True), so shell-hook
+    # callbacks registered during gateway startup may be gone by the
+    # time the first conversation turn fires.  Re-registering here
+    # guarantees the hook callback is present.  Idempotent.
+    try:
+        from agent.shell_hooks import register_from_config
+        from hermes_cli.config import load_config
+        register_from_config(load_config(), accept_hooks=True)
+    except Exception:
+        pass
+
+    # Fired once per turn before the tool-calling loop.
     # Fired once per turn before the tool-calling loop.  Plugins can
     # return a dict with a ``context`` key (or a plain string) whose
     # value is appended to the current turn's user message.
@@ -724,6 +738,18 @@ def run_conversation(
             _plugin_user_context = "\n\n".join(_ctx_parts)
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
+
+    # Check for response override: if any pre_llm_call hook returned
+    # {"response": "..."}, capture it for later use before the LLM loop.
+    _response_override = None
+    try:
+        for r in _pre_results:
+            if isinstance(r, dict) and r.get("response") is not None:
+                _response_override = str(r["response"])
+                break
+    except NameError:
+        pass  # _pre_results not defined (hook invocation raised)
+
 
     # Main conversation loop
     api_call_count = 0
@@ -797,6 +823,23 @@ def run_conversation(
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
         )
+
+
+    # Response override: if a pre_llm_call hook returned a full response,
+    # set it as the final response, skip the LLM loop, and fall through
+    # to post-turn processing.  Zero tokens consumed.
+    if _response_override is not None:
+        messages.append({
+            "role": "assistant",
+            "content": _response_override,
+        })
+        final_response = _response_override
+        api_call_count = 0
+        completed = True
+        _turn_exit_reason = "hook_response_override"
+        # Prevent the while loop from entering
+        while agent.iteration_budget.consume(): pass  # exhaust budget
+        agent._budget_grace_call = False
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot

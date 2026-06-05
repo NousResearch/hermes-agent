@@ -536,6 +536,11 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     if isinstance(context, str) and context.strip():
         return {"context": context}
 
+    response = data.get("response")
+    if isinstance(response, str) and response.strip():
+        return {"response": response}
+
+
     return None
 
 

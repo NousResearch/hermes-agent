@@ -140,6 +140,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="min-w-44">
+            <DropdownMenuItem onSelect={() => void respond('once')}>Allow once</DropdownMenuItem>
             <DropdownMenuItem onSelect={() => void respond('session')}>Allow this session</DropdownMenuItem>
             <DropdownMenuItem
               onSelect={() => {

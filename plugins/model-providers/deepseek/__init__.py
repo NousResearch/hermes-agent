@@ -44,8 +44,50 @@ def _model_supports_thinking(model: str | None) -> bool:
     return False
 
 
+# Literal backslash-n (two chars: \ followed by n).  Used in
+# normalize_tool_call_arguments to detect and fix DeepSeek's
+# double-escaped newlines without confusing the Python lexer or
+# the patch tool.
+_BSN = chr(92) + "n"  # \n
+
+
 class DeepSeekProfile(ProviderProfile):
-    """DeepSeek — extra_body.thinking + top-level reasoning_effort."""
+    """DeepSeek — extra_body.thinking + top-level reasoning_effort
+    + double-escaped-newline fix in tool arguments."""
+
+    def normalize_tool_call_arguments(self, arguments: str) -> str:
+        """Fix DeepSeek double-escaped newlines in tool-call JSON.
+
+        DeepSeek sometimes emits literal \\n (two chars) in tool-call
+        arguments where a real newline was intended.  This unescapes
+        them provider-locally so tools like ``patch`` receive correct
+        multi-line strings.
+
+        Contained blast radius: only DeepSeek.  Other providers unaffected.
+        """
+        import json as _json
+
+        if _BSN not in arguments:
+            return arguments
+
+        try:
+            parsed = _json.loads(arguments)
+        except _json.JSONDecodeError:
+            return arguments
+
+        NL = chr(10)
+
+        def _fix(obj):
+            if isinstance(obj, str) and _BSN in obj:
+                return obj.replace(_BSN, NL)
+            if isinstance(obj, dict):
+                return {k: _fix(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_fix(v) for v in obj]
+            return obj
+
+        fixed = _fix(parsed)
+        return _json.dumps(fixed, ensure_ascii=False)
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context

@@ -115,6 +115,34 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     return "gemini" in m or "gemma" in m
 
 
+
+def _deepseek_normalize_newlines(args_json: str) -> str:
+    """Fix DeepSeek double-escaped newlines in tool-call JSON arguments.
+
+    DeepSeek sometimes emits literal \\n (two chars) where a real newline
+    was intended.  Unescape them provider-locally so tools like ``patch``
+    receive correct multi-line strings.
+    """
+    import json as _json
+    bsn = chr(92) + "n"
+    try:
+        parsed = _json.loads(args_json)
+    except _json.JSONDecodeError:
+        return args_json
+
+    nl = chr(10)
+    def _fix(obj):
+        if isinstance(obj, str) and bsn in obj:
+            return obj.replace(bsn, nl)
+        if isinstance(obj, dict):
+            return {k: _fix(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_fix(v) for v in obj]
+        return obj
+
+    fixed = _fix(parsed)
+    return _json.dumps(fixed, ensure_ascii=False)
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -628,11 +656,18 @@ class ChatCompletionsTransport(ProviderTransport):
                         except Exception:
                             pass
                     tc_provider_data["extra_content"] = extra
+                raw_arguments = tc.function.arguments
+                _model_name = (getattr(response, "model", "") or "").lower()
+                if _model_name.startswith("deepseek") and chr(92)+"n" in (raw_arguments or ""):
+                    try:
+                        raw_arguments = _deepseek_normalize_newlines(raw_arguments)
+                    except Exception:
+                        pass
                 tool_calls.append(
                     ToolCall(
                         id=tc.id,
                         name=tc.function.name,
-                        arguments=tc.function.arguments,
+                        arguments=raw_arguments,
                         provider_data=tc_provider_data or None,
                     )
                 )

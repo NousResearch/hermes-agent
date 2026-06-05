@@ -109,6 +109,20 @@ class ProviderProfile:
         """
         return messages
 
+    def normalize_tool_call_arguments(self, arguments: str) -> str:
+        """Provider-specific tool-call argument normalization.
+
+        Called on each tool-call's ``arguments`` JSON string before it is
+        stored in the conversation history.  Providers that are known to
+        double-escape JSON control characters (e.g. ``\\\
+`` → ``\\\\\\\
+``)
+        can override this to unescape them back to real control characters.
+
+        Default: pass-through.
+        """
+        return arguments
+
     def build_extra_body(
         self, *, session_id: str | None = None, **context: Any
     ) -> dict[str, Any]:

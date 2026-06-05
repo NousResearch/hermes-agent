@@ -1,0 +1,55 @@
+{
+  "jobs": [
+    {
+      "name": "mes-heartbeat",
+      "schedule": "every 2m",
+      "script": "heartbeat.py",
+      "prompt": "MES 心跳巡检发现异常，需要你进行诊断和自愈：\n\n## 异常报告\n{script_output}\n\n## 你的任务\n1. 分析异常报告中的每个 WARNING/CRITICAL 检查项\n2. 使用 DecisionMatrix 评估故障场景的自愈级别（L1/L2/L3）\n3. L1 级别：直接执行修复命令（如重启 nginx）\n4. L2 级别：推送修复方案到飞书，等待人工确认\n5. L3 级别：推送详细诊断报告到飞书，通知运维人员\n6. 将本次故障记录到 memory（如果 memory 工具可用）\n\n注意：只处理异常组件，正常组件不需要关注。",
+      "skills": ["mes-upstream-check"],
+      "enabled_toolsets": ["terminal"],
+      "deliver": "feishu"
+    },
+    {
+      "name": "mes-full-check",
+      "schedule": "every 5m",
+      "script": "full_check.py",
+      "prompt": "MES 全组件巡检发现异常，需要你进行诊断和自愈：\n\n## 异常报告\n{script_output}\n\n## 你的任务\n1. 逐一分析 6 个组件的异常检查项\n2. 优先处理 CRITICAL 级别，其次 WARNING\n3. 使用 DecisionMatrix 评估每个故障的自愈级别\n4. L1：自动执行修复（systemctl restart 等）\n5. L2：推送修复方案，等待确认\n6. L3：推送详细诊断 + AI 分析\n7. 如果多个组件同时异常，分析是否有关联性\n8. 记录到 memory",
+      "skills": ["mes-nginx-check", "mes-jvm-check", "mes-rabbitmq-check", "mes-oracle-check", "mes-elk-check", "mes-skywalking-check"],
+      "enabled_toolsets": ["terminal"],
+      "deliver": "feishu"
+    },
+    {
+      "name": "mes-deep-analysis",
+      "schedule": "*/30 * * * *",
+      "script": "deep_analysis.py",
+      "prompt": "MES 深度分析发现异常，需要你进行深入诊断：\n\n## 异常报告\n{script_output}\n\n## 你的任务\n1. 分析 Oracle 慢查询：识别 TOP SQL，评估优化建议\n2. 分析 ELK 异常模式：识别日志中的错误模式、频率趋势\n3. 结合历史巡检数据（如果 memory 可用）判断是否为新问题\n4. 生成深度分析报告，包含：\n   - 根因分析\n   - 影响范围评估\n   - 优化建议\n   - 紧急程度判断\n5. 推送报告到飞书",
+      "skills": ["mes-oracle-check", "mes-elk-check"],
+      "enabled_toolsets": ["terminal"],
+      "deliver": "feishu"
+    },
+    {
+      "name": "mes-daily-report",
+      "schedule": "0 8 * * *",
+      "no_agent": true,
+      "script": "full_check.py",
+      "deliver": "feishu"
+    },
+    {
+      "name": "mes-weekly-trend",
+      "schedule": "0 9 * * 1",
+      "script": "full_check.py",
+      "prompt": "生成 MES 周度趋势分析报告：\n\n## 巡检数据\n{script_output}\n\n## 你的任务\n1. 分析本周各组件健康趋势\n2. 识别反复出现的问题模式\n3. 生成容量规划建议\n4. 推送周报到飞书",
+      "skills": ["mes-nginx-check", "mes-jvm-check", "mes-rabbitmq-check", "mes-oracle-check", "mes-elk-check", "mes-skywalking-check"],
+      "enabled_toolsets": ["terminal"],
+      "deliver": "feishu"
+    },
+    {
+      "name": "mes-evolution",
+      "schedule": "0 2 * * 0",
+      "prompt": "执行 MES 巡检技能进化：\n1. 使用 mes_evolution(action='list') 获取可进化技能列表\n2. 使用 mes_evolution(action='evolve_all') 批量进化所有技能\n3. 分析进化报告：哪些技能改进了，哪些没有\n4. 通过飞书推送进化报告",
+      "skills": ["mes-evolution"],
+      "enabled_toolsets": ["terminal"],
+      "deliver": "feishu"
+    }
+  ]
+}

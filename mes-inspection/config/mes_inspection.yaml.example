@@ -1,0 +1,274 @@
+# MES 巡检配置文件示例
+# 复制此文件为 mes_inspection.yaml 并根据实际环境修改
+# 放置位置（按优先级）：
+#   1. $MES_INSPECTION_HOME/config/mes_inspection.yaml
+#   2. ~/.mes-inspection/config.yaml
+#   3. 本目录/mes_inspection.yaml
+
+# ============================================================
+# Nginx 配置
+# ============================================================
+nginx:
+  # 是否检查 Nginx 进程
+  process_check: true
+  # 5xx 错误率告警阈值 (%)
+  error_5xx_threshold_warn: 1.0
+  # 5xx 错误率严重阈值 (%)
+  error_5xx_threshold_critical: 5.0
+  # 活跃连接数告警阈值
+  active_connections_warn: 10000
+  # 平均响应时间告警阈值 (秒)
+  response_time_warn: 2.0
+  # 平均响应时间严重阈值 (秒)
+  response_time_critical: 5.0
+  # Nginx status URL
+  status_url: "http://localhost/nginx_status"
+  # 健康检查 URL
+  health_check_url: "http://localhost:8080/health"
+  # 访问日志路径
+  access_log_path: "/var/log/nginx/access.log"
+
+# ============================================================
+# JVM / Tomcat 配置
+# ============================================================
+jvm:
+  # 堆内存使用率告警阈值 (%)
+  heap_usage_warn: 80.0
+  # 堆内存使用率严重阈值 (%)
+  heap_usage_critical: 90.0
+  # Full GC 频率告警阈值 (次/分钟)
+  full_gc_freq_warn: 5
+  # Full GC 耗时严重阈值 (秒)
+  full_gc_time_critical: 10.0
+  # 活跃线程数告警阈值
+  active_threads_warn: 500
+  # BLOCKED 线程数严重阈值
+  blocked_threads_critical: 10
+  # 检查最近日志行数
+  catalina_log_lines: 1000
+  # Tomcat 进程名
+  tomcat_process_name: "catalina"
+
+# ============================================================
+# RabbitMQ 配置
+# ============================================================
+rabbitmq:
+  # 队列深度告警阈值
+  queue_depth_warn: 1000
+  # 队列深度严重阈值
+  queue_depth_critical: 10000
+  # 内存使用率告警阈值 (%)
+  memory_usage_warn: 80.0
+  # 内存使用率严重阈值 (%)
+  memory_usage_critical: 95.0
+  # 磁盘剩余百分比告警阈值 (%)
+  disk_free_warn_percent: 20.0
+  # RabbitMQ 管理界面 URL
+  management_url: "http://localhost:15672"
+  # 管理界面用户名
+  management_user: "guest"
+  # 管理界面密码
+  management_password: "guest"
+
+# ============================================================
+# Oracle 数据库配置
+# ============================================================
+oracle:
+  # 慢 SQL 阈值 (秒)
+  slow_sql_threshold_sec: 5.0
+  # 慢 SQL 数量告警阈值
+  slow_sql_count_warn: 5
+  # 表空间使用率告警阈值 (%)
+  tablespace_usage_warn: 80.0
+  # 表空间使用率严重阈值 (%)
+  tablespace_usage_critical: 90.0
+  # 锁等待数严重阈值
+  lock_wait_critical: 10
+  # 活跃会话数告警阈值
+  active_sessions_warn: 100
+  # Oracle 连接字符串
+  connection_string: ""
+  # 用户名
+  username: ""
+  # 密码环境变量名
+  password_env: "ORACLE_PASSWORD"
+
+# ============================================================
+# ELK (Elasticsearch) 配置
+# ============================================================
+elk:
+  # 集群状态严重级别
+  cluster_status_critical: "red"
+  # 集群状态告警级别
+  cluster_status_warn: "yellow"
+  # 未分配分片告警阈值
+  unassigned_shards_warn: 5
+  # 磁盘使用率告警阈值 (%)
+  disk_usage_warn: 80.0
+  # 磁盘使用率严重阈值 (%)
+  disk_usage_critical: 90.0
+  # JVM 堆内存告警阈值 (%)
+  jvm_heap_warn: 75.0
+  # Elasticsearch URL
+  elasticsearch_url: "http://localhost:9200"
+
+# ============================================================
+# SkyWalking 配置
+# ============================================================
+skywalking:
+  # P95 响应时间告警阈值 (ms)
+  p95_response_time_warn: 2000
+  # P95 响应时间严重阈值 (ms)
+  p95_response_time_critical: 5000
+  # SLA 告警阈值 (%)
+  sla_warn: 99.0
+  # SLA 严重阈值 (%)
+  sla_critical: 95.0
+  # 错误率严重阈值 (%)
+  error_rate_critical: 5.0
+  # SkyWalking OAP URL
+  oap_url: "http://localhost:12800"
+  # 服务名
+  service_name: "mes-service"
+
+# ============================================================
+# 上游节点心跳检查配置（通过 nginx_upstream_check_module）
+# ============================================================
+upstream:
+  # nginx_upstream_check_module 状态页 URL
+  # Nginx 配置示例：
+  #   location /upstream_status {
+  #       upstream_check;
+  #       upstream_check_type html;
+  #   }
+  # JSON 格式（推荐）：加 ?format=json
+  status_url: "http://localhost/upstream_status?format=json"
+  # HTTP 超时（秒）
+  timeout: 5
+
+# ============================================================
+# 告警器配置
+# ============================================================
+alerter:
+  # 飞书 Webhook URL
+  feishu_webhook_url: ""
+  # 飞书 App ID 环境变量名
+  feishu_app_id_env: "FEISHU_APP_ID"
+  # 飞书 App Secret 环境变量名
+  feishu_app_secret_env: "FEISHU_APP_SECRET"
+  # 飞书主页频道环境变量名
+  feishu_home_channel_env: "FEISHU_HOME_CHANNEL"
+  # P0 告警静默窗口 (秒)
+  silence_window_seconds: 900
+  # P2/P3 汇总间隔 (秒)
+  batch_interval_seconds: 1800
+  # 最大消息长度
+  max_message_length: 8000
+
+# ============================================================
+# 自愈配置
+# ============================================================
+self_healing:
+  # 是否启用自愈
+  enabled: true
+  # 数据风险权重
+  data_risk_weight: 0.30
+  # 可逆性权重
+  reversibility_weight: 0.25
+  # 影响范围权重
+  impact_scope_weight: 0.25
+  # 成功率权重
+  success_rate_weight: 0.15
+  # 配置变更权重
+  config_change_weight: 0.05
+  # L1 阈值 (score < 30 → L1)
+  l1_threshold: 30
+  # L2 阈值 (30 <= score < 70 → L2)
+  l2_threshold: 70
+  # 首次出现默认级别 (score >= 70 → L3)
+  default_first_occurrence_level: "L3"
+  # 涉及数据时的级别
+  data_involved_level: "L3"
+
+# ============================================================
+# 记忆配置
+# ============================================================
+memory:
+  # 日志目录，留空则使用 ~/.mes-inspection/memory/
+  log_dir: ""
+  # 每个组件最大案例数
+  max_case_per_component: 1000
+  # 知识演化间隔 (天)
+  evolution_interval_days: 7
+
+# ============================================================
+# GitLab 配置
+# ============================================================
+gitlab:
+  # 私有 GitLab URL
+  url: ""
+  # GitLab Token 环境变量名
+  token_env: "GITLAB_TOKEN"
+  # 默认分支
+  default_branch: "main"
+  # MR 审查者列表
+  mr_reviewers: []
+
+# ============================================================
+# 策略进化配置 (基于 hermes-agent-self-evolution)
+# ============================================================
+evolution:
+  # GEPA 进化迭代次数
+  iterations: 10
+  # 评估数据源: synthetic(自动生成) | golden(人工标注) | sessiondb(会话历史)
+  eval_source: "synthetic"
+  # 进化优化器模型（用于 GEPA 反思）
+  optimizer_model: "openai/gpt-4.1"
+  # 评估模型
+  eval_model: "openai/gpt-4.1-mini"
+  # hermes-agent 仓库路径（留空则使用 HERMES_AGENT_REPO 环境变量）
+  hermes_repo: ""
+  # Skills 目录（留空则使用默认路径）
+  skills_dir: ""
+  # API Key 环境变量名（默认 OPENAI_API_KEY）
+  api_key_env: "QWEN_API_KEY"
+  # 自定义模型 base_url（私有部署时填写）
+  base_url: ""
+
+# ============================================================
+# 模型配置
+# ============================================================
+model:
+  # 提供商 (custom / openai / anthropic)
+  provider: "custom"
+  # API 基础 URL
+  base_url: ""
+  # 模型名称
+  model_name: "Qwen3-235B-A22B-w8a8"
+  # API Key 环境变量名
+  api_key_env: "QWEN_API_KEY"
+
+# ============================================================
+# 调试工具配置
+# ============================================================
+debug:
+  # GC 日志文件路径
+  gc_log_path: "/u01/app/mes-app/logs/gc.log"
+  # 最大读取行数
+  gc_max_lines: 50000
+  # GC 暂停告警阈值 (秒)
+  gc_pause_warn_sec: 1.0
+  # GC 暂停严重阈值 (秒)
+  gc_pause_critical_sec: 5.0
+  # Full GC 次数告警阈值
+  gc_full_count_warn: 10
+  # 线程堆栈上下文行数
+  stack_context_lines: 10
+  # BLOCKED 线程告警阈值
+  stack_blocked_warn: 10
+  # ES 索引前缀
+  es_index_prefix: "39qjmes"
+  # ES 默认返回条数
+  es_default_size: 100
+  # ES 最大返回条数
+  es_max_size: 1000

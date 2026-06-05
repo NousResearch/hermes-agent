@@ -1,0 +1,48 @@
+name: Docs Site Checks
+
+on:
+  pull_request:
+    paths:
+      - 'website/**'
+      - '.github/workflows/docs-site-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docs-site-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install website dependencies
+        run: npm ci
+        working-directory: website
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Install ascii-guard
+        run: python -m pip install ascii-guard==2.3.0 pyyaml==6.0.3
+
+      - name: Extract skill metadata for dashboard
+        run: python3 website/scripts/extract-skills.py
+
+      - name: Regenerate per-skill docs pages + catalogs
+        run: python3 website/scripts/generate-skill-docs.py
+
+      - name: Lint docs diagrams
+        run: npm run lint:diagrams
+        working-directory: website
+
+      - name: Build Docusaurus
+        run: npm run build
+        working-directory: website

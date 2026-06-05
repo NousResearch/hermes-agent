@@ -1,0 +1,9 @@
+PyYAML>=6.0,<7
+
+# 进化引擎（hermes-agent-self-evolution）
+# 安装方式：pip install -e ./vendor/hermes-agent-self-evolution[dev]
+# 或直接：pip install git+https://github.com/NousResearch/hermes-agent-self-evolution.git
+dspy>=3.0.0
+openai>=1.0.0
+click>=8.0
+rich>=13.0

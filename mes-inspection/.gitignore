@@ -1,0 +1,11 @@
+# Vendor dependencies — install separately, don't commit
+vendor/hermes-agent-self-evolution/
+
+# Runtime data
+data/
+reports/
+output/
+datasets/
+*.pyc
+__pycache__/
+.pytest_cache/

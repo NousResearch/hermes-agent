@@ -184,8 +184,9 @@ def _supports_vision_override(
       1. ``model.supports_vision`` (top-level shortcut for the active model)
       2. ``providers.<provider>.models.<model>.supports_vision``
          (named custom providers — ``provider`` may be the runtime-resolved
-         value ``"custom"`` and/or the user-declared name under
-         ``model.provider``; both are tried)
+         value ``"custom"`` and/or the user-declared value under
+         ``model.provider``; the raw value, the runtime value, and the
+         stripped name for ``custom:<name>`` forms are all tried)
 
     Returns None when no override is set, so the caller falls through to
     models.dev. Returns False explicitly only when the user wrote a
@@ -205,11 +206,13 @@ def _supports_vision_override(
     # get rewritten to provider="custom" at runtime
     # (hermes_cli/runtime_provider.py:_resolve_named_custom_runtime), so the
     # config still holds the user-declared name under model.provider. Try
-    # both as candidate provider keys.
+    # all relevant keys: runtime name, raw config value, and (for the
+    # ``custom:<name>`` form) the stripped name after the colon.
     config_provider = str(model_cfg.get("provider") or "").strip()
+    stripped_named = config_provider.split(":", 1)[1].strip() if config_provider.startswith("custom:") and ":" in config_provider else ""
     providers_raw = cfg.get("providers")
     providers_cfg: Dict[str, Any] = providers_raw if isinstance(providers_raw, dict) else {}
-    for p in dict.fromkeys(filter(None, (provider, config_provider))):
+    for p in dict.fromkeys(filter(None, (provider, config_provider, stripped_named))):
         entry_raw = providers_cfg.get(p)
         entry: Dict[str, Any] = entry_raw if isinstance(entry_raw, dict) else {}
         models_raw = entry.get("models")

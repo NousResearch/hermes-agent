@@ -205,6 +205,27 @@ class TestSupportsVisionOverride:
         }
         assert _supports_vision_override(cfg, "custom", "my-llava") is True
 
+    def test_per_provider_per_model_via_stripped_named_custom(self):
+        # model.provider is "custom:my-proxy" — the actual providers key is
+        # "my-proxy". The function should try the stripped name after the colon.
+        cfg = {
+            "model": {"provider": "custom:my-proxy"},
+            "providers": {
+                "my-proxy": {"models": {"gpt-5.5": {"supports_vision": True}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "gpt-5.5") is True
+
+    def test_per_provider_per_model_via_stripped_named_custom_false(self):
+        # Same as above but with an explicit False override.
+        cfg = {
+            "model": {"provider": "custom:my-proxy"},
+            "providers": {
+                "my-proxy": {"models": {"gpt-5.5": {"supports_vision": False}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "gpt-5.5") is False
+
     def test_quoted_false_string_in_yaml_does_not_enable(self):
         # Real-world: user writes supports_vision: "false" (quoted).
         cfg = {"model": {"supports_vision": "false"}}

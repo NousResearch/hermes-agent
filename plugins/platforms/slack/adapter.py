@@ -3364,6 +3364,7 @@ class SlackAdapter(BasePlatformAdapter):
                     thread_ts=event_thread_ts,
                     user_id=user_id,
                     team_id=team_id,
+                    chat_type="dm" if is_dm else "group",
                 )
                 if (
                     not reply_to_bot_thread
@@ -3395,6 +3396,7 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts=event_thread_ts,
             user_id=user_id,
             team_id=team_id,
+            chat_type="dm" if is_dm else "group",
         ):
             thread_context = await self._fetch_thread_context(
                 channel_id=channel_id,
@@ -4567,6 +4569,8 @@ class SlackAdapter(BasePlatformAdapter):
         thread_ts: str,
         user_id: str,
         team_id: str = "",
+        *,
+        chat_type: str = "group",
     ) -> bool:
         """Check if there's an active session for a thread.
 
@@ -4577,6 +4581,14 @@ class SlackAdapter(BasePlatformAdapter):
         construction — avoids the bug where manual key building didn't
         respect ``thread_sessions_per_user`` and ``group_sessions_per_user``
         settings correctly.
+
+        Args:
+            chat_type: The session chat type — ``"dm"`` for IM/MPIM
+                conversations, ``"group"`` for channels.  Must come from
+                the event-derived ``channel_type`` (``"im"``/``"mpim"``
+                → ``"dm"``) rather than being inferred from the channel
+                ID prefix, because MPIM IDs start with ``"G"``, not
+                ``"D"``.
         """
         session_store = getattr(self, "_session_store", None)
         if not session_store:
@@ -4588,7 +4600,7 @@ class SlackAdapter(BasePlatformAdapter):
             source = SessionSource(
                 platform=Platform.SLACK,
                 chat_id=channel_id,
-                chat_type="group",
+                chat_type=chat_type,
                 user_id=user_id,
                 thread_id=thread_ts,
                 scope_id=team_id or None,

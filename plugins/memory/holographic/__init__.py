@@ -357,14 +357,19 @@ class HolographicMemoryProvider(MemoryProvider):
     # -- Auto-extraction (on_session_end) ------------------------------------
 
     def _auto_extract_facts(self, messages: list) -> None:
+        """Extract structured facts from user messages at session end.
+
+        Instead of dumping raw messages verbatim (the old behavior that caused
+        #22907), this extracts the matching portion and wraps it as a clean
+        declarative statement. Only extracts from messages that match clear
+        preference/decision patterns, and deduplicates against existing facts.
+        """
         _PREF_PATTERNS = [
-            re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
-            re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
-            re.compile(r'\bI\s+(?:always|never|usually)\s+(.+)', re.IGNORECASE),
-        ]
-        _DECISION_PATTERNS = [
-            re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
-            re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
+            (re.compile(r'\bI\s+prefer\s+(.+?)(?:\s+(?:over|instead of|rather than)\s+(.+?))?(?:\.|!|$)', re.IGNORECASE), "pref"),
+            (re.compile(r'\bI\s+(?:always|never|usually)\s+(.+?)(?:\.|!|$)', re.IGNORECASE), "habit"),
+            (re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+(\w+)\s+is\s+(.+?)(?:\.|!|$)', re.IGNORECASE), "pref"),
+            (re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+?)(?:\.|!|$)', re.IGNORECASE), "decision"),
+            (re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+?)(?:\.|!|$)', re.IGNORECASE), "project"),
         ]
 
         extracted = 0
@@ -375,23 +380,43 @@ class HolographicMemoryProvider(MemoryProvider):
             if not isinstance(content, str) or len(content) < 10:
                 continue
 
-            for pattern in _PREF_PATTERNS:
-                if pattern.search(content):
-                    try:
-                        self._store.add_fact(content[:400], category="user_pref")
-                        extracted += 1
-                    except Exception:
-                        pass
-                    break
+            for pattern, kind in _PREF_PATTERNS:
+                m = pattern.search(content)
+                if not m:
+                    continue
 
-            for pattern in _DECISION_PATTERNS:
-                if pattern.search(content):
-                    try:
-                        self._store.add_fact(content[:400], category="project")
-                        extracted += 1
-                    except Exception:
-                        pass
-                    break
+                # Build a clean declarative fact from the captured groups
+                groups = [g.strip().rstrip('.,;!') for g in m.groups() if g]
+                if not groups:
+                    continue
+
+                if kind == "pref" and len(groups) >= 2 and " over " in content[m.start():m.end()].lower():
+                    fact_text = f"prefers {groups[0]} over {groups[1]}"
+                elif kind == "pref":
+                    fact_text = f"prefers {groups[0]}"
+                elif kind == "habit":
+                    habit_word = "always" if "always" in content[m.start():m.end()].lower() else ("never" if "never" in content[m.start():m.end()].lower() else "usually")
+                    fact_text = f"{habit_word} {groups[0]}"
+                elif kind == "decision":
+                    fact_text = f"decided to {groups[0]}"
+                elif kind == "project":
+                    fact_text = f"project requires {groups[0]}"
+                else:
+                    fact_text = groups[0]
+
+                # Cap length to avoid storing entire conversations
+                if len(fact_text) > 200:
+                    fact_text = fact_text[:200]
+
+                category_map = {"pref": "user_pref", "habit": "user_pref", "decision": "project", "project": "project"}
+                cat = category_map.get(kind, "general")
+
+                try:
+                    self._store.add_fact(fact_text, category=cat)
+                    extracted += 1
+                except Exception:
+                    pass
+                break  # one fact per message max
 
         if extracted:
             logger.info("Auto-extracted %d facts from conversation", extracted)

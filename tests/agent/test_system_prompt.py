@@ -55,3 +55,31 @@ class TestContextFileCwd:
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
+
+
+class TestSoulToolPreferences:
+    def test_openai_guidance_respects_soul_web_tool_preference(self):
+        soul = (
+            "You use kagi search but never `web_search`. "
+            "You use kagi extract but never `web_extract`."
+        )
+        agent = _make_agent(
+            load_soul_identity=True,
+            skip_context_files=True,
+            valid_tool_names=["web_search", "web_extract"],
+            _tool_use_enforcement=True,
+            model="gpt-5.4",
+        )
+
+        with (
+            patch("run_agent.load_soul_md", return_value=soul),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+        ):
+            parts = build_system_prompt_parts(agent)
+
+        stable = parts["stable"]
+        assert soul in stable
+        assert "→ use web_search" not in stable
+        assert "appropriate permitted retrieval/search tool" in stable

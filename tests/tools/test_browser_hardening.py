@@ -46,6 +46,18 @@ class TestDeadCodeRemoval:
         assert "browser_close" not in names
 
 
+class TestBrowserNavigateSchema:
+    def test_description_qualifies_web_tool_preference(self):
+        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+
+        navigate_schema = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_navigate")
+        description = navigate_schema["description"]
+
+        assert "permitted lightweight retrieval tool" in description
+        assert "permitted extraction tool" in description
+        assert "prefer web_search or web_extract" not in description
+
+
 # ---------------------------------------------------------------------------
 # Caching: _find_agent_browser
 # ---------------------------------------------------------------------------

@@ -1254,6 +1254,11 @@ class TestOpenAIModelExecutionGuidance:
         assert "missing_context" in text or "missing context" in text
         assert "hallucinate" in text or "guess" in text
 
+    def test_guidance_does_not_mandate_specific_web_tool(self):
+        assert "→ use web_search" not in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "appropriate permitted retrieval/search tool" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "web_search when available" in OPENAI_MODEL_EXECUTION_GUIDANCE
+
     def test_guidance_uses_xml_tags(self):
         assert "<tool_persistence>" in OPENAI_MODEL_EXECUTION_GUIDANCE
         assert "</tool_persistence>" in OPENAI_MODEL_EXECUTION_GUIDANCE

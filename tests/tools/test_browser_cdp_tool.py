@@ -359,6 +359,8 @@ def test_registered_in_browser_toolset():
     assert entry.schema["parameters"]["required"] == ["method"]
     assert "Chrome DevTools Protocol" in entry.schema["description"]
     assert browser_cdp_tool.CDP_DOCS_URL in entry.schema["description"]
+    assert "permitted extraction tool" in entry.schema["description"]
+    assert "use web_extract" not in entry.schema["description"]
 
 
 def test_dispatch_through_registry(cdp_server):

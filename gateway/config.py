@@ -1601,16 +1601,23 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
 
     # Email
+    email_auth_mode = os.getenv("EMAIL_AUTH_MODE", "").strip().lower()
     email_addr = os.getenv("EMAIL_ADDRESS")
+    email_gog_account = os.getenv("EMAIL_GOG_ACCOUNT")
     email_pwd = os.getenv("EMAIL_PASSWORD")
     email_imap = os.getenv("EMAIL_IMAP_HOST")
     email_smtp = os.getenv("EMAIL_SMTP_HOST")
-    if all([email_addr, email_pwd, email_imap, email_smtp]):
+    if all([email_addr, email_pwd, email_imap, email_smtp]) or (
+        email_auth_mode == "gog" and (email_gog_account or email_addr)
+    ):
+        email_address = email_addr or email_gog_account
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
         config.platforms[Platform.EMAIL].enabled = True
         config.platforms[Platform.EMAIL].extra.update({
-            "address": email_addr,
+            "address": email_address,
+            "auth_mode": email_auth_mode or "password",
+            "gog_account": email_gog_account or email_address,
             "imap_host": email_imap,
             "smtp_host": email_smtp,
         })

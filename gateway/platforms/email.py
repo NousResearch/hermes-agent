@@ -5,12 +5,14 @@ Allows users to interact with Hermes by sending emails.
 Uses IMAP to receive and SMTP to send messages.
 
 Environment variables:
+    EMAIL_AUTH_MODE     — password/app_password (default) or gog
     EMAIL_IMAP_HOST     — IMAP server host (e.g., imap.gmail.com)
     EMAIL_IMAP_PORT     — IMAP server port (default: 993)
     EMAIL_SMTP_HOST     — SMTP server host (e.g., smtp.gmail.com)
     EMAIL_SMTP_PORT     — SMTP server port (default: 587)
     EMAIL_ADDRESS       — Email address for the agent
     EMAIL_PASSWORD      — Email password or app-specific password
+    EMAIL_GOG_ACCOUNT   — Optional gog OAuth account when EMAIL_AUTH_MODE=gog
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
 """
@@ -18,12 +20,16 @@ Environment variables:
 import asyncio
 import email as email_lib
 import imaplib
+import json
 import logging
 import os
 import re
+import shutil
 import smtplib
 import socket
 import ssl
+import subprocess
+import tempfile
 import uuid
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
@@ -159,7 +165,10 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
     
 def check_email_requirements() -> bool:
     """Check if email platform dependencies are available."""
+    auth_mode = os.getenv("EMAIL_AUTH_MODE", "").strip().lower()
     addr = os.getenv("EMAIL_ADDRESS")
+    if auth_mode == "gog":
+        return bool(os.getenv("EMAIL_GOG_ACCOUNT") or addr)
     pwd = os.getenv("EMAIL_PASSWORD")
     imap = os.getenv("EMAIL_IMAP_HOST")
     smtp = os.getenv("EMAIL_SMTP_HOST")
@@ -306,7 +315,11 @@ class EmailAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
 
-        self._address = os.getenv("EMAIL_ADDRESS", "")
+        self._auth_mode = os.getenv("EMAIL_AUTH_MODE", "password").strip().lower()
+        self._gog_account = os.getenv("EMAIL_GOG_ACCOUNT", "")
+        self._address = os.getenv("EMAIL_ADDRESS", self._gog_account)
+        if not self._gog_account:
+            self._gog_account = self._address
         self._password = os.getenv("EMAIL_PASSWORD", "")
         self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
         self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
@@ -330,6 +343,51 @@ class EmailAdapter(BasePlatformAdapter):
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
         logger.info("[Email] Adapter initialized for %s", self._address)
+
+    def _use_gog(self) -> bool:
+        return self._auth_mode == "gog"
+
+    def _run_gog(self, *args: str) -> Dict[str, Any]:
+        """Run gog in JSON mode without exposing OAuth tokens to Hermes."""
+        env = dict(os.environ)
+        if "GOG_KEYRING_PASSWORD" not in env:
+            self._load_gog_keyring_password(env)
+        cmd = ["gog", *args, "--account", self._gog_account, "--json", "--no-input"]
+        proc = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=45,
+            env=env,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout or "gog command failed").strip())
+        if not proc.stdout.strip():
+            return {}
+        return json.loads(proc.stdout)
+
+    def _load_gog_keyring_password(self, env: Dict[str, str]) -> None:
+        env_path = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))) / ".env"
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, value = stripped.split("=", 1)
+                if key == "GOG_KEYRING_PASSWORD" and value:
+                    env[key] = value
+                    return
+        except OSError:
+            return
+
+    def _mark_gog_message_read(self, message_id: str) -> None:
+        if not message_id:
+            return
+        try:
+            self._run_gog("gmail", "messages", "modify", message_id, "--remove", "UNREAD")
+        except Exception as e:  # noqa: BLE001 - read marking is best-effort
+            logger.warning("[Email] gog mark-read failed for %s: %s", message_id, e)
 
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
@@ -395,6 +453,26 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
+        if self._use_gog():
+            try:
+                data = self._run_gog(
+                    "gmail", "messages", "search",
+                    "in:inbox is:unread",
+                    "--max", "500",
+                )
+                for msg in data.get("messages", []):
+                    if msg.get("id"):
+                        self._seen_uids.add(msg["id"])
+                logger.info("[Email] gog OAuth connection test passed for %s.", self._gog_account)
+            except Exception as e:
+                logger.error("[Email] gog OAuth connection failed: %s", e)
+                return False
+
+            self._running = True
+            self._poll_task = asyncio.create_task(self._poll_loop())
+            print(f"[Email] Connected via gog OAuth as {self._gog_account}")
+            return True
+
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
@@ -464,6 +542,9 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
+        if self._use_gog():
+            return self._fetch_new_messages_gog()
+
         results = []
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
@@ -529,6 +610,99 @@ class EmailAdapter(BasePlatformAdapter):
             logger.error("[Email] IMAP fetch error: %s", e)
         return results
 
+    def _fetch_new_messages_gog(self) -> List[Dict[str, Any]]:
+        """Fetch unread Gmail messages through gog's stored OAuth token."""
+        results = []
+        try:
+            data = self._run_gog(
+                "gmail", "messages", "search",
+                "in:inbox is:unread",
+                "--max", "10",
+            )
+            for item in data.get("messages", []):
+                message_id = item.get("id")
+                thread_id = item.get("threadId") or message_id
+                if not message_id or message_id in self._seen_uids:
+                    continue
+                self._seen_uids.add(message_id)
+
+                attachment_dir = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))) / "cache" / "email-attachments"
+                attachment_dir.mkdir(parents=True, exist_ok=True)
+                thread_payload = self._run_gog(
+                    "gmail", "thread", "get", thread_id,
+                    "--sanitize-content",
+                    "--download",
+                    "--out-dir", str(attachment_dir),
+                )
+                thread = thread_payload.get("thread", {})
+                messages = thread.get("messages") or []
+                msg = next((m for m in messages if m.get("id") == message_id), None)
+                if msg is None and messages:
+                    msg = messages[-1]
+                if not msg:
+                    continue
+
+                headers = msg.get("headers") or {}
+                sender_raw = headers.get("from", item.get("from", ""))
+                sender_addr = _extract_email_address(sender_raw)
+                sender_name = _decode_header_value(sender_raw)
+                if "<" in sender_name:
+                    sender_name = sender_name.split("<")[0].strip().strip('"')
+
+                subject = _decode_header_value(headers.get("subject", item.get("subject", "(no subject)")))
+                if _is_automated_sender(sender_addr, headers):
+                    logger.debug("[Email] Skipping automated sender: %s", sender_addr)
+                    continue
+
+                results.append({
+                    "uid": message_id,
+                    "sender_addr": sender_addr,
+                    "sender_name": sender_name,
+                    "subject": subject,
+                    "message_id": headers.get("message_id", message_id),
+                    "gmail_message_id": message_id,
+                    "thread_id": thread_id,
+                    "in_reply_to": headers.get("in_reply_to", ""),
+                    "body": msg.get("body") or msg.get("snippet") or item.get("snippet", ""),
+                    "attachments": self._attachments_from_gog_downloads(thread_payload.get("downloaded")),
+                    "date": headers.get("date", item.get("date", "")),
+                })
+
+        except Exception as e:
+            logger.error("[Email] gog fetch error: %s", e)
+        return results
+
+    def _attachments_from_gog_downloads(self, downloaded: Any) -> List[Dict[str, Any]]:
+        attachments: List[Dict[str, Any]] = []
+        if not downloaded:
+            return attachments
+        candidates = downloaded if isinstance(downloaded, list) else [downloaded]
+        for item in candidates:
+            path_value = None
+            filename = None
+            media_type = "application/octet-stream"
+            if isinstance(item, str):
+                path_value = item
+            elif isinstance(item, dict):
+                path_value = item.get("path") or item.get("file") or item.get("local_path")
+                filename = item.get("filename") or item.get("name")
+                media_type = item.get("mimeType") or item.get("mime_type") or media_type
+            if not path_value:
+                continue
+            path = Path(path_value)
+            if not path.exists():
+                continue
+            filename = filename or path.name
+            ext = path.suffix.lower()
+            att_type = "image" if ext in _IMAGE_EXTS else "document"
+            attachments.append({
+                "path": str(path),
+                "filename": filename,
+                "type": att_type,
+                "media_type": media_type,
+            })
+        return attachments
+
     async def _dispatch_message(self, msg_data: Dict[str, Any]) -> None:
         """Convert a fetched email into a MessageEvent and dispatch it."""
         sender_addr = msg_data["sender_addr"]
@@ -585,6 +759,8 @@ class EmailAdapter(BasePlatformAdapter):
         self._thread_context[sender_addr] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
+            "gmail_message_id": msg_data.get("gmail_message_id", ""),
+            "thread_id": msg_data.get("thread_id", ""),
         }
 
         source = self.build_source(
@@ -607,6 +783,9 @@ class EmailAdapter(BasePlatformAdapter):
 
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
+        if self._use_gog() and msg_data.get("gmail_message_id"):
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._mark_gog_message_read, msg_data["gmail_message_id"])
 
     async def send(
         self,
@@ -656,6 +835,9 @@ class EmailAdapter(BasePlatformAdapter):
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
+        if self._use_gog():
+            return self._send_email_gog(to_addr, body, reply_to_msg_id, subject, msg_id, ctx)
+
         smtp = self._connect_smtp()
         try:
             smtp.login(self._address, self._password)
@@ -667,6 +849,46 @@ class EmailAdapter(BasePlatformAdapter):
                 smtp.close()
 
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
+        return msg_id
+
+    def _send_email_gog(
+        self,
+        to_addr: str,
+        body: str,
+        reply_to_msg_id: Optional[str],
+        subject: str,
+        msg_id: str,
+        ctx: Dict[str, str],
+        attachments: Optional[List[str]] = None,
+    ) -> str:
+        args = [
+            "gmail", "send",
+            "--to", to_addr,
+            "--subject", subject,
+        ]
+        thread_id = ctx.get("thread_id")
+        gmail_message_id = ctx.get("gmail_message_id") or reply_to_msg_id
+        if thread_id:
+            args.extend(["--thread-id", thread_id])
+        elif gmail_message_id:
+            args.extend(["--reply-to-message-id", gmail_message_id])
+        for file_path in attachments or []:
+            path = Path(file_path)
+            if path.exists():
+                args.extend(["--attach", str(path)])
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tmp:
+            tmp.write(body)
+            tmp_path = tmp.name
+        try:
+            self._run_gog(*args, "--body-file", tmp_path)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        logger.info("[Email] Sent gog OAuth reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -770,6 +992,9 @@ class EmailAdapter(BasePlatformAdapter):
         if body:
             msg.attach(MIMEText(body, "plain", "utf-8"))
 
+        if self._use_gog():
+            return self._send_email_gog(to_addr, body, None, subject, msg_id, ctx, file_paths)
+
         for file_path in file_paths:
             p = Path(file_path)
             try:
@@ -849,6 +1074,19 @@ class EmailAdapter(BasePlatformAdapter):
 
         if body:
             msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        if self._use_gog():
+            attach_path = file_path
+            temp_dir = None
+            if file_name and Path(file_path).name != file_name:
+                temp_dir = tempfile.mkdtemp(prefix="hermes-email-attach-")
+                attach_path = str(Path(temp_dir) / file_name)
+                shutil.copyfile(file_path, attach_path)
+            try:
+                return self._send_email_gog(to_addr, body, None, subject, msg_id, ctx, [attach_path])
+            finally:
+                if temp_dir:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
 
         # Attach file
         p = Path(file_path)

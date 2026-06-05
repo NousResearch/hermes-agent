@@ -62,6 +62,33 @@ class TestConfigEnvOverrides(unittest.TestCase):
         _apply_env_overrides(config)
         self.assertNotIn(Platform.EMAIL, config.platforms)
 
+    @patch.dict(os.environ, {
+        "EMAIL_AUTH_MODE": "gog",
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_GOG_ACCOUNT": "hermes@test.com",
+    }, clear=True)
+    def test_email_gog_config_loaded_from_env(self):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        email_config = config.platforms[Platform.EMAIL]
+        self.assertTrue(email_config.enabled)
+        self.assertEqual(email_config.extra["address"], "hermes@test.com")
+        self.assertEqual(email_config.extra["auth_mode"], "gog")
+        self.assertEqual(email_config.extra["gog_account"], "hermes@test.com")
+
+    @patch.dict(os.environ, {
+        "EMAIL_AUTH_MODE": "gog",
+        "EMAIL_GOG_ACCOUNT": "hermes@test.com",
+    }, clear=True)
+    def test_email_gog_account_can_supply_address(self):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        email_config = config.platforms[Platform.EMAIL]
+        self.assertEqual(email_config.extra["address"], "hermes@test.com")
+        self.assertEqual(email_config.extra["gog_account"], "hermes@test.com")
+
 class TestCheckRequirements(unittest.TestCase):
     """Verify check_email_requirements function."""
 
@@ -86,6 +113,15 @@ class TestCheckRequirements(unittest.TestCase):
     def test_requirements_empty_env(self):
         from gateway.platforms.email import check_email_requirements
         self.assertFalse(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "EMAIL_AUTH_MODE": "gog",
+        "EMAIL_ADDRESS": "a@b.com",
+        "EMAIL_GOG_ACCOUNT": "a@b.com",
+    }, clear=True)
+    def test_requirements_met_with_gog_auth(self):
+        from gateway.platforms.email import check_email_requirements
+        self.assertTrue(check_email_requirements())
 
 
 class TestHelperFunctions(unittest.TestCase):
@@ -785,6 +821,132 @@ class TestSendMethods(unittest.TestCase):
         self.assertEqual(info["name"], "user@test.com")
         self.assertEqual(info["type"], "dm")
         self.assertEqual(info["subject"], "Test")
+
+
+class TestGogEmailAdapter(unittest.TestCase):
+    """Test Gmail OAuth support through gog without touching live credentials."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_AUTH_MODE": "gog",
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_GOG_ACCOUNT": "hermes@test.com",
+            "EMAIL_POLL_INTERVAL": "15",
+        }, clear=False):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def test_run_gog_injects_keyring_password_from_hermes_env(self):
+        import tempfile
+        adapter = self._make_adapter()
+        with tempfile.TemporaryDirectory() as home:
+            Path(home, ".env").write_text("GOG_KEYRING_PASSWORD=test-secret\n", encoding="utf-8")
+            with patch.dict(os.environ, {"HERMES_HOME": home}, clear=False):
+                os.environ.pop("GOG_KEYRING_PASSWORD", None)
+                completed = SimpleNamespace(returncode=0, stdout="{}\n", stderr="")
+                with patch("subprocess.run", return_value=completed) as mock_run:
+                    adapter._run_gog("gmail", "messages", "search", "in:inbox")
+
+        cmd = mock_run.call_args.args[0]
+        env = mock_run.call_args.kwargs["env"]
+        self.assertEqual(cmd[:5], ["gog", "gmail", "messages", "search", "in:inbox"])
+        self.assertIn("--account", cmd)
+        self.assertIn("--json", cmd)
+        self.assertEqual(env["GOG_KEYRING_PASSWORD"], "test-secret")
+
+    def test_fetch_new_messages_gog_downloads_attachments(self):
+        import tempfile
+        adapter = self._make_adapter()
+        with tempfile.TemporaryDirectory() as home:
+            attachment = Path(home, "example.pdf")
+            attachment.write_bytes(b"%PDF-1.4")
+            with patch.dict(os.environ, {"HERMES_HOME": home}, clear=False):
+                search_payload = {"messages": [{"id": "m1", "threadId": "t1"}]}
+                thread_payload = {
+                    "thread": {
+                        "messages": [{
+                            "id": "m1",
+                            "headers": {
+                                "from": "User <user@test.com>",
+                                "subject": "Docs",
+                                "message_id": "<m1@test.com>",
+                            },
+                            "body": "See attached.",
+                        }]
+                    },
+                    "downloaded": [{
+                        "path": str(attachment),
+                        "filename": "example.pdf",
+                        "mimeType": "application/pdf",
+                    }],
+                }
+                with patch.object(adapter, "_run_gog", side_effect=[search_payload, thread_payload]) as mock_gog:
+                    results = adapter._fetch_new_messages_gog()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["sender_addr"], "user@test.com")
+        self.assertEqual(results[0]["attachments"][0]["type"], "document")
+        self.assertEqual(results[0]["attachments"][0]["filename"], "example.pdf")
+        thread_call = mock_gog.call_args_list[1].args
+        self.assertIn("--download", thread_call)
+        self.assertIn("--out-dir", thread_call)
+
+    def test_dispatch_marks_gog_message_read_after_handle(self):
+        import asyncio
+        adapter = self._make_adapter()
+        handled = []
+
+        async def capture_handle(event):
+            handled.append(event)
+
+        adapter.handle_message = capture_handle
+        adapter._mark_gog_message_read = MagicMock()
+        msg_data = {
+            "uid": "m1",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Hello",
+            "message_id": "<m1@test.com>",
+            "gmail_message_id": "m1",
+            "thread_id": "t1",
+            "in_reply_to": "",
+            "body": "Hi",
+            "attachments": [],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+
+        self.assertEqual(len(handled), 1)
+        adapter._mark_gog_message_read.assert_called_once_with("m1")
+
+    def test_send_email_gog_uses_attach_args(self):
+        import tempfile
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Docs",
+            "gmail_message_id": "m1",
+            "thread_id": "t1",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as f:
+            with patch.object(adapter, "_run_gog", return_value={}) as mock_gog:
+                msg_id = adapter._send_email_gog(
+                    "user@test.com",
+                    "Body",
+                    None,
+                    "Re: Docs",
+                    "<hermes@test.com>",
+                    adapter._thread_context["user@test.com"],
+                    [f.name],
+                )
+
+        args = mock_gog.call_args.args
+        self.assertEqual(msg_id, "<hermes@test.com>")
+        self.assertIn("--thread-id", args)
+        self.assertIn("--attach", args)
+        self.assertIn(f.name, args)
 
 
 class TestConnectDisconnect(unittest.TestCase):

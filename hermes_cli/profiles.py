@@ -615,9 +615,42 @@ def _check_gateway_running(profile_dir: Path) -> bool:
     """Check if a gateway is running for a given profile directory."""
     try:
         from gateway.status import get_running_pid
-        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
+        if get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None:
+            return True
     except Exception:
+        pass
+    return _check_launchd_gateway_running(profile_dir)
+
+
+def _check_launchd_gateway_running(profile_dir: Path) -> bool:
+    """Check macOS LaunchAgent state for a profile when PID checks are unavailable."""
+    if sys.platform != "darwin":
         return False
+    try:
+        from hermes_cli.config import get_hermes_home
+
+        hermes_home = get_hermes_home().resolve()
+        resolved_profile = profile_dir.resolve()
+        if resolved_profile == hermes_home:
+            label = "ai.hermes.gateway"
+        elif resolved_profile.parent == hermes_home / "profiles":
+            label = f"ai.hermes.gateway-{resolved_profile.name}"
+        else:
+            return False
+        if not (Path.home() / "Library" / "LaunchAgents" / f"{label}.plist").exists():
+            return False
+        target = f"gui/{os.getuid()}/{label}"
+        result = subprocess.run(
+            ["launchctl", "print", target],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    return "state = running" in result.stdout and "pid = " in result.stdout
 
 
 def _count_skills(profile_dir: Path) -> int:

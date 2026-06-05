@@ -409,6 +409,20 @@ class TestCronjobToolScriptValidation:
         assert result["success"] is False
         assert "relative" in result["error"].lower() or "absolute" in result["error"].lower()
 
+    def test_absolute_script_error_mentions_active_scripts_dir(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script=str(cron_env / "scripts" / "monitor.py"),
+        ))
+        assert result["success"] is False
+        assert str(cron_env / "scripts") in result["error"]
+        assert "~/.hermes/scripts" not in result["error"]
+
     def test_create_with_tilde_script_rejected(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob

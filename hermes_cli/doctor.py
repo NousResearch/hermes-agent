@@ -12,7 +12,7 @@ from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, get_bundled_whatsapp_bridge_dir
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -1456,7 +1456,7 @@ def run_doctor(args):
     if _npm_bin:
         npm_dirs = [
             (PROJECT_ROOT, "Browser tools (agent-browser)"),
-            (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),
+            (get_bundled_whatsapp_bridge_dir(), "WhatsApp bridge"),
         ]
         for npm_dir, label in npm_dirs:
             if not (npm_dir / "node_modules").exists():

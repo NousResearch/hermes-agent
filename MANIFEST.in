@@ -1,6 +1,15 @@
 graft skills
 graft optional-skills
 graft locales
+# WhatsApp Baileys bridge (Node.js) for sdist builds — Homebrew and other
+# downstream packagers build the wheel from the sdist, so the bridge sources
+# must be in the tarball. The wheel itself is covered by
+# [tool.setuptools.data-files] in pyproject.toml. Without this the sdist drops
+# bridge.js and the gateway WhatsApp adapter fatals with whatsapp_bridge_missing.
+graft scripts/whatsapp-bridge
+# Never ship a developer's locally-installed node_modules (created by the
+# bridge's runtime `npm install`) — it would bloat the sdist by 10s of MB.
+prune scripts/whatsapp-bridge/node_modules
 # Bundled plugin manifests (plugin.yaml / plugin.yml). Without these the
 # PluginManager scan (hermes_cli/plugins.py) finds zero plugins on installs
 # built from the sdist (e.g. Homebrew, downstream packagers). package-data

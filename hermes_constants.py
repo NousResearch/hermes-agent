@@ -221,6 +221,43 @@ def get_bundled_skills_dir(default: Path | None = None) -> Path:
     return get_hermes_home() / "skills"
 
 
+def get_bundled_whatsapp_bridge_dir(default: Path | None = None) -> Path:
+    """Return the bundled WhatsApp (Baileys) Node.js bridge directory.
+
+    The bridge under ``scripts/whatsapp-bridge`` is a bare data directory (no
+    ``__init__.py``), so — like ``locales/`` — it is invisible to
+    ``packages.find`` and to ``package-data``. It ships as setuptools
+    ``data-files`` (wheel) / ``MANIFEST.in`` graft (sdist), which means its
+    install location differs by install type. Resolution order, first existing
+    wins:
+
+        1. ``HERMES_WHATSAPP_BRIDGE_DIR`` env var (Nix/Homebrew wrapper or
+           explicit override).
+        2. Wheel-installed ``<sysconfig data|purelib|platlib>/scripts/whatsapp-bridge``
+           — where setuptools ``data-files`` extract on a ``pip install``.
+        3. Caller-supplied ``default`` (rarely needed).
+        4. ``<repo-root>/scripts/whatsapp-bridge`` — source checkouts and
+           ``pip install -e .``, where this top-level module sits at the repo
+           root next to ``scripts/``.
+
+    Falling through to the source-style path (even when it is missing) keeps
+    callers' "bridge script missing at <path>" diagnostics informative instead
+    of returning ``None``. Without this resolution, packaged installs raised
+    ``whatsapp_bridge_missing`` because the gateway adapter looked for the
+    bridge at ``<site-packages>/scripts/whatsapp-bridge`` — a location
+    ``data-files`` never populate.
+    """
+    override = os.getenv("HERMES_WHATSAPP_BRIDGE_DIR", "").strip()
+    if override:
+        return Path(override)
+    packaged = _get_packaged_data_dir("scripts/whatsapp-bridge")
+    if packaged is not None:
+        return packaged
+    if default is not None:
+        return default
+    return Path(__file__).resolve().parent / "scripts" / "whatsapp-bridge"
+
+
 def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     """Resolve a Hermes subdirectory with backward compatibility.
 

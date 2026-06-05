@@ -226,3 +226,40 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     # Every on-disk catalog has the .yaml extension the globs above match.
     on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
     assert on_disk, "expected locales/*.yaml catalogs on disk"
+
+
+def test_whatsapp_bridge_ships_in_both_wheel_and_sdist():
+    """Regression test: gateway WhatsApp adapter `whatsapp_bridge_missing` on packaged installs.
+
+    scripts/whatsapp-bridge/ is a bare Node.js data directory (no __init__.py),
+    so — like locales/ — it is invisible to packages.find and to package-data
+    (which attaches to a package). It must be declared as setuptools data-files
+    (wheel) AND grafted in MANIFEST.in (sdist; Homebrew and other downstream
+    packagers build the wheel from the sdist). Without both, sealed installs
+    drop bridge.js and the gateway WhatsApp adapter — plus `hermes whatsapp`
+    pairing and `hermes doctor` — can't find it via
+    get_bundled_whatsapp_bridge_dir(), even though editable/git checkouts work.
+    Mirrors test_locale_catalogs_ship_in_both_wheel_and_sdist.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data_files = data["tool"]["setuptools"].get("data-files", {})
+    bridge_globs = data_files.get("scripts/whatsapp-bridge")
+    assert bridge_globs, (
+        "pyproject [tool.setuptools.data-files] must declare "
+        '"scripts/whatsapp-bridge" so the wheel ships the Node.js bridge'
+    )
+    # bridge.js + allowlist.js (*.js) and package.json + package-lock.json
+    # (*.json) are all required at runtime, so both globs must be present.
+    assert any(g.endswith("*.js") for g in bridge_globs), bridge_globs
+    assert any(g.endswith("*.json") for g in bridge_globs), bridge_globs
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft scripts/whatsapp-bridge" in manifest, (
+        "MANIFEST.in must `graft scripts/whatsapp-bridge` so the sdist ships the bridge"
+    )
+
+    # The runtime files the globs above must actually match on disk. bridge.js
+    # imports ./allowlist.js; npm install needs package.json + package-lock.json.
+    bridge_dir = REPO_ROOT / "scripts" / "whatsapp-bridge"
+    for required in ("bridge.js", "allowlist.js", "package.json", "package-lock.json"):
+        assert (bridge_dir / required).is_file(), f"missing bridge asset: {required}"

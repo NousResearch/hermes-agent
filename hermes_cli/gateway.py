@@ -2119,7 +2119,10 @@ def _detect_venv_dir() -> Path | None:
             return venv
 
     # Fallback: check common virtualenv directory names under the project root.
-    for candidate in (".venv", "venv"):
+    # Prefer the installer-canonical "venv/" (scripts/install.sh creates it via
+    # `python -m venv venv` / `uv venv venv`). Checking ".venv" first picked up
+    # stale sibling uv-default envs that diverge from the install location.
+    for candidate in ("venv", ".venv"):
         venv = PROJECT_ROOT / candidate
         if venv.is_dir():
             return venv

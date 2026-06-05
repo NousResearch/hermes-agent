@@ -1247,3 +1247,59 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+class TestGrok43StaleCacheGuard:
+    """Pre-catalog builds resolved grok-4.3 via the generic 'grok-4' catch-all
+    (256,000) and persisted it before the 'grok-4.3' (1M) catalog entry was
+    added on 2026-05-15.  The step-1 cache guard must drop that stale value
+    and re-resolve to 1M, while leaving correct grok-4 entries (256,000)
+    untouched.
+    """
+
+    def test_suggests_grok_4_3(self):
+        from agent.model_metadata import _model_name_suggests_grok_4_3
+        assert _model_name_suggests_grok_4_3("grok-4.3")
+        assert _model_name_suggests_grok_4_3("grok-4.3-latest")
+        assert _model_name_suggests_grok_4_3("xai/grok-4.3")
+        assert not _model_name_suggests_grok_4_3("grok-4")
+        assert not _model_name_suggests_grok_4_3("grok-4-fast")
+        assert not _model_name_suggests_grok_4_3("grok-4.20")
+
+    def test_stale_grok_4_3_dropped_and_reresolves_to_1m(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import importlib
+        import agent.model_metadata as mm
+        importlib.reload(mm)
+        base = "https://api.x.ai/v1"
+        mm.save_context_length("grok-4.3", base, 256_000)
+        ctx = mm.get_model_context_length(
+            "grok-4.3", base_url=base, api_key="", provider="xai"
+        )
+        assert ctx == 1_000_000
+
+    def test_correct_grok_4_3_cache_preserved(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import importlib
+        import agent.model_metadata as mm
+        importlib.reload(mm)
+        base = "https://api.x.ai/v1"
+        mm.save_context_length("grok-4.3", base, 1_000_000)
+        ctx = mm.get_model_context_length(
+            "grok-4.3", base_url=base, api_key="", provider="xai"
+        )
+        assert ctx == 1_000_000
+
+    def test_grok_4_not_clobbered(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import importlib
+        import agent.model_metadata as mm
+        importlib.reload(mm)
+        base = "https://api.x.ai/v1"
+        # 256,000 is the CORRECT value for plain grok-4 — guard must not touch it.
+        for slug in ("grok-4", "grok-4-0709"):
+            mm.save_context_length(slug, base, 256_000)
+            ctx = mm.get_model_context_length(
+                slug, base_url=base, api_key="", provider="xai"
+            )
+            assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"

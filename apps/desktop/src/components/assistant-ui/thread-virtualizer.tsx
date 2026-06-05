@@ -1,13 +1,25 @@
 import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
-import { type ComponentProps, type FC, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import {
+  type ComponentProps,
+  type FC,
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef
+} from 'react'
 
+import { setMutableRef } from '@/lib/mutable-ref'
 import { cn } from '@/lib/utils'
 import { setThreadScrolledUp } from '@/store/thread-scroll'
 
 const ESTIMATED_ITEM_HEIGHT = 220
 const OVERSCAN = 4
 const AT_BOTTOM_THRESHOLD = 4
+const POST_RUN_BOTTOM_LOCK_MS = 1_200
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -55,7 +67,7 @@ function buildGroups(signature: string): MessageGroup[] {
   return groups
 }
 
-export const VirtualizedThread: FC<VirtualizedThreadProps> = ({
+const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
   clampToComposer,
   components,
   emptyPlaceholder,
@@ -66,9 +78,15 @@ export const VirtualizedThread: FC<VirtualizedThreadProps> = ({
     s.thread.messages.map((message, index) => `${index}:${message.id}:${message.role}`).join('\n')
   )
 
+  const isRunning = useAuiState(s => s.thread.isRunning)
+
   const groups = useMemo(() => buildGroups(messageSignature), [messageSignature])
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+
+  // Shared ref so scrollToFn can check whether the user is parked at the
+  // bottom without needing a ref from inside useThreadScrollAnchor.
+  const stickyBottomRef = useRef(true)
 
   const virtualizer = useVirtualizer({
     count: groups.length,
@@ -78,14 +96,40 @@ export const VirtualizedThread: FC<VirtualizedThreadProps> = ({
     // Seed the rect so the initial range mounts something before
     // `observeElementRect` reports the real layout (it overrides this).
     initialRect: { height: 600, width: 800 },
-    overscan: OVERSCAN
+    overscan: OVERSCAN,
+    // When the virtualizer adjusts scroll due to item measurement changes,
+    // skip the adjustment if the user is at the bottom. Our ResizeObserver +
+    // pinToBottom loop handles scroll anchoring; letting the virtualizer also
+    // adjust creates a feedback loop where the two fight each other,
+    // producing visible rubber-banding (the view snaps to the composer
+    // then jumps back up).
+    scrollToFn: (offset, _options, instance) => {
+      const el = instance.scrollElement
+
+      if (!el) {
+        return
+      }
+
+      if (stickyBottomRef.current) {
+        const maxScroll = el.scrollHeight - el.clientHeight
+        const distFromBottom = maxScroll - el.scrollTop
+
+        if (distFromBottom <= AT_BOTTOM_THRESHOLD && offset < maxScroll) {
+          return
+        }
+      }
+
+      ;(el as HTMLElement).scrollTo(0, offset)
+    }
   })
 
   useThreadScrollAnchor({
     enabled: !renderEmpty,
     groupCount: groups.length,
+    isRunning,
     scrollerRef,
     sessionKey: sessionKey ?? null,
+    stickyBottomRef,
     virtualizer
   })
 
@@ -169,19 +213,38 @@ export const VirtualizedThread: FC<VirtualizedThreadProps> = ({
   )
 }
 
+export const VirtualizedThread = memo(VirtualizedThreadInner)
+
+function scrollElementToBottom(el: HTMLDivElement) {
+  el.scrollTop = el.scrollHeight
+}
+
 interface ScrollAnchorOptions {
   enabled: boolean
   groupCount: number
+  isRunning: boolean
   scrollerRef: React.RefObject<HTMLDivElement | null>
   sessionKey: string | null
+  stickyBottomRef: React.MutableRefObject<boolean>
   virtualizer: Virtualizer<HTMLDivElement, Element>
 }
 
-function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, virtualizer }: ScrollAnchorOptions) {
-  // `armed` = parked at bottom, content growth should follow. Cleared on
+function useThreadScrollAnchor({
+  enabled,
+  groupCount,
+  isRunning,
+  scrollerRef,
+  sessionKey,
+  stickyBottomRef,
+  virtualizer
+}: ScrollAnchorOptions) {
+  // `stickyBottomRef` = parked at bottom, content growth should follow. Cleared on
   // user-driven upward scroll; re-armed when they reach bottom again.
-  const armedRef = useRef(true)
+  // This is a shared ref — scrollToFn reads it to prevent the virtualizer's
+  // measurement adjustments from fighting our pinToBottom.
   const lastTopRef = useRef(0)
+  const lastHeightRef = useRef(0)
+  const lastClientHeightRef = useRef(0)
   // Counter that tracks how many scroll events we expect to be ours rather
   // than the user's. `pinToBottom` writes `el.scrollTop`, which fires an
   // async `scroll` event; without this guard the on-scroll handler can race
@@ -204,23 +267,25 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
 
     // Hold the disarm gate across the scroll event the next line will fire.
     programmaticScrollPendingRef.current += 1
-    el.scrollTop = el.scrollHeight
+    scrollElementToBottom(el)
     lastTopRef.current = el.scrollTop
+    lastHeightRef.current = el.scrollHeight
+    lastClientHeightRef.current = el.clientHeight
   }, [scrollerRef])
 
   const jumpToBottom = useCallback(() => {
-    armedRef.current = true
+    setMutableRef(stickyBottomRef, true)
 
     if (groupCount > 0) {
       virtualizer.scrollToIndex(groupCount - 1, { align: 'end', behavior: 'auto' })
     }
 
     requestAnimationFrame(() => {
-      if (armedRef.current) {
+      if (stickyBottomRef.current) {
         pinToBottom()
       }
     })
-  }, [groupCount, pinToBottom, virtualizer])
+  }, [groupCount, pinToBottom, stickyBottomRef, virtualizer])
 
   useEffect(() => () => setThreadScrolledUp(false), [])
 
@@ -234,7 +299,8 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
     }
 
     const disarm = () => {
-      armedRef.current = false
+      setMutableRef(stickyBottomRef, false)
+      programmaticScrollPendingRef.current = 0
     }
 
     const onScroll = () => {
@@ -250,24 +316,37 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
       if (programmaticScrollPendingRef.current > 0) {
         programmaticScrollPendingRef.current -= 1
         lastTopRef.current = top
+        lastHeightRef.current = el.scrollHeight
+        lastClientHeightRef.current = el.clientHeight
         // Always re-arm — sticky-bottom should hold through clamp races.
-        armedRef.current = true
+        setMutableRef(stickyBottomRef, true)
         const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
         setThreadScrolledUp(!atBottom)
 
         return
       }
 
-      if (top + 1 < lastTopRef.current) {
-        armedRef.current = false
+      // Disarm only when `scrollTop` decreases while both content height and
+      // viewport height are stable. A bare `top < lastTopRef.current` check is
+      // unsafe: virtualizer measurement, streaming markdown, composer resizing,
+      // window resizing, and toolbar/status updates can all move scrollTop as a
+      // layout side effect. Wheel-up and touchmove still disarm immediately via
+      // their own listeners below, so real user intent remains covered.
+      const heightGrew = el.scrollHeight > lastHeightRef.current
+      const clientHeightChanged = Math.abs(el.clientHeight - lastClientHeightRef.current) > 1
+
+      if (!heightGrew && !clientHeightChanged && top + 1 < lastTopRef.current) {
+        setMutableRef(stickyBottomRef, false)
       }
 
       lastTopRef.current = top
+      lastHeightRef.current = el.scrollHeight
+      lastClientHeightRef.current = el.clientHeight
 
       const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
 
       if (atBottom) {
-        armedRef.current = true
+        setMutableRef(stickyBottomRef, true)
       }
 
       setThreadScrolledUp(!atBottom)
@@ -288,7 +367,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
       el.removeEventListener('wheel', onWheel)
       el.removeEventListener('touchmove', disarm)
     }
-  }, [scrollerRef])
+  }, [scrollerRef, stickyBottomRef])
 
   // Follow content growth (streaming, item measurements, loading indicator)
   // while armed. During fast streaming the ResizeObserver can fire many
@@ -297,7 +376,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
   // (~20+ ms self in `Virtualizer.getMaxScrollOffset`) several times per
   // token.
   useEffect(() => {
-    if (!enabled) {
+    if (!enabled || !isRunning) {
       return undefined
     }
 
@@ -308,14 +387,17 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
     }
 
     let pinRafScheduled = false
+
     const schedulePin = () => {
-      if (pinRafScheduled || !armedRef.current) {
+      if (pinRafScheduled || !stickyBottomRef.current) {
         return
       }
+
       pinRafScheduled = true
       requestAnimationFrame(() => {
         pinRafScheduled = false
-        if (armedRef.current) {
+
+        if (stickyBottomRef.current) {
           pinToBottom()
         }
       })
@@ -323,14 +405,15 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
 
     const observer = new ResizeObserver(schedulePin)
 
-    observer.observe(el)
-
+    // Observe ONLY the content (firstElementChild), not the scroller `el`
+    // itself. Resizes of the viewport/scroller (window resize, devtools
+    // panel toggle) shouldn't trigger a pin — only content growth should.
     if (el.firstElementChild) {
       observer.observe(el.firstElementChild)
     }
 
     return () => observer.disconnect()
-  }, [enabled, pinToBottom, scrollerRef])
+  }, [enabled, isRunning, pinToBottom, scrollerRef, stickyBottomRef])
 
   // Jump to bottom on session change OR when an empty thread first gets
   // content. Both share the same intent and the same effect.
@@ -367,16 +450,63 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
     if (!enabled) {
       return
     }
-    if (groupCount > prevGroupCountForLayoutRef.current && armedRef.current) {
-      pinToBottom()
+
+    if (groupCount > prevGroupCountForLayoutRef.current && stickyBottomRef.current) {
+      // Defer to rAF so that browser scroll/wheel events from the current
+      // frame are processed first.  Without this deferral, a trackpad
+      // scroll-up during streaming can race with this effect: the wheel
+      // event hasn't fired yet so stickyBottomRef is still true, and the
+      // immediate pinToBottom() would snap the viewport back to bottom
+      // against the user's intent.
       requestAnimationFrame(() => {
-        if (armedRef.current) {
+        if (stickyBottomRef.current) {
           pinToBottom()
         }
       })
     }
+
     prevGroupCountForLayoutRef.current = groupCount
-  }, [enabled, groupCount, pinToBottom])
+  }, [enabled, groupCount, pinToBottom, stickyBottomRef])
+
+  // Completion swaps streaming placeholders/plain code for final rendered DOM
+  // (notably Shiki-highlighted code). Keep following the bottom briefly after
+  // `isRunning` flips false so that final measurement pass cannot strand the
+  // viewport near the top of a large code block.
+  const prevIsRunningForLayoutRef = useRef(isRunning)
+  useLayoutEffect(() => {
+    const finishedRun = prevIsRunningForLayoutRef.current && !isRunning
+    prevIsRunningForLayoutRef.current = isRunning
+
+    if (!enabled || !finishedRun || !stickyBottomRef.current) {
+      return undefined
+    }
+
+    const lockUntil = performance.now() + POST_RUN_BOTTOM_LOCK_MS
+    let lockRaf: number | null = null
+
+    const lockFrame = () => {
+      lockRaf = null
+
+      if (!stickyBottomRef.current) {
+        return
+      }
+
+      pinToBottom()
+
+      if (performance.now() < lockUntil) {
+        lockRaf = requestAnimationFrame(lockFrame)
+      }
+    }
+
+    pinToBottom()
+    lockRaf = requestAnimationFrame(lockFrame)
+
+    return () => {
+      if (lockRaf !== null) {
+        cancelAnimationFrame(lockRaf)
+      }
+    }
+  }, [enabled, isRunning, pinToBottom, stickyBottomRef])
 
   useAuiEvent('thread.runStart', jumpToBottom)
 }

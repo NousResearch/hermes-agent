@@ -26,6 +26,7 @@ interface SessionActions {
   title: string
   pinned?: boolean
   onPin?: () => void
+  onArchive?: () => void
   onDelete?: () => void
 }
 
@@ -40,7 +41,7 @@ interface ItemSpec {
   variant?: 'destructive'
 }
 
-function useSessionActions({ sessionId, title, pinned = false, onPin, onDelete }: SessionActions) {
+function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive, onDelete }: SessionActions) {
   const [renameOpen, setRenameOpen] = useState(false)
 
   const items: ItemSpec[] = [
@@ -79,6 +80,15 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onDelete }
       onSelect: () => {
         triggerHaptic('selection')
         setRenameOpen(true)
+      }
+    },
+    {
+      disabled: !onArchive,
+      icon: 'archive',
+      label: 'Archive',
+      onSelect: () => {
+        triggerHaptic('selection')
+        onArchive?.()
       }
     },
     {

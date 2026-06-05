@@ -3,7 +3,7 @@
 The module is imported *lazily* by ``tui_gateway/server.py`` so that a
 box with missing audio deps fails at call time (returning a clean RPC
 error) rather than at gateway startup. These tests therefore only
-assert the public contract the gateway depends on: the three symbols
+assert the public contract the gateway depends on: the gateway symbols
 exist, ``stop_and_transcribe`` is a no-op when nothing is recording,
 and ``speak_text`` tolerates empty input without touching the provider
 stack.
@@ -11,6 +11,7 @@ stack.
 
 import os
 import sys
+import types
 
 import pytest
 
@@ -24,10 +25,12 @@ class TestPublicAPI:
             speak_text,
             start_recording,
             stop_and_transcribe,
+            stop_speaking,
         )
 
         assert callable(start_recording)
         assert callable(stop_and_transcribe)
+        assert callable(stop_speaking)
         assert callable(speak_text)
 
 
@@ -288,6 +291,43 @@ class TestSpeakTextGuards:
 
         # Should simply return None without raising.
         assert speak_text(text) is None
+
+    def test_stop_speaking_interrupts_active_playback(self, monkeypatch):
+        import hermes_cli.voice as voice
+
+        calls = []
+        monkeypatch.setattr(voice, "stop_playback", lambda: calls.append("stop"))
+        monkeypatch.setattr(voice, "_tts_cancel_generation", 0)
+        voice._tts_playing.clear()
+
+        voice.stop_speaking()
+
+        assert calls == ["stop"]
+        assert voice._tts_playing.is_set()
+        assert voice._tts_cancel_generation == 1
+
+    def test_stop_during_synthesis_skips_audio_playback(self, monkeypatch):
+        import hermes_cli.voice as voice
+
+        played = []
+        monkeypatch.setattr(voice, "_tts_cancel_generation", 0)
+        monkeypatch.setattr(voice, "stop_playback", lambda: None)
+        monkeypatch.setattr(voice, "play_audio_file", lambda path: played.append(path))
+
+        def fake_tts_tool(text, output_path):
+            with open(output_path, "wb") as f:
+                f.write(b"mp3")
+            voice.stop_speaking()
+
+        monkeypatch.setitem(
+            sys.modules,
+            "tools.tts_tool",
+            types.SimpleNamespace(text_to_speech_tool=fake_tts_tool),
+        )
+
+        assert voice.speak_text("hello") is None
+        assert played == []
+        assert voice._tts_playing.is_set()
 
 
 class TestContinuousAPI:

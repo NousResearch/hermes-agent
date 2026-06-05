@@ -31,6 +31,45 @@ _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 
+
+def _summarize_exec_approval(command: str, description: str = "") -> str:
+    """Return a short human-facing summary for Discord exec approval prompts."""
+    cmd = (command or "").strip()
+    desc = (description or "").strip()
+    lower = cmd.lower()
+
+    if "rm -rf" in lower or lower.startswith("rm "):
+        action = "ファイルやフォルダを削除する操作です。"
+    elif "git push" in lower:
+        action = "GitHubなどのリモートへ変更を送る操作です。"
+    elif "git pull" in lower or "git fetch" in lower:
+        action = "GitHubなどから最新情報を取得する操作です。"
+    elif "git reset" in lower or "git checkout" in lower:
+        action = "Gitの作業状態やブランチを変更する操作です。"
+    elif "systemctl" in lower or "service " in lower or "hermes gateway restart" in lower:
+        action = "サービスやGatewayの起動状態を変更する操作です。"
+    elif "sudo" in lower:
+        action = "管理者権限が関わる可能性のある操作です。"
+    elif "python" in lower or "pytest" in lower or "npm test" in lower:
+        action = "スクリプトやテストを実行する操作です。"
+    elif "curl" in lower or "wget" in lower:
+        action = "外部URLへアクセスする操作です。"
+    elif "|" in cmd:
+        action = "複数のコマンドをつないで実行する操作です。"
+    else:
+        action = "シェルコマンドを実行する操作です。"
+
+    reason = desc if desc else "安全確認が必要なコマンドとして検出されました。"
+    if len(reason) > 220:
+        reason = reason[:217] + "..."
+
+    return (
+        f"何をするか: {action}\n"
+        f"なぜ確認が必要か: {reason}\n"
+        "判断: 内容に問題なければ「許可」。不明・危険に見える場合は「拒否」を押してください。"
+    )
+
+
 try:
     import discord
     from discord import Message as DiscordMessage, Intents
@@ -4050,15 +4089,19 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            # Discord embed description limit is 4096; show full command up to that
-            max_desc = 4088
-            cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
+            # Discord embed description limit is 4096; keep the human summary first.
+            approval_summary = _summarize_exec_approval(command, description)
+            max_cmd = 2600
+            cmd_display = command if len(command) <= max_cmd else command[: max_cmd - 3] + "..."
             embed = discord.Embed(
-                title="⚠️ Command Approval Required",
-                description=f"```\n{cmd_display}\n```",
+                title="⚠️ 実行許可が必要です",
+                description=(
+                    f"{approval_summary}\n\n"
+                    f"コマンド:\n```\n{cmd_display}\n```"
+                ),
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="Reason", value=description, inline=False)
+            embed.add_field(name="ボタンの意味", value="許可: 今回だけ実行 / セッション許可: 同じ会話中は許可 / 常に許可: 今後も許可 / 拒否: 実行しない", inline=False)
 
             view = ExecApprovalView(
                 session_key=session_key,
@@ -5073,29 +5116,29 @@ def _define_discord_view_classes() -> None:
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc)
 
-        @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
+        @discord.ui.button(label="許可", style=discord.ButtonStyle.green)
         async def allow_once(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
+            await self._resolve(interaction, "once", discord.Color.green(), "今回だけ許可")
 
-        @discord.ui.button(label="Allow Session", style=discord.ButtonStyle.grey)
+        @discord.ui.button(label="セッション許可", style=discord.ButtonStyle.grey)
         async def allow_session(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "session", discord.Color.blue(), "Approved for session")
+            await self._resolve(interaction, "session", discord.Color.blue(), "このセッションで許可")
 
-        @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
+        @discord.ui.button(label="常に許可", style=discord.ButtonStyle.blurple)
         async def allow_always(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "always", discord.Color.purple(), "Approved permanently")
+            await self._resolve(interaction, "always", discord.Color.purple(), "常に許可")
 
-        @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
+        @discord.ui.button(label="拒否", style=discord.ButtonStyle.red)
         async def deny(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "deny", discord.Color.red(), "Denied")
+            await self._resolve(interaction, "deny", discord.Color.red(), "拒否")
 
         async def on_timeout(self):
             """Handle view timeout -- disable buttons and mark as expired."""

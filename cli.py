@@ -974,7 +974,7 @@ def _run_cleanup():
     try:
         from tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
-    except Exception:
+    except BaseException:
         pass
     # Close cached auxiliary LLM clients (sync + async) so that
     # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
@@ -7166,7 +7166,11 @@ class HermesCLI:
         except Exception:
             pass
 
-        # Create the new session with parent link
+        # Create the new session with parent link.
+        # Persist a stable ``_branched_from`` marker in model_config so
+        # list_sessions_rich() can keep the branch visible in /resume and
+        # /sessions even after the parent is reopened and re-ended with a
+        # different end_reason (e.g. tui_shutdown overwriting 'branched').
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
@@ -7175,6 +7179,7 @@ class HermesCLI:
                 model_config={
                     "max_iterations": self.max_turns,
                     "reasoning_config": self.reasoning_config,
+                    "_branched_from": parent_session_id,
                 },
                 parent_session_id=parent_session_id,
             )

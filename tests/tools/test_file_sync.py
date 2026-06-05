@@ -181,6 +181,32 @@ class TestRateLimiting:
         mgr.sync()
         assert upload.call_count == 0
 
+    def test_failed_sync_does_not_advance_rate_limit_clock(self, tmp_files):
+        """After a failed sync, the next non-forced sync should still retry.
+
+        Regression test: the failure path used to bump _last_sync_time,
+        suppressing the documented retry for _sync_interval seconds.
+        """
+        upload = MagicMock(side_effect=RuntimeError("transient failure"))
+        mgr = FileSyncManager(
+            get_files_fn=_make_get_files(tmp_files),
+            upload_fn=upload,
+            delete_fn=MagicMock(),
+            sync_interval=10.0,
+        )
+
+        # First sync: all uploads fail
+        mgr.sync(force=True)
+        assert upload.call_count >= 1  # at least one attempt before failure
+
+        # State rolled back — next non-forced sync should retry (not rate-limited)
+        upload.reset_mock()
+        upload.side_effect = None  # uploads now succeed
+        mgr.sync()  # NOT forced — should NOT be rate-limited
+        assert upload.call_count == 3, (
+            "non-forced sync after failure should retry, not be rate-limited"
+        )
+
     def test_force_bypasses_rate_limit(self, tmp_files, tmp_path):
         upload = MagicMock()
         mgr = FileSyncManager(

@@ -1754,18 +1754,36 @@ class SlashCommandAutoSuggest(AutoSuggest):
 
     Shows the rest of a command or subcommand in dim text as you type.
     Falls back to history-based suggestions for non-slash input.
+
+    On an empty buffer, checks for a *session suggestion* set by plugins
+    via ``PluginContext.set_session_suggestion()`` — consumed once.
     """
 
     def __init__(
         self,
         history_suggest: AutoSuggest | None = None,
         completer: SlashCommandCompleter | None = None,
+        session_suggest_fn: Callable[[], str | None] | None = None,
     ) -> None:
         self._history = history_suggest
         self._completer = completer  # Reuse its model cache
+        self._session_suggest_fn = session_suggest_fn
 
     def get_suggestion(self, buffer, document):
         text = document.text_before_cursor
+
+        # Session-start ghost-text suggestion on empty buffer (consumed once).
+        if not text:
+            if self._session_suggest_fn:
+                suggestion = self._session_suggest_fn()
+                if suggestion:
+                    if isinstance(suggestion, Suggestion):
+                        return suggestion
+                    return Suggestion(suggestion)
+            # Fall back to history for empty-buffer suggestions
+            if self._history:
+                return self._history.get_suggestion(buffer, document)
+            return None
 
         # Only suggest for slash commands
         if not text.startswith("/"):

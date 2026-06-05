@@ -14150,6 +14150,11 @@ class HermesCLI:
             auto_suggest=SlashCommandAutoSuggest(
                 history_suggest=AutoSuggestFromHistory(),
                 completer=_completer,
+                session_suggest_fn=lambda: (
+                    __import__("hermes_cli.plugins", fromlist=["get_plugin_manager"])
+                    .get_plugin_manager()
+                    .consume_session_suggestion()
+                ),
             ),
         )
         # Keep prompt_toolkit on its simple tempfile path. Setting
@@ -14157,6 +14162,7 @@ class HermesCLI:
         # which tries to mkdir() the mkdtemp() directory again and raises
         # EEXIST. The suffix keeps markdown highlighting without that bug.
         input_area.buffer.tempfile_suffix = '.md'
+        self._input_area = input_area  # stored for set_session_suggestion() to clear suggestion cache
 
         # Dynamic height: accounts for both explicit newlines AND visual
         # wrapping of long lines so the input area always fits its content.

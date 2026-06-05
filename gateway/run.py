@@ -6930,6 +6930,16 @@ class GatewayRunner:
             adapter.gateway_runner = self  # For cross-platform delivery
             return adapter
 
+        elif platform == Platform.LINEAR_AIG:
+            from gateway.platforms.linear_aig import (
+                LinearAIGAdapter,
+                check_linear_aig_requirements,
+            )
+            if not check_linear_aig_requirements():
+                logger.warning("Linear AIG: aiohttp not installed")
+                return None
+            return LinearAIGAdapter(config)
+
         elif platform == Platform.MSGRAPH_WEBHOOK:
             from gateway.platforms.msgraph_webhook import (
                 MSGraphWebhookAdapter,

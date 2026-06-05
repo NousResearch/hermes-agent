@@ -119,6 +119,7 @@ class Platform(Enum):
     DINGTALK = "dingtalk"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
+    LINEAR_AIG = "linear_aig"
     MSGRAPH_WEBHOOK = "msgraph_webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
@@ -431,6 +432,15 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.SMS: lambda cfg: bool(os.getenv("TWILIO_ACCOUNT_SID")),
     Platform.API_SERVER: lambda cfg: True,
     Platform.WEBHOOK: lambda cfg: True,
+    Platform.LINEAR_AIG: lambda cfg: bool(
+        cfg.token
+        or cfg.api_key
+        or cfg.extra.get("access_token")
+        or os.getenv(str(cfg.extra.get("access_token_env") or "LINEAR_ACCESS_TOKEN"))
+        or os.getenv("LINEAR_OAUTH_TOKEN")
+        or os.getenv("HERMES_LINEAR_AIG_ACCESS_TOKEN")
+        or os.getenv("LINEAR_API_KEY")
+    ),
     Platform.MSGRAPH_WEBHOOK: lambda cfg: bool(
         str(cfg.extra.get("client_state") or "").strip()
     ),

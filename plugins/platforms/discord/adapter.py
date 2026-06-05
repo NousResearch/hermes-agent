@@ -600,6 +600,12 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
+        # Phase 3: continuous voice mixer (ambient idle bed + ducked speech).
+        # Installed once per guild on join; lets acks / TTS / the "thinking"
+        # loop overlap in one outgoing stream instead of stop-and-swap.
+        self._voice_mixers: Dict[int, Any] = {}  # guild_id -> VoiceMixer
+        self._ambient_pcm_cache: Optional[bytes] = None  # decoded ambient bed
+        self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
         # Track threads where the bot has participated so follow-up messages
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
@@ -1925,6 +1931,160 @@ class DiscordAdapter(BasePlatformAdapter):
     # Voice channel methods (join / leave / play)
     # ------------------------------------------------------------------
 
+    def _load_voice_fx_config(self) -> Dict[str, Any]:
+        """Read voice mixer / ambient / ack settings from config.yaml.
+
+        All settings live under ``discord.voice_fx`` in config.yaml (NOT the
+        .env file — these are behavioral, not secrets).  The feature is OFF by
+        default; users opt in with ``discord.voice_fx.enabled: true``.
+
+        Returns a dict with safe defaults so callers never KeyError.
+        """
+        defaults: Dict[str, Any] = {
+            "enabled": False,        # master switch for the mixer subsystem
+            "ambient_enabled": True, # idle "thinking" bed while tools run
+            "ambient_path": "",      # optional custom loop file; "" = synthesised
+            "ambient_gain": 0.18,    # idle bed loudness (0..1)
+            "duck_gain": 0.06,       # ambient loudness while speech plays
+            "speech_gain": 1.0,      # TTS / ack loudness
+            "ack_enabled": True,     # speak a short phrase before tool calls
+            "ack_phrases": [
+                "Let me look into that.",
+                "One moment.",
+                "Checking on that now.",
+                "Give me a sec.",
+                "On it.",
+            ],
+        }
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            fx = ((cfg.get("discord") or {}).get("voice_fx") or {})
+            if isinstance(fx, dict):
+                for k, v in fx.items():
+                    if k in defaults and v is not None:
+                        defaults[k] = v
+        except Exception as e:
+            logger.debug("Could not load discord.voice_fx config: %s", e)
+        return defaults
+
+    def _get_ambient_pcm(self) -> Optional[bytes]:
+        """Return decoded 48k/stereo/s16le PCM for the ambient idle bed.
+
+        Uses a custom file when ``ambient_path`` is set and decodable, else a
+        synthesised pad.  Cached after first build.
+        """
+        if self._ambient_pcm_cache is not None:
+            return self._ambient_pcm_cache
+        if not self._voice_fx_cfg.get("ambient_enabled"):
+            return None
+        try:
+            from voice_mixer import decode_to_pcm, synth_ambient_pcm
+        except ImportError:
+            from .voice_mixer import decode_to_pcm, synth_ambient_pcm
+
+        pcm: Optional[bytes] = None
+        path = (self._voice_fx_cfg.get("ambient_path") or "").strip()
+        if path and os.path.isfile(path):
+            pcm = decode_to_pcm(path)
+            if not pcm:
+                logger.warning("Ambient file %s failed to decode; using synth bed", path)
+        if not pcm:
+            pcm = synth_ambient_pcm()
+        self._ambient_pcm_cache = pcm
+        return pcm
+
+    async def _install_voice_mixer(self, guild_id: int, vc) -> None:
+        """Create a VoiceMixer, start the ambient bed, and play it on the VC.
+
+        The mixer runs continuously for the life of the connection: one
+        ``vc.play(mixer)`` call, never stopped until leave.
+        """
+        try:
+            from voice_mixer import VoiceMixer
+        except ImportError:
+            from .voice_mixer import VoiceMixer
+
+        mixer = VoiceMixer(
+            ambient_gain=float(self._voice_fx_cfg.get("ambient_gain", 0.18)),
+            duck_gain=float(self._voice_fx_cfg.get("duck_gain", 0.06)),
+            speech_gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
+        )
+        ambient = await asyncio.to_thread(self._get_ambient_pcm)
+        if ambient:
+            mixer.set_ambient(ambient)
+
+        def _after(error):
+            if error:
+                logger.error("Voice mixer stream error (guild=%d): %s", guild_id, error)
+
+        if vc.is_playing():
+            vc.stop()
+        vc.play(mixer, after=_after)
+        self._voice_mixers[guild_id] = mixer
+        logger.info("Voice mixer installed (guild=%d, ambient=%s)", guild_id, bool(ambient))
+
+    async def play_ack_in_voice(self, guild_id: int, phrase: Optional[str] = None) -> bool:
+        """Speak a short acknowledgement over the ambient bed.
+
+        Called from the gateway's tool-progress hook on the first tool call of
+        a turn, so the user hears "let me look into that" before the bot goes
+        quiet to work.  No-op unless the mixer is installed and acks enabled.
+        """
+        if not self._voice_fx_cfg.get("ack_enabled"):
+            return False
+        mixer = self._voice_mixers.get(guild_id)
+        if mixer is None:
+            return False
+        if phrase is None:
+            import random
+            phrases = self._voice_fx_cfg.get("ack_phrases") or ["One moment."]
+            phrase = random.choice(phrases)
+
+        # Synthesise the ack via the configured TTS provider, then layer it.
+        import uuid as _uuid
+        audio_path = os.path.join(
+            tempfile.gettempdir(), "hermes_voice",
+            f"ack_{_uuid.uuid4().hex[:12]}.mp3",
+        )
+        os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+        try:
+            from tools.tts_tool import text_to_speech_tool
+            result_json = await asyncio.to_thread(
+                text_to_speech_tool, text=phrase, output_path=audio_path
+            )
+            result = json.loads(result_json)
+            actual = result.get("file_path", audio_path)
+            if not result.get("success") or not os.path.isfile(actual):
+                return False
+            try:
+                from voice_mixer import decode_to_pcm
+            except ImportError:
+                from .voice_mixer import decode_to_pcm
+            pcm = await asyncio.to_thread(decode_to_pcm, actual)
+            if not pcm:
+                return False
+            mixer.play_speech(
+                pcm, gain=float(self._voice_fx_cfg.get("speech_gain", 1.0))
+            )
+            self._reset_voice_timeout(guild_id)
+            return True
+        except Exception as e:
+            logger.debug("play_ack_in_voice failed: %s", e)
+            return False
+        finally:
+            for p in {audio_path, locals().get("actual")}:
+                if p and os.path.isfile(p):
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+
+    def voice_mixer_active(self, guild_id: int) -> bool:
+        """True when a continuous mixer is installed for this guild."""
+        mixers = getattr(self, "_voice_mixers", None)
+        return bool(mixers) and mixers.get(guild_id) is not None
+
     async def join_voice_channel(self, channel) -> bool:
         """Join a Discord voice channel. Returns True on success."""
         if not self._client or not DISCORD_AVAILABLE:
@@ -1957,6 +2117,15 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("Voice receiver failed to start: %s", e)
 
+            # Phase 3: install the continuous mixer (ambient bed + ducked
+            # speech).  Best-effort — if it fails we fall back to the legacy
+            # one-shot FFmpegPCMAudio playback path in play_in_voice_channel.
+            if getattr(self, "_voice_fx_cfg", {}).get("enabled"):
+                try:
+                    await self._install_voice_mixer(guild_id, vc)
+                except Exception as e:
+                    logger.warning("Voice mixer failed to start: %s", e)
+
             return True
 
     async def leave_voice_channel(self, guild_id: int) -> None:
@@ -1970,8 +2139,17 @@ class DiscordAdapter(BasePlatformAdapter):
             if listen_task:
                 listen_task.cancel()
 
+            # Tear down the mixer (stops the continuous outgoing stream).
+            if getattr(self, "_voice_mixers", None) is not None:
+                self._voice_mixers.pop(guild_id, None)
+
             vc = self._voice_clients.pop(guild_id, None)
             if vc and vc.is_connected():
+                try:
+                    if vc.is_playing():
+                        vc.stop()
+                except Exception:
+                    pass
                 await vc.disconnect()
             task = self._voice_timeout_tasks.pop(guild_id, None)
             if task:
@@ -1983,11 +2161,43 @@ class DiscordAdapter(BasePlatformAdapter):
     PLAYBACK_TIMEOUT = 120
 
     async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
-        """Play an audio file in the connected voice channel."""
+        """Play an audio file in the connected voice channel.
+
+        When the continuous mixer is installed for this guild, the clip is
+        decoded to PCM and layered over the ambient bed (ducking it) so the
+        reply can overlap the idle "thinking" loop seamlessly.  Otherwise we
+        fall back to the legacy one-shot FFmpegPCMAudio path.
+        """
         vc = self._voice_clients.get(guild_id)
         if not vc or not vc.is_connected():
             return False
 
+        # ── Mixer path (overlap + ducking) ──────────────────────────────
+        mixer = getattr(self, "_voice_mixers", {}).get(guild_id) if getattr(self, "_voice_mixers", None) else None
+        if mixer is not None:
+            try:
+                from voice_mixer import decode_to_pcm
+            except ImportError:
+                from .voice_mixer import decode_to_pcm
+            pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
+            if pcm:
+                speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
+                mixer.play_speech(pcm, gain=speech_gain)
+                # Block until the speech child drains so callers serialise
+                # replies (mirrors legacy semantics) but the ambient keeps
+                # playing underneath the whole time.
+                wait_start = time.monotonic()
+                while mixer.speech_active:
+                    if time.monotonic() - wait_start > self.PLAYBACK_TIMEOUT:
+                        logger.warning("Mixer speech playback timed out after %ds", self.PLAYBACK_TIMEOUT)
+                        mixer.stop_speech()
+                        break
+                    await asyncio.sleep(0.05)
+                self._reset_voice_timeout(guild_id)
+                return True
+            logger.warning("Mixer decode failed for %s; falling back to legacy playback", audio_path)
+
+        # ── Legacy one-shot path (no mixer) ─────────────────────────────
         # Pause voice receiver while playing (echo prevention)
         receiver = self._voice_receivers.get(guild_id)
         if receiver:

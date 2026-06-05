@@ -576,7 +576,7 @@ class SessionEntry:
         session_key = data["session_key"]
         session_id = data["session_id"]
 
-        # Validate path-sensitive fields to prevent directory traversal attacks
+        # Validate path-sensitive fields to prevent directory traversal (CWE-22)
         for _field, _val in (("session_key", session_key), ("session_id", session_id)):
             if _val and (".." in str(_val) or str(_val).startswith(("/", "\\"))):
                 raise ValueError(
@@ -786,12 +786,11 @@ class SessionStore:
             try:
                 with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    for key, entry_data in data.items():
-                        try:
-                            self._entries[key] = SessionEntry.from_dict(entry_data)
-                        except (ValueError, KeyError):
-                            # Skip entries with unknown/removed platform values
-                            continue
+                for key, entry_data in data.items():
+                    try:
+                        self._entries[key] = SessionEntry.from_dict(entry_data)
+                    except (ValueError, KeyError) as e:
+                        print(f"[gateway] Warning: Skipping invalid session entry {key!r}: {e}")
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 

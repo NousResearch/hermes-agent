@@ -171,6 +171,11 @@ jobs:
           source .venv/bin/activate
           uv pip install -e ".[all,dev]"
 
+      - name: Packaged-wheel i18n smoke test
+        run: |
+          source .venv/bin/activate
+          python -m pytest -m integration tests/test_wheel_locales_e2e.py -v
+
       - name: Run e2e tests
         run: |
           source .venv/bin/activate

@@ -63,6 +63,31 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
+
+def _launch_cwd_for_session(source: str) -> Optional[str]:
+    """Working directory to stamp on a new session row, or None.
+
+    Only local CLI sessions get a recorded cwd: the directory the process was
+    launched from is meaningful for ``hermes -c`` / ``--resume`` (relaunch
+    where you left off). Gateway/cron/remote-backend sessions have no stable
+    host cwd to restore, so they record nothing.
+
+    ``TERMINAL_ENV`` is set by the CLI's config bridge (``load_cli_config``);
+    a non-"local" backend (docker/ssh/modal/...) means the host cwd is
+    irrelevant to the agent's tools, so we skip it there too.
+    """
+    if source != "cli":
+        return None
+    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    if backend and backend != "local":
+        return None
+    try:
+        return os.getcwd()
+    except OSError:
+        # cwd was unlinked out from under us — nothing meaningful to record.
+        return None
+
+
 # OpenAI lazy proxy + safe stdio + proxy URL helpers — see agent/process_bootstrap.py.
 # `OpenAI` is re-exported here so `patch("run_agent.OpenAI", ...)` in tests works.
 # The other `# noqa: F401` re-exports below cover names accessed via
@@ -476,15 +501,17 @@ class AIAgent:
         """Create session DB row on first use. Disables _session_db on failure."""
         if self._session_db_created or not self._session_db:
             return
+        source = self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli")
         try:
             self._session_db.create_session(
                 session_id=self.session_id,
-                source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                source=source,
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
                 user_id=None,
                 parent_session_id=self._parent_session_id,
+                cwd=_launch_cwd_for_session(source),
             )
             self._session_db_created = True
         except Exception as e:
@@ -4627,7 +4654,7 @@ class AIAgent:
         return reapply_reasoning_echo_for_provider(self, api_messages)
 
     @staticmethod
-    def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
+    def _sanitize_tool_calls_for_strict_api(api_msg: dict, model: "str | None" = None) -> dict:
         """Strip Codex Responses API fields from tool_calls for strict providers.
 
         Providers like Mistral, Fireworks, and other strict OpenAI-compatible APIs
@@ -4636,17 +4663,26 @@ class AIAgent:
         the internal message history — this method only modifies the outgoing
         API copy.
 
+        ``extra_content`` (Gemini thought_signature) is also stripped — strict
+        providers reject it with "Extra inputs are not permitted" — UNLESS the
+        outgoing ``model`` is itself Gemini-family, in which case it must be
+        replayed (Gemini 3 thinking models 400 without it). Defaults to
+        stripping when no model is supplied.
+
         Creates new tool_call dicts rather than mutating in-place, so the
         original messages list retains call_id/response_item_id for Codex
         Responses API compatibility (e.g. if the session falls back to a
         Codex provider later).
 
-        Fields stripped: call_id, response_item_id
+        Fields stripped: call_id, response_item_id, extra_content (model-gated)
         """
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
             return api_msg
+        from agent.transports.chat_completions import _model_consumes_thought_signature
         _STRIP_KEYS = {"call_id", "response_item_id"}
+        if not _model_consumes_thought_signature(model):
+            _STRIP_KEYS = _STRIP_KEYS | {"extra_content"}
         api_msg["tool_calls"] = [
             {k: v for k, v in tc.items() if k not in _STRIP_KEYS}
             if isinstance(tc, dict) else tc

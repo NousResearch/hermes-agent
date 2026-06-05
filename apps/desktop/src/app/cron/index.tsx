@@ -25,65 +25,30 @@ import {
   triggerCronJob,
   updateCronJob
 } from '@/hermes'
-import { AlertTriangle, Clock, Pause, Pencil, Play, Trash2, Zap } from '@/lib/icons'
+import { type Translations, useI18n } from '@/i18n'
+import { AlertTriangle, Clock } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
+import { OverlayView } from '../overlays/overlay-view'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { CronJobActionsMenu, CronJobActionsTrigger } from './cron-job-actions-menu'
+
 const DEFAULT_DELIVER = 'local'
 
-const DELIVERY_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
-  { label: 'This desktop', value: 'local' },
-  { label: 'Telegram', value: 'telegram' },
-  { label: 'Discord', value: 'discord' },
-  { label: 'Slack', value: 'slack' },
-  { label: 'Email', value: 'email' }
-]
+const DELIVERY_VALUES: readonly string[] = ['local', 'telegram', 'discord', 'slack', 'email']
 
 const SCHEDULE_OPTIONS: ReadonlyArray<ScheduleOption> = [
-  {
-    expr: '0 9 * * *',
-    hint: 'Every day at 9:00 AM',
-    label: 'Daily',
-    value: 'daily'
-  },
-  {
-    expr: '0 9 * * 1-5',
-    hint: 'Monday through Friday at 9:00 AM',
-    label: 'Weekdays',
-    value: 'weekdays'
-  },
-  {
-    expr: '0 9 * * 1',
-    hint: 'Every Monday at 9:00 AM',
-    label: 'Weekly',
-    value: 'weekly'
-  },
-  {
-    expr: '0 9 1 * *',
-    hint: 'The first day of each month at 9:00 AM',
-    label: 'Monthly',
-    value: 'monthly'
-  },
-  {
-    expr: '0 * * * *',
-    hint: 'At the top of every hour',
-    label: 'Hourly',
-    value: 'hourly'
-  },
-  {
-    expr: '*/15 * * * *',
-    hint: 'Every 15 minutes',
-    label: 'Every 15 minutes',
-    value: 'every-15-minutes'
-  },
-  {
-    hint: 'Cron syntax or natural language',
-    label: 'Custom',
-    value: 'custom'
-  }
+  { expr: '0 9 * * *', value: 'daily' },
+  { expr: '0 9 * * 1-5', value: 'weekdays' },
+  { expr: '0 9 * * 1', value: 'weekly' },
+  { expr: '0 9 1 * *', value: 'monthly' },
+  { expr: '0 * * * *', value: 'hourly' },
+  { expr: '*/15 * * * *', value: 'every-15-minutes' },
+  { value: 'custom' }
 ]
 
 const STATE_TONE: Record<string, 'good' | 'muted' | 'warn' | 'bad'> = {
@@ -159,19 +124,8 @@ function cronParts(expr: string): null | string[] {
   return parts.length === 5 ? parts : null
 }
 
-function dayName(value: string): string {
-  const names: Record<string, string> = {
-    '0': 'Sunday',
-    '1': 'Monday',
-    '2': 'Tuesday',
-    '3': 'Wednesday',
-    '4': 'Thursday',
-    '5': 'Friday',
-    '6': 'Saturday',
-    '7': 'Sunday'
-  }
-
-  return names[value] ?? `day ${value}`
+function dayName(value: string, c: Translations['cron']): string {
+  return c.days[value] ?? c.dayFallback(value)
 }
 
 function formatCronTime(minute: string, hour: string): string {
@@ -247,36 +201,36 @@ function scheduleOptionForExpr(expr: string): ScheduleOption {
   return SCHEDULE_OPTIONS[SCHEDULE_OPTIONS.length - 1]
 }
 
-function scheduleSummary(option: ScheduleOption, expr: string): string {
+function scheduleSummary(option: ScheduleOption, expr: string, c: Translations['cron']): string {
   const parts = cronParts(expr)
 
   if (!parts) {
-    return option.hint
+    return c.scheduleHints[option.value] ?? ''
   }
 
   const [minute, hour, dayOfMonth, , dayOfWeek] = parts
 
   if (option.value === 'daily') {
-    return `Every day at ${formatCronTime(minute, hour)}`
+    return c.everyDayAt(formatCronTime(minute, hour))
   }
 
   if (option.value === 'weekdays') {
-    return `Weekdays at ${formatCronTime(minute, hour)}`
+    return c.weekdaysAt(formatCronTime(minute, hour))
   }
 
   if (option.value === 'weekly') {
-    return `Every ${dayName(dayOfWeek)} at ${formatCronTime(minute, hour)}`
+    return c.everyDayOfWeekAt(dayName(dayOfWeek, c), formatCronTime(minute, hour))
   }
 
   if (option.value === 'monthly') {
-    return `Monthly on day ${dayOfMonth} at ${formatCronTime(minute, hour)}`
+    return c.monthlyOnDayAt(dayOfMonth, formatCronTime(minute, hour))
   }
 
   if (option.value === 'hourly') {
-    return minute === '0' ? 'At the top of every hour' : `Every hour at :${minute.padStart(2, '0')}`
+    return minute === '0' ? c.topOfHour : c.everyHourAt(minute.padStart(2, '0'))
   }
 
-  return option.hint
+  return c.scheduleHints[option.value] ?? ''
 }
 
 function formatTime(iso?: null | string): string {
@@ -306,10 +260,13 @@ function matchesQuery(job: CronJob, q: string): boolean {
 }
 
 interface CronViewProps extends React.ComponentProps<'section'> {
+  onClose: () => void
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
-export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: CronViewProps) {
+export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: CronViewProps) {
+  const { t } = useI18n()
+  const c = t.cron
   const [jobs, setJobs] = useState<CronJob[] | null>(null)
   const [query, setQuery] = useState('')
   const [refreshing, setRefreshing] = useState(false)
@@ -326,11 +283,13 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
       const result = await getCronJobs()
       setJobs(result)
     } catch (err) {
-      notifyError(err, 'Failed to load cron jobs')
+      notifyError(err, c.failedLoad)
     } finally {
       setRefreshing(false)
     }
-  }, [])
+  }, [c])
+
+  useRefreshHotkey(refresh)
 
   useEffect(() => {
     void refresh()
@@ -356,11 +315,11 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
       setJobs(current => (current ? current.map(row => (row.id === job.id ? updated : row)) : current))
       notify({
         kind: 'success',
-        title: isPaused ? 'Cron resumed' : 'Cron paused',
+        title: isPaused ? c.resumed : c.paused,
         message: truncate(jobTitle(job), 60)
       })
     } catch (err) {
-      notifyError(err, 'Failed to update cron job')
+      notifyError(err, c.failedUpdate)
     } finally {
       setBusyJobId(null)
     }
@@ -372,9 +331,9 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
     try {
       const updated = await triggerCronJob(job.id)
       setJobs(current => (current ? current.map(row => (row.id === job.id ? updated : row)) : current))
-      notify({ kind: 'success', title: 'Cron triggered', message: truncate(jobTitle(job), 60) })
+      notify({ kind: 'success', title: c.triggered, message: truncate(jobTitle(job), 60) })
     } catch (err) {
-      notifyError(err, 'Failed to trigger cron job')
+      notifyError(err, c.failedTrigger)
     } finally {
       setBusyJobId(null)
     }
@@ -390,10 +349,10 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
     try {
       await deleteCronJob(pendingDelete.id)
       setJobs(current => (current ? current.filter(row => row.id !== pendingDelete.id) : current))
-      notify({ kind: 'success', title: 'Cron deleted', message: truncate(jobTitle(pendingDelete), 60) })
+      notify({ kind: 'success', title: c.deleted, message: truncate(jobTitle(pendingDelete), 60) })
       setPendingDelete(null)
     } catch (err) {
-      notifyError(err, 'Failed to delete cron job')
+      notifyError(err, c.failedDelete)
     } finally {
       setDeleting(false)
     }
@@ -409,7 +368,7 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
       })
 
       setJobs(current => (current ? [...current, created] : [created]))
-      notify({ kind: 'success', title: 'Cron created', message: truncate(jobTitle(created), 60) })
+      notify({ kind: 'success', title: c.created, message: truncate(jobTitle(created), 60) })
     } else if (editor.mode === 'edit') {
       const updated = await updateCronJob(editor.job.id, {
         prompt: values.prompt,
@@ -419,112 +378,112 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
       })
 
       setJobs(current => (current ? current.map(row => (row.id === updated.id ? updated : row)) : current))
-      notify({ kind: 'success', title: 'Cron updated', message: truncate(jobTitle(updated), 60) })
+      notify({ kind: 'success', title: c.updated, message: truncate(jobTitle(updated), 60) })
     }
 
     setEditor({ mode: 'closed' })
   }
 
   return (
-    <PageSearchShell
-      {...props}
-      onSearchChange={setQuery}
-      searchPlaceholder="Search cron jobs..."
-      searchTrailingAction={
-        <Button
-          aria-label={refreshing ? 'Refreshing cron jobs' : 'Refresh cron jobs'}
-          className="text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-          disabled={refreshing}
-          onClick={() => void refresh()}
-          size="icon-xs"
-          title={refreshing ? 'Refreshing cron jobs' : 'Refresh cron jobs'}
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name="refresh" size="0.875rem" spinning={refreshing} />
-        </Button>
-      }
-      searchValue={query}
-    >
-      {!jobs ? (
-        <PageLoader label="Loading cron jobs..." />
-      ) : visibleJobs.length === 0 ? (
-        // Empty state owns the primary "create" CTA — we used to also have
-        // one in the filters bar but it was redundant. Only show the button
-        // when there are zero jobs total; the search-empty case ("No
-        // matches") just asks the user to broaden their query.
-        <EmptyState
-          actionLabel={totalCount === 0 ? 'Create first cron' : undefined}
-          description={
-            totalCount === 0
-              ? 'Schedule a prompt to run on a cron expression. Hermes will run it and deliver results to the destination you pick.'
-              : 'Try a broader search query.'
-          }
-          onAction={totalCount === 0 ? () => setEditor({ mode: 'create' }) : undefined}
-          title={totalCount === 0 ? 'No scheduled jobs yet' : 'No matches'}
-        />
-      ) : (
-        <div className="h-full overflow-y-auto px-4 py-3">
-          {/* Inline header replaces the old top-bar "New cron" button. We
-              still need a single, always-visible affordance to add a job
-              when the list is non-empty (rows themselves only expose
-              edit/pause/trigger/delete). */}
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">
-              {enabledCount}/{totalCount} active
-            </span>
-            <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
-              <Codicon name="add" />
-              New cron
-            </Button>
+    <OverlayView closeLabel={c.close} onClose={onClose}>
+      <PageSearchShell
+        {...props}
+        onSearchChange={setQuery}
+        searchPlaceholder={c.search}
+        searchTrailingAction={
+          <Button
+            aria-label={refreshing ? c.refreshing : c.refresh}
+            className="text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+            disabled={refreshing}
+            onClick={() => void refresh()}
+            size="icon-xs"
+            title={refreshing ? c.refreshing : c.refresh}
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name="refresh" size="0.875rem" spinning={refreshing} />
+          </Button>
+        }
+        searchValue={query}
+      >
+        {!jobs ? (
+          <PageLoader label={c.loading} />
+        ) : visibleJobs.length === 0 ? (
+          // Empty state owns the primary "create" CTA — we used to also have
+          // one in the filters bar but it was redundant. Only show the button
+          // when there are zero jobs total; the search-empty case ("No
+          // matches") just asks the user to broaden their query.
+          <EmptyState
+            actionLabel={totalCount === 0 ? c.createFirst : undefined}
+            description={totalCount === 0 ? c.emptyDescNew : c.emptyDescSearch}
+            onAction={totalCount === 0 ? () => setEditor({ mode: 'create' }) : undefined}
+            title={totalCount === 0 ? c.emptyTitleNew : c.emptyTitleSearch}
+          />
+        ) : (
+          <div className="h-full overflow-y-auto px-4 py-3">
+            {/* Inline header replaces the old top-bar "New cron" button. We
+                still need a single, always-visible affordance to add a job
+                when the list is non-empty (rows themselves only expose
+                edit/pause/trigger/delete). */}
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">
+                {c.active(enabledCount, totalCount)}
+              </span>
+              <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
+                <Codicon name="add" />
+                {c.newCron}
+              </Button>
+            </div>
+            <div className="divide-y divide-border/40 rounded-lg border border-border/40 bg-background/70">
+              {visibleJobs.map(job => (
+                <CronJobRow
+                  busy={busyJobId === job.id}
+                  c={c}
+                  job={job}
+                  key={job.id}
+                  onDelete={() => setPendingDelete(job)}
+                  onEdit={() => setEditor({ mode: 'edit', job })}
+                  onPauseResume={() => void handlePauseResume(job)}
+                  onTrigger={() => void handleTrigger(job)}
+                />
+              ))}
+            </div>
           </div>
-          <div className="divide-y divide-border/40 rounded-lg border border-border/40 bg-background/70">
-            {visibleJobs.map(job => (
-              <CronJobRow
-                busy={busyJobId === job.id}
-                job={job}
-                key={job.id}
-                onDelete={() => setPendingDelete(job)}
-                onEdit={() => setEditor({ mode: 'edit', job })}
-                onPauseResume={() => void handlePauseResume(job)}
-                onTrigger={() => void handleTrigger(job)}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-      <CronEditorDialog editor={editor} onClose={() => setEditor({ mode: 'closed' })} onSave={handleEditorSave} />
+        )}
+        <CronEditorDialog editor={editor} onClose={() => setEditor({ mode: 'closed' })} onSave={handleEditorSave} />
 
-      <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Delete cron job?</DialogTitle>
-            <DialogDescription>
-              {pendingDelete ? (
-                <>
-                  This will remove{' '}
-                  <span className="font-medium text-foreground">{truncate(jobTitle(pendingDelete), 60)}</span>{' '}
-                  permanently. It will stop firing immediately.
-                </>
-              ) : null}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
-              Cancel
-            </Button>
-            <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
-              {deleting ? 'Deleting...' : 'Delete'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </PageSearchShell>
+        <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>{c.deleteTitle}</DialogTitle>
+              <DialogDescription>
+                {pendingDelete ? (
+                  <>
+                    {c.deleteDescPrefix}
+                    <span className="font-medium text-foreground">{truncate(jobTitle(pendingDelete), 60)}</span>
+                    {c.deleteDescSuffix}
+                  </>
+                ) : null}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
+                {t.common.cancel}
+              </Button>
+              <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
+                {deleting ? c.deleting : t.common.delete}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </PageSearchShell>
+    </OverlayView>
   )
 }
 
 function CronJobRow({
   busy,
+  c,
   job,
   onDelete,
   onEdit,
@@ -532,6 +491,7 @@ function CronJobRow({
   onTrigger
 }: {
   busy: boolean
+  c: Translations['cron']
   job: CronJob
   onDelete: () => void
   onEdit: () => void
@@ -553,8 +513,10 @@ function CronJobRow({
       >
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-sm font-medium">{jobTitle(job)}</span>
-          <StatePill tone={STATE_TONE[state] ?? 'muted'}>{state}</StatePill>
-          {deliver && deliver !== DEFAULT_DELIVER && <StatePill tone="muted">{deliver}</StatePill>}
+          <StatePill tone={STATE_TONE[state] ?? 'muted'}>{c.states[state] ?? state}</StatePill>
+          {deliver && deliver !== DEFAULT_DELIVER && (
+            <StatePill tone="muted">{c.deliveryLabels[deliver] ?? deliver}</StatePill>
+          )}
         </div>
         {hasName && prompt && <p className="mt-1 truncate text-xs text-muted-foreground">{truncate(prompt, 120)}</p>}
         <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.68rem] text-muted-foreground">
@@ -562,8 +524,12 @@ function CronJobRow({
             <Clock className="size-3" />
             {jobScheduleDisplay(job)}
           </span>
-          <span>Last: {formatTime(job.last_run_at)}</span>
-          <span>Next: {formatTime(job.next_run_at)}</span>
+          <span>
+            {c.last} {formatTime(job.last_run_at)}
+          </span>
+          <span>
+            {c.next} {formatTime(job.next_run_at)}
+          </span>
         </div>
         {job.last_error && (
           <p className="mt-1 inline-flex items-start gap-1 text-[0.68rem] text-destructive">
@@ -573,44 +539,24 @@ function CronJobRow({
         )}
       </button>
 
-      <div className="flex shrink-0 items-center gap-0.5">
-        <IconAction
-          aria-label={isPaused ? 'Resume cron' : 'Pause cron'}
-          disabled={busy}
-          onClick={onPauseResume}
-          title={isPaused ? 'Resume' : 'Pause'}
+      <div className="flex shrink-0 items-center">
+        <CronJobActionsMenu
+          busy={busy}
+          isPaused={isPaused}
+          onDelete={onDelete}
+          onEdit={onEdit}
+          onPauseResume={onPauseResume}
+          onTrigger={onTrigger}
+          title={jobTitle(job)}
         >
-          {isPaused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
-        </IconAction>
-        <IconAction aria-label="Trigger now" disabled={busy} onClick={onTrigger} title="Trigger now">
-          <Zap className="size-3.5" />
-        </IconAction>
-        <IconAction aria-label="Edit cron" onClick={onEdit} title="Edit">
-          <Pencil className="size-3.5" />
-        </IconAction>
-        <IconAction
-          aria-label="Delete cron"
-          className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-          onClick={onDelete}
-          title="Delete"
-        >
-          <Trash2 className="size-3.5" />
-        </IconAction>
+          <CronJobActionsTrigger
+            className="text-muted-foreground hover:text-foreground"
+            onClick={event => event.stopPropagation()}
+            title={jobTitle(job)}
+          />
+        </CronJobActionsMenu>
       </div>
     </div>
-  )
-}
-
-function IconAction({ children, className, ...props }: Omit<React.ComponentProps<typeof Button>, 'size' | 'variant'>) {
-  return (
-    <Button
-      className={cn('size-7 text-muted-foreground hover:text-foreground', className)}
-      size="icon"
-      variant="ghost"
-      {...props}
-    >
-      {children}
-    </Button>
   )
 }
 
@@ -660,6 +606,8 @@ function CronEditorDialog({
   onClose: () => void
   onSave: (values: EditorValues) => Promise<void>
 }) {
+  const { t } = useI18n()
+  const c = t.cron
   const open = editor.mode !== 'closed'
   const isEdit = editor.mode === 'edit'
   const initial = isEdit ? editor.job : null
@@ -702,7 +650,7 @@ function CronEditorDialog({
     }
   }
 
-  const scheduleHint = scheduleSummary(selectedScheduleOption, schedule)
+  const scheduleHint = scheduleSummary(selectedScheduleOption, schedule, c)
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -710,7 +658,7 @@ function CronEditorDialog({
     const trimmedSchedule = schedule.trim()
 
     if (!trimmedPrompt || !trimmedSchedule) {
-      setError('Prompt and schedule are required.')
+      setError(c.promptScheduleRequired)
 
       return
     }
@@ -726,7 +674,7 @@ function CronEditorDialog({
         schedule: trimmedSchedule
       })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save cron job')
+      setError(err instanceof Error ? err.message : c.failedSave)
     } finally {
       setSaving(false)
     }
@@ -736,37 +684,33 @@ function CronEditorDialog({
     <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{isEdit ? 'Edit cron job' : 'New cron job'}</DialogTitle>
-          <DialogDescription>
-            {isEdit
-              ? 'Update the schedule, prompt, or delivery target. Changes apply on next run.'
-              : 'Schedule a prompt to run automatically. Use cron syntax or a natural phrase like "every 15 minutes".'}
-          </DialogDescription>
+          <DialogTitle>{isEdit ? c.editTitle : c.createTitle}</DialogTitle>
+          <DialogDescription>{isEdit ? c.editDesc : c.createDesc}</DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-4" onSubmit={handleSubmit}>
-          <Field htmlFor="cron-name" label="Name" optional>
+          <Field htmlFor="cron-name" label={c.nameLabel} optional optionalLabel={c.optional}>
             <Input
               autoFocus
               id="cron-name"
               onChange={event => setName(event.target.value)}
-              placeholder="Morning briefing"
+              placeholder={c.namePlaceholder}
               value={name}
             />
           </Field>
 
-          <Field htmlFor="cron-prompt" label="Prompt">
+          <Field htmlFor="cron-prompt" label={c.promptLabel}>
             <Textarea
               className="min-h-24 font-mono"
               id="cron-prompt"
               onChange={event => setPrompt(event.target.value)}
-              placeholder="Summarize my unread Slack threads and email me the top 5..."
+              placeholder={c.promptPlaceholder}
               value={prompt}
             />
           </Field>
 
           <div className="grid items-start gap-4 sm:grid-cols-2">
-            <Field htmlFor="cron-frequency" label="Frequency">
+            <Field htmlFor="cron-frequency" label={c.frequencyLabel}>
               <Select onValueChange={handleSchedulePresetChange} value={schedulePreset}>
                 <SelectTrigger className="h-9 rounded-md" id="cron-frequency">
                   <SelectValue />
@@ -774,22 +718,22 @@ function CronEditorDialog({
                 <SelectContent>
                   {SCHEDULE_OPTIONS.map(option => (
                     <SelectItem key={option.value} value={option.value}>
-                      {option.label}
+                      {c.scheduleLabels[option.value]}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </Field>
 
-            <Field htmlFor="cron-deliver" label="Deliver to">
+            <Field htmlFor="cron-deliver" label={c.deliverLabel}>
               <Select onValueChange={setDeliver} value={deliver}>
                 <SelectTrigger className="h-9 rounded-md" id="cron-deliver">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {DELIVERY_OPTIONS.map(option => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
+                  {DELIVERY_VALUES.map(value => (
+                    <SelectItem key={value} value={value}>
+                      {c.deliveryLabels[value]}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -798,15 +742,15 @@ function CronEditorDialog({
           </div>
 
           {schedulePreset === 'custom' ? (
-            <Field htmlFor="cron-schedule" label="Custom schedule">
+            <Field htmlFor="cron-schedule" label={c.customScheduleLabel}>
               <Input
                 className="font-mono"
                 id="cron-schedule"
                 onChange={event => setSchedule(event.target.value)}
-                placeholder="0 9 * * * or weekdays at 9am"
+                placeholder={c.customPlaceholder}
                 value={schedule}
               />
-              <FieldHint>Cron expression, or phrases like "every hour" or "weekdays at 9am".</FieldHint>
+              <FieldHint>{c.customHint}</FieldHint>
             </Field>
           ) : (
             <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
@@ -826,10 +770,10 @@ function CronEditorDialog({
 
           <DialogFooter>
             <Button disabled={saving} onClick={onClose} type="button" variant="outline">
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button disabled={saving} type="submit">
-              {saving ? 'Saving...' : isEdit ? 'Save changes' : 'Create cron'}
+              {saving ? t.common.saving : isEdit ? c.saveChanges : c.createAction}
             </Button>
           </DialogFooter>
         </form>
@@ -842,18 +786,20 @@ function Field({
   children,
   htmlFor,
   label,
-  optional
+  optional,
+  optionalLabel
 }: {
   children: React.ReactNode
   htmlFor: string
   label: string
   optional?: boolean
+  optionalLabel?: string
 }) {
   return (
     <div className="grid gap-1.5">
       <label className="flex items-baseline gap-2 text-xs font-medium text-foreground" htmlFor={htmlFor}>
         {label}
-        {optional && <span className="text-[0.65rem] font-normal text-muted-foreground">Optional</span>}
+        {optional && <span className="text-[0.65rem] font-normal text-muted-foreground">{optionalLabel}</span>}
       </label>
       {children}
     </div>
@@ -875,7 +821,5 @@ interface EditorValues {
 
 interface ScheduleOption {
   expr?: string
-  hint: string
-  label: string
   value: string
 }

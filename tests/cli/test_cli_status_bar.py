@@ -508,3 +508,107 @@ class TestStatusBarFieldConfig:
         with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["duration"]}}}):
             second = cli_obj._get_status_bar_field_set()
         assert first == second == frozenset({"model"})
+
+
+class TestCacheHitRate:
+    def test_cache_hit_rate_shown_in_wide_terminal(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=5,
+            context_tokens=12_000,
+            context_length=200_000,
+            cache_read_tokens=7600,
+            cache_write_tokens=0,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "◎ 76.0%" in text
+
+    def test_cache_hit_rate_shown_in_narrow_terminal(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=5,
+            context_tokens=12_000,
+            context_length=200_000,
+            cache_read_tokens=5000,
+            cache_write_tokens=0,
+        )
+
+        text = cli_obj._build_status_bar_text(width=60)
+
+        assert "◎ 50%" in text
+
+    def test_cache_hit_rate_hidden_when_zero(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=5,
+            context_tokens=12_000,
+            context_length=200_000,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "◎" not in text
+
+    def test_cache_hit_rate_hidden_when_no_data(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=5,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "◎" not in text
+
+    def test_cache_hit_rate_one_decimal(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=5,
+            context_tokens=12_000,
+            context_length=200_000,
+            cache_read_tokens=7620,
+            cache_write_tokens=0,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "◎ 76.2%" in text
+
+    def test_cache_hit_rate_with_anthropic_style_cache(self):
+        """Anthropic has both cache_read and cache_write"""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=5,
+            context_tokens=12_000,
+            context_length=200_000,
+            cache_read_tokens=5000,
+            cache_write_tokens=2000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        # cache_read / prompt_tokens = 5000 / 10000 = 50%
+        assert "◎ 50.0%" in text

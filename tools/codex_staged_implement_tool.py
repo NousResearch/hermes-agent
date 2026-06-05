@@ -11,7 +11,7 @@ from tools.registry import registry
 
 
 _ALLOWED_VERIFY_IDS = {"diff-check", "none"}
-_SUPPORTED_MODES = {"execute", "dry_run_plan"}
+_SUPPORTED_MODES = {"execute", "execute_inferred", "dry_run_plan"}
 _SUPPORTED_CONTINUE_POLICY = "stop-on-review-needed"
 _SUPPORTED_DIRTY_POLICIES = {"require-clean"}
 _DANGER_PARTS = {
@@ -917,7 +917,21 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
     resolved_workdir = str(repo)
     verification_policy = _verification_policy(verify_ids)
 
-    allowlist, scope_error = _validate_scope(args, repo)
+    if mode == "execute_inferred" and _explicit_scope_was_provided(args):
+        return _json_result(
+            _base_result(
+                status="rejected_scope",
+                resolved_workdir=resolved_workdir,
+                git_head=git_head,
+                verification_policy=verification_policy,
+                error="execute_inferred requires omitted scope for inference",
+            )
+        )
+
+    if mode == "execute_inferred":
+        allowlist, scope_error = _infer_scope_from_task(repo, task_text)
+    else:
+        allowlist, scope_error = _validate_scope(args, repo)
     if scope_error:
         return _json_result(
             _base_result(
@@ -1126,8 +1140,12 @@ _SCHEMA = {
             },
             "mode": {
                 "type": "string",
-                "enum": ["execute", "dry_run_plan"],
-                "description": "Use dry_run_plan to propose a bounded stage plan without invoking runner/Codex or writing repo files.",
+                "enum": ["execute", "execute_inferred", "dry_run_plan"],
+                "description": (
+                    "Use execute with explicit allowed_files/allowed_globs only. Use execute_inferred only "
+                    "to execute a conservatively inferred dry-run scope after explicitly selecting that mode. "
+                    "Use dry_run_plan to propose a bounded stage plan without invoking runner/Codex or writing repo files."
+                ),
             },
         },
         "required": ["workdir", "task"],

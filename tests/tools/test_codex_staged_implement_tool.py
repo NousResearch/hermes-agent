@@ -58,6 +58,12 @@ def test_tool_schema_promotes_staged_implement_as_default_channel():
     assert "candidate work only" in description
     assert "not that the task is complete" in description
     assert "verify the diff" in description
+    assert schema["parameters"]["properties"]["mode"]["enum"] == [
+        "execute",
+        "execute_inferred",
+        "dry_run_plan",
+    ]
+    assert "execute_inferred only" in schema["parameters"]["properties"]["mode"]["description"]
     assert schema["parameters"]["properties"]["dirty_baseline_policy"]["enum"] == ["require-clean"]
 
 
@@ -68,6 +74,29 @@ def test_empty_scope_is_rejected(tmp_path):
 
     assert result["status"] == "rejected_scope"
     assert result["runner_exit_code"] is None
+
+
+def test_execute_omitted_scope_does_not_infer_or_invoke_runner(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    _commit_files(repo, ["tools/terminal_tool.py", "tests/tools/test_terminal_tool.py"])
+    calls = []
+
+    def fake_infer(repo, task_text):
+        raise AssertionError("execute mode must not infer omitted scope")
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("runner should not be invoked")
+
+    monkeypatch.setattr(tool, "_infer_scope_from_task", fake_infer)
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(workdir=str(repo), task="tighten terminal tool policy")
+
+    assert result["status"] == "rejected_scope"
+    assert result["error"] == "scope is required"
+    assert result["runner_exit_code"] is None
+    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -510,6 +539,168 @@ def test_dry_run_plan_inference_never_outputs_broad_globs(tmp_path, monkeypatch)
     assert result["resolved_allowlist"]["globs"] == []
     assert result["proposed_allowlist"]["globs"] == []
     assert result["proposed_stage_plan"]["slices"][0]["allowed_globs"] == []
+    assert calls == []
+
+
+def test_execute_inferred_known_template_invokes_runner_with_inferred_allowlist(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    expected_files = ["tools/terminal_tool.py", "tests/tools/test_terminal_tool.py"]
+    _commit_files(repo, expected_files)
+    captured = {}
+
+    def fake_runner(argv):
+        captured["argv"] = argv
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "status": "completed",
+                    "verification_status": "passed",
+                    "changed_files": expected_files,
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(
+        mode="execute_inferred",
+        workdir=str(repo),
+        task="tighten terminal tool policy handling",
+    )
+
+    assert result["status"] == "ready_for_review"
+    assert result["resolved_allowlist"] == {"files": expected_files, "globs": []}
+    assert result["changed_files"] == expected_files
+    assert result["runner_exit_code"] == 0
+    assert captured["argv"][0].endswith("python") or "python" in captured["argv"][0]
+    assert "--plan-file" in captured["argv"]
+    plan_path = Path(captured["argv"][captured["argv"].index("--plan-file") + 1])
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert plan["slices"][0]["allowed_files"] == expected_files
+    assert plan["slices"][0]["allowed_globs"] == []
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"allowed_files": ["README.md"]},
+        {"allowed_globs": ["docs/*.md"]},
+        {"allowed_files": []},
+        {"allowed_globs": []},
+    ],
+)
+def test_execute_inferred_rejects_explicit_scope_instead_of_bypassing_inference(
+    tmp_path, monkeypatch, scope
+):
+    repo = _clean_repo(tmp_path)
+    _commit_files(repo, ["docs/example.md", "tools/terminal_tool.py", "tests/tools/test_terminal_tool.py"])
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("runner should not be invoked")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(
+        mode="execute_inferred",
+        workdir=str(repo),
+        task="tighten terminal tool policy handling",
+        **scope,
+    )
+
+    assert result["status"] == "rejected_scope"
+    assert result["error"] == "execute_inferred requires omitted scope for inference"
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_execute_inferred_explicit_scope_cannot_rescue_unsupported_task(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("runner should not be invoked")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(
+        mode="execute_inferred",
+        workdir=str(repo),
+        task="make the runtime safer",
+        allowed_files=["README.md"],
+    )
+
+    assert result["status"] == "rejected_scope"
+    assert result["error"] == "execute_inferred requires omitted scope for inference"
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("task", "expected_error"),
+    [
+        ("make the runtime safer", "scope is required"),
+        ("tighten terminal tool policy and harden impl guard", "needs_split"),
+        ("update docs/../tools/terminal_tool.py with notes", "unsupported_template"),
+    ],
+)
+def test_execute_inferred_uncertain_split_or_unsupported_scope_does_not_invoke_runner(
+    tmp_path, monkeypatch, task, expected_error
+):
+    repo = _clean_repo(tmp_path)
+    _commit_files(
+        repo,
+        [
+            "tools/terminal_tool.py",
+            "tests/tools/test_terminal_tool.py",
+            "scripts/runtime/codex_impl_guard.py",
+            "tests/scripts/test_codex_impl_guard.py",
+        ],
+    )
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("runner should not be invoked")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(mode="execute_inferred", workdir=str(repo), task=task)
+
+    assert result["status"] == "rejected_scope"
+    assert result["error"] == expected_error
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_execute_inferred_dirty_inferred_scope_does_not_invoke_runner(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    _commit_files(repo, ["tools/terminal_tool.py", "tests/tools/test_terminal_tool.py"])
+    (repo / "README.md").write_text("dirty\n", encoding="utf-8")
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("runner should not be invoked")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(
+        mode="execute_inferred",
+        workdir=str(repo),
+        task="tighten terminal tool policy handling",
+    )
+
+    assert result["status"] == "dirty_worktree"
+    assert result["resolved_allowlist"] == {
+        "files": ["tools/terminal_tool.py", "tests/tools/test_terminal_tool.py"],
+        "globs": [],
+    }
+    assert result["runner_exit_code"] is None
     assert calls == []
 
 

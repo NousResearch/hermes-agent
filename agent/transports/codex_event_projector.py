@@ -66,6 +66,14 @@ class ProjectionResult:
     final_text: Optional[str] = None  # Set when an agentMessage completes
 
 
+_IGNORED_NOTIFICATION_METHODS = frozenset({
+    # Codex streams assistant text here before later sending the authoritative
+    # item/completed agentMessage. Treat the delta as display-only so memory /
+    # transcript projection does not duplicate partial assistant content.
+    "item/agentMessage/delta",
+})
+
+
 class CodexEventProjector:
     """Stateful projector consuming Codex notifications in arrival order.
 
@@ -85,6 +93,9 @@ class CodexEventProjector:
         # (`item/<type>/outputDelta`, `item/<type>/delta`) are display-only and
         # don't enter the messages list — same way Hermes already only writes
         # the assistant message after the streaming completion event.
+        if method in _IGNORED_NOTIFICATION_METHODS:
+            return ProjectionResult()
+
         if method != "item/completed":
             return ProjectionResult()
 

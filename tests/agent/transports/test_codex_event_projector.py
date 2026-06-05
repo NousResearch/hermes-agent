@@ -60,6 +60,19 @@ class TestProjectionInvariants:
             assert r.is_tool_iteration is False
             assert r.final_text is None
 
+    def test_agent_message_delta_is_explicitly_ignored(self) -> None:
+        p = CodexEventProjector()
+        r = p.project({
+            "method": "item/agentMessage/delta",
+            "params": {
+                "delta": "partial text",
+                "item": {"type": "agentMessage", "id": "m1", "text": "partial text"},
+            },
+        })
+        assert r.messages == []
+        assert r.final_text is None
+        assert r.is_tool_iteration is False
+
     def test_turn_started_and_completed_are_silent(self) -> None:
         p = CodexEventProjector()
         for method in ("turn/started", "turn/completed", "thread/started"):

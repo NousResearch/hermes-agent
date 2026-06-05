@@ -238,12 +238,6 @@ class WeComAdapter(BasePlatformAdapter):
         # arrives — a new inbound message gives us a new req_id and the
         # stream channel becomes usable again.
         self._stream_expired_chats: set[str] = set()
-        # Chats whose stream has been finalized (finish=true sent) during the
-        # current turn. Prevents _keep_typing from re-opening a stream AFTER
-        # send() already closed it (race window: send() finishes → _keep_typing
-        # fires send_typing → new orphan stream starts → nothing to close it).
-        # Cleared on the next inbound message for the chat.
-        self._stream_delivered_chats: set[str] = set()
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -1018,7 +1012,6 @@ class WeComAdapter(BasePlatformAdapter):
         # A new inbound message starts a new "turn" — allow send_typing to
         # open a fresh stream again (the previous turn's delivery guard is
         # no longer relevant).
-        self._stream_delivered_chats.discard(normalized_chat_id)
 
     def _resolve_stream_req_id(
         self, chat_id: str, reply_to: Optional[str]
@@ -1619,7 +1612,6 @@ class WeComAdapter(BasePlatformAdapter):
         # The mark is set synchronously here; if send fails it's still set
         # (conservative: better to suppress an extra typing than to leak one).
         _chat_key = str(chat_id).strip()
-        self._stream_delivered_chats.add(_chat_key)
 
         try:
             # If we have an active stream for this chat, finalize it with the
@@ -1645,7 +1637,6 @@ class WeComAdapter(BasePlatformAdapter):
                         finish=True,
                     )
                     self._reset_native_stream_state()
-                    self._stream_delivered_chats.add(chat_id.strip())
                     return SendResult(
                         success=True,
                         message_id=self._active_stream_id or uuid.uuid4().hex[:12],
@@ -1703,7 +1694,6 @@ class WeComAdapter(BasePlatformAdapter):
 
         # Mark delivered so _keep_typing cannot open an orphan stream after
         # this turn's reply already landed (regardless of which path was taken).
-        self._stream_delivered_chats.add(str(chat_id or "").strip())
         return SendResult(
             success=True,
             message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12],
@@ -1905,31 +1895,15 @@ class WeComAdapter(BasePlatformAdapter):
         return True
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Trigger WeCom's typing indicator by seeding an empty stream frame.
+        """No-op: WeCom typing is handled by the stream consumer seed frame.
 
-        WeCom has no separate ``send_typing`` API, but seeding a stream
-        with empty content has the same client-side effect: the user sees
-        the "typing" bubble immediately. Subsequent calls within the same
-        turn are no-ops (the stream is already live).
+        The stream consumer sends an empty seed frame at the start of run(),
+        which is what triggers WeCom's typing animation. _keep_typing loops
+        are designed for platforms where typing expires (Telegram 5s) — WeCom
+        streams stay open indefinitely, so repeated send_typing calls cause
+        orphan streams. Delegating entirely to the consumer avoids the race.
         """
-        del metadata
-        chat = str(chat_id or "").strip()
-        if not chat:
-            return
-        if self._active_stream_id is not None:
-            logger.info("[%s] send_typing: skip (stream %s already active)", self.name, self._active_stream_id)
-            return
-        if chat in self._stream_expired_chats:
-            logger.info("[%s] send_typing: skip (chat %s expired)", self.name, chat)
-            return
-        if chat in self._stream_delivered_chats:
-            logger.info("[%s] send_typing: skip (chat %s already delivered)", self.name, chat)
-            return
-        logger.info("[%s] send_typing: opening stream for chat %s", self.name, chat)
-        try:
-            await self.send_stream_frame("", chat_id=chat)
-        except Exception as exc:
-            logger.info("[%s] send_typing failed: %s", self.name, exc)
+        del chat_id, metadata
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return minimal chat info."""

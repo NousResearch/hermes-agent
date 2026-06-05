@@ -1299,10 +1299,11 @@ class TestSendStreamFrameFailures:
 
 
 class TestSendTypingTriggersThinking:
-    """``send_typing`` is implemented as an empty stream-seed frame."""
+    """``send_typing`` is a no-op — typing is handled by stream consumer."""
 
     @pytest.mark.asyncio
-    async def test_send_typing_sends_empty_seed_frame(self):
+    async def test_send_typing_is_noop(self):
+        """send_typing must not open any stream — the consumer seed frame does."""
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -1313,51 +1314,19 @@ class TestSendTypingTriggersThinking:
 
         await adapter.send_typing("chat-1")
 
-        # Fire-and-forget seed frame via _send_json.
-        assert adapter._send_json.await_count >= 1
-        first = adapter._send_json.await_args_list[0].args[0]
-        assert first["body"]["msgtype"] == "stream"
-        assert first["body"]["stream"]["content"] == ""
-        assert first["body"]["stream"]["finish"] is False
-
-    @pytest.mark.asyncio
-    async def test_send_typing_idempotent_when_stream_already_active(self):
-        """If a stream is mid-flight, send_typing must be a no-op."""
-        from gateway.platforms.wecom import WeComAdapter
-
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
-        adapter._active_stream_id = "stream_abc"
-        adapter._send_reply_request = AsyncMock()
-
-        await adapter.send_typing("chat-1")
-
+        adapter._send_json.assert_not_awaited()
         adapter._send_reply_request.assert_not_awaited()
+        assert adapter._active_stream_id is None
 
     @pytest.mark.asyncio
-    async def test_send_typing_skips_expired_chats(self):
+    async def test_send_typing_does_not_raise(self):
+        """send_typing must never raise regardless of state."""
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
-        adapter._stream_expired_chats.add("chat-1")
-        adapter._send_reply_request = AsyncMock()
-
         await adapter.send_typing("chat-1")
-
-        adapter._send_reply_request.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_send_typing_swallows_errors(self):
-        """Typing failure is best-effort and must not raise to caller."""
-        from gateway.platforms.wecom import WeComAdapter
-
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
-        adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._send_reply_request = AsyncMock(
-            side_effect=RuntimeError("nope"),
-        )
-
-        # Must not raise.
-        await adapter.send_typing("chat-1")
+        await adapter.send_typing("")
+        await adapter.send_typing(None)  # type: ignore
 
 
 class TestStreamContentTruncation:
@@ -1393,11 +1362,9 @@ class TestSendClosesActiveStream:
     """``send()`` must finalize any active stream so typing doesn't linger."""
 
     @pytest.mark.asyncio
-    async def test_send_finalizes_active_stream_from_send_typing(self):
-        """When send_typing opened a stream and then send() delivers the
-        final response, send() must close the stream with finish=true
-        instead of opening a parallel markdown reply (which would leave
-        the typing bubble visible forever)."""
+    async def test_send_finalizes_active_stream_opened_by_consumer(self):
+        """When the stream consumer opened a stream and then send() delivers
+        the response (e.g. fallback path), send() must close the stream."""
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -1406,79 +1373,59 @@ class TestSendClosesActiveStream:
         adapter._ws = MagicMock(closed=False)
         adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
-        # Step 1: send_typing opens a stream (seed frame via _send_json).
-        await adapter.send_typing("chat-1")
-        assert adapter._active_stream_id is not None
-        stream_id = adapter._active_stream_id
+        # Manually set active stream state (as the consumer would).
+        adapter._active_stream_id = "stream_test"
+        adapter._active_stream_req_id = "req-1"
+        adapter._active_stream_chat_id = "chat-1"
 
-        # Step 2: send() delivers the final answer (finalize via _send_reply_request).
         result = await adapter.send("chat-1", "Hello world!")
 
         assert result.success is True
-        # Stream must be closed now.
         assert adapter._active_stream_id is None
-        # The finalize frame must carry finish=true with the content.
         finalize_calls = [
             call for call in adapter._send_reply_request.await_args_list
-            if call.args[1].get("msgtype") == "stream"
-            and call.args[1].get("stream", {}).get("finish") is True
+            if call.args[1].get("stream", {}).get("finish") is True
         ]
         assert len(finalize_calls) == 1
         assert finalize_calls[0].args[1]["stream"]["content"] == "Hello world!"
-        assert finalize_calls[0].args[1]["stream"]["id"] == stream_id
 
     @pytest.mark.asyncio
     async def test_send_ignores_stream_for_different_chat(self):
-        """If the active stream is for a different chat, send() must NOT
-        close it — just deliver via markdown as normal."""
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
-        adapter._last_chat_req_ids["chat-1"] = "req-1"
         adapter._last_chat_req_ids["chat-2"] = "req-2"
-        adapter._send_json = AsyncMock()
-        adapter._ws = MagicMock(closed=False)
         adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
-        # Open a stream for chat-1.
-        await adapter.send_typing("chat-1")
-        assert adapter._active_stream_chat_id == "chat-1"
+        adapter._active_stream_id = "stream_test"
+        adapter._active_stream_req_id = "req-1"
+        adapter._active_stream_chat_id = "chat-1"
 
-        # send() to a different chat (chat-2) — must not close chat-1's stream.
         result = await adapter.send("chat-2", "Hi")
 
         assert result.success is True
-        # Stream for chat-1 is still alive.
-        assert adapter._active_stream_id is not None
-        assert adapter._active_stream_chat_id == "chat-1"
+        assert adapter._active_stream_id is not None  # untouched
 
     @pytest.mark.asyncio
     async def test_send_falls_through_when_stream_expired(self):
-        """If closing the stream hits 846608, send() gracefully falls through
-        to proactive markdown send without raising."""
-        from gateway.platforms.wecom import (
-            STREAM_EXPIRED_ERRCODE, WeComAdapter,
-        )
+        from gateway.platforms.wecom import STREAM_EXPIRED_ERRCODE, WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._send_json = AsyncMock()
-        adapter._ws = MagicMock(closed=False)
 
-        async def fake_send_reply_request(req_id, body, **kwargs):
-            if body.get("msgtype") == "stream" and body.get("stream", {}).get("finish"):
+        async def fake(req_id, body, **kwargs):
+            if body.get("stream", {}).get("finish"):
                 return {"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "expired"}
             return {"errcode": 0, "headers": {"req_id": req_id}}
 
-        adapter._send_reply_request = AsyncMock(side_effect=fake_send_reply_request)
+        adapter._send_reply_request = AsyncMock(side_effect=fake)
+        adapter._active_stream_id = "stream_test"
+        adapter._active_stream_req_id = "req-1"
+        adapter._active_stream_chat_id = "chat-1"
 
-        # Open stream (seed goes via _send_json, fire-and-forget)
-        await adapter.send_typing("chat-1")
-
-        # send() tries to finalize — gets 846608 — falls through to markdown
         result = await adapter.send("chat-1", "Final answer")
 
         assert result.success is True
-        # Stream state must be cleaned up.
         assert adapter._active_stream_id is None
         assert "chat-1" in adapter._stream_expired_chats
+

@@ -5,8 +5,14 @@ declare global {
     hermesDesktop: {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
-      // profile's backend from the pool.
-      getConnection: (profile?: string | null) => Promise<HermesConnection>
+      // profile's backend from the pool. Pass `{ revalidate: true }` on a
+      // reconnect (sleep/wake) so the main process liveness-probes the cached
+      // backend and rebuilds it if it has gone unreachable, instead of handing
+      // back a dead descriptor the renderer would re-dial forever.
+      getConnection: (
+        profile?: string | null,
+        options?: { revalidate?: boolean }
+      ) => Promise<HermesConnection>
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>

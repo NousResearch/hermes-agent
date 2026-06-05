@@ -1,5 +1,13 @@
+/* global console, fetch, process, WebSocket */
 // quick probe — read state of the renderer
-const list = await (await fetch('http://127.0.0.1:9222/json/list')).json()
+const args = Object.fromEntries(
+  process.argv.slice(2).map(arg => {
+    const [key, value = ''] = arg.replace(/^--/, '').split('=')
+    return [key, value]
+  })
+)
+const port = Number(args.port || 9222)
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
 const tgt = list.find(t => t.type === 'page' && t.url.startsWith('http'))
 console.log('target:', tgt?.url)
 if (!tgt) process.exit(1)

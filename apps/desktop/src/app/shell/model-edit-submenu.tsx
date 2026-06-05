@@ -11,6 +11,7 @@ import {
   DropdownMenuSubContent
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
+import { useTranslation } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import {
   $activeSessionId,
@@ -22,11 +23,11 @@ import {
 // Hermes' real reasoning levels (see VALID_REASONING_EFFORTS); `none` is owned
 // by the Thinking toggle, not the radio.
 const EFFORT_OPTIONS = [
-  { value: 'minimal', label: 'Minimal' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'Max' }
+  { value: 'minimal', labelKey: 'models.reasoning.minimal' },
+  { value: 'low', labelKey: 'models.reasoning.low' },
+  { value: 'medium', labelKey: 'models.reasoning.medium' },
+  { value: 'high', labelKey: 'models.reasoning.high' },
+  { value: 'xhigh', labelKey: 'models.reasoning.max' }
 ] as const
 
 /** How "fast" is achieved for a given model — two different mechanisms:
@@ -97,6 +98,7 @@ export function ModelEditSubmenu({
   reasoning,
   requestGateway
 }: ModelEditSubmenuProps) {
+  const t = useTranslation()
   // Reactive session state comes straight from the stores rather than being
   // drilled through the panel, so editing it re-renders only this submenu.
   const activeSessionId = useStore($activeSessionId)
@@ -133,7 +135,7 @@ export function ModelEditSubmenu({
       })
     } catch (err) {
       setCurrentReasoningEffort(rollback)
-      notifyError(err, 'Model option update failed')
+      notifyError(err, t('models.notifications.optionUpdateFailed'))
     }
   }
 
@@ -163,7 +165,7 @@ export function ModelEditSubmenu({
           })
         } catch (err) {
           setCurrentFastMode(!enabled)
-          notifyError(err, 'Fast mode update failed')
+          notifyError(err, t('models.notifications.fastModeUpdateFailed'))
         }
       })()
     }
@@ -175,13 +177,13 @@ export function ModelEditSubmenu({
   return (
     <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
       {!hasFast && !reasoning ? (
-        <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">No options for this model</div>
+        <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{t('models.options.none')}</div>
       ) : (
         <>
-          <DropdownMenuLabel className={dropdownMenuSectionLabel}>Options</DropdownMenuLabel>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{t('models.options.title')}</DropdownMenuLabel>
           {reasoning ? (
             <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-              Thinking
+              {t('models.options.thinking')}
               <Switch
                 checked={thinkingOn}
                 className="ml-auto"
@@ -194,14 +196,14 @@ export function ModelEditSubmenu({
           ) : null}
           {hasFast ? (
             <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-              Fast
+              {t('models.options.fast')}
               <Switch checked={fastOn} className="ml-auto" onCheckedChange={toggleFast} size="xs" />
             </DropdownMenuItem>
           ) : null}
           {reasoning ? (
             <>
               <DropdownMenuSeparator className="mx-0" />
-              <DropdownMenuLabel className={dropdownMenuSectionLabel}>Effort</DropdownMenuLabel>
+              <DropdownMenuLabel className={dropdownMenuSectionLabel}>{t('models.options.effort')}</DropdownMenuLabel>
               <DropdownMenuRadioGroup
                 onValueChange={value => void patchReasoning(value, currentReasoningEffort)}
                 value={effort}
@@ -213,7 +215,7 @@ export function ModelEditSubmenu({
                     onSelect={event => event.preventDefault()}
                     value={option.value}
                   >
-                    {option.label}
+                    {t(option.labelKey)}
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>

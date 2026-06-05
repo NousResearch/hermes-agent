@@ -10,7 +10,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { useI18n } from '@/i18n'
+import { useTranslation } from '@/i18n'
 import { Globe } from '@/lib/icons'
 
 const URL_HINT = /^https?:\/\//i
@@ -30,8 +30,7 @@ export function UrlDialog({
   open: boolean
   value: string
 }) {
-  const { t } = useI18n()
-  const c = t.composer
+  const t = useTranslation()
   const trimmed = value.trim()
   const looksLikeUrl = trimmed.length > 0 && URL_HINT.test(trimmed)
 
@@ -46,8 +45,8 @@ export function UrlDialog({
             <Globe className="size-4" />
           </span>
           <div className="grid gap-0.5 text-left">
-            <DialogTitle>{c.attachUrlTitle}</DialogTitle>
-            <DialogDescription>{c.attachUrlDesc}</DialogDescription>
+            <DialogTitle>{t('chat.composer.url.title')}</DialogTitle>
+            <DialogDescription>{t('chat.composer.url.description')}</DialogDescription>
           </div>
         </DialogHeader>
         <form
@@ -63,24 +62,24 @@ export function UrlDialog({
               autoCorrect="off"
               inputMode="url"
               onChange={e => onChange(e.target.value)}
-              placeholder={c.urlPlaceholder}
+              placeholder="https://example.com/post"
               ref={inputRef}
               spellCheck={false}
               value={value}
             />
             {trimmed.length > 0 && !looksLikeUrl && (
               <p className="text-xs text-muted-foreground/85">
-                {c.urlHintPre}
-                <span className="font-mono">https://…</span>
+                {t('chat.composer.url.hint')}{' '}
+                <span className="font-mono">https://...</span>
               </p>
             )}
           </div>
           <DialogFooter>
             <Button onClick={() => onOpenChange(false)} type="button" variant="ghost">
-              {t.common.cancel}
+              {t('common.cancel')}
             </Button>
             <Button disabled={!looksLikeUrl} type="submit">
-              {c.attach}
+              {t('chat.composer.url.attach')}
             </Button>
           </DialogFooter>
         </form>

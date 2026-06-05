@@ -55,7 +55,7 @@ const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string
       const status = msg.match(/(?:error code|status(?:Code)?)[^\d]*(\d{3})/i)?.[1]
 
       return status
-        ? translateNow('notifications.errors.openaiRejectedApiKeyWithStatus', status)
+        ? translateNow('notifications.errors.openaiRejectedApiKeyWithStatus', { status })
         : translateNow('notifications.errors.openaiRejectedApiKey')
     }
   },

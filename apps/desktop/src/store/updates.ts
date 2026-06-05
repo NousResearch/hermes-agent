@@ -86,12 +86,12 @@ export function reportBackendContract(contract: number | undefined): void {
   }
 
   notify({
-    action: { label: translateNow('notifications.updateHermes'), onClick: () => void applyUpdates() },
+    action: { label: translateNow('updates.notifications.updateHermes'), onClick: () => void applyUpdates() },
     durationMs: 0,
     id: SKEW_TOAST_ID,
     kind: 'warning',
-    message: translateNow('notifications.backendOutOfDateMessage'),
-    title: translateNow('notifications.backendOutOfDateTitle')
+    message: translateNow('updates.notifications.backendOutOfDateMessage'),
+    title: translateNow('updates.notifications.backendOutOfDate')
   })
 }
 
@@ -122,7 +122,7 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
 
   notify({
     action: {
-      label: translateNow('notifications.seeWhatsNew'),
+      label: translateNow('updates.notifications.seeWhatsNew'),
       onClick: () => {
         snoozeUpdateToast()
         openUpdatesWindow()
@@ -131,9 +131,9 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
     durationMs: 0,
     id: UPDATE_TOAST_ID,
     kind: 'info',
-    message: translateNow('notifications.updateReadyMessage', behind),
+    message: translateNow('updates.notifications.newChangesAvailable', { count: behind }),
     onDismiss: () => snoozeUpdateToast(),
-    title: translateNow('notifications.updateReadyTitle')
+    title: translateNow('updates.notifications.updateReady')
   })
 }
 
@@ -216,11 +216,11 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
   const bridge = window.hermesDesktop?.updates
 
   if (!bridge) {
-    return { ok: false, error: 'unavailable', message: 'Desktop bridge unavailable.' }
+    return { ok: false, error: 'unavailable', message: translateNow('updates.notifications.desktopBridgeUnavailable') }
   }
 
   dismissNotification(UPDATE_TOAST_ID)
-  $updateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: 'Starting update…' })
+  $updateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: translateNow('updates.notifications.startingUpdate') })
 
   try {
     const result = await bridge.apply(opts)

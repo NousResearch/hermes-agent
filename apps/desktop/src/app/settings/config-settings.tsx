@@ -13,7 +13,7 @@ import {
   getHermesConfigSchema,
   saveHermesConfig
 } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { useTranslation } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
@@ -22,6 +22,9 @@ import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SEC
 import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
 import { ModelSettings } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
+
+const fieldLabelKey = (schemaKey: string) => `settings.fields.${schemaKey}.label`
+const fieldDescriptionKey = (schemaKey: string) => `settings.fields.${schemaKey}.description`
 
 function ConfigField({
   schemaKey,
@@ -38,18 +41,16 @@ function ConfigField({
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
 }) {
-  const { t } = useI18n()
+  const t = useTranslation()
 
-  const label =
-    t.settings.fieldLabels[schemaKey] ?? FIELD_LABELS[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey)
+  const label = FIELD_LABELS[schemaKey]
+    ? t(fieldLabelKey(schemaKey))
+    : prettyName(schemaKey.split('.').pop() ?? schemaKey)
 
   const normalize = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '')
 
   const rawDescription = (
-    t.settings.fieldDescriptions[schemaKey] ??
-    FIELD_DESCRIPTIONS[schemaKey] ??
-    schema.description ??
-    ''
+    FIELD_DESCRIPTIONS[schemaKey] ? t(fieldDescriptionKey(schemaKey)) : (schema.description ?? '')
   ).trim()
 
   const normalizedDesc = normalize(rawDescription)
@@ -65,7 +66,10 @@ function ConfigField({
 
   if (schema.type === 'boolean') {
     return row(
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end gap-3">
+        <span className="text-xs text-muted-foreground">
+          {value ? t('settings.config.boolean.on') : t('settings.config.boolean.off')}
+        </span>
         <Switch checked={Boolean(value)} onCheckedChange={onChange} />
       </div>
     )
@@ -88,8 +92,8 @@ function ConfigField({
               {option
                 ? (optionLabels?.[option] ?? prettyName(option))
                 : schemaKey === 'display.personality'
-                  ? 'None'
-                  : '(none)'}
+                  ? t('settings.config.none')
+                  : t('settings.config.none')}
             </SelectItem>
           ))}
         </SelectContent>
@@ -109,7 +113,7 @@ function ConfigField({
             onChange(n)
           }
         }}
-        placeholder="Not set"
+        placeholder={t('settings.config.notSet')}
         type="number"
         value={value === undefined || value === null ? '' : String(value)}
       />
@@ -128,7 +132,7 @@ function ConfigField({
               .filter(Boolean)
           )
         }
-        placeholder="comma-separated values"
+        placeholder={t('settings.config.commaSeparated')}
         value={Array.isArray(value) ? value.join(', ') : String(value ?? '')}
       />
     )
@@ -145,7 +149,7 @@ function ConfigField({
             /* keep last valid */
           }
         }}
-        placeholder="Not set"
+        placeholder={t('settings.config.notSet')}
         spellCheck={false}
         value={JSON.stringify(value, null, 2)}
       />,
@@ -160,14 +164,14 @@ function ConfigField({
       <Textarea
         className={cn('min-h-24 resize-y bg-background', CONTROL_TEXT)}
         onChange={e => onChange(e.target.value)}
-        placeholder="Not set"
+        placeholder={t('settings.config.notSet')}
         value={String(value ?? '')}
       />
     ) : (
       <Input
         className={CONTROL_TEXT}
         onChange={e => onChange(e.target.value)}
-        placeholder="Not set"
+        placeholder={t('settings.config.notSet')}
         value={String(value ?? '')}
       />
     ),
@@ -186,6 +190,7 @@ export function ConfigSettings({
   onMainModelChanged?: (provider: string, model: string) => void
   importInputRef: React.RefObject<HTMLInputElement | null>
 }) {
+  const t = useTranslation()
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [_defaults, setDefaults] = useState<HermesConfigRecord | null>(null)
   const [schema, setSchema] = useState<Record<string, ConfigFieldSchema> | null>(null)
@@ -206,10 +211,10 @@ export function ConfigSettings({
         setDefaults(d)
         setSchema(s.fields)
       })
-      .catch(err => notifyError(err, 'Settings failed to load'))
+      .catch(err => notifyError(err, t('settings.config.loadError')))
 
     return () => void (cancelled = true)
-  }, [])
+  }, [t])
 
   useEffect(() => {
     let cancelled = false
@@ -240,7 +245,7 @@ export function ConfigSettings({
 
     const v = saveVersion
 
-    const t = window.setTimeout(() => {
+    const timeout = window.setTimeout(() => {
       void (async () => {
         try {
           await saveHermesConfig(config)
@@ -250,14 +255,14 @@ export function ConfigSettings({
           }
         } catch (err) {
           if (saveVersionRef.current === v) {
-            notifyError(err, 'Autosave failed')
+            notifyError(err, t('settings.config.autosaveFailed'))
           }
         }
       })()
     }, 550)
 
-    return () => window.clearTimeout(t)
-  }, [config, onConfigSaved, saveVersion])
+    return () => window.clearTimeout(timeout)
+  }, [config, onConfigSaved, saveVersion, t])
 
   const updateConfig = (next: HermesConfigRecord) => {
     saveVersionRef.current += 1
@@ -323,9 +328,9 @@ export function ConfigSettings({
     reader.onload = () => {
       try {
         updateConfig(JSON.parse(String(reader.result)))
-        notify({ kind: 'success', title: 'Config imported', message: 'Saving…' })
+        notify({ kind: 'success', title: t('settings.config.imported'), message: t('settings.config.saving') })
       } catch (err) {
-        notifyError(err, 'Invalid config JSON')
+        notifyError(err, t('settings.config.invalidJson'))
       }
     }
 
@@ -334,7 +339,7 @@ export function ConfigSettings({
   }
 
   if (!config || !schema) {
-    return <LoadingState label="Loading Hermes configuration..." />
+    return <LoadingState label={t('settings.config.loading')} />
   }
 
   return (
@@ -345,7 +350,7 @@ export function ConfigSettings({
         </div>
       )}
       {fields.length === 0 ? (
-        <EmptyState description="This section has no adjustable settings." title="Nothing to configure" />
+        <EmptyState description={t('settings.config.empty.description')} title={t('settings.config.empty.title')} />
       ) : (
         <div className="grid gap-1">
           {fields.map(([key, field]) => (

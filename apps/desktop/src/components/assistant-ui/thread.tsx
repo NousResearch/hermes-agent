@@ -75,6 +75,7 @@ import {
 import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useTranslation } from '@/i18n'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
@@ -187,22 +188,26 @@ function pickPrimaryPreviewTarget(targets: string[]): string[] {
   return [localUrl || targets[targets.length - 1]]
 }
 
-const CenteredThreadSpinner: FC = () => (
-  <div
-    aria-label="Loading session"
-    className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
-    role="status"
-  >
-    <Loader
-      aria-hidden="true"
-      className="size-12 text-midground/70"
-      pathSteps={220}
-      role="presentation"
-      strokeScale={0.72}
-      type="rose-curve"
-    />
-  </div>
-)
+const CenteredThreadSpinner: FC = () => {
+  const t = useTranslation()
+
+  return (
+    <div
+      aria-label={t('assistant.thread.loadingSession')}
+      className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
+      role="status"
+    >
+      <Loader
+        aria-hidden="true"
+        className="size-12 text-midground/70"
+        pathSteps={220}
+        role="presentation"
+        strokeScale={0.72}
+        type="rose-curve"
+      />
+    </div>
+  )
+}
 
 const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> = ({ onBranchInNewChat }) => {
   const messageId = useAuiState(s => s.message.id)
@@ -520,6 +525,7 @@ function formatMessageTimestamp(value: Date | string | number | undefined): stri
 }
 
 const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, onBranchInNewChat }) => {
+  const t = useTranslation()
   const [menuOpen, setMenuOpen] = useState(false)
 
   return (
@@ -546,7 +552,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
         </ActionBarPrimitive.Reload>
         <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
           <DropdownMenuTrigger asChild>
-            <TooltipIconButton tooltip="More actions">
+            <TooltipIconButton tooltip={t('assistant.thread.moreActions')}>
               <Codicon name="ellipsis" />
             </TooltipIconButton>
           </DropdownMenuTrigger>
@@ -554,7 +560,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
             <MessageTimestamp />
             <DropdownMenuItem onSelect={() => onBranchInNewChat?.(messageId)}>
               <GitBranchIcon />
-              Branch in new chat
+              {t('assistant.thread.branchInNewChat')}
             </DropdownMenuItem>
             <ReadAloudItem messageId={messageId} text={messageText} />
           </DropdownMenuContent>
@@ -565,6 +571,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
 }
 
 const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, text }) => {
+  const t = useTranslation()
   const voicePlayback = useStore($voicePlayback)
 
   const readAloudStatus =
@@ -583,9 +590,9 @@ const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, tex
     try {
       await playSpeechText(text, { messageId, source: 'read-aloud' })
     } catch (error) {
-      notifyError(error, 'Read aloud failed')
+      notifyError(error, t('assistant.thread.readAloudFailed'))
     }
-  }, [messageId, text])
+  }, [messageId, t, text])
 
   return (
     <DropdownMenuItem
@@ -596,7 +603,11 @@ const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, tex
       }}
     >
       <Icon className={isPreparing ? 'animate-spin' : undefined} />
-      {isPreparing ? 'Preparing audio...' : isSpeaking ? 'Stop reading' : 'Read aloud'}
+      {isPreparing
+        ? t('assistant.thread.preparingAudio')
+        : isSpeaking
+          ? t('assistant.thread.stopReading')
+          : t('assistant.thread.readAloud')}
     </DropdownMenuItem>
   )
 }
@@ -670,6 +681,7 @@ const StopGlyph = <IconPlayerStopFilled aria-hidden className="size-3.5 -transla
 const UserMessage: FC<{
   onCancel?: () => Promise<void> | void
 }> = ({ onCancel }) => {
+  const t = useTranslation()
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
@@ -761,10 +773,10 @@ const UserMessage: FC<{
               ) : (
                 <ActionBarPrimitive.Edit asChild>
                   <button
-                    aria-label="Edit message"
+                    aria-label={t('assistant.thread.editMessage')}
                     className={bubbleClassName}
                     onClick={() => triggerHaptic('selection')}
-                    title="Edit message"
+                    title={t('assistant.thread.editMessage')}
                     type="button"
                   >
                     {bubbleContent}
@@ -775,14 +787,14 @@ const UserMessage: FC<{
                 <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
                   {showStop ? (
                     <button
-                      aria-label="Stop"
+                      aria-label={t('chat.composer.controls.stop')}
                       className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
                       onClick={event => {
                         event.preventDefault()
                         event.stopPropagation()
                         void onCancel?.()
                       }}
-                      title="Stop"
+                      title={t('chat.composer.controls.stop')}
                       type="button"
                     >
                       {StopGlyph}
@@ -791,7 +803,7 @@ const UserMessage: FC<{
                     <span
                       aria-hidden="true"
                       className="flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary)"
-                      title="Editable checkpoint"
+                      title={t('assistant.thread.editableCheckpoint')}
                     >
                       <Codicon name="discard" size="0.875rem" />
                     </span>
@@ -806,18 +818,18 @@ const UserMessage: FC<{
               <span aria-hidden className="checkpoint-icon size-1.5 rounded-full border border-current" />
               <BranchPickerPrimitive.Previous
                 className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
-                title="Restore previous checkpoint"
+                title={t('assistant.thread.restorePreviousCheckpoint')}
               >
-                Restore checkpoint
+                {t('assistant.thread.restoreCheckpoint')}
               </BranchPickerPrimitive.Previous>
               <span className="checkpoint-divider opacity-55">
                 <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
               </span>
               <BranchPickerPrimitive.Next
                 className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
-                title="Restore next checkpoint"
+                title={t('assistant.thread.restoreNextCheckpoint')}
               >
-                Go forward
+                {t('assistant.thread.goForward')}
               </BranchPickerPrimitive.Next>
             </BranchPickerPrimitive.Root>
           </div>
@@ -870,6 +882,7 @@ interface UserEditComposerProps {
 }
 
 const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }) => {
+  const t = useTranslation()
   const aui = useAui()
   const draft = useAuiState(s => s.composer.text)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -1346,7 +1359,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
             data-expanded={expanded ? 'true' : undefined}
           >
             <div
-              aria-label="Edit message"
+              aria-label={t('assistant.thread.editMessage')}
               autoFocus
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 outline-none',
@@ -1355,7 +1368,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'
               )}
               contentEditable
-              data-placeholder="Edit message"
+              data-placeholder={t('assistant.thread.editMessage')}
               data-slot={RICH_INPUT_SLOT}
               onBlur={() => window.setTimeout(closeTrigger, 80)}
               onDragOver={handleDragOver}
@@ -1372,7 +1385,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
             />
             <ComposerPrimitive.Input className="sr-only" tabIndex={-1} unstable_focusOnScrollToBottom={false} />
             <button
-              aria-label="Send edited message"
+              aria-label={t('assistant.thread.sendEditedMessage')}
               className={cn('absolute right-2 bottom-2 size-5', USER_ACTION_ICON_BUTTON_CLASS)}
               disabled={!canSubmit || submitting}
               onClick={() => {
@@ -1382,7 +1395,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
                   submitEdit(editor)
                 }
               }}
-              title="Send edited message"
+              title={t('assistant.thread.sendEditedMessage')}
               type="button"
             >
               {submitting ? StopGlyph : <Codicon name="arrow-up" size={USER_ACTION_ICON_SIZE} />}

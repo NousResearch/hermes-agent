@@ -3,12 +3,15 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import { $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { usePromptActions } from './use-prompt-actions'
 
 vi.mock('@/hermes', () => ({
+  getHermesConfigRecord: vi.fn(),
+  saveHermesConfig: vi.fn(),
   transcribeAudio: vi.fn()
 }))
 
@@ -95,7 +98,11 @@ describe('usePromptActions /title', () => {
     )
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={refreshSessions} requestGateway={requestGateway} />)
+    render(
+      <I18nProvider configClient={null}>
+        <Harness onReady={h => (handle = h)} refreshSessions={refreshSessions} requestGateway={requestGateway} />
+      </I18nProvider>
+    )
 
     await handle!.submitText('/title New title')
 
@@ -118,7 +125,11 @@ describe('usePromptActions /title', () => {
     )
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={refreshSessions} requestGateway={requestGateway} />)
+    render(
+      <I18nProvider configClient={null}>
+        <Harness onReady={h => (handle = h)} refreshSessions={refreshSessions} requestGateway={requestGateway} />
+      </I18nProvider>
+    )
 
     await handle!.submitText('/title Fresh chat')
 
@@ -136,7 +147,11 @@ describe('usePromptActions /title', () => {
     const requestGateway = vi.fn(async () => ({ output: 'Title: Old title' }) as never)
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={refreshSessions} requestGateway={requestGateway} />)
+    render(
+      <I18nProvider configClient={null}>
+        <Harness onReady={h => (handle = h)} refreshSessions={refreshSessions} requestGateway={requestGateway} />
+      </I18nProvider>
+    )
 
     await handle!.submitText('/title')
 
@@ -155,7 +170,11 @@ describe('usePromptActions /title', () => {
     })
 
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={refreshSessions} requestGateway={requestGateway} />)
+    render(
+      <I18nProvider configClient={null}>
+        <Harness onReady={h => (handle = h)} refreshSessions={refreshSessions} requestGateway={requestGateway} />
+      </I18nProvider>
+    )
 
     await handle!.submitText('/title way too long title')
 

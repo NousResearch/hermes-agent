@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import type { ToolsetConfig } from '@/types/hermes'
 
 const getToolsetConfig = vi.fn()
@@ -10,11 +11,13 @@ const deleteEnvVar = vi.fn()
 const revealEnvVar = vi.fn()
 
 vi.mock('@/hermes', () => ({
+  getHermesConfigRecord: vi.fn(),
   getToolsetConfig: (name: string) => getToolsetConfig(name),
   selectToolsetProvider: (name: string, provider: string) => selectToolsetProvider(name, provider),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
   deleteEnvVar: (key: string) => deleteEnvVar(key),
-  revealEnvVar: (key: string) => revealEnvVar(key)
+  revealEnvVar: (key: string) => revealEnvVar(key),
+  saveHermesConfig: vi.fn()
 }))
 
 vi.mock('@/store/notifications', () => ({
@@ -68,7 +71,11 @@ afterEach(() => {
 describe('ToolsetConfigPanel', () => {
   it('lists providers from the config endpoint', async () => {
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+    render(
+      <I18nProvider configClient={null}>
+        <ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />
+      </I18nProvider>
+    )
 
     expect(await screen.findByText('Microsoft Edge TTS')).toBeTruthy()
     expect(screen.getByText('ElevenLabs')).toBeTruthy()
@@ -77,7 +84,11 @@ describe('ToolsetConfigPanel', () => {
 
   it('selects a provider when clicked', async () => {
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+    render(
+      <I18nProvider configClient={null}>
+        <ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />
+      </I18nProvider>
+    )
 
     const elevenlabs = await screen.findByRole('button', { name: /ElevenLabs/ })
     fireEvent.click(elevenlabs)
@@ -87,14 +98,19 @@ describe('ToolsetConfigPanel', () => {
 
   it('saves an API key for a provider env var', async () => {
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+    render(
+      <I18nProvider configClient={null}>
+        <ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />
+      </I18nProvider>
+    )
 
     // Select the keyed provider so its env vars render.
     const elevenlabs = await screen.findByRole('button', { name: /ElevenLabs/ })
     fireEvent.click(elevenlabs)
 
-    // Click "Set" to reveal the input for the unset key.
-    fireEvent.click(await screen.findByRole('button', { name: 'Set' }))
+    // Open the credential actions menu and click "Set" to reveal the input for the unset key.
+    fireEvent.pointerDown(await screen.findByRole('button', { name: 'Actions for ELEVENLABS_API_KEY' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Set' }))
 
     const input = await screen.findByPlaceholderText('ElevenLabs API key')
     fireEvent.change(input, { target: { value: 'sk-test-123' } })
@@ -144,7 +160,11 @@ describe('ToolsetConfigPanel', () => {
     )
 
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+    render(
+      <I18nProvider configClient={null}>
+        <ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />
+      </I18nProvider>
+    )
 
     // The active provider's env-var field only renders when it's the expanded
     // one — so finding it proves ElevenLabs (not Edge TTS) was auto-expanded.

@@ -1,7 +1,8 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { type MutableRefObject, useCallback } from 'react'
 
-import { getProfiles, transcribeAudio } from '@/hermes'
+import { transcribeAudio } from '@/hermes'
+import { useTranslation } from '@/i18n'
 import { appendTextPart, branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
   attachmentDisplayText,
@@ -30,7 +31,6 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $busy,
   $messages,
@@ -151,6 +151,8 @@ export function usePromptActions({
   sttEnabled,
   updateSessionState
 }: PromptActionsOptions) {
+  const t = useTranslation()
+
   const appendSessionTextMessage = useCallback(
     (sessionId: string, role: ChatMessage['role'], text: string) => {
       const body = text.trim()
@@ -314,7 +316,7 @@ export function usePromptActions({
         } catch (err) {
           dropOptimistic(null)
           releaseBusy()
-          notifyError(err, 'Session unavailable')
+          notifyError(err, t('chat.notifications.sessionUnavailable'))
 
           return false
         }
@@ -322,7 +324,11 @@ export function usePromptActions({
         if (!sessionId) {
           dropOptimistic(null)
           releaseBusy()
-          notify({ kind: 'error', title: 'Session unavailable', message: 'Could not create a new session' })
+          notify({
+            kind: 'error',
+            title: t('chat.notifications.sessionUnavailable'),
+            message: t('chat.notifications.createSessionFailed')
+          })
 
           return false
         }
@@ -342,7 +348,7 @@ export function usePromptActions({
 
         return true
       } catch (err) {
-        const message = inlineErrorMessage(err, 'Prompt failed')
+        const message = inlineErrorMessage(err, t('chat.notifications.promptFailed'))
 
         releaseBusy()
         updateSessionState(sessionId, state => ({
@@ -353,7 +359,7 @@ export function usePromptActions({
               id: `assistant-error-${Date.now()}`,
               role: 'assistant',
               parts: [],
-              error: message || 'Prompt failed',
+              error: message || t('chat.notifications.promptFailed'),
               branchGroupId: state.pendingBranchGroup ?? undefined
             }
           ],
@@ -364,12 +370,12 @@ export function usePromptActions({
         }))
 
         if (isProviderSetupError(err)) {
-          requestDesktopOnboarding('Add a provider credential before sending your first message.')
+          requestDesktopOnboarding(t('onboarding.providerCredentialRequired'))
 
           return false
         }
 
-        notifyError(err, 'Prompt failed')
+        notifyError(err, t('chat.notifications.promptFailed'))
 
         return false
       }
@@ -381,6 +387,7 @@ export function usePromptActions({
       requestGateway,
       selectedStoredSessionIdRef,
       syncImageAttachmentsForSubmit,
+      t,
       updateSessionState
     ]
   )
@@ -444,58 +451,13 @@ export function usePromptActions({
           return
         }
 
-        // /profile selects which profile new chats open in — no app relaunch.
-        // A profile is per-session now, so an existing thread can't change its
-        // profile mid-stream; `/profile <name>` instead points the next new chat
-        // (and the current empty draft) at that profile's backend.
-        if (normalizedName === 'profile') {
-          const target = arg.trim()
-          const current = normalizeProfileKey($activeGatewayProfile.get())
-
-          if (!target) {
-            notify({
-              kind: 'success',
-              message: `Profile: ${current}. Use /profile <name> or the "New session" picker to start a chat in another profile.`
-            })
-
-            return
-          }
-
-          try {
-            const { profiles } = await getProfiles()
-            const match = profiles.find(profile => profile.name === target)
-
-            if (!match) {
-              notify({
-                kind: 'error',
-                title: 'Unknown profile',
-                message: `No profile named "${target}". Available: ${profiles.map(profile => profile.name).join(', ')}`
-              })
-
-              return
-            }
-
-            const key = normalizeProfileKey(match.name)
-
-            $newChatProfile.set(key)
-            // Swap the live gateway now so an empty draft sends into this
-            // profile immediately; an existing thread keeps its own profile.
-            await ensureGatewayProfile(key)
-            notify({ kind: 'success', message: `New chats will use profile ${match.name}.` })
-          } catch (err) {
-            notifyError(err, 'Failed to set profile')
-          }
-
-          return
-        }
-
         const sessionId = sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
 
         if (!sessionId) {
           notify({
             kind: 'error',
-            title: 'Session unavailable',
-            message: 'Could not create a new session'
+            title: t('chat.notifications.sessionUnavailable'),
+            message: t('chat.notifications.createSessionFailed')
           })
 
           return
@@ -651,7 +613,8 @@ export function usePromptActions({
       refreshSessions,
       requestGateway,
       startFreshSessionDraft,
-      submitPromptText
+      submitPromptText,
+      t
     ]
   )
 
@@ -675,7 +638,7 @@ export function usePromptActions({
   const transcribeVoiceAudio = useCallback(
     async (audio: Blob) => {
       if (!sttEnabled) {
-        throw new Error('Speech-to-text is disabled in settings.')
+        throw new Error(t('chat.notifications.speechToTextDisabled'))
       }
 
       const dataUrl = await blobToDataUrl(audio)
@@ -683,7 +646,7 @@ export function usePromptActions({
 
       return result.transcript
     },
-    [sttEnabled]
+    [sttEnabled, t]
   )
 
   const cancelRun = useCallback(async () => {
@@ -743,9 +706,9 @@ export function usePromptActions({
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })
     } catch (err) {
-      notifyError(err, 'Stop failed')
+      notifyError(err, t('chat.notifications.stopFailed'))
     }
-  }, [activeSessionId, activeSessionIdRef, busyRef, requestGateway, updateSessionState])
+  }, [activeSessionId, activeSessionIdRef, busyRef, requestGateway, t, updateSessionState])
 
   const reloadFromMessage = useCallback(
     async (parentId: string | null) => {
@@ -817,10 +780,10 @@ export function usePromptActions({
           busy: false,
           awaitingResponse: false
         }))
-        notifyError(err, 'Regenerate failed')
+        notifyError(err, t('chat.notifications.regenerateFailed'))
       }
     },
-    [activeSessionId, requestGateway, updateSessionState]
+    [activeSessionId, requestGateway, t, updateSessionState]
   )
 
   const editMessage = useCallback(
@@ -890,10 +853,10 @@ export function usePromptActions({
         setBusy(false)
         setAwaitingResponse(false)
         updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false }))
-        notifyError(surfaced, 'Edit failed')
+        notifyError(surfaced, t('chat.notifications.editFailed'))
       }
     },
-    [activeSessionId, activeSessionIdRef, busyRef, requestGateway, updateSessionState]
+    [activeSessionId, activeSessionIdRef, busyRef, requestGateway, t, updateSessionState]
   )
 
   const handleThreadMessagesChange = useCallback(

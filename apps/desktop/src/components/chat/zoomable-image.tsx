@@ -3,6 +3,7 @@
 import { type ComponentProps, useState } from 'react'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { useTranslation } from '@/i18n'
 import { Download } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -51,6 +52,7 @@ export interface ZoomableImageProps extends ComponentProps<'img'> {
 }
 
 export function ZoomableImage({ className, containerClassName, src, alt, slot, ...props }: ZoomableImageProps) {
+  const t = useTranslation()
   const [saving, setSaving] = useState(false)
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const canOpen = Boolean(src)
@@ -67,7 +69,7 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
         const saved = await window.hermesDesktop.saveImageFromUrl(src)
 
         if (saved) {
-          notify({ kind: 'success', title: 'Image saved', message: imageFilename(src) })
+          notify({ kind: 'success', title: t('notifications.image.saved'), message: imageFilename(src) })
         }
 
         return
@@ -80,17 +82,17 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
           await startBrowserDownload(src)
           notify({
             kind: 'info',
-            title: 'Download started',
-            message: 'Restart Hermes Desktop to use Save Image.'
+            title: t('notifications.image.downloadStarted'),
+            message: t('notifications.image.restartToUseSaveImage')
           })
         } catch (fallbackError) {
-          notifyError(fallbackError, 'Restart Hermes Desktop to save images')
+          notifyError(fallbackError, t('notifications.image.restartToSaveImages'))
         }
 
         return
       }
 
-      notifyError(error, 'Image download failed')
+      notifyError(error, t('notifications.image.downloadFailed'))
     } finally {
       setSaving(false)
     }
@@ -109,7 +111,7 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
             onClick={() => setLightboxOpen(false)}
             src={src}
           />
-          <ImageActionButton onClick={handleDownload} saving={saving} variant="lightbox" />
+          <ImageActionButton onClick={handleDownload} saving={saving} t={t} variant="lightbox" />
         </div>
       </DialogContent>
     </Dialog>
@@ -125,12 +127,12 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
           className="contents"
           disabled={!canOpen}
           onClick={() => canOpen && setLightboxOpen(true)}
-          title={canOpen ? 'Open image' : undefined}
+          title={canOpen ? t('notifications.image.open') : undefined}
           type="button"
         >
           <img alt={alt ?? ''} className={className} src={src} {...props} />
         </button>
-        {src && <ImageActionButton onClick={handleDownload} saving={saving} variant="inline" />}
+        {src && <ImageActionButton onClick={handleDownload} saving={saving} t={t} variant="inline" />}
       </span>
       {lightbox}
     </>
@@ -140,15 +142,17 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
 function ImageActionButton({
   onClick,
   saving,
+  t,
   variant
 }: {
   onClick: () => void
   saving: boolean
+  t: ReturnType<typeof useTranslation>
   variant: 'inline' | 'lightbox'
 }) {
   return (
     <button
-      aria-label={saving ? 'Saving image' : 'Download image'}
+      aria-label={saving ? t('notifications.image.saving') : t('notifications.image.download')}
       className={cn(
         'absolute right-2 top-2 grid size-8 place-items-center rounded-full border border-border/70 bg-background/80 text-muted-foreground opacity-0 shadow-sm backdrop-blur transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 disabled:opacity-50',
         variant === 'inline' ? 'group-hover/image:opacity-100' : 'group-hover/lightbox:opacity-100'
@@ -158,7 +162,7 @@ function ImageActionButton({
         event.stopPropagation()
         void onClick()
       }}
-      title={saving ? 'Saving image' : 'Download image'}
+      title={saving ? t('notifications.image.saving') : t('notifications.image.download')}
       type="button"
     >
       <Download className={cn('size-4', saving && 'animate-pulse')} />

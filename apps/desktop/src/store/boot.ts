@@ -81,7 +81,7 @@ export function failDesktopBoot(message: string) {
   $desktopBoot.set({
     ...current,
     error: message,
-    message: translateNow('boot.desktopBootFailedWithMessage', message),
+    message: translateNow('boot.desktopBootFailedWithMessage', { message }),
     phase: 'renderer.error',
     progress: clampProgress(current.progress),
     running: false,

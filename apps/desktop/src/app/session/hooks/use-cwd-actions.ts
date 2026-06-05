@@ -1,5 +1,6 @@
 import { type MutableRefObject, useCallback } from 'react'
 
+import { useTranslation } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
 import { $currentCwd, setCurrentBranch, setCurrentCwd } from '@/store/session'
 import type { SessionRuntimeInfo } from '@/types/hermes'
@@ -17,6 +18,8 @@ export function useCwdActions({
   onSessionRuntimeInfo,
   requestGateway
 }: CwdActionsOptions) {
+  const t = useTranslation()
+
   const refreshProjectBranch = useCallback(
     async (cwd: string) => {
       const target = cwd.trim()
@@ -85,7 +88,7 @@ export function useCwdActions({
         const message = err instanceof Error ? err.message : String(err)
 
         if (!message.includes('unknown method')) {
-          notifyError(err, 'Working directory change failed')
+          notifyError(err, t('session.cwd.changeFailed'))
 
           return
         }
@@ -94,12 +97,12 @@ export function useCwdActions({
         setCurrentBranch('')
         notify({
           kind: 'warning',
-          title: 'Working directory staged',
-          message: 'Restart the desktop backend to apply cwd changes to this active session.'
+          title: t('session.cwd.stagedTitle'),
+          message: t('session.cwd.stagedMessage')
         })
       }
     },
-    [activeSessionId, onSessionRuntimeInfo, requestGateway]
+    [activeSessionId, onSessionRuntimeInfo, requestGateway, t]
   )
 
   return { changeSessionCwd, refreshProjectBranch }

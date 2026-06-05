@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { translateNow } from '@/i18n'
+
 type BrowserAudioContext = typeof AudioContext
 
 export interface MicRecorderOptions {
@@ -27,26 +29,26 @@ function micError(error: unknown): Error {
   const name = error instanceof DOMException ? error.name : ''
 
   if (name === 'NotAllowedError' || name === 'SecurityError') {
-    return new Error('Microphone permission was denied.')
+    return new Error(translateNow('chat.composer.voice.errors.permissionDenied'))
   }
 
   if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-    return new Error('No microphone was found.')
+    return new Error(translateNow('chat.composer.voice.errors.noMicrophone'))
   }
 
   if (name === 'NotReadableError' || name === 'TrackStartError') {
-    return new Error('Microphone is already in use by another app.')
+    return new Error(translateNow('chat.composer.voice.errors.microphoneInUse'))
   }
 
   if (name === 'OverconstrainedError') {
-    return new Error('Microphone constraints are not supported by this device.')
+    return new Error(translateNow('chat.composer.voice.errors.constraintsUnsupported'))
   }
 
   if (error instanceof Error) {
     return error
   }
 
-  return new Error('Could not start microphone recording.')
+  return new Error(translateNow('chat.composer.voice.errors.startFailed'))
 }
 
 export function useMicRecorder(): { handle: MicRecorderHandle; level: number; recording: boolean } {
@@ -158,13 +160,13 @@ export function useMicRecorder(): { handle: MicRecorderHandle; level: number; re
     }
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      throw new Error('This runtime does not support microphone recording.')
+      throw new Error(translateNow('chat.composer.voice.errors.runtimeUnsupported'))
     }
 
     const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
 
     if (permitted === false) {
-      throw new Error('Microphone access denied.')
+      throw new Error(translateNow('chat.composer.voice.errors.accessDenied'))
     }
 
     let stream: MediaStream

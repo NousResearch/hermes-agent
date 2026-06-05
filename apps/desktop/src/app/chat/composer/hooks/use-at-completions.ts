@@ -2,6 +2,7 @@ import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-u
 import { useCallback } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { useTranslation } from '@/i18n'
 
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
@@ -9,16 +10,16 @@ import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 const KIND_RE = /^@(file|folder|url|image|tool|git):(.*)$/
 const REF_STARTERS = new Set(['file', 'folder', 'url', 'image', 'tool', 'git'])
 
-const STARTER_META: Record<string, string> = {
-  file: 'Attach a file reference',
-  folder: 'Attach a folder reference',
-  url: 'Attach a URL reference',
-  image: 'Attach an image reference',
-  tool: 'Attach a tool reference',
-  git: 'Attach git context'
+const STARTER_META_KEYS: Record<string, string> = {
+  file: 'chat.composer.refs.file',
+  folder: 'chat.composer.refs.folder',
+  url: 'chat.composer.refs.url',
+  image: 'chat.composer.refs.image',
+  tool: 'chat.composer.refs.tool',
+  git: 'chat.composer.refs.git'
 }
 
-function starterEntries(query: string): CompletionEntry[] {
+function starterEntries(query: string, t: (key: string) => string): CompletionEntry[] {
   const q = query.trim().toLowerCase()
   const kinds = Array.from(REF_STARTERS)
   const filtered = q ? kinds.filter(kind => kind.startsWith(q)) : kinds
@@ -26,7 +27,7 @@ function starterEntries(query: string): CompletionEntry[] {
   return filtered.map(kind => ({
     text: `@${kind}:`,
     display: `@${kind}:`,
-    meta: STARTER_META[kind] || ''
+    meta: STARTER_META_KEYS[kind] ? t(STARTER_META_KEYS[kind]) : ''
   }))
 }
 
@@ -79,11 +80,12 @@ export function useAtCompletions(options: {
   cwd: string | null
 }): { adapter: Unstable_TriggerAdapter; loading: boolean } {
   const { gateway, sessionId, cwd } = options
+  const t = useTranslation()
   const enabled = Boolean(gateway)
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
-      const starters = starterEntries(query)
+      const starters = starterEntries(query, t)
 
       if (!gateway) {
         return { items: starters, query }
@@ -109,7 +111,7 @@ export function useAtCompletions(options: {
         return { items: starters, query }
       }
     },
-    [gateway, sessionId, cwd]
+    [gateway, sessionId, cwd, t]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {

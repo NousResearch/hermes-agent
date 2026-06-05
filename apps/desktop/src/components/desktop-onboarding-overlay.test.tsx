@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import type { OAuthProvider } from '@/types/hermes'
 
@@ -32,6 +33,30 @@ function setProviders(providers: OAuthProvider[]) {
 
 const ctx: OnboardingContext = { requestGateway: async () => undefined as never }
 
+const localStorageValues = new Map<string, string>()
+
+beforeEach(() => {
+  localStorageValues.clear()
+
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      clear: () => localStorageValues.clear(),
+      getItem: (key: string) => localStorageValues.get(key) ?? null,
+      removeItem: (key: string) => localStorageValues.delete(key),
+      setItem: (key: string, value: string) => localStorageValues.set(key, value)
+    }
+  })
+})
+
+function renderPicker() {
+  render(
+    <I18nProvider configClient={null}>
+      <Picker ctx={ctx} />
+    </I18nProvider>
+  )
+}
+
 afterEach(() => {
   cleanup()
 
@@ -56,7 +81,7 @@ afterEach(() => {
 describe('onboarding Picker', () => {
   it('features Nous Portal and hides other providers behind a disclosure', () => {
     setProviders([provider('anthropic', 'Anthropic Claude'), provider('nous', 'Nous Portal')])
-    render(<Picker ctx={ctx} />)
+    renderPicker()
 
     expect(screen.getByText('Nous Portal')).toBeTruthy()
     expect(screen.getByText('Recommended')).toBeTruthy()
@@ -70,7 +95,7 @@ describe('onboarding Picker', () => {
 
   it('shows every provider directly when Nous Portal is absent', () => {
     setProviders([provider('anthropic', 'Anthropic Claude'), provider('openai-codex', 'OpenAI Codex / ChatGPT')])
-    render(<Picker ctx={ctx} />)
+    renderPicker()
 
     expect(screen.getByText('Anthropic API Key')).toBeTruthy()
     expect(screen.getByText('OpenAI OAuth (ChatGPT)')).toBeTruthy()
@@ -80,7 +105,7 @@ describe('onboarding Picker', () => {
 
   it('offers "choose later" on first run and persists the skip', () => {
     setProviders([provider('nous', 'Nous Portal')])
-    render(<Picker ctx={ctx} />)
+    renderPicker()
 
     const skip = screen.getByRole('button', { name: "I'll choose a provider later" })
 
@@ -93,7 +118,7 @@ describe('onboarding Picker', () => {
   it('hides "choose later" in manual (add-provider) mode', () => {
     setProviders([provider('nous', 'Nous Portal')])
     $desktopOnboarding.set({ ...$desktopOnboarding.get(), manual: true })
-    render(<Picker ctx={ctx} />)
+    renderPicker()
 
     expect(screen.queryByRole('button', { name: "I'll choose a provider later" })).toBeNull()
   })

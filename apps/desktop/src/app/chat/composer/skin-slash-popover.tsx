@@ -1,4 +1,4 @@
-import { useI18n } from '@/i18n'
+import { useTranslation } from '@/i18n'
 import { desktopSkinSlashCompletions } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { useTheme } from '@/themes/context'
@@ -11,8 +11,7 @@ interface SkinSlashPopoverProps {
 }
 
 export function SkinSlashPopover({ draft, onSelect }: SkinSlashPopoverProps) {
-  const { t } = useI18n()
-  const c = t.composer
+  const t = useTranslation()
   const { availableThemes, themeName } = useTheme()
   const match = draft.match(/^\/skin\s+(\S*)$/i)
 
@@ -24,7 +23,7 @@ export function SkinSlashPopover({ draft, onSelect }: SkinSlashPopoverProps) {
 
   return (
     <div
-      aria-label={c.themeSuggestions}
+      aria-label={t('chat.skin.suggestions')}
       className={COMPLETION_DRAWER_CLASS}
       data-slot="composer-skin-completion-drawer"
       data-state="open"
@@ -32,10 +31,8 @@ export function SkinSlashPopover({ draft, onSelect }: SkinSlashPopoverProps) {
     >
       <div className="grid gap-0.5 pt-0.5">
         {items.length === 0 ? (
-          <CompletionDrawerEmpty title={c.noMatchingThemes}>
-            {c.themeTryPre}
-            <span className="font-mono text-foreground/80">/skin list</span>
-            {c.themeTryPost}
+          <CompletionDrawerEmpty title={t('chat.skin.noMatchingThemes')}>
+            {t('chat.composer.lookup.try')} <span className="font-mono text-foreground/80">/skin list</span>.
           </CompletionDrawerEmpty>
         ) : (
           items.map(item => (

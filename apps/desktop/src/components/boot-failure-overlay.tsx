@@ -3,14 +3,14 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import type { DesktopConnectionConfig } from '@/global'
-import { useI18n } from '@/i18n'
+import { useTranslation } from '@/i18n'
 import { AlertTriangle, FileText, Loader2, LogIn, RefreshCw, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 import type { RemoteReauth } from './boot-failure-reauth'
-import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
+import { deriveProviderShape, isRemoteReauthFailure } from './boot-failure-reauth'
 
 type BusyAction = 'local' | 'repair' | 'retry' | 'signin' | null
 
@@ -26,9 +26,9 @@ type BusyAction = 'local' | 'repair' | 'retry' | 'signin' | null
 // renders dead — "gateway offline", no composer, only a toast — with no way
 // to retry, repair the install, switch the gateway, or find the logs.
 export function BootFailureOverlay() {
+  const t = useTranslation()
   const boot = useStore($desktopBoot)
   const onboarding = useStore($desktopOnboarding)
-  const { t } = useI18n()
   const [busy, setBusy] = useState<BusyAction>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
@@ -143,7 +143,11 @@ export function BootFailureOverlay() {
       const result = await window.hermesDesktop?.oauthLoginConnectionConfig(remoteReauth.url)
 
       if (result?.connected) {
-        notify({ kind: 'success', title: t.boot.failure.signedInTitle, message: t.boot.failure.signedInMessage })
+        notify({
+          kind: 'success',
+          title: t('boot.failure.signIn.signedIn'),
+          message: t('boot.failure.signIn.reconnecting')
+        })
         window.location.reload()
 
         return
@@ -151,24 +155,23 @@ export function BootFailureOverlay() {
 
       notify({
         kind: 'warning',
-        title: t.boot.failure.signInIncompleteTitle,
-        message: t.boot.failure.signInIncompleteMessage
+        title: t('boot.failure.signIn.incompleteTitle'),
+        message: t('boot.failure.signIn.incompleteMessage')
       })
     } catch (err) {
-      notifyError(err, t.boot.failure.signInFailed)
+      notifyError(err, t('boot.failure.signIn.failed'))
     } finally {
       setBusy(null)
     }
   }
 
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
-  const copy = t.boot.failure
 
-  const label = signInLabel(remoteReauth, {
-    identityProvider: copy.identityProvider,
-    remoteGateway: copy.signInToRemoteGateway,
-    withProvider: copy.signInWithProvider
-  })
+  const signInText = remoteReauth?.isPassword
+    ? t('boot.failure.signInRemote')
+    : t('boot.failure.signInWithProvider', {
+        provider: remoteReauth?.providerLabel || t('boot.failure.identityProvider')
+      })
 
   return (
     <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-(--ui-chat-surface-background) p-6">
@@ -179,10 +182,10 @@ export function BootFailureOverlay() {
           </div>
           <div>
             <h2 className="text-[0.9375rem] font-semibold tracking-tight">
-              {remoteReauth ? copy.remoteTitle : copy.title}
+              {remoteReauth ? t('boot.failure.remoteTitle') : t('boot.failure.title')}
             </h2>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              {remoteReauth ? copy.remoteDescription : copy.description}
+              {remoteReauth ? t('boot.failure.remoteDescription') : t('boot.failure.description')}
             </p>
           </div>
         </div>
@@ -197,31 +200,31 @@ export function BootFailureOverlay() {
               {remoteReauth ? (
                 <Button disabled={Boolean(busy)} onClick={() => void signInRemote()}>
                   {busy === 'signin' ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                  {label}
+                  {signInText}
                 </Button>
               ) : (
                 <Button disabled={Boolean(busy)} onClick={() => void retry()}>
                   {busy === 'retry' ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                  {copy.retry}
+                  {t('common.retry')}
                 </Button>
               )}
               {!remoteReauth ? (
                 <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="outline">
                   {busy === 'repair' ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
-                  {copy.repairInstall}
+                  {t('boot.failure.repairInstall')}
                 </Button>
               ) : null}
               <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="outline">
                 {busy === 'local' ? <Loader2 className="size-4 animate-spin" /> : null}
-                {copy.useLocalGateway}
+                {t('boot.failure.useLocalGateway')}
               </Button>
               <Button onClick={openLogs} variant="ghost">
                 <FileText className="size-4" />
-                {copy.openLogs}
+                {t('boot.failure.openLogs')}
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
-              {remoteReauth ? copy.remoteSignInHint : copy.repairHint}
+              {remoteReauth ? t('boot.failure.remoteHint') : t('boot.failure.repairHint')}
             </p>
           </div>
 
@@ -232,7 +235,7 @@ export function BootFailureOverlay() {
                 onClick={() => setShowLogs(v => !v)}
                 type="button"
               >
-                {showLogs ? copy.hideRecentLogs : copy.showRecentLogs}
+                {showLogs ? t('boot.failure.hideRecentLogs') : t('boot.failure.showRecentLogs')}
               </button>
               {showLogs ? (
                 <pre className="max-h-48 overflow-auto rounded-2xl border border-border bg-secondary/30 p-3 font-mono text-[0.7rem] leading-4 text-muted-foreground">

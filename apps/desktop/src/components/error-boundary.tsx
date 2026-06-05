@@ -2,6 +2,7 @@ import { Component, type ErrorInfo, type ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
+import { translateNow } from '@/i18n'
 
 export interface ErrorBoundaryFallbackProps {
   error: Error
@@ -56,17 +57,17 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
     <div className="fixed inset-0 z-[1500] grid place-items-center bg-(--ui-chat-surface-background) p-6">
       <ErrorState
         className="w-full max-w-[28rem]"
-        description={error.message || 'The view hit an unexpected error. Your chats and settings are safe.'}
-        title="Something broke in the interface"
+        description={error.message || translateNow('errorBoundary.description')}
+        title={translateNow('errorBoundary.title')}
       >
         <Button className="font-semibold" onClick={reset} size="lg">
-          Try again
+          {translateNow('common.tryAgain')}
         </Button>
         <Button onClick={() => window.location.reload()} variant="text">
-          Reload window
+          {translateNow('errorBoundary.reloadWindow')}
         </Button>
         <Button onClick={() => void window.hermesDesktop?.revealLogs()?.catch(() => undefined)} variant="text">
-          Open logs
+          {translateNow('boot.failure.openLogs')}
         </Button>
       </ErrorState>
     </div>

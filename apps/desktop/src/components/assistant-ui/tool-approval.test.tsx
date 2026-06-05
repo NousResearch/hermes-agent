@@ -1,7 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
+import { I18nProvider } from '@/i18n'
 import { $gateway } from '@/store/gateway'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
@@ -25,6 +27,10 @@ function mockGateway() {
   return request
 }
 
+function renderWithI18n(ui: React.ReactElement) {
+  return render(<I18nProvider configClient={null}>{ui}</I18nProvider>)
+}
+
 afterEach(() => {
   cleanup()
   clearAllPrompts()
@@ -34,21 +40,21 @@ afterEach(() => {
 
 describe('PendingToolApproval', () => {
   it('renders nothing when there is no pending approval', () => {
-    const { container } = render(<PendingToolApproval part={part('terminal')} />)
+    const { container } = renderWithI18n(<PendingToolApproval part={part('terminal')} />)
 
     expect(container.innerHTML).toBe('')
   })
 
   it('renders nothing for tools that never raise approval', () => {
     setRequest()
-    const { container } = render(<PendingToolApproval part={part('read_file')} />)
+    const { container } = renderWithI18n(<PendingToolApproval part={part('read_file')} />)
 
     expect(container.innerHTML).toBe('')
   })
 
   it('renders the inline run/reject controls on the pending terminal row', () => {
     setRequest('chmod -R 777 /tmp/x')
-    render(<PendingToolApproval part={part('terminal')} />)
+    renderWithI18n(<PendingToolApproval part={part('terminal')} />)
 
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
@@ -57,7 +63,7 @@ describe('PendingToolApproval', () => {
   it('sends approval.respond {choice: "once"} and clears the request on Run', async () => {
     const request = mockGateway()
     setRequest()
-    render(<PendingToolApproval part={part('terminal')} />)
+    renderWithI18n(<PendingToolApproval part={part('terminal')} />)
 
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
 
@@ -70,7 +76,7 @@ describe('PendingToolApproval', () => {
   it('sends choice "deny" on Reject', async () => {
     const request = mockGateway()
     setRequest()
-    render(<PendingToolApproval part={part('terminal')} />)
+    renderWithI18n(<PendingToolApproval part={part('terminal')} />)
 
     fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
 

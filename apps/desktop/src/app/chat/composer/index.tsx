@@ -17,7 +17,7 @@ import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-te
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { useI18n } from '@/i18n'
+import { useTranslation } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
@@ -46,7 +46,6 @@ import {
   focusComposerInput,
   markActiveComposer,
   onComposerFocusRequest,
-  onComposerInsertRefsRequest,
   onComposerInsertRequest
 } from './focus'
 import { HelpHint } from './help-hint'
@@ -54,12 +53,7 @@ import { useAtCompletions } from './hooks/use-at-completions'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useVoiceConversation } from './hooks/use-voice-conversation'
 import { useVoiceRecorder } from './hooks/use-voice-recorder'
-import {
-  dragHasAttachments,
-  droppedFileInlineRef,
-  type InlineRefInput,
-  insertInlineRefsIntoEditor
-} from './inline-refs'
+import { dragHasAttachments, droppedFileInlineRef, insertInlineRefsIntoEditor } from './inline-refs'
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
@@ -84,6 +78,29 @@ const COMPOSER_SINGLE_LINE_MAX_PX = 36
 
 const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
+
+// Resting composer placeholders. New sessions get open-ended starters; an
+// existing chat gets phrasings that read as a continuation of the thread.
+// One is picked at random per session (stable until the session changes).
+const NEW_SESSION_PLACEHOLDERS = [
+  'chat.composer.placeholders.new.building',
+  'chat.composer.placeholders.new.task',
+  'chat.composer.placeholders.new.mind',
+  'chat.composer.placeholders.new.describe',
+  'chat.composer.placeholders.new.tackle',
+  'chat.composer.placeholders.new.ask',
+  'chat.composer.placeholders.new.goal'
+]
+
+const FOLLOW_UP_PLACEHOLDERS = [
+  'chat.composer.placeholders.followUp.send',
+  'chat.composer.placeholders.followUp.context',
+  'chat.composer.placeholders.followUp.refine',
+  'chat.composer.placeholders.followUp.next',
+  'chat.composer.placeholders.followUp.keepGoing',
+  'chat.composer.placeholders.followUp.push',
+  'chat.composer.placeholders.followUp.adjust'
+]
 
 const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
 
@@ -118,6 +135,7 @@ export function ChatBar({
   onSubmit,
   onTranscribeAudio
 }: ChatBarProps) {
+  const t = useTranslation()
   const aui = useAui()
   const draft = useAuiState(s => s.composer.text)
   const attachments = useStore($composerAttachments)
@@ -168,18 +186,15 @@ export function ChatBar({
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
   const showHelpHint = draft === '?'
 
-  const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
-  const newSessionPlaceholders = t.composer.newSessionPlaceholders
-  const followUpPlaceholders = t.composer.followUpPlaceholders
 
   // Resting placeholder: a starter for brand-new sessions, a continuation for
   // existing ones. Picked once and only re-rolled when we genuinely move to a
   // *different* conversation. Critically, the first id assignment of a freshly
   // started session (null → id, on the first send) is treated as the same
   // conversation so the placeholder doesn't visibly flip mid-stream.
-  const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
-    pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
+  const [restingPlaceholderKey, setRestingPlaceholderKey] = useState(() =>
+    pickPlaceholder(sessionId ? FOLLOW_UP_PLACEHOLDERS : NEW_SESSION_PLACEHOLDERS)
   )
 
   const prevSessionIdRef = useRef(sessionId)
@@ -198,17 +213,17 @@ export function ChatBar({
       return
     }
 
-    setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
-  }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
+    setRestingPlaceholderKey(pickPlaceholder(sessionId ? FOLLOW_UP_PLACEHOLDERS : NEW_SESSION_PLACEHOLDERS))
+  }, [sessionId])
 
   // When the bar is disabled it's because the gateway isn't open. Distinguish a
   // cold start ("Starting Hermes...") from a dropped connection we're trying to
   // restore (e.g. after the Mac slept) so the stuck state reads as recoverable.
   const placeholder = disabled
     ? gatewayState === 'closed' || gatewayState === 'error'
-      ? t.composer.placeholderReconnecting
-      : t.composer.placeholderStarting
-    : restingPlaceholder
+      ? t('chat.composer.placeholders.reconnecting')
+      : t('chat.composer.placeholders.starting')
+    : t(restingPlaceholderKey)
 
   const focusInput = useCallback(() => {
     focusComposerInput(editorRef.current)
@@ -419,7 +434,7 @@ export function ChatBar({
     requestMainFocus()
   }
 
-  const insertInlineRefs = (refs: InlineRefInput[]) => {
+  const insertInlineRefs = (refs: string[]) => {
     const editor = editorRef.current
 
     if (!editor) {
@@ -438,19 +453,6 @@ export function ChatBar({
 
     return true
   }
-
-  // Latest-closure ref so the (once-only) subscription always calls the current
-  // insertInlineRefs without re-subscribing every render.
-  const insertInlineRefsRef = useRef(insertInlineRefs)
-  insertInlineRefsRef.current = insertInlineRefs
-
-  useEffect(() => {
-    return onComposerInsertRefsRequest(({ refs, target }) => {
-      if (target === 'main') {
-        insertInlineRefsRef.current(refs)
-      }
-    })
-  }, [])
 
   const selectSkinSlashCommand = (command: string) => {
     draftRef.current = command
@@ -1194,7 +1196,7 @@ export function ChatBar({
   const input = (
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
-        aria-label={t.composer.message}
+        aria-label={t('chat.composer.message')}
         autoCapitalize="off"
         autoCorrect="off"
         className={cn(

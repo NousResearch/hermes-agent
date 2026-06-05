@@ -239,6 +239,95 @@ class WeComAdapter(BasePlatformAdapter):
         # stream channel becomes usable again.
         self._stream_expired_chats: set[str] = set()
 
+        # Per-chat FIFO send queue with token-bucket rate limiting.
+        # Mirrors OpenClaw's chat-queue.ts (serial per chat) plus a
+        # token bucket to stay within WeCom's 30 msgs/min/chat limit.
+        self._chat_queues: Dict[str, asyncio.Queue] = {}
+        self._chat_workers: Dict[str, asyncio.Task] = {}
+        # Token bucket state per chat: (tokens_available, last_refill_ts)
+        self._chat_buckets: Dict[str, List[float]] = {}
+
+    # Token bucket parameters: 30 tokens max, refill 1 token per 2s.
+    _BUCKET_MAX_TOKENS = 30
+    _BUCKET_REFILL_INTERVAL = 2.0  # seconds per token
+
+    def _get_bucket(self, chat_id: str) -> List[float]:
+        """Get or create token bucket for a chat. [tokens, last_refill_ts]"""
+        key = str(chat_id or "").strip()
+        if key not in self._chat_buckets:
+            # Start with full bucket
+            self._chat_buckets[key] = [float(self._BUCKET_MAX_TOKENS), time.monotonic()]
+        return self._chat_buckets[key]
+
+    def _bucket_try_consume(self, chat_id: str) -> float:
+        """Try to consume a token. Returns 0 if available, or seconds to wait."""
+        bucket = self._get_bucket(chat_id)
+        now = time.monotonic()
+        # Refill tokens based on elapsed time
+        elapsed = now - bucket[1]
+        refilled = elapsed / self._BUCKET_REFILL_INTERVAL
+        bucket[0] = min(self._BUCKET_MAX_TOKENS, bucket[0] + refilled)
+        bucket[1] = now
+
+        if bucket[0] >= 1.0:
+            bucket[0] -= 1.0
+            return 0.0  # token available, no wait
+        else:
+            # How long until next token is available
+            deficit = 1.0 - bucket[0]
+            return deficit * self._BUCKET_REFILL_INTERVAL
+
+    async def _enqueue_chat_send(self, chat_id: str, coro_factory):
+        """Enqueue a send task for a chat and await its result.
+
+        FIFO per chat, parallel across chats. Worker uses token bucket
+        so sends fire immediately when under the rate limit, and only
+        wait when the bucket is empty.
+        """
+        key = str(chat_id or "").strip()
+        if key not in self._chat_queues:
+            self._chat_queues[key] = asyncio.Queue()
+            self._chat_workers[key] = asyncio.create_task(
+                self._chat_send_worker(key)
+            )
+
+        future = asyncio.get_running_loop().create_future()
+        await self._chat_queues[key].put((coro_factory, future))
+        return await future
+
+    async def _chat_send_worker(self, chat_key: str) -> None:
+        """Per-chat worker: drain queue with token-bucket rate limiting."""
+        queue = self._chat_queues[chat_key]
+        try:
+            while True:
+                coro_factory, future = await queue.get()
+                try:
+                    # Token bucket: wait only if bucket is empty
+                    wait = self._bucket_try_consume(chat_key)
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+                        # Re-consume after wait
+                        self._bucket_try_consume(chat_key)
+
+                    result = await coro_factory()
+                    if not future.done():
+                        future.set_result(result)
+                except Exception as exc:
+                    if not future.done():
+                        future.set_exception(exc)
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:
+            while not queue.empty():
+                try:
+                    _, future = queue.get_nowait()
+                    if not future.done():
+                        future.set_exception(
+                            RuntimeError("WeCom adapter shutting down")
+                        )
+                except asyncio.QueueEmpty:
+                    break
+
     # ------------------------------------------------------------------
     # Connection lifecycle
     # ------------------------------------------------------------------
@@ -296,6 +385,12 @@ class WeComAdapter(BasePlatformAdapter):
         # Force-close any lingering stream so the WeCom client doesn't show
         # a permanent typing bubble after the gateway goes down.
         self._reset_native_stream_state()
+
+        # Cancel per-chat send workers so queued tasks get cleaned up.
+        for task in self._chat_workers.values():
+            task.cancel()
+        self._chat_workers.clear()
+        self._chat_queues.clear()
 
         if self._listen_task:
             self._listen_task.cancel()
@@ -1616,18 +1711,27 @@ class WeComAdapter(BasePlatformAdapter):
         streaming consumer's seed frame), close it via finish=true so the
         typing animation is replaced by the final content. Otherwise fall
         through to proactive ``aibot_send_msg`` or passive reply markdown.
+
+        All sends are serialized per chat_id to avoid exceeding WeCom's
+        30 msgs/min/chat rate limit (errcode 846607).
         """
         del metadata
 
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
 
-        # Mark delivered BEFORE any await so _keep_typing cannot race and open
-        # an orphan stream while send() is blocked awaiting the WS reply.
-        # The mark is set synchronously here; if send fails it's still set
-        # (conservative: better to suppress an extra typing than to leak one).
-        _chat_key = str(chat_id).strip()
+        return await self._enqueue_chat_send(
+            chat_id,
+            lambda: self._send_inner(chat_id, content, reply_to),
+        )
 
+    async def _send_inner(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Actual send logic, called under the per-chat lock."""
         try:
             # If we have an active stream for this chat, finalize it with the
             # content — this closes the typing animation and delivers the text
@@ -1826,6 +1930,9 @@ class WeComAdapter(BasePlatformAdapter):
           * **finalize=True**: send the closing ``finish: true`` frame
             and clear stream state so the next turn starts fresh.
 
+        All frames are serialized per chat_id (same lock as send()) to
+        avoid exceeding WeCom's 30 msgs/min/chat rate limit.
+
         Returns ``True`` when the frame landed; ``False`` when the
         stream is unavailable (no req_id, expired session, transport
         error). On ``False`` the caller should fall back to
@@ -1841,6 +1948,27 @@ class WeComAdapter(BasePlatformAdapter):
             return False
         if chat in self._stream_expired_chats:
             return False
+
+        if finalize:
+            # Finalize frame counts toward 30/min — go through the queue
+            return await self._enqueue_chat_send(
+                chat,
+                lambda: self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=True),
+            )
+        else:
+            # Intermediate frames: fire-and-forget, no queue, no rate limit.
+            # WeCom does NOT count them toward the 30/min quota.
+            return await self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=False)
+
+    async def _send_stream_frame_inner(
+        self,
+        text: str,
+        *,
+        chat: str,
+        reply_to: Optional[str] = None,
+        finalize: bool = False,
+    ) -> bool:
+        """Actual stream frame logic, called under the per-chat lock."""
 
         try:
             if self._active_stream_id is None:

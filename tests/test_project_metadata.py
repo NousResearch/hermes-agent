@@ -203,6 +203,15 @@ def test_messaging_extra_includes_qrcode_for_weixin_setup():
     assert any(dep.startswith("qrcode") for dep in messaging_extra)
 
 
+def test_dashboard_lazy_deps_match_web_extra():
+    """Dashboard lazy-install pins must stay in sync with the [web] extra."""
+    from tools.lazy_deps import LAZY_DEPS
+
+    optional_dependencies = _load_optional_dependencies()
+
+    assert set(LAZY_DEPS["tool.dashboard"]) == set(optional_dependencies["web"])
+
+
 def test_discord_voice_dependencies_avoid_vulnerable_pynacl_cap():
     """discord.py[voice] currently caps PyNaCl below the patched 1.6.x line.
 

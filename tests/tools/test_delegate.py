@@ -1901,12 +1901,14 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
         child.run_conversation.side_effect = slow_run
 
-        # Patch both the interval AND the idle ceiling so the test proves
-        # the in-tool branch takes effect: with a 0.05s interval and the
-        # default _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
-        # trip after 0.25s and stop firing. We should see heartbeats
-        # continuing through the full 0.4s run.
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+        # Patch the interval plus explicit stale ceilings so the test proves
+        # the in-tool branch takes effect without depending on production
+        # timeout constants. With interval=0.05 and idle ceiling=1, the old
+        # idle-branch behavior would stop before a second touch; the in-tool
+        # branch should keep touching during the slow tool.
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05), \
+             patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 1), \
+             patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IN_TOOL", 40):
             _run_single_child(
                 task_index=0,
                 goal="Test long-running tool",
@@ -1914,11 +1916,12 @@ class TestDelegateHeartbeat(unittest.TestCase):
                 parent_agent=parent,
             )
 
-        # With the old idle threshold (5 cycles = 0.25s), touch_calls
-        # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
-        # we should see substantially more heartbeats over 0.4s.
+        # With the patched idle threshold (1 cycle), using the old idle branch
+        # would stop before a second touch. More than one touch proves the
+        # current_tool branch is being used; keep the assertion tolerant of
+        # scheduler jitter on loaded macOS runners.
         self.assertGreater(
-            len(touch_calls), 6,
+            len(touch_calls), 1,
             f"Heartbeat stopped too early while child was inside a tool; "
             f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
         )

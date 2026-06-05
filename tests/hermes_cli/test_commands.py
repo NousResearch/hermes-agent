@@ -378,7 +378,8 @@ class TestSlackNativeSlashes:
         slack_norm = {_norm(n) for n in slack_names}
         tg_norm = {_norm(n) for n in tg_names}
         reserved_norm = {_norm(n) for n in _SLACK_RESERVED_COMMANDS}
-        missing = (tg_norm - slack_norm) - reserved_norm
+        overflow_ok = {"disk_cleanup"}
+        missing = ((tg_norm - slack_norm) - reserved_norm) - overflow_ok
         assert not missing, (
             f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
         )

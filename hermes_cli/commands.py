@@ -1033,7 +1033,7 @@ _SLACK_RESERVED_COMMANDS = frozenset({
     # https://slack.com/help/articles/201259356-Use-built-in-slash-commands
     "me", "status", "away", "dnd", "shrug", "remind", "msg", "feed",
     "who", "collapse", "expand", "leave", "join", "open", "search",
-    "topic", "mute", "pro", "shortcuts",
+    "topic", "mute", "pro", "shortcuts", "debug", "version",
 })
 
 # High-value aliases that must survive Slack's 50-slash cap even when the

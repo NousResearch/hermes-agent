@@ -2110,6 +2110,84 @@ class TestThreadCountStore:
 
 
 # ===========================================================================
+# Bot-id cache path alignment (HERMES_HOME parity with thread-count store)
+# ===========================================================================
+
+
+class TestBotIdCachePathAlignment:
+    """The bot-id cache must live under the SAME HERMES_HOME as the rest of
+    the adapter's state.
+
+    The original code resolved the bot-id cache with a raw
+    ``os.getenv("HERMES_HOME", Path.home() / ".hermes")`` while the
+    thread-count store used ``get_hermes_home()``. On native Windows with
+    HERMES_HOME unset the two diverged — thread counts landed in
+    ``%LOCALAPPDATA%\\hermes`` but the bot-id cache in
+    ``%USERPROFILE%\\.hermes`` — so the cache always missed across restarts
+    and the bot re-ran members.list on every boot. Context-local profile
+    overrides hit the same split-brain. These tests pin the alignment.
+    """
+
+    def test_bot_id_cache_under_hermes_home_env(self, adapter, tmp_path, monkeypatch):
+        """With HERMES_HOME set, the cache resolves directly under it (and
+        under the same home the thread-count store would use)."""
+        from hermes_constants import get_hermes_home
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        path = adapter._bot_id_cache_path()
+        assert path == tmp_path / "google_chat_bot_id.json"
+        assert path.parent == get_hermes_home()
+
+    def test_bot_id_cache_matches_native_home_on_windows(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """Native Windows, HERMES_HOME unset: the bot-id cache must share the
+        platform-native ``%LOCALAPPDATA%\\hermes`` home with the thread-count
+        store — not split off into ``%USERPROFILE%\\.hermes``.
+        """
+        import hermes_constants
+
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        # Simulate native Windows with a controlled LOCALAPPDATA.
+        local_appdata = tmp_path / "AppData" / "Local"
+        local_appdata.mkdir(parents=True)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+        # Distinct fake home so the OLD (buggy) %USERPROFILE%\.hermes path
+        # would resolve elsewhere and fail the assertion below.
+        fake_home = tmp_path / "userprofile"
+        fake_home.mkdir()
+        monkeypatch.setattr(hermes_constants.Path, "home", lambda: fake_home)
+
+        expected_home = local_appdata / "hermes"
+        assert hermes_constants.get_hermes_home() == expected_home
+        assert adapter._bot_id_cache_path().parent == expected_home
+        # Explicitly NOT the pre-fix USERPROFILE/.hermes location.
+        assert adapter._bot_id_cache_path().parent != fake_home / ".hermes"
+
+    def test_bot_id_cache_honors_context_local_override(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """A context-local profile override (set without mutating os.environ)
+        must steer the bot-id cache too — the raw getenv read ignored it."""
+        from hermes_constants import (
+            set_hermes_home_override,
+            reset_hermes_home_override,
+        )
+
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        override_home = tmp_path / "profiles" / "coder"
+        override_home.mkdir(parents=True)
+        token = set_hermes_home_override(override_home)
+        try:
+            assert adapter._bot_id_cache_path() == (
+                override_home / "google_chat_bot_id.json"
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+
+# ===========================================================================
 # Inbound attachment download SSRF guard
 # ===========================================================================
 

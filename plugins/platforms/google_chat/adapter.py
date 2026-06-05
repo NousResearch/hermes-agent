@@ -688,9 +688,22 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # Bot identity resolution
     # ------------------------------------------------------------------
     def _bot_id_cache_path(self) -> _Path:
-        """Location where the resolved bot user_id is cached across restarts."""
-        base = os.getenv("HERMES_HOME", str(_Path.home() / ".hermes"))
-        return _Path(base) / "google_chat_bot_id.json"
+        """Location where the resolved bot user_id is cached across restarts.
+
+        Resolved via ``get_hermes_home()`` so it lands under the SAME
+        HERMES_HOME as the thread-count store (and every other piece of
+        adapter state). A raw ``os.getenv("HERMES_HOME", ~/.hermes)`` would
+        diverge on native Windows (``%LOCALAPPDATA%\\hermes`` vs
+        ``%USERPROFILE%\\.hermes``) and ignore context-local profile
+        overrides, splitting persistence across two homes and forcing a
+        members.list re-resolve on every restart.
+        """
+        try:
+            from hermes_constants import get_hermes_home as _get_hermes_home
+            base = _get_hermes_home()
+        except (ModuleNotFoundError, ImportError):
+            base = _Path.home() / ".hermes"
+        return base / "google_chat_bot_id.json"
 
     def _load_cached_bot_id(self) -> Optional[str]:
         path = self._bot_id_cache_path()

@@ -2,7 +2,7 @@
 """Tests for execute_code's strict / project execution modes.
 
 The mode switch controls two things:
-  - working directory: staging tmpdir (strict/default) vs session CWD (project)
+  - working directory: staging tmpdir (strict) vs session CWD (project)
   - interpreter:       sys.executable (strict) vs active venv's python (project)
 
 Security-critical invariants — env scrubbing, tool whitelist, resource caps —
@@ -67,8 +67,8 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
 class TestGetExecutionMode(unittest.TestCase):
     """_get_execution_mode reads config.yaml only (no env var surface)."""
 
-    def test_default_is_strict(self):
-        self.assertEqual(DEFAULT_EXECUTION_MODE, "strict")
+    def test_default_is_project(self):
+        self.assertEqual(DEFAULT_EXECUTION_MODE, "project")
 
     def test_config_project(self):
         with patch("tools.code_execution_tool._load_config",
@@ -125,7 +125,7 @@ class TestResolveChildPython(unittest.TestCase):
     def test_project_with_no_venv_falls_back(self):
         """Project mode without VIRTUAL_ENV or CONDA_PREFIX → sys.executable."""
         env = {k: v for k, v in os.environ.items()
-               if k not in ("VIRTUAL_ENV", "CONDA_PREFIX")}
+               if k not in {"VIRTUAL_ENV", "CONDA_PREFIX"}}
         with patch.dict(os.environ, env, clear=True):
             self.assertEqual(_resolve_child_python("project"), sys.executable)
 
@@ -227,11 +227,6 @@ class TestResolveChildCwd(unittest.TestCase):
 
 class TestModeAwareSchema(unittest.TestCase):
 
-    def test_default_description_mentions_temp_dir(self):
-        with patch("tools.code_execution_tool._load_config", return_value={}):
-            desc = build_execute_code_schema()["description"]
-        self.assertIn("temp dir", desc)
-
     def test_strict_description_mentions_temp_dir(self):
         desc = build_execute_code_schema(mode="strict")["description"]
         self.assertIn("temp dir", desc)
@@ -286,21 +281,15 @@ class TestModeAwareSchema(unittest.TestCase):
 class TestExecuteCodeModeIntegration(unittest.TestCase):
     """End-to-end: verify the subprocess actually runs where we expect."""
 
-    def _run(self, code, mode=None, enabled_tools=None, extra_env=None):
+    def _run(self, code, mode, enabled_tools=None, extra_env=None):
         env_overrides = extra_env or {}
-        config_patch = (
-            _mock_mode(mode)
-            if mode is not None
-            else patch("tools.code_execution_tool._load_config", return_value={})
-        )
-        task_mode = mode or "default"
-        with config_patch:
+        with _mock_mode(mode):
             with patch.dict(os.environ, env_overrides):
                 with patch("model_tools.handle_function_call",
                            side_effect=_mock_handle_function_call):
                     raw = execute_code(
                         code=code,
-                        task_id=f"test-{task_mode}",
+                        task_id=f"test-{mode}",
                         enabled_tools=enabled_tools or list(SANDBOX_ALLOWED_TOOLS),
                     )
         return json.loads(raw)
@@ -325,44 +314,6 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
             self.assertEqual(
                 os.path.realpath(result["output"].strip()),
                 os.path.realpath(td),
-            )
-
-    def test_default_mode_keeps_relative_helper_file_out_of_session_cwd(self):
-        """Default mode: ad-hoc relative helpers land in temp, not workspace."""
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            result = self._run(
-                (
-                    "from pathlib import Path\n"
-                    "Path('helper.py').write_text('scratch', encoding='utf-8')\n"
-                    "print(Path.cwd())\n"
-                ),
-                extra_env={"TERMINAL_CWD": td},
-            )
-            self.assertEqual(result["status"], "success")
-            self.assertIn("hermes_sandbox_", result["output"])
-            self.assertFalse(
-                os.path.exists(os.path.join(td, "helper.py")),
-                "default execute_code mode must not write relative helper files into TERMINAL_CWD",
-            )
-
-    def test_default_mode_allows_explicit_output_path(self):
-        """Default temp-cwd mode still permits deliberate deliverable paths."""
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            output_path = os.path.join(td, "deliverable.txt")
-            result = self._run(
-                (
-                    "from pathlib import Path\n"
-                    f"Path({output_path!r}).write_text('deliverable', encoding='utf-8')\n"
-                    "print('wrote deliverable')\n"
-                ),
-                extra_env={"TERMINAL_CWD": td},
-            )
-            self.assertEqual(result["status"], "success")
-            self.assertEqual(
-                open(output_path, encoding="utf-8").read(),
-                "deliverable",
             )
 
     def test_project_mode_interpreter_is_venv_python(self):

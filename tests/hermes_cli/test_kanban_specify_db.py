@@ -10,15 +10,6 @@ import pytest
 from hermes_cli import kanban_db as kb
 
 
-_PAYSLIP_BODY = (
-    "תלוש שכר עבור עובד בדיקה\n"
-    "ת.ז. 000000000\n"
-    "מעסיק: חברת דוגמה בע\"מ\n"
-    "ברוטו 12,500\n"
-    "נטו 9,800\n"
-)
-
-
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
@@ -180,33 +171,6 @@ def test_specify_with_only_body_preserves_title(kanban_home):
         t = kb.get_task(conn, tid)
     assert t.title == "keep this title"
     assert t.body == "new body only"
-
-
-def test_specify_blocks_payroll_pii_body(kanban_home):
-    with kb.connect() as conn:
-        tid = _create_triage(conn, title="rough")
-        with pytest.raises(kb.PIIWriteBlocked):
-            kb.specify_triage_task(conn, tid, body=_PAYSLIP_BODY)
-        task = kb.get_task(conn, tid)
-
-    assert task.status == "triage"
-    assert task.body is None
-
-
-def test_specify_allows_pii_after_explicit_confirmation(kanban_home):
-    with kb.connect() as conn:
-        tid = _create_triage(conn, title="rough")
-        ok = kb.specify_triage_task(
-            conn,
-            tid,
-            body=_PAYSLIP_BODY,
-            allow_pii=True,
-        )
-        task = kb.get_task(conn, tid)
-
-    assert ok is True
-    assert task.status in {"todo", "ready"}
-    assert task.body == _PAYSLIP_BODY
 
 
 def test_specify_second_call_noop_false(kanban_home):

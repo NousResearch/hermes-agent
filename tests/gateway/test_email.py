@@ -18,8 +18,6 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 from gateway.platforms.base import SendResult
@@ -660,7 +658,6 @@ class TestSendMethods(unittest.TestCase):
     def test_send_image_includes_url(self):
         """send_image should include image URL in email body."""
         import asyncio
-        from unittest.mock import AsyncMock
         adapter = self._make_adapter()
 
         adapter.send = AsyncMock(return_value=SendResult(success=True))

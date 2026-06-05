@@ -1,7 +1,6 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
 
 import logging
-import os
 import sys
 import types
 from pathlib import Path
@@ -13,17 +12,13 @@ import yaml
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
-    LoadedPlugin,
     PluginContext,
     PluginManager,
     PluginManifest,
-    get_plugin_manager,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
     resolve_plugin_command_result,
-    discover_plugins,
-    invoke_hook,
 )
 
 
@@ -328,6 +323,8 @@ class TestPluginHooks:
     def test_valid_hooks_include_request_scoped_api_hooks(self):
         assert "pre_api_request" in VALID_HOOKS
         assert "post_api_request" in VALID_HOOKS
+        assert "api_request_error" in VALID_HOOKS
+        assert "subagent_start" in VALID_HOOKS
         assert "transform_terminal_output" in VALID_HOOKS
         assert "transform_tool_result" in VALID_HOOKS
         assert "transform_llm_output" in VALID_HOOKS
@@ -373,6 +370,26 @@ class TestPluginHooks:
 
         # Should not raise
         mgr.invoke_hook("pre_tool_call", tool_name="test", args={}, task_id="t1")
+
+    def test_invoke_hook_adds_observer_schema_version(self, tmp_path, monkeypatch):
+        """invoke_hook() supplies the observer schema version for all hooks."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "schema_plugin",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: kw.get("telemetry_schema_version"))'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr.invoke_hook("pre_tool_call", tool_name="test", args={}) == [
+            "hermes.observer.v1"
+        ]
 
     def test_hook_exception_does_not_propagate(self, tmp_path, monkeypatch):
         """A hook callback that raises does NOT crash the caller."""
@@ -440,6 +457,8 @@ class TestPluginHooks:
         mgr = PluginManager()
         mgr.discover_and_load()
 
+        assert mgr.has_hook("pre_api_request") is True
+        assert mgr.has_hook("post_api_request") is False
         results = mgr.invoke_hook(
             "pre_api_request",
             session_id="s1",
@@ -493,7 +512,6 @@ class TestPluginHooks:
 
         assert any("on_banana" in record.message for record in caplog.records)
 
-
 class TestPreToolCallBlocking:
     """Tests for the pre_tool_call block directive helper."""
 
@@ -538,6 +556,95 @@ class TestPreToolCallBlocking:
         assert get_pre_tool_call_block_message("terminal", {}) == "first blocker"
 
 
+class TestThreadToolWhitelist:
+    """Tests for the thread-local tool whitelist used by background review forks."""
+
+    def test_allowed_tool_passes_through_to_hooks(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist({"memory", "skill_manage"})
+        try:
+            assert get_pre_tool_call_block_message("memory", {}) is None
+        finally:
+            clear_thread_tool_whitelist()
+
+    def test_disallowed_tool_blocked_with_message(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist(
+            {"memory"}, deny_msg_fmt="denied: {tool_name}"
+        )
+        try:
+            msg = get_pre_tool_call_block_message("terminal", {})
+            assert msg == "denied: terminal"
+        finally:
+            clear_thread_tool_whitelist()
+
+    def test_clear_restores_unrestricted_behavior(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist({"memory"})
+        clear_thread_tool_whitelist()
+        # After clearing, any tool should pass through to plugin hooks (which
+        # return [] here, so result is None).
+        assert get_pre_tool_call_block_message("terminal", {}) is None
+
+    def test_whitelist_is_thread_local(self, monkeypatch):
+        """Setting a whitelist in one thread must NOT leak into another."""
+        import threading
+
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+
+        # Main thread: install a restrictive whitelist.
+        set_thread_tool_whitelist({"memory"})
+        try:
+            assert get_pre_tool_call_block_message("terminal", {}) is not None
+
+            # Worker thread: should NOT inherit main thread's whitelist.
+            result = {}
+
+            def worker():
+                result["msg"] = get_pre_tool_call_block_message("terminal", {})
+
+            t = threading.Thread(target=worker)
+            t.start()
+            t.join()
+            assert result["msg"] is None, (
+                "thread-local whitelist leaked across threads"
+            )
+        finally:
+            clear_thread_tool_whitelist()
+
+
 # ── TestPluginContext ──────────────────────────────────────────────────────
 
 
@@ -572,6 +679,129 @@ class TestPluginContext:
 
         from tools.registry import registry
         assert "plugin_echo" in registry._tools
+
+    def test_register_tool_rejects_shadow_without_override(self, tmp_path, monkeypatch, caplog):
+        """Without override=True, registering a tool name claimed by a different toolset is rejected."""
+        from tools.registry import registry
+
+        # Seed an existing entry from a non-plugin toolset.
+        registry.register(
+            name="shadow_target",
+            toolset="terminal",
+            schema={"name": "shadow_target", "description": "Built-in", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: "built-in",
+        )
+        original_handler = registry._tools["shadow_target"].handler
+        try:
+            plugins_dir = tmp_path / "hermes_test" / "plugins"
+            plugin_dir = plugins_dir / "shadow_plugin"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "shadow_plugin"}))
+            (plugin_dir / "__init__.py").write_text(
+                'def register(ctx):\n'
+                '    ctx.register_tool(\n'
+                '        name="shadow_target",\n'
+                '        toolset="plugin_shadow_plugin",\n'
+                '        schema={"name": "shadow_target", "description": "Plugin", "parameters": {"type": "object", "properties": {}}},\n'
+                '        handler=lambda args, **kw: "plugin",\n'
+                '    )\n'
+            )
+            hermes_home = tmp_path / "hermes_test"
+            (hermes_home / "config.yaml").write_text(
+                yaml.safe_dump({"plugins": {"enabled": ["shadow_plugin"]}})
+            )
+            monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+            with caplog.at_level(logging.ERROR, logger="tools.registry"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+
+            # Original handler must still be in place — registration was rejected.
+            assert registry._tools["shadow_target"].handler is original_handler
+            assert registry._tools["shadow_target"].toolset == "terminal"
+            # And an ERROR was logged explaining why and how to opt in.
+            assert any("override=True" in r.message for r in caplog.records)
+        finally:
+            registry.deregister("shadow_target")
+
+    def test_register_tool_override_replaces_existing(self, tmp_path, monkeypatch, caplog):
+        """override=True lets a plugin replace an existing built-in tool."""
+        from tools.registry import registry
+
+        registry.register(
+            name="override_target",
+            toolset="terminal",
+            schema={"name": "override_target", "description": "Built-in", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: "built-in",
+        )
+        try:
+            plugins_dir = tmp_path / "hermes_test" / "plugins"
+            plugin_dir = plugins_dir / "override_plugin"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "override_plugin"}))
+            (plugin_dir / "__init__.py").write_text(
+                'def register(ctx):\n'
+                '    ctx.register_tool(\n'
+                '        name="override_target",\n'
+                '        toolset="plugin_override_plugin",\n'
+                '        schema={"name": "override_target", "description": "Plugin", "parameters": {"type": "object", "properties": {}}},\n'
+                '        handler=lambda args, **kw: "plugin",\n'
+                '        override=True,\n'
+                '    )\n'
+            )
+            hermes_home = tmp_path / "hermes_test"
+            (hermes_home / "config.yaml").write_text(
+                yaml.safe_dump({"plugins": {"enabled": ["override_plugin"]}})
+            )
+            monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+            with caplog.at_level(logging.INFO, logger="tools.registry"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+
+            # Plugin handler replaced the built-in one.
+            assert registry._tools["override_target"].toolset == "plugin_override_plugin"
+            assert registry._tools["override_target"].handler({}, ) == "plugin"
+            # Override is audit-logged at INFO.
+            assert any(
+                "overriding existing" in r.message and "override_target" in r.message
+                for r in caplog.records
+            )
+            # Plugin tracks it.
+            assert "override_target" in mgr._plugin_tool_names
+        finally:
+            registry.deregister("override_target")
+
+    def test_register_tool_override_on_new_name_is_noop_path(self, tmp_path, monkeypatch):
+        """override=True on a brand-new name still registers cleanly (no existing entry to replace)."""
+        from tools.registry import registry
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "new_override_plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "new_override_plugin"}))
+        (plugin_dir / "__init__.py").write_text(
+            'def register(ctx):\n'
+            '    ctx.register_tool(\n'
+            '        name="brand_new_override_tool",\n'
+            '        toolset="plugin_new_override_plugin",\n'
+            '        schema={"name": "brand_new_override_tool", "description": "New", "parameters": {"type": "object", "properties": {}}},\n'
+            '        handler=lambda args, **kw: "ok",\n'
+            '        override=True,\n'
+            '    )\n'
+        )
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["new_override_plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        try:
+            mgr = PluginManager()
+            mgr.discover_and_load()
+            assert "brand_new_override_tool" in registry._tools
+        finally:
+            registry.deregister("brand_new_override_tool")
 
 
 # ── TestPluginToolVisibility ───────────────────────────────────────────────
@@ -1097,7 +1327,6 @@ class TestPluginCommandResultResolution:
         monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
         monkeypatch.setattr("hermes_cli.plugins._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
 
-        import pytest
         with pytest.raises(TimeoutError):
             resolve_plugin_command_result(_slow_handler())
 

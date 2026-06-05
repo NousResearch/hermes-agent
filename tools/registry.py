@@ -81,13 +81,11 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
-        "label_he", "category",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None,
-                 label_he=None, category=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -106,15 +104,6 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
-        # Optional Hebrew display label for surfaces that render tool names to
-        # native (RTL) operators — e.g. companion tool-pickers.  English
-        # ``name`` remains the canonical identifier used by the LLM and tests.
-        self.label_he = label_he
-        # Optional logical grouping (e.g. "automation", "filesystem",
-        # "messaging") used to organize tools in operator-facing UIs without
-        # coupling to the internal ``toolset`` field, which is reserved for
-        # runtime enable/disable + check_fn gating.
-        self.category = category
 
 
 # ---------------------------------------------------------------------------
@@ -255,16 +244,15 @@ class ToolRegistry:
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
-        label_he: str = None,
-        category: str = None,
+        override: bool = False,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
-        ``label_he`` (optional Hebrew display name) and ``category`` (optional
-        operator-facing grouping like "automation", "filesystem") are surfaced
-        to UIs that render tools to native users; they don't affect runtime
-        gating or LLM-visible schema. Default ``None`` keeps existing tool
-        registrations untouched.
+        ``override=True`` is an explicit opt-in for plugins that intend to
+        replace an existing built-in tool implementation (e.g. swap the
+        default browser tool for a headed-Chrome CDP backend). Without it,
+        registrations that would shadow an existing tool from a different
+        toolset are rejected to prevent accidental overwrites.
         """
         with self._lock:
             existing = self._tools.get(name)
@@ -280,13 +268,22 @@ class ToolRegistry:
                         "Tool '%s': MCP toolset '%s' overwriting MCP toolset '%s'",
                         name, toolset, existing.toolset,
                     )
+                elif override:
+                    # Explicit plugin opt-in: replace the existing tool.
+                    # Logged at INFO so the override is auditable in agent.log.
+                    logger.info(
+                        "Tool '%s': toolset '%s' overriding existing toolset '%s' "
+                        "(override=True opt-in)",
+                        name, toolset, existing.toolset,
+                    )
                 else:
                     # Reject shadowing — prevent plugins/MCP from overwriting
                     # built-in tools or vice versa.
                     logger.error(
                         "Tool registration REJECTED: '%s' (toolset '%s') would "
-                        "shadow existing tool from toolset '%s'. Deregister the "
-                        "existing tool first if this is intentional.",
+                        "shadow existing tool from toolset '%s'. Pass "
+                        "override=True to register() if the replacement is "
+                        "intentional, or deregister the existing tool first.",
                         name, toolset, existing.toolset,
                     )
                     return
@@ -302,8 +299,6 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
-                label_he=label_he,
-                category=category,
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
@@ -409,7 +404,16 @@ class ToolRegistry:
             return entry.handler(args, **kwargs)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
-            return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
+            # Route through the sanitizer so framing tokens / CDATA / fences
+            # in exception strings don't reach the model as structural noise.
+            # See model_tools._sanitize_tool_error for rationale.
+            raw = f"Tool execution failed: {type(e).__name__}: {e}"
+            try:
+                from model_tools import _sanitize_tool_error
+                sanitized = _sanitize_tool_error(raw)
+            except Exception:
+                sanitized = raw  # defensive: never let the sanitizer block error propagation
+            return json.dumps({"error": sanitized})
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)

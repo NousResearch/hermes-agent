@@ -177,7 +177,7 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
         "conflicts (Telegram, Discord, and Slack only allow one active "
         "session per token)."
     )
-    print_info("Recommendation: stop the gateway first with 'hermes stop'.")
+    print_info("Recommendation: stop the gateway first with 'hermes gateway stop'.")
     print()
     if not auto_yes and not prompt_yes_no("Continue anyway?", default=False):
         print_info("Migration cancelled. Stop the gateway and try again.")
@@ -298,7 +298,7 @@ def claw_command(args):
 
     if action == "migrate":
         _cmd_migrate(args)
-    elif action in ("cleanup", "clean"):
+    elif action in {"cleanup", "clean"}:
         _cmd_cleanup(args)
     else:
         print("Usage: hermes claw <command> [options]")

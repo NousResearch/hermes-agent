@@ -46,7 +46,7 @@ const renderPlain = (node: React.ReactNode) => {
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {
     expect(matches('say _hi_ there')).toEqual(['_hi_'])
-    expect(matches('very __bold__ move')).toEqual(['__bold__'])
+    expect(matches('very __bold move__ today')).toEqual(['__bold move__'])
     expect(matches('(_paren_) and [_bracket_]')).toEqual(['_paren_', '_bracket_'])
   })
 
@@ -56,6 +56,12 @@ describe('INLINE_RE emphasis', () => {
     expect(matches(path)).toEqual([])
     expect(matches('snake_case_var and MY_CONST')).toEqual([])
     expect(matches('foo__bar__baz')).toEqual([])
+  })
+
+  it('keeps Python dunder identifiers literal', () => {
+    expect(matches('if __name__ == "__main__":')).toEqual([])
+    expect(matches('def __init__(self):')).toEqual([])
+    expect(matches('print(__file__)')).toEqual([])
   })
 
   it('still matches asterisk emphasis intraword', () => {
@@ -93,7 +99,12 @@ describe('stripInlineMarkup', () => {
   it('strips word-boundary emphasis only', () => {
     expect(stripInlineMarkup('say _hi_ there')).toBe('say hi there')
     expect(stripInlineMarkup('browser_screenshot_ecc.png')).toBe('browser_screenshot_ecc.png')
-    expect(stripInlineMarkup('__bold__ and foo__bar__')).toBe('bold and foo__bar__')
+    expect(stripInlineMarkup('__bold move__ and foo__bar__')).toBe('bold move and foo__bar__')
+  })
+
+  it('preserves Python dunder identifiers', () => {
+    expect(stripInlineMarkup('if __name__ == "__main__":')).toBe('if __name__ == "__main__":')
+    expect(stripInlineMarkup('class X: def __init__(self): pass')).toBe('class X: def __init__(self): pass')
   })
 
   it('leaves ~!/~? kaomoji alone and still handles real subscript', () => {
@@ -215,5 +226,106 @@ describe('Md wrapping', () => {
     )
 
     expect(lines.some(line => line.startsWith(' hi  ok'))).toBe(true)
+  })
+
+  it('renders Python dunder identifiers literally outside code fences', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: 'if __name__ == "__main__":\n    obj.__init__()'
+        })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('if __name__ == "__main__":')
+    expect(rendered).toContain('obj.__init__()')
+  })
+})
+
+describe('Md link labels', () => {
+  it('renders bare URLs with readable slug labels', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 120 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: 'see https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure for details'
+        })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('Puerto Rico El Yunque Rainforest Adventure')
+    expect(rendered).not.toContain('https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure')
+  })
+
+  it('keeps explicit markdown labels as the immediate fallback', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: '[Trip details](https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure)'
+        })
+      )
+    )
+
+    expect(lines.join('\n')).toContain('Trip details')
+  })
+})
+
+describe('renderTable CJK width alignment', () => {
+  it('column starts share the same display offset across CJK rows', async () => {
+    const { stringWidth } = await import('@hermes/ink')
+
+    const md = [
+      '| 配置 | Config | 状态 |',
+      '|------|--------|------|',
+      '| Vicuna (report) | dense | × |',
+      '| ChatGLM | chat | ✓ |',
+      '| 通义千问 | qwen | × |'
+    ].join('\n')
+
+    // Pre-fix bug: ` `.repeat(w - stripInlineMarkup(...).length) used
+    // UTF-16 code units, so a CJK header cell padded to 2 cells while
+    // the body cell padded to 4, drifting subsequent columns by 2
+    // cells per CJK char.
+    //
+    // Post-fix contract: the prefix preceding the start of column N
+    // has the same display width across the header and every body row
+    // (deduped to skip the divider, which renders independently).
+    const lines = renderPlain(
+      React.createElement(Box, null, React.createElement(Md, { compact: true, t: DEFAULT_THEME, text: md }))
+    ).filter(line => line.trim().length > 0)
+
+    // Heuristic: a "data row" line either contains 'Config' (header)
+    // or one of the body labels; a divider is all box-drawing.  Use
+    // the substring 'Config' / 'dense' / 'chat' / 'qwen' as the
+    // unique anchor for column 2's start position on each row.
+    const colStarts = (line: string, anchor: string): number => {
+      const idx = line.indexOf(anchor)
+
+      return idx < 0 ? -1 : stringWidth(line.slice(0, idx))
+    }
+
+    const headerCol2 = lines.map(l => colStarts(l, 'Config')).find(v => v >= 0)
+    const denseCol2 = lines.map(l => colStarts(l, 'dense')).find(v => v >= 0)
+    const chatCol2 = lines.map(l => colStarts(l, 'chat')).find(v => v >= 0)
+    const qwenCol2 = lines.map(l => colStarts(l, 'qwen')).find(v => v >= 0)
+
+    expect(headerCol2).toBeDefined()
+    expect(denseCol2).toBe(headerCol2)
+    expect(chatCol2).toBe(headerCol2)
+    // The CJK row is the one that drifted before the fix.  It must
+    // align with the rest now.
+    expect(qwenCol2).toBe(headerCol2)
   })
 })

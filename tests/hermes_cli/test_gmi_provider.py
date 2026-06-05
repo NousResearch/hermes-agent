@@ -80,14 +80,6 @@ class TestGmiConfigRegistry:
 
 
 class TestGmiModelCatalog:
-    def test_static_model_fallback_exists(self):
-        assert "gmi" in _PROVIDER_MODELS
-        models = _PROVIDER_MODELS["gmi"]
-        assert "zai-org/GLM-5.1-FP8" in models
-        assert "deepseek-ai/DeepSeek-V3.2" in models
-        assert "moonshotai/Kimi-K2.5" in models
-        assert "anthropic/claude-sonnet-4.6" in models
-
     def test_canonical_provider_entry(self):
         slugs = [p.slug for p in CANONICAL_PROVIDERS]
         assert "gmi" in slugs
@@ -183,7 +175,6 @@ class TestGmiDoctor:
             "DASHSCOPE_API_KEY",
             "MINIMAX_API_KEY",
             "MINIMAX_CN_API_KEY",
-            "AI_GATEWAY_API_KEY",
             "KILOCODE_API_KEY",
             "OPENCODE_ZEN_API_KEY",
             "OPENCODE_GO_API_KEY",
@@ -268,11 +259,6 @@ class TestGmiModelMetadata:
 
 
 class TestGmiAuxiliary:
-    def test_aux_default_model(self):
-        from agent.auxiliary_client import _get_aux_model_for_provider
-
-        assert _get_aux_model_for_provider("gmi") == "google/gemini-3.1-flash-lite-preview"
-
     def test_resolve_provider_client_uses_gmi_aux_default(self, monkeypatch):
         monkeypatch.setenv("GMI_API_KEY", "gmi-test-key")
 

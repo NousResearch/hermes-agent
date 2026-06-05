@@ -38,7 +38,7 @@ _HERMES_CORE_TOOLS = [
     # Vision + image generation
     "vision_analyze", "image_generate",
     # Skills
-    "skills_list", "list_skills", "skill_view", "skill_manage",
+    "skills_list", "skill_view", "skill_manage",
     # Browser automation
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
@@ -56,9 +56,6 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
-    # Workflow + routine primitives (canonical pivot away from
-    # save_workflow_rule, see hermes-agent-202606-028 / desktop-202606-514)
-    "save_workflow", "create_routine",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -73,6 +70,16 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+]
+
+# Webhook events may originate from untrusted third-party content (for example,
+# public PR titles/comments). Keep the default webhook toolset intentionally
+# constrained to avoid local file/system execution by prompt injection.
+_HERMES_WEBHOOK_SAFE_TOOLS = [
+    "web_search",
+    "web_extract",
+    "vision_analyze",
+    "clarify",
 ]
 
 
@@ -91,6 +98,17 @@ TOOLSETS = {
         "tools": ["web_search"],
         "includes": []
     },
+
+    "x_search": {
+        "description": (
+            "Search X (Twitter) posts and threads via xAI's built-in "
+            "x_search Responses tool. Available when xAI credentials are "
+            "configured (SuperGrok OAuth or XAI_API_KEY). Off by default; "
+            "enable in `hermes tools` → X (Twitter) Search."
+        ),
+        "tools": ["x_search"],
+        "includes": []
+    },
     
     "vision": {
         "description": "Image analysis and vision tools",
@@ -107,6 +125,17 @@ TOOLSETS = {
     "image_gen": {
         "description": "Creative generation tools (images)",
         "tools": ["image_generate"],
+        "includes": []
+    },
+
+    "video_gen": {
+        "description": (
+            "Video generation tools. Single ``video_generate`` tool covers "
+            "text-to-video (prompt only) and image-to-video (prompt + "
+            "image_url) — the active backend auto-routes. Configure via "
+            "``hermes tools`` → Video Generation."
+        ),
+        "tools": ["video_generate"],
         "includes": []
     },
 
@@ -134,10 +163,10 @@ TOOLSETS = {
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
-        "tools": ["skills_list", "list_skills", "skill_view", "skill_manage"],
+        "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
-
+    
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
         "tools": [
@@ -155,36 +184,13 @@ TOOLSETS = {
         "tools": ["cronjob"],
         "includes": []
     },
-
-    "workflows": {
-        "description": (
-            "Workflow + routine primitives: save_workflow persists a YAML "
-            "describing what happens when a trigger fires; create_routine "
-            "schedules a cron tick that fires a workflow. Files live under "
-            "<HERMES_HOME>/workflows/ and <HERMES_HOME>/routines/. Supersedes "
-            "the deprecated save_workflow_rule store."
-        ),
-        "tools": ["save_workflow", "create_routine"],
-        "includes": []
-    },
     
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
         "tools": ["send_message"],
         "includes": []
     },
-    
-    "rl": {
-        "description": "RL training tools for running reinforcement learning on Tinker-Atropos",
-        "tools": [
-            "rl_list_environments", "rl_select_environment",
-            "rl_get_current_config", "rl_edit_config",
-            "rl_start_training", "rl_check_status",
-            "rl_stop_training", "rl_get_results",
-            "rl_list_runs", "rl_test_inference"
-        ],
-        "includes": []
-    },
+
     
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
@@ -207,6 +213,12 @@ TOOLSETS = {
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",
         "tools": ["memory"],
+        "includes": []
+    },
+
+    "context_engine": {
+        "description": "Runtime tools exposed by the active context engine",
+        "tools": [],
         "includes": []
     },
     
@@ -339,7 +351,7 @@ TOOLSETS = {
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
-            "skills_list", "list_skills", "skill_view", "skill_manage",
+            "skills_list", "skill_view", "skill_manage",
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
@@ -363,7 +375,7 @@ TOOLSETS = {
             # Vision + image generation
             "vision_analyze", "image_generate",
             # Skills
-            "skills_list", "list_skills", "skill_view", "skill_manage",
+            "skills_list", "skill_view", "skill_manage",
             # Browser automation
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
@@ -377,8 +389,6 @@ TOOLSETS = {
             "execute_code", "delegate_task",
             # Cronjob management
             "cronjob",
-            # Workflow + routine primitives
-            "save_workflow", "create_routine",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 
@@ -396,7 +406,7 @@ TOOLSETS = {
         # Mirrors hermes-cli so cron's "default" toolset is the same set of
         # core tools users see interactively — then `hermes tools` filters
         # them down per the platform config. _DEFAULT_OFF_TOOLSETS (moa,
-        # homeassistant, rl) are excluded by _get_platform_tools() unless
+        # homeassistant) are excluded by _get_platform_tools() unless
         # the user explicitly enables them.
         "description": "Default cron toolset - same core tools as hermes-cli; gated by `hermes tools`",
         "tools": _HERMES_CORE_TOOLS,
@@ -529,7 +539,7 @@ TOOLSETS = {
 
     "hermes-webhook": {
         "description": "Webhook toolset - receive and process external webhook events",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_WEBHOOK_SAFE_TOOLS,
         "includes": []
     },
 

@@ -32,11 +32,11 @@ def hooks_command(args) -> None:
         print("Run 'hermes hooks --help' for details.")
         return
 
-    if sub in ("list", "ls"):
+    if sub in {"list", "ls"}:
         _cmd_list(args)
     elif sub == "test":
         _cmd_test(args)
-    elif sub in ("revoke", "remove", "rm"):
+    elif sub in {"revoke", "remove", "rm"}:
         _cmd_revoke(args)
     elif sub == "doctor":
         _cmd_doctor(args)
@@ -220,7 +220,7 @@ def _cmd_test(args) -> None:
     if getattr(args, "for_tool", None):
         specs = [
             s for s in specs
-            if s.event not in ("pre_tool_call", "post_tool_call")
+            if s.event not in {"pre_tool_call", "post_tool_call"}
             or s.matches_tool(args.for_tool)
         ]
 

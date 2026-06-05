@@ -11,6 +11,7 @@ import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
   boundedLiveRenderText,
   buildToolTrailLine,
+  buildVerboseToolTrailLine,
   estimateTokensRough,
   isTransientTrailLine,
   sameToolTrailGroup,
@@ -542,8 +543,8 @@ class TurnController {
     }
   }
 
-  recordReasoningAvailable(text: string) {
-    if (this.interrupted || !getUiState().showReasoning) {
+  recordReasoningAvailable(text: string, force = false) {
+    if (this.interrupted || (!force && !getUiState().showReasoning)) {
       return
     }
 
@@ -560,8 +561,8 @@ class TurnController {
     this.pulseReasoningStreaming()
   }
 
-  recordReasoningDelta(text: string) {
-    if (this.interrupted || !getUiState().showReasoning) {
+  recordReasoningDelta(text: string, force = false) {
+    if (this.interrupted || (!force && !getUiState().showReasoning)) {
       return
     }
 
@@ -587,14 +588,15 @@ class TurnController {
     error?: string,
     summary?: string,
     duration?: number,
-    todos?: unknown
+    todos?: unknown,
+    resultText?: string
   ) {
     if (this.interrupted) {
       return
     }
 
     this.recordTodos(todos)
-    const line = this.completeTool(toolId, fallbackName, error, summary, duration)
+    const line = this.completeTool(toolId, fallbackName, error, summary, duration, resultText)
 
     this.pendingSegmentTools = [...this.pendingSegmentTools, line]
     this.flushPendingToolsIntoLastSegment()
@@ -606,30 +608,42 @@ class TurnController {
     toolId: string,
     fallbackName?: string,
     error?: string,
-    duration?: number
+    duration?: number,
+    resultText?: string
   ) {
     if (this.interrupted) {
       return
     }
 
     this.flushStreamingSegment()
-    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration)])
+    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration, resultText)])
     this.publishToolState()
   }
 
-  private completeTool(toolId: string, fallbackName?: string, error?: string, summary?: string, duration?: number) {
+  private completeTool(
+    toolId: string,
+    fallbackName?: string,
+    error?: string,
+    summary?: string,
+    duration?: number,
+    resultText?: string
+  ) {
     const done = this.activeTools.find(tool => tool.id === toolId)
     const name = done?.name ?? fallbackName ?? 'tool'
     const label = toolTrailLabel(name)
     const fallbackDuration = done?.startedAt ? (Date.now() - done.startedAt) / 1000 : undefined
 
-    const line = buildToolTrailLine(
-      name,
-      done?.context || '',
-      Boolean(error),
-      error || summary || '',
-      duration ?? fallbackDuration
-    )
+    const line =
+      done?.verboseArgs || resultText
+        ? buildVerboseToolTrailLine(
+            name,
+            done?.context || '',
+            Boolean(error),
+            duration ?? fallbackDuration,
+            done?.verboseArgs,
+            error || resultText || summary || ''
+          )
+        : buildToolTrailLine(name, done?.context || '', Boolean(error), error || summary || '', duration ?? fallbackDuration)
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
 
@@ -675,7 +689,7 @@ class TurnController {
     }, STREAM_BATCH_MS)
   }
 
-  recordToolStart(toolId: string, name: string, context: string) {
+  recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string) {
     if (this.interrupted) {
       return
     }
@@ -688,7 +702,7 @@ class TurnController {
     const sample = `${name} ${context}`.trim()
 
     this.toolTokenAcc += sample ? estimateTokensRough(sample) : 0
-    this.activeTools = [...this.activeTools, { context, id: toolId, name, startedAt: Date.now() }]
+    this.activeTools = [...this.activeTools, { context, id: toolId, name, startedAt: Date.now(), verboseArgs }]
 
     patchTurnState({ toolTokens: this.toolTokenAcc, tools: this.activeTools })
   }
@@ -741,6 +755,14 @@ class TurnController {
       const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
       patchTurnState({ streaming: boundedLiveRenderText(visible) })
     }, this.streamDelay)
+  }
+
+  hydrateStreamingText(text: string) {
+    this.streamTimer = clear(this.streamTimer)
+    this.bufRef = text
+    const raw = this.bufRef.trimStart()
+    const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
+    patchTurnState({ streaming: boundedLiveRenderText(visible) })
   }
 
   startMessage() {

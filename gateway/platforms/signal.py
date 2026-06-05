@@ -99,11 +99,11 @@ def _guess_extension(data: bytes) -> str:
 
 
 def _is_image_ext(ext: str) -> bool:
-    return ext.lower() in (".jpg", ".jpeg", ".png", ".gif", ".webp")
+    return ext.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
 def _is_audio_ext(ext: str) -> bool:
-    return ext.lower() in (".mp3", ".wav", ".ogg", ".m4a", ".aac")
+    return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac"}
 
 
 _EXT_TO_MIME = {
@@ -191,6 +191,14 @@ class SignalAdapter(BasePlatformAdapter):
         # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
+
+        # Mention filter — only respond in groups when the bot account is @mentioned.
+        # Read from config extra first, then SIGNAL_REQUIRE_MENTION env var.
+        _rm_cfg = extra.get("require_mention")
+        if _rm_cfg is not None:
+            self.require_mention = bool(_rm_cfg)
+        else:
+            self.require_mention = os.getenv("SIGNAL_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
         # DM allowlist — mirrors SIGNAL_ALLOWED_USERS checked by run.py.
         # Stored here so the reaction hooks can skip unauthorized senders
@@ -446,7 +454,9 @@ class SignalAdapter(BasePlatformAdapter):
                 if sent_msg and isinstance(sent_msg, dict):
                     dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
                     sent_ts = sent_msg.get("timestamp")
-                    if dest == self._account_normalized:
+                    sent_msg_group_info = sent_msg.get("groupInfo") or {}
+                    sent_msg_group_id = sent_msg_group_info.get("groupId") if sent_msg_group_info else None
+                    if dest == self._account_normalized or sent_msg_group_id:
                         # Check if this is an echo of our own outbound reply
                         if sent_ts and sent_ts in self._recent_sent_timestamps:
                             self._recent_sent_timestamps.discard(sent_ts)
@@ -515,6 +525,23 @@ class SignalAdapter(BasePlatformAdapter):
         mentions = data_message.get("mentions", [])
         if text and mentions:
             text = _render_mentions(text, mentions)
+
+        # Mention filter: in groups, only process messages that @mention the bot account
+        if is_group and self.require_mention:
+            account_norm = self._account_normalized
+            # Check rendered mention tags OR raw mention metadata
+            mentioned_in_text = account_norm and (
+                f"@{account_norm}" in (text or "")
+            )
+            mentioned_in_metadata = any(
+                m.get("number") == account_norm or m.get("uuid") == account_norm
+                for m in (data_message.get("mentions") or [])
+            )
+            if not mentioned_in_text and not mentioned_in_metadata:
+                logger.debug(
+                    "Signal: ignoring group message (require_mention=true, bot not mentioned)"
+                )
+                return
 
         # Extract quote (reply-to) context from Signal dataMessage
         quote_data = data_message.get("quote") or {}
@@ -1449,7 +1476,7 @@ class SignalAdapter(BasePlatformAdapter):
            contacts from seeing the 👀 reaction (which fires before run.py's
            auth gate and would otherwise reveal that a bot is listening).
         """
-        if os.getenv("SIGNAL_REACTIONS", "true").lower() in ("false", "0", "no"):
+        if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
             return False
         if event is not None:
             sender = getattr(getattr(event, "source", None), "user_id", None)

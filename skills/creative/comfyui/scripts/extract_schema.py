@@ -81,7 +81,7 @@ def trace_to_node(workflow: dict, link: list, *, max_hops: int = 8) -> str | Non
             return None
         cls = node.get("class_type", "")
         # Reroute / Primitive / passthrough wrappers
-        if cls in ("Reroute", "PrimitiveNode", "Note", "easy showAnything"):
+        if cls in {"Reroute", "PrimitiveNode", "Note", "easy showAnything"}:
             inputs = node.get("inputs", {}) or {}
             # Find first link-shaped input and follow it
             next_link = next((v for v in inputs.values() if is_link(v)), None)
@@ -105,7 +105,7 @@ def find_negative_prompt_node(workflow: dict) -> str | None:
         src = trace_to_node(workflow, neg)
         if src and isinstance(workflow.get(src), dict):
             cls = workflow[src].get("class_type", "")
-            if cls.startswith("CLIPTextEncode") or cls in ("smZ CLIPTextEncode", "BNK_CLIPTextEncodeAdvanced"):
+            if cls.startswith("CLIPTextEncode") or cls in {"smZ CLIPTextEncode", "BNK_CLIPTextEncodeAdvanced"}:
                 return src
     return None
 
@@ -121,7 +121,7 @@ def find_positive_prompt_node(workflow: dict) -> str | None:
         src = trace_to_node(workflow, pos)
         if src and isinstance(workflow.get(src), dict):
             cls = workflow[src].get("class_type", "")
-            if cls.startswith("CLIPTextEncode") or cls in ("smZ CLIPTextEncode", "BNK_CLIPTextEncodeAdvanced"):
+            if cls.startswith("CLIPTextEncode") or cls in {"smZ CLIPTextEncode", "BNK_CLIPTextEncodeAdvanced"}:
                 return src
     return None
 

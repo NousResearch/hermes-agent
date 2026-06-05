@@ -5,7 +5,6 @@ background session) across gateway messenger platforms.
 """
 
 import asyncio
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -269,6 +268,88 @@ class TestRunBackgroundTask:
         mock_agent_instance.close.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_media_files_routed_by_type(self, monkeypatch):
+        """Result media is routed to the type-specific sender, not send_document.
+
+        A TTS clip should arrive as a voice bubble, a video as a video, an
+        image as a native image, and everything else as a document.
+        """
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        runner._run_in_executor_with_context = AsyncMock(
+            return_value={"final_response": "see attached", "messages": []}
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        # Four real files so the media-delivery path validator accepts them
+        # (default mode requires the file to exist as a regular file).
+        import os as _os
+        import tempfile as _tempfile
+        _tmpdir = _tempfile.mkdtemp(prefix="bg_media_")
+        _ogg = _os.path.join(_tmpdir, "clip.ogg")
+        _mp4 = _os.path.join(_tmpdir, "render.mp4")
+        _png = _os.path.join(_tmpdir, "chart.png")
+        _pdf = _os.path.join(_tmpdir, "report.pdf")
+        for _p in (_ogg, _mp4, _png, _pdf):
+            with open(_p, "wb") as _fh:
+                _fh.write(b"x")
+        # ogg flagged as voice, mp4 video, png image, pdf doc.
+        media = [
+            (_ogg, True),
+            (_mp4, False),
+            (_png, False),
+            (_pdf, False),
+        ]
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        mock_adapter.send_video = AsyncMock()
+        mock_adapter.send_image_file = AsyncMock()
+        mock_adapter.send_document = AsyncMock()
+        mock_adapter.send_image = AsyncMock()
+        # No text, no markdown images — just the four media attachments.
+        mock_adapter.extract_media = MagicMock(return_value=(media, ""))
+        mock_adapter.extract_images = MagicMock(return_value=([], ""))
+        # Non-telegram platform so every audio ext routes through send_voice.
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        try:
+            await runner._run_background_task("make stuff", source, "bg_test")
+
+            mock_adapter.send_voice.assert_called_once()
+            assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == _ogg
+            mock_adapter.send_video.assert_called_once()
+            assert mock_adapter.send_video.call_args.kwargs["video_path"] == _mp4
+            mock_adapter.send_image_file.assert_called_once()
+            assert mock_adapter.send_image_file.call_args.kwargs["image_path"] == _png
+            mock_adapter.send_document.assert_called_once()
+            assert mock_adapter.send_document.call_args.kwargs["file_path"] == _pdf
+        finally:
+            import shutil as _shutil
+            _shutil.rmtree(_tmpdir, ignore_errors=True)
+
+    @pytest.mark.asyncio
     async def test_telegram_dm_topic_completion_preserves_reply_anchor_metadata(self, monkeypatch):
         """Background completion metadata must let Telegram send thread id plus reply id."""
         from gateway import run as gateway_run
@@ -316,6 +397,7 @@ class TestRunBackgroundTask:
         assert mock_adapter.send.call_args.kwargs["metadata"] == {
             "thread_id": "20197",
             "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20197",
             "telegram_reply_to_message_id": "463",
         }
 

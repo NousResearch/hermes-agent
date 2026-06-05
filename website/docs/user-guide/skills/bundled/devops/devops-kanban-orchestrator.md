@@ -68,6 +68,7 @@ Your job description says "route, don't execute." The rules that enforce that:
 - **For any concrete task, create a Kanban task and assign it.** Every single time.
 - **Split multi-lane requests before creating cards.** A user prompt can contain several independent workstreams. Extract those lanes first, then create one card per lane instead of bundling unrelated work into a single implementer card.
 - **Run independent lanes in parallel.** If two cards do not need each other's output, leave them unlinked so the dispatcher can fan them out. Link only true data dependencies.
+- **Never create dependent work as independent ready cards.** If a card must wait for another card, pass `parents=[...]` in the original `kanban_create` call. Do not create it first and link it later, and do not rely on prose like "wait for T1" inside the body.
 - **If no specialist fits the available profiles, ask the user which profile to create or which existing profile to use.** Do not invent profile names; the dispatcher will silently drop unknown assignees.
 - **Decompose, route, and summarize — that's the whole job.**
 
@@ -85,7 +86,7 @@ Before creating anything, draft the graph out loud (in your response to the user
 2. Map each lane to one of the profiles you discovered in Step 0. If a lane doesn't fit any existing profile, ask the user which to use or create.
 3. Decide whether each lane is independent or gated by another lane.
 4. Create independent lanes as parallel cards with no parent links.
-5. Create synthesis/review/integration cards with parent links to the lanes they depend on.
+5. Create synthesis/review/integration cards with parent links to the lanes they depend on. A child created with unfinished parents starts in `todo`; the dispatcher promotes it to `ready` only after every parent is done.
 
 Examples of prompts that should fan out (using placeholder profile names — substitute whatever exists on the user's setup):
 
@@ -132,6 +133,8 @@ t4 = kanban_create(
 ```
 
 `parents=[...]` gates promotion — children stay in `todo` until every parent reaches `done`, then auto-promote to `ready`. No manual coordination needed; the dispatcher and dependency engine handle it.
+
+If the task graph has dependencies, create the parent cards first, capture their returned ids, and include those ids in the child card's `parents` list during the child `kanban_create` call. Avoid creating all cards in parallel and linking them afterward; that creates a window where the dispatcher can claim a child before its inputs exist.
 
 ### Step 4 — Complete your own task
 
@@ -192,6 +195,30 @@ Tell them what you created in plain prose, naming the actual profiles you used:
 **Don't pre-create the whole graph if the shape depends on intermediate findings.** If T3's structure depends on what T1 and T2 find, let T3 exist as a "synthesize findings" task whose own first step is to read parent handoffs and plan the rest. Orchestrators can spawn orchestrators.
 
 **Tenant inheritance.** If `HERMES_TENANT` is set in your env, pass `tenant=os.environ.get("HERMES_TENANT")` on every `kanban_create` call so child tasks stay in the same namespace.
+
+## Goal-mode cards (persistent workers)
+
+By default a dispatched worker gets **one shot** at its card: it does its work, calls `kanban_complete`/`kanban_block`, and exits. For open-ended cards where one turn rarely finishes the job, pass `goal_mode=True` to wrap that worker in a Ralph-style goal loop — the same engine behind the `/goal` slash command:
+
+```python
+kanban_create(
+    title="Translate the full docs site to French",
+    body="Acceptance: every page translated, no English left, links intact.",
+    assignee="<translator-profile>",
+    goal_mode=True,        # judge re-checks the card after each turn
+    goal_max_turns=15,     # optional budget (default 20)
+)["task_id"]
+```
+
+How it behaves:
+- After each worker turn, an auxiliary judge evaluates the worker's response against the card's **title + body** (treated as the acceptance criteria).
+- Not done + budget remains → the worker keeps going **in the same session** (full context retained — not a fresh respawn).
+- Worker calls `kanban_complete`/`kanban_block` itself → loop stops, normal lifecycle.
+- Budget exhausted without completion → the card is **blocked** for human review (sticky), never a silent exit.
+
+When to use it: long, multi-step, or "keep going until X is true" cards. When NOT to: cheap one-shot cards (translation of a single string, a quick lookup) — the judge overhead isn't worth it, and the dispatcher's existing retry/circuit-breaker already handles transient worker failures.
+
+Write the body as **explicit acceptance criteria** — the judge is only as good as the goal text. "Translate the README" is weaker than "Translate every section of the README to French; no English sentences remain."
 
 ## Recovering stuck workers
 

@@ -133,6 +133,38 @@ class TestAtomicJsonWrite:
         assert result["emoji"] == "🎉"
         assert result["japanese"] == "日本語"
 
+    def test_mode_does_not_crash_without_fchmod(self, tmp_path):
+        """Regression: os.fchmod is Unix-only and absent on Windows. Passing a
+        mode must not raise AttributeError when fchmod is unavailable.
+
+        Simulates the Windows os module by removing fchmod from the namespace.
+        Previously this crashed in `hermes memory setup` while saving the
+        Hindsight config with mode=0o600 (GitHub: Windows setup traceback).
+        """
+        import utils
+
+        target = tmp_path / "secret.json"
+        no_fchmod = {k: getattr(os, k) for k in dir(os) if k != "fchmod"}
+        fake_os = type("FakeOs", (), no_fchmod)
+        assert not hasattr(fake_os, "fchmod")
+
+        with patch.object(utils, "os", fake_os):
+            atomic_json_write(target, {"api_key": "secret"}, mode=0o600)
+
+        assert json.loads(target.read_text(encoding="utf-8")) == {"api_key": "secret"}
+
+    def test_mode_applied_when_supported(self, tmp_path):
+        import stat as stat_mod
+
+        target = tmp_path / "secret.json"
+        atomic_json_write(target, {"api_key": "secret"}, mode=0o600)
+
+        # os.chmod's effect is platform-dependent (Windows only honors the
+        # write bit), so only assert the durable mode on POSIX.
+        if hasattr(os, "fchmod"):
+            actual = stat_mod.S_IMODE(target.stat().st_mode)
+            assert actual == 0o600
+
     def test_concurrent_writes_dont_corrupt(self, tmp_path):
         """Multiple rapid writes should each produce valid JSON."""
         import threading

@@ -1,4 +1,4 @@
-import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
+import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
@@ -6,7 +6,6 @@ import unicodeSpinners from 'unicode-animations'
 import { $delegationState } from '../app/delegationStore.js'
 import type { IndicatorStyle } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
-import { $uiState } from '../app/uiStore.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
@@ -75,9 +74,48 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
   return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
 }
 
-function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
-  const ui = useStore($uiState)
-  const style = ui.indicatorStyle
+// `FACES` / `EMOJI_FRAMES` are static, so measure their widest glyph once at
+// module load instead of rescanning on every status render.
+const KAOMOJI_FRAME_WIDTH = FACES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+const EMOJI_FRAME_WIDTH = EMOJI_FRAMES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+
+const indicatorFrameWidth = (style: IndicatorStyle): number => {
+  if (style === 'kaomoji') {
+    return KAOMOJI_FRAME_WIDTH
+  }
+
+  if (style === 'emoji') {
+    return EMOJI_FRAME_WIDTH
+  }
+
+  // 'ascii' and 'unicode' are single-column glyphs.
+  return 1
+}
+
+// Bounded width of the elapsed-time clock, derived from `fmtDuration` itself so
+// the reservation/budget stays consistent with what actually renders (it emits
+// a space between units, e.g. `59m 59s` / `99h 59m`). Durations beyond this
+// (100h+) are left to clip rather than reserving unbounded width.
+export const MAX_DURATION_WIDTH = Math.max(
+  stringWidth(fmtDuration(59 * 60_000 + 59_000)), // "59m 59s"
+  stringWidth(fmtDuration(99 * 3_600_000 + 59 * 60_000)) // "99h 59m"
+)
+
+// Display width to reserve for the busy indicator so its verb + elapsed-time
+// tail can't shove the model off-screen on narrow terminals. Style-aware:
+// `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
+// ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
+// Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
+export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
+  const { showVerb } = renderIndicator(style, 0)
+  const verb = showVerb ? 1 + VERB_PAD_LEN : 0
+  // ` · ` plus the bounded clock (e.g. `59m 59s`).
+  const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
+
+  return indicatorFrameWidth(style) + verb + duration
+}
+
+function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
@@ -143,11 +181,69 @@ function ctxBarColor(pct: number | undefined, t: Theme) {
   return t.color.statusGood
 }
 
+function statusSessionCountLabel(count: number) {
+  return `${count} ${count === 1 ? 'session' : 'sessions'}`
+}
+
 function ctxBar(pct: number | undefined, w = 10) {
   const p = Math.max(0, Math.min(100, pct ?? 0))
   const filled = Math.round((p / 100) * w)
 
   return '█'.repeat(filled) + '░'.repeat(w - filled)
+}
+
+// `minLeftContent` is the display width of the high-priority left segments
+// (status indicator + model + context). Reserving it makes the cwd/branch
+// segment on the right yield FIRST on narrow terminals, instead of squeezing
+// the loading indicator and model down to nothing.
+export function statusRuleWidths(cols: number, cwdLabel: string, minLeftContent = 0) {
+  const width = Math.max(1, Math.floor(cols || 1))
+  const desiredSeparatorWidth = width >= 24 ? 3 : 1
+  const baseMinLeft = width >= 24 ? 8 : 1
+  // Never reserve more than the terminal width; never less than the historical
+  // floor. With the default `minLeftContent = 0` this is identical to the old
+  // behaviour, so callers that don't pass content are unaffected.
+  const minLeftWidth = Math.min(width, Math.max(baseMinLeft, Math.floor(minLeftContent)))
+  const maxRightWidth = Math.max(0, width - desiredSeparatorWidth - minLeftWidth)
+
+  if (!cwdLabel || maxRightWidth <= 0) {
+    return { leftWidth: width, rightWidth: 0, separatorWidth: 0 }
+  }
+
+  const rightWidth = Math.max(0, Math.min(stringWidth(cwdLabel), maxRightWidth))
+  const separatorWidth = rightWidth > 0 ? desiredSeparatorWidth : 0
+  const leftWidth = Math.max(1, width - separatorWidth - rightWidth)
+
+  return { leftWidth, rightWidth, separatorWidth }
+}
+
+// Progressive disclosure for the status rule's lower-priority tail segments.
+// As the terminal narrows we shed the least important pieces first (cost →
+// bg → voice → compressions → duration → context bar), and below the bar
+// breakpoint the context read-out collapses to a bare token count. Status and
+// model are never gated here — they're guaranteed room by `statusRuleWidths`.
+export interface StatusBarSegments {
+  bar: boolean
+  bg: boolean
+  compactCtx: boolean
+  compressions: boolean
+  cost: boolean
+  duration: boolean
+  voice: boolean
+}
+
+export function statusBarSegments(cols: number): StatusBarSegments {
+  const w = Math.max(1, Math.floor(cols || 1))
+
+  return {
+    compactCtx: w < 72,
+    bar: w >= 72,
+    duration: w >= 76,
+    compressions: w >= 80,
+    voice: w >= 84,
+    bg: w >= 88,
+    cost: w >= 96
+  }
 }
 
 function SpawnHud({ t }: { t: Theme }) {
@@ -279,78 +375,173 @@ export function StatusRule({
   model,
   modelFast,
   modelReasoningEffort,
+  indicatorStyle = 'kaomoji',
   usage,
   bgCount,
+  liveSessionCount,
   sessionStartedAt,
   showCost,
   turnStartedAt,
   voiceLabel,
+  onSessionCountClick,
   t
 }: StatusRuleProps) {
   const pct = usage.context_percent
   const barColor = ctxBarColor(pct, t)
+  const segs = statusBarSegments(cols)
 
+  // On narrow terminals the context read-out collapses to a bare token count
+  // (`12k tok`) and the visual fill bar is dropped entirely.
   const ctxLabel = usage.context_max
-    ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+    ? segs.compactCtx
+      ? `${fmtK(usage.context_used ?? 0)} tok`
+      : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
     : usage.total > 0
       ? `${fmtK(usage.total)} tok`
       : ''
 
-  const bar = usage.context_max ? ctxBar(pct) : ''
-  const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
+  const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
+  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+
+  // Width of the must-keep left segments (indicator + model + context). They
+  // are pinned (never shrink) and reserved so the cwd/branch on the right
+  // yields first. The busy face width depends on the active /indicator style
+  // (kaomoji is wide + verb; unicode is a bare 1-col spinner).
+  const essentialWidth =
+    stringWidth('─ ') +
+    (busy ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null) : stringWidth(status)) +
+    stringWidth(' │ ') +
+    stringWidth(modelText) +
+    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+
+  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel, essentialWidth)
+
+  // Whole-segment progressive disclosure for the tail: a segment renders only
+  // if it fits in the space left after the pinned essentials, evaluated in
+  // descending priority order — bar, duration, compressions, voice, session
+  // count, bg, cost. Lower-priority segments drop first and nothing truncates
+  // mid-segment, so status/model/context are never crushed.
+  const SEP = stringWidth(' │ ')
+  let tailBudget = Math.max(0, leftWidth - essentialWidth)
+  const fits = (w: number) => {
+    if (tailBudget >= w) {
+      tailBudget -= w
+
+      return true
+    }
+
+    return false
+  }
+
+  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+  const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+  const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
+
+  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
+  const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+  const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
+  const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
+  const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
+  const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
+  const showCostSeg = segs.cost && showCost && !!costText && fits(SEP + stringWidth(costText))
+
+  const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
+    event.stopImmediatePropagation?.()
+    onSessionCountClick?.()
+  }
+
+  const sessionCountNode = onSessionCountClick ? (
+    <Box flexShrink={0} onClick={handleSessionCountClick}>
+      <Text color={t.color.accent}> │ {sessionCountText}</Text>
+    </Box>
+  ) : (
+    <Text color={t.color.muted}> │ {sessionCountText}</Text>
+  )
 
   return (
     <Box height={1}>
-      <Box flexShrink={1} width={leftWidth}>
-        <Text color={t.color.border} wrap="truncate-end">
-          {'─ '}
+      <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
+        {/* Pinned essentials — never shrink, always visible. */}
+        <Box flexDirection="row" flexShrink={0}>
+          <Text color={t.color.border}>{'─ '}</Text>
           {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
+            <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
           ) : (
-            <Text color={statusColor}>{status}</Text>
+            <Text color={statusColor} wrap="truncate-end">
+              {status}
+            </Text>
           )}
-          <Text color={t.color.muted}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
-          {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
-          {bar ? (
-            <Text color={t.color.muted}>
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {modelText}
+          </Text>
+          {ctxLabel ? (
+            <Text color={t.color.muted} wrap="truncate-end">
               {' │ '}
-              <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
+              {ctxLabel}
             </Text>
           ) : null}
-          {sessionStartedAt ? (
-            <Text color={t.color.muted}>
-              {' │ '}
-              <SessionDuration startedAt={sessionStartedAt} />
+        </Box>
+        {showBar ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
+          </Text>
+        ) : null}
+        {showDuration ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <SessionDuration startedAt={sessionStartedAt!} />
+          </Text>
+        ) : null}
+        {showCompressions ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
+              cmp {compressions}
             </Text>
-          ) : null}
-          {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
-            <Text color={t.color.muted}>
-              {' │ '}
-              <Text color={usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.muted}>
-                cmp {usage.compressions}
-              </Text>
-            </Text>
-          ) : null}
-          <SpawnHud t={t} />
-          {voiceLabel ? (
-            <Text
-              color={
-                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
-              }
-            >
-              {' │ '}
-              {voiceLabel}
-            </Text>
-          ) : null}
-          {bgCount > 0 ? <Text color={t.color.muted}> │ {bgCount} bg</Text> : null}
-          {showCost && typeof usage.cost_usd === 'number' ? (
-            <Text color={t.color.muted}> │ ${usage.cost_usd.toFixed(4)}</Text>
-          ) : null}
-        </Text>
+          </Text>
+        ) : null}
+        {showVoice ? (
+          <Text
+            color={
+              voiceLabel!.startsWith('●') ? t.color.error : voiceLabel!.startsWith('◉') ? t.color.warn : t.color.muted
+            }
+            wrap="truncate-end"
+          >
+            {' │ '}
+            {voiceLabel}
+          </Text>
+        ) : null}
+        {showSessionCount ? sessionCountNode : null}
+        {showBg ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {bgCount} bg
+          </Text>
+        ) : null}
+        {showCostSeg ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {costText}
+          </Text>
+        ) : null}
+        {/* SpawnHud isn't part of the tail budget (its width is dynamic), so it
+            renders last — any overflow truncates the HUD itself rather than the
+            budgeted segments before it. It self-hides when no delegation runs. */}
+        <SpawnHud t={t} />
       </Box>
 
-      <Text color={t.color.border}> ─ </Text>
-      <Text color={t.color.label}>{cwdLabel}</Text>
+      {rightWidth > 0 ? (
+        <>
+          <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
+          <Box flexShrink={0} width={rightWidth}>
+            <Text color={t.color.label} wrap="truncate-end">
+              {cwdLabel}
+            </Text>
+          </Box>
+        </>
+      ) : null}
     </Box>
   )
 }
@@ -455,12 +646,14 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 
 interface StatusRuleProps {
   bgCount: number
+  liveSessionCount: number
   busy: boolean
   cols: number
   cwdLabel: string
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
+  indicatorStyle?: IndicatorStyle
   sessionStartedAt?: null | number
   showCost: boolean
   status: string
@@ -469,6 +662,7 @@ interface StatusRuleProps {
   turnStartedAt?: null | number
   usage: Usage
   voiceLabel?: string
+  onSessionCountClick?: () => void
 }
 
 interface StickyPromptTrackerProps {

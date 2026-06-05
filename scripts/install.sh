@@ -6,7 +6,7 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+#   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -64,11 +64,22 @@ NODE_VERSION="22"
 #   data still at /root/.hermes (HERMES_HOME).  Matches Claude Code / Codex CLI
 #   and keeps Docker bind-mounted /root/ volumes lean.
 ROOT_FHS_LAYOUT=false
+DETECTED_BROWSER_EXECUTABLE=""
 
 # Options
 USE_VENV=true
 RUN_SETUP=true
+SKIP_BROWSER=false
+NO_SKILLS=false
 BRANCH="main"
+INSTALL_COMMIT=""
+ENSURE_DEPS=""
+POSTINSTALL_MODE=false
+MANIFEST_MODE=false
+STAGE_NAME=""
+JSON_OUTPUT=false
+NON_INTERACTIVE=false
+INCLUDE_DESKTOP=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -90,9 +101,41 @@ while [[ $# -gt 0 ]]; do
             RUN_SETUP=false
             shift
             ;;
-        --branch)
+        --skip-browser|--no-playwright)
+            SKIP_BROWSER=true
+            shift
+            ;;
+        --no-skills)
+            NO_SKILLS=true
+            shift
+            ;;
+        --branch|-Branch)
             BRANCH="$2"
             shift 2
+            ;;
+        --commit|-Commit)
+            INSTALL_COMMIT="$2"
+            shift 2
+            ;;
+        --manifest|-Manifest)
+            MANIFEST_MODE=true
+            shift
+            ;;
+        --stage|-Stage)
+            STAGE_NAME="$2"
+            shift 2
+            ;;
+        --json|-Json)
+            JSON_OUTPUT=true
+            shift
+            ;;
+        --non-interactive|-NonInteractive)
+            NON_INTERACTIVE=true
+            shift
+            ;;
+        --include-desktop|-IncludeDesktop)
+            INCLUDE_DESKTOP=true
+            shift
             ;;
         --dir)
             INSTALL_DIR="$2"
@@ -103,6 +146,14 @@ while [[ $# -gt 0 ]]; do
             HERMES_HOME="$2"
             shift 2
             ;;
+        --ensure)
+            ENSURE_DEPS="$2"
+            shift 2
+            ;;
+        --postinstall)
+            POSTINSTALL_MODE=true
+            shift
+            ;;
         -h|--help)
             echo "Hermes Agent Installer"
             echo ""
@@ -111,7 +162,17 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
+            echo "  --skip-browser Skip Playwright/Chromium install (browser tools won't work)"
+            echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
+            echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
+            echo "                   'hermes update' runs never inject bundled skills either"
             echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
+            echo "  --manifest     Print desktop bootstrap stage manifest as JSON"
+            echo "  --stage NAME   Run one desktop bootstrap stage"
+            echo "  --json         Print a JSON result frame for --stage"
+            echo "  --non-interactive  Skip stages that require user input"
+            echo "  --include-desktop  Also build the desktop app (apps/desktop -> Hermes.app)"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -126,6 +187,12 @@ while [[ $# -gt 0 ]]; do
             echo "  (default /root/.hermes).  This keeps Docker bind-mounted volumes"
             echo "  small and ensures the command is on PATH for all shells."
             echo "  Existing installs at \$HERMES_HOME/hermes-agent are preserved in-place."
+            echo "  --ensure DEPS  Install only specified deps (comma-separated)"
+            echo "                   Supported: node, browser, ripgrep, ffmpeg"
+            echo "                   Does NOT clone repo or create venv"
+            echo "  --postinstall  Run post-install setup only (for pip users)"
+            echo "                   Installs optional deps + runs hermes setup"
+            echo "                   Does NOT clone repo or create venv"
             exit 0
             ;;
         *)
@@ -166,6 +233,66 @@ log_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+json_escape() {
+    # Enough for short installer status strings; avoids requiring jq during
+    # pre-install bootstrap.
+    printf '%s' "$1" | tr '\n' ' ' | sed \
+        -e 's/\\/\\\\/g' \
+        -e 's/"/\\"/g'
+}
+
+# npm rewrites tracked package-lock.json files non-deterministically during
+# `npm install` / `npm run pack`. On a managed install those diffs are never
+# intentional, but they leave the checkout dirty — which forces `hermes update`
+# to autostash on every run and makes branch switches fragile. Restore them so
+# a fresh install ends with a clean tree. Best-effort; only touches lockfiles.
+restore_dirty_lockfiles() {
+    local repo="${1:-$INSTALL_DIR}"
+    [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
+    command -v git >/dev/null 2>&1 || return 0
+    local dirty
+    dirty=$(git -C "$repo" diff --name-only 2>/dev/null | grep 'package-lock\.json$' || true)
+    [ -z "$dirty" ] && return 0
+    echo "$dirty" | while IFS= read -r f; do
+        [ -n "$f" ] && git -C "$repo" checkout -- "$f" 2>/dev/null || true
+    done
+}
+
+emit_manifest() {
+    # Stage-Desktop is included only with --include-desktop, mirroring
+    # install.ps1: the signed bootstrap installer (Hermes-Setup) passes it so
+    # a GUI install ends up with a launchable app; the Electron app's own
+    # first-launch bootstrap and the CLI one-liner omit it (building the
+    # desktop from inside the already-running app would clobber it).
+    local desktop_stage=""
+    if [ "$INCLUDE_DESKTOP" = true ]; then
+        desktop_stage='{"name":"desktop","title":"Build desktop app","category":"runtime","needs_user_input":false},'
+    fi
+    printf '%s' '{"protocol_version":1,"stages":[{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},{"name":"python-deps","title":"Install Python dependencies","category":"runtime","needs_user_input":false},{"name":"node-deps","title":"Install browser-tool dependencies","category":"runtime","needs_user_input":false},{"name":"path","title":"Install hermes command","category":"runtime","needs_user_input":false},{"name":"config","title":"Prepare config and skills","category":"configuration","needs_user_input":false},{"name":"setup","title":"Configure API keys and settings","category":"configuration","needs_user_input":true},{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true},'"$desktop_stage"'{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}'
+    printf '\n'
+}
+
+stage_needs_user_input() {
+    case "$1" in
+        setup|gateway) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+emit_stage_json() {
+    local stage="$1"
+    local ok="$2"
+    local skipped="${3:-false}"
+    local reason="${4:-}"
+    local escaped_reason
+    escaped_reason="$(json_escape "$reason")"
+    if [ -n "$escaped_reason" ]; then
+        printf '{"ok":%s,"stage":"%s","skipped":%s,"reason":"%s"}\n' "$ok" "$stage" "$skipped" "$escaped_reason"
+    else
+        printf '{"ok":%s,"stage":"%s","skipped":%s}\n' "$ok" "$stage" "$skipped"
+    fi
+}
+
 prompt_yes_no() {
     local question="$1"
     local default="${2:-yes}"
@@ -178,7 +305,9 @@ prompt_yes_no() {
         *) prompt_suffix="[y/N]" ;;
     esac
 
-    if [ "$IS_INTERACTIVE" = true ]; then
+    if [ "$NON_INTERACTIVE" = true ]; then
+        answer=""
+    elif [ "$IS_INTERACTIVE" = true ]; then
         read -r -p "$question $prompt_suffix " answer || answer=""
     elif [ -r /dev/tty ] && [ -w /dev/tty ]; then
         printf "%s %s " "$question" "$prompt_suffix" > /dev/tty
@@ -245,10 +374,18 @@ resolve_install_layout() {
         fi
         INSTALL_DIR="/usr/local/lib/hermes-agent"
         ROOT_FHS_LAYOUT=true
+        # Place uv-managed Python under /usr/local/share so the venv interpreter
+        # is world-readable.  Default uv paths land in /root/.local/share/uv,
+        # which non-root users can't traverse — leaving the shared
+        # /usr/local/bin/hermes wrapper unable to exec the bad-interpreter venv
+        # python.  See #21457.
+        export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-/usr/local/share/uv/python}"
+        export UV_PYTHON_BIN_DIR="${UV_PYTHON_BIN_DIR:-/usr/local/share/uv/bin}"
         log_info "Root install on Linux — using FHS layout"
         log_info "  Code:    $INSTALL_DIR"
         log_info "  Command: /usr/local/bin/hermes"
         log_info "  Data:    $HERMES_HOME (unchanged)"
+        log_info "  uv Python: $UV_PYTHON_INSTALL_DIR (world-readable)"
         return 0
     fi
 
@@ -314,7 +451,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex"
+            log_info "  iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
             exit 1
             ;;
         *)
@@ -338,52 +475,58 @@ install_uv() {
         return 0
     fi
 
-    log_info "Checking for uv package manager..."
+    # Hermes owns its own uv at $HERMES_HOME/bin/uv.  Always install there —
+    # no PATH probing, no conda guards, no multi-location resolution chains.
+    # The runtime update path (hermes_cli/managed_uv.py) looks in the same
+    # place, so install.sh and `hermes update` stay in sync.
+    local _managed_uv="$HERMES_HOME/bin/uv"
 
-    # Check common locations for uv
-    if command -v uv &> /dev/null; then
-        UV_CMD="uv"
+    if [ -x "$_managed_uv" ]; then
+        UV_CMD="$_managed_uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "uv found ($UV_VERSION)"
+        log_success "Managed uv found ($UV_VERSION)"
         return 0
     fi
 
-    # Check ~/.local/bin (default uv install location) even if not on PATH yet
-    if [ -x "$HOME/.local/bin/uv" ]; then
-        UV_CMD="$HOME/.local/bin/uv"
-        UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "uv found at ~/.local/bin ($UV_VERSION)"
-        return 0
-    fi
+    log_info "Installing managed uv into $HERMES_HOME/bin ..."
+    mkdir -p "$HERMES_HOME/bin"
 
-    # Check ~/.cargo/bin (alternative uv install location)
-    if [ -x "$HOME/.cargo/bin/uv" ]; then
-        UV_CMD="$HOME/.cargo/bin/uv"
-        UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "uv found at ~/.cargo/bin ($UV_VERSION)"
-        return 0
+    # Two-stage: download the installer, then run it.  Piping
+    # `curl | sh` masks curl failures (sh exits 0 on empty stdin)
+    # and conflates network errors with installer errors.
+    local _uv_install_log _uv_installer
+    _uv_install_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
+    _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
+    if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_install_log"; then
+        log_error "Failed to download uv installer from https://astral.sh/uv/install.sh"
+        log_info "curl output:"
+        sed 's/^/    /' "$_uv_install_log" >&2
+        log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
+        rm -f "$_uv_install_log" "$_uv_installer"
+        exit 1
     fi
-
-    # Install uv
-    log_info "Installing uv (fast Python package manager)..."
-    if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
-        # uv installs to ~/.local/bin by default
-        if [ -x "$HOME/.local/bin/uv" ]; then
-            UV_CMD="$HOME/.local/bin/uv"
-        elif [ -x "$HOME/.cargo/bin/uv" ]; then
-            UV_CMD="$HOME/.cargo/bin/uv"
-        elif command -v uv &> /dev/null; then
-            UV_CMD="uv"
+    # UV_UNMANAGED_INSTALL tells the astral installer to place the binary
+    # directly into $HERMES_HOME/bin instead of ~/.local/bin.
+    if UV_UNMANAGED_INSTALL="$HERMES_HOME/bin" sh "$_uv_installer" >>"$_uv_install_log" 2>&1; then
+        rm -f "$_uv_installer"
+        if [ -x "$_managed_uv" ]; then
+            UV_CMD="$_managed_uv"
         else
-            log_error "uv installed but not found on PATH"
-            log_info "Try adding ~/.local/bin to your PATH and re-running"
+            log_error "uv installer reported success but binary not found at $_managed_uv"
+            log_info "Installer output:"
+            sed 's/^/    /' "$_uv_install_log" >&2
+            rm -f "$_uv_install_log"
             exit 1
         fi
+        rm -f "$_uv_install_log"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "uv installed ($UV_VERSION)"
+        log_success "Managed uv installed ($UV_VERSION)"
     else
         log_error "Failed to install uv"
+        log_info "Installer output:"
+        sed 's/^/    /' "$_uv_install_log" >&2
         log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
+        rm -f "$_uv_install_log" "$_uv_installer"
         exit 1
     fi
 }
@@ -431,10 +574,78 @@ check_python() {
     fi
 }
 
+# Best-effort automatic git provisioning, mirroring install.ps1's Install-Git
+# (which downloads PortableGit on Windows). git is required to clone the repo,
+# and a fresh "normie" machine with no developer tools won't have it. Returns 0
+# if git is available afterwards, non-zero otherwise (caller prints manual
+# instructions and aborts).
+attempt_install_git() {
+    case "$OS" in
+        macos)
+            # Prefer Homebrew — fully headless when present.
+            if command -v brew >/dev/null 2>&1; then
+                log_info "Installing Git via Homebrew..."
+                brew install git >/dev/null 2>&1 || true
+                command -v git >/dev/null 2>&1 && return 0
+            fi
+            # Fall back to Apple Command Line Tools, which provide git AND the
+            # compiler some Python wheels need. `xcode-select --install` pops a
+            # system dialog (Apple gates CLT behind it — it cannot be fully
+            # silent without MDM), so we trigger it and poll for git to appear.
+            if command -v xcode-select >/dev/null 2>&1; then
+                log_info "Requesting Apple Command Line Tools (provides git + compiler)..."
+                log_info "If a macOS dialog appears, click \"Install\" and accept the license."
+                xcode-select --install >/dev/null 2>&1 || true
+                local waited=0
+                local timeout=900
+                while [ "$waited" -lt "$timeout" ]; do
+                    if command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1; then
+                        return 0
+                    fi
+                    sleep 5
+                    waited=$((waited + 5))
+                    if [ $((waited % 60)) -eq 0 ]; then
+                        log_info "Still waiting for Command Line Tools install ($((waited / 60))m)..."
+                    fi
+                done
+            fi
+            return 1
+            ;;
+        linux)
+            local sudo_cmd=""
+            if [ "$(id -u 2>/dev/null || echo 1000)" -ne 0 ]; then
+                command -v sudo >/dev/null 2>&1 && sudo_cmd="sudo"
+            fi
+            case "$DISTRO" in
+                ubuntu|debian)
+                    log_info "Installing Git via apt..."
+                    $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+                    $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git >/dev/null 2>&1 || true
+                    ;;
+                fedora)
+                    log_info "Installing Git via dnf..."
+                    $sudo_cmd dnf install -y git >/dev/null 2>&1 || true
+                    ;;
+                arch)
+                    log_info "Installing Git via pacman..."
+                    $sudo_cmd pacman -S --noconfirm git >/dev/null 2>&1 || true
+                    ;;
+                *)
+                    return 1
+                    ;;
+            esac
+            command -v git >/dev/null 2>&1 && return 0
+            return 1
+            ;;
+    esac
+    return 1
+}
+
 check_git() {
     log_info "Checking Git..."
 
-    if command -v git &> /dev/null; then
+    # On fresh macOS /usr/bin/git is a stub that exits non-zero until CLT is installed.
+    if command -v git &> /dev/null && git --version &> /dev/null; then
         GIT_VERSION=$(git --version | awk '{print $3}')
         log_success "Git $GIT_VERSION found"
         return 0
@@ -452,7 +663,15 @@ check_git() {
         fi
     fi
 
-    log_info "Please install Git:"
+    # Try to install it automatically before giving up (parity with install.ps1).
+    log_info "Attempting to install Git automatically..."
+    if attempt_install_git; then
+        GIT_VERSION=$(git --version | awk '{print $3}')
+        log_success "Git $GIT_VERSION installed"
+        return 0
+    fi
+
+    log_warn "Could not install Git automatically. Please install it manually:"
 
     case "$OS" in
         linux)
@@ -483,26 +702,43 @@ check_git() {
     exit 1
 }
 
+# The desktop build runs Vite ^8, which refuses to start on Node outside
+# `^20.19 || >=22.12` — older Node lacks `node:util.styleText`, so `vite build`
+# crashes with a SyntaxError that surfaces only as the opaque "Build desktop
+# app … exit code 1" install failure. Returns 0 when the given `node --version`
+# string clears that floor; anything below it is replaced with the Hermes-
+# managed Node $NODE_VERSION LTS.
+node_satisfies_build() {
+    local ver="${1#v}"
+    local major="${ver%%.*}"
+    local minor="${ver#*.}"; minor="${minor%%.*}"
+    case "$major" in ''|*[!0-9]*) return 1 ;; esac
+    case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
+    if [ "$major" -eq 20 ] && [ "$minor" -ge 19 ]; then return 0; fi
+    if [ "$major" -ge 22 ] && { [ "$major" -gt 22 ] || [ "$minor" -ge 12 ]; }; then return 0; fi
+    return 1
+}
+
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
-    if command -v node &> /dev/null; then
-        local found_ver=$(node --version)
-        log_success "Node.js $found_ver found"
+    if command -v node &> /dev/null && node_satisfies_build "$(node --version)"; then
+        log_success "Node.js $(node --version) found"
         HAS_NODE=true
         return 0
     fi
 
-    # Check our own managed install from a previous run
-    if [ -x "$HERMES_HOME/node/bin/node" ]; then
+    # Prefer a Hermes-managed Node from a previous run over a too-old system one.
+    if [ -x "$HERMES_HOME/node/bin/node" ] && node_satisfies_build "$("$HERMES_HOME/node/bin/node" --version)"; then
         export PATH="$HERMES_HOME/node/bin:$PATH"
-        local found_ver=$("$HERMES_HOME/node/bin/node" --version)
-        log_success "Node.js $found_ver found (Hermes-managed)"
+        log_success "Node.js $("$HERMES_HOME/node/bin/node" --version) found (Hermes-managed)"
         HAS_NODE=true
         return 0
     fi
 
-    if [ "$DISTRO" = "termux" ]; then
+    if command -v node &> /dev/null; then
+        log_warn "Node.js $(node --version) is too old for the desktop build (need ^20.19 or >=22.12) — installing Hermes-managed Node $NODE_VERSION LTS..."
+    elif [ "$DISTRO" = "termux" ]; then
         log_info "Node.js not found — installing Node.js via pkg..."
     else
         log_info "Node.js not found — installing Node.js $NODE_VERSION LTS..."
@@ -600,16 +836,20 @@ install_node() {
         return 0
     fi
 
-    # Place into ~/.hermes/node/ and symlink binaries to ~/.local/bin/
+    # Place into ~/.hermes/node/ and symlink binaries into the same bin dir
+    # the hermes command uses (get_command_link_dir): /usr/local/bin for root
+    # FHS installs, $PREFIX/bin on Termux, ~/.local/bin otherwise.
     rm -rf "$HERMES_HOME/node"
     mkdir -p "$HERMES_HOME"
     mv "$extracted_dir" "$HERMES_HOME/node"
     rm -rf "$tmp_dir"
 
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$HERMES_HOME/node/bin/node" "$HOME/.local/bin/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$HOME/.local/bin/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$HOME/.local/bin/npx"
+    local node_link_dir
+    node_link_dir="$(get_command_link_dir)"
+    mkdir -p "$node_link_dir"
+    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
+    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
+    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
 
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
@@ -857,50 +1097,24 @@ clone_repo() {
             log_info "Existing installation found, updating..."
             cd "$INSTALL_DIR"
 
-            local autostash_ref=""
-            if [ -n "$(git status --porcelain)" ]; then
-                local stash_name
-                stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
-                log_info "Local changes detected, stashing before update..."
-                git stash push --include-untracked -m "$stash_name"
-                autostash_ref="$(git rev-parse --verify refs/stash)"
-            fi
-
+            # This is a managed clone the user never edits, so any working-tree
+            # dirt is git artifact (CRLF renormalization, npm lockfile churn,
+            # files left behind when a directory was deleted upstream such as
+            # apps/bootstrap-installer/). The old path stashed that dirt and
+            # re-applied it after the pull, but the stash/restore cycle has
+            # clobbered freshly-pulled source files (apps/desktop/ →
+            # "[UNRESOLVED_ENTRY] Cannot resolve entry module index.html").
+            # Discard the dirt with a hard reset instead — mirrors install.ps1's
+            # update path. Fork users customize via `hermes update`, which keeps
+            # the stash machinery; the installer is a managed-only entry point.
             git fetch origin
-            git checkout "$BRANCH"
-            git pull --ff-only origin "$BRANCH"
-
-            if [ -n "$autostash_ref" ]; then
-                local restore_now="yes"
-                if [ -t 0 ] && [ -t 1 ]; then
-                    echo
-                    log_warn "Local changes were stashed before updating."
-                    log_warn "Restoring them may reapply local customizations onto the updated codebase."
-                    printf "Restore local changes now? [Y/n] "
-                    read -r restore_answer
-                    case "$restore_answer" in
-                        ""|y|Y|yes|YES|Yes) restore_now="yes" ;;
-                        *) restore_now="no" ;;
-                    esac
-                fi
-
-                if [ "$restore_now" = "yes" ]; then
-                    log_info "Restoring local changes..."
-                    if git stash apply "$autostash_ref"; then
-                        git stash drop "$autostash_ref" >/dev/null
-                        log_warn "Local changes were restored on top of the updated codebase."
-                        log_warn "Review git diff / git status if Hermes behaves unexpectedly."
-                    else
-                        log_error "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
-                        log_info "Resolve manually with: git stash apply $autostash_ref"
-                        exit 1
-                    fi
-                else
-                    log_info "Skipped restoring local changes."
-                    log_info "Your changes are still preserved in git stash."
-                    log_info "Restore manually with: git stash apply $autostash_ref"
-                fi
+            if [ -n "$(git status --porcelain)" ]; then
+                log_info "Discarding working-tree changes on managed clone before update..."
+                git reset --hard HEAD >/dev/null 2>&1 || true
+                git clean -fd >/dev/null 2>&1 || true
             fi
+            git checkout "$BRANCH"
+            git reset --hard "origin/$BRANCH"
         else
             log_error "Directory exists but is not a git repository: $INSTALL_DIR"
             log_info "Remove it or choose a different directory with --dir"
@@ -912,12 +1126,12 @@ clone_repo() {
         # so SSH fails fast instead of hanging when no key is configured.
         log_info "Trying SSH clone..."
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+           git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
             log_success "Cloned via SSH"
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
             log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+            if git clone --depth 1 --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"
@@ -927,6 +1141,14 @@ clone_repo() {
     fi
 
     cd "$INSTALL_DIR"
+
+    if [ -n "$INSTALL_COMMIT" ]; then
+        log_info "Pinning checkout to commit $INSTALL_COMMIT..."
+        if ! git cat-file -e "$INSTALL_COMMIT^{commit}" 2>/dev/null; then
+            git fetch origin "$INSTALL_COMMIT" || true
+        fi
+        git checkout --detach "$INSTALL_COMMIT"
+    fi
 
     log_success "Repository ready"
 }
@@ -960,11 +1182,32 @@ setup_venv() {
     # uv creates the venv and pins the Python version in one step
     $UV_CMD venv venv --python "$PYTHON_VERSION"
 
+    # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.14 left in the
+    # user's shell env). uv honours UV_PYTHON over an existing venv for the
+    # later `uv sync` / `uv pip install` tiers, so without this it would
+    # silently delete this 3.11 venv and recreate it at the inherited
+    # version — building Rust transitives that have no wheel for that
+    # version from source via maturin, which fails. Pinning UV_PYTHON to the
+    # interpreter we just created forces every subsequent uv command onto it.
+    if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+    fi
+
     log_success "Virtual environment ready (Python $PYTHON_VERSION)"
 }
 
 install_deps() {
     log_info "Installing dependencies..."
+
+    # Re-pin UV_PYTHON to the venv interpreter. setup_venv already does this,
+    # but the bootstrap runs install stages (`venv`, `python-deps`) as separate
+    # processes, so an export from setup_venv does NOT survive into a separate
+    # python-deps invocation. Re-deriving it here covers that path. Without it,
+    # an inherited UV_PYTHON=3.14 makes the uv sync/pip tiers below recreate the
+    # venv at 3.14 and fail the maturin source build (no cp314 wheels yet).
+    if [ "$DISTRO" != "termux" ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+    fi
 
     if [ "$DISTRO" = "termux" ]; then
         if [ "$USE_VENV" = true ]; then
@@ -1017,11 +1260,6 @@ install_deps() {
         log_info "Termux note: matrix e2ee and local faster-whisper extras are excluded from .[termux-all] due to upstream Android wheel/toolchain blockers."
         log_info "Termux note: browser/WhatsApp tooling is not installed by default; see the Termux guide for optional follow-up steps."
 
-        if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
-            log_info "tinker-atropos submodule found — skipping install (optional, for RL training)"
-            log_info "  To install later: $PIP_PYTHON -m pip install -e \"./tinker-atropos\""
-        fi
-
         log_success "All dependencies installed"
         return 0
     fi
@@ -1060,30 +1298,154 @@ install_deps() {
     fi
 
     # Install the main package in editable mode with all extras.
-    # Try [all] first, fall back to base install if extras have issues.
-    ALL_INSTALL_LOG=$(mktemp)
-    if ! $UV_CMD pip install -e ".[all]" 2>"$ALL_INSTALL_LOG"; then
-        log_warn "Full install (.[all]) failed, trying base install..."
-        log_info "Reason: $(tail -5 "$ALL_INSTALL_LOG" | head -3)"
-        rm -f "$ALL_INSTALL_LOG"
-        if ! $UV_CMD pip install -e "."; then
-            log_error "Package installation failed."
-            log_info "Check that build tools are installed: sudo apt install build-essential python3-dev"
-            log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
-            exit 1
+    #
+    # Hash-verified install (Tier 0) — when uv.lock is present, prefer
+    # `uv sync --locked`. The lockfile records SHA256 hashes for every
+    # transitive, so a compromised transitive (different hash than what
+    # we shipped) is REJECTED by the resolver. This is the *only* path
+    # that protects against the "direct dep is fine, but the dep's dep
+    # got worm-poisoned overnight" failure mode. All `uv pip install`
+    # tiers below re-resolve transitives fresh from PyPI without any
+    # hash verification — they exist to keep installs working when the
+    # lockfile is stale, missing, or out-of-sync with the current
+    # extras spec, NOT because they're equivalent in posture.
+    if [ -f "uv.lock" ]; then
+        log_info "Trying tier: hash-verified (uv.lock) ..."
+        log_info "(this resolves + downloads the curated [all] set — first run on a"
+        log_info " fresh venv can take 1-5 minutes; uv prints progress below)"
+        # Stream uv's progress directly to the user instead of swallowing
+        # it with `2>"$(mktemp)"`.  Two reasons:
+        #   1. `--extra all --locked` against a fresh venv has to pull
+        #      every transitive — silencing stderr makes the install
+        #      look frozen for minutes on slow networks. Users see
+        #      "Trying tier: hash-verified ..." and assume it's hung.
+        #   2. The previous `2>"$(mktemp)"` substituted the path at
+        #      command-build time but never saved it, so on failure the
+        #      uv error message was unreachable — the user just got the
+        #      generic "lockfile may be stale" warning.
+        #
+        # Critical flag choice: `--extra all`, NOT `--all-extras`.
+        #   --all-extras = every [project.optional-dependencies] key.
+        #                  This bypasses the curated `[all]` extra
+        #                  entirely and pulls e.g. [matrix] (which
+        #                  needs python-olm + make on Windows) and
+        #                  [rl] (git+https deps that fail offline).
+        #   --extra all  = install just the `[all]` extra's contents.
+        #                  This respects the curation in pyproject.toml.
+        # uv's own progress UI handles TTY detection and downgrades
+        # gracefully when stdout/stderr aren't terminals.
+        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
+            log_success "Main package installed (hash-verified via uv.lock)"
+            log_success "All dependencies installed"
+            return 0
         fi
+        log_warn "uv.lock sync failed (see uv output above), falling back to PyPI resolve..."
     else
-        rm -f "$ALL_INSTALL_LOG"
+        log_info "uv.lock not found — falling back to PyPI resolve (no hash verification)"
+    fi
+
+    # Multi-tier fallback. The point of the tiers is that ONE compromised
+    # PyPI package (a worm-poisoned release that gets quarantined, like
+    # mistralai 2.4.6 in May 2026) shouldn't be able to silently demote a
+    # fresh install all the way down to "core only" — the user should keep
+    # everything else they signed up for.
+    #
+    # Tier 1: [all] — the curated extra in pyproject.toml.
+    # Tier 2: [all] minus the currently-broken extras list (_BROKEN_EXTRAS).
+    #         Edit _BROKEN_EXTRAS below when something on PyPI breaks; this
+    #         lets users keep the rest of [all] when one transitive is
+    #         unavailable. The list of [all]'s contents is parsed from
+    #         pyproject.toml at runtime — there is NO hand-mirrored copy
+    #         to drift out of sync. If you want to change what [all]
+    #         contains, edit pyproject.toml only.
+    # Tier 3: bare `.` — last-resort so at least the core CLI launches.
+    #         Skipped tiers like "PyPI-only extras (no git deps)" used to
+    #         exist to dodge [rl] / [matrix] git+sdist deps; those are no
+    #         longer in [all] post-2026-05-12 lazy-install migration, so
+    #         a separate PyPI-only tier had no remaining content.
+    local _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
+
+    # Parse [project.optional-dependencies].all from pyproject.toml.
+    # tomllib is stdlib on Python 3.11+ which uv's bootstrap guarantees.
+    # Falls back to a hand list if parse fails — defensive only.
+    local _ALL_EXTRAS_CSV
+    _ALL_EXTRAS_CSV="$(
+        "$PYTHON_PATH" - <<'PY' 2>/dev/null
+import re, sys, tomllib
+try:
+    with open("pyproject.toml", "rb") as fh:
+        data = tomllib.load(fh)
+    specs = data["project"]["optional-dependencies"]["all"]
+    extras = []
+    for s in specs:
+        m = re.search(r"hermes-agent\[([\w-]+)\]", s)
+        if m:
+            extras.append(m.group(1))
+    print(",".join(extras))
+except Exception as e:
+    print("", file=sys.stderr)
+    sys.exit(1)
+PY
+    )"
+    if [ -z "$_ALL_EXTRAS_CSV" ]; then
+        log_warn "Could not parse [all] from pyproject.toml; falling back to .[all] only."
+        _ALL_EXTRAS_CSV=""
+    fi
+
+    # Build "[all] minus broken" spec by filtering the parsed list.
+    local _SAFE_SPEC=".[all]"
+    if [ -n "$_ALL_EXTRAS_CSV" ] && [ "${#_BROKEN_EXTRAS[@]}" -gt 0 ]; then
+        local _SAFE_EXTRAS=()
+        local _e _b _skip
+        IFS=',' read -ra _ALL_EXTRAS_ARR <<< "$_ALL_EXTRAS_CSV"
+        for _e in "${_ALL_EXTRAS_ARR[@]}"; do
+            _skip=false
+            for _b in "${_BROKEN_EXTRAS[@]}"; do
+                if [ "$_e" = "$_b" ]; then _skip=true; break; fi
+            done
+            if [ "$_skip" = false ]; then _SAFE_EXTRAS+=("$_e"); fi
+        done
+        _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
+    fi
+
+    ALL_INSTALL_LOG=$(mktemp)
+    local _installed=false
+    local _tier_name=""
+
+    install_tier() {
+        local name="$1"; local spec="$2"
+        log_info "Trying tier: $name ..."
+        if $UV_CMD pip install -e "$spec" 2>"$ALL_INSTALL_LOG"; then
+            log_success "Main package installed ($name)"
+            _installed=true
+            _tier_name="$name"
+            return 0
+        fi
+        log_warn "Tier '$name' failed. Top of pip output:"
+        head -5 "$ALL_INSTALL_LOG" | sed 's/^/    /' >&2
+        return 1
+    }
+
+    install_tier "all" ".[all]" \
+        || install_tier "all minus known-broken (${_BROKEN_EXTRAS[*]:-none})" "$_SAFE_SPEC" \
+        || install_tier "core only (no extras)" "."
+
+    rm -f "$ALL_INSTALL_LOG"
+
+    if [ "$_installed" = false ]; then
+        log_error "Package installation failed even with no extras."
+        log_info "Check that build tools are installed: sudo apt install build-essential python3-dev"
+        log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
+        exit 1
+    fi
+
+    if [ "$_tier_name" != "all (with RL/matrix extras)" ]; then
+        log_warn "Note: installed via fallback tier ($_tier_name)."
+        log_info "Some optional features may be missing. After resolving any"
+        log_info "PyPI/network issue, re-run: $UV_CMD pip install -e '.[all]'"
     fi
 
     log_success "Main package installed"
-
-    # tinker-atropos (RL training) is optional — skip by default.
-    # To enable RL tools: git submodule update --init tinker-atropos && uv pip install -e "./tinker-atropos"
-    if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
-        log_info "tinker-atropos submodule found — skipping install (optional, for RL training)"
-        log_info "  To install: $UV_CMD pip install -e \"./tinker-atropos\""
-    fi
 
     log_success "All dependencies installed"
 }
@@ -1122,6 +1484,10 @@ setup_path() {
     # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
     # can't make this launcher import modules from another checkout.
     mkdir -p "$command_link_dir"
+    # Older installs created this path as a symlink to $HERMES_BIN. Without
+    # the rm, `cat >` follows the symlink and overwrites the venv pip entry
+    # point with this shim — making `exec "$HERMES_BIN"` self-recurse. (#21454)
+    rm -f "$command_link_dir/hermes"
     cat > "$command_link_dir/hermes" <<EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
@@ -1263,6 +1629,11 @@ copy_config_templates() {
     else
         log_info "~/.hermes/.env already exists, keeping it"
     fi
+    # Restrict .env permissions — this file holds API keys and tokens.
+    # 0600 ensures only the file owner can read/write, matching standard
+    # practice for credential files (.netrc, .aws/credentials, .ssh/config).
+    chmod 600 "$HERMES_HOME/.env"
+    configure_browser_env_from_system_browser
 
     # Create config.yaml at ~/.hermes/config.yaml (top level, easy to find)
     if [ ! -f "$HERMES_HOME/config.yaml" ]; then
@@ -1299,25 +1670,106 @@ SOUL_EOF
     log_success "Configuration directory ready: ~/.hermes/"
 
     # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
-    log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
-    if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
-        log_success "Skills synced to ~/.hermes/skills/"
+    if [ "$NO_SKILLS" = true ]; then
+        # Blank-slate install: write the opt-out marker and skip seeding.
+        # skills_sync.py and `hermes update` both honor this marker, so the
+        # default profile stays empty across future updates too.
+        printf '%s\n' \
+            "This profile opted out of bundled-skill seeding (installed with --no-skills)." \
+            "Delete this file to re-enable sync on the next 'hermes update'." \
+            > "$HERMES_HOME/.no-bundled-skills" 2>/dev/null || true
+        log_info "Skipping bundled skills (--no-skills). Wrote $HERMES_HOME/.no-bundled-skills"
+        log_info "  Future 'hermes update' runs will not inject bundled skills. Delete the marker to opt back in."
     else
-        # Fallback: simple directory copy if Python sync fails
-        if [ -d "$INSTALL_DIR/skills" ] && [ ! "$(ls -A "$HERMES_HOME/skills/" 2>/dev/null | grep -v '.bundled_manifest')" ]; then
-            cp -r "$INSTALL_DIR/skills/"* "$HERMES_HOME/skills/" 2>/dev/null || true
-            log_success "Skills copied to ~/.hermes/skills/"
+        log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
+        if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
+            log_success "Skills synced to ~/.hermes/skills/"
+        else
+            # Fallback: simple directory copy if Python sync fails
+            if [ -d "$INSTALL_DIR/skills" ] && [ ! "$(ls -A "$HERMES_HOME/skills/" 2>/dev/null | grep -v '.bundled_manifest')" ]; then
+                cp -r "$INSTALL_DIR/skills/"* "$HERMES_HOME/skills/" 2>/dev/null || true
+                log_success "Skills copied to ~/.hermes/skills/"
+            fi
+        fi
+    fi
+}
+
+find_system_browser() {
+    # Prefer a user-specified browser path, then common Linux/macOS Chrome and
+    # Chromium command names.  Arch-family distributions commonly ship plain
+    # `chromium`, while Debian-family systems often use `chromium-browser`.
+    if [ -n "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ]; then
+        if [ -x "$AGENT_BROWSER_EXECUTABLE_PATH" ]; then
+            echo "$AGENT_BROWSER_EXECUTABLE_PATH"
+            return 0
+        fi
+        if command -v "$AGENT_BROWSER_EXECUTABLE_PATH" >/dev/null 2>&1; then
+            command -v "$AGENT_BROWSER_EXECUTABLE_PATH"
+            return 0
         fi
     fi
 
-    # Seed source-classified manifest sidecar (.bundled_manifest.json) so
-    # downstream catalogs (e.g. agente-desktop Skills page) can render
-    # bundled-vs-hub-vs-user groupings READ-ONLY.  Desktop never writes
-    # ~/.hermes/skills/* itself (desktop boundary policy 2026-05-23); this
-    # runs from the Hermes/install side at install time only.
-    if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/seed_bundled_skills.py" --hermes-home "$HERMES_HOME" --repo-root "$INSTALL_DIR" --quiet 2>/dev/null; then
-        log_success "Seeded ~/.hermes/skills/.bundled_manifest.json"
+    local candidate
+    for candidate in google-chrome google-chrome-stable chromium chromium-browser chrome; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+
+    if [ "$(uname)" = "Darwin" ]; then
+        for app in \
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+            "/Applications/Chromium.app/Contents/MacOS/Chromium"; do
+            if [ -x "$app" ]; then
+                echo "$app"
+                return 0
+            fi
+        done
     fi
+
+    return 1
+}
+
+run_browser_install_with_timeout() {
+    local timeout_seconds="$1"
+    shift
+
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$timeout_seconds" "$@"
+    else
+        "$@"
+    fi
+}
+
+configure_browser_env_from_system_browser() {
+    local env_file="$HERMES_HOME/.env"
+    local browser_path="${DETECTED_BROWSER_EXECUTABLE:-}"
+
+    if [ -z "$browser_path" ]; then
+        browser_path="$(find_system_browser 2>/dev/null || true)"
+    fi
+
+    if [ -z "$browser_path" ]; then
+        return 0
+    fi
+
+    mkdir -p "$HERMES_HOME"
+    if [ ! -f "$env_file" ]; then
+        touch "$env_file"
+    fi
+
+    if grep -q '^AGENT_BROWSER_EXECUTABLE_PATH=' "$env_file" 2>/dev/null; then
+        log_info "AGENT_BROWSER_EXECUTABLE_PATH already configured"
+        return 0
+    fi
+
+    {
+        echo ""
+        echo "# Hermes Agent browser tools — use the system Chrome/Chromium binary."
+        echo "AGENT_BROWSER_EXECUTABLE_PATH=$browser_path"
+    } >> "$env_file"
+    log_success "Configured browser tools to use $browser_path"
 }
 
 install_node_deps() {
@@ -1345,58 +1797,90 @@ install_node_deps() {
         # Playwright's --with-deps only supports apt-based systems natively.
         # For Arch/Manjaro we install the system libs via pacman first.
         # Other systems must install Chromium dependencies manually.
+        if [ "$SKIP_BROWSER" = true ]; then
+            log_info "Skipping Playwright/Chromium install (--skip-browser)"
+            log_info "Browser tools will be unavailable until you run manually:"
+            log_info "  cd $INSTALL_DIR && npx playwright install chromium"
+            log_info "On apt-based systems, an admin also needs to run:"
+            log_info "  sudo npx playwright install-deps chromium"
+        else
         log_info "Installing browser engine (Playwright Chromium)..."
-        case "$DISTRO" in
-            ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
-                log_info "Playwright may request sudo to install browser system dependencies (shared libraries)."
-                log_info "This is standard Playwright setup — Hermes itself does not require root access."
-                cd "$INSTALL_DIR" && npx playwright install --with-deps chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — browser tools will not work."
-                    log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
-                }
-                ;;
-            arch|manjaro)
-                if command -v pacman &> /dev/null; then
-                    log_info "Arch/Manjaro detected — installing Chromium system dependencies via pacman..."
-                    if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
-                        sudo NEEDRESTART_MODE=a pacman -S --noconfirm --needed \
-                            nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
-                    elif [ "$(id -u)" -eq 0 ]; then
-                        pacman -S --noconfirm --needed \
-                            nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
+        DETECTED_BROWSER_EXECUTABLE="$(find_system_browser 2>/dev/null || true)"
+        if [ -n "$DETECTED_BROWSER_EXECUTABLE" ]; then
+            log_success "Found system Chrome/Chromium at $DETECTED_BROWSER_EXECUTABLE"
+            log_info "Skipping Playwright browser download; Hermes will use the system browser."
+        else
+            case "$DISTRO" in
+                ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
+                    # Use --with-deps only when sudo is available non-interactively
+                    # (root, or a user with passwordless sudo). Non-sudo users
+                    # — typical for systemd service accounts and unprivileged
+                    # operator users — would otherwise get blocked on an
+                    # interactive sudo prompt that they can't satisfy. Fall back
+                    # to the browser-only install in that case, and print the
+                    # exact command the admin needs to run separately.
+                    if [ "$(id -u)" -eq 0 ] || (command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null); then
+                        log_info "Installing Playwright Chromium with system dependencies..."
+                        cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install --with-deps chromium 2>/dev/null || {
+                            log_warn "Playwright browser installation failed — browser tools will not work."
+                            log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
+                        }
                     else
-                        log_warn "Cannot install browser deps without sudo. Run manually:"
-                        log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
+                        log_warn "No sudo available — skipping system-library install (--with-deps)."
+                        log_info "Ask an administrator to run, one time, as root:"
+                        log_info "  sudo npx playwright install-deps chromium"
+                        log_info "  (from $INSTALL_DIR, after Node.js deps are installed)"
+                        log_info "Installing Chromium binary into this user's Playwright cache..."
+                        cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                            log_warn "Playwright browser installation failed — browser tools will not work."
+                            log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install chromium"
+                        }
                     fi
-                fi
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — browser tools will not work."
-                }
-                ;;
-            fedora|rhel|centos|rocky|alma)
-                log_warn "Playwright does not support automatic dependency installation on RPM-based systems."
-                log_info "Install Chromium system dependencies manually before using browser tools:"
-                log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — install dependencies above and retry."
-                }
-                ;;
-            opensuse*|sles)
-                log_warn "Playwright does not support automatic dependency installation on zypper-based systems."
-                log_info "Install Chromium system dependencies manually before using browser tools:"
-                log_info "  sudo zypper install mozilla-nss libatk-1_0-0 at-spi2-core cups-libs libdrm2 libxkbcommon0 Mesa-libgbm1 pango cairo libasound2"
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — install dependencies above and retry."
-                }
-                ;;
-            *)
-                log_warn "Playwright does not support automatic dependency installation on $DISTRO."
-                log_info "Install Chromium/browser system dependencies for your distribution, then run:"
-                log_info "  cd $INSTALL_DIR && npx playwright install chromium"
-                log_info "Browser tools will not work until dependencies are installed."
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || true
-                ;;
-        esac
+                    ;;
+                arch|manjaro|cachyos|endeavouros|garuda)
+                    if command -v pacman &> /dev/null; then
+                        log_info "Arch-family distro detected — installing Chromium system dependencies via pacman..."
+                        if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
+                            sudo NEEDRESTART_MODE=a pacman -S --noconfirm --needed \
+                                nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
+                        elif [ "$(id -u)" -eq 0 ]; then
+                            pacman -S --noconfirm --needed \
+                                nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
+                        else
+                            log_warn "Cannot install browser deps without sudo. Run manually:"
+                            log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
+                        fi
+                    fi
+                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                        log_warn "Playwright browser installation failed — browser tools will not work."
+                    }
+                    ;;
+                fedora|rhel|centos|rocky|alma)
+                    log_warn "Playwright does not support automatic dependency installation on RPM-based systems."
+                    log_info "Install Chromium system dependencies manually before using browser tools:"
+                    log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"
+                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                        log_warn "Playwright browser installation failed — install dependencies above and retry."
+                    }
+                    ;;
+                opensuse*|sles)
+                    log_warn "Playwright does not support automatic dependency installation on zypper-based systems."
+                    log_info "Install Chromium system dependencies manually before using browser tools:"
+                    log_info "  sudo zypper install mozilla-nss libatk-1_0-0 at-spi2-core cups-libs libdrm2 libxkbcommon0 Mesa-libgbm1 pango cairo libasound2"
+                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                        log_warn "Playwright browser installation failed — install dependencies above and retry."
+                    }
+                    ;;
+                *)
+                    log_warn "Playwright does not support automatic dependency installation on $DISTRO."
+                    log_info "Install Chromium/browser system dependencies for your distribution, then run:"
+                    log_info "  cd $INSTALL_DIR && npx playwright install chromium"
+                    log_info "Browser tools will not work until dependencies are installed."
+                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || true
+                    ;;
+            esac
+        fi
+        fi
         log_success "Browser engine setup complete"
     fi
 
@@ -1410,7 +1894,8 @@ install_node_deps() {
         log_success "TUI dependencies installed"
     fi
 
-
+    # Keep the checkout clean so `hermes update` doesn't autostash every run.
+    restore_dirty_lockfiles "$INSTALL_DIR"
 }
 
 run_setup_wizard() {
@@ -1625,6 +2110,405 @@ print_success() {
     fi
 }
 
+ensure_browser() {
+    if ! command -v node >/dev/null 2>&1; then
+        local node_bin="$HERMES_HOME/node/bin/node"
+        if [ -x "$node_bin" ]; then
+            export PATH="$HERMES_HOME/node/bin:$PATH"
+        else
+            log_error "Node.js not found. Run with --ensure node first."
+            return 1
+        fi
+    fi
+
+    local npm_bin
+    npm_bin="$(command -v npm 2>/dev/null || echo "$HERMES_HOME/node/bin/npm")"
+    if [ ! -x "$npm_bin" ]; then
+        log_error "npm not found"
+        return 1
+    fi
+
+    log_info "Installing agent-browser..."
+    local log_file
+    log_file="$(mktemp)"
+    if ! "$npm_bin" install -g --prefix "$HERMES_HOME/node" --silent --ignore-scripts \
+        "agent-browser@^0.26.0" \
+        "@askjo/camofox-browser@^1.5.2" \
+        >"$log_file" 2>&1; then
+        log_error "npm install failed:"
+        cat "$log_file" >&2
+        rm -f "$log_file"
+        return 1
+    fi
+    rm -f "$log_file"
+    export PATH="$HERMES_HOME/node/bin:$PATH"
+
+    local sys_browser
+    sys_browser="$(find_system_browser 2>/dev/null || true)"
+    if [ -n "$sys_browser" ]; then
+        configure_browser_env_from_system_browser "$sys_browser"
+        log_info "System browser detected -- skipping Chromium download"
+        return 0
+    fi
+
+    log_info "Installing Chromium via agent-browser install..."
+    local ab_bin="$HERMES_HOME/node/bin/agent-browser"
+    if [ -x "$ab_bin" ]; then
+        "$ab_bin" install 2>/dev/null || {
+            log_warn "Chromium install failed. Browser tools may not work without a system browser."
+
+            # OS-specific hints (detect_os sets $DISTRO)
+            case "${DISTRO:-unknown}" in
+                ubuntu|debian)
+                    log_info "Try: sudo apt-get install -y chromium-browser"
+                    ;;
+                arch)
+                    log_info "Try: sudo pacman -S chromium"
+                    ;;
+                fedora|rhel|centos)
+                    log_info "Try: sudo dnf install -y chromium"
+                    ;;
+            esac
+        }
+    else
+        log_warn "agent-browser not found at $ab_bin"
+    fi
+
+    return 0
+}
+
+ensure_mode() {
+    detect_os
+
+    IFS=',' read -ra DEPS <<< "$ENSURE_DEPS"
+    for dep in "${DEPS[@]}"; do
+        dep="$(echo "$dep" | tr -d '[:space:]')"
+        case "$dep" in
+            node)
+                check_node
+                ;;
+            browser)
+                check_node
+                if [ "$HAS_NODE" = true ]; then
+                    ensure_browser
+                fi
+                ;;
+            ripgrep)
+                if ! command -v rg &>/dev/null; then
+                    HAS_RIPGREP=false
+                    HAS_FFMPEG=true
+                    install_system_packages
+                fi
+                ;;
+            ffmpeg)
+                if ! command -v ffmpeg &>/dev/null; then
+                    HAS_FFMPEG=false
+                    HAS_RIPGREP=true
+                    install_system_packages
+                fi
+                ;;
+            *)
+                log_warn "Unknown dependency: $dep"
+                ;;
+        esac
+    done
+}
+
+postinstall_mode() {
+    print_banner
+    detect_os
+
+    log_info "Post-install mode: setting up Hermes for pip install"
+
+    check_node
+    check_network_prerequisites
+    install_system_packages
+
+    if [ "$HAS_NODE" = true ] && [ "$SKIP_BROWSER" = false ]; then
+        ensure_browser
+    fi
+
+    HERMES_CMD="$(command -v hermes 2>/dev/null || echo "")"
+    if [ -n "$HERMES_CMD" ]; then
+        log_info "Running hermes setup..."
+        "$HERMES_CMD" setup
+    else
+        log_warn "hermes command not found on PATH"
+        log_info "Try: python -m hermes_cli.main setup"
+    fi
+}
+
+# Build apps/desktop into a launchable native app. Mirrors install.ps1's
+# Install-Desktop: a root-level npm install so the apps/* workspace resolves
+# the desktop's own deps (Electron ~150MB), then `npm run pack`
+# (electron-builder --dir) which emits an unpacked app for the current OS. Only invoked
+# via the 'desktop' stage / --include-desktop, which the Electron app's own
+# first-launch bootstrap never requests (it must not rebuild itself).
+install_desktop() {
+    local desktop_dir="$INSTALL_DIR/apps/desktop"
+
+    # The desktop stage only runs when a build is explicitly requested
+    # (--include-desktop / 'desktop' stage), so a missing toolchain is a hard
+    # failure, not a silent skip — a silent skip yields a "complete" install
+    # with no app and a confusing "couldn't find a built desktop" at launch.
+    # Always re-resolve Node here. Stages run in separate processes, so we can't
+    # trust an earlier check; more importantly check_node now enforces the build
+    # floor (^20.19 || >=22.12) and prepends the Hermes-managed Node to PATH, so
+    # the build never runs on a too-old system Node — the cause of the opaque
+    # "Build desktop app … exit code 1" failure (Vite crashes on old Node).
+    check_node
+    if ! command -v npm >/dev/null 2>&1; then
+        log_error "Cannot build desktop app: Node.js / npm unavailable"
+        log_info "Install Node.js and retry: cd $desktop_dir && npm run pack"
+        return 1
+    fi
+    if [ ! -f "$desktop_dir/package.json" ]; then
+        log_warn "Skipping desktop build (apps/desktop not present in checkout)"
+        return 0
+    fi
+
+    # 1. Root workspace install so apps/desktop's deps (Electron, Vite,
+    #    node-pty prebuilds) resolve. The browser-tools install runs in the
+    #    repo-root package workspace, which does not pull apps/* deps.
+    #
+    #    Prefer `npm ci`: it deletes node_modules and reinstalls from the
+    #    lockfile, so it always produces a complete tree. Bare `npm install`
+    #    can report "up to date" against a stale node_modules/.package-lock.json
+    #    marker while node_modules is actually empty (Windows workspace-hoisting
+    #    flake) — leaving tsc/typescript unresolved and `npm run pack`'s
+    #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
+    #    only if `npm ci` is unavailable or the lockfile is out of sync.
+    log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
+    ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ) || {
+        log_error "Desktop workspace npm install failed"
+        return 1
+    }
+    log_success "Desktop workspace dependencies installed"
+
+    # 2. Build. `npm run pack` = tsc + vite build + electron-builder --dir,
+    #    producing an unpacked app for the current OS. We disable signing
+    #    auto-discovery so electron-builder falls back to an ad-hoc signature
+    #    instead of grabbing an unrelated Developer ID from the keychain; a
+    #    real signed/notarized .dmg needs Apple credentials and is a separate
+    #    release concern.
+    log_info "Building desktop app (this takes 1-3 minutes)..."
+    ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack ) || {
+        log_error "Desktop app build failed"
+        log_info "Run manually: cd $desktop_dir && npm run pack"
+        return 1
+    }
+
+    local app=""
+    if [ "$OS" = "linux" ]; then
+        if [ -x "$desktop_dir/release/linux-unpacked/Hermes" ]; then
+            app="$desktop_dir/release/linux-unpacked/Hermes"
+        elif [ -x "$desktop_dir/release/linux-unpacked/hermes" ]; then
+            app="$desktop_dir/release/linux-unpacked/hermes"
+        fi
+    else
+        local cand
+        for cand in \
+            "$desktop_dir/release/mac-arm64/Hermes.app" \
+            "$desktop_dir/release/mac/Hermes.app"; do
+            if [ -d "$cand" ]; then
+                app="$cand"
+                break
+            fi
+        done
+    fi
+    if [ -z "$app" ]; then
+        log_error "Desktop build completed but no app was found under $desktop_dir/release/"
+        return 1
+    fi
+    log_success "Desktop app built: $app"
+
+    # Linux: Electron's chrome-sandbox helper needs root:root 4755 or the
+    # sandboxed renderer will abort on startup.  Check the file is a regular
+    # file (not a symlink) before chown/chmod so we don't follow an
+    # attacker-controlled link to an arbitrary path.
+    if [ "$OS" = "linux" ]; then
+        local sandbox="$desktop_dir/release/linux-unpacked/chrome-sandbox"
+        if [ -f "$sandbox" ] && [ ! -L "$sandbox" ]; then
+            if [ "$(id -u)" -eq 0 ]; then
+                chown root:root "$sandbox" && chmod 4755 "$sandbox" || {
+                    log_error "Cannot configure Electron sandbox helper: $sandbox"
+                    return 1
+                }
+            elif command -v sudo >/dev/null 2>&1; then
+                sudo chown root:root "$sandbox" && sudo chmod 4755 "$sandbox" || {
+                    log_error "Cannot configure Electron sandbox helper (sudo failed): $sandbox"
+                    return 1
+                }
+            else
+                log_error "Cannot configure Electron sandbox helper without sudo: $sandbox"
+                return 1
+            fi
+        fi
+    fi
+
+    # macOS: make the locally-built (ad-hoc) app relaunchable after an in-place
+    # self-update. An ad-hoc bundle has no stable Designated Requirement, so a
+    # later in-place rebuild (new cdhash) plus the inherited quarantine flag
+    # trips Gatekeeper's tamper check ("Hermes is damaged and can't be opened").
+    # Strip quarantine + re-apply a clean deep ad-hoc signature (no
+    # hardened-runtime flag, which an ad-hoc build can't satisfy). Skipped when a
+    # real signing identity is configured so a signed build isn't clobbered.
+    if [ "$OS" = "macos" ] && [ -z "${CSC_LINK:-}" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && command -v codesign >/dev/null 2>&1; then
+        xattr -cr "$app" 2>/dev/null || true
+        codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+    fi
+
+    # `npm install` + `npm run pack` rewrite lockfiles; restore them so the
+    # checkout stays clean for the next `hermes update`.
+    restore_dirty_lockfiles "$INSTALL_DIR"
+}
+
+# Each --stage runs in its own process, so (unlike the monolithic main() where
+# clone_repo cd's once and later steps inherit it) a stage that operates on the
+# checkout must cd into it explicitly. Without this, install_deps/setup_path run
+# from the desktop app's cwd and resolve `.` / the venv against the wrong tree.
+require_install_dir() {
+    if [ -z "$INSTALL_DIR" ] || [ ! -d "$INSTALL_DIR" ]; then
+        log_error "Install directory not found: ${INSTALL_DIR:-<unset>}"
+        log_info "The 'repository' stage must run before this one."
+        return 1
+    fi
+    cd "$INSTALL_DIR"
+}
+
+# Desktop bootstrap stage protocol. Mirrors the Windows install.ps1 surface
+# closely enough for the Electron bootstrap runner to show structured progress.
+run_stage_body() {
+    local stage="$1"
+
+    case "$stage" in
+        prerequisites)
+            print_banner
+            detect_os
+            resolve_install_layout
+            install_uv
+            check_python
+            check_git
+            check_node
+            check_network_prerequisites
+            install_system_packages
+            ;;
+        repository)
+            detect_os
+            resolve_install_layout
+            check_git
+            clone_repo
+            ;;
+        venv)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            install_uv
+            check_python
+            setup_venv
+            ;;
+        python-deps)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            install_uv
+            check_python
+            install_deps
+            ;;
+        node-deps)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            check_node
+            install_node_deps
+            ;;
+        path)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            setup_path
+            ;;
+        config)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            copy_config_templates
+            ;;
+        setup)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            run_setup_wizard
+            ;;
+        gateway)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            maybe_start_gateway
+            ;;
+        desktop)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            # Each stage runs in its own process, so the Hermes-managed Node
+            # provisioned during prerequisites/node-deps (at $HERMES_HOME/node/bin)
+            # isn't on PATH here. check_node re-adds it (or installs if missing)
+            # so install_desktop can find npm instead of silently skipping.
+            check_node
+            install_desktop
+            ;;
+        complete)
+            detect_os
+            resolve_install_layout
+            print_success
+            echo "git" > "$HERMES_HOME/.install_method"
+            ;;
+        *)
+            log_error "Unknown stage: $stage"
+            return 2
+            ;;
+    esac
+}
+
+run_stage_protocol() {
+    local stage="$1"
+    if [ -z "$stage" ]; then
+        log_error "--stage requires a stage name"
+        if [ "$JSON_OUTPUT" = true ]; then
+            emit_stage_json "" false false "missing stage name"
+        fi
+        return 2
+    fi
+
+    if [ "$NON_INTERACTIVE" = true ] && stage_needs_user_input "$stage"; then
+        log_info "Skipping $stage (non-interactive bootstrap)"
+        if [ "$JSON_OUTPUT" = true ]; then
+            emit_stage_json "$stage" true true
+        fi
+        return 0
+    fi
+
+    # Run the stage body in a subshell so a stage helper that calls `exit 1`
+    # on failure (clone_repo, install_deps, etc. were written for the monolithic
+    # flow) only exits the subshell — the parent still reaches the JSON result
+    # frame below. Without this, a failed --stage would terminate the process
+    # before emitting the frame and the Rust/Electron parser would see "no
+    # result frame" instead of a clean {ok:false} contract response.
+    set +e
+    ( run_stage_body "$stage" )
+    local code=$?
+    set -e
+
+    if [ "$JSON_OUTPUT" = true ]; then
+        if [ "$code" -eq 0 ]; then
+            emit_stage_json "$stage" true false
+        else
+            emit_stage_json "$stage" false false "exit code $code"
+        fi
+    fi
+    return "$code"
+}
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -1650,7 +2534,23 @@ main() {
     run_setup_wizard
     maybe_start_gateway
 
+    if [ "$INCLUDE_DESKTOP" = true ]; then
+        install_desktop
+    fi
+
     print_success
+
+    echo "git" > "$HERMES_HOME/.install_method"
 }
 
-main
+if [ "$MANIFEST_MODE" = true ]; then
+    emit_manifest
+elif [ -n "$STAGE_NAME" ]; then
+    run_stage_protocol "$STAGE_NAME"
+elif [ -n "$ENSURE_DEPS" ]; then
+    ensure_mode
+elif [ "$POSTINSTALL_MODE" = true ]; then
+    postinstall_mode
+else
+    main
+fi

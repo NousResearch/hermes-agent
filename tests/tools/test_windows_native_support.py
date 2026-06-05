@@ -11,13 +11,11 @@ Windows runner.
 
 from __future__ import annotations
 
-import importlib
 import os
 import signal
-import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -420,12 +418,21 @@ class TestTzdataDependencyDeclared:
         root = Path(__file__).resolve().parents[2]
         source = (root / "pyproject.toml").read_text(encoding="utf-8")
         # The dependency line should be conditional on sys_platform == 'win32'
-        # and should NOT be in the core dependencies for Linux/macOS.
-        assert (
-            'tzdata>=2023.3; sys_platform == \'win32\'' in source
-            or "tzdata>=2023.3; sys_platform == 'win32'" in source
-            or 'tzdata>=2023.3; sys_platform == "win32"' in source
-        ), "tzdata must be a Windows-only dep in pyproject.toml dependencies"
+        # and should NOT be in the core dependencies for Linux/macOS. We do
+        # not care about the exact pinned version (which is bumped over time)
+        # — only that tzdata is declared with a win32 marker. This is an
+        # invariant check, not a snapshot test.
+        import re
+        # Match `"tzdata` … `; sys_platform == 'win32'"` allowing any version
+        # specifier in between (==X.Y.Z, >=X.Y.Z,<W, etc.) and either quote
+        # style on the marker.
+        pattern = re.compile(
+            r'"tzdata[^"]*;\s*sys_platform\s*==\s*[\'"]win32[\'"]\s*"'
+        )
+        assert pattern.search(source), (
+            "tzdata must be a Windows-only dep in pyproject.toml dependencies "
+            "(declared with a `; sys_platform == 'win32'` marker)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -616,10 +623,21 @@ class TestKanbanWaitpidWindowsGuard:
         # Find the waitpid call and confirm it's inside a POSIX gate.
         idx = source.find("os.waitpid(-1, os.WNOHANG)")
         assert idx > 0, "waitpid call must exist"
-        # Look backwards up to 400 chars for the gate.
+        # Look backwards up to 400 chars for the gate. Accept either form:
+        #   `if os.name != "nt":` (run iff POSIX), or
+        #   `if os.name == "nt": return []` (early-return guard).
+        # Both correctly keep the waitpid loop off Windows; the early-return
+        # form is stronger because the rest of the function never runs.
         preamble = source[max(0, idx - 400):idx]
-        assert 'os.name != "nt"' in preamble or "os.name != 'nt'" in preamble, (
-            "os.waitpid(-1, os.WNOHANG) must sit behind an os.name != 'nt' guard"
+        guard_patterns = (
+            'os.name != "nt"',
+            "os.name != 'nt'",
+            'os.name == "nt"',  # early-return guard
+            "os.name == 'nt'",
+        )
+        assert any(p in preamble for p in guard_patterns), (
+            "os.waitpid(-1, os.WNOHANG) must sit behind an os.name guard "
+            f"(checked patterns: {guard_patterns})"
         )
 
 

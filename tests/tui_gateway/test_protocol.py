@@ -336,6 +336,60 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     ]
 
 
+def test_session_resume_hydrates_agent_history_with_ancestors(server, monkeypatch):
+    """A compression tip can have no direct rows while ancestors hold context.
+
+    The resume payload already renders ancestor-inclusive messages; the live
+    agent must receive that same lineage history or it starts with history=0.
+    """
+
+    target = "20260605_201511_a9e01a"
+    lineage_history = [
+        {"role": "user", "content": "before compression"},
+        {"role": "assistant", "content": "still remembered"},
+    ]
+    captured: dict[str, object] = {}
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return list(lineage_history) if include_ancestors else []
+
+    def init_session(sid, key, agent, history, cols=80):
+        captured["sid"] = sid
+        captured["key"] = key
+        captured["history"] = history
+        captured["cols"] = cols
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
+    monkeypatch.setattr(server, "_init_session", init_session)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
+
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100},
+        }
+    )
+
+    assert "error" not in resp
+    assert captured["history"] == lineage_history
+    assert resp["result"]["messages"] == [
+        {"role": "user", "text": "before compression"},
+        {"role": "assistant", "text": "still remembered"},
+    ]
+
+
 def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
     """A user message persisted with list-shaped multimodal content used to
     crash session resume with ``'list' object has no attribute 'strip'``."""

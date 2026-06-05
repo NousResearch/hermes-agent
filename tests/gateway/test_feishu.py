@@ -4943,3 +4943,323 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------------------
+# Feishu auto_skill tests
+# ---------------------------------------------------------------------------------------
+
+
+class TestFeishuAutoSkill(unittest.TestCase):
+    """专项测试 Feishu auto_skill 注入逻辑."""
+
+    # -------------------------------------------------------------------------
+    # 1. _load_settings 可读取 extra.default_skill 与 extra.chat_skills
+    # -------------------------------------------------------------------------
+
+    def test_load_settings_reads_default_skill_string(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings(
+            {
+                "app_id": "app_id",
+                "app_secret": "secret",
+                "domain": "feishu",
+                "connection_mode": "websocket",
+                "encrypt_key": "",
+                "verification_token": "",
+                "group_policy": "allowlist",
+                "admins": [],
+                "allowed_group_users": [],
+                "bot_open_id": "",
+                "bot_user_id": "",
+                "bot_name": "",
+                "dedup_cache_size": 100,
+                "text_batch_delay_seconds": 0.0,
+                "text_batch_split_delay_seconds": 0.0,
+                "text_batch_max_messages": 10,
+                "text_batch_max_chars": 1000,
+                "media_batch_delay_seconds": 0.0,
+                "webhook_host": "0.0.0.0",
+                "webhook_port": 9000,
+                "webhook_path": "/webhook",
+                "default_skill": "codex-execution-playbook",
+            }
+        )
+        self.assertEqual(settings.default_skill, "codex-execution-playbook")
+        self.assertEqual(settings.chat_skills, {})
+
+    def test_load_settings_reads_chat_skills_single_and_list(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings(
+            {
+                "app_id": "app_id",
+                "app_secret": "secret",
+                "domain": "feishu",
+                "connection_mode": "websocket",
+                "encrypt_key": "",
+                "verification_token": "",
+                "group_policy": "allowlist",
+                "admins": [],
+                "allowed_group_users": [],
+                "bot_open_id": "",
+                "bot_user_id": "",
+                "bot_name": "",
+                "dedup_cache_size": 100,
+                "text_batch_delay_seconds": 0.0,
+                "text_batch_split_delay_seconds": 0.0,
+                "text_batch_max_messages": 10,
+                "text_batch_max_chars": 1000,
+                "media_batch_delay_seconds": 0.0,
+                "webhook_host": "0.0.0.0",
+                "webhook_port": 9000,
+                "webhook_path": "/webhook",
+                "chat_skills": {
+                    "oc_group1": "skill-single",
+                    "oc_group2": ["skill-a", "skill-b"],
+                },
+                "default_skill": "default-skill",
+            }
+        )
+        self.assertEqual(settings.default_skill, "default-skill")
+        self.assertEqual(
+            settings.chat_skills,
+            {
+                "oc_group1": "skill-single",
+                "oc_group2": ["skill-a", "skill-b"],
+            },
+        )
+
+    def test_load_settings_defaults_when_absent(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings(
+            {
+                "app_id": "app_id",
+                "app_secret": "secret",
+                "domain": "feishu",
+                "connection_mode": "websocket",
+                "encrypt_key": "",
+                "verification_token": "",
+                "group_policy": "allowlist",
+                "admins": [],
+                "allowed_group_users": [],
+                "bot_open_id": "",
+                "bot_user_id": "",
+                "bot_name": "",
+                "dedup_cache_size": 100,
+                "text_batch_delay_seconds": 0.0,
+                "text_batch_split_delay_seconds": 0.0,
+                "text_batch_max_messages": 10,
+                "text_batch_max_chars": 1000,
+                "media_batch_delay_seconds": 0.0,
+                "webhook_host": "0.0.0.0",
+                "webhook_port": 9000,
+                "webhook_path": "/webhook",
+            }
+        )
+        self.assertIsNone(settings.default_skill)
+        self.assertEqual(settings.chat_skills, {})
+
+    # -------------------------------------------------------------------------
+    # 2. _apply_settings 后 adapter 持有 _default_skill 与 _chat_skills
+    # -------------------------------------------------------------------------
+
+    def test_apply_settings_sets_auto_skill_fields(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        settings = FeishuAdapter._load_settings(
+            {
+                "app_id": "app_id",
+                "app_secret": "secret",
+                "domain": "feishu",
+                "connection_mode": "websocket",
+                "encrypt_key": "",
+                "verification_token": "",
+                "group_policy": "allowlist",
+                "admins": [],
+                "allowed_group_users": [],
+                "bot_open_id": "",
+                "bot_user_id": "",
+                "bot_name": "",
+                "dedup_cache_size": 100,
+                "text_batch_delay_seconds": 0.0,
+                "text_batch_split_delay_seconds": 0.0,
+                "text_batch_max_messages": 10,
+                "text_batch_max_chars": 1000,
+                "media_batch_delay_seconds": 0.0,
+                "webhook_host": "0.0.0.0",
+                "webhook_port": 9000,
+                "webhook_path": "/webhook",
+                "default_skill": "codex-execution-playbook",
+                "chat_skills": {"oc_chat1": "skill-1"},
+            }
+        )
+        adapter._apply_settings(settings)
+        self.assertEqual(adapter._default_skill, "codex-execution-playbook")
+        self.assertEqual(adapter._chat_skills, {"oc_chat1": "skill-1"})
+
+    # -------------------------------------------------------------------------
+    # Helper: minimal _process_inbound_message mock
+    # -------------------------------------------------------------------------
+
+    def _build_adapter(self, default_skill=None, chat_skills=None):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_user_id = ""
+        adapter._bot_name = "Hermes"
+        adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
+        adapter._fetch_message_text = AsyncMock(return_value=None)
+        adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat"})
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
+        )
+        adapter._resolve_source_chat_type = Mock(return_value="group")
+        adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter._default_skill = default_skill
+        adapter._chat_skills = chat_skills or {}
+        return adapter
+
+    def _build_text_message(self, chat_id="oc_chat"):
+        return SimpleNamespace(
+            content=json.dumps({"text": "hello"}),
+            message_type="text",
+            message_id="m1",
+            mentions=[],
+            chat_id=chat_id,
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+
+    # -------------------------------------------------------------------------
+    # 3. chat_id 命中 chat_skills 时优先使用 per-chat skill
+    # -------------------------------------------------------------------------
+
+    def test_auto_skill_uses_per_chat_override(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._build_adapter(
+            default_skill="default-skill",
+            chat_skills={"oc_chat1": "per-chat-skill"},
+        )
+        message = self._build_text_message(chat_id="oc_chat1")
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m1",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.auto_skill, "per-chat-skill")
+
+    def test_auto_skill_uses_per_chat_list(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._build_adapter(
+            default_skill="default-skill",
+            chat_skills={"oc_chat1": ["skill-a", "skill-b"]},
+        )
+        message = self._build_text_message(chat_id="oc_chat1")
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m1",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.auto_skill, ["skill-a", "skill-b"])
+
+    # -------------------------------------------------------------------------
+    # 4. chat_id 未命中时使用 default_skill
+    # -------------------------------------------------------------------------
+
+    def test_auto_skill_falls_back_to_default(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._build_adapter(
+            default_skill="fallback-skill",
+            chat_skills={"oc_other_chat": "other-skill"},
+        )
+        message = self._build_text_message(chat_id="oc_unknown_chat")
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m1",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.auto_skill, "fallback-skill")
+
+    def test_auto_skill_none_when_no_config(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._build_adapter(default_skill=None, chat_skills={})
+        message = self._build_text_message(chat_id="oc_any_chat")
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m1",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertIsNone(event.auto_skill)
+
+    # -------------------------------------------------------------------------
+    # 5. MessageEvent.auto_skill 能携带解析结果（全路径端到端）
+    # -------------------------------------------------------------------------
+
+    def test_message_event_auto_skill_carries_resolved_value(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._build_adapter(
+            default_skill="codex-execution-playbook",
+            chat_skills={
+                "oc_group": ["skill-a", "skill-b"],
+                "ou_dm": "yuanbao",
+            },
+        )
+        # DM chat — hits per-chat override
+        dm_message = self._build_text_message(chat_id="ou_dm")
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=dm_message,
+                message=dm_message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m1",
+            )
+        )
+        dm_event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(dm_event.auto_skill, "yuanbao")
+
+        # Different group — falls back to default
+        group_message = self._build_text_message(chat_id="oc_other_group")
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=group_message,
+                message=group_message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m2",
+            )
+        )
+        group_event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(group_event.auto_skill, "codex-execution-playbook")

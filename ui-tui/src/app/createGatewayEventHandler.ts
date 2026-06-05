@@ -13,7 +13,7 @@ import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
-import { formatAbandonedClarify, formatToolCall, setToolEmoji, setToolEmojis, stripAnsi } from '../lib/text.js'
+import { formatAbandonedClarify, formatToolCall, normalizeToolEmojis, stripAnsi, withToolEmoji } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
@@ -421,9 +421,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'session.info': {
-        const info = ev.payload
+        const info = { ...ev.payload, tool_emojis: normalizeToolEmojis(ev.payload.tool_emojis) }
 
-        setToolEmojis(info.tool_emojis)
         patchUiState(state => ({
           ...state,
           info,
@@ -720,7 +719,19 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'tool.start':
         if (ev.payload.name && ev.payload.emoji) {
-          setToolEmoji(ev.payload.name, ev.payload.emoji)
+          patchUiState(state => {
+            if (!state.info) {
+              return state
+            }
+
+            return {
+              ...state,
+              info: {
+                ...state.info,
+                tool_emojis: withToolEmoji(state.info.tool_emojis, ev.payload.name!, ev.payload.emoji)
+              }
+            }
+          })
         }
 
         turnController.recordTodos(ev.payload.todos)

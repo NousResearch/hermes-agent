@@ -1,7 +1,9 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
+import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
+import { $uiState } from '../app/uiStore.js'
 import { THINKING_COT_MAX } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import {
@@ -707,6 +709,8 @@ export const ToolTrail = memo(function ToolTrail({
   trail?: string[]
   activity?: ActivityItem[]
 }) {
+  const toolEmojis = useStore($uiState).info?.tool_emojis
+
   const visible = useMemo(
     () => ({
       thinking: sectionMode('thinking', detailsMode, sections, commandOverride),
@@ -1073,7 +1077,7 @@ export const ToolTrail = memo(function ToolTrail({
                   color={group.color}
                   content={
                     <>
-                      <Text color={t.color.accent}>{toolCallEmoji(group.label)} </Text>
+                      <Text color={t.color.accent}>{toolCallEmoji(group.label, '⚡', toolEmojis)} </Text>
                       {toolLabel(group)}
                       {isDelegateGroup ? (
                         <Text color={t.color.statusFg} dim>

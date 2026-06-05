@@ -4770,10 +4770,12 @@ def test_session_steer_errors_when_agent_has_no_steer_method():
 def test_session_info_includes_tool_emojis(monkeypatch):
     fake_model_tools = types.ModuleType("model_tools")
     fake_model_tools.get_toolset_for_tool = lambda name: "file"
-    fake_display = types.ModuleType("agent.display")
-    fake_display.get_tool_emoji = lambda name, default="⚡": {"read_file": "📖"}.get(name, default)
     monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
-    monkeypatch.setitem(sys.modules, "agent.display", fake_display)
+    monkeypatch.setattr(
+        server,
+        "_get_tool_emoji",
+        lambda name, default="⚡": {"read_file": "📖"}.get(name, default),
+    )
 
     agent = types.SimpleNamespace(
         model="test-model",

@@ -11,11 +11,11 @@ import {
   hasAnsi,
   isToolTrailResultLine,
   lastCotTrailIndex,
+  normalizeToolEmojis,
   parseToolTrailResultLine,
   pasteTokenLabel,
   sameToolTrailGroup,
   sanitizeAnsiForRender,
-  setToolEmojis,
   splitToolDuration,
   stripAnsi,
   thinkingPreview,
@@ -123,15 +123,22 @@ describe('sameToolTrailGroup', () => {
 
 describe('tool emojis', () => {
   it('maps backend tool emoji metadata onto raw names and rendered call labels', () => {
-    setToolEmojis({ read_file: '📖', terminal: '💻' })
+    const emojis = normalizeToolEmojis({ read_file: '📖', terminal: '💻' })
 
-    expect(toolEmoji('read_file')).toBe('📖')
-    expect(toolEmoji('Read File')).toBe('📖')
-    expect(toolCallEmoji('Read File("/tmp/x") (0.9s)')).toBe('📖')
-    expect(toolCallEmoji('Terminal("npm test")')).toBe('💻')
-    expect(toolEmoji('unknown_tool')).toBe('⚡')
+    expect(toolEmoji('read_file', '⚡', emojis)).toBe('📖')
+    expect(toolEmoji('Read File', '⚡', emojis)).toBe('📖')
+    expect(toolCallEmoji('Read File("/tmp/x") (0.9s)', '⚡', emojis)).toBe('📖')
+    expect(toolCallEmoji('Terminal("npm test")', '⚡', emojis)).toBe('💻')
+    expect(toolEmoji('unknown_tool', '⚡', emojis)).toBe('⚡')
+  })
 
-    setToolEmojis({})
+  it('keeps emoji maps isolated per session', () => {
+    const left = normalizeToolEmojis({ read_file: '📖' })
+    const right = normalizeToolEmojis({ terminal: '💻' })
+
+    expect(toolEmoji('Read File', '⚡', left)).toBe('📖')
+    expect(toolEmoji('Read File', '⚡', right)).toBe('⚡')
+    expect(toolEmoji('Terminal', '⚡', right)).toBe('💻')
   })
 })
 

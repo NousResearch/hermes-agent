@@ -15,6 +15,8 @@ Cursor rule: `.cursor/rules/hermes-fleet.mdc`
 
 Prefer `fleet_context_snapshot()` when available; otherwise run in order:
 
+Before editing `.learnings/memory.md`: `self_improvement_snapshot(summary=True)`.
+
 1. `skills_list()` — discover agents and their SOUL.md files
 2. `agents_list(include_heartbeat=true)` — registry + live heartbeat
 3. `learnings_read()` — HOT-tier persistent memory (.learnings/memory.md)
@@ -105,7 +107,7 @@ timezone, locale, and worker count.
 | `gateway/run.py` | Messaging gateway runner |
 | `hermes_cli/config.py` | Default config and config migration |
 | `mcp_serve.py` | MCP server entry point (stdio) |
-| `hermes_skills_mcp.py` | 12 read-only skills/knowledge MCP tools |
+| `hermes_skills_mcp.py` | 13 read-only skills/knowledge MCP tools |
 | `agents/AGENT_REGISTRY.json` | Agent index/discovery manifest |
 | `AGENTS.md` | Full agent fleet documentation |
 

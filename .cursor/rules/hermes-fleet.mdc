@@ -14,7 +14,8 @@ Read the canonical guide: `website/docs/user-guide/features/cursor-hermes.md`.
 Prefer one consolidated MCP read when available; otherwise call in order:
 
 1. `town_brief()` or `fleet_context_snapshot(summary=true)` — if present on the Hermes MCP server
-2. Else: `agents_list(include_heartbeat=true)` → `learnings_read(file="memory.md")` → `knowledge_read(artifact="latest_state")` → `knowledge_read(artifact="held_spec_ledger")`
+2. Before memory promotion or `memory.md` edits: `self_improvement_snapshot(summary=true)`
+3. Else: `agents_list(include_heartbeat=true)` → `learnings_read(file="memory.md")` → `knowledge_read(artifact="latest_state")` → `knowledge_read(artifact="held_spec_ledger")`
 
 Before changing a named agent: prefer `town_handoff_bundle(agent_name="<agent>")`; otherwise call `skills_read(name="<agent>")` and `agents_get(name="<agent>")`.
 

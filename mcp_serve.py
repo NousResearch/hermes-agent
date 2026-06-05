@@ -12,6 +12,11 @@ Matches OpenClaw's 9-tool MCP channel bridge surface:
 
 Plus: channels_list (Hermes-specific extra)
 
+Optional skills/knowledge tools (13) when hermes_skills_mcp is available:
+  fleet_context_snapshot, agent_health_summary, self_improvement_snapshot,
+  town_brief, town_handoff_bundle, skills_list, skills_read, agents_list,
+  agents_get, knowledge_read, knowledge_query, learnings_read, artifacts_list
+
 Usage:
     hermes mcp serve
     hermes mcp serve --verbose
@@ -855,6 +860,13 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
         result = bridge.respond_to_approval(id, decision)
         return json.dumps(result, indent=2)
+
+    try:
+        from hermes_skills_mcp import register_skills_tools
+
+        register_skills_tools(mcp)
+    except ImportError:
+        logger.debug("hermes_skills_mcp unavailable; skills tools not registered")
 
     return mcp
 

@@ -920,8 +920,23 @@ class TestE2EPermissions:
 
 
 # ---------------------------------------------------------------------------
-# 4. TOOL LISTING — verify all 10 tools are registered
+# 4. TOOL LISTING — messaging + optional skills/knowledge tools
 # ---------------------------------------------------------------------------
+
+_MESSAGING_MCP_TOOLS = frozenset({
+    "conversations_list", "conversation_get", "messages_read",
+    "attachments_fetch", "events_poll", "events_wait",
+    "messages_send", "channels_list",
+    "permissions_list_open", "permissions_respond",
+})
+
+_SKILLS_MCP_TOOLS = frozenset({
+    "fleet_context_snapshot", "agent_health_summary", "self_improvement_snapshot",
+    "town_brief", "town_handoff_bundle", "skills_list", "skills_read",
+    "agents_list", "agents_get", "knowledge_read", "knowledge_query",
+    "learnings_read", "artifacts_list",
+})
+
 
 class TestToolRegistration:
     def test_all_tools_registered(self, mcp_server_e2e, _event_loop):
@@ -929,13 +944,11 @@ class TestToolRegistration:
         tools = server._tool_manager.list_tools()
         tool_names = {t.name for t in tools}
 
-        expected = {
-            "conversations_list", "conversation_get", "messages_read",
-            "attachments_fetch", "events_poll", "events_wait",
-            "messages_send", "channels_list",
-            "permissions_list_open", "permissions_respond",
-        }
-        assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
+        missing_messaging = _MESSAGING_MCP_TOOLS - tool_names
+        assert not missing_messaging, f"Missing messaging tools: {missing_messaging}"
+
+        missing_skills = _SKILLS_MCP_TOOLS - tool_names
+        assert not missing_skills, f"Missing skills tools: {missing_skills}"
 
     def test_tools_have_descriptions(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e

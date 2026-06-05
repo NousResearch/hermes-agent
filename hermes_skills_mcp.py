@@ -16,9 +16,10 @@ read-only tools that let MCP clients discover and read:
 Paths resolve via HERMES_AGENTS_DIR (runtime fleet), then HERMES_REPO,
 then HERMES_HOME — same profile conventions as mcp_serve.py.
 
-Tool surface (12 tools; read-only by design):
+Tool surface (13 tools; read-only by design):
   fleet_context_snapshot — one-call bounded fleet bootstrap for IDEs
   agent_health_summary — compact actionable fleet health anomalies
+  self_improvement_snapshot — HOT/WARM memory health + knowledge reconciliation
   town_brief — human-facing Cursor/Town integration brief
   town_handoff_bundle — bounded agent/spec handoff context bundle
   knowledge_query — bounded keyword query over knowledge graph artifacts
@@ -547,6 +548,50 @@ def build_agent_health_summary() -> dict:
     }
 
 
+def build_self_improvement_snapshot(*, summary: bool = False) -> dict:
+    """Read-only audit for recursive self-improvement across knowledge + memory.
+
+    Surfaces HOT/WARM tier health, knowledge↔HOT reconciliation hints, and a
+    session loop checklist. Does not write .learnings/ or artifacts.
+    """
+    from tools.self_improvement_audit import build_self_improvement_audit
+
+    learnings_dir = _get_learnings_dir()
+    if not learnings_dir:
+        learnings_dir = _get_hermes_repo() / ".learnings"
+
+    audit = build_self_improvement_audit(
+        learnings_dir=learnings_dir,
+        latest_state_path=_find_latest_state_path(),
+        held_spec_path=_find_held_spec_ledger_path(),
+        contradiction_path=_find_contradiction_ledger_path(),
+    )
+    proposals = list(audit.get("proposals") or [])
+    status = "attention" if proposals else "ok"
+
+    if summary:
+        return {
+            "format": "summary",
+            "as_of": audit.get("as_of"),
+            "status": status,
+            "writes_allowed": False,
+            "hot_tier": audit.get("hot_tier"),
+            "warm_file_count": len(audit.get("warm_tiers") or []),
+            "corrections_log_present": bool(
+                (audit.get("corrections_log") or {}).get("present")
+            ),
+            "knowledge_present": audit.get("knowledge_present"),
+            "proposal_count": len(proposals),
+            "proposals": proposals[:_SNAPSHOT_LIST_CAP],
+            "recursive_loop": audit.get("recursive_loop"),
+            "governance_note": audit.get("governance_note"),
+            "recommended_mcp_calls": audit.get("recommended_mcp_calls"),
+        }
+
+    audit["status"] = status
+    return audit
+
+
 def build_town_brief() -> dict:
     """Build a concise, read-only Town/Cursor operational brief."""
     snapshot = build_fleet_context_snapshot(summary=True)
@@ -597,6 +642,7 @@ def build_town_brief() -> dict:
 
     next_actions = [
         "Use town_brief or fleet_context_snapshot(summary=True) at Cursor session start.",
+        "Use self_improvement_snapshot(summary=True) before editing memory.md or promoting learnings.",
         "Use learnings_read(file='memory.md') for read-only HOT memory/reference context.",
         "Use agents_get(name) and skills_read(name) before modifying a named agent.",
         "Use knowledge_read('held_spec_ledger') before changing governed specs or pipelines.",
@@ -984,6 +1030,24 @@ def register_skills_tools(mcp) -> None:
         answer instead of the full fleet context snapshot. Read-only.
         """
         return json.dumps(build_agent_health_summary(), indent=2)
+
+    # -- self_improvement_snapshot ------------------------------------------
+
+    @mcp.tool()
+    def self_improvement_snapshot(
+        summary: bool = False,
+    ) -> str:
+        """Return read-only memory/knowledge health for recursive self-improvement.
+
+        Audits HOT (.learnings/memory.md) and WARM tiers, compares operational
+        anchors against knowledge-layer artifacts, and returns operator proposals.
+        Never writes files; Town-Hermes automated memory sync remains frozen.
+
+        Args:
+            summary: If True, omit full reconciliation lists and return counts,
+                     proposal samples, and the recursive loop checklist only.
+        """
+        return json.dumps(build_self_improvement_snapshot(summary=summary), indent=2)
 
     # -- town_brief ---------------------------------------------------------
 

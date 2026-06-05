@@ -496,7 +496,7 @@ same auth gate as the rest of `/api/`.
 When the dashboard is bound to a public or non-loopback address — anything other than `127.0.0.1` / `localhost` — Hermes Agent engages an auth gate. Every request must carry a verified session cookie or it's bounced to the login page. Three providers ship in the box:
 
 - **[Username/password](#usernamepassword-provider-no-oauth-idp)** — the simplest way to put auth on a self-hosted / on-prem / homelab dashboard. No external identity provider. **Use it only on a trusted network or behind a VPN — not for public-internet exposure.**
-- **[OAuth (Nous Portal)](#default-provider-nous-research)** — for hosted deployments (typically Fly.io) and any dashboard reachable over the public internet, and the recommended path for a [remote Hermes Desktop connection](#connecting-hermes-desktop-to-a-remote-backend). Every login is verified against your Nous account, so this is the provider suitable for internet-facing use.
+- **[OAuth (Nous Portal)](#default-provider-nous-research)** — for hosted deployments and any dashboard reachable over the public internet, and the recommended path for a [remote Hermes Desktop connection](#connecting-hermes-desktop-to-a-remote-backend). Every login is verified against your Nous account, so this is the provider suitable for internet-facing use.
 - **[Self-hosted OIDC](#self-hosted-oidc-provider)** — for bringing your own identity provider via standard OpenID Connect (Keycloak, Auth0, Okta, Google, GitHub via an OIDC bridge, etc.). No Nous Portal involved; suitable for public-internet exposure when fronted by a conformant OIDC server.
 
 Operator-owned dashboards bound to loopback are unaffected — no auth, no login page.
@@ -559,9 +559,9 @@ dashboard:
 |---------|-----------|--------|----------------|
 | `HERMES_DASHBOARD_OAUTH_CLIENT_ID` | `dashboard.oauth.client_id` | `agent:{instance_id}` | `hermes dashboard register` |
 
-Per the Hermes Agent convention (`~/.hermes/.env` is for API keys / secrets only), **`config.yaml` is the recommended place to set these values** for local dev, on-prem, and any deployment you control directly. The environment-variable path exists so Fly.io's platform-secret injection can push per-deploy `client_id`s without anyone having to edit `config.yaml` inside the image — that's its primary purpose.
+Per the Hermes Agent convention (`~/.hermes/.env` is for API keys / secrets only), **`config.yaml` is the recommended place to set these values** for local dev, on-prem, and any deployment you control directly. The environment-variable path exists so a hosting platform's secret injection can push per-deploy `client_id`s without anyone having to edit `config.yaml` inside the image — that's its primary purpose.
 
-Empty environment values are treated as unset, so a provisioned-but-not-populated Fly secret can't accidentally shadow a valid `config.yaml` entry.
+Empty environment values are treated as unset, so a provisioned-but-not-populated platform secret can't accidentally shadow a valid `config.yaml` entry.
 
 If neither source provides a client_id, the plugin reports the specific reason and the dashboard's fail-closed bind error tells you exactly what to fix:
 
@@ -821,9 +821,9 @@ engages the OAuth gate.
 
 ### Public URL override
 
-By default, the dashboard reconstructs the OAuth callback URL from the request — `X-Forwarded-Host` + `X-Forwarded-Proto` + `X-Forwarded-Prefix` (when uvicorn is configured with `proxy_headers=True`, which `start_server` enables under the gate). This works out of the box on Fly.io, which sets all three headers correctly.
+By default, the dashboard reconstructs the OAuth callback URL from the request — `X-Forwarded-Host` + `X-Forwarded-Proto` + `X-Forwarded-Prefix` (when uvicorn is configured with `proxy_headers=True`, which `start_server` enables under the gate). This works out of the box behind a reverse proxy that sets all three headers correctly.
 
-For deploys behind reverse proxies that don't reliably forward those headers (manual nginx setups, on-prem ingresses, custom-domain Fly deploys with partial proxy chains), set `dashboard.public_url` (or `HERMES_DASHBOARD_PUBLIC_URL`) to the **complete public URL** the dashboard is reached at:
+For deploys behind reverse proxies that don't reliably forward those headers (manual nginx setups, on-prem ingresses, custom-domain deploys with partial proxy chains), set `dashboard.public_url` (or `HERMES_DASHBOARD_PUBLIC_URL`) to the **complete public URL** the dashboard is reached at:
 
 ```yaml
 dashboard:
@@ -837,7 +837,7 @@ Same precedence as the other dashboard settings — env wins over `config.yaml`:
 | Surface | Override path | When to use |
 |---------|---------------|-------------|
 | `dashboard.public_url` in `config.yaml` | `HERMES_DASHBOARD_PUBLIC_URL` | Local dev / on-prem (canonical) |
-| `HERMES_DASHBOARD_PUBLIC_URL` env var | — | Fly.io platform secrets / CI |
+| `HERMES_DASHBOARD_PUBLIC_URL` env var | — | Hosting-platform secrets / CI |
 | (unset) | — | Default — reconstruct from `X-Forwarded-*` headers |
 
 Validation rejects values without `http://` / `https://` scheme, without a host, or containing quote / angle / whitespace / control characters. A malformed value silently falls through to header reconstruction so the login flow keeps working rather than dispatching the user to a hostile URL.
@@ -865,7 +865,7 @@ Access tokens have a 15-minute TTL. **There is no refresh token in contract v1**
 | `hermes_session_pkce` | 10 min | HttpOnly; holds the PKCE verifier + provider hint during the round trip |
 | `hermes_session_rt` | unused in v1 | Reserved for forward-compat; not written when `refresh_token` is empty |
 
-All three are `Path=/` and `SameSite=Lax`. The `Secure` flag is set when the dashboard is reached over HTTPS (detected via the request URL scheme — honours `X-Forwarded-Proto` from Fly's TLS terminator under `proxy_headers=True`).
+All three are `Path=/` and `SameSite=Lax`. The `Secure` flag is set when the dashboard is reached over HTTPS (detected via the request URL scheme — honours `X-Forwarded-Proto` from an upstream TLS terminator under `proxy_headers=True`).
 
 ### Logout
 
@@ -902,7 +902,7 @@ The login page lists all registered providers; multiple providers can be stacked
 ### Verifying the gate is on
 
 ```bash
-# Quick env-var path (Fly.io shape).
+# Quick env-var path.
 HERMES_DASHBOARD_OAUTH_CLIENT_ID=agent:test \
   hermes dashboard --host 0.0.0.0
 

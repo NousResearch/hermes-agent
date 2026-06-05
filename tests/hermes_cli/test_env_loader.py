@@ -86,6 +86,59 @@ def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_API_KEY") == "sk-123"
 
 
+def test_no_arg_load_honors_context_local_home_override(tmp_path, monkeypatch):
+    """Parameterless load_hermes_dotenv() must honor the context-local home
+    override, not just os.environ["HERMES_HOME"].
+
+    Regression: profile-scoped cron jobs install a context-local override via
+    set_hermes_home_override(profile_home) while leaving HERMES_HOME pointing
+    at the scheduler root. discover_mcp_tools() -> _load_mcp_config() calls
+    load_hermes_dotenv() with no args; the old code read HERMES_HOME from the
+    environment and reloaded the ROOT .env with override=True, stomping the
+    profile credentials run_job() had just loaded.
+    """
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / ".env").write_text("MCP_KEY=root-value\n", encoding="utf-8")
+
+    profile_home = tmp_path / "profiles" / "support"
+    profile_home.mkdir(parents=True)
+    (profile_home / ".env").write_text("MCP_KEY=profile-value\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.delenv("MCP_KEY", raising=False)
+
+    token = set_hermes_home_override(profile_home)
+    try:
+        loaded = load_hermes_dotenv()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert loaded == [profile_home / ".env"]
+    assert os.getenv("MCP_KEY") == "profile-value"
+
+
+def test_no_arg_load_falls_back_to_env_home_without_override(tmp_path, monkeypatch):
+    """Without a context-local override, the no-arg path still resolves
+    HERMES_HOME from the environment (unchanged behavior)."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("MCP_KEY=env-value\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("MCP_KEY", raising=False)
+
+    loaded = load_hermes_dotenv()
+
+    assert loaded == [home / ".env"]
+    assert os.getenv("MCP_KEY") == "env-value"
+
+
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()

@@ -18,9 +18,9 @@
     "lint:diagrams": "ascii-guard lint --exclude-code-blocks docs"
   },
   "dependencies": {
-    "@docusaurus/core": "3.9.2",
-    "@docusaurus/preset-classic": "3.9.2",
-    "@docusaurus/theme-mermaid": "^3.10.1",
+    "@docusaurus/core": "3.10.1",
+    "@docusaurus/preset-classic": "3.10.1",
+    "@docusaurus/theme-mermaid": "3.10.1",
     "@easyops-cn/docusaurus-search-local": "^0.55.2",
     "@mdx-js/react": "^3.1.1",
     "clsx": "^2.1.1",
@@ -29,9 +29,9 @@
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
-    "@docusaurus/module-type-aliases": "3.9.2",
-    "@docusaurus/tsconfig": "3.9.2",
-    "@docusaurus/types": "3.9.2",
+    "@docusaurus/module-type-aliases": "3.10.1",
+    "@docusaurus/tsconfig": "3.10.1",
+    "@docusaurus/types": "3.10.1",
     "typescript": "~5.6.2"
   },
   "browserslist": {
@@ -47,7 +47,34 @@
     ]
   },
   "overrides": {
-    "serialize-javascript": "7.0.3"
+    "serialize-javascript": "7.0.5",
+    "uuid": "11.1.1",
+    "@docusaurus/core": "3.10.1",
+    "@docusaurus/babel": "3.10.1",
+    "@docusaurus/bundler": "3.10.1",
+    "@docusaurus/cssnano-preset": "3.10.1",
+    "@docusaurus/logger": "3.10.1",
+    "@docusaurus/mdx-loader": "3.10.1",
+    "@docusaurus/module-type-aliases": "3.10.1",
+    "@docusaurus/plugin-content-blog": "3.10.1",
+    "@docusaurus/plugin-content-docs": "3.10.1",
+    "@docusaurus/plugin-content-pages": "3.10.1",
+    "@docusaurus/plugin-css-cascade-layers": "3.10.1",
+    "@docusaurus/plugin-debug": "3.10.1",
+    "@docusaurus/plugin-google-analytics": "3.10.1",
+    "@docusaurus/plugin-google-gtag": "3.10.1",
+    "@docusaurus/plugin-google-tag-manager": "3.10.1",
+    "@docusaurus/plugin-sitemap": "3.10.1",
+    "@docusaurus/plugin-svgr": "3.10.1",
+    "@docusaurus/preset-classic": "3.10.1",
+    "@docusaurus/theme-classic": "3.10.1",
+    "@docusaurus/theme-common": "3.10.1",
+    "@docusaurus/theme-mermaid": "3.10.1",
+    "@docusaurus/theme-search-algolia": "3.10.1",
+    "@docusaurus/types": "3.10.1",
+    "@docusaurus/utils": "3.10.1",
+    "@docusaurus/utils-common": "3.10.1",
+    "@docusaurus/utils-validation": "3.10.1"
   },
   "engines": {
     "node": ">=20.0"

@@ -14,6 +14,7 @@
     "pino": "^9.0.0"
   },
   "overrides": {
-    "protobufjs": "^7.5.5"
+    "protobufjs": "^7.5.5",
+    "qs": "6.15.2"
   }
 }

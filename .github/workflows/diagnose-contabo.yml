@@ -61,9 +61,15 @@ jobs:
           done
 
           # Per-container view: who has claude-proxy / gateway-* seeded and live?
+          # After the role-gate fix, ONLY hermes (gateway) should have
+          # claude-proxy in /run/service; hermes-dashboard should NOT.
           for c in hermes hermes-dashboard; do
             echo
-            echo "================ [$c] /run/service ================"
+            echo "================ [$c] role + network ================"
+            echo "HERMES_ROLE env: $(docker exec "$c" sh -c 'echo "${HERMES_ROLE:-(unset)}"' 2>&1 || echo '?')"
+            echo "NetworkMode:     $(docker inspect -f '{{.HostConfig.NetworkMode}}' "$c" 2>/dev/null || echo '?')"
+            echo "CMD argv0 token: $(docker inspect -f '{{json .Config.Cmd}}' "$c" 2>/dev/null || echo '?')"
+            echo "-- [$c] /run/service --"
             docker exec "$c" sh -c 'ls -1 /run/service 2>&1' 2>&1 \
               || { echo "($c not running or exec failed)"; continue; }
             echo "-- [$c] claude-proxy supervise status --"
@@ -75,12 +81,15 @@ jobs:
             echo "-- [$c] proxy / gateway / s6-log processes --"
             docker exec "$c" sh -c 'ps -eo pid,args 2>/dev/null | grep -iE "claude_proxy|claude-proxy|s6-log|gateway run" | grep -v grep' 2>&1 \
               || echo "(none / ps unavailable)"
+            echo "-- [$c] in-container :11435 /health (the real bot path) --"
+            docker exec "$c" sh -c 'curl -fsS -m 5 http://127.0.0.1:11435/health 2>&1' 2>&1 \
+              && echo "  <- :11435 OK inside $c" || echo "  <- :11435 NOT answering inside $c"
           done
 
           echo
-          echo "================ :11435 health (host) ================"
-          curl -fsS -m 5 http://127.0.0.1:11435/health 2>&1 && echo "  <- :11435 OK" \
-            || echo "  <- :11435 NOT answering"
+          echo "================ :11435 health (host loopback) ================"
+          curl -fsS -m 5 http://127.0.0.1:11435/health 2>&1 && echo "  <- :11435 OK on host" \
+            || echo "  <- :11435 NOT answering on host (expected if gateway is bridge-networked)"
 
           echo
           echo "diagnose: done (nothing was changed)"

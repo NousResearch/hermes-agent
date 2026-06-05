@@ -48,9 +48,19 @@ jobs:
           # its Claude provider and the bots go dark -- yet the deploy still
           # reported green. Gate on the two server-side signals that map
           # directly to that failure: the container is actually Running (not
-          # restart-looping) and the proxy answers GET /health on :11435
-          # (network_mode: host, so it's on the host's localhost). Fail the
-          # deploy if either never comes up.
+          # restart-looping) and the proxy answers GET /health on :11435.
+          #
+          # IMPORTANT: probe from INSIDE the gateway container, not the host.
+          # The proxy binds 127.0.0.1:11435 (container-local loopback; see
+          # deploy/claude-proxy/claude_proxy.py), and this host runs the
+          # containers on a BRIDGE network -- the dashboard publishes
+          # 127.0.0.1:9119->9119, which host networking cannot do. A host-side
+          # `curl 127.0.0.1:11435` therefore never connects even when the proxy
+          # is healthy and the bots (which live in this same container) reach it
+          # fine. `docker exec hermes` runs the probe in the container's netns,
+          # testing the exact path the bots use. This was a false-negative in
+          # run 26998127716: the proxy logged "Proxy ready" but the host probe
+          # failed for the full 10min.
           #
           # Timeout is generous (10min): on this host the stage2 ownership
           # fix of the /opt/data volume dominates boot, and 02/03 (profile
@@ -59,17 +69,19 @@ jobs:
           # at T+2min boot was still in 01-hermes-setup and the proxy hadn't
           # seeded yet. Better to wait out a slow boot than cry wolf.
           probe() {
-            curl -fsS -m 5 -o /dev/null "$1" 2>/dev/null \
-              || wget -q -T 5 -O /dev/null "$1" 2>/dev/null
+            docker exec hermes sh -c \
+              'curl -fsS -m 5 -o /dev/null http://127.0.0.1:11435/health 2>/dev/null \
+                 || wget -q -T 5 -O /dev/null http://127.0.0.1:11435/health 2>/dev/null' \
+              2>/dev/null
           }
           health_ok=""
           for i in $(seq 1 120); do   # up to 120 * 5s = 600s (10min)
             running=$(docker inspect -f '{{.State.Running}}' hermes 2>/dev/null || echo false)
             restarting=$(docker inspect -f '{{.State.Restarting}}' hermes 2>/dev/null || echo false)
             if [ "$running" = "true" ] && [ "$restarting" = "false" ] \
-               && probe http://127.0.0.1:11435/health; then
+               && probe; then
               health_ok=1
-              echo "health-gate: container running and :11435 /health OK (attempt $i / ~$((i*5))s)"
+              echo "health-gate: container running and :11435 /health OK in-container (attempt $i / ~$((i*5))s)"
               break
             fi
             # Every ~30s show boot progress (last container log line) so a
@@ -84,8 +96,18 @@ jobs:
           if [ -z "$health_ok" ]; then
             echo "health-gate: FAILED -- :11435 never came up within 600s. Diagnostics:"
             docker ps -a --filter name=hermes || true
+            echo "--- network mode (host probe assumptions) ---"
+            for c in hermes hermes-dashboard; do
+              echo "$c: $(docker inspect -f '{{.HostConfig.NetworkMode}}' "$c" 2>/dev/null || echo '?')"
+            done
+            echo "--- claude-proxy supervise status (hermes) ---"
+            docker exec hermes sh -c '/command/s6-svstat /run/service/claude-proxy 2>&1; /command/s6-svstat /run/service/claude-proxy/log 2>&1' 2>&1 || true
+            echo "--- in-container :11435 /health probe (hermes) ---"
+            docker exec hermes sh -c 'curl -fsS -m 5 http://127.0.0.1:11435/health 2>&1 || echo "(in-container probe failed)"' 2>&1 || true
             echo "--- full boot log (hermes, tail 200) ---"
             docker logs --tail 200 hermes 2>&1 || true
+            echo "--- proxy lock contention markers (Resource busy / exit 111) ---"
+            docker logs hermes 2>&1 | grep -iE 'resource busy|unable to lock|exitcode 111' || echo "(none -- no claude-proxy log-lock contention)"
             echo "--- did the boot hooks run? (markers in log) ---"
             docker logs hermes 2>&1 | grep -iE 'cont-init.*0[23]-|reconcile|seed-services' || echo "(no 02/03 hook markers seen -- boot likely never reached them)"
             echo "--- /opt/data/services (what 03 has to seed from) ---"

@@ -1963,7 +1963,7 @@ class TestSchemaInit:
         assert "title" in columns
 
     def test_topic_mode_schema_is_not_auto_migrated_on_open(self, tmp_path):
-        """Opening an old DB should not add topic-mode columns until /topic opts in.
+        """Opening an old DB should not add topic-mode tables until /topic opts in.
 
         The gateway must remain rollback-safe: simply upgrading Hermes and starting
         the old bot should not eagerly mutate the state DB for this feature.
@@ -2028,9 +2028,15 @@ class TestSchemaInit:
         conn.close()
 
         db = SessionDB(db_path=old_db)
-        cursor = db._conn.execute("PRAGMA table_info(sessions)")
-        columns = {row[1] for row in cursor.fetchall()}
-        assert {"chat_id", "chat_type", "thread_id", "session_key"}.isdisjoint(columns)
+        tables = {
+            row[0]
+            for row in db._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "telegram_dm_topic_mode" not in tables
+        assert "telegram_dm_topic_bindings" not in tables
+        assert db.get_meta("telegram_dm_topic_schema_version") is None
         db.close()
 
     def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(self, tmp_path):

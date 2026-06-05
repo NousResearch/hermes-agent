@@ -60,6 +60,18 @@ const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string
     }
   },
   {
+    test: msg => /No STT provider available/i.test(msg),
+    summarize: () => translateNow('notifications.errors.sttProviderUnavailable')
+  },
+  {
+    test: msg => /faster-whisper not installed/i.test(msg) || /STT provider 'local' configured but unavailable/i.test(msg),
+    summarize: () => translateNow('notifications.errors.localSttUnavailable')
+  },
+  {
+    test: msg => /timed out connecting to hermes backend after \d+ms/i.test(msg),
+    summarize: () => translateNow('notifications.errors.voiceTranscriptionStillStarting')
+  },
+  {
     test: msg => /neither voice_tools_openai_key nor openai_api_key is set/i.test(msg),
     summarize: () => translateNow('notifications.errors.openaiTtsNeedsKey')
   },

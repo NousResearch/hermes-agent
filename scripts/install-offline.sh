@@ -66,22 +66,21 @@ if [[ $EUID -ne 0 ]]; then
 fi
 ok "root 权限确认"
 
-# Python
+# Python - 自动检测 >= 3.11 的 Python
 PYTHON_BIN=""
-PYTHON_MAJOR="${PYTHON_VERSION%%.*}"
-PYTHON_MINOR="${PYTHON_VERSION#*.}"
-for py in "python${PYTHON_VERSION}" "python3" "python" "/usr/local/bin/python${PYTHON_VERSION}" "/usr/local/bin/python3" "/usr/bin/python${PYTHON_VERSION}" "/usr/bin/python3"; do
+for py in "python${PYTHON_VERSION}" "python3.13" "python3.12" "python3.11" "python3" "python" \
+          "/usr/local/bin/python3.13" "/usr/local/bin/python3.12" "/usr/local/bin/python3.11" \
+          "/usr/local/bin/python3" "/usr/bin/python3.13" "/usr/bin/python3.12" "/usr/bin/python3.11" "/usr/bin/python3"; do
     if command -v "$py" &>/dev/null || [[ -x "$py" ]]; then
         PY_MAJOR=$("$py" -c 'import sys; print(sys.version_info.major)' 2>/dev/null || echo 0)
         PY_MINOR=$("$py" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo 0)
-        if [[ "$PY_MAJOR" -gt "$PYTHON_MAJOR" ]] || \
-           { [[ "$PY_MAJOR" -eq "$PYTHON_MAJOR" ]] && [[ "$PY_MINOR" -ge "$PYTHON_MINOR" ]]; }; then
+        if [[ "$PY_MAJOR" -eq 3 ]] && [[ "$PY_MINOR" -ge 11 ]] && [[ "$PY_MINOR" -lt 14 ]]; then
             PYTHON_BIN="$py"
             break
         fi
     fi
 done
-[[ -z "$PYTHON_BIN" ]] && die "需要 Python >= $PYTHON_VERSION。请先安装 python${PYTHON_VERSION}"
+[[ -z "$PYTHON_BIN" ]] && die "需要 Python 3.11-3.13。请先安装 python3.11/3.12/3.13"
 PYTHON_FULL_VER=$("$PYTHON_BIN" --version 2>&1)
 ok "$PYTHON_FULL_VER ($PYTHON_BIN)"
 

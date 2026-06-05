@@ -93,6 +93,7 @@ class SessionSource:
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
     context_anchor: Optional[Dict[str, Any]] = None  # Durable context anchor bound to this chat/thread lane
+    task_binding: Optional[Dict[str, Any]] = None  # Durable task metadata bound to this chat/thread lane
     
     @property
     def description(self) -> str:
@@ -138,6 +139,8 @@ class SessionSource:
             d["message_id"] = self.message_id
         if self.context_anchor:
             d["context_anchor"] = self.context_anchor
+        if self.task_binding:
+            d["task_binding"] = self.task_binding
         return d
 
     @classmethod
@@ -157,6 +160,7 @@ class SessionSource:
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
             context_anchor=data.get("context_anchor") if isinstance(data.get("context_anchor"), dict) else None,
+            task_binding=data.get("task_binding") if isinstance(data.get("task_binding"), dict) else None,
         )
     
 
@@ -330,6 +334,25 @@ def build_session_context_prompt(
             if url:
                 lines.append(f"  - URL: {url}")
             source_label = str(context_anchor.get("source") or "").strip()
+            if source_label:
+                lines.append(f"  - Binding source: {source_label}")
+
+    # Durable task binding (e.g. a Todoist task used to recover thread context
+    # after the chat history is reset or the model loses context overnight).
+    task_binding = context.source.task_binding if isinstance(context.source.task_binding, dict) else None
+    if task_binding:
+        task_id = str(task_binding.get("task_id") or "").strip()
+        if task_id:
+            lines.append("")
+            lines.append("**Bound Todoist Task:**")
+            lines.append(f"  - Task ID: `{task_id}`")
+            title = str(task_binding.get("task_title") or "").strip()
+            if title:
+                lines.append(f"  - Title: {title}")
+            url = str(task_binding.get("url") or "").strip()
+            if url:
+                lines.append(f"  - URL: {url}")
+            source_label = str(task_binding.get("source") or "").strip()
             if source_label:
                 lines.append(f"  - Binding source: {source_label}")
 

@@ -1248,6 +1248,10 @@ from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.context_anchors import ContextAnchorStore, infer_anchor_type
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
+from gateway.thread_tasks import (
+    ThreadTaskBindingStore,
+    parse_todoist_task_id,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -2030,6 +2034,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         self.delivery_router = DeliveryRouter(self.config)
         self.context_anchors = ContextAnchorStore(_hermes_home / "context_anchors.json")
+        self.thread_task_bindings = ThreadTaskBindingStore(_hermes_home / "thread_task_bindings.json")
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
         self._shutdown_event = asyncio.Event()
@@ -6914,6 +6919,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return await self._handle_update_command(event)
                 if _cmd_def_inner.name == "version":
                     return await self._handle_version_command(event)
+                if _cmd_def_inner.name == "bind-task":
+                    return await self._handle_bind_task_command(event)
+                if _cmd_def_inner.name == "recover":
+                    return await self._handle_recover_command(event)
 
             # Catch-all: any other recognized slash command reached the
             # running-agent guard. Reject gracefully rather than falling
@@ -7324,6 +7333,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "bind-context":
             return await self._handle_bind_context_command(event)
+
+        if canonical == "bind-task":
+            return await self._handle_bind_task_command(event)
 
         if canonical == "recover":
             return await self._handle_recover_command(event)
@@ -8033,6 +8045,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # Build session context
         source = self._source_with_context_anchor(source)
+        source = self._source_with_thread_task_binding(source)
         event.source = source
         context = build_session_context(source, self.config, session_entry)
         
@@ -9299,24 +9312,83 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             f"{url_suffix}"
         )
 
+    def _get_thread_task_binding_store(self) -> ThreadTaskBindingStore:
+        store = getattr(self, "thread_task_bindings", None)
+        if store is None:
+            store = ThreadTaskBindingStore(_hermes_home / "thread_task_bindings.json")
+            self.thread_task_bindings = store
+        return store
+
+    def _source_with_thread_task_binding(self, source: SessionSource) -> SessionSource:
+        """Attach durable thread/task metadata to the source before prompt injection."""
+
+        try:
+            binding = self._get_thread_task_binding_store().resolve_for_source(source)
+        except Exception:
+            logger.debug("Failed to resolve thread task binding", exc_info=True)
+            return source
+        if not binding:
+            return source
+        return dataclasses.replace(source, task_binding=binding.to_dict())
+
+    async def _handle_bind_task_command(self, event: MessageEvent) -> str:
+        """Bind, show, or remove a Todoist task reference for the current chat/thread."""
+
+        source = event.source
+        raw_args = event.get_command_args().strip()
+        store = self._get_thread_task_binding_store()
+        if not raw_args or raw_args.lower() in {"show", "status"}:
+            binding = store.resolve_for_source(source)
+            if not binding:
+                return "No Todoist task is bound to this chat/thread. Use `/bind-task <task_id> [title]`."
+            title = f" — {binding.task_title}" if binding.task_title else ""
+            return f"Bound Todoist task: `{binding.task_id}`{title}\n{binding.url}"
+        if raw_args.lower() in {"off", "clear", "remove", "unbind"}:
+            removed = store.unbind(source)
+            if removed:
+                return f"Removed Todoist task binding `{removed.task_id}` from this chat/thread."
+            fallback = store.resolve_for_source(source)
+            if fallback and fallback.source == "thread-title":
+                return (
+                    "No manual binding was set; this chat/thread still has a Todoist id "
+                    "in its title. Remove `[T:<task_id>]` from the title to disable "
+                    "title fallback."
+                )
+            return "No Todoist task binding was set for this chat/thread."
+
+        first, _, rest = raw_args.partition(" ")
+        task_id = first if first.isdigit() else parse_todoist_task_id(raw_args)
+        if not task_id:
+            return "Usage: /bind-task <todoist_task_id> [optional title]"
+        title = rest.strip() if first == task_id else ""
+        binding = store.bind(source, task_id, task_title=title, source_label="manual")
+        title_suffix = f" — {binding.task_title}" if binding.task_title else ""
+        return (
+            f"Bound this chat/thread to Todoist task `{binding.task_id}`{title_suffix}.\n"
+            f"Future turns will include this task reference in session context.\n"
+            f"{binding.url}"
+        )
+
     async def _handle_recover_command(self, event: MessageEvent) -> str:
         """Show the durable context-recovery anchor for the current chat/thread."""
 
         anchor = self._get_context_anchor_store().resolve_for_source(event.source)
-        if not anchor:
+        binding = self._get_thread_task_binding_store().resolve_for_source(event.source)
+        if not anchor and not binding:
             return (
-                "No context anchor found for this chat/thread. "
-                "Add `[context:<type>:<id>]` to the thread title or run "
-                "`/bind-context <type> <id-or-url> [title]`."
+                "No recovery anchor found for this chat/thread. Add `[context:<type>:<id>]` "
+                "or `[T:<task_id>]` to the thread title, or run `/bind-context ...` / `/bind-task ...`."
             )
-        title = f"\nTitle: {anchor.title}" if anchor.title else ""
-        url = f"\nURL: {anchor.url}" if anchor.url else ""
-        return (
-            "Recovery anchor for this chat/thread:\n"
-            f"Context anchor: `{anchor.anchor_type}:{anchor.anchor_id}`{title}{url}\n"
-            "I will inject this into future session context automatically."
-        )
-
+        response_lines = ["Recovery anchor for this chat/thread:"]
+        if anchor:
+            title = f"\nTitle: {anchor.title}" if anchor.title else ""
+            url = f"\nURL: {anchor.url}" if anchor.url else ""
+            response_lines.append(f"Context anchor: `{anchor.anchor_type}:{anchor.anchor_id}`{title}{url}")
+        if binding:
+            title = f"\nTitle: {binding.task_title}" if binding.task_title else ""
+            response_lines.append(f"Todoist task: `{binding.task_id}`{title}\nURL: {binding.url}")
+        response_lines.append("I will inject this into future session context automatically.")
+        return "\n".join(response_lines)
 
 
 

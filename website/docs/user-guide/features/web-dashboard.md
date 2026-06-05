@@ -581,6 +581,35 @@ Or pass --insecure to skip the auth gate (NOT recommended on untrusted
 networks).
 ```
 
+#### Worked example: Nous Research
+
+From a logged-in Hermes install to a Nous-gated dashboard in three steps.
+
+**1. Log in and register the dashboard.** `hermes dashboard register` uses your existing Nous login to provision an OAuth client and writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` into `~/.hermes/.env` for you:
+
+```bash
+hermes setup            # if you're not already logged into Nous Portal
+hermes dashboard register
+# ✓ Registered dashboard "swift_falcon"
+# …writes HERMES_DASHBOARD_OAUTH_CLIENT_ID to ~/.hermes/.env
+```
+
+**2. Run the dashboard on a reachable address.** A non-loopback bind without `--insecure` engages the OAuth gate, and the `client_id` just written activates the `nous` provider:
+
+```bash
+hermes dashboard --host 0.0.0.0 --port 9119 --no-open
+```
+
+**3. Log in.** Open `http://<host>:9119/`, you'll be bounced to `/login`. Click **Sign in with Nous Research** → authenticate at the Portal → land back on the authenticated dashboard. Verify the gate from any machine:
+
+```bash
+curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
+# true
+# ["nous"]
+```
+
+`GET /api/auth/me` then returns the verified session (`provider: nous`). For an internet-facing host, register with `--redirect-uri https://hermes.example.com/auth/callback` and set `HERMES_DASHBOARD_PUBLIC_URL` so the OAuth callback resolves to your public URL (see [Public URL override](#public-url-override)).
+
 ### Username/password provider (no OAuth IDP)
 
 If you don't want to wire up an OAuth identity provider — a self-hosted "just put a password on my dashboard" deployment — the bundled `plugins/dashboard_auth/basic` plugin registers a `DashboardAuthProvider` named `basic` that authenticates with a **username and password** instead of an OAuth redirect.
@@ -625,6 +654,40 @@ When `secret` is empty, a random per-process signing key is generated. That's fi
 :::
 
 The `/auth/password-login` endpoint is rate-limited per client IP (default 10 attempts/minute → HTTP 429) and returns a single generic `401 Invalid credentials` for both unknown users and wrong passwords, so it can't be used as a username-enumeration oracle.
+
+#### Worked example: username/password
+
+From nothing to a password-gated dashboard on a trusted network in three steps.
+
+**1. Set credentials in `~/.hermes/.env`.** Hash the password so no plaintext sits at rest, and set a stable signing secret so sessions survive restarts:
+
+```bash
+# Compute a scrypt hash of your chosen password:
+HASH=$(python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('choose-a-strong-password'))")
+
+cat >> ~/.hermes/.env <<EOF
+HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
+HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=$HASH
+HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)
+EOF
+chmod 600 ~/.hermes/.env
+```
+
+**2. Run the dashboard on a reachable address.** A non-loopback bind without `--insecure` engages the gate, and the username + hash activate the `basic` provider:
+
+```bash
+hermes dashboard --host 0.0.0.0 --port 9119 --no-open
+```
+
+**3. Log in.** Open `http://<host>:9119/`, you'll be bounced to `/login` — a **credential form** (not a "Sign in with X" button). Enter `admin` / your password → land on the authenticated dashboard. Verify the gate from any machine:
+
+```bash
+curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
+# true
+# ["basic"]
+```
+
+`GET /api/auth/me` then returns the verified session (`provider: basic`). Keep this behind a VPN — see the warning above; for a public host use the [Nous Research](#default-provider-nous-research) or [self-hosted OIDC](#self-hosted-oidc-provider) provider instead.
 
 #### Writing your own password provider
 

@@ -1068,6 +1068,61 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(link)) is None
 
+    def test_denylist_blocks_run_secrets_via_var_run_symlink(self, tmp_path, monkeypatch):
+        """/run/secrets (k8s serviceaccount tokens, systemd LoadCredential) must
+        never be delivered. /var/run is a compat symlink to /run, and paths are
+        resolve()d before the denylist check — so a /var/run/... delivery
+        canonicalizes to /run/... and the /var/run prefix entry alone misses it.
+
+        Load-bearing: the patched denylist is *derived from the real*
+        ``_MEDIA_DELIVERY_DENIED_PREFIXES`` by relocating each real entry under
+        ``tmp_path``. ``/var/run`` is realized as a symlink to the ``/run``
+        analog, exactly mirroring systemd. If the production fix (the ``/run``
+        entry) is removed, ``/run`` drops out of the derived tuple, the resolved
+        ``/var/run`` symlink no longer matches any prefix, and the second
+        assertion fails — so this test genuinely guards the fix.
+        """
+        self._patch_roots(monkeypatch)
+
+        from gateway.platforms import base as base_mod
+
+        # /run must be on the real denylist — the canonicalization-bypass fix.
+        assert "/run" in base_mod._MEDIA_DELIVERY_DENIED_PREFIXES
+
+        fake_run = tmp_path / "run"
+        secret_dir = fake_run / "secrets"
+        secret_dir.mkdir(parents=True)
+        token = secret_dir / "token"
+        token.write_text("eyJhbGciOi...serviceaccount-jwt")
+
+        fake_var = tmp_path / "var"
+        fake_var.mkdir()
+        fake_var_run = fake_var / "run"  # /var/run -> /run, as on systemd
+        fake_var_run.symlink_to(fake_run, target_is_directory=True)
+
+        # Relocate the *real* system prefixes under tmp_path so the test stays
+        # hermetic on macOS (no real /run) yet fails if /run is removed upstream.
+        relocate = {"/run": str(fake_run), "/var/run": str(fake_var_run)}
+        derived = tuple(
+            relocate.get(prefix, str(tmp_path / prefix.lstrip("/")))
+            for prefix in base_mod._MEDIA_DELIVERY_DENIED_PREFIXES
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            derived,
+        )
+
+        # Canonical /run/... path is denied.
+        assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
+        # /var/run/... resolves to /run/... — denied only because /run is on the
+        # denylist. This is the assertion the production fix exists to satisfy.
+        assert (
+            BasePlatformAdapter.validate_media_delivery_path(
+                str(fake_var_run / "secrets" / "token")
+            )
+            is None
+        )
+
 
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio

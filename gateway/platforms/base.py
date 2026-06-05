@@ -882,6 +882,12 @@ _MEDIA_DELIVERY_DENIED_PREFIXES = (
     "/boot",
     "/var/log",
     "/var/lib",
+    "/run",  # systemd runtime: /run/secrets (k8s serviceaccount tokens,
+    # docker/podman secrets), /run/credentials/<unit> (systemd LoadCredential),
+    # sockets. /var/run is a compat symlink to /run, and
+    # validate_media_delivery_path resolve()s symlinks BEFORE this prefix check,
+    # so a /var/run/... path canonicalizes to /run/... and slips past the
+    # /var/run entry alone — this closes that canonicalization bypass.
     "/var/run",
 )
 

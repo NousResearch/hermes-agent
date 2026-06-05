@@ -3632,7 +3632,18 @@ class FeishuAdapter(BasePlatformAdapter):
         if preferred == "photo":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.PHOTO)
         if preferred == "audio":
-            return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.AUDIO)
+            # Feishu voice messages (msg_type=audio, stored as .ogg/.opus)
+            # are functionally voice messages, not audio file attachments.
+            # Distinguish by file extension when available; otherwise assume voice
+            # since Feishu users rarely send audio files as attachments.
+            if normalized.media_refs:
+                fname = (normalized.media_refs[0].file_name or "").lower()
+                # Known audio-file extensions → treat as AUDIO (not voice)
+                if any(fname.endswith(ext) for ext in (".mp3", ".m4a", ".flac", ".aac", ".wav")):
+                    return self._resolve_media_message_type(
+                        media_types[0] if media_types else "", default=MessageType.AUDIO
+                    )
+            return MessageType.VOICE
         if preferred == "document":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.DOCUMENT)
         return MessageType.TEXT

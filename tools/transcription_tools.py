@@ -1340,8 +1340,26 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
+
+        # Convert to wav if the API might not support the source format (e.g. .ogg)
+        _SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm"}
+        _actual_path = file_path
+        _suffix = Path(file_path).suffix.lower()
+        if _suffix and _suffix not in _SUPPORTED_FORMATS:
+            import subprocess, tempfile
+            _tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            _tmp_wav.close()
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-i", file_path, "-ar", "16000", "-ac", "1", "-y", _tmp_wav.name],
+                    capture_output=True, timeout=15,
+                )
+                _actual_path = _tmp_wav.name
+            except Exception:
+                _actual_path = file_path  # fall back to original
+
         try:
-            with open(file_path, "rb") as audio_file:
+            with open(_actual_path, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
                     model=model_name,
                     file=audio_file,

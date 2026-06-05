@@ -326,6 +326,44 @@ def _normalize_role(r: Optional[str]) -> str:
     return "leaf"
 
 
+# ACP subprocess transport only speaks to the GitHub Copilot CLI
+# (`copilot --acp --stdio`).  Other CLIs reject the `--acp` flag at
+# parse time, which used to surface as a confusing three-retry loop in
+# the gateway before being caught here — see #38662.  If a future
+# version gains a second ACP-compatible CLI, expand this set.
+_SUPPORTED_ACP_COMMANDS = frozenset({"copilot"})
+
+
+def _validate_acp_command(
+    acp_command: Optional[str], field: str = "acp_command"
+) -> Optional[str]:
+    """Reject acp_command values the ACP transport cannot drive.
+
+    The transport in ``agent/copilot_acp_client.py`` is wired specifically
+    to GitHub Copilot CLI.  Passing another binary (e.g. ``"claude"``)
+    results in the child dying with ``unknown option '--acp'`` before
+    any prompt is sent.  Validate up front so the caller gets a clear
+    configuration error instead of three silent retries.
+
+    Returns ``None`` when the value is acceptable, or a human-readable
+    error message describing what to do instead.
+    """
+    if not acp_command:
+        return None
+    # Bare ``copilot`` or an absolute path ending in ``/copilot`` is fine —
+    # users with the CLI in a non-default location (e.g. nvm, asdf) need
+    # to set HERMES_COPILOT_ACP_COMMAND=/path/to/copilot.
+    if acp_command == "copilot" or acp_command.endswith("/copilot"):
+        return None
+    return (
+        f"Unsupported {field}={acp_command!r}. The ACP subprocess transport "
+        f"in agent/copilot_acp_client.py only supports GitHub Copilot CLI "
+        f"({sorted(_SUPPORTED_ACP_COMMANDS)}). For Claude, leave {field} "
+        f"unset and route via the parent's normal model, or use the "
+        f"`claude-code` skill for Claude Code CLI."
+    )
+
+
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
@@ -1968,6 +2006,14 @@ def delegate_task(
             "(`p` in /agents) or the `delegation.pause` RPC before retrying."
         )
 
+    # Reject ACP commands the subprocess transport can't drive.  This is
+    # a configuration error, not a transient failure — catching it here
+    # means the caller doesn't have to wait for three child-agent retries
+    # to surface as "unknown option '--acp'".  See #38662.
+    acp_cmd_error = _validate_acp_command(acp_command)
+    if acp_cmd_error:
+        return tool_error(acp_cmd_error)
+
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
 
@@ -2049,6 +2095,16 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+        # Per-task acp_command can override the top-level one.  The empty
+        # string is treated as "unset" by the schema, so only check
+        # non-empty values here.  See #38662.
+        per_task_acp = task.get("acp_command")
+        if per_task_acp:
+            per_task_error = _validate_acp_command(
+                per_task_acp, field=f"tasks[{i}].acp_command"
+            )
+            if per_task_error:
+                return tool_error(per_task_error)
 
     overall_start = time.monotonic()
     results = []

@@ -29,6 +29,7 @@ from tools.delegate_tool import (
     _build_child_progress_callback,
     _build_child_system_prompt,
     _strip_blocked_tools,
+    _validate_acp_command,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
 )
@@ -1896,13 +1897,189 @@ class TestDispatchDelegateTask(unittest.TestCase):
 
             delegate_task(
                 goal="test",
-                acp_command="claude",
+                acp_command="copilot",
                 acp_args=["--acp", "--stdio"],
                 parent_agent=parent,
             )
             _, kwargs = mock_build.call_args
-            self.assertEqual(kwargs["override_acp_command"], "claude")
+            self.assertEqual(kwargs["override_acp_command"], "copilot")
             self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
+
+
+class TestValidateAcpCommand(unittest.TestCase):
+    """Unit tests for the acp_command allowlist — see #38662.
+
+    The ACP subprocess transport in agent/copilot_acp_client.py is wired
+    specifically to ``copilot --acp --stdio``.  Other CLIs reject --acp
+    at parse time, so we validate up front rather than letting the child
+    die three times and then surface a confusing retry-loop error.
+    """
+
+    def test_none_is_acceptable(self):
+        """None means 'inherit parent's acp_command' — always valid."""
+        self.assertIsNone(_validate_acp_command(None))
+
+    def test_empty_string_is_acceptable(self):
+        """Empty string is treated as unset by the schema — also valid."""
+        self.assertIsNone(_validate_acp_command(""))
+
+    def test_bare_copilot_is_acceptable(self):
+        """The canonical case: the default Copilot CLI binary."""
+        self.assertIsNone(_validate_acp_command("copilot"))
+
+    def test_absolute_path_to_copilot_is_acceptable(self):
+        """Users with the CLI in a non-default location (nvm, asdf) need
+        a way to point at it without tripping the allowlist."""
+        self.assertIsNone(_validate_acp_command("/opt/copilot/bin/copilot"))
+        self.assertIsNone(_validate_acp_command("/usr/local/bin/copilot"))
+
+    def test_claude_is_rejected(self):
+        """Claude Code CLI doesn't implement --acp — this was the original
+        /claude gateway bug.  Must error before the child spawns."""
+        err = _validate_acp_command("claude")
+        self.assertIsNotNone(err)
+        self.assertIn("'claude'", err)
+        self.assertIn("copilot", err)
+        self.assertIn("agent/copilot_acp_client.py", err)
+
+    def test_claude_code_is_rejected(self):
+        """The npm package name as a binary reference is also invalid."""
+        err = _validate_acp_command("claude-code")
+        self.assertIsNotNone(err)
+        self.assertIn("'claude-code'", err)
+
+    def test_random_cli_is_rejected(self):
+        """Any other CLI name is invalid — we only support copilot."""
+        for cli in ("code", "aider", "cursor", "windsurf", "gpt"):
+            with self.subTest(cli=cli):
+                err = _validate_acp_command(cli)
+                self.assertIsNotNone(err, f"{cli} should have been rejected")
+                self.assertIn(f"'{cli}'", err)
+
+    def test_error_message_includes_field_name(self):
+        """The field name is surfaced so the user knows which kwarg is bad."""
+        err = _validate_acp_command("claude", field="tasks[0].acp_command")
+        self.assertIsNotNone(err)
+        self.assertIn("tasks[0].acp_command", err)
+        self.assertIn("'claude'", err)
+
+
+class TestDelegateAcpCommandRejection(unittest.TestCase):
+    """delegate_task must short-circuit on bad acp_command values.
+
+    Regression for #38662: the gateway's /claude command was setting
+    acp_command='claude', which made every child agent retry the same
+    unparseable spawn three times.  delegate_task now rejects the bad
+    value before any child is built.
+    """
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_top_level_claude_returns_tool_error(self, mock_creds, mock_cfg):
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            result = delegate_task(
+                goal="test",
+                acp_command="claude",
+                acp_args=["--acp", "--stdio"],
+                parent_agent=parent,
+            )
+
+        # Child build must never have been attempted.
+        mock_build.assert_not_called()
+        # The result is a tool_error JSON envelope; verify the message
+        # points the user at the right thing.
+        self.assertIn("Unsupported acp_command='claude'", result)
+        self.assertIn("copilot", result)
+        self.assertIn("claude-code", result)
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_claude_returns_tool_error(self, mock_creds, mock_cfg):
+        """Per-task acp_command is validated in the task loop too."""
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            result = delegate_task(
+                tasks=[
+                    {"goal": "good"},
+                    {"goal": "bad", "acp_command": "claude"},
+                ],
+                parent_agent=parent,
+            )
+
+        mock_build.assert_not_called()
+        self.assertIn("tasks[1].acp_command", result)
+        self.assertIn("'claude'", result)
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_copilot_top_level_succeeds(self, mock_creds, mock_cfg):
+        """Sanity check: the supported value still works end-to-end."""
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            mock_build.return_value = mock_child
+
+            delegate_task(
+                goal="test",
+                acp_command="copilot",
+                acp_args=["--acp", "--stdio"],
+                parent_agent=parent,
+            )
+
+        mock_build.assert_called_once()
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_none_acp_command_succeeds(self, mock_creds, mock_cfg):
+        """The default (no ACP) path still works — children inherit parent."""
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            mock_build.return_value = mock_child
+
+            delegate_task(goal="test", parent_agent=parent)
+
+        mock_build.assert_called_once()
+
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""

@@ -32,6 +32,7 @@ import {
   shouldAutoDrainOnSettle,
   updateQueuedPrompt
 } from '@/store/composer-queue'
+import { notify } from '@/store/notifications'
 import { $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 
@@ -84,6 +85,11 @@ const COMPOSER_SINGLE_LINE_MAX_PX = 36
 
 const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
+
+// Hard limit for text paste length. Pasting more than this truncates the text
+// with a notification — inserting tens of thousands of DOM nodes into a
+// contentEditable at once freezes the browser.
+const MAX_PASTE_LENGTH = 50_000
 
 const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
 
@@ -494,7 +500,21 @@ export function ChatBar({
     }
 
     event.preventDefault()
-    document.execCommand('insertText', false, pastedText)
+
+    // Truncate very large pastes to prevent the browser from freezing when
+    // thousands of DOM nodes are inserted into the contentEditable at once.
+    let textToInsert = pastedText
+
+    if (textToInsert.length > MAX_PASTE_LENGTH) {
+      textToInsert = textToInsert.slice(0, MAX_PASTE_LENGTH)
+      notify({
+        kind: 'warning',
+        title: 'Paste truncated',
+        message: `Text was truncated to ${MAX_PASTE_LENGTH.toLocaleString()} characters.`
+      })
+    }
+
+    document.execCommand('insertText', false, textToInsert)
     const nextDraft = composerPlainText(event.currentTarget)
     draftRef.current = nextDraft
     aui.composer().setText(nextDraft)

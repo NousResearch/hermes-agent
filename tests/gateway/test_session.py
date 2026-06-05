@@ -611,6 +611,68 @@ class TestSessionStoreSwitchSession:
         db.close()
 
 
+class TestSessionStoreSQLiteOriginMetadata:
+    """Gateway-origin metadata should be queryable from state.db sessions."""
+
+    @pytest.fixture()
+    def store(self, tmp_path, monkeypatch):
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+        try:
+            yield store
+        finally:
+            if store._db:
+                store._db.close()
+
+    def test_new_gateway_session_persists_origin_metadata_to_sqlite(self, store):
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-123",
+            chat_name="Guild / #ops / deploy-thread",
+            chat_type="thread",
+            user_id="user-456",
+            thread_id="thread-789",
+            parent_chat_id="channel-parent",
+        )
+
+        entry = store.get_or_create_session(source)
+        row = store._db.get_session(entry.session_id)
+
+        assert row["source"] == "discord"
+        assert row["user_id"] == "user-456"
+        assert row["chat_id"] == "channel-123"
+        assert row["chat_type"] == "thread"
+        assert row["chat_name"] == "Guild / #ops / deploy-thread"
+        assert row["thread_id"] == "thread-789"
+        assert row["parent_chat_id"] == "channel-parent"
+        assert row["session_key"] == entry.session_key
+
+    def test_reset_session_persists_origin_metadata_to_replacement_row(self, store):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100123",
+            chat_name="release war room",
+            chat_type="group",
+            user_id="42",
+            thread_id="9001",
+        )
+        entry = store.get_or_create_session(source)
+
+        replacement = store.reset_session(entry.session_key)
+        row = store._db.get_session(replacement.session_id)
+
+        assert row["source"] == "telegram"
+        assert row["user_id"] == "42"
+        assert row["chat_id"] == "-100123"
+        assert row["chat_type"] == "group"
+        assert row["chat_name"] == "release war room"
+        assert row["thread_id"] == "9001"
+        assert row["parent_chat_id"] is None
+        assert row["session_key"] == entry.session_key
+
+
 class TestWhatsAppSessionKeyConsistency:
     """Regression: WhatsApp session keys must collapse JID/LID aliases to a
     single stable identity for both DM chat_ids and group participant_ids."""

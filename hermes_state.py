@@ -235,6 +235,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
     user_id TEXT,
+    chat_id TEXT,
+    chat_type TEXT,
+    chat_name TEXT,
+    thread_id TEXT,
+    parent_chat_id TEXT,
+    session_key TEXT,
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
@@ -302,6 +308,7 @@ CREATE TABLE IF NOT EXISTS compression_locks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
+CREATE INDEX IF NOT EXISTS idx_sessions_session_key ON sessions(session_key);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
@@ -945,19 +952,33 @@ class SessionDB:
         model_config: Dict[str, Any] = None,
         system_prompt: str = None,
         user_id: str = None,
+        chat_id: str = None,
+        chat_type: str = None,
+        chat_name: str = None,
+        thread_id: str = None,
+        parent_chat_id: str = None,
+        session_key: str = None,
         parent_session_id: str = None,
         cwd: str = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
             conn.execute(
-                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
+                """INSERT OR IGNORE INTO sessions (
+                   id, source, user_id, chat_id, chat_type, chat_name, thread_id,
+                   parent_chat_id, session_key, model, model_config,
                    system_prompt, parent_session_id, cwd, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
                     user_id,
+                    chat_id,
+                    chat_type,
+                    chat_name,
+                    thread_id,
+                    parent_chat_id,
+                    session_key,
                     model,
                     json.dumps(model_config) if model_config else None,
                     system_prompt,

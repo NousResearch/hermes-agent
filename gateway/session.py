@@ -665,6 +665,30 @@ def build_session_key(
     return ":".join(key_parts)
 
 
+def _db_origin_kwargs(
+    source: Optional[SessionSource],
+    session_key: str,
+) -> Dict[str, Optional[str]]:
+    """Return gateway-origin fields persisted alongside the SQLite session."""
+    if source is None:
+        return {
+            "chat_id": None,
+            "chat_type": None,
+            "chat_name": None,
+            "thread_id": None,
+            "parent_chat_id": None,
+            "session_key": session_key,
+        }
+    return {
+        "chat_id": source.chat_id,
+        "chat_type": source.chat_type,
+        "chat_name": source.chat_name,
+        "thread_id": source.thread_id,
+        "parent_chat_id": source.parent_chat_id,
+        "session_key": session_key,
+    }
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -937,6 +961,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                **_db_origin_kwargs(source, session_key),
             }
 
         # SQLite operations outside the lock
@@ -1163,6 +1188,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
+                **_db_origin_kwargs(old_entry.origin, session_key),
             }
 
         if self._db and db_end_session_id:

@@ -74,6 +74,19 @@ class TestParseAvailableOutputTokens:
         msg = "max_tokens: 9999 > context_window: 10000 - input_tokens: 9999 = available_tokens: 1"
         assert self._parse(msg) == 1
 
+    def test_openrouter_nous_output_tokens_format(self):
+        msg = (
+            "Error code: 400 - {"
+            '"status": 400, '
+            '"message": "This endpoint\'s maximum context length is 256000 tokens. '
+            "However, you requested about 281093 tokens "
+            "(5683 of text input, 13410 of tool input, 262000 in the output). "
+            'Please reduce the length of either one."'
+            "}"
+        )
+
+        assert self._parse(msg) == 236907
+
     # ── Should NOT detect (returns None) ─────────────────────────────────
 
     def test_prompt_too_long_is_not_output_cap_error(self):

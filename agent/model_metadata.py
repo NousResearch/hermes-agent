@@ -955,10 +955,34 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     Anthropic's API returns errors like:
       "max_tokens: 32768 > context_window: 200000 - input_tokens: 190000 = available_tokens: 10000"
 
+    OpenRouter-compatible providers may return:
+      "maximum context length is 256000 tokens ... (5683 of text input,
+       13410 of tool input, 262000 in the output)"
+
     Returns the number of output tokens that would fit (e.g. 10000 above), or None if
     the error does not look like a max_tokens-too-large error.
     """
     error_lower = error_msg.lower()
+
+    # OpenRouter/Nous format: the response says how much of the request is
+    # text input, tool input, and output. The output cap is too large when
+    # text + tools fits but text + tools + requested output exceeds the window.
+    openrouter_match = re.search(
+        r'maximum\s+context\s+length\s+is\s+([\d,]+).*?'
+        r'([\d,]+)\s+of\s+text\s+input.*?'
+        r'([\d,]+)\s+of\s+tool\s+input.*?'
+        r'([\d,]+)\s+in\s+the\s+output',
+        error_lower,
+        re.DOTALL,
+    )
+    if openrouter_match:
+        max_context = int(openrouter_match.group(1).replace(',', ''))
+        text_input = int(openrouter_match.group(2).replace(',', ''))
+        tool_input = int(openrouter_match.group(3).replace(',', ''))
+        requested_output = int(openrouter_match.group(4).replace(',', ''))
+        available = max_context - text_input - tool_input
+        if available >= 1 and requested_output > available:
+            return available
 
     # Must look like an output-cap error, not a prompt-length error.
     is_output_cap_error = (

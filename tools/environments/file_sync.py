@@ -232,7 +232,12 @@ class FileSyncManager:
         except Exception as exc:
             self._synced_files = prev_files
             self._pushed_hashes = prev_hashes
-            self._last_sync_time = time.monotonic()
+            # Do NOT advance _last_sync_time here: a failed cycle rolls state
+            # back so the next cycle can retry. Bumping the rate-limit clock on
+            # failure would make the next non-forced sync() return early (the
+            # guard above), suppressing that retry for up to _sync_interval and
+            # leaving the remote with stale files — contradicting this method's
+            # documented "next cycle retries everything" contract.
             logger.warning("file_sync: sync failed, rolled back state: %s", exc)
 
     # ------------------------------------------------------------------

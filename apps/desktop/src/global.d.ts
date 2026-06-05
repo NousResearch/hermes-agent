@@ -12,7 +12,7 @@ declare global {
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
       getGatewayWsUrl: (profile?: null | string) => Promise<string>
       getBootProgress: () => Promise<DesktopBootProgress>
-      getConnectionConfig: () => Promise<DesktopConnectionConfig>
+      getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
@@ -190,6 +190,9 @@ export interface DesktopActiveProfile {
 export interface DesktopConnectionConfig {
   envOverride: boolean
   mode: 'local' | 'remote'
+  // The profile this config describes, or null for the global/default
+  // connection. Per-profile entries let a profile point at its own backend.
+  profile: null | string
   remoteAuthMode: 'oauth' | 'token'
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
@@ -199,6 +202,9 @@ export interface DesktopConnectionConfig {
 
 export interface DesktopConnectionConfigInput {
   mode: 'local' | 'remote'
+  // When set, the save/apply/test targets this profile's per-profile remote
+  // override instead of the global connection.
+  profile?: null | string
   remoteAuthMode?: 'oauth' | 'token'
   remoteToken?: string
   remoteUrl?: string

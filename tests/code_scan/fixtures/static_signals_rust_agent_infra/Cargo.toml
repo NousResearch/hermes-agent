@@ -1,0 +1,16 @@
+[package]
+name = "franken-agent-infra"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+franken-agent-detection = { git = "https://example.invalid/franken-agent-detection", branch = "main" }
+fastembed = "4.0"
+ort = { version = "2.0", features = ["cuda"] }
+aes-gcm = "0.10"
+argon2 = "0.5"
+ssh2 = "0.9"
+
+[dev-dependencies]
+cargo-audit = { git = "..." }
+cargo-deny = "0.15"

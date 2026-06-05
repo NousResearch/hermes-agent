@@ -43,6 +43,7 @@ from static_signals import (
     extract_edge_function_markers,
     extract_package_config_markers,
     extract_supabase_migration_markers,
+    extract_rust_agent_infra_markers,
 )
 
 # ── Optional enrichers (may be absent if upstream beads not yet available) ---
@@ -842,6 +843,7 @@ class RunUA:
                 signals.extend(extract_supabase_migration_markers(rel_path, content))
                 signals.extend(extract_edge_function_markers(rel_path, content))
                 signals.extend(extract_package_config_markers(rel_path, content))
+                signals.extend(extract_rust_agent_infra_markers(rel_path, content))
 
         self.static_signals_data = build_static_signals_artifact(signals)
         self._write_json("static-signals.json", self.static_signals_data)

@@ -961,3 +961,54 @@ class TestUAArtifactIntegrity:
             expected_sha = hashlib.sha256(fpath.read_bytes()).hexdigest()
             assert entry["sha256"] == expected_sha, f"sha256 mismatch for {name}"
             assert entry["bytes"] == fpath.stat().st_size, f"bytes mismatch for {name}"
+
+
+# ── TDD RED/GREEN extension for UA-T1-006 rust-agent-infra ─────────────────
+
+class TestStaticSignalsRunUARustAgentInfra:
+    """Verify static signals integration for rust/agent-infra fixture (heuristic only)."""
+
+    def test_review_bundle_registers_rust_agent_infra_static_signals(self, tmp_path: Path):
+        target = str(FIXTURES_DIR / "static_signals_rust_agent_infra")
+        out = tmp_path / "bundle-rust"
+        rc, _, stderr = run_ua(target, str(out), mode="review")
+        assert rc == 0, f"review on rust fixture failed: {stderr}"
+
+        static_path = out / "static-signals.json"
+        assert static_path.exists(), "static-signals.json missing for rust infra fixture"
+
+        static_signals = json.loads(static_path.read_text(encoding="utf-8"))
+        assert static_signals["claim_type"] == "heuristic_signal"
+        assert static_signals["semantic_status"] == "not_validated"
+
+        surfaces = {s["surface"] for s in static_signals.get("signals", [])}
+        required = {
+            "agent_robot_api_surface",
+            "session_history_privacy_surface",
+            "remote_sync_surface",
+            "model_embedding_surface",
+            "crypto_security_surface",
+            "multi_agent_connector_surface",
+            "ci_supply_chain_surface",
+            "custom_runtime_dependency_surface",
+        }
+        assert required.issubset(surfaces), f"Missing required rust agent infra surfaces: {required - surfaces}"
+
+        manifest = _load_manifest(str(out))
+        assert "static-signals.json" in manifest["artifact_paths"]
+        integrity = manifest["artifact_integrity"]["static-signals.json"]
+        assert integrity["bytes"] == static_path.stat().st_size
+        assert integrity["sha256"] == hashlib.sha256(static_path.read_bytes()).hexdigest()
+
+    def test_preflight_rust_signals_in_summary_and_not_validated(self, tmp_path: Path):
+        target = str(FIXTURES_DIR / "static_signals_rust_agent_infra")
+        out = tmp_path / "bundle-rust-preflight"
+        rc, _, stderr = run_ua(target, str(out), mode="preflight")
+        assert rc == 0, f"preflight on rust fixture failed: {stderr}"
+
+        summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+        statics = summary.get("static_signals", {})
+        assert statics.get("claim_type") == "heuristic_signal"
+        assert statics.get("semantic_status") == "not_validated"
+        assert statics.get("total_signals", 0) > 0
+        assert "executed_external_gate" not in str(statics)

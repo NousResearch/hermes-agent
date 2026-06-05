@@ -547,3 +547,78 @@ class TestPackageConfigMarkers:
         assert extract_package_config_markers("src/vite.config.ts", vite_content) == []
         assert extract_package_config_markers("vercel.dev.json", "{}") == []
         assert extract_package_config_markers("netlify.ini", "[build]") == []
+
+# ── TDD RED/GREEN for UA-T1-006-rust-agent-infra-signal-coverage ─────────
+
+class TestRustAgentInfraMarkers:
+    """Rust/coding-agent infrastructure repo static signal coverage (heuristic only).
+
+    All emitted signals MUST be claim_type='heuristic_signal' and
+    semantic_status='not_validated'. No security claims.
+    """
+
+    def test_extracts_all_required_rust_agent_infra_surfaces(self):
+        """Detect deterministic line-oriented content markers for all 8 required surfaces."""
+        from static_signals import extract_rust_agent_infra_markers
+
+        fixture_root = PROJECT_ROOT / "tests" / "code_scan" / "fixtures" / "static_signals_rust_agent_infra"
+
+        # Read files
+        cargo = (fixture_root / "Cargo.toml").read_text(encoding="utf-8")
+        robot_md = (fixture_root / "docs" / "ROBOT_MODE.md").read_text(encoding="utf-8")
+        sec_md = (fixture_root / "docs" / "SECURITY_AUDIT_REPORT.md").read_text(encoding="utf-8")
+        hermes_rs = (fixture_root / "src" / "connectors" / "hermes.rs").read_text(encoding="utf-8")
+        pack_rs = (fixture_root / "src" / "search" / "pack_planner.rs").read_text(encoding="utf-8")
+        sync_rs = (fixture_root / "src" / "sources" / "sync.rs").read_text(encoding="utf-8")
+        models_rs = (fixture_root / "src" / "daemon" / "models.rs").read_text(encoding="utf-8")
+        ci_yml = (fixture_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+        signals = []
+        signals.extend(extract_rust_agent_infra_markers("Cargo.toml", cargo))
+        signals.extend(extract_rust_agent_infra_markers("docs/ROBOT_MODE.md", robot_md))
+        signals.extend(extract_rust_agent_infra_markers("docs/SECURITY_AUDIT_REPORT.md", sec_md))
+        signals.extend(extract_rust_agent_infra_markers("src/connectors/hermes.rs", hermes_rs))
+        signals.extend(extract_rust_agent_infra_markers("src/search/pack_planner.rs", pack_rs))
+        signals.extend(extract_rust_agent_infra_markers("src/sources/sync.rs", sync_rs))
+        signals.extend(extract_rust_agent_infra_markers("src/daemon/models.rs", models_rs))
+        signals.extend(extract_rust_agent_infra_markers(".github/workflows/ci.yml", ci_yml))
+
+        surface_set = {s["surface"] for s in signals}
+        required_surfaces = {
+            "agent_robot_api_surface",
+            "session_history_privacy_surface",
+            "remote_sync_surface",
+            "model_embedding_surface",
+            "crypto_security_surface",
+            "multi_agent_connector_surface",
+            "ci_supply_chain_surface",
+            "custom_runtime_dependency_surface",
+        }
+        assert required_surfaces.issubset(surface_set), f"Missing surfaces: {required_surfaces - surface_set}"
+
+        # All must be strict Tier-1 heuristic
+        for s in signals:
+            assert s["claim_type"] == "heuristic_signal"
+            assert s["semantic_status"] == "not_validated"
+            assert "content markers only" in s["boundary"]
+            assert "do not prove security" in s["boundary"]
+
+        # At least one marker per surface
+        counts = {}
+        for s in signals:
+            counts[s["surface"]] = counts.get(s["surface"], 0) + 1
+        for surf in required_surfaces:
+            assert counts.get(surf, 0) >= 1, f"No signals for {surf}"
+
+    def test_extract_rust_agent_infra_markers_respects_max_per_type(self):
+        from static_signals import extract_rust_agent_infra_markers
+        content = "ssh2\nssh2\nssh2\nsmtp\nsftp\nsftp\n"
+        signals = extract_rust_agent_infra_markers("src/sync.rs", content, max_per_type=1)
+        ssh_signals = [s for s in signals if "ssh" in s["marker"].lower() or s["marker_type"] == "remote_ssh"]
+        assert len(ssh_signals) <= 1
+
+    def test_non_rust_agent_paths_emit_no_rust_signals(self):
+        from static_signals import extract_rust_agent_infra_markers
+        assert extract_rust_agent_infra_markers("src/main.rs", "fn main() {}") == []
+        assert extract_rust_agent_infra_markers("README.md", "Some docs") == []
+        assert extract_rust_agent_infra_markers("pyproject.toml", "[tool]") == []

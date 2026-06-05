@@ -495,6 +495,7 @@ __all__ = [
     "extract_edge_function_markers",
     "extract_package_config_markers",
     "extract_supabase_migration_markers",
+    "extract_rust_agent_infra_markers",
     "make_signal_record",
     "SignalRecord",
     "CLAIM_TYPE",
@@ -502,3 +503,200 @@ __all__ = [
     "SCHEMA_VERSION",
     "DEFAULT_BOUNDARIES",
 ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UA-T1-006: Rust / coding-agent infrastructure deterministic markers (Tier 1 heuristic only)
+# All signals emitted here are strictly claim_type=heuristic_signal + semantic_status=not_validated.
+# Detection uses ONLY deterministic line-oriented content markers + path hints. No semantics,
+# execution, or claims about runtime, security, models, sync safety, deployment, or policy.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_RUST_AGENT_INFRA_SURFACES = {
+    "agent_robot_api_surface",
+    "session_history_privacy_surface",
+    "remote_sync_surface",
+    "model_embedding_surface",
+    "crypto_security_surface",
+    "multi_agent_connector_surface",
+    "ci_supply_chain_surface",
+    "custom_runtime_dependency_surface",
+}
+
+# Path gating (case-insensitive normalized)
+_RUST_CARGO_PATH_RE = re.compile(r"(?:^|/)Cargo\.toml\Z", re.IGNORECASE)
+_RUST_ROBOT_DOC_PATH_RE = re.compile(r"(?:^|/)docs/ROBOT_MODE\.md\Z", re.IGNORECASE)
+_RUST_SECURITY_AUDIT_PATH_RE = re.compile(r"(?:^|/)docs/SECURITY_AUDIT_REPORT\.md\Z", re.IGNORECASE)
+_RUST_CONNECTOR_HERMES_PATH_RE = re.compile(r"(?:^|/)src/connectors/hermes\.rs\Z", re.IGNORECASE)
+_RUST_PACK_PLANNER_PATH_RE = re.compile(r"(?:^|/)src/search/pack_planner\.rs\Z", re.IGNORECASE)
+_RUST_SOURCES_SYNC_PATH_RE = re.compile(r"(?:^|/)src/sources/sync\.rs\Z", re.IGNORECASE)
+_RUST_DAEMON_MODELS_PATH_RE = re.compile(r"(?:^|/)src/daemon/models\.rs\Z", re.IGNORECASE)
+_RUST_CI_WORKFLOW_PATH_RE = re.compile(r"^\.?github/workflows/[^/]+\.ya?ml\Z", re.IGNORECASE)
+
+# Simple deterministic content marker maps (line contains + snippet; stdlib only, no parsing)
+# agent_robot_api_surface
+_ROBOT_API_MARKERS = (
+    ("robot_triage_json", re.compile(r"triage\s+--json", re.IGNORECASE)),
+    ("robot_search_robot", re.compile(r"search\s+--robot", re.IGNORECASE)),
+    ("robot_pack_robot_max_tokens", re.compile(r"pack\s+--robot.*--max-tokens|pack\s+--robot", re.IGNORECASE)),
+    ("robot_capabilities_json", re.compile(r"capabilities\s+--json", re.IGNORECASE)),
+    ("robot_introspect_json", re.compile(r"introspect\s+--json", re.IGNORECASE)),
+)
+
+# session_history_privacy_surface
+_PRIVACY_MARKERS = (
+    ("privacy_redacted", re.compile(r"\[REDACTED\]", re.IGNORECASE)),
+    ("privacy_redaction", re.compile(r"privacy\s+redact|redact.*privacy|session.*history.*(redact|privacy)", re.IGNORECASE)),
+)
+
+# remote_sync_surface
+_REMOTE_SYNC_MARKERS = (
+    ("remote_ssh", re.compile(r"\bssh2\b|\bssh\b", re.IGNORECASE)),
+    ("remote_rsync", re.compile(r"\brsync\b", re.IGNORECASE)),
+    ("remote_sftp", re.compile(r"\bsftp\b", re.IGNORECASE)),
+)
+
+# model_embedding_surface (Cargo + source)
+_MODEL_EMBEDDING_MARKERS = (
+    ("embedding_fastembed", re.compile(r"\bfastembed\b", re.IGNORECASE)),
+    ("embedding_ort", re.compile(r"\bort\b", re.IGNORECASE)),
+    ("embedding_semantic", re.compile(r"\bsemantic\b", re.IGNORECASE)),
+    ("embedding_onnx", re.compile(r"\bonnx\b", re.IGNORECASE)),
+    ("embedding_daemon_model", re.compile(r"daemon.*model|model.*install|embedding", re.IGNORECASE)),
+)
+
+# crypto_security_surface (Cargo + audit report)
+_CRYPTO_MARKERS = (
+    ("crypto_aes_gcm", re.compile(r"\baes-gcm\b|\baes_gcm\b", re.IGNORECASE)),
+    ("crypto_argon2", re.compile(r"\bargon2\b", re.IGNORECASE)),
+    ("crypto_nonce", re.compile(r"\bnonce\b", re.IGNORECASE)),
+    ("crypto_encryption", re.compile(r"\bencryption\b", re.IGNORECASE)),
+    ("crypto_security_audit", re.compile(r"security\s+audit|audit.*report", re.IGNORECASE)),
+)
+
+# multi_agent_connector_surface
+_MULTI_AGENT_MARKERS = (
+    ("multi_agent_hermes_connector", re.compile(r"HermesConnector|hermes.*connector", re.IGNORECASE)),
+    ("multi_agent_franken", re.compile(r"franken.agent|franken_agent_detection|FrakenDetector", re.IGNORECASE)),
+)
+
+# ci_supply_chain_surface
+_CI_SUPPLY_CHAIN_MARKERS = (
+    ("ci_cargo_test", re.compile(r"\bcargo(?:\s+|-)test\b", re.IGNORECASE)),
+    ("ci_cargo_audit", re.compile(r"\bcargo(?:\s+|-)audit\b", re.IGNORECASE)),
+    ("ci_cargo_deny", re.compile(r"\bcargo(?:\s+|-)deny\b", re.IGNORECASE)),
+)
+
+# custom_runtime_dependency_surface (Cargo.toml focused)
+_CUSTOM_RUNTIME_DEP_MARKERS = (
+    ("dep_git_franken", re.compile(r"franken-agent-detection.*\{.*git", re.IGNORECASE)),
+    ("dep_fastembed", re.compile(r"\bfastembed\s*[=:]|fastembed\s*=", re.IGNORECASE)),
+    ("dep_ort", re.compile(r"\bort\s*[=:]|ort\s*=", re.IGNORECASE)),
+    ("dep_aes_gcm", re.compile(r"\baes-gcm\b", re.IGNORECASE)),
+    ("dep_argon2", re.compile(r"\bargon2\b", re.IGNORECASE)),
+    ("dep_ssh2", re.compile(r"\bssh2\b", re.IGNORECASE)),
+    ("dep_git_custom", re.compile(r"\{.*git\s*=", re.IGNORECASE)),
+)
+
+
+def _is_rust_agent_infra_relevant(rel_path: str) -> bool:
+    n = _normalize_rel_path(rel_path)
+    return bool(
+        _RUST_CARGO_PATH_RE.search(n)
+        or _RUST_ROBOT_DOC_PATH_RE.search(n)
+        or _RUST_SECURITY_AUDIT_PATH_RE.search(n)
+        or _RUST_CONNECTOR_HERMES_PATH_RE.search(n)
+        or _RUST_PACK_PLANNER_PATH_RE.search(n)
+        or _RUST_SOURCES_SYNC_PATH_RE.search(n)
+        or _RUST_DAEMON_MODELS_PATH_RE.search(n)
+        or _RUST_CI_WORKFLOW_PATH_RE.search(n)
+    )
+
+
+def extract_rust_agent_infra_markers(
+    rel_path: str,
+    content: str,
+    max_per_type: int = 50,
+) -> List[Dict[str, Any]]:
+    """Extract Tier-1 heuristic static signals for Rust/coding-agent infrastructure repos.
+
+    Strictly line-oriented deterministic content markers only.
+    All returned signals have claim_type='heuristic_signal' and semantic_status='not_validated'.
+    Does NOT claim security, runtime behavior, model download, sync safety, CI success,
+    deployment readiness, or policy semantics.
+    """
+    normalized = _normalize_rel_path(rel_path)
+    if not _is_rust_agent_infra_relevant(normalized):
+        return []
+
+    try:
+        cap = int(max_per_type)
+    except (TypeError, ValueError):
+        cap = 50
+    if cap <= 0:
+        return []
+
+    signals: List[Dict[str, Any]] = []
+    emitted_by_type: Dict[str, int] = {}
+
+    # Determine candidate surface + marker list based on path heuristics + content
+    marker_groups = []
+
+    if _RUST_CARGO_PATH_RE.search(normalized):
+        surf = "custom_runtime_dependency_surface"
+        marker_groups.append((surf, _CUSTOM_RUNTIME_DEP_MARKERS))
+        # Cross-detect model/crypto/CI supply-chain markers from Cargo metadata too.
+        marker_groups.append(("model_embedding_surface", _MODEL_EMBEDDING_MARKERS))
+        marker_groups.append(("crypto_security_surface", _CRYPTO_MARKERS))
+        marker_groups.append(("multi_agent_connector_surface", _MULTI_AGENT_MARKERS))
+        marker_groups.append(("ci_supply_chain_surface", _CI_SUPPLY_CHAIN_MARKERS))
+
+    if _RUST_ROBOT_DOC_PATH_RE.search(normalized):
+        surf = "agent_robot_api_surface"
+        marker_groups.append((surf, _ROBOT_API_MARKERS))
+
+    if _RUST_SECURITY_AUDIT_PATH_RE.search(normalized):
+        surf = "crypto_security_surface"
+        marker_groups.append((surf, _CRYPTO_MARKERS))
+
+    if _RUST_CONNECTOR_HERMES_PATH_RE.search(normalized):
+        surf = "multi_agent_connector_surface"
+        marker_groups.append((surf, _MULTI_AGENT_MARKERS))
+
+    if _RUST_PACK_PLANNER_PATH_RE.search(normalized):
+        surf = "session_history_privacy_surface"
+        marker_groups.append((surf, _PRIVACY_MARKERS))
+
+    if _RUST_SOURCES_SYNC_PATH_RE.search(normalized):
+        surf = "remote_sync_surface"
+        marker_groups.append((surf, _REMOTE_SYNC_MARKERS))
+
+    if _RUST_DAEMON_MODELS_PATH_RE.search(normalized):
+        surf = "model_embedding_surface"
+        marker_groups.append((surf, _MODEL_EMBEDDING_MARKERS))
+
+    if _RUST_CI_WORKFLOW_PATH_RE.search(normalized):
+        surf = "ci_supply_chain_surface"
+        marker_groups.append((surf, _CI_SUPPLY_CHAIN_MARKERS))
+
+    for line_number, line in enumerate(str(content or "").splitlines(), start=1):
+        if not line.strip():
+            continue
+        for surf, markers in marker_groups:
+            for marker_type, pattern in markers:
+                if emitted_by_type.get(marker_type, 0) >= cap:
+                    continue
+                if not pattern.search(line):
+                    continue
+                signals.append(
+                    make_signal_record(
+                        surface=surf,
+                        path=normalized,
+                        line=line_number,
+                        marker_type=marker_type,
+                        marker=_marker_snippet(line),
+                    )
+                )
+                emitted_by_type[marker_type] = emitted_by_type.get(marker_type, 0) + 1
+
+    return signals

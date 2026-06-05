@@ -29,8 +29,12 @@ import json
 import logging
 import mimetypes
 import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -412,6 +416,9 @@ def _path_from_file_uri(uri: str) -> Path | str:
 class OpenVikingMemoryProvider(MemoryProvider):
     """Full bidirectional memory via OpenViking context database."""
 
+    _server_log_fh = None
+    _server_log_lock = threading.Lock()
+
     def __init__(self):
         self._client: Optional[_VikingClient] = None
         self._endpoint = ""
@@ -422,6 +429,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
+        self._server_process: Optional[subprocess.Popen] = None
+        self._server_start_lock = threading.Lock()
+        self._start_thread: Optional[threading.Thread] = None
 
     @property
     def name(self) -> str:
@@ -480,9 +490,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 self._endpoint, self._api_key,
                 account=self._account, user=self._user, agent=self._agent,
             )
-            if not self._client.health():
-                logger.warning("OpenViking server at %s is not reachable", self._endpoint)
+            if self._client.health():
+                logger.info("OpenViking server at %s is reachable", self._endpoint)
+            else:
+                logger.warning("OpenViking server at %s is not reachable, attempting auto-start", self._endpoint)
                 self._client = None
+                self._start_server_thread()
         except ImportError:
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None
@@ -490,6 +503,160 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Register as the last active provider for atexit safety net
         global _last_active_provider
         _last_active_provider = self
+
+    @classmethod
+    def _open_server_log(cls):
+        """Return (cached) append-mode log file for openviking-server output, or None."""
+        with cls._server_log_lock:
+            if cls._server_log_fh is not None:
+                return cls._server_log_fh
+            try:
+                from hermes_constants import get_hermes_home
+                log_dir = get_hermes_home() / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                log_path = log_dir / "openviking-server.log"
+                # Line-buffered; errors="replace" tolerates garbled output.
+                fh = open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)
+                fh.fileno()  # verify real fd
+                cls._server_log_fh = fh
+            except Exception as exc:
+                logger.debug("Failed to open OpenViking server log: %s", exc)
+            return cls._server_log_fh
+
+    @staticmethod
+    def _terminate_proc(proc: subprocess.Popen) -> None:
+        """Best-effort terminate (2s) then kill (1s). All exceptions swallowed."""
+        try:
+            proc.terminate()
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=1.0)
+            except Exception:
+                pass
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    def _find_server_binary(self) -> Optional[str]:
+        """Locate openviking-server: shutil.which() → venv bin fallback."""
+        # Tier 1: PATH
+        server_bin = shutil.which("openviking-server")
+        if server_bin:
+            return server_bin
+
+        # Tier 2: venv bin
+        venv_bin = Path(sys.executable).parent / "openviking-server"
+        if venv_bin.is_file() and os.access(venv_bin, os.X_OK):
+            logger.debug("Found openviking-server in venv: %s", venv_bin)
+            return str(venv_bin)
+
+        return None
+
+    def _start_server_thread(self) -> None:
+        """Spawn a background thread to start openviking-server and poll /health."""
+        with self._server_start_lock:
+            # Sentinel: True = start in progress, Popen = running, None = idle.
+            # If the tracked process has already exited, clear so we can restart.
+            if self._server_process is True:
+                return
+            if self._server_process is not None:
+                if self._server_process.poll() is None:
+                    logger.info("OpenViking server already starting (PID %s)", self._server_process.pid)
+                    return
+                self._server_process = None
+            self._server_process = True
+
+        def _run():
+            try:
+                _run_inner()
+            except Exception:
+                # Clear sentinel on unexpected errors so retry is possible.
+                with self._server_start_lock:
+                    if self._server_process is True:
+                        self._server_process = None
+                logger.warning("OpenViking server start thread failed unexpectedly", exc_info=True)
+
+        def _run_inner():
+            server_bin = self._find_server_binary()
+            if not server_bin:
+                logger.warning("openviking-server not found — auto-start skipped")
+                with self._server_start_lock:
+                    self._server_process = None
+                return
+
+            # Build command — config validation is left to the server.
+            config_path = os.environ.get("OPENVIKING_CONFIG", os.path.expanduser("~/.openviking/ov.conf"))
+            from urllib.parse import urlparse as _urlparse
+            parsed = _urlparse(self._endpoint)
+            host = parsed.hostname or "127.0.0.1"
+            port = parsed.port or 1933
+
+            cmd = [server_bin, "--config", config_path, "--host", host, "--port", str(port)]
+            logger.info("Starting OpenViking server: %s", " ".join(cmd))
+
+            # Redirect stdout/stderr to log file (or DEVNULL on failure).
+            log_fh = self._open_server_log()
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=log_fh or subprocess.DEVNULL,
+                    stderr=log_fh or subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except Exception as e:
+                logger.warning("Failed to start openviking-server: %s", e)
+                with self._server_start_lock:
+                    self._server_process = None
+                return
+
+            with self._server_start_lock:
+                self._server_process = proc
+
+            # Poll /health for up to 30 seconds.
+            poll_client = None
+            try:
+                poll_client = _VikingClient(
+                    self._endpoint, self._api_key,
+                    account=self._account, user=self._user, agent=self._agent,
+                )
+            except ImportError:
+                logger.warning("httpx not installed — cannot verify server health")
+                # Without httpx we can't poll /health — kill the orphaned proc.
+                self._terminate_proc(proc)
+                with self._server_start_lock:
+                    self._server_process = None
+                return
+
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    logger.warning("openviking-server exited prematurely (code %s)", proc.returncode)
+                    with self._server_start_lock:
+                        self._server_process = None
+                    return
+
+                time.sleep(1.0)
+                try:
+                    if poll_client.health():
+                        logger.info("OpenViking server started successfully (PID %s)", proc.pid)
+                        self._client = poll_client
+                        return
+                except Exception:
+                    pass  # keep polling
+
+            # Timeout — kill to prevent orphan holding port 1933.
+            logger.warning("OpenViking server did not become healthy within 30s — giving up")
+            self._terminate_proc(proc)
+            with self._server_start_lock:
+                self._server_process = None
+
+        t = threading.Thread(target=_run, daemon=True, name="openviking-server-start")
+        self._start_thread = t
+        t.start()
 
     def system_prompt_block(self) -> str:
         if not self._client:
@@ -689,6 +856,20 @@ class OpenVikingMemoryProvider(MemoryProvider):
         for t in (self._sync_thread, self._prefetch_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
+
+        # Join the start thread first to avoid a race: if shutdown clears
+        # the sentinel while the thread hasn't Popen'd yet, we'd leak a process.
+        start_thread = self._start_thread
+        if start_thread and start_thread.is_alive():
+            start_thread.join(timeout=5.0)
+
+        # Terminate only processes we spawned; skip True sentinel.
+        with self._server_start_lock:
+            proc = self._server_process
+            self._server_process = None
+        if proc is not None and proc is not True and proc.poll() is None:
+            logger.info("Terminating auto-started OpenViking server (PID %s)", proc.pid)
+            self._terminate_proc(proc)
         # Clear atexit reference so it doesn't double-commit
         global _last_active_provider
         if _last_active_provider is self:

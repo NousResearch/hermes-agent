@@ -1,6 +1,10 @@
-"""Tests for plugins/memory/openviking/__init__.py — URI normalization and payload handling."""
+"""Tests for plugins/memory/openviking/__init__.py — URI normalization, payload handling, and auto-start."""
 
 import json
+import os
+import subprocess
+import threading
+from unittest.mock import MagicMock, patch
 
 from plugins.memory.openviking import OpenVikingMemoryProvider
 
@@ -281,3 +285,530 @@ class TestOpenVikingMemoryUriBuilder:
             assert f"/memories/{subdir}/mem_" in uri, (
                 f"subdir '{subdir}' not placed correctly in URI: {uri}"
             )
+class TestOpenVikingAutoStart:
+    """Tests for the auto-start server logic in initialize()."""
+
+    @staticmethod
+    def _make_fake_monotonic(step=1.0, max_calls=None):
+        """Fake time.monotonic: increments by *step*, jumps to 100.0 after *max_calls*."""
+        state = {"t": 0.0, "calls": 0}
+
+        def _fake():
+            state["calls"] += 1
+            if max_calls is not None and state["calls"] > max_calls:
+                return 100.0  # past any reasonable deadline
+            current = state["t"]
+            state["t"] += step
+            return current
+
+        return _fake
+
+    @patch.object(OpenVikingMemoryProvider, "_find_server_binary", return_value="/usr/local/bin/openviking-server")
+    @patch("plugins.memory.openviking.subprocess.Popen")
+    @patch("plugins.memory.openviking._VikingClient")
+    def test_auto_start_launches_server_on_health_failure(self, MockClient, MockPopen, mock_find):
+        """health() fails → Popen should be called."""
+        mock_client_instance = MagicMock()
+        mock_client_instance.health.return_value = False
+        MockClient.return_value = mock_client_instance
+
+        # Popen returns a mock process that stays alive
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 12345
+        MockPopen.return_value = mock_proc
+
+        # poll_client reports healthy on 3rd call
+        mock_poll_client = MagicMock()
+        health_call_count = {"n": 0}
+
+        def health_succeeds_on_3rd():
+            health_call_count["n"] += 1
+            return health_call_count["n"] >= 3
+
+        mock_poll_client.health.side_effect = health_succeeds_on_3rd
+        MockClient.return_value = mock_poll_client
+
+        with patch("plugins.memory.openviking.time.monotonic", side_effect=self._make_fake_monotonic()), \
+             patch("plugins.memory.openviking.time.sleep"):
+            provider = OpenVikingMemoryProvider()
+            provider.initialize("test-session")
+
+            # Wait for daemon thread
+            for t in threading.enumerate():
+                if t.name == "openviking-server-start":
+                    t.join(timeout=5.0)
+
+        MockPopen.assert_called_once()
+        cmd = MockPopen.call_args[0][0]
+        assert cmd[0] == "/usr/local/bin/openviking-server"
+        assert "--config" in cmd
+        assert "--host" in cmd
+        assert "--port" in cmd
+        assert MockPopen.call_args[1]["start_new_session"] is True
+        assert health_call_count["n"] >= 3
+
+    @patch.object(OpenVikingMemoryProvider, "_find_server_binary", return_value=None)
+    @patch("plugins.memory.openviking._VikingClient")
+    def test_auto_start_skipped_when_server_not_found(self, MockClient, mock_find):
+        """Binary not found → no Popen, client stays None."""
+        mock_client_instance = MagicMock()
+        mock_client_instance.health.return_value = False
+        MockClient.return_value = mock_client_instance
+
+        with patch("plugins.memory.openviking.subprocess.Popen") as MockPopen:
+            provider = OpenVikingMemoryProvider()
+            provider.initialize("test-session")
+
+            # Wait for daemon thread
+            for t in threading.enumerate():
+                if t.name == "openviking-server-start":
+                    t.join(timeout=5.0)
+
+            # No process was started
+            MockPopen.assert_not_called()
+
+        assert provider._client is None
+
+    @patch("plugins.memory.openviking._VikingClient")
+    def test_no_auto_start_when_server_already_healthy(self, MockClient):
+        """health() succeeds → no auto-start."""
+        mock_client_instance = MagicMock()
+        mock_client_instance.health.return_value = True
+        MockClient.return_value = mock_client_instance
+
+        with patch("plugins.memory.openviking.subprocess.Popen") as MockPopen:
+            provider = OpenVikingMemoryProvider()
+            provider.initialize("test-session")
+
+            # No server process should be spawned
+            MockPopen.assert_not_called()
+
+        assert provider._client is not None
+
+    @patch.object(OpenVikingMemoryProvider, "_find_server_binary", return_value="/usr/local/bin/openviking-server")
+    @patch("plugins.memory.openviking.subprocess.Popen")
+    @patch("plugins.memory.openviking._VikingClient")
+    def test_auto_start_graceful_degradation_on_timeout(self, MockClient, MockPopen, mock_find):
+        """Server never healthy → client stays None."""
+        mock_poll_client = MagicMock()
+        mock_poll_client.health.return_value = False
+        MockClient.return_value = mock_poll_client
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 12345
+        MockPopen.return_value = mock_proc
+
+        # Force timeout after 5 polling iterations
+        with patch("plugins.memory.openviking.time.monotonic",
+                    side_effect=self._make_fake_monotonic(max_calls=5)), \
+             patch("plugins.memory.openviking.time.sleep"):
+            provider = OpenVikingMemoryProvider()
+            provider.initialize("test-session")
+
+            for t in threading.enumerate():
+                if t.name == "openviking-server-start":
+                    t.join(timeout=5.0)
+
+        assert provider._client is None
+
+    @patch.object(OpenVikingMemoryProvider, "_find_server_binary", return_value="/usr/local/bin/openviking-server")
+    @patch("plugins.memory.openviking.subprocess.Popen")
+    @patch("plugins.memory.openviking._VikingClient")
+    def test_auto_start_handles_premature_exit(self, MockClient, MockPopen, mock_find):
+        """Server exits early → client stays None."""
+        mock_poll_client = MagicMock()
+        mock_poll_client.health.return_value = False
+        MockClient.return_value = mock_poll_client
+
+        mock_proc = MagicMock()
+        poll_call_count = {"n": 0}
+
+        def poll_exits():
+            poll_call_count["n"] += 1
+            if poll_call_count["n"] >= 2:
+                return 1
+            return None
+
+        mock_proc.poll.side_effect = poll_exits
+        mock_proc.returncode = 1
+        mock_proc.pid = 12345
+        MockPopen.return_value = mock_proc
+
+        with patch("plugins.memory.openviking.time.monotonic", side_effect=self._make_fake_monotonic()), \
+             patch("plugins.memory.openviking.time.sleep"):
+            provider = OpenVikingMemoryProvider()
+            provider.initialize("test-session")
+
+            for t in threading.enumerate():
+                if t.name == "openviking-server-start":
+                    t.join(timeout=5.0)
+
+        assert provider._client is None
+        assert provider._server_process is None
+
+    def test_no_duplicate_start_when_server_already_starting(self):
+        """Sentinel blocks duplicate _start_server_thread() calls."""
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 12345
+
+        mock_poll_client = MagicMock()
+        mock_poll_client.health.return_value = False
+
+        provider = OpenVikingMemoryProvider()
+        provider._endpoint = "http://127.0.0.1:1933"
+        provider._api_key = ""
+        provider._account = "default"
+        provider._user = "default"
+        provider._agent = "hermes"
+
+        with patch.object(OpenVikingMemoryProvider, "_find_server_binary", return_value="/usr/local/bin/openviking-server"), \
+             patch("plugins.memory.openviking.subprocess.Popen", return_value=mock_proc) as MockPopen, \
+             patch("plugins.memory.openviking._VikingClient", return_value=mock_poll_client), \
+             patch("plugins.memory.openviking.time.sleep"):
+            # Stall monotonic at 0 so the polling loop never exits.
+            with patch("plugins.memory.openviking.time.monotonic", return_value=0.0):
+                provider._start_server_thread()
+
+                import time as _time
+                _time.sleep(0.1)
+
+                assert provider._server_process is not None
+
+                # Second call: sentinel active → returns early.
+                provider._start_server_thread()
+
+            for t in threading.enumerate():
+                if t.name == "openviking-server-start":
+                    t.join(timeout=5.0)
+
+        assert MockPopen.call_count == 1
+
+    @patch.object(OpenVikingMemoryProvider, "_find_server_binary", return_value="/usr/local/bin/openviking-server")
+    @patch("plugins.memory.openviking.subprocess.Popen")
+    @patch("plugins.memory.openviking._VikingClient")
+    def test_auto_start_uses_openviking_config_env(self, MockClient, MockPopen, mock_find):
+        """OPENVIKING_CONFIG env var → --config flag."""
+        mock_poll_client = MagicMock()
+        mock_poll_client.health.return_value = False
+        MockClient.return_value = mock_poll_client
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 12345
+        MockPopen.return_value = mock_proc
+
+        with patch.dict(os.environ, {"OPENVIKING_CONFIG": "/custom/ov.conf"}), \
+             patch("plugins.memory.openviking.time.monotonic",
+                    side_effect=self._make_fake_monotonic(max_calls=3)), \
+             patch("plugins.memory.openviking.time.sleep"):
+            provider = OpenVikingMemoryProvider()
+            provider.initialize("test-session")
+
+            for t in threading.enumerate():
+                if t.name == "openviking-server-start":
+                    t.join(timeout=5.0)
+
+        cmd = MockPopen.call_args[0][0]
+        config_idx = cmd.index("--config")
+        assert cmd[config_idx + 1] == "/custom/ov.conf"
+
+    def test_shutdown_terminates_auto_started_server(self):
+        """shutdown() terminates a process we spawned."""
+        provider = OpenVikingMemoryProvider()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 99999
+        provider._server_process = mock_proc
+
+        provider.shutdown()
+
+        mock_proc.terminate.assert_called_once()
+
+    def test_shutdown_does_not_terminate_external_server(self):
+        """No server_process → shutdown() is a no-op."""
+        provider = OpenVikingMemoryProvider()
+        provider._server_process = None
+        provider.shutdown()
+
+    def test_shutdown_clears_sentinel_without_terminating(self):
+        """_server_process=True → cleared to None, no terminate/kill."""
+        provider = OpenVikingMemoryProvider()
+        provider._server_process = True
+        provider.shutdown()
+        assert provider._server_process is None
+
+    @patch.object(OpenVikingMemoryProvider, "_find_server_binary", return_value=None)
+    @patch("plugins.memory.openviking._VikingClient")
+    def test_shutdown_waits_for_start_thread(self, MockClient, mock_find):
+        """shutdown() joins the start thread before clearing _server_process."""
+        mock_client_instance = MagicMock()
+        mock_client_instance.health.return_value = False
+        MockClient.return_value = mock_client_instance
+
+        provider = OpenVikingMemoryProvider()
+        provider.initialize("test-session")
+
+        # Thread exits quickly (binary not found). shutdown must join it.
+        provider.shutdown()
+
+        assert provider._server_process is None
+
+    @patch.object(OpenVikingMemoryProvider, "_find_server_binary", return_value="/usr/local/bin/openviking-server")
+    @patch("plugins.memory.openviking.subprocess.Popen")
+    @patch("plugins.memory.openviking._VikingClient")
+    def test_restarts_server_after_process_exit(self, MockClient, MockPopen, mock_find):
+        """Dead process reference → second _start_server_thread() restarts."""
+        mock_poll_client = MagicMock()
+        mock_poll_client.health.return_value = False
+        MockClient.return_value = mock_poll_client
+
+        # The new process that Popen will return (single call)
+        live_proc = MagicMock()
+        live_proc.poll.return_value = None
+        live_proc.pid = 22222
+        MockPopen.return_value = live_proc
+
+        # Simulate a previously-started process that has since exited
+        dead_proc = MagicMock()
+        dead_proc.poll.return_value = 1
+        dead_proc.returncode = 1
+        dead_proc.pid = 11111
+
+        provider = OpenVikingMemoryProvider()
+        provider._endpoint = "http://127.0.0.1:1933"
+        provider._api_key = ""
+        provider._account = "default"
+        provider._user = "default"
+        provider._agent = "hermes"
+        provider._server_process = dead_proc
+
+        with patch("plugins.memory.openviking.time.monotonic",
+                    side_effect=self._make_fake_monotonic(max_calls=5)), \
+             patch("plugins.memory.openviking.time.sleep"):
+            provider._start_server_thread()
+
+            for t in threading.enumerate():
+                if t.name == "openviking-server-start":
+                    t.join(timeout=5.0)
+
+        assert MockPopen.call_count == 1
+
+
+class TestFindServerBinary:
+    """Tests for _find_server_binary(): PATH → venv bin fallback."""
+
+    def test_finds_binary_in_path(self):
+        """shutil.which finds it → return immediately."""
+        provider = OpenVikingMemoryProvider()
+        with patch("plugins.memory.openviking.shutil.which", return_value="/usr/local/bin/openviking-server"):
+            assert provider._find_server_binary() == "/usr/local/bin/openviking-server"
+
+    def test_falls_back_to_venv_bin(self):
+        """shutil.which=None → check venv bin directory."""
+        provider = OpenVikingMemoryProvider()
+        # Create a fake executable
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a fake executable
+            fake_bin = Path(tmpdir) / "openviking-server"
+            fake_bin.write_text("#!/bin/sh\necho ok\n")
+            fake_bin.chmod(0o755)
+
+            with patch("plugins.memory.openviking.shutil.which", return_value=None), \
+                 patch("plugins.memory.openviking.sys") as mock_sys:
+                mock_sys.executable = str(Path(tmpdir) / "python")
+                result = provider._find_server_binary()
+
+            assert result == str(fake_bin)
+
+    def test_returns_none_when_not_found_anywhere(self):
+        """Neither PATH nor venv bin has it → None."""
+        provider = OpenVikingMemoryProvider()
+        with patch("plugins.memory.openviking.shutil.which", return_value=None), \
+             patch("plugins.memory.openviking.Path") as mock_path_cls:
+            mock_venv_bin = MagicMock()
+            mock_venv_bin.is_file.return_value = False
+            mock_parent = MagicMock()
+            mock_parent.__truediv__ = lambda self, other: mock_venv_bin
+            mock_path_cls.return_value.parent = mock_parent
+
+            assert provider._find_server_binary() is None
+
+    @patch.object(OpenVikingMemoryProvider, "_find_server_binary", return_value="/venv/bin/openviking-server")
+    @patch("plugins.memory.openviking.subprocess.Popen")
+    @patch("plugins.memory.openviking._VikingClient")
+    def test_auto_start_uses_venv_binary_when_not_in_path(self, MockClient, MockPopen, mock_find):
+        """Integration: venv fallback binary → auto-start works."""
+        mock_client_instance = MagicMock()
+        mock_client_instance.health.return_value = False
+        MockClient.return_value = mock_client_instance
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 54321
+        MockPopen.return_value = mock_proc
+
+        mock_poll_client = MagicMock()
+        health_count = {"n": 0}
+        mock_poll_client.health.side_effect = lambda: (health_count.update(n=health_count["n"] + 1) or health_count["n"]) >= 2
+        MockClient.return_value = mock_poll_client
+
+        with patch("plugins.memory.openviking.time.monotonic",
+                    side_effect=TestOpenVikingAutoStart._make_fake_monotonic()), \
+             patch("plugins.memory.openviking.time.sleep"):
+            provider = OpenVikingMemoryProvider()
+            provider.initialize("test-session")
+
+            for t in threading.enumerate():
+                if t.name == "openviking-server-start":
+                    t.join(timeout=5.0)
+
+        MockPopen.assert_called_once()
+        cmd = MockPopen.call_args[0][0]
+        assert cmd[0] == "/venv/bin/openviking-server"
+
+
+class TestServerLogRedirection:
+    """Tests for _open_server_log() and Popen stdout/stderr wiring."""
+
+    def test_open_server_log_returns_file_handle(self):
+        """_open_server_log() returns open file handle on success."""
+        import tempfile
+        from pathlib import Path
+
+        # Reset class-level cache
+        OpenVikingMemoryProvider._server_log_fh = None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_home = Path(tmpdir)
+            with patch.dict("sys.modules", {"hermes_constants": MagicMock(get_hermes_home=lambda: mock_home)}):
+                fh = OpenVikingMemoryProvider._open_server_log()
+
+            try:
+                assert fh is not None
+                assert fh.mode == "a"
+                assert (mock_home / "logs").is_dir()
+            finally:
+                if fh:
+                    fh.close()
+                OpenVikingMemoryProvider._server_log_fh = None
+
+    def test_open_server_log_returns_none_on_failure(self):
+        """Log dir not writable → returns None."""
+        # Reset class-level cache
+        OpenVikingMemoryProvider._server_log_fh = None
+
+        with patch.dict("sys.modules", {"hermes_constants": MagicMock()}) as mods:
+            mods["hermes_constants"].get_hermes_home.side_effect = OSError("no home")
+            result = OpenVikingMemoryProvider._open_server_log()
+
+        assert result is None
+        OpenVikingMemoryProvider._server_log_fh = None
+
+    def test_open_server_log_caches_handle(self):
+        """Repeated calls return the same handle."""
+        import tempfile
+        from pathlib import Path
+
+        OpenVikingMemoryProvider._server_log_fh = None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_home = Path(tmpdir)
+            with patch.dict("sys.modules", {"hermes_constants": MagicMock(get_hermes_home=lambda: mock_home)}):
+                fh1 = OpenVikingMemoryProvider._open_server_log()
+                fh2 = OpenVikingMemoryProvider._open_server_log()
+
+            try:
+                assert fh1 is fh2
+            finally:
+                if fh1:
+                    fh1.close()
+                OpenVikingMemoryProvider._server_log_fh = None
+
+    @patch.object(OpenVikingMemoryProvider, "_find_server_binary", return_value="/usr/local/bin/openviking-server")
+    @patch("plugins.memory.openviking.subprocess.Popen")
+    @patch("plugins.memory.openviking._VikingClient")
+    def test_popen_receives_log_handle_not_devnull(self, MockClient, MockPopen, mock_find):
+        """_open_server_log succeeds → Popen gets real file handle, not DEVNULL."""
+        OpenVikingMemoryProvider._server_log_fh = None
+
+        mock_client_instance = MagicMock()
+        mock_client_instance.health.return_value = False
+        MockClient.return_value = mock_client_instance
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 12345
+        MockPopen.return_value = mock_proc
+
+        mock_poll_client = MagicMock()
+        mock_poll_client.health.return_value = False
+        MockClient.return_value = mock_poll_client
+
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_home = Path(tmpdir)
+            with patch.dict("sys.modules", {"hermes_constants": MagicMock(get_hermes_home=lambda: mock_home)}), \
+                 patch("plugins.memory.openviking.time.monotonic",
+                        side_effect=TestOpenVikingAutoStart._make_fake_monotonic(max_calls=3)), \
+                 patch("plugins.memory.openviking.time.sleep"):
+                provider = OpenVikingMemoryProvider()
+                provider.initialize("test-session")
+
+                for t in threading.enumerate():
+                    if t.name == "openviking-server-start":
+                        t.join(timeout=5.0)
+
+            # Popen stdout/stderr should NOT be DEVNULL
+            popen_kwargs = MockPopen.call_args[1]
+            assert popen_kwargs["stdout"] is not subprocess.DEVNULL
+            assert popen_kwargs["stderr"] is not subprocess.DEVNULL
+
+        if OpenVikingMemoryProvider._server_log_fh:
+            OpenVikingMemoryProvider._server_log_fh.close()
+        OpenVikingMemoryProvider._server_log_fh = None
+
+    @patch.object(OpenVikingMemoryProvider, "_find_server_binary", return_value="/usr/local/bin/openviking-server")
+    @patch("plugins.memory.openviking.subprocess.Popen")
+    @patch("plugins.memory.openviking._VikingClient")
+    def test_popen_falls_back_to_devnull_when_log_unavailable(self, MockClient, MockPopen, mock_find):
+        """_open_server_log fails → Popen gets DEVNULL."""
+        OpenVikingMemoryProvider._server_log_fh = None
+
+        mock_client_instance = MagicMock()
+        mock_client_instance.health.return_value = False
+        MockClient.return_value = mock_client_instance
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 12345
+        MockPopen.return_value = mock_proc
+
+        mock_poll_client = MagicMock()
+        mock_poll_client.health.return_value = False
+        MockClient.return_value = mock_poll_client
+
+        with patch.dict("sys.modules", {"hermes_constants": MagicMock()}) as mods:
+            mods["hermes_constants"].get_hermes_home.side_effect = OSError("no home")
+            with patch("plugins.memory.openviking.time.monotonic",
+                        side_effect=TestOpenVikingAutoStart._make_fake_monotonic(max_calls=3)), \
+                 patch("plugins.memory.openviking.time.sleep"):
+                provider = OpenVikingMemoryProvider()
+                provider.initialize("test-session")
+
+                for t in threading.enumerate():
+                    if t.name == "openviking-server-start":
+                        t.join(timeout=5.0)
+
+        # Popen stdout/stderr should be DEVNULL (fallback)
+        popen_kwargs = MockPopen.call_args[1]
+        assert popen_kwargs["stdout"] is subprocess.DEVNULL
+        assert popen_kwargs["stderr"] is subprocess.DEVNULL
+
+        OpenVikingMemoryProvider._server_log_fh = None

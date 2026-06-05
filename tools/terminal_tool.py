@@ -838,6 +838,8 @@ Do NOT use sed/awk to edit files — use patch instead.
 Do NOT use echo/cat heredoc to create files — use write_file instead.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
 
+IMPORTANT: Certain dangerous commands are unconditionally blocked by a hardline security layer and cannot be executed even with elevated privileges or yolo mode. These include: system shutdown/reboot/halt/poweroff, recursive delete of root or system directories, raw block device overwrites, fork bombs, and kill-all-processes. If a user asks whether you can perform these actions, tell them the commands are blocked at the execution layer for safety.
+
 Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
 Background: Set background=true to get a session_id. Almost always pair with notify_on_complete=true — bg without notify runs SILENTLY and you have no way to learn it finished short of calling process(action='poll') yourself. Two legitimate uses:
   (1) Long-lived processes that never exit (servers, watchers, daemons) — silent is correct, there's no exit to notify on.

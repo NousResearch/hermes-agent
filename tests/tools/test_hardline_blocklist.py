@@ -374,3 +374,24 @@ def test_sudo_stdin_guard_container_bypass(clean_session):
         for cmd in _SUDO_STDIN_BLOCK:
             result = check_all_command_guards(cmd, env)
             assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"
+
+
+# -------------------------------------------------------------------------
+# Terminal tool description awareness
+# -------------------------------------------------------------------------
+
+
+def test_terminal_tool_description_mentions_hardline_blocklist():
+    """The terminal tool description must tell the LLM about the hardline
+    blocklist so it doesn't claim it can run blocked commands.
+
+    Regression test for issue #40063: agent claims it can shutdown the
+    computer because it doesn't know about the hardline blocklist.
+    """
+    from tools.terminal_tool import TERMINAL_TOOL_DESCRIPTION
+
+    desc = TERMINAL_TOOL_DESCRIPTION.lower()
+    assert "hardline" in desc, "terminal tool description must mention 'hardline' blocklist"
+    assert "shutdown" in desc or "reboot" in desc, (
+        "terminal tool description must list shutdown/reboot as blocked commands"
+    )

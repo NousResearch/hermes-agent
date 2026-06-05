@@ -1,7 +1,6 @@
 import { atom, computed } from 'nanostores'
 
 import { getProfiles, setApiRequestProfile } from '@/hermes'
-import { resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { queryClient } from '@/lib/query-client'
 import {
   arraysEqual,
@@ -12,8 +11,7 @@ import {
   storedStringArray,
   storedStringRecord
 } from '@/lib/storage'
-import { $gateway } from '@/store/gateway'
-import { setConnection } from '@/store/session'
+import { $gateway, ensureGatewayForProfile } from '@/store/gateway'
 import type { ProfileInfo } from '@/types/hermes'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
@@ -180,10 +178,11 @@ export const $gatewaySwapTarget = atom<string | null>(null)
 
 let gatewaySwitch: Promise<void> | null = null
 
-// Reconnect the single live gateway to `profile`'s backend if it isn't already
-// there. A null/empty target means "no explicit profile" → keep the gateway on
-// whatever profile it's currently on (so a plain new chat stays put and a
-// single-profile user never swaps). No-op fast path when already on target.
+// Make `profile`'s backend the active gateway, lazily opening its socket if it
+// isn't live yet. Unlike the old single-socket swap, background profiles keep
+// their sockets — so their sessions keep streaming concurrently. A null/empty
+// target means "no explicit profile" → keep the current gateway (a plain new
+// chat stays put; single-profile users never leave the primary).
 export async function ensureGatewayProfile(profile: string | null | undefined): Promise<void> {
   if (profile == null || !String(profile).trim()) {
     // "No explicit profile" = use the current gateway. But if an explicit swap
@@ -199,44 +198,26 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   const target = normalizeProfileKey(profile)
 
-  if (normalizeProfileKey($activeGatewayProfile.get()) === target) {
+  if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
     return
   }
 
-  // Serialize concurrent swaps so two rapid session switches don't fight over
-  // the single socket.
+  // Serialize concurrent activations so two rapid session switches don't race
+  // the active pointer.
   if (gatewaySwitch) {
     await gatewaySwitch.catch(() => undefined)
 
-    if (normalizeProfileKey($activeGatewayProfile.get()) === target) {
+    if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
       return
     }
   }
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
-    const desktop = window.hermesDesktop
-    const gateway = $gateway.get()
-
-    if (!desktop || !gateway) {
-      return
-    }
-
-    // getConnection lazily spawns/reuses the profile's pool backend (or returns
-    // the primary when target is the primary's profile).
-    const conn = await desktop.getConnection(target)
-    setConnection(conn)
-    const wsUrl = await resolveGatewayWsUrl(desktop, conn)
-    // The single socket is still OPEN to the *previous* profile's backend, and
-    // gateway.connect() no-ops on an already-open socket. Drop it first so the
-    // reconnect actually re-points at the target profile's backend — otherwise
-    // the swap silently stays on the old backend (session.create writes to the
-    // wrong profile's DB). close() nulls the socket without emitting a 'closed'
-    // state, so it doesn't trip the boot auto-reconnect.
-    gateway.close()
-    await gateway.connect(wsUrl)
+    // ensureGatewayForProfile opens (or reuses) the target's socket and points
+    // the active gateway at it — without closing the profile you came from.
+    await ensureGatewayForProfile(target)
     $activeGatewayProfile.set(target)
-    void desktop.touchBackend?.(target).catch(() => undefined)
   })()
 
   try {
@@ -287,6 +268,19 @@ export function selectProfile(name: string): void {
     requestFreshSession()
   }
 
+  void ensureGatewayProfile(target)
+}
+
+// Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
+// view. Unlike selectProfile, it leaves $showAllProfiles untouched, so the
+// unified sidebar stays put — used by the per-profile "+" in the all-profiles
+// session list, where switching scope would throw away the browse state the user
+// is in. Points new chats at the profile and opens its backend so the next
+// message lands in the right place.
+export function newSessionInProfile(name: string): void {
+  const target = normalizeProfileKey(name)
+  $newChatProfile.set(target)
+  requestFreshSession()
   void ensureGatewayProfile(target)
 }
 

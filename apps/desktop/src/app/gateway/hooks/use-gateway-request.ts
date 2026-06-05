@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
+import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
 
@@ -24,6 +25,16 @@ export function useGatewayRequest() {
   useEffect(() => {
     gatewayStateRef.current = gatewayState
   }, [gatewayState])
+
+  // Track the active gateway (primary or a background profile's socket) so
+  // outbound requests and overlay props always target the focused profile.
+  useEffect(
+    () =>
+      $gateway.subscribe(gateway => {
+        gatewayRef.current = gateway as HermesGateway | null
+      }),
+    []
+  )
 
   const ensureGatewayOpen = useCallback(async () => {
     const existing = gatewayRef.current
@@ -99,7 +110,10 @@ export function useGatewayRequest() {
           throw error
         }
 
-        const recovered = await ensureGatewayOpen()
+        // Primary keeps the OAuth-aware reconnect (remote gateways re-mint a
+        // single-use ticket); background profiles are always local pool
+        // backends, so the registry handles their reconnect with no reauth.
+        const recovered = isActivePrimary() ? await ensureGatewayOpen() : await ensureActiveGatewayOpen()
 
         if (!recovered) {
           // Prefer the reauth error from the failed reconnect (OAuth session

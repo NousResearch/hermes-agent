@@ -381,6 +381,30 @@ class TestWebServerEndpoints:
         resp = self.client.patch("/api/sessions/no-fields", json={})
         assert resp.status_code == 400
 
+    def test_profiles_sessions_tags_default_profile(self):
+        """The cross-profile aggregator returns the default profile's rows
+        tagged profile="default" (single-profile parity with /api/sessions)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="agg-me", source="cli")
+            db.append_message(session_id="agg-me", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/profiles/sessions?limit=20&min_messages=0")
+        assert resp.status_code == 200
+        data = resp.json()
+        row = next(s for s in data["sessions"] if s["id"] == "agg-me")
+        assert row["profile"] == "default"
+        assert row["is_default_profile"] is True
+        assert isinstance(data.get("errors"), list)
+
+    def test_profiles_sessions_rejects_unknown_archived_value(self):
+        resp = self.client.get("/api/profiles/sessions?archived=bogus")
+        assert resp.status_code == 400
+
     def test_get_sessions_rejects_unknown_archived_value(self):
         resp = self.client.get("/api/sessions?archived=bogus")
         assert resp.status_code == 400
@@ -1771,6 +1795,30 @@ class TestNewEndpoints:
         assert cloned_skill.exists()
         profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
         assert profiles["cloned"]["skill_count"] == 1
+
+    def test_profiles_create_with_clone_from_duplicates_source(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        # Create a source profile and give it a distinctive skill.
+        assert self.client.post("/api/profiles", json={"name": "source-prof"}).status_code == 200
+        source_skill = get_hermes_home() / "profiles" / "source-prof" / "skills" / "custom" / "src-skill"
+        source_skill.mkdir(parents=True)
+        (source_skill / "SKILL.md").write_text("---\nname: src-skill\n---\n", encoding="utf-8")
+
+        # Duplicate it via an explicit clone_from source (not "default").
+        resp = self.client.post(
+            "/api/profiles",
+            json={"name": "source-prof-copy", "clone_from": "source-prof"},
+        )
+
+        assert resp.status_code == 200
+        cloned_skill = (
+            get_hermes_home() / "profiles" / "source-prof-copy" / "skills" / "custom" / "src-skill" / "SKILL.md"
+        )
+        assert cloned_skill.exists()
 
     def test_profiles_create_without_clone_seeds_bundled_skills(self, monkeypatch):
         from hermes_constants import get_hermes_home

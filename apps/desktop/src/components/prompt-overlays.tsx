@@ -64,7 +64,7 @@ function SudoDialog() {
           request_id: request.requestId
         })
         triggerHaptic('submit')
-        clearSudoRequest(request.requestId)
+        clearSudoRequest(request.sessionId, request.requestId)
       } catch (error) {
         notifyError(error, 'Could not send sudo password')
         setSubmitting(false)
@@ -163,7 +163,7 @@ function SecretDialog() {
           value: secret
         })
         triggerHaptic('submit')
-        clearSecretRequest(request.requestId)
+        clearSecretRequest(request.sessionId, request.requestId)
       } catch (error) {
         notifyError(error, 'Could not send secret')
         setSubmitting(false)

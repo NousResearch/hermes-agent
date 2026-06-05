@@ -45,6 +45,7 @@ import {
   focusComposerInput,
   markActiveComposer,
   onComposerFocusRequest,
+  onComposerInsertRefsRequest,
   onComposerInsertRequest
 } from './focus'
 import { HelpHint } from './help-hint'
@@ -52,7 +53,12 @@ import { useAtCompletions } from './hooks/use-at-completions'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useVoiceConversation } from './hooks/use-voice-conversation'
 import { useVoiceRecorder } from './hooks/use-voice-recorder'
-import { dragHasAttachments, droppedFileInlineRef, insertInlineRefsIntoEditor } from './inline-refs'
+import {
+  dragHasAttachments,
+  droppedFileInlineRef,
+  type InlineRefInput,
+  insertInlineRefsIntoEditor
+} from './inline-refs'
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
@@ -432,7 +438,7 @@ export function ChatBar({
     requestMainFocus()
   }
 
-  const insertInlineRefs = (refs: string[]) => {
+  const insertInlineRefs = (refs: InlineRefInput[]) => {
     const editor = editorRef.current
 
     if (!editor) {
@@ -451,6 +457,19 @@ export function ChatBar({
 
     return true
   }
+
+  // Latest-closure ref so the (once-only) subscription always calls the current
+  // insertInlineRefs without re-subscribing every render.
+  const insertInlineRefsRef = useRef(insertInlineRefs)
+  insertInlineRefsRef.current = insertInlineRefs
+
+  useEffect(() => {
+    return onComposerInsertRefsRequest(({ refs, target }) => {
+      if (target === 'main') {
+        insertInlineRefsRef.current(refs)
+      }
+    })
+  }, [])
 
   const selectSkinSlashCommand = (command: string) => {
     draftRef.current = command

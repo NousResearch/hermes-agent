@@ -81,7 +81,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
           session_id: request.sessionId ?? undefined
         })
         triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
-        clearApprovalRequest()
+        clearApprovalRequest(request.sessionId)
       } catch (error) {
         notifyError(error, 'Could not send approval response')
         setSubmitting(null)

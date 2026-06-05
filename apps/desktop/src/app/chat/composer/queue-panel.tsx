@@ -2,6 +2,7 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import { Tip } from '@/components/ui/tooltip'
 import { ArrowUp, Pencil, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { QueuedPromptEntry } from '@/store/composer-queue'
@@ -80,41 +81,44 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                       : 'opacity-0 group-hover/queue-row:opacity-100 group-focus-within/queue-row:opacity-100'
                   )}
                 >
-                  <Button
-                    aria-label="Edit queued turn"
-                    className="h-5 w-5 rounded-md"
-                    disabled={Boolean(editingId) && !isEditing}
-                    onClick={() => onEdit(entry)}
-                    size="icon-xs"
-                    title="Edit queued turn"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <Pencil size={11} />
-                  </Button>
-                  <Button
-                    aria-label="Send queued turn now"
-                    className="h-5 w-5 rounded-md"
-                    disabled={busy || isEditing}
-                    onClick={() => onSendNow(entry.id)}
-                    size="icon-xs"
-                    title="Send queued turn now"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <ArrowUp size={11} />
-                  </Button>
-                  <Button
-                    aria-label="Delete queued turn"
-                    className="h-5 w-5 rounded-md"
-                    onClick={() => onDelete(entry.id)}
-                    size="icon-xs"
-                    title="Delete queued turn"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <Trash2 size={11} />
-                  </Button>
+                  <Tip label="Edit queued turn">
+                    <Button
+                      aria-label="Edit queued turn"
+                      className="h-5 w-5 rounded-md"
+                      disabled={Boolean(editingId) && !isEditing}
+                      onClick={() => onEdit(entry)}
+                      size="icon-xs"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Pencil size={11} />
+                    </Button>
+                  </Tip>
+                  <Tip label="Send queued turn now">
+                    <Button
+                      aria-label="Send queued turn now"
+                      className="h-5 w-5 rounded-md"
+                      disabled={busy || isEditing}
+                      onClick={() => onSendNow(entry.id)}
+                      size="icon-xs"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <ArrowUp size={11} />
+                    </Button>
+                  </Tip>
+                  <Tip label="Delete queued turn">
+                    <Button
+                      aria-label="Delete queued turn"
+                      className="h-5 w-5 rounded-md"
+                      onClick={() => onDelete(entry.id)}
+                      size="icon-xs"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Trash2 size={11} />
+                    </Button>
+                  </Tip>
                 </div>
               </div>
             )

@@ -1604,6 +1604,7 @@ async def get_sessions(
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
+                exclude_children=True,
             )
             now = time.time()
             for s in sessions:
@@ -1619,6 +1620,114 @@ async def get_sessions(
     except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/profiles/sessions")
+async def get_profiles_sessions(
+    limit: int = 20,
+    offset: int = 0,
+    min_messages: int = 0,
+    archived: str = "exclude",
+    order: str = "recent",
+    profile: str = "all",
+):
+    """Unified, read-only session list aggregated across ALL profiles.
+
+    Intentionally process-light: this opens each profile's ``state.db`` directly
+    from disk — it does NOT spawn a dashboard backend per profile. Each returned
+    session is tagged with its owning ``profile`` so the desktop renders one
+    browsable list and only spins up a profile's backend when the user actually
+    interacts (sends a message). A user with a single (default) profile gets the
+    same rows as ``/api/sessions``, just tagged ``profile="default"``.
+    """
+    if archived not in ("exclude", "only", "include"):
+        raise HTTPException(status_code=400, detail="archived must be one of: exclude, only, include")
+    if order not in ("created", "recent"):
+        raise HTTPException(status_code=400, detail="order must be one of: created, recent")
+
+    from hermes_state import SessionDB
+    from hermes_cli import profiles as profiles_mod
+
+    targets: List[Tuple[str, Path]] = []
+    if profile and profile != "all":
+        name, home = _cron_profile_home(profile)
+        targets.append((name, home))
+    else:
+        try:
+            infos = profiles_mod.list_profiles()
+            targets = [(info.name, info.path) for info in infos]
+        except Exception:
+            _log.exception("GET /api/profiles/sessions: list_profiles failed")
+            targets = []
+        if not targets:
+            targets.append(("default", profiles_mod.get_profile_dir("default")))
+
+    min_message_count = max(0, min_messages)
+    archived_only = archived == "only"
+    include_archived = archived == "include"
+    # Over-fetch per profile so the merged+sorted window is correct for the
+    # requested page. Capped so a huge profile can't blow up the response.
+    per_profile = min(max(limit + offset, limit), 500)
+
+    merged: List[Dict[str, Any]] = []
+    total = 0
+    profile_totals: Dict[str, int] = {}
+    errors: List[Dict[str, str]] = []
+    now = time.time()
+    for name, home in targets:
+        db_path = Path(home) / "state.db"
+        if not db_path.exists():
+            continue
+        try:
+            # Read-only: this loop runs on every sidebar refresh, so it must
+            # never DDL/write-lock another profile's live DB (see SessionDB
+            # read_only docstring).
+            db = SessionDB(db_path=db_path, read_only=True)
+        except Exception as exc:
+            errors.append({"profile": name, "error": str(exc)})
+            continue
+        try:
+            rows = db.list_sessions_rich(
+                limit=per_profile,
+                offset=0,
+                min_message_count=min_message_count,
+                include_archived=include_archived,
+                archived_only=archived_only,
+                order_by_last_active=order == "recent",
+            )
+            profile_total = db.session_count(
+                min_message_count=min_message_count,
+                include_archived=include_archived,
+                archived_only=archived_only,
+                exclude_children=True,
+            )
+            total += profile_total
+            profile_totals[name] = profile_total
+            for s in rows:
+                s["profile"] = name
+                s["is_default_profile"] = name == "default"
+                s["is_active"] = (
+                    s.get("ended_at") is None
+                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                )
+                s["archived"] = bool(s.get("archived"))
+                merged.append(s)
+        except Exception as exc:
+            errors.append({"profile": name, "error": str(exc)})
+        finally:
+            db.close()
+
+    sort_key = "last_active" if order == "recent" else "started_at"
+    merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
+    window = merged[offset:offset + limit]
+    return {
+        "sessions": window,
+        "total": total,
+        "profile_totals": profile_totals,
+        "limit": limit,
+        "offset": offset,
+        "errors": errors,
+    }
 
 
 @app.get("/api/sessions/search")
@@ -5080,15 +5189,31 @@ async def get_session_stats():
         db.close()
 
 
-@app.get("/api/sessions/{session_id}")
-async def get_session_detail(session_id: str):
+def _open_session_db_for_profile(profile: Optional[str]):
+    """Open a SessionDB for read paths, optionally for another profile.
+
+    ``profile`` None/empty → this process's own ``state.db`` (the common,
+    single-profile case). A named profile opens that profile's on-disk
+    ``state.db`` directly so the primary backend can serve cross-profile reads
+    (transcripts, detail) without spawning that profile's backend.
+    """
     from hermes_state import SessionDB
-    db = SessionDB()
+    if not profile:
+        return SessionDB()
+    _name, home = _cron_profile_home(profile)
+    return SessionDB(db_path=Path(home) / "state.db")
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session_detail(session_id: str, profile: Optional[str] = None):
+    db = _open_session_db_for_profile(profile)
     try:
         sid = db.resolve_session_id(session_id)
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        if profile:
+            session["profile"] = _cron_profile_home(profile)[0]
         return session
     finally:
         db.close()
@@ -5108,9 +5233,8 @@ async def get_session_latest_descendant(session_id: str):
     }
 
 @app.get("/api/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str):
-    from hermes_state import SessionDB
-    db = SessionDB()
+async def get_session_messages(session_id: str, profile: Optional[str] = None):
+    db = _open_session_db_for_profile(profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
@@ -5136,6 +5260,9 @@ async def delete_session_endpoint(session_id: str):
 class SessionRename(BaseModel):
     title: Optional[str] = None
     archived: Optional[bool] = None
+    # Mutate a session belonging to another profile (opens its state.db). Omit
+    # for the current/default profile.
+    profile: Optional[str] = None
 
 
 @app.patch("/api/sessions/{session_id}")
@@ -5143,10 +5270,10 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
     """Update a session: rename (or clear its title) and/or archive it.
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
-    restores the session. Either field may be omitted.
+    restores the session. Either field may be omitted. ``profile`` targets
+    another profile's session.
     """
-    from hermes_state import SessionDB
-    db = SessionDB()
+    db = _open_session_db_for_profile(body.profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
@@ -6573,6 +6700,11 @@ class ProfileCreate(BaseModel):
     clone_all: bool = False
     no_skills: bool = False
     description: Optional[str] = None
+    # Explicit source profile to clone from (e.g. duplicating an existing
+    # profile). When set, it takes precedence over ``clone_from_default``,
+    # which always sources from "default". ``clone_all`` still selects a full
+    # state copytree vs. a config/skills/SOUL copy.
+    clone_from: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
 
@@ -6733,13 +6865,23 @@ async def list_profiles_endpoint():
 @app.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod
-    clone = body.clone_from_default or body.clone_all
+    explicit_source = (body.clone_from or "").strip()
+    if explicit_source:
+        # Duplicating a specific profile: clone its config/skills/SOUL (or full
+        # state when clone_all) from the named source rather than "default".
+        clone = True
+        clone_from = explicit_source
+        clone_config = not body.clone_all
+    else:
+        clone = body.clone_from_default or body.clone_all
+        clone_from = "default" if clone else None
+        clone_config = body.clone_from_default and not body.clone_all
     try:
         path = profiles_mod.create_profile(
             name=body.name,
-            clone_from="default" if clone else None,
+            clone_from=clone_from,
             clone_all=body.clone_all,
-            clone_config=body.clone_from_default and not body.clone_all,
+            clone_config=clone_config,
             no_skills=body.no_skills,
             description=body.description,
         )

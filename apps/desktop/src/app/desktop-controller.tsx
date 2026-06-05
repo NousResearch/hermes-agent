@@ -11,7 +11,7 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getSessionMessages, listSessions } from '../hermes'
+import { getSessionMessages, listAllProfileSessions, type SessionInfo } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import { toggleCommandPalette } from '../store/command-palette'
 import {
@@ -25,9 +25,11 @@ import {
   pinSession,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
+  SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '../store/layout'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
+import { $freshSessionRequest, normalizeProfileKey, refreshActiveProfile } from '../store/profile'
 import {
   $activeSessionId,
   $currentCwd,
@@ -45,6 +47,7 @@ import {
   setCurrentModel,
   setCurrentProvider,
   setMessages,
+  setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
   setSessionsTotal
@@ -97,6 +100,26 @@ const MessagingView = lazy(async () => ({ default: (await import('./messaging'))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
+
+// Rows a session refresh must preserve even if the aggregator omits them:
+// in-flight first turns (message_count 0), pinned rows aged off the page, and
+// the actively-viewed chat (its "working" flag clears a beat before the
+// aggregator sees the persisted row). Pass `scope` to only keep the active row
+// when it belongs to the profile being paged.
+function sessionsToKeep(scope?: string): Set<string> {
+  const keep = new Set<string>([...$workingSessionIds.get(), ...$pinnedSessionIds.get()])
+  const active = $selectedStoredSessionId.get()
+
+  if (active) {
+    const session = scope ? $sessions.get().find(s => s.id === active) : null
+
+    if (!scope || !session || normalizeProfileKey(session.profile) === scope) {
+      keep.add(active)
+    }
+  }
+
+  return keep
+}
 
 export function DesktopController() {
   const queryClient = useQueryClient()
@@ -201,9 +224,9 @@ export function DesktopController() {
     }
   }, [])
 
-  // Global chrome shortcuts (plain Cmd/Ctrl, no alt/shift): Cmd+K → command
-  // palette (the composer's "drain next queued" moved to Cmd+Shift+K), Cmd+. →
-  // command center (sessions / system / usage).
+  // Global chrome shortcuts (plain Cmd/Ctrl, no alt/shift): Cmd+K / Cmd+P →
+  // command palette (the composer's "drain next queued" moved to Cmd+Shift+K),
+  // Cmd+. → command center (sessions / system / usage).
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) {
@@ -212,7 +235,7 @@ export function DesktopController() {
 
       const key = event.key.toLowerCase()
 
-      if (key === 'k') {
+      if (key === 'k' || key === 'p') {
         event.preventDefault()
         toggleCommandPalette()
       } else if (key === '.') {
@@ -236,17 +259,15 @@ export function DesktopController() {
       // Require at least one message so abandoned/empty "Untitled" drafts (one
       // was created per TUI/desktop launch before the lazy-create fix) don't
       // clutter the sidebar.
-      const result = await listSessions(limit, 1)
+      // Unified cross-profile list (served read-only off each profile's
+      // state.db; no per-profile backend is spawned). Single-profile users get
+      // the same rows tagged profile="default".
+      const result = await listAllProfileSessions(limit, 1)
 
       if (refreshSessionsRequestRef.current === requestId) {
-        // Don't hard-replace. Two kinds of rows must survive a refresh the
-        // server didn't return: (1) sessions whose first turn is still in
-        // flight (message_count 0, so min_messages=1 omits them) and (2)
-        // pinned sessions that have aged off the most-recent page — otherwise
-        // the pin "disappears until you refresh". mergeSessionPage keeps both.
-        const keepIds = new Set<string>([...$workingSessionIds.get(), ...$pinnedSessionIds.get()])
-        setSessions(prev => mergeSessionPage(prev, result.sessions, keepIds))
+        setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
+        setSessionProfileTotals(result.profile_totals ?? {})
       }
     } finally {
       if (refreshSessionsRequestRef.current === requestId) {
@@ -259,6 +280,21 @@ export function DesktopController() {
     bumpSessionsLimit()
     void refreshSessions()
   }, [refreshSessions])
+
+  // ALL-profiles view pages one profile at a time: fetch that profile's next
+  // page and merge it in place, leaving every other profile's rows untouched.
+  const loadMoreSessionsForProfile = useCallback(async (profile: string) => {
+    const key = normalizeProfileKey(profile)
+    const inKey = (s: SessionInfo) => normalizeProfileKey(s.profile) === key
+    const loaded = $sessions.get().filter(inKey).length
+    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key)
+    const keep = sessionsToKeep(key)
+
+    setSessions(prev => [...prev.filter(s => !inKey(s)), ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)])
+
+    const total = result.profile_totals?.[key] ?? result.total ?? result.sessions.length
+    setSessionProfileTotals(prev => ({ ...prev, [key]: Math.max(total, result.sessions.length) }))
+  }, [])
 
   const toggleSelectedPin = useCallback(() => {
     const sessionId = $selectedStoredSessionId.get()
@@ -349,9 +385,11 @@ export function DesktopController() {
         return
       }
 
+      const storedProfile = $sessions.get().find(session => session.id === storedSessionId)?.profile
+
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
-          const latest = await getSessionMessages(storedSessionId)
+          const latest = await getSessionMessages(storedSessionId, storedProfile)
           updateSessionState(
             runtimeSessionId,
             state => ({
@@ -454,6 +492,20 @@ export function DesktopController() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [startFreshSessionDraft])
 
+  // A profile switch/create drops to a fresh new-session draft so the previously
+  // open session doesn't bleed across contexts. Skip the initial value.
+  const freshSessionRequest = useStore($freshSessionRequest)
+  const lastFreshRef = useRef(freshSessionRequest)
+
+  useEffect(() => {
+    if (freshSessionRequest === lastFreshRef.current) {
+      return
+    }
+
+    lastFreshRef.current = freshSessionRequest
+    startFreshSessionDraft()
+  }, [freshSessionRequest, startFreshSessionDraft])
+
   const composer = useComposerActions({
     activeSessionId,
     currentCwd,
@@ -529,6 +581,7 @@ export function DesktopController() {
   useEffect(() => {
     if (gatewayState === 'open') {
       void refreshCurrentModel()
+      void refreshActiveProfile()
       void refreshSessions().catch(() => undefined)
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
@@ -571,6 +624,7 @@ export function DesktopController() {
       currentView={currentView}
       onArchiveSession={sessionId => void archiveSession(sessionId)}
       onDeleteSession={sessionId => void removeSession(sessionId)}
+      onLoadMoreProfileSessions={loadMoreSessionsForProfile}
       onLoadMoreSessions={loadMoreSessions}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}

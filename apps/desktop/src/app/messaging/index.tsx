@@ -18,11 +18,11 @@ import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
-import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
-import { ListRow } from '../settings/primitives'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PageSearchShell } from '../page-search-shell'
+import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
+import { ListRow } from '../settings/primitives'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { PlatformAvatar } from './platform-icon'

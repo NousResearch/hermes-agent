@@ -4,6 +4,7 @@ import { PageLoader } from '@/components/page-loader'
 import { Badge, type BadgeProps } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
   Dialog,
   DialogContent,
@@ -311,7 +312,6 @@ export function CronView({ onClose }: CronViewProps) {
 
   const [editor, setEditor] = useState<EditorState>({ mode: 'closed' })
   const [pendingDelete, setPendingDelete] = useState<CronJob | null>(null)
-  const [deleting, setDeleting] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -369,25 +369,6 @@ export function CronView({ onClose }: CronViewProps) {
       notifyError(err, 'Failed to trigger cron job')
     } finally {
       setBusyJobId(null)
-    }
-  }
-
-  async function handleConfirmDelete() {
-    if (!pendingDelete) {
-      return
-    }
-
-    setDeleting(true)
-
-    try {
-      await deleteCronJob(pendingDelete.id)
-      setJobs(current => (current ? current.filter(row => row.id !== pendingDelete.id) : current))
-      notify({ kind: 'success', title: 'Cron deleted', message: truncate(jobTitle(pendingDelete), 60) })
-      setPendingDelete(null)
-    } catch (err) {
-      notifyError(err, 'Failed to delete cron job')
-    } finally {
-      setDeleting(false)
     }
   }
 
@@ -480,30 +461,33 @@ export function CronView({ onClose }: CronViewProps) {
       </div>
       <CronEditorDialog editor={editor} onClose={() => setEditor({ mode: 'closed' })} onSave={handleEditorSave} />
 
-      <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Delete cron job?</DialogTitle>
-            <DialogDescription>
-              {pendingDelete ? (
-                <>
-                  This will remove{' '}
-                  <span className="font-medium text-foreground">{truncate(jobTitle(pendingDelete), 60)}</span>{' '}
-                  permanently. It will stop firing immediately.
-                </>
-              ) : null}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
-              Cancel
-            </Button>
-            <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
-              {deleting ? 'Deleting...' : 'Delete'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        busyLabel="Deleting…"
+        confirmLabel="Delete"
+        description={
+          pendingDelete ? (
+            <>
+              This will remove{' '}
+              <span className="font-medium text-foreground">{truncate(jobTitle(pendingDelete), 60)}</span> permanently.
+              It will stop firing immediately.
+            </>
+          ) : null
+        }
+        destructive
+        doneLabel="Deleted"
+        onClose={() => setPendingDelete(null)}
+        onConfirm={async () => {
+          if (!pendingDelete) {
+            return
+          }
+
+          await deleteCronJob(pendingDelete.id)
+          setJobs(current => (current ? current.filter(row => row.id !== pendingDelete.id) : current))
+          notify({ kind: 'success', message: truncate(jobTitle(pendingDelete), 60), title: 'Cron deleted' })
+        }}
+        open={pendingDelete !== null}
+        title="Delete cron job?"
+      />
     </OverlayView>
   )
 }

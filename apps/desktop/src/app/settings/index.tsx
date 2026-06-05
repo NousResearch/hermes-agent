@@ -1,6 +1,7 @@
 import { IconDownload, IconRefresh, IconUpload } from '@tabler/icons-react'
 import { useRef } from 'react'
 
+import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, Globe, Info, KeyRound, Settings2, Sparkles, Wrench, Zap } from '@/lib/icons'
@@ -173,28 +174,32 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
             onClick={() => setActiveView('about')}
           />
           <div className="mt-auto flex items-center gap-1 pt-2">
-            <OverlayIconButton onClick={() => void exportConfig()} title="Export config">
-              <IconDownload className="size-3.5" />
-            </OverlayIconButton>
-            <OverlayIconButton
-              onClick={() => {
-                triggerHaptic('open')
-                importInputRef.current?.click()
-              }}
-              title="Import config"
-            >
-              <IconUpload className="size-3.5" />
-            </OverlayIconButton>
-            <OverlayIconButton
-              className="hover:text-destructive"
-              onClick={() => {
-                triggerHaptic('warning')
-                void resetConfig()
-              }}
-              title="Reset to defaults"
-            >
-              <IconRefresh className="size-3.5" />
-            </OverlayIconButton>
+            <Tip label="Export config">
+              <OverlayIconButton onClick={() => void exportConfig()}>
+                <IconDownload className="size-3.5" />
+              </OverlayIconButton>
+            </Tip>
+            <Tip label="Import config">
+              <OverlayIconButton
+                onClick={() => {
+                  triggerHaptic('open')
+                  importInputRef.current?.click()
+                }}
+              >
+                <IconUpload className="size-3.5" />
+              </OverlayIconButton>
+            </Tip>
+            <Tip label="Reset to defaults">
+              <OverlayIconButton
+                className="hover:text-destructive"
+                onClick={() => {
+                  triggerHaptic('warning')
+                  void resetConfig()
+                }}
+              >
+                <IconRefresh className="size-3.5" />
+              </OverlayIconButton>
+            </Tip>
           </div>
         </OverlaySidebar>
 

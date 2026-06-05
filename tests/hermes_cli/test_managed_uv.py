@@ -92,12 +92,55 @@ class TestEnsureUv:
             assert path == str(tmp_path / "bin" / "uv")
             mock_install.assert_called_once()
 
-    def test_install_failure_returns_none(self, tmp_path):
+    def test_install_failure_returns_falsy(self, tmp_path):
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv._install_uv", side_effect=RuntimeError("network down")):
             from hermes_cli.managed_uv import ensure_uv
             path = ensure_uv()
-            assert path is None
+            # Failure is a falsy sentinel (not None) so legacy 2-target call
+            # sites can still unpack it without raising — see
+            # TestEnsureUvUpdateBoundary for why.
+            assert not path
+
+
+class TestEnsureUvUpdateBoundary:
+    """``ensure_uv()`` must answer to both the single-value and the legacy
+    ``(path, fresh_bootstrap)`` call conventions.
+
+    ``hermes update`` runs the call site from the old, already-imported
+    ``hermes_cli.main`` against the freshly pulled ``managed_uv``. A release
+    parked on a ``(path, fresh)`` tuple runs ``uv_bin, fresh = ensure_uv()``
+    against the single-value module; the path is an iterable ``str`` so the
+    2-target unpack walked its characters and raised
+    ``ValueError: too many values to unpack (expected 2)`` (root cause behind
+    PR #39763), or ``TypeError`` on the ``None`` failure path. The result must
+    therefore be usable as a bare path *and* unpackable as a 2-tuple, in both
+    the success and failure cases.
+    """
+
+    def test_success_usable_as_single_value(self, tmp_path):
+        _make_executable(tmp_path / "bin" / "uv")
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            from hermes_cli.managed_uv import ensure_uv
+            uv_bin = ensure_uv()
+            assert uv_bin == str(tmp_path / "bin" / "uv")
+            assert bool(uv_bin) is True
+
+    def test_success_unpacks_as_legacy_two_tuple(self, tmp_path):
+        _make_executable(tmp_path / "bin" / "uv")
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            from hermes_cli.managed_uv import ensure_uv
+            uv_bin, fresh = ensure_uv()  # old: uv_bin, fresh_bootstrap = ensure_uv()
+            assert uv_bin == str(tmp_path / "bin" / "uv")
+            assert fresh is False
+
+    def test_failure_unpacks_without_raising(self, tmp_path):
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv._install_uv", side_effect=RuntimeError("network down")):
+            from hermes_cli.managed_uv import ensure_uv
+            uv_bin, fresh = ensure_uv()
+            assert uv_bin is None
+            assert fresh is False
 
 
 # ---------------------------------------------------------------------------

@@ -943,85 +943,22 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
     async def _handle_polling_network_error(self, error: Exception) -> None:
-        """Reconnect polling after a transient network interruption.
+        """Handle a network error in the polling loop.
 
-        Triggered by NetworkError/TimedOut in the polling error callback, which
-        happen when the host loses connectivity (Mac sleep, WiFi switch, VPN
-        reconnect, etc.).  The gateway process stays alive but the long-poll
-        connection silently dies; without this handler the bot never recovers.
+        This method is called when a NetworkError or TimedOut occurs in the
+        polling error callback. We immediately mark the adapter as having a
+        fatal error (retryable) so that the gateway's reconnection watcher
+        can take over and attempt to reconnect the platform with exponential
+        backoff.
 
-        Strategy: exponential back-off (5s, 10s, 20s, 40s, 60s cap) up to
-        MAX_NETWORK_RETRIES attempts, then mark the adapter retryable-fatal so
-        the supervisor restarts the gateway process.
+        Args:
+            error: The exception that occurred.
         """
         if self.has_fatal_error:
             return
-
-        MAX_NETWORK_RETRIES = 10
-        BASE_DELAY = 5
-        MAX_DELAY = 60
-
-        self._polling_network_error_count += 1
         self._send_path_degraded = True
-        attempt = self._polling_network_error_count
-
-        if attempt > MAX_NETWORK_RETRIES:
-            message = (
-                "Telegram polling could not reconnect after %d network error retries. "
-                "Restarting gateway." % MAX_NETWORK_RETRIES
-            )
-            logger.error("[%s] %s Last error: %s", self.name, message, error)
-            self._set_fatal_error("telegram_network_error", message, retryable=True)
-            await self._notify_fatal_error()
-            return
-
-        delay = min(BASE_DELAY * (2 ** (attempt - 1)), MAX_DELAY)
-        logger.warning(
-            "[%s] Telegram network error (attempt %d/%d), reconnecting in %ds. Error: %s",
-            self.name, attempt, MAX_NETWORK_RETRIES, delay, error,
-        )
-        await asyncio.sleep(delay)
-
-        try:
-            if self._app and self._app.updater and self._app.updater.running:
-                await self._app.updater.stop()
-        except Exception:
-            pass
-
-        await self._drain_polling_connections()
-
-        try:
-            await self._app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=False,
-                error_callback=self._polling_error_callback_ref,
-            )
-            logger.info(
-                "[%s] Telegram polling resumed after network error (attempt %d)",
-                self.name, attempt,
-            )
-            self._polling_network_error_count = 0
-            # start_polling() returning is necessary but not sufficient:
-            # PTB's Updater can be left in a state where `running` is True
-            # but the underlying long-poll task is wedged on a stale httpx
-            # connection and never makes progress. No error_callback fires
-            # in that state, so the reconnect ladder won't advance on its
-            # own. Schedule a deferred probe to detect the wedge and
-            # re-enter the ladder if needed.
-            if not self.has_fatal_error:
-                probe = asyncio.ensure_future(self._verify_polling_after_reconnect())
-                self._background_tasks.add(probe)
-                probe.add_done_callback(self._background_tasks.discard)
-        except Exception as retry_err:
-            logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
-            # start_polling failed — polling is dead and no further error
-            # callbacks will fire, so schedule the next retry ourselves.
-            if not self.has_fatal_error:
-                task = asyncio.ensure_future(
-                    self._handle_polling_network_error(retry_err)
-                )
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
+        self._set_fatal_error("telegram_network_error", str(error), retryable=True)
+        await self._notify_fatal_error()
 
     async def _verify_polling_after_reconnect(self) -> None:
         """Heartbeat probe scheduled after a successful reconnect.

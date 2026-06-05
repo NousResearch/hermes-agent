@@ -152,7 +152,9 @@ async function getSessionToken(): Promise<string> {
     _sessionToken = injected;
     return _sessionToken;
   }
-  throw new Error("Session token not available — page must be served by the Hermes dashboard server");
+  throw new Error(
+    "Session token not available — page must be served by the Hermes dashboard server",
+  );
 }
 
 /**
@@ -167,7 +169,10 @@ async function getSessionToken(): Promise<string> {
  * Tickets are single-use and TTL=30s — every WS connect attempt must
  * fetch a fresh ticket.
  */
-export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: number }> {
+export async function getWsTicket(): Promise<{
+  ticket: string;
+  ttl_seconds: number;
+}> {
   const res = await fetch(`${BASE}/api/auth/ws-ticket`, {
     method: "POST",
     credentials: "include",
@@ -284,9 +289,13 @@ export const api = {
       return r;
     }),
   getSessions: (limit = 20, offset = 0) =>
-    fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
+    fetchJSON<PaginatedSessions>(
+      `/api/sessions?limit=${limit}&offset=${offset}`,
+    ),
   getSessionMessages: (id: string) =>
-    fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
+    fetchJSON<SessionMessagesResponse>(
+      `/api/sessions/${encodeURIComponent(id)}/messages`,
+    ),
   getSessionLatestDescendant: (id: string) =>
     fetchJSON<SessionLatestDescendantResponse>(
       `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
@@ -325,12 +334,18 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ older_than_days, source }),
     }),
-  getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
+  getLogs: (params: {
+    file?: string;
+    lines?: number;
+    level?: string;
+    component?: string;
+  }) => {
     const qs = new URLSearchParams();
     if (params.file) qs.set("file", params.file);
     if (params.lines) qs.set("lines", String(params.lines));
     if (params.level && params.level !== "ALL") qs.set("level", params.level);
-    if (params.component && params.component !== "all") qs.set("component", params.component);
+    if (params.component && params.component !== "all")
+      qs.set("component", params.component);
     return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`);
   },
   getAnalytics: (days: number) =>
@@ -339,10 +354,14 @@ export const api = {
     fetchJSON<ModelsAnalyticsResponse>(`/api/analytics/models?days=${days}`),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
-  getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
+  getSchema: () =>
+    fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>(
+      "/api/config/schema",
+    ),
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
   getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
-  getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
+  getAuxiliaryModels: () =>
+    fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
   setModelAssignment: (body: ModelAssignmentRequest) =>
     fetchJSON<ModelAssignmentResponse>("/api/model/set", {
       method: "POST",
@@ -389,18 +408,34 @@ export const api = {
 
   // Cron jobs
   getCronJobs: (profile = "all") =>
-    fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }, profile = "default") =>
-    fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(job),
-    }),
+    fetchJSON<CronJob[]>(
+      `/api/cron/jobs?profile=${encodeURIComponent(profile)}`,
+    ),
+  createCronJob: (
+    job: { prompt: string; schedule: string; name?: string; deliver?: string },
+    profile = "default",
+  ) =>
+    fetchJSON<CronJob>(
+      `/api/cron/jobs?profile=${encodeURIComponent(profile)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(job),
+      },
+    ),
   pauseCronJob: (id: string, profile = "default") =>
-    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+    fetchJSON<CronJob>(
+      `/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`,
+      { method: "POST" },
+    ),
   updateCronJob: (
     id: string,
-    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string },
+    updates: {
+      prompt?: string;
+      schedule?: string;
+      name?: string;
+      deliver?: string;
+    },
     profile = "default",
   ) =>
     fetchJSON<CronJob>(
@@ -412,17 +447,24 @@ export const api = {
       },
     ),
   resumeCronJob: (id: string, profile = "default") =>
-    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/resume?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+    fetchJSON<CronJob>(
+      `/api/cron/jobs/${encodeURIComponent(id)}/resume?profile=${encodeURIComponent(profile)}`,
+      { method: "POST" },
+    ),
   triggerCronJob: (id: string, profile = "default") =>
-    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/trigger?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+    fetchJSON<CronJob>(
+      `/api/cron/jobs/${encodeURIComponent(id)}/trigger?profile=${encodeURIComponent(profile)}`,
+      { method: "POST" },
+    ),
   deleteCronJob: (id: string, profile = "default") =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
+    fetchJSON<{ ok: boolean }>(
+      `/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`,
+      { method: "DELETE" },
+    ),
 
   // Profiles
-  getProfiles: () =>
-    fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
-  getActiveProfile: () =>
-    fetchJSON<ActiveProfileInfo>("/api/profiles/active"),
+  getProfiles: () => fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
+  getActiveProfile: () => fetchJSON<ActiveProfileInfo>("/api/profiles/active"),
   setActiveProfile: (name: string) =>
     fetchJSON<{ ok: boolean; active: string }>("/api/profiles/active", {
       method: "POST",
@@ -438,11 +480,14 @@ export const api = {
     provider?: string;
     model?: string;
   }) =>
-    fetchJSON<{ ok: boolean; name: string; path: string; model_set?: boolean }>("/api/profiles", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
+    fetchJSON<{ ok: boolean; name: string; path: string; model_set?: boolean }>(
+      "/api/profiles",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
   updateProfileDescription: (name: string, description: string) =>
     fetchJSON<{ ok: boolean; description: string; description_auto: boolean }>(
       `/api/profiles/${encodeURIComponent(name)}/description`,
@@ -461,15 +506,6 @@ export const api = {
         body: JSON.stringify({ overwrite }),
       },
     ),
-  setProfileModel: (name: string, provider: string, model: string) =>
-    fetchJSON<{ ok: boolean; provider: string; model: string }>(
-      `/api/profiles/${encodeURIComponent(name)}/model`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, model }),
-      },
-    ),
   renameProfile: (name: string, newName: string) =>
     fetchJSON<{ ok: boolean; name: string; path: string }>(
       `/api/profiles/${encodeURIComponent(name)}`,
@@ -480,10 +516,9 @@ export const api = {
       },
     ),
   deleteProfile: (name: string) =>
-    fetchJSON<{ ok: boolean }>(
-      `/api/profiles/${encodeURIComponent(name)}`,
-      { method: "DELETE" },
-    ),
+    fetchJSON<{ ok: boolean }>(`/api/profiles/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
   getProfileSetupCommand: (name: string) =>
     fetchJSON<{ command: string }>(
       `/api/profiles/${encodeURIComponent(name)}/setup-command`,
@@ -501,6 +536,32 @@ export const api = {
         body: JSON.stringify({ content }),
       },
     ),
+  getProfileModel: (name: string) =>
+    fetchJSON<{ provider: string; model: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/model`,
+    ),
+  setProfileModel: (
+    name: string,
+    providerOrBody: string | { provider: string; model: string },
+    model?: string,
+  ) => {
+    const body =
+      typeof providerOrBody === "string"
+        ? { provider: providerOrBody, model: model ?? "" }
+        : providerOrBody;
+    return fetchJSON<{ ok: boolean; provider: string; model: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/model`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+  },
+  getProfileModelOptions: (name: string) =>
+    fetchJSON<ModelOptionsResponse>(
+      `/api/profiles/${encodeURIComponent(name)}/model/options`,
+    ),
 
   // Skills & Toolsets
   getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),
@@ -514,7 +575,9 @@ export const api = {
 
   // Session search (FTS5)
   searchSessions: (q: string) =>
-    fetchJSON<SessionSearchResponse>(`/api/sessions/search?q=${encodeURIComponent(q)}`),
+    fetchJSON<SessionSearchResponse>(
+      `/api/sessions/search?q=${encodeURIComponent(q)}`,
+    ),
 
   // OAuth provider management
   getOAuthProviders: () =>
@@ -543,7 +606,11 @@ export const api = {
       },
     );
   },
-  submitOAuthCode: async (providerId: string, sessionId: string, code: string) => {
+  submitOAuthCode: async (
+    providerId: string,
+    sessionId: string,
+    code: string,
+  ) => {
     const token = await getSessionToken();
     return fetchJSON<OAuthSubmitResponse>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
@@ -640,14 +707,18 @@ export const api = {
   rescanPlugins: () =>
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
-  getPluginsHub: () => fetchJSON<PluginsHubResponse>("/api/dashboard/plugins/hub"),
+  getPluginsHub: () =>
+    fetchJSON<PluginsHubResponse>("/api/dashboard/plugins/hub"),
 
   installAgentPlugin: (body: AgentPluginInstallRequest) =>
-    fetchJSON<AgentPluginInstallResponse>("/api/dashboard/agent-plugins/install", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...body }),
-    }),
+    fetchJSON<AgentPluginInstallResponse>(
+      "/api/dashboard/agent-plugins/install",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body }),
+      },
+    ),
 
   enableAgentPlugin: (name: string) =>
     fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
@@ -691,8 +762,7 @@ export const api = {
     ),
 
   // Dashboard themes
-  getThemes: () =>
-    fetchJSON<DashboardThemesResponse>("/api/dashboard/themes"),
+  getThemes: () => fetchJSON<DashboardThemesResponse>("/api/dashboard/themes"),
   setTheme: (name: string) =>
     fetchJSON<{ ok: boolean; theme: string }>("/api/dashboard/theme", {
       method: "PUT",
@@ -727,22 +797,25 @@ export const api = {
       },
     ),
   getMcpCatalog: () =>
-    fetchJSON<{ entries: McpCatalogEntry[]; diagnostics: McpCatalogDiagnostic[] }>(
-      "/api/mcp/catalog",
-    ),
+    fetchJSON<{
+      entries: McpCatalogEntry[];
+      diagnostics: McpCatalogDiagnostic[];
+    }>("/api/mcp/catalog"),
   installMcpCatalogEntry: (
     name: string,
     env: Record<string, string> = {},
     enable = true,
   ) =>
-    fetchJSON<{ ok: boolean; name: string; background: boolean; action?: string }>(
-      "/api/mcp/catalog/install",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, env, enable }),
-      },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      background: boolean;
+      action?: string;
+    }>("/api/mcp/catalog/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, env, enable }),
+    }),
 
   // ── Admin: Pairing ──────────────────────────────────────────────────
   getPairing: () => fetchJSON<PairingResponse>("/api/pairing"),
@@ -788,11 +861,7 @@ export const api = {
   // ── Admin: Credential pool ──────────────────────────────────────────
   getCredentialPool: () =>
     fetchJSON<{ providers: CredentialPoolProvider[] }>("/api/credentials/pool"),
-  addCredentialPoolEntry: (
-    provider: string,
-    api_key: string,
-    label?: string,
-  ) =>
+  addCredentialPoolEntry: (provider: string, api_key: string, label?: string) =>
     fetchJSON<{ ok: boolean; provider: string; count: number }>(
       "/api/credentials/pool",
       {
@@ -847,14 +916,16 @@ export const api = {
     }),
   getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
   createHook: (body: HookCreate) =>
-    fetchJSON<{ ok: boolean; event: string; command: string; approved: boolean }>(
-      "/api/ops/hooks",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      event: string;
+      command: string;
+      approved: boolean;
+    }>("/api/ops/hooks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   deleteHook: (event: string, command: string) =>
     fetchJSON<{ ok: boolean }>("/api/ops/hooks", {
       method: "DELETE",
@@ -892,7 +963,6 @@ export const api = {
         lines: opts?.lines ?? 200,
       }),
     }),
-
 
   getCheckpoints: () => fetchJSON<CheckpointsResponse>("/api/ops/checkpoints"),
   pruneCheckpoints: () =>
@@ -1005,7 +1075,6 @@ export interface McpCatalogDiagnostic {
   message: string;
 }
 
-
 export interface McpServerCreate {
   name: string;
   url?: string;
@@ -1049,7 +1118,12 @@ export interface MessagingPlatform {
   error_code: string | null;
   error_message: string | null;
   updated_at: string | null;
-  home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
+  home_channel: {
+    platform: string;
+    chat_id: string;
+    name: string;
+    thread_id?: string;
+  } | null;
   env_vars: MessagingPlatformEnvVar[];
 }
 
@@ -1191,7 +1265,12 @@ export interface SystemStats {
   uptime_seconds?: number;
   memory?: { total: number; available: number; used: number; percent: number };
   disk?: { total: number; used: number; free: number; percent: number };
-  process?: { pid: number; rss: number; create_time: number; num_threads: number };
+  process?: {
+    pid: number;
+    rss: number;
+    create_time: number;
+    num_threads: number;
+  };
 }
 
 export interface CuratorStatus {

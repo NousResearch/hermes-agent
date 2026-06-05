@@ -6739,6 +6739,8 @@ class ProfileDescriptionUpdate(BaseModel):
 
 
 class ProfileModelUpdate(BaseModel):
+    """Payload for PUT /api/profiles/{name}/model — set the profile's main model."""
+
     provider: str
     model: str
 
@@ -7089,6 +7091,20 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     return {"ok": True}
 
 
+def _read_profile_config_yaml(profile_dir: Path) -> Dict[str, Any]:
+    """Read a profile's config.yaml directly, bypassing active-profile caches."""
+    config_path = profile_dir / "config.yaml"
+    if not config_path.is_file():
+        return {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        _log.exception("Failed to read %s", config_path)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 @app.put("/api/profiles/{name}/description")
 async def update_profile_description_endpoint(name: str, body: ProfileDescriptionUpdate):
     """Set or clear a profile's role description (kanban routing signal).
@@ -7112,6 +7128,21 @@ async def update_profile_description_endpoint(name: str, body: ProfileDescriptio
     return {"ok": True, "description": text, "description_auto": False}
 
 
+@app.get("/api/profiles/{name}/model")
+async def get_profile_model(name: str):
+    """Return the profile's currently configured main model + provider."""
+    profile_dir = _resolve_profile_dir(name)
+    cfg = _read_profile_config_yaml(profile_dir)
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        provider = str(model_cfg.get("provider", "") or "")
+        model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
+    else:
+        provider = ""
+        model = str(model_cfg) if model_cfg else ""
+    return {"provider": provider, "model": model}
+
+
 @app.put("/api/profiles/{name}/model")
 async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
     """Set the main model (``model.default`` + ``model.provider``) for a
@@ -7130,6 +7161,57 @@ async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
         _log.exception("PUT /api/profiles/%s/model failed", name)
         raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "provider": provider, "model": model}
+
+
+@app.get("/api/profiles/{name}/model/options")
+async def get_profile_model_options(name: str):
+    """Profile-scoped variant of /api/model/options.
+
+    Resolves provider/model availability against the target profile's
+    config.yaml, .env, and auth profiles rather than the dashboard's active
+    profile.
+    """
+    try:
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        profile_dir = _resolve_profile_dir(name)
+        cfg = _read_profile_config_yaml(profile_dir)
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
+            current_provider = model_cfg.get("provider", "") or ""
+            current_base_url = model_cfg.get("base_url", "") or ""
+        else:
+            current_model = str(model_cfg) if model_cfg else ""
+            current_provider = ""
+            current_base_url = ""
+
+        user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        custom_providers = (
+            cfg.get("custom_providers")
+            if isinstance(cfg.get("custom_providers"), list)
+            else []
+        )
+
+        providers = list_authenticated_providers(
+            current_provider=current_provider,
+            current_base_url=current_base_url,
+            current_model=current_model,
+            user_providers=user_providers,
+            custom_providers=custom_providers,
+            max_models=50,
+            profile_dir=profile_dir,
+        )
+        return {
+            "providers": providers,
+            "model": current_model,
+            "provider": current_provider,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/profiles/%s/model/options failed", name)
+        raise HTTPException(status_code=500, detail="Failed to list model options")
 
 
 @app.post("/api/profiles/{name}/describe-auto")

@@ -402,6 +402,13 @@ export interface Translations {
     modelSaved?: string;
     modelSelect?: string;
     actions?: string;
+    configureModel: string;
+    configureModelTitle: string;
+    configureModelSubtitle: string;
+    profileModel: string;
+    setProfileModelTitle: string;
+    modelUnset: string;
+    change: string;
   };
 
   // ── Skills page ──

@@ -25,6 +25,7 @@ import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type { ActiveProfileInfo, ProfileInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { ProfileModelDialog } from "@/components/ProfileModelDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
@@ -35,10 +36,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
-import {
-  Select,
-  SelectOption,
-} from "@nous-research/ui/ui/components/select";
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
@@ -226,7 +224,10 @@ function ProfileActionsMenu({
             <button
               type="button"
               role="menuitem"
-              className={cn(itemClass, "text-destructive hover:bg-destructive/10")}
+              className={cn(
+                itemClass,
+                "text-destructive hover:bg-destructive/10",
+              )}
               onClick={run(onDelete)}
             >
               <Trash2 className="h-4 w-4" />
@@ -283,8 +284,7 @@ export default function ProfilesPage() {
       modelOptional: p.modelOptional ?? "Model (optional)",
       modelInherit: p.modelInherit ?? "Inherit from clone / default",
       modelLoading: p.modelLoading ?? "Loading models…",
-      modelNone:
-        p.modelNone ?? "No authenticated providers — set a key first",
+      modelNone: p.modelNone ?? "No authenticated providers — set a key first",
       editModel: p.editModel ?? "Change model",
       modelSaved: p.modelSaved ?? "Model updated",
       modelSelect: p.modelSelect ?? "Select a model",
@@ -346,8 +346,8 @@ export default function ProfilesPage() {
   // Per-profile "set active" in-flight name
   const [settingActive, setSettingActive] = useState<string | null>(null);
 
-  const modelKey = (provider: string | null, model: string | null) =>
-    provider && model ? `${provider}\u0000${model}` : "";
+  // Per-profile model configuration popup
+  const [modelDialogFor, setModelDialogFor] = useState<string | null>(null);
 
   const loadModelChoices = useCallback(() => {
     if (modelChoices !== null || modelChoicesLoading.current) return;
@@ -463,7 +463,10 @@ export default function ProfilesPage() {
     }
     try {
       await api.renameProfile(renamingFrom, target);
-      showToast(`${t.profiles.renamed}: ${renamingFrom} → ${target}`, "success");
+      showToast(
+        `${t.profiles.renamed}: ${renamingFrom} → ${target}`,
+        "success",
+      );
       setRenamingFrom(null);
       setRenameTo("");
       load();
@@ -623,17 +626,10 @@ export default function ProfilesPage() {
 
   const openModelEditor = useCallback(
     (p: ProfileInfo) => {
-      if (editingModelFor === p.name) {
-        closeEditor();
-        return;
-      }
-      setEditingSoulFor(null);
-      setEditingDescFor(null);
-      setEditingModelFor(p.name);
-      setModelEditChoice(modelKey(p.provider, p.model));
-      loadModelChoices();
+      closeEditor();
+      setModelDialogFor(p.name);
     },
-    [closeEditor, editingModelFor, loadModelChoices],
+    [closeEditor],
   );
 
   const handleSaveModel = async (name: string) => {
@@ -766,6 +762,17 @@ export default function ProfilesPage() {
         description={deleteMessage}
         loading={profileDelete.isDeleting}
       />
+
+      {modelDialogFor && (
+        <ProfileModelDialog
+          profileName={modelDialogFor}
+          onError={(msg) => showToast(`${t.status.error}: ${msg}`, "error")}
+          onClose={() => {
+            setModelDialogFor(null);
+            load();
+          }}
+        />
+      )}
 
       {/* Create profile modal */}
       {createModalOpen && (

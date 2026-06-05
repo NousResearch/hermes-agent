@@ -309,6 +309,13 @@ export const tr: Translations = {
     created: "Oluşturuldu",
     deleted: "Silindi",
     renamed: "Yeniden adlandırıldı",
+    configureModel: "Modeli yapılandır",
+    configureModelTitle: "{name} için modeli yapılandır",
+    configureModelSubtitle: "Bu profilin config.yaml dosyasına kaydedilir — yeni oturumlara uygulanır.",
+    profileModel: "Profil modeli",
+    setProfileModelTitle: "{name} için model belirle",
+    modelUnset: "(ayarlanmamış)",
+    change: "Değiştir",
   },
 
   pluginsPage: {

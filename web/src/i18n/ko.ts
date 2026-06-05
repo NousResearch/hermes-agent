@@ -308,6 +308,13 @@ export const ko: Translations = {
     created: "생성됨",
     deleted: "삭제됨",
     renamed: "이름 변경됨",
+    configureModel: "모델 구성",
+    configureModelTitle: "{name}의 모델 구성",
+    configureModelSubtitle: "이 프로필의 config.yaml에 저장됩니다 — 새 세션에 적용됩니다.",
+    profileModel: "프로필 모델",
+    setProfileModelTitle: "{name}의 모델 설정",
+    modelUnset: "(설정 안 됨)",
+    change: "변경",
   },
 
   pluginsPage: {

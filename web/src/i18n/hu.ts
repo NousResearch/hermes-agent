@@ -309,6 +309,13 @@ export const hu: Translations = {
     created: "Létrehozva",
     deleted: "Törölve",
     renamed: "Átnevezve",
+    configureModel: "Modell beállítása",
+    configureModelTitle: "Modell beállítása ehhez: {name}",
+    configureModelSubtitle: "A profil config.yaml fájljába mentődik — új munkamenetekre érvényes.",
+    profileModel: "Profilmodell",
+    setProfileModelTitle: "Modell beállítása ehhez: {name}",
+    modelUnset: "(nincs beállítva)",
+    change: "Módosítás",
   },
 
   pluginsPage: {

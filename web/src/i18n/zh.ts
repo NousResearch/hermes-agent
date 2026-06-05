@@ -305,6 +305,13 @@ export const zh: Translations = {
     created: "已创建",
     deleted: "已删除",
     renamed: "已重命名",
+    configureModel: "配置模型",
+    configureModelTitle: "配置 {name} 的模型",
+    configureModelSubtitle: "保存到此 Profile 的 config.yaml — 仅对新会话生效。",
+    profileModel: "Profile 模型",
+    setProfileModelTitle: "设置 {name} 的模型",
+    modelUnset: "（未设置）",
+    change: "更改",
   },
 
   pluginsPage: {

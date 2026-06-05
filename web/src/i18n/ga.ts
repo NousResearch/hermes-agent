@@ -317,6 +317,13 @@ export const ga: Translations = {
     created: "Cruthaithe",
     deleted: "Scriosta",
     renamed: "Athainmnithe",
+    configureModel: "Cumraigh múnla",
+    configureModelTitle: "Cumraigh múnla do {name}",
+    configureModelSubtitle: "Sábháilte chuig config.yaml na próifíle seo — i bhfeidhm ar sheisiúin nua.",
+    profileModel: "Múnla na próifíle",
+    setProfileModelTitle: "Socraigh múnla do {name}",
+    modelUnset: "(gan socrú)",
+    change: "Athraigh",
   },
 
   pluginsPage: {

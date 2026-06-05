@@ -308,6 +308,13 @@ export const ja: Translations = {
     created: "作成しました",
     deleted: "削除しました",
     renamed: "名前を変更しました",
+    configureModel: "モデルを設定",
+    configureModelTitle: "{name} のモデルを設定",
+    configureModelSubtitle: "このプロファイルの config.yaml に保存されます — 新しいセッションに適用されます。",
+    profileModel: "プロファイルモデル",
+    setProfileModelTitle: "{name} のモデルを設定",
+    modelUnset: "（未設定）",
+    change: "変更",
   },
 
   pluginsPage: {

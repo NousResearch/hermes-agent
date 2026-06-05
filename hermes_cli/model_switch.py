@@ -20,10 +20,14 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import re
+import threading
 from dataclasses import dataclass
-from typing import List, NamedTuple, Optional
+from pathlib import Path
+from typing import Iterator, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
     custom_provider_slug,
@@ -1120,12 +1124,11 @@ def switch_model(
 # Process-level guard so the picker prewarm thread is spawned at most once per
 # process — mirrors run_agent's _openrouter_prewarm_done. Without a guard a
 # long-lived process (or repeated triggers) would leak one OS thread per call.
-import threading as _threading  # noqa: E402
 
-_picker_prewarm_done = _threading.Event()
+_picker_prewarm_done = threading.Event()
 
 
-def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
+def prewarm_picker_cache_async() -> Optional[threading.Thread]:
     """Warm the provider-models disk cache in a background daemon thread.
 
     The no-args ``/model`` picker calls ``list_authenticated_providers()``,
@@ -1168,12 +1171,76 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
             # Best-effort warmup — never surface errors into the session.
             logger.debug("picker cache prewarm failed", exc_info=True)
 
-    t = _threading.Thread(target=_warm, daemon=True, name="picker-cache-prewarm")
+    t = threading.Thread(target=_warm, daemon=True, name="picker-cache-prewarm")
     t.start()
     return t
 
 
+_HERMES_HOME_OVERRIDE_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _hermes_home_override(profile_dir: Optional[Path]) -> Iterator[None]:
+    """Temporarily redirect HERMES_HOME for the duration of the block.
+
+    Used by the per-profile model picker so downstream auth lookups
+    (``_load_auth_store``, ``load_pool``, ``read_*_credentials``) resolve
+    against the target profile's directory instead of the dashboard's
+    active profile.  Process env vars (e.g. ``OPENROUTER_API_KEY``)
+    are left alone — those reflect the user's machine-wide shell env
+    and aren't profile-scoped in any deployment we ship.
+
+    Serialized through a process-wide lock so two concurrent requests
+    can't observe each other's override.
+    """
+    if profile_dir is None:
+        yield
+        return
+    with _HERMES_HOME_OVERRIDE_LOCK:
+        prior = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(profile_dir)
+        try:
+            yield
+        finally:
+            if prior is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = prior
+
+
 def list_authenticated_providers(
+    current_provider: str = "",
+    current_base_url: str = "",
+    user_providers: dict = None,
+    custom_providers: list | None = None,
+    max_models: int = 8,
+    current_model: str = "",
+    profile_dir: Optional[Path] = None,
+) -> List[dict]:
+    """Public entry point.  When ``profile_dir`` is provided, scopes downstream
+    auth/credential lookups to that profile by temporarily redirecting
+    ``HERMES_HOME``; otherwise falls through to the implementation unchanged."""
+    if profile_dir is None:
+        return _list_authenticated_providers_impl(
+            current_provider=current_provider,
+            current_base_url=current_base_url,
+            user_providers=user_providers,
+            custom_providers=custom_providers,
+            max_models=max_models,
+            current_model=current_model,
+        )
+    with _hermes_home_override(profile_dir):
+        return _list_authenticated_providers_impl(
+            current_provider=current_provider,
+            current_base_url=current_base_url,
+            user_providers=user_providers,
+            custom_providers=custom_providers,
+            max_models=max_models,
+            current_model=current_model,
+        )
+
+
+def _list_authenticated_providers_impl(
     current_provider: str = "",
     current_base_url: str = "",
     user_providers: dict = None,

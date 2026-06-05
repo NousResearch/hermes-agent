@@ -309,6 +309,13 @@ export const af: Translations = {
     created: "Geskep",
     deleted: "Geskrap",
     renamed: "Hernoem",
+    configureModel: "Stel model op",
+    configureModelTitle: "Stel model vir {name} op",
+    configureModelSubtitle: "Stoor in hierdie profiel se config.yaml — geld vir nuwe sessies.",
+    profileModel: "Profielmodel",
+    setProfileModelTitle: "Stel model vir {name}",
+    modelUnset: "(nie gestel nie)",
+    change: "Verander",
   },
 
   pluginsPage: {

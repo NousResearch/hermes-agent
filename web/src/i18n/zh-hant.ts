@@ -308,6 +308,13 @@ export const zhHant: Translations = {
     created: "已建立",
     deleted: "已刪除",
     renamed: "已重新命名",
+    configureModel: "設定模型",
+    configureModelTitle: "設定 {name} 的模型",
+    configureModelSubtitle: "儲存至此設定檔的 config.yaml — 僅對新工作階段生效。",
+    profileModel: "設定檔模型",
+    setProfileModelTitle: "設定 {name} 的模型",
+    modelUnset: "（未設定）",
+    change: "變更",
   },
 
   pluginsPage: {

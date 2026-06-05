@@ -309,6 +309,13 @@ export const ru: Translations = {
     created: "Создан",
     deleted: "Удалён",
     renamed: "Переименован",
+    configureModel: "Настроить модель",
+    configureModelTitle: "Настроить модель для {name}",
+    configureModelSubtitle: "Сохраняется в config.yaml этого профиля — применяется к новым сессиям.",
+    profileModel: "Модель профиля",
+    setProfileModelTitle: "Задать модель для {name}",
+    modelUnset: "(не задано)",
+    change: "Изменить",
   },
 
   pluginsPage: {

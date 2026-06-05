@@ -3325,6 +3325,33 @@ def complete_task(
             )
             raise VerificationFailedError(task_id, verification_findings)
 
+    # Preserve declared artifacts off the scratch workspace BEFORE it is
+    # reaped by _cleanup_workspace, so async gateway delivery and the run row
+    # both reference durable copies rather than dangling scratch paths. Gate
+    # checks above already confirmed the files exist; we copy them into a
+    # sibling archive and rewrite the artifact list to the durable paths.
+    run_metadata = metadata
+    if isinstance(metadata, dict):
+        md_artifacts = metadata.get("artifacts")
+        if isinstance(md_artifacts, (list, tuple)):
+            declared = [
+                str(p).strip()
+                for p in md_artifacts
+                if isinstance(p, str) and str(p).strip()
+            ]
+            if declared:
+                ws_row = conn.execute(
+                    "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+                    (task_id,),
+                ).fetchone()
+                if ws_row:
+                    preserved = _preserve_scratch_artifacts(
+                        ws_row["workspace_kind"], ws_row["workspace_path"], declared,
+                    )
+                    if preserved != declared:
+                        run_metadata = dict(metadata)
+                        run_metadata["artifacts"] = preserved
+
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
@@ -3363,18 +3390,18 @@ def complete_task(
             conn, task_id,
             outcome="completed", status="done",
             summary=summary if summary is not None else result,
-            metadata=metadata,
+            metadata=run_metadata,
         )
         # If complete_task was called on a never-claimed task (ready or
         # blocked → done with no run in flight), synthesize a
         # zero-duration run so the handoff fields are persisted in
         # attempt history instead of silently lost.
-        if run_id is None and (summary or metadata or result):
+        if run_id is None and (summary or run_metadata or result):
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="completed",
                 summary=summary if summary is not None else result,
-                metadata=metadata,
+                metadata=run_metadata,
             )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
@@ -3394,8 +3421,8 @@ def complete_task(
         # ``kanban_complete(artifacts=[...])`` which stashes the list in
         # ``metadata["artifacts"]`` — we promote it onto the event so
         # consumers don't have to fetch the run row to find it.
-        if isinstance(metadata, dict):
-            md_artifacts = metadata.get("artifacts")
+        if isinstance(run_metadata, dict):
+            md_artifacts = run_metadata.get("artifacts")
             if isinstance(md_artifacts, (list, tuple)):
                 cleaned_artifacts = [
                     str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()
@@ -3523,6 +3550,68 @@ def _is_managed_scratch_path(p: Path) -> bool:
         except ValueError:
             continue
     return False
+
+
+def _scratch_artifact_archive_dir(workspace_path: Path) -> Path:
+    """Durable sibling archive dir for a scratch workspace's artifacts.
+
+    Scratch task dirs live at ``<workspaces_root>/<task_id>``. The returned
+    archive dir is ``<workspaces_root>/../artifacts/<task_id>`` — a sibling of
+    the managed ``workspaces`` root, so it falls *outside*
+    :func:`_is_managed_scratch_path` and is never reaped by
+    :func:`_cleanup_workspace`. Holds for every layout (default board,
+    per-board, and the ``HERMES_KANBAN_WORKSPACES_ROOT`` override) because in
+    all of them the parent of the task dir is the workspaces root.
+    """
+    return workspace_path.parent.parent / "artifacts" / workspace_path.name
+
+
+def _preserve_scratch_artifacts(
+    workspace_kind: Optional[str],
+    workspace_path: Optional[str],
+    artifacts: list[str],
+) -> list[str]:
+    """Copy declared artifacts off a scratch workspace before it is reaped.
+
+    Scratch workspaces are ``shutil.rmtree``-d immediately after completion
+    (:func:`_cleanup_workspace`), so any path a worker declared via
+    ``kanban_complete(artifacts=[...])`` would dangle by the time the gateway
+    notifier asynchronously uploads it. For each artifact that resolves to an
+    existing file *under* the scratch dir, we copy it into the durable archive
+    (:func:`_scratch_artifact_archive_dir`) and return that absolute durable
+    path in its place. Entries that are already-durable absolute paths, that
+    don't resolve, or that don't exist are returned unchanged.
+
+    Best-effort: any per-file error falls back to the original path string, and
+    a non-scratch workspace (worktree/dir — never reaped) is a no-op.
+    """
+    if workspace_kind != "scratch" or not workspace_path or not artifacts:
+        return list(artifacts)
+    try:
+        wp = Path(workspace_path).expanduser().resolve(strict=False)
+    except OSError:
+        return list(artifacts)
+    archive_dir = _scratch_artifact_archive_dir(wp)
+    result: list[str] = []
+    for raw in artifacts:
+        rewritten = raw
+        try:
+            cand = Path(raw).expanduser()
+            resolved = (
+                cand.resolve(strict=False)
+                if cand.is_absolute()
+                else (wp / cand).resolve(strict=False)
+            )
+            under_scratch = resolved == wp or resolved.is_relative_to(wp)
+            if under_scratch and resolved.is_file():
+                dest = archive_dir / resolved.relative_to(wp)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(resolved, dest)
+                rewritten = str(dest)
+        except (OSError, ValueError):
+            rewritten = raw
+        result.append(rewritten)
+    return result
 
 
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:

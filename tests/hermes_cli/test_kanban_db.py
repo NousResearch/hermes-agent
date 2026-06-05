@@ -1559,6 +1559,58 @@ def test_cleanup_workspace_refuses_path_outside_scratch_root(kanban_home, tmp_pa
     assert (real_source / "README.md").read_text(encoding="utf-8") == "important"
 
 
+def test_complete_task_preserves_scratch_artifacts_before_cleanup(kanban_home):
+    """Declared artifacts survive scratch cleanup in a durable sibling archive.
+
+    Reproduces the invest-watcher smoke-card bug: a worker reports
+    ``note.md`` but the scratch workspace is reaped on completion, so the
+    path dangles before the gateway notifier can upload it. The fix copies
+    declared artifacts into ``<workspaces_root>/../artifacts/<id>/`` and
+    rewrites the completion-event path to the durable copy.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="smoke")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        (ws / "note.md").write_text("durable findings", encoding="utf-8")
+
+        kb.complete_task(
+            conn, t, result="ok", metadata={"artifacts": ["note.md"]},
+        )
+
+        events = kb.list_events(conn, t)
+    # Scratch dir reaped, but the declared artifact persists in the archive.
+    assert not ws.exists(), "scratch dir should be cleaned up"
+    completed = [e for e in events if e.kind == "completed"]
+    assert completed, "a completed event should be emitted"
+    artifacts = completed[-1].payload.get("artifacts")
+    assert artifacts and len(artifacts) == 1
+    durable = Path(artifacts[0])
+    assert durable.is_file(), "completion event must point at a durable copy"
+    assert durable.read_text(encoding="utf-8") == "durable findings"
+    assert not durable.is_relative_to(ws.parent), "archive must sit outside the workspaces root"
+    assert not kb._is_managed_scratch_path(durable.parent), "archive must not be a reapable scratch dir"
+
+
+def test_preserve_scratch_artifacts_leaves_external_and_nonscratch_paths(tmp_path):
+    """Already-durable / non-scratch entries pass through unchanged."""
+    scratch = tmp_path / "workspaces" / "task-1"
+    scratch.mkdir(parents=True)
+    external = tmp_path / "elsewhere" / "report.pdf"
+    external.parent.mkdir(parents=True)
+    external.write_text("x", encoding="utf-8")
+
+    # Non-scratch workspace kinds are never reaped -> no-op.
+    assert kb._preserve_scratch_artifacts(
+        "worktree", str(scratch), ["note.md"],
+    ) == ["note.md"]
+
+    # An absolute path outside the scratch dir is left as-is.
+    out = kb._preserve_scratch_artifacts("scratch", str(scratch), [str(external)])
+    assert out == [str(external)]
+
+
 def test_cleanup_workspace_honors_workspaces_root_env_override(tmp_path, monkeypatch):
     """``HERMES_KANBAN_WORKSPACES_ROOT`` extends the managed-scratch set.
 

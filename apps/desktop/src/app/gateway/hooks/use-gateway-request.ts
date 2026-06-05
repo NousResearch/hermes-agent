@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
+import { RECONNECT_STEP_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
@@ -64,15 +65,26 @@ export function useGatewayRequest() {
         // Reconnect to whichever profile the gateway is currently routed to (not
         // always the primary), so a sleep/wake reconnect keeps the user on the
         // profile they were chatting in.
-        const conn = await desktop.getConnection($activeGatewayProfile.get())
+        const conn = await withTimeout(
+          desktop.getConnection($activeGatewayProfile.get()),
+          RECONNECT_STEP_TIMEOUT_MS,
+          'desktop.getConnection'
+        )
+
         connectionRef.current = conn
         setConnection(conn)
+
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
         // and short-lived, so the cached conn.wsUrl ticket is dead here;
         // resolveGatewayWsUrl() throws a reauth error in OAuth mode rather than
         // connecting with a stale ticket. Stash it so requestGateway can show
         // the actionable "sign in again" message.
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        const wsUrl = await withTimeout(
+          resolveGatewayWsUrl(desktop, conn),
+          RECONNECT_STEP_TIMEOUT_MS,
+          'resolveGatewayWsUrl'
+        )
+
         await existing.connect(wsUrl)
 
         return existing

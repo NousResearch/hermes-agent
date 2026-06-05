@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 
 import { HermesGateway } from '@/hermes'
 import { resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
+import { RECONNECT_STEP_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { setGatewayState } from '@/store/session'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
@@ -110,8 +111,13 @@ async function openSecondary(entry: Secondary): Promise<void> {
     return
   }
 
-  const conn = await desktop.getConnection(entry.profile)
-  const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+  const conn = await withTimeout(
+    desktop.getConnection(entry.profile),
+    RECONNECT_STEP_TIMEOUT_MS,
+    'desktop.getConnection'
+  )
+
+  const wsUrl = await withTimeout(resolveGatewayWsUrl(desktop, conn), RECONNECT_STEP_TIMEOUT_MS, 'resolveGatewayWsUrl')
   await entry.gateway.connect(wsUrl)
   void desktop.touchBackend?.(entry.profile).catch(() => undefined)
 }

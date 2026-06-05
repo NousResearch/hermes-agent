@@ -4,6 +4,7 @@ import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
+import { RECONNECT_STEP_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -120,13 +121,18 @@ export function useGatewayBoot({
       reconnecting = true
 
       try {
-        const conn = await desktop.getConnection($activeGatewayProfile.get())
+        const conn = await withTimeout(
+          desktop.getConnection($activeGatewayProfile.get()),
+          RECONNECT_STEP_TIMEOUT_MS,
+          'desktop.getConnection'
+        )
 
         if (cancelled) {
           return
         }
 
         publish(conn)
+
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
         // with a short TTL, so the ticket baked into the cached conn.wsUrl is
         // dead on every reconnect after the initial boot — reusing it surfaces
@@ -134,7 +140,12 @@ export function useGatewayBoot({
         // mints a fresh ticket (or throws a reauth error in OAuth mode rather
         // than connecting with a stale one). For local/token gateways the URL
         // carries a long-lived token and the re-mint is a cheap no-op.
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        const wsUrl = await withTimeout(
+          resolveGatewayWsUrl(desktop, conn),
+          RECONNECT_STEP_TIMEOUT_MS,
+          'resolveGatewayWsUrl'
+        )
+
         await gateway.connect(wsUrl)
 
         if (cancelled) {

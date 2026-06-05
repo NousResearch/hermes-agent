@@ -301,6 +301,40 @@ class TestCmdUpdateBranchFallback:
                 "(no capture_output) so postinstall progress is visible"
             )
 
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_hands_python_dependency_install_to_fresh_process(
+        self, mock_run, _mock_which, mock_args
+    ):
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+
+        with patch.object(
+            hm, "_run_update_python_dependency_install_subprocess"
+        ) as mock_install:
+            cmd_update(mock_args)
+
+        mock_install.assert_called_once_with()
+
+    @patch("subprocess.run")
+    def test_python_dependency_install_subprocess_imports_fresh_main(
+        self, mock_run
+    ):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0)
+
+        hm._run_update_python_dependency_install_subprocess()
+
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == hm.sys.executable
+        assert cmd[1] == "-c"
+        assert "_run_update_python_dependency_install" in cmd[2]
+        assert mock_run.call_args.kwargs["cwd"] == hm.PROJECT_ROOT
+
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
         with patch("shutil.which", return_value=None), patch(

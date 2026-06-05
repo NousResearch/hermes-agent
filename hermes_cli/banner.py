@@ -294,6 +294,32 @@ def check_via_pypi() -> Optional[int]:
         return 1 if latest != VERSION else 0
 
 
+def _repo_head_cache_key(repo_dir: Path) -> Optional[str]:
+    """Return a cheap file-backed cache key for the checkout's current HEAD.
+
+    The update-check cache used to key only on embedded revision and package
+    version. Source installs commonly keep the same package version while users
+    rebase/cherry-pick local checkouts, so stale "N commits behind" counts could
+    survive for the full TTL after the repo became current. Reading .git/HEAD and
+    the pointed ref file is enough to invalidate that cache without running git
+    before the fast cache path.
+    """
+    git_dir = repo_dir / ".git"
+    head_file = git_dir / "HEAD"
+    try:
+        head = head_file.read_text().strip()
+    except Exception:
+        return None
+    if head.startswith("ref:"):
+        ref = head.split(None, 1)[1].strip() if " " in head else head[4:].strip()
+        try:
+            ref_value = (git_dir / ref).read_text().strip()
+        except Exception:
+            ref_value = ""
+        return f"{head}:{ref_value}"
+    return head
+
+
 def check_for_updates() -> Optional[int]:
     """Check whether a Hermes update is available.
 
@@ -308,6 +334,13 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+    repo_cache_key = None
+    if not embedded_rev:
+        repo_dir_for_cache = Path(__file__).parent.parent.resolve()
+        if not (repo_dir_for_cache / ".git").exists():
+            repo_dir_for_cache = hermes_home / "hermes-agent"
+        if (repo_dir_for_cache / ".git").exists():
+            repo_cache_key = _repo_head_cache_key(repo_dir_for_cache)
 
     # Docker images have no working tree to count commits against — the
     # published image excludes `.git` (see .dockerignore) and sets no
@@ -337,11 +370,14 @@ def check_for_updates() -> Optional[int]:
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
-            if (
-                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
-                and cached.get("ver") == VERSION
-            ):
+            cache_fresh = now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
+            same_revision = cached.get("rev") == embedded_rev
+            same_version = cached.get("ver") == VERSION
+            same_repo_head = cached.get("repo_head") == repo_cache_key
+            # ``repo_head`` is only known for source checkouts. Old cache files
+            # without it are intentionally invalidated for source installs so a
+            # rebase/cherry-pick cannot leave a stale behind count in place.
+            if cache_fresh and same_revision and same_version and same_repo_head:
                 return cached.get("behind")
     except Exception:
         pass
@@ -362,7 +398,15 @@ def check_for_updates() -> Optional[int]:
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+            json.dumps(
+                {
+                    "ts": now,
+                    "behind": behind,
+                    "rev": embedded_rev,
+                    "ver": VERSION,
+                    "repo_head": repo_cache_key,
+                }
+            )
         )
     except Exception:
         pass

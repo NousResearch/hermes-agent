@@ -194,6 +194,9 @@ function IdleView({
         <DialogDescription className="text-center text-sm">
           A new version of Hermes is ready to install.
         </DialogDescription>
+        <p className="text-center text-xs text-muted-foreground">
+          Hermes will close and reopen once the update is complete.
+        </p>
       </div>
 
       <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
@@ -309,7 +312,7 @@ function ApplyingView({ apply }: { apply: UpdateApplyState }) {
 
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
         <DialogDescription className="text-center text-sm">
-          The Hermes updater will take over in its own window and reopen Hermes when it&rsquo;s done.
+          Hermes will close to run the update in the background and reopen when it&rsquo;s done.
         </DialogDescription>
       </div>
 

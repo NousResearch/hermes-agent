@@ -243,25 +243,36 @@ class TestTerminalIntegration:
 
         monkeypatch.setattr(builtins, "__import__", fail_local_environment_import)
 
-        assert _ep_mod._is_hermes_provider_credential("OPENAI_API_KEY")
-        assert _ep_mod._is_hermes_provider_credential("ANTHROPIC_API_KEY")
+        blocked_provider_vars = [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "TOGETHER_API_KEY",
+            "FIREWORKS_API_KEY",
+            "BROWSERBASE_API_KEY",
+            "GH_TOKEN",
+        ]
 
-        register_env_passthrough(["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "TENOR_API_KEY"])
-        assert not is_env_passthrough("OPENAI_API_KEY")
-        assert not is_env_passthrough("ANTHROPIC_API_KEY")
+        for name in blocked_provider_vars:
+            assert _ep_mod._is_hermes_provider_credential(name)
+
+        register_env_passthrough([*blocked_provider_vars, "TENOR_API_KEY"])
+        for name in blocked_provider_vars:
+            assert not is_env_passthrough(name)
         assert is_env_passthrough("TENOR_API_KEY")
 
         child_env = _scrub_child_env(
             {
-                "OPENAI_API_KEY": "synthetic-provider-secret",
-                "ANTHROPIC_API_KEY": "synthetic-anthropic-secret",
+                **{
+                    name: f"synthetic-provider-secret-{index}"
+                    for index, name in enumerate(blocked_provider_vars)
+                },
                 "TENOR_API_KEY": "synthetic-skill-secret",
                 "PATH": "/usr/bin",
             },
             is_passthrough=is_env_passthrough,
             is_windows=False,
         )
-        assert "OPENAI_API_KEY" not in child_env
-        assert "ANTHROPIC_API_KEY" not in child_env
+        for name in blocked_provider_vars:
+            assert name not in child_env
         assert child_env["TENOR_API_KEY"] == "synthetic-skill-secret"
         assert child_env["PATH"] == "/usr/bin"

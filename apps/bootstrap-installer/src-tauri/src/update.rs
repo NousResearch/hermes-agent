@@ -183,7 +183,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
 
     emit_stage(&app, "update", StageState::Running, None, None);
     let started = Instant::now();
-    let update = run_streamed(
+    let mut update = run_streamed(
         &app,
         &hermes,
         &update_args,
@@ -192,6 +192,38 @@ async fn run_update(app: AppHandle) -> Result<()> {
         Some("update"),
     )
     .await?;
+
+    // Retry-once for the update-boundary crash. `hermes update` lazily imports
+    // the FRESHLY PULLED modules, but the dependency-install step still runs the
+    // already-in-memory pre-pull code for one invocation. A release that changed
+    // an updater-path contract across that boundary (e.g. #39780's `_UvResult`,
+    // whose `__iter__` injected a bool into the argv and crashed Windows
+    // `list2cmdline` with `TypeError: sequence item 1: expected str instance,
+    // bool found`, fixed in #39820) therefore kills the FIRST update on the
+    // parked population — even though the fix is already on disk by then. A
+    // second `hermes update` runs clean because the now-current module is loaded
+    // from the start. Rather than make the parked user click Update twice (and
+    // stare at a scary crash first), retry once automatically. Skip the retry
+    // for the concurrent-instance guard (exit 2) — that's a "close Hermes" state
+    // a retry can't fix.
+    if !matches!(update.exit_code, Some(0) | Some(UPDATE_EXIT_CONCURRENT)) {
+        emit_log(
+            &app,
+            Some("update"),
+            LogStream::Stdout,
+            "[update] first update attempt failed; retrying once (the fix it just \
+             pulled loads on the second run)…",
+        );
+        update = run_streamed(
+            &app,
+            &hermes,
+            &update_args,
+            &install_root,
+            &child_env,
+            Some("update"),
+        )
+        .await?;
+    }
     let update_ms = started.elapsed().as_millis() as u64;
 
     match update.exit_code {

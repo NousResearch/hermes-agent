@@ -5,7 +5,7 @@
       "schedule": "every 2m",
       "script": "heartbeat.py",
       "prompt": "MES 心跳巡检发现异常，需要你进行诊断和自愈：\n\n## 异常报告\n{script_output}\n\n## 你的任务\n1. 分析异常报告中的每个 WARNING/CRITICAL 检查项\n2. 使用 DecisionMatrix 评估故障场景的自愈级别（L1/L2/L3）\n3. L1 级别：直接执行修复命令（如重启 nginx）\n4. L2 级别：推送修复方案到飞书，等待人工确认\n5. L3 级别：推送详细诊断报告到飞书，通知运维人员\n6. 将本次故障记录到 memory（如果 memory 工具可用）\n\n注意：只处理异常组件，正常组件不需要关注。",
-      "skills": ["mes-nginx-check", "mes-jvm-check"],
+      "skills": ["mes-upstream-check"],
       "enabled_toolsets": ["terminal"],
       "deliver": "feishu"
     },

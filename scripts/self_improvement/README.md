@@ -36,11 +36,35 @@ Default behavior intentionally chooses the newest **ended** session, not the
 newest open session. That avoids accidentally attributing the live review
 conversation to the task that just completed.
 
+## `audit_memory_context.py`
+
+Audits recalled `<memory-context>` / Mnemosyne-context text for likely
+non-durable raw fragments. The helper is deliberately non-destructive: it writes
+a JSONL report and can print suggested invalidation commands, but it does not
+modify memory itself.
+
+```bash
+# Read a captured memory-context text file and append an audit report
+python scripts/self_improvement/audit_memory_context.py --input /tmp/memory-context.txt
+
+# Print suggested invalidation calls for entries with memory ids
+python scripts/self_improvement/audit_memory_context.py --input /tmp/memory-context.txt --commands --no-write
+
+# Pipe context directly from stdin
+python scripts/self_improvement/audit_memory_context.py --input -
+```
+
+Candidate reasons include raw `[USER]` fragments, standalone command fragments
+such as “proceed”, one-off task prompts, background-process notification
+fragments, and low-importance raw conversation entries. Stable distilled rules
+and preferences are intentionally ignored even when they mention those words.
+
 ## Output files
 
 - `task_runs.jsonl` — task/session telemetry records.
 - `events.jsonl` — optional compact workflow-improvement events when
   `--append-event` is passed.
+- `memory_context_audit.jsonl` — non-destructive memory-context audit reports.
 
 Each task-run entry stores structured metrics only:
 

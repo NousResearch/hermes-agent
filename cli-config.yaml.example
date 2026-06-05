@@ -919,8 +919,9 @@ code_execution:
 #   off    — skip all approval prompts (equivalent to --yolo)
 #
 # safe_delete_roots allows literal child `rm` targets under disposable roots to
-# skip approval. Deleting the root itself, traversal, globs, shell expansion,
-# compound commands, and mixed safe/unsafe target lists remain approval-gated.
+# skip approval. safe_delete_dir_names allows recursive deletion of literal cache
+# directory basenames from any parent. Deleting roots, traversal, globs, shell
+# expansion, compound commands, and mixed safe/unsafe targets remain gated.
 approvals:
   mode: "manual"
   timeout: 60
@@ -928,6 +929,15 @@ approvals:
   safe_delete_roots:
     - "/tmp"
     - "/private/tmp"
+  safe_delete_dir_names:
+    - "__pycache__"
+    - ".pytest_cache"
+    - ".mypy_cache"
+    - ".ruff_cache"
+    - ".pyre"
+    - ".pytype"
+    - ".tox"
+    - ".nox"
   mcp_reload_confirm: true
   destructive_slash_confirm: true
 

@@ -27,6 +27,64 @@ from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
 
+_SNAPSHOT_MESSAGE_FIELDS = ("role", "content", "tool_calls", "tool_call_id")
+_BACKGROUND_REVIEW_STALE_WRITE_MESSAGE = (
+    "Background review skipped memory/skill write because the parent "
+    "conversation changed after the review snapshot was taken."
+)
+_BACKGROUND_REVIEW_MEMORY_WRITE_ACTIONS = {"add", "replace", "remove"}
+_BACKGROUND_REVIEW_SKILL_WRITE_ACTIONS = {
+    "create",
+    "edit",
+    "patch",
+    "delete",
+    "write_file",
+    "remove_file",
+}
+
+
+def _json_normalized(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key): _json_normalized(val)
+            for key, val in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_json_normalized(item) for item in value]
+    return {"type": type(value).__name__}
+
+
+def _background_review_snapshot_token(messages: Optional[List[Dict]]) -> str:
+    normalized_messages = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            normalized_messages.append(_json_normalized(message))
+            continue
+        normalized_messages.append(
+            {
+                field: _json_normalized(message.get(field))
+                for field in _SNAPSHOT_MESSAGE_FIELDS
+                if field in message
+            }
+        )
+    return json.dumps(
+        normalized_messages,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _is_background_review_write_tool(tool_name: str, args: Dict[str, Any]) -> bool:
+    action = str(args.get("action", "")).lower()
+    if tool_name == "memory":
+        return action in _BACKGROUND_REVIEW_MEMORY_WRITE_ACTIONS
+    if tool_name == "skill_manage":
+        return action in _BACKGROUND_REVIEW_SKILL_WRITE_ACTIONS
+    return False
+
 
 # ---------------------------------------------------------------------------
 # Background-review aux-model selector + routed digest.
@@ -619,6 +677,20 @@ def _run_review_in_thread(
     from run_agent import AIAgent
     from tools.terminal_tool import set_approval_callback as _set_approval_callback
 
+    snapshot_token = _background_review_snapshot_token(messages_snapshot)
+
+    def _block_stale_parent_write(
+        tool_name: str,
+        args: Dict[str, Any],
+        **_kwargs: Any,
+    ) -> Optional[str]:
+        if not _is_background_review_write_tool(tool_name, args):
+            return None
+        live_messages = getattr(agent, "_session_messages", messages_snapshot)
+        if _background_review_snapshot_token(live_messages) != snapshot_token:
+            return _BACKGROUND_REVIEW_STALE_WRITE_MESSAGE
+        return None
+
     # Install a non-interactive approval callback on this worker
     # thread so any dangerous-command guard the review agent trips
     # resolves to "deny" instead of falling back to input() -- which
@@ -801,6 +873,7 @@ def _run_review_in_thread(
                     "Background review denied non-whitelisted tool: "
                     "{tool_name}. Only memory/skill tools are allowed."
                 ),
+                block_callback=_block_stale_parent_write,
             )
             try:
                 from tools.skill_manager_tool import _reset_background_review_read_marks

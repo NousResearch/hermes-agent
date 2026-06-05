@@ -98,9 +98,10 @@ def test_background_review_installs_thread_local_whitelist():
 
     captured = {}
 
-    def _capture_whitelist(whitelist, deny_msg_fmt=None):
+    def _capture_whitelist(whitelist, deny_msg_fmt=None, block_callback=None):
         captured["whitelist"] = set(whitelist)
         captured["deny_msg_fmt"] = deny_msg_fmt
+        captured["block_callback"] = block_callback
         # Stop here — we just want to see what gets installed.
         raise RuntimeError("stop after capturing whitelist")
 
@@ -133,6 +134,7 @@ def test_background_review_installs_thread_local_whitelist():
     assert "delegate_task" not in whitelist
     assert "web_search" not in whitelist
     assert "execute_code" not in whitelist
+    assert callable(captured["block_callback"])
 
 
 def test_background_review_agent_tools_are_limited():

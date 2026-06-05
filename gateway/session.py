@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import json
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -65,6 +66,11 @@ from .whatsapp_identity import (
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
 from utils import atomic_replace
+
+# Matches any value that could escape the sessions directory as a file path.
+# Covers: directory traversal (..),  Unix/Windows absolute paths (/  \),
+# and Windows drive-letter paths (C:/ D:\\ etc.).
+_TRAVERSAL_RE = re.compile(r'\.\.|^[/\\]|^[A-Za-z]:')
 
 
 @dataclass
@@ -578,7 +584,7 @@ class SessionEntry:
 
         # Validate path-sensitive fields to prevent directory traversal (CWE-22)
         for _field, _val in (("session_key", session_key), ("session_id", session_id)):
-            if _val and (".." in str(_val) or str(_val).startswith(("/", "\\"))):
+            if _val and _TRAVERSAL_RE.search(str(_val)):
                 raise ValueError(
                     f"Invalid {_field}: potential directory traversal detected"
                 )

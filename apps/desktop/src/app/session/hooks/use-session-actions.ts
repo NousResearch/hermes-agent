@@ -763,7 +763,7 @@ export function useSessionActions({
           await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
         }
 
-        await deleteSession(storedSessionId)
+        await deleteSession(storedSessionId, removed?.profile)
         clearQueuedPrompts(storedSessionId)
 
         if (closingRuntimeId) {
@@ -839,7 +839,7 @@ export function useSessionActions({
       }
 
       try {
-        await setSessionArchived(storedSessionId, true)
+        await setSessionArchived(storedSessionId, true, archived?.profile)
         notify({ durationMs: 2_000, kind: 'success', message: 'Archived' })
       } catch (err) {
         if (archived) {

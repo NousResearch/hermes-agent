@@ -3478,7 +3478,15 @@ function fetchJsonViaOauthSession(url, options = {}) {
       redirect: 'follow'
     })
     request.setHeader('Content-Type', 'application/json')
-    if (body) request.setHeader('Content-Length', String(body.length))
+    // NOTE: do NOT set Content-Length manually here. Electron's net.request
+    // (ClientRequest, Chromium net stack) treats Content-Length as a protected
+    // header it computes itself from request.write(body); setting it explicitly
+    // throws `net::ERR_INVALID_ARGUMENT` and the whole request fails before it
+    // leaves the app. This only bites the OAuth/remote path (electronNet) on
+    // body-bearing POSTs — e.g. POST /api/model/set from Settings → Models — while
+    // GET and bodyless POSTs are unaffected. The local/token path (fetchJson, Node
+    // http) tolerates a manual Content-Length, which is why this regressed only
+    // for remote-backend OAuth users.
 
     let timedOut = false
     const timer = setTimeout(() => {

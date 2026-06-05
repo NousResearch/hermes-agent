@@ -851,6 +851,11 @@ def skill_manage(
         result = _delete_skill(name, absorbed_into=absorbed_into)
 
     elif action == "write_file":
+        # Fall back to the `content` param (used by create/edit) when a model
+        # supplies the standalone write_file tool's `content` name instead of
+        # `file_content`. See the handler-level alias for `path`/`file_path`.
+        if file_content is None:
+            file_content = content
         if not file_path:
             return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
         if file_content is None:
@@ -1024,7 +1029,11 @@ registry.register(
         name=args.get("name", ""),
         content=args.get("content"),
         category=args.get("category"),
-        file_path=args.get("file_path"),
+        # Accept `path`/`file_path` and `content`/`file_content` interchangeably:
+        # the standalone write_file tool uses the short names, so models carry
+        # that naming across to skill_manage. `file_*` wins when both are set;
+        # the write_file action below also falls back to `content`.
+        file_path=args.get("file_path") or args.get("path"),
         file_content=args.get("file_content"),
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),

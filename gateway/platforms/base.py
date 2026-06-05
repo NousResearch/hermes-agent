@@ -2789,7 +2789,8 @@ class BasePlatformAdapter(ABC):
             try:
                 from hermes_cli.config import load_config as _load_config
                 _cfg = _load_config()
-                max_age_seconds = float(_cfg.get('trust_recent_files_seconds', 600))
+                _gateway_cfg = _cfg.get('gateway', {})
+                max_age_seconds = float(_gateway_cfg.get('trust_recent_files_seconds', 600))
             except Exception:
                 max_age_seconds = 600.0
         safe_media: List[Tuple[str, bool]] = []

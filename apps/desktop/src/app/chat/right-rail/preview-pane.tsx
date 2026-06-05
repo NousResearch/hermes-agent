@@ -3,6 +3,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-controls'
+import { Tip } from '@/components/ui/tooltip'
 import { Bug } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -607,15 +608,16 @@ export function PreviewPane({
         {!embedded && (
           <div className="pointer-events-none flex min-h-(--titlebar-height) items-center gap-1.5 border-b border-border/60 bg-background px-2 py-1">
             <div className="min-w-0 flex-1">
-              <a
-                className="pointer-events-auto inline max-w-full truncate text-left text-xs font-medium text-foreground underline-offset-4 decoration-current/20 transition-colors hover:text-primary hover:underline"
-                href={currentUrl}
-                rel="noreferrer"
-                target="_blank"
-                title={`Open ${currentUrl}`}
-              >
-                {previewLabel || 'Preview'}
-              </a>
+              <Tip label={`Open ${currentUrl}`}>
+                <a
+                  className="pointer-events-auto inline max-w-full truncate text-left text-xs font-medium text-foreground underline-offset-4 decoration-current/20 transition-colors hover:text-primary hover:underline"
+                  href={currentUrl}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  {previewLabel || 'Preview'}
+                </a>
+              </Tip>
             </div>
           </div>
         )}

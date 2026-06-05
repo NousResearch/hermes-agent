@@ -1,6 +1,6 @@
 import './styles.css'
 
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router-dom'
@@ -9,6 +9,7 @@ import App from './app'
 import { ErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
 import { installClipboardShim } from './lib/clipboard'
+import { queryClient } from './lib/query-client'
 import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
@@ -21,15 +22,6 @@ installClipboardShim()
 if (import.meta.env.MODE !== 'production') {
   import('./app/chat/perf-probe')
 }
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      refetchOnWindowFocus: false,
-      staleTime: 60_000
-    }
-  }
-})
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -3909,6 +3909,28 @@ async function resolveRemoteBackend(profile) {
   return buildRemoteConnection(config.remote?.url, authMode, token, 'settings')
 }
 
+// A remote profile's sessions live on its remote host's state.db, not on a local
+// file the primary can open — so reads for it must route to the remote backend,
+// not the local-disk fast path. These three helpers drive that (see
+// interceptSessionReadForRemote).
+function profileHasRemoteOverride(profile) {
+  return Boolean(profileRemoteOverride(readDesktopConnectionConfig(), profile))
+}
+
+function configuredRemoteProfileNames() {
+  const config = readDesktopConnectionConfig()
+  return Object.keys(config.profiles || {}).filter(name => profileRemoteOverride(config, name))
+}
+
+// GET a profile's resolved backend (remote pool or local primary), parsed JSON.
+async function fetchJsonForProfile(profile, path) {
+  const conn = await ensureBackend(profile)
+  const url = `${conn.baseUrl}${path}`
+  return conn.authMode === 'oauth'
+    ? fetchJsonViaOauthSession(url, { method: 'GET', timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+    : fetchJson(url, conn.token, { method: 'GET', timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+}
+
 async function probeRemoteAuthMode(rawUrl) {
   // Determine how a remote gateway expects callers to authenticate, WITHOUT
   // sending any credentials. ``/api/status`` is public on every Hermes
@@ -4698,7 +4720,92 @@ ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
   return systemPreferences.askForMediaAccess('microphone')
 })
 
+// Re-route remote-profile session reads to the owning remote backend. Returns
+// `undefined` when the request isn't an interceptable session GET (caller takes
+// the normal local path), else the response. Mutations (DELETE/PATCH) carry
+// their own profile semantics and are out of scope.
+//   GET /api/profiles/sessions      → splice each remote profile's real rows in
+//   GET /api/sessions/{id}[/messages] → for a remote profile, read from remote
+async function interceptSessionReadForRemote(request) {
+  if ((request?.method || 'GET').toUpperCase() !== 'GET' || typeof request?.path !== 'string') {
+    return undefined
+  }
+
+  let parsed
+  try {
+    parsed = new URL(request.path, 'http://x')
+  } catch {
+    return undefined
+  }
+  const { pathname, searchParams } = parsed
+
+  if (pathname === '/api/profiles/sessions') {
+    const remoteProfiles = configuredRemoteProfileNames()
+    if (remoteProfiles.length === 0) {
+      return undefined // no remote profiles → local fast path
+    }
+    const requested = (searchParams.get('profile') || 'all').trim() || 'all'
+    if (requested !== 'all') {
+      return profileHasRemoteOverride(requested) ? remoteSessionList(requested, searchParams) : undefined
+    }
+    return mergeRemoteProfileSessions(searchParams, remoteProfiles)
+  }
+
+  // Per-session detail/messages. The renderer tags the owner as ?profile=<name>;
+  // for a remote profile, drop it and let the remote serve its own state.db.
+  if (/^\/api\/sessions\/[^/]+(\/messages)?$/.test(pathname)) {
+    const profile = (searchParams.get('profile') || '').trim()
+    return profile && profileHasRemoteOverride(profile) ? fetchJsonForProfile(profile, pathname) : undefined
+  }
+
+  return undefined
+}
+
+const rowsOf = data => (Array.isArray(data?.sessions) ? data.sessions : [])
+
+// A remote profile's session list, read from its remote host and tagged with the
+// desktop-facing profile name (the remote's /api/sessions doesn't know it).
+async function remoteSessionList(profile, searchParams) {
+  const qs = new URLSearchParams(searchParams)
+  qs.delete('profile') // remote serves its own db; no cross-profile read there
+  const data = await fetchJsonForProfile(profile, `/api/sessions?${qs}`)
+  for (const s of rowsOf(data)) {
+    s.profile = profile
+    s.is_default_profile = false
+  }
+  return { ...data, sessions: rowsOf(data) }
+}
+
+// Unified list: primary's local aggregate, with each remote profile's stale local
+// rows swapped for the remote's real ones, re-sorted by recency. A dead remote
+// contributes nothing rather than breaking the sidebar.
+async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
+  const primary = await ensureBackend(null)
+  const base = await fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
+    method: 'GET',
+    timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
+  }).catch(() => ({ sessions: [], total: 0 }))
+
+  const remoteSet = new Set(remoteProfiles)
+  const merged = rowsOf(base).filter(s => !remoteSet.has(s?.profile))
+  const remoteRows = await Promise.all(remoteProfiles.map(name => remoteSessionList(name, searchParams).then(rowsOf, () => [])))
+  for (const rows of remoteRows) merged.push(...rows)
+
+  const recency = s => s?.last_active ?? s?.started_at ?? 0
+  merged.sort((a, b) => recency(b) - recency(a))
+  return { ...base, sessions: merged }
+}
+
 ipcMain.handle('hermes:api', async (_event, request) => {
+  // Remote-profile session reads would otherwise hit the local primary off each
+  // profile's on-disk state.db — fine for local profiles, but a remote profile's
+  // sessions live on its remote host, so the UI's IDs 404 the moment resume runs
+  // there (the "session not found → new session" bug). Route them to the remote.
+  const rerouted = await interceptSessionReadForRemote(request)
+  if (rerouted !== undefined) {
+    return rerouted
+  }
+
   const connection = await ensureBackend(request?.profile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   const url = `${connection.baseUrl}${request.path}`

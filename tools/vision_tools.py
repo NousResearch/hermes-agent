@@ -617,9 +617,8 @@ def _should_use_native_vision_fast_path() -> bool:
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
             return False
-        return (
-        return _supports_media_in_tool_results(provider, model)
-        )
+            return _supports_media_in_tool_results(provider, model)
+        
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False

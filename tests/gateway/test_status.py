@@ -568,6 +568,20 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    def test_write_runtime_status_records_agent_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="running",
+            agent_state="busy",
+            agent_detail="calling tool: web_search",
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "running"
+        assert payload["agent_state"] == "busy"
+        assert payload["agent_detail"] == "calling tool: web_search"
+
 
 class TestGetProcessStartTime:
     """Start-time fingerprint backing the PID-reuse guard (#43846 / #50468).

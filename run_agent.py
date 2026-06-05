@@ -2831,6 +2831,12 @@ class AIAgent:
         """
         self._last_activity_ts = time.time()
         self._last_activity_desc = desc
+        try:
+            from agent.status_tracker import set_state
+
+            set_state("busy", desc)
+        except Exception:
+            pass
         if os.environ.get("HERMES_KANBAN_TASK"):
             try:
                 from tools.kanban_tools import heartbeat_current_worker_from_env
@@ -5228,6 +5234,14 @@ class AIAgent:
         file reads/writes may do so only when their target paths do not overlap.
         """
         tool_calls = assistant_message.tool_calls
+        try:
+            from agent.status_tracker import set_state
+
+            if tool_calls:
+                tool_name = getattr(getattr(tool_calls[0], "function", None), "name", None)
+                set_state("busy", f"calling tool: {tool_name or 'tool'}")
+        except Exception:
+            pass
 
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True

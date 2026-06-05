@@ -694,6 +694,8 @@ def write_pid_file() -> None:
 def write_runtime_status(
     *,
     gateway_state: Any = _UNSET,
+    agent_state: Any = _UNSET,
+    agent_detail: Any = _UNSET,
     exit_reason: Any = _UNSET,
     restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET,
@@ -716,6 +718,10 @@ def write_runtime_status(
 
     if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state
+    if agent_state is not _UNSET:
+        payload["agent_state"] = agent_state
+    if agent_detail is not _UNSET:
+        payload["agent_detail"] = agent_detail
     if exit_reason is not _UNSET:
         payload["exit_reason"] = exit_reason
     if restart_requested is not _UNSET:

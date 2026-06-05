@@ -526,6 +526,13 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
+    try:
+        from agent.status_tracker import set_state
+
+        set_state("busy", "processing")
+    except Exception:
+        pass
+
     if moa_config is None:
         try:
             from hermes_cli.moa_config import decode_moa_turn
@@ -612,6 +619,12 @@ def run_conversation(
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
+        try:
+            from agent.status_tracker import set_state
+
+            set_state("busy", "processing")
+        except Exception:
+            pass
 
         # Check for interrupt request (e.g., user sent new message)
         if agent._interrupt_requested:
@@ -624,6 +637,12 @@ def run_conversation(
         api_call_count += 1
         agent._api_call_count = api_call_count
         agent._touch_activity(f"starting API call #{api_call_count}")
+        try:
+            from agent.status_tracker import set_state
+
+            set_state("busy", f"API call #{api_call_count}")
+        except Exception:
+            pass
 
         # Grace call: the budget is exhausted but we gave the model one
         # more chance.  Consume the grace flag so the loop exits after

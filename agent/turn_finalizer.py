@@ -471,6 +471,12 @@ def finalize_turn(
     # Fired at the very end of every run_conversation call.
     # Plugins can use this for cleanup, flushing buffers, etc.
     try:
+        try:
+            from agent.status_tracker import set_state
+
+            set_state("idle")
+        except Exception:
+            pass
         from hermes_cli.plugins import invoke_hook as _invoke_hook
         _invoke_hook(
             "on_session_end",

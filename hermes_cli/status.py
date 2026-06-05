@@ -4,6 +4,7 @@ Status command for hermes CLI.
 Shows the status of all Hermes Agent components.
 """
 
+import json
 import os
 import sys
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
@@ -470,6 +471,28 @@ def show_status(args):
         pass
 
     # =========================================================================
+    # Agent State
+    # =========================================================================
+    print()
+    print(color("◆ Agent State", Colors.CYAN, Colors.BOLD))
+
+    status_file = get_hermes_home() / "status.json"
+    if status_file.exists():
+        try:
+            with open(status_file, encoding="utf-8") as f:
+                agent_status = json.load(f)
+            state = str(agent_status.get("state") or "unknown")
+            detail = agent_status.get("state_detail") or "—"
+            updated = _format_iso_timestamp(agent_status.get("updated_at"))
+            print(f"  State:        ● {state}")
+            print(f"  Detail:       {detail}")
+            print(f"  Updated:      {updated}")
+        except Exception:
+            print("  State:        (error reading status file)")
+    else:
+        print("  State:        (no status file)")
+
+    # =========================================================================
     # Gateway Status
     # =========================================================================
     print()
@@ -513,7 +536,6 @@ def show_status(args):
 
     jobs_file = get_hermes_home() / "cron" / "jobs.json"
     if jobs_file.exists():
-        import json
         try:
             with open(jobs_file, encoding="utf-8") as f:
                 data = json.load(f)
@@ -533,7 +555,6 @@ def show_status(args):
 
     sessions_file = get_hermes_home() / "sessions" / "sessions.json"
     if sessions_file.exists():
-        import json
         try:
             with open(sessions_file, encoding="utf-8") as f:
                 data = json.load(f)

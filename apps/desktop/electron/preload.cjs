@@ -45,6 +45,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     setDefaultProjectDir: dir => ipcRenderer.invoke('hermes:setting:defaultProjectDir:set', dir),
     pickDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:pick')
   },
+  tray: {
+    getState: () => ipcRenderer.invoke('hermes:tray:get-state'),
+    setCloseBehavior: minimizeToTray => ipcRenderer.invoke('hermes:tray:set-close-behavior', minimizeToTray)
+  },
   revealLogs: () => ipcRenderer.invoke('hermes:logs:reveal'),
   getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),

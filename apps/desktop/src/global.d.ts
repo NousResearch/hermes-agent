@@ -49,6 +49,10 @@ declare global {
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }
+      tray: {
+        getState: () => Promise<{ closeToTray: boolean; trayActive: boolean; isMac: boolean }>
+        setCloseBehavior: (minimizeToTray: boolean) => Promise<{ ok: boolean }>
+      }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>

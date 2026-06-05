@@ -1,7 +1,9 @@
 import { useStore } from '@nanostores/react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Switch } from '@/components/ui/switch'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -69,6 +71,36 @@ function SectionHead({ title, description, control }: { title: string; descripti
 export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const [closeToTray, setCloseToTray] = useState(true)
+
+  useEffect(() => {
+    window.hermesDesktop.tray
+      ?.getState()
+      .then(state => setCloseToTray(state.closeToTray))
+      .catch(() => { /* prefs not available — use default */ })
+  }, [])
+
+  const trayLabels = useMemo(() => {
+    const lang = (typeof navigator !== 'undefined' ? navigator.language : 'en').split('-')[0]
+    const L: Record<string, Record<string, string>> = {
+      minimizeTitle: {
+        en: 'Minimize to Tray on Close',
+        pt: 'Minimizar para a bandeja ao fechar',
+        es: 'Minimizar a la bandeja al cerrar',
+        zh: '关闭时最小化到托盘'
+      },
+      minimizeDesc: {
+        en: 'When enabled, closing the window hides Hermes to the system tray instead of quitting.',
+        pt: 'Quando ativado, fechar a janela esconde o Hermes na bandeja do sistema em vez de sair.',
+        es: 'Cuando está activado, cerrar la ventana oculta Hermes en la bandeja del sistema en lugar de salir.',
+        zh: '启用后，关闭窗口会将 Hermes 隐藏到系统托盘而不是退出。'
+      }
+    }
+    return {
+      title: L.minimizeTitle[lang] || L.minimizeTitle.en,
+      description: L.minimizeDesc[lang] || L.minimizeDesc.en
+    }
+  }, [])
 
   return (
     <SettingsContent>
@@ -114,6 +146,23 @@ export function AppearanceSettings() {
             }
             description="Product hides raw tool payloads; Technical shows full input/output."
             title="Tool Call Display"
+          />
+        </section>
+
+        <section>
+          <SectionHead
+            control={
+              <Switch
+                checked={closeToTray}
+                onCheckedChange={checked => {
+                  setCloseToTray(checked)
+                  window.hermesDesktop.tray?.setCloseBehavior(checked)
+                  triggerHaptic('crisp')
+                }}
+              />
+            }
+            description={trayLabels.description}
+            title={trayLabels.title}
           />
         </section>
 

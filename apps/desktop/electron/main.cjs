@@ -14,7 +14,8 @@ const {
   safeStorage,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } = require('electron')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
@@ -275,6 +276,15 @@ const APP_ICON_PATHS = [
 
 let rendererTitleBarTheme = null
 const terminalSessions = new Map()
+
+// System tray state (Windows/Linux): tray icon lives while app is running.
+// `forceQuit` distinguishes "real quit" (from tray menu or OS) from
+// "minimize to tray" (close button hides window instead of destroying it).
+// `closeToTray` is user-preference (from Settings) — when false, Alt+F4/X
+// closes the app normally even with the tray icon present.
+let tray = null
+let forceQuit = false
+let closeToTray = true
 
 function isHexColor(value) {
   return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
@@ -2811,6 +2821,127 @@ function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
 }
 
+// ── Tray translations ──────────────────────────────────────────
+// Matched against app.getLocale() language prefix (e.g. 'pt-BR' → 'pt').
+
+const TRAY_LABELS = Object.freeze({
+  open:  { en: 'Open Hermes',   pt: 'Abrir Hermes',    es: 'Abrir Hermes',    zh: '打开 Hermes' },
+  hide:  { en: 'Hide Hermes',   pt: 'Esconder Hermes',  es: 'Ocultar Hermes',  zh: '隐藏 Hermes' },
+  quit:  { en: 'Quit',          pt: 'Sair',             es: 'Salir',            zh: '退出'        }
+})
+
+function tr(key) {
+  try {
+    const lang = (app.getLocale() || 'en').split('-')[0]
+    return TRAY_LABELS[key]?.[lang] || TRAY_LABELS[key]?.en || key
+  } catch {
+    return TRAY_LABELS[key]?.en || key
+  }
+}
+
+function createTray() {
+  if (tray) return
+  if (IS_MAC) return // macOS uses the dock; no system tray needed.
+
+  const iconPath = getAppIconPath()
+  if (!iconPath) {
+    rememberLog('[tray] no icon file found; skipping tray creation')
+    return
+  }
+
+  const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
+  tray = new Tray(icon)
+  tray.setToolTip('Hermes')
+
+  // Toggle window visibility on single click (Windows/Linux convention)
+  tray.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isVisible()) {
+      mainWindow.hide()
+    } else {
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+
+  tray.on('double-click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.show()
+    mainWindow.focus()
+  })
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: tr('open'),
+      click: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        mainWindow.show()
+        mainWindow.focus()
+      }
+    },
+    {
+      label: tr('hide'),
+      click: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        mainWindow.hide()
+      }
+    },
+    { type: 'separator' },
+    {
+      label: tr('quit'),
+      click: () => {
+        forceQuit = true
+        app.quit()
+      }
+    }
+  ])
+
+  tray.setContextMenu(contextMenu)
+  rememberLog('[tray] system tray icon created')
+}
+
+const DESKTOP_PREFERENCES_PATH = path.join(HERMES_HOME, 'desktop-preferences.json')
+
+function loadDesktopPreferences() {
+  try {
+    if (!fileExists(DESKTOP_PREFERENCES_PATH)) return
+    const raw = fs.readFileSync(DESKTOP_PREFERENCES_PATH, 'utf8')
+    const prefs = JSON.parse(raw)
+    if (typeof prefs.closeToTray === 'boolean') closeToTray = prefs.closeToTray
+    rememberLog(`[tray] preferences loaded: closeToTray=${closeToTray}`)
+  } catch (err) {
+    rememberLog(`[tray] failed to load preferences: ${err.message}`)
+  }
+}
+
+function saveDesktopPreference(key, value) {
+  try {
+    let prefs = {}
+    if (fileExists(DESKTOP_PREFERENCES_PATH)) {
+      prefs = JSON.parse(fs.readFileSync(DESKTOP_PREFERENCES_PATH, 'utf8'))
+    }
+    prefs[key] = value
+    fs.writeFileSync(DESKTOP_PREFERENCES_PATH, JSON.stringify(prefs, null, 2), 'utf8')
+  } catch (err) {
+    rememberLog(`[tray] failed to save preference ${key}: ${err.message}`)
+  }
+}
+
+// ── Tray IPC ────────────────────────────────────────────────────
+
+ipcMain.handle('hermes:tray:get-state', () => ({
+  closeToTray,
+  trayActive: !!tray,
+  isMac: IS_MAC
+}))
+
+ipcMain.handle('hermes:tray:set-close-behavior', (_event, minimizeToTray) => {
+  closeToTray = Boolean(minimizeToTray)
+  saveDesktopPreference('closeToTray', closeToTray)
+  rememberLog(`[tray] close behavior set to ${closeToTray ? 'minimize to tray' : 'quit'}`)
+  return { ok: true }
+})
+
 function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const { webContents } = mainWindow
@@ -4379,6 +4510,21 @@ function createWindow() {
   mainWindow.on('will-leave-full-screen', () => sendWindowStateChanged(false))
   mainWindow.on('leave-full-screen', () => sendWindowStateChanged(false))
 
+  // Intercept close: hide to tray instead of quitting (Windows/Linux).
+  // macOS already preserves the app when windows close (dock convention).
+  mainWindow.on('close', (event) => {
+    if (!forceQuit && tray && closeToTray) {
+      event.preventDefault()
+      mainWindow.hide()
+      return
+    }
+    // Not minimizing to tray — destroy tray so window-all-closed can quit.
+    if (tray) {
+      tray.destroy()
+      tray = null
+    }
+  })
+
   installPreviewShortcut(mainWindow)
   installDevToolsShortcut(mainWindow)
   installZoomShortcuts(mainWindow)
@@ -5080,6 +5226,8 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   createWindow()
+  createTray()
+  loadDesktopPreferences()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -5133,5 +5281,8 @@ app.on('before-quit', () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  // When tray is active, the close event was intercepted — the window was
+  // hidden, not destroyed. window-all-closed shouldn't fire in that case,
+  // but guard with !tray for safety (clean exit if tray creation failed).
+  if (process.platform !== 'darwin' && !tray) app.quit()
 })

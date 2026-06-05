@@ -19,8 +19,8 @@ from gateway.session import SessionSource, build_session_key
 
 
 class _MediaRoutingAdapter(BasePlatformAdapter):
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(PlatformConfig(enabled=True, token="test"), platform)
 
     async def connect(self):
         return True
@@ -35,9 +35,9 @@ class _MediaRoutingAdapter(BasePlatformAdapter):
         return {"id": chat_id, "type": "dm"}
 
 
-def _event(thread_id=None):
+def _event(thread_id=None, *, platform=Platform.TELEGRAM, reply_to_message_id=None):
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=platform,
         chat_id="chat-1",
         chat_type="dm",
         thread_id=thread_id,
@@ -47,6 +47,7 @@ def _event(thread_id=None):
         message_type=MessageType.TEXT,
         source=source,
         message_id="msg-1",
+        reply_to_message_id=reply_to_message_id,
     )
 
 
@@ -121,6 +122,27 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
     adapter.send_document.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_base_adapter_preserves_feishu_thread_reply_anchor_for_image_media(tmp_path, monkeypatch):
+    adapter = _MediaRoutingAdapter(platform=Platform.FEISHU)
+    event = _event(
+        thread_id="omt-thread",
+        platform=Platform.FEISHU,
+        reply_to_message_id="om-parent",
+    )
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "capture.png")
+    adapter._message_handler = AsyncMock(return_value=f"MEDIA:{media_file}")
+    adapter.send_multiple_images = AsyncMock(return_value=None)
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    adapter.send_multiple_images.assert_awaited_once()
+    assert adapter.send_multiple_images.await_args.kwargs["metadata"] == {
+        "thread_id": "omt-thread",
+        "reply_to_message_id": "om-parent",
+    }
+
+
 def _fake_runner(thread_meta):
     """Build a fake GatewayRunner-like object with the helper methods needed by
     _deliver_media_from_response."""
@@ -129,6 +151,40 @@ def _fake_runner(thread_meta):
         _reply_anchor_for_event=lambda event: None,
     )
     return runner
+
+
+@pytest.mark.asyncio
+async def test_streaming_delivery_preserves_feishu_thread_reply_anchor_for_image_media(tmp_path, monkeypatch):
+    event = _event(
+        thread_id="omt-thread",
+        platform=Platform.FEISHU,
+        reply_to_message_id="om-parent",
+    )
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "capture.png")
+    adapter = SimpleNamespace(
+        name="feishu",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_multiple_images=AsyncMock(return_value=None),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        GatewayRunner.__new__(GatewayRunner),
+        f"MEDIA:{media_file}",
+        event,
+        adapter,
+    )
+
+    adapter.send_multiple_images.assert_awaited_once()
+    assert adapter.send_multiple_images.await_args.kwargs["metadata"] == {
+        "thread_id": "omt-thread",
+        "reply_to_message_id": "om-parent",
+    }
 
 
 @pytest.mark.asyncio

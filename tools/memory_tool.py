@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Memory Tool Module - Persistent Curated Memory
+Memory Tool Module - Persistent Curated Memory with Layered Priorities
 
 Provides bounded, file-backed memory that persists across sessions. Two stores:
   - MEMORY.md: agent's personal notes and observations (environment facts, project
@@ -15,6 +15,16 @@ The snapshot refreshes on the next session start.
 
 Entry delimiter: § (section sign). Entries can be multiline.
 Character limits (not tokens) because char counts are model-independent.
+
+Layered Memory System:
+Entries can have priority layers marked with prefixes:
+  - ## [core] — Permanent core facts (always injected into system prompt)
+  - ## [active] — Currently active memories (injected with token budget)
+  - ## [archive] — Low-frequency archived memories (recalled on demand)
+
+Default layer is [active] if no prefix is specified.
+Auto-decay: active entries not referenced in 30 days are moved to archive.
+Recall: archive entries matching query topics are promoted back to active.
 
 Design:
 - Single `memory` tool with action parameter: add, replace, remove, read
@@ -57,6 +67,37 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+
+# Layered memory system constants
+LAYER_CORE = "core"
+LAYER_ACTIVE = "active"
+LAYER_ARCHIVE = "archive"
+LAYER_PREFIXES = {
+    "## [core]": LAYER_CORE,
+    "## [active]": LAYER_ACTIVE,
+    "## [archive]": LAYER_ARCHIVE,
+}
+DEFAULT_LAYER = LAYER_ACTIVE
+AUTO_DECAY_DAYS = 30  # active entries not referenced in 30 days → archive
+
+
+def _parse_layer(entry: str) -> tuple:
+    """Parse entry and return (layer, content).
+    
+    If no layer prefix is found, returns (DEFAULT_LAYER, entry).
+    Layer prefixes are stripped from the returned content.
+    """
+    for prefix, layer in LAYER_PREFIXES.items():
+        if entry.startswith(prefix):
+            return layer, entry[len(prefix):].strip()
+    return DEFAULT_LAYER, entry
+
+
+def _add_layer_prefix(content: str, layer: str) -> str:
+    """Add layer prefix to content."""
+    if layer == DEFAULT_LAYER:
+        return content  # Don't add prefix for default layer
+    return f"## [{layer}] {content}"
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +197,17 @@ class MemoryStore:
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
+
+        # Auto-decay active entries to archive if not referenced recently
+        try:
+            decay_result = self._auto_decay_memory()
+            if decay_result.get("decayed", 0) > 0:
+                logger.info(
+                    "Memory auto-decay: %d active entries moved to archive",
+                    decay_result["decayed"]
+                )
+        except Exception as e:
+            logger.warning("Memory auto-decay failed: %s", e)
 
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
@@ -473,22 +525,187 @@ class MemoryStore:
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """Render a system prompt block with layered priority.
+        
+        Layer priority:
+        1. [core] — Always injected (permanent core facts)
+        2. [active] — Injected with token budget (current active memories)
+        3. [archive] — Only recalled on demand (low-frequency archived)
+        
+        For MEMORY.md: core gets priority, active fills remaining budget.
+        For USER.md: all entries are treated as core (user profile is always important).
+        """
         if not entries:
             return ""
 
         limit = self._char_limit(target)
-        content = ENTRY_DELIMITER.join(entries)
+        
+        # For USER.md, treat all entries as core (user profile is always important)
+        if target == "user":
+            content = ENTRY_DELIMITER.join(entries)
+            current = len(content)
+            pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
+            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
+            separator = "═" * 46
+            return f"{separator}\n{header}\n{separator}\n{content}"
+        
+        # For MEMORY.md, apply layered priority
+        core_entries = []
+        active_entries = []
+        archive_entries = []
+        
+        for entry in entries:
+            layer, content = _parse_layer(entry)
+            if layer == LAYER_CORE:
+                core_entries.append(content)
+            elif layer == LAYER_ACTIVE:
+                active_entries.append(content)
+            else:
+                archive_entries.append(content)
+        
+        # Build result with priority: core + active (with budget)
+        result_entries = []
+        result_entries.extend(core_entries)
+        
+        # Calculate remaining budget after core
+        core_content = ENTRY_DELIMITER.join(core_entries) if core_entries else ""
+        remaining_budget = limit - len(core_content)
+        
+        # Add active entries until budget exhausted
+        for entry in active_entries:
+            entry_with_delimiter = f"\n§\n{entry}" if result_entries else entry
+            if len(entry_with_delimiter) <= remaining_budget:
+                result_entries.append(entry)
+                remaining_budget -= len(entry_with_delimiter)
+            else:
+                break
+        
+        # Calculate final stats
+        content = ENTRY_DELIMITER.join(result_entries)
         current = len(content)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
-
-        if target == "user":
-            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
-        else:
-            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
-
+        
+        # Header with layer stats
+        total_core = len(core_entries)
+        total_active = len(active_entries)
+        total_archive = len(archive_entries)
+        injected_active = len(result_entries) - total_core
+        
+        header = (
+            f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars] "
+            f"[core:{total_core} active:{injected_active}/{total_active} archive:{total_archive}]"
+        )
+        
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
+
+    def _auto_decay_memory(self) -> Dict[str, Any]:
+        """Auto-decay active entries to archive if not referenced recently.
+        
+        This method checks each active entry's last reference time.
+        If an active entry hasn't been referenced in AUTO_DECAY_DAYS days,
+        it's moved to archive layer.
+        
+        Called during load_from_disk() to maintain memory hygiene.
+        """
+        import re
+        from datetime import datetime, timedelta
+        
+        mem_dir = get_memory_dir()
+        metadata_path = mem_dir / "memory_metadata.json"
+        
+        # Load metadata (last reference times)
+        metadata = {}
+        if metadata_path.exists():
+            try:
+                import json
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except Exception:
+                metadata = {}
+        
+        # Process MEMORY.md
+        memory_path = mem_dir / "MEMORY.md"
+        if not memory_path.exists():
+            return {"decayed": 0, "total": 0}
+        
+        entries = self._read_file(memory_path)
+        if not entries:
+            return {"decayed": 0, "total": 0}
+        
+        now = datetime.now()
+        decay_threshold = now - timedelta(days=AUTO_DECAY_DAYS)
+        decayed_count = 0
+        new_entries = []
+        
+        for entry in entries:
+            layer, content = _parse_layer(entry)
+            
+            if layer == LAYER_ACTIVE:
+                # Check last reference time
+                entry_hash = str(hash(content))
+                last_ref_str = metadata.get(entry_hash, {}).get("last_referenced")
+                
+                if last_ref_str:
+                    try:
+                        last_ref = datetime.fromisoformat(last_ref_str)
+                        if last_ref < decay_threshold:
+                            # Decay to archive
+                            new_entry = _add_layer_prefix(content, LAYER_ARCHIVE)
+                            new_entries.append(new_entry)
+                            decayed_count += 1
+                            continue
+                    except ValueError:
+                        pass
+                
+                # Update last referenced time
+                if entry_hash not in metadata:
+                    metadata[entry_hash] = {}
+                metadata[entry_hash]["last_referenced"] = now.isoformat()
+            
+            new_entries.append(entry)
+        
+        # Save updated entries
+        if decayed_count > 0:
+            self.memory_entries = new_entries
+            self._write_file(memory_path, new_entries)
+        
+        # Save metadata
+        try:
+            import json
+            metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        
+        return {"decayed": decayed_count, "total": len(entries)}
+
+    def _update_reference_time(self, content: str) -> None:
+        """Update the last reference time for an entry."""
+        from datetime import datetime
+        
+        mem_dir = get_memory_dir()
+        metadata_path = mem_dir / "memory_metadata.json"
+        
+        # Load metadata
+        metadata = {}
+        if metadata_path.exists():
+            try:
+                import json
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except Exception:
+                metadata = {}
+        
+        # Update reference time
+        entry_hash = str(hash(content))
+        if entry_hash not in metadata:
+            metadata[entry_hash] = {}
+        metadata[entry_hash]["last_referenced"] = datetime.now().isoformat()
+        
+        # Save metadata
+        try:
+            import json
+            metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:

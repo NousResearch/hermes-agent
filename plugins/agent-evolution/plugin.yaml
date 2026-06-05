@@ -1,0 +1,35 @@
+name: agent-evolution
+version: "1.0.0"
+description: "Agent 进化系统 — 理性(数据驱动) + 感性(涌现认知) 融合架构。让任何用户一句话就能让agent获得自我进化能力。"
+author: "Vermes Team"
+homepage: "https://vbit.top/vermes"
+license: "MIT"
+
+# 插件类型
+type: "memory"
+
+# 入口点
+entry_point: "__init__.py"
+
+# 依赖
+dependencies:
+  python: ">=3.10"
+  packages: []
+
+# 配置项
+config:
+  evolution_dir: "~/.hermes/evolution"
+  auto_decay_days: 30
+  enable_emotional_tracking: true
+
+# 工具定义
+tools:
+  - name: "evolution_status"
+    description: "查看进化系统状态"
+  - name: "evolution_report"
+    description: "生成进化报告"
+  - name: "evolution_record"
+    description: "记录执行结果"
+
+# 安装后执行
+post_install: "scripts/init.sh"

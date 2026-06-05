@@ -1083,6 +1083,40 @@ def init_agent(
         except Exception:
             pass  # Memory is optional -- don't break agent init
     
+    # ── Evolution system: auto-activate ──────────────────────────────
+    # Automatically initializes the evolution system (self-model.db)
+    # for all agents. No configuration needed — just works.
+    agent._evolution_active = False
+    try:
+        from agent.evolution_manager import is_evolution_active, get_evolution_dir
+        from pathlib import Path
+        import subprocess
+        
+        evolution_dir = get_evolution_dir()
+        
+        # Auto-create evolution directory and database
+        if not is_evolution_active():
+            evolution_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Run initialization
+            plugin_dir = Path(get_hermes_home()) / "plugins" / "agent-evolution"
+            init_script = plugin_dir / "scripts" / "init.sh"
+            
+            if init_script.exists():
+                subprocess.run(
+                    ["bash", str(init_script), "通用助手"],
+                    capture_output=True,
+                    timeout=30,
+                    cwd=str(evolution_dir)
+                )
+        
+        agent._evolution_active = is_evolution_active()
+        
+        if agent._evolution_active:
+            _ra().logger.info("Evolution system activated")
+    except Exception as evo_err:
+        _ra().logger.debug("Evolution system init skipped: %s", evo_err)
+    
 
 
     # Memory provider plugin (external — one at a time, alongside built-in)

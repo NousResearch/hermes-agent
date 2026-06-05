@@ -4885,7 +4885,8 @@ class HermesCLI:
         # invokes it before every request. Skip the string-only validation
         # and placeholder substitution for callables.
         _is_callable_provider = callable(api_key) and not isinstance(api_key, str)
-        if not _is_callable_provider and (not isinstance(api_key, str) or not api_key):
+        _is_subprocess_mode = resolved_api_mode == "claude_code_subprocess"
+        if not _is_callable_provider and not _is_subprocess_mode and (not isinstance(api_key, str) or not api_key):
             # Custom / local endpoints (llama.cpp, ollama, vLLM, etc.) often
             # don't require authentication.  When a base_url IS configured but
             # no API key was found, use a placeholder so the OpenAI SDK
@@ -4903,7 +4904,7 @@ class HermesCLI:
                 print("\n⚠️  Provider resolver returned an empty API key. "
                       "Set OPENROUTER_API_KEY or run: hermes setup")
                 return False
-        if not isinstance(base_url, str) or not base_url:
+        if not _is_subprocess_mode and (not isinstance(base_url, str) or not base_url):
             print("\n⚠️  Provider resolver returned an empty base URL. "
                   "Check your provider config or run: hermes setup")
             return False

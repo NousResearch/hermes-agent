@@ -688,6 +688,14 @@ def init_agent(
         if not agent.quiet_mode:
             _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
             print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
+    elif agent.api_mode == "claude_code_subprocess":
+        # Claude Code CLI subprocess — no HTTP client needed.
+        # Inference is handled by _call_claude_code_subprocess() which
+        # calls `claude -p` directly via subprocess.
+        agent.client = None
+        agent._client_kwargs = {}
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with model: {agent.model} (Claude Code CLI)")
     else:
         if api_key and base_url:
             # Explicit credentials from CLI/gateway — construct directly.

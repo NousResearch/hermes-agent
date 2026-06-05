@@ -619,6 +619,13 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
 
+    if agent.api_mode == "claude_code_subprocess":
+        # Subprocess mode needs no Anthropic transport — just build a minimal
+        # kwargs dict with system, messages, and model for _call_claude_code_subprocess.
+        anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
+        system = getattr(agent, "system_prompt", "") or ""
+        return {"model": agent.model, "messages": anthropic_messages, "system": system}
+
     if agent.api_mode in _ANTHROPIC_RESPONSE_MODES:
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)

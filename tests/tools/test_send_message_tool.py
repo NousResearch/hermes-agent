@@ -113,6 +113,109 @@ class TestSendMessageTool:
         send_mock.assert_not_awaited()
         mirror_mock.assert_not_called()
 
+    def test_bare_platform_prefers_current_conversation_over_home(self):
+        """A bare platform target during an active conversation must reply to
+        that conversation (the user), not the home channel."""
+        home = SimpleNamespace(chat_id="HOMECHAN")
+        config, _telegram_cfg = _make_config()
+        config.get_home_channel = lambda _platform: home
+
+        with patch.dict(
+            os.environ,
+            {"HERMES_SESSION_PLATFORM": "telegram", "HERMES_SESSION_CHAT_ID": "USERCHAT"},
+            clear=False,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool({"action": "send", "target": "telegram", "message": "here you go"})
+            )
+
+        assert result["success"] is True
+        assert send_mock.await_args.args[2] == "USERCHAT"
+
+    def test_current_conversation_default_carries_session_thread(self):
+        home = SimpleNamespace(chat_id="HOMECHAN")
+        config, _telegram_cfg = _make_config()
+        config.get_home_channel = lambda _platform: home
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_SESSION_PLATFORM": "telegram",
+                "HERMES_SESSION_CHAT_ID": "USERCHAT",
+                "HERMES_SESSION_THREAD_ID": "TOPIC9",
+            },
+            clear=False,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool({"action": "send", "target": "telegram", "message": "hi"})
+            )
+
+        assert result["success"] is True
+        assert send_mock.await_args.args[2] == "USERCHAT"
+        assert send_mock.await_args.kwargs["thread_id"] == "TOPIC9"
+
+    def test_bare_platform_falls_back_to_home_without_active_session(self):
+        """With no active conversation (cron / proactive send), a bare platform
+        target still routes to the home channel."""
+        home = SimpleNamespace(chat_id="HOMECHAN")
+        config, _telegram_cfg = _make_config()
+        config.get_home_channel = lambda _platform: home
+
+        with patch.dict(
+            os.environ,
+            {"HERMES_SESSION_PLATFORM": "", "HERMES_SESSION_CHAT_ID": ""},
+            clear=False,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool({"action": "send", "target": "telegram", "message": "cron msg"})
+            )
+
+        assert result["success"] is True
+        assert send_mock.await_args.args[2] == "HOMECHAN"
+        assert "home channel" in result.get("note", "")
+
+    def test_bare_platform_ignores_session_on_different_platform(self):
+        """Session is telegram but the agent sends to slack with a bare target —
+        must NOT leak the telegram chat_id; falls back to slack home channel."""
+        slack_home = SimpleNamespace(chat_id="SLACKHOME")
+        slack_cfg = SimpleNamespace(enabled=True, token="xoxb-test", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.SLACK: slack_cfg},
+            get_home_channel=lambda _platform: slack_home,
+        )
+
+        with patch.dict(
+            os.environ,
+            {"HERMES_SESSION_PLATFORM": "telegram", "HERMES_SESSION_CHAT_ID": "TGCHAT"},
+            clear=False,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool({"action": "send", "target": "slack", "message": "hi"})
+            )
+
+        assert result["success"] is True
+        assert send_mock.await_args.args[2] == "SLACKHOME"
+
     def test_resolved_telegram_topic_name_preserves_thread_id(self):
         config, telegram_cfg = _make_config()
 

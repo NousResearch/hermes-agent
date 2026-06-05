@@ -124,8 +124,12 @@ SEND_MESSAGE_SCHEMA = {
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
-        "If the user just says a platform name like 'send to telegram', send directly "
-        "to the home channel without listing first."
+        "If you are replying to the user you are currently talking to, you usually do NOT "
+        "need send_message at all — just include the text (and any MEDIA:) in your normal "
+        "reply and it is delivered to the current conversation automatically. Use send_message "
+        "when you want to send to a DIFFERENT channel/person, or proactively.\n"
+        "If you pass a bare platform name like 'telegram' with no channel, it goes to the "
+        "current conversation when one is active, otherwise to that platform's home channel."
     ),
     "parameters": {
         "type": "object",
@@ -137,11 +141,11 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (current conversation if active, else home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+                "description": "The message text to send. To send an image or file, include MEDIA:<absolute_path> in the message (e.g. 'MEDIA:/workspace/outbound/report.pdf') — the platform will deliver it as a native media attachment. Always use an absolute path. When running in a sandboxed (Docker) backend, write any file you intend to send into the $OUTBOUND_DIR directory (e.g. /workspace/outbound/...); files written elsewhere (such as /tmp) live only inside the sandbox and cannot be delivered."
             },
             "buttons": {
                 "type": "array",
@@ -282,22 +286,41 @@ def _handle_send(args):
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
+    used_current_conversation = False
     if not chat_id:
-        home = config.get_home_channel(platform)
-        if not home and platform_name == "weixin":
-            wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
-            if wx_home:
-                from gateway.config import HomeChannel
-                home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
-        if home:
-            chat_id = home.chat_id
-            used_home_channel = True
+        # Prefer the current interactive conversation over the home channel.
+        # When the agent omits an explicit channel and we are actively handling
+        # a message on this same platform, reply to that conversation (the user
+        # we are talking to) rather than the home channel — this is what "send me
+        # the file" means. Fall back to the home channel only when there is no
+        # matching active session, e.g. cron jobs or proactive sends, which do
+        # not seed HERMES_SESSION_* (see gateway/session_context.py).
+        from gateway.session_context import get_session_env
+        session_platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+        session_chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+        if session_chat_id and session_platform == platform_name:
+            chat_id = session_chat_id
+            if thread_id is None:
+                session_thread = get_session_env("HERMES_SESSION_THREAD_ID", "").strip()
+                if session_thread:
+                    thread_id = session_thread
+            used_current_conversation = True
         else:
-            return json.dumps({
-                "error": f"No home channel set for {platform_name} to determine where to send the message. "
-                f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
-                f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
-            })
+            home = config.get_home_channel(platform)
+            if not home and platform_name == "weixin":
+                wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
+                if wx_home:
+                    from gateway.config import HomeChannel
+                    home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
+            if home:
+                chat_id = home.chat_id
+                used_home_channel = True
+            else:
+                return json.dumps({
+                    "error": f"No home channel set for {platform_name} to determine where to send the message. "
+                    f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
+                    f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
+                })
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
@@ -320,6 +343,8 @@ def _handle_send(args):
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+        elif used_current_conversation and isinstance(result, dict) and result.get("success"):
+            result["note"] = f"No channel given — sent to the current {platform_name} conversation (chat_id: {chat_id})"
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:

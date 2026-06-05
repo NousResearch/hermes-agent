@@ -69,7 +69,9 @@ class TestWebUIBuildNeeded:
     def test_returns_true_when_package_lock_newer_than_dist(self, tmp_path):
         web_dir, dist_dir = _make_web_dir(tmp_path)
         _touch(dist_dir / ".vite" / "manifest.json", offset=-10)
-        _touch(web_dir / "package-lock.json")
+        # With a single workspace root lockfile, the lockfile lives at the
+        # project root (tmp_path), not inside web_dir.
+        _touch(tmp_path / "package-lock.json")
         assert _web_ui_build_needed(web_dir) is True
 
     def test_returns_true_when_vite_config_newer_than_dist(self, tmp_path):

@@ -494,11 +494,15 @@ class TestStartLogin:
         with pytest.raises(ProviderError, match="http"):
             provider.start_login(redirect_uri="ftp://x/auth/callback")
 
-    def test_rejects_http_with_non_localhost(self, provider):
-        with pytest.raises(ProviderError, match="localhost"):
-            provider.start_login(
-                redirect_uri="http://hermes.fly.dev/auth/callback"
-            )
+    def test_allows_http_with_arbitrary_host(self, provider):
+        # http:// is permitted for any host now, not just localhost — the
+        # Portal-side check is authoritative on which redirect_uris are
+        # accepted; this client-side fast-fail must not reject self-hosted
+        # dashboards reached over plain HTTP (LAN IPs, internal hostnames,
+        # TLS-terminating reverse proxies). Should not raise.
+        provider.start_login(redirect_uri="http://hermes.fly.dev/auth/callback")
+        provider.start_login(redirect_uri="http://192.168.1.50:8080/auth/callback")
+        provider.start_login(redirect_uri="http://my-internal-host/auth/callback")
 
     def test_allows_http_localhost(self, provider):
         # Should not raise.
@@ -542,7 +546,12 @@ class TestCompleteLogin:
     def test_happy_path_returns_session(self, provider, rsa_keypair):
         access_token = _mint_token(rsa_keypair)
         mock_resp = self._mock_post(
-            200, {"access_token": access_token, "token_type": "Bearer"}
+            200,
+            {
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "refresh_token": "rt_initial_value",
+            },
         )
         with patch("plugins.dashboard_auth.nous.httpx.post", return_value=mock_resp):
             session = provider.complete_login(
@@ -555,10 +564,28 @@ class TestCompleteLogin:
         assert session.user_id == "usr_abc"
         assert session.provider == "nous"
         assert session.access_token == access_token
-        assert session.refresh_token == ""  # contract V1
+        # The dashboard auth-code grant now issues a refresh token (NAS #293);
+        # complete_login must surface it so the middleware persists it.
+        assert session.refresh_token == "rt_initial_value"
         assert session.org_id == "org_xyz"
         assert session.email == ""
         assert session.display_name == ""
+
+    def test_happy_path_tolerates_missing_refresh_token(self, provider, rsa_keypair):
+        # If Portal omits refresh_token (older deploy), the session is still
+        # valid as access-token-only; refresh_token defaults to "".
+        access_token = _mint_token(rsa_keypair)
+        mock_resp = self._mock_post(
+            200, {"access_token": access_token, "token_type": "Bearer"}
+        )
+        with patch("plugins.dashboard_auth.nous.httpx.post", return_value=mock_resp):
+            session = provider.complete_login(
+                code="abc",
+                state="state-val",
+                code_verifier="vfy",
+                redirect_uri="https://hermes.fly.dev/auth/callback",
+            )
+        assert session.refresh_token == ""
 
     def test_400_raises_invalid_code(self, provider):
         mock_resp = self._mock_post(400, {"error": "invalid_grant"})
@@ -730,24 +757,90 @@ class TestVerifySession:
 
 
 # ---------------------------------------------------------------------------
-# refresh_session + revoke_session (V1 contract: trivial)
+# refresh_session + revoke_session
 # ---------------------------------------------------------------------------
 
 
 class TestRefreshAndRevoke:
     @pytest.fixture
-    def provider(self):
-        return nous_plugin.NousDashboardAuthProvider(
-            client_id="agent:inst1", portal_url="https://portal.example.com"
+    def provider(self, rsa_keypair):
+        p = nous_plugin.NousDashboardAuthProvider(
+            client_id="agent:inst123", portal_url="https://portal.example.com"
         )
+        _patched_jwks(p, rsa_keypair)
+        return p
 
-    def test_refresh_always_raises(self, provider):
-        with pytest.raises(RefreshExpiredError):
-            provider.refresh_session(refresh_token="anything")
+    def _mock_post(self, status_code, body, *, ctype="application/json"):
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = status_code
+        if isinstance(body, dict):
+            resp.text = json.dumps(body)
+            resp.json = MagicMock(return_value=body)
+        else:
+            resp.text = body
+            resp.json = MagicMock(side_effect=ValueError("not json"))
+        resp.headers = {"content-type": ctype}
+        return resp
 
-    def test_refresh_raises_even_with_empty_token(self, provider):
-        with pytest.raises(RefreshExpiredError):
-            provider.refresh_session(refresh_token="")
+    def test_refresh_happy_path_returns_rotated_session(self, provider, rsa_keypair):
+        # Portal returns a fresh access token AND a rotated refresh token.
+        access_token = _mint_token(rsa_keypair)
+        mock_resp = self._mock_post(
+            200,
+            {
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "refresh_token": "rt_rotated_value",
+            },
+        )
+        with patch(
+            "plugins.dashboard_auth.nous.httpx.post", return_value=mock_resp
+        ) as mock_post:
+            session = provider.refresh_session(refresh_token="rt_old_value")
+
+        assert isinstance(session, Session)
+        assert session.access_token == access_token
+        # The ROTATED refresh token must be surfaced so the middleware can
+        # persist it back to the cookie.
+        assert session.refresh_token == "rt_rotated_value"
+        assert session.provider == "nous"
+
+        # Posts grant_type=refresh_token with the RT in BOTH the body (Portal's
+        # schema requires it there) and the X-Refresh-Token header (log
+        # redaction). Verified against the live preview deploy.
+        _, kwargs = mock_post.call_args
+        assert kwargs["data"]["grant_type"] == "refresh_token"
+        assert kwargs["data"]["client_id"] == "agent:inst123"
+        assert kwargs["data"]["refresh_token"] == "rt_old_value"
+        assert kwargs["headers"]["x-nous-refresh-token"] == "rt_old_value"
+
+    def test_refresh_400_raises_refresh_expired(self, provider):
+        # Expired / revoked / reuse-detected RT → Portal 400 → force re-login.
+        mock_resp = self._mock_post(400, {"error": "invalid_grant"})
+        with patch("plugins.dashboard_auth.nous.httpx.post", return_value=mock_resp):
+            with pytest.raises(RefreshExpiredError, match="invalid_grant"):
+                provider.refresh_session(refresh_token="rt_dead")
+
+    def test_refresh_empty_token_raises_refresh_expired_without_network(self, provider):
+        # No RT present — fail fast as a dead session, never hit the network.
+        with patch("plugins.dashboard_auth.nous.httpx.post") as mock_post:
+            with pytest.raises(RefreshExpiredError):
+                provider.refresh_session(refresh_token="")
+        mock_post.assert_not_called()
+
+    def test_refresh_network_error_raises_provider_error(self, provider):
+        with patch(
+            "plugins.dashboard_auth.nous.httpx.post",
+            side_effect=httpx.RequestError("boom"),
+        ):
+            with pytest.raises(ProviderError, match="unreachable"):
+                provider.refresh_session(refresh_token="rt_x")
+
+    def test_refresh_500_raises_provider_error(self, provider):
+        mock_resp = self._mock_post(500, "oops", ctype="text/plain")
+        with patch("plugins.dashboard_auth.nous.httpx.post", return_value=mock_resp):
+            with pytest.raises(ProviderError):
+                provider.refresh_session(refresh_token="rt_x")
 
     def test_revoke_is_noop(self, provider):
         # Must not raise; returns None implicitly.

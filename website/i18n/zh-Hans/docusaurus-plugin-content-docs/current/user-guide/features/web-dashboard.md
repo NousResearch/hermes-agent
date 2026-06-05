@@ -24,7 +24,6 @@ hermes dashboard
 | `--host` | `127.0.0.1` | 绑定地址 |
 | `--no-open` | — | 不自动打开浏览器 |
 | `--insecure` | 关闭 | 允许绑定到非 localhost 主机（**危险**——会在网络上暴露 API 密钥；请配合防火墙和强认证使用） |
-| `--tui` | 关闭 | 启用浏览器内 Chat 标签页（通过 PTY/WebSocket 嵌入 `hermes --tui`）。也可设置 `HERMES_DASHBOARD_TUI=1`。 |
 
 ```bash
 # 自定义端口
@@ -35,9 +34,6 @@ hermes dashboard --host 0.0.0.0
 
 # 启动时不打开浏览器
 hermes dashboard --no-open
-
-# 启用浏览器内 Chat 标签页
-hermes dashboard --tui
 ```
 
 ## 前置条件
@@ -52,7 +48,7 @@ pip install 'hermes-agent[web,pty]'
 
 在没有依赖项的情况下运行 `hermes dashboard` 时，它会告诉你需要安装什么。如果前端尚未构建且 `npm` 可用，则会在首次启动时自动构建。
 
-Chat 标签页在普通 `hermes dashboard` 启动时默认关闭。如需嵌入式浏览器聊天面板，请使用 `hermes dashboard --tui` 启动，或设置 `HERMES_DASHBOARD_TUI=1`。
+Chat 标签页是每次 `hermes dashboard` 启动的一部分——内嵌的浏览器聊天面板（通过 PTY/WebSocket 运行 TUI）始终可用，无需任何额外参数。
 
 ## 页面
 

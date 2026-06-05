@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import subprocess
@@ -7,6 +8,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD = REPO_ROOT / "scripts" / "runtime" / "codex_impl_guard.py"
+
+
+def _load_guard_module():
+    spec = importlib.util.spec_from_file_location("codex_impl_guard_under_test", GUARD)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -195,11 +204,54 @@ def test_dirty_require_clean_blocks_before_codex_runs(tmp_path):
     assert not marker.exists()
 
 
-def test_non_require_clean_dirty_policy_fails_closed_until_delta_tracking_exists(tmp_path):
+def test_allow_listed_owned_policy_allows_dirty_baseline_inside_allowlist(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
-    (repo / "demo.py").write_text("VALUE = 'dirty'\n", encoding="utf-8")
+    (repo / "demo.py").write_text("VALUE = 'dirty before codex'\n", encoding="utf-8")
+    fake = _write_fake_codex(
+        tmp_path / "fake_codex.py",
+        f"open(os.path.join({str(repo)!r}, 'demo.py'), 'w', encoding='utf-8').write(\"VALUE = 'codex change'\\n\")\n",
+    )
+
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--dirty-baseline-policy", "allow-listed-owned")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["status"] == "review_needed"
+    assert result["reason"] == "codex_exit_zero_safe_diff"
+    assert result["dirty_baseline_policy"] == "allow-listed-owned"
+    assert result["dirty_baseline"] == ["demo.py"]
+    assert result["allowlist_violations"] == []
+    assert "demo.py" in result["changed_files"]
+
+
+def test_allow_listed_owned_policy_reports_unchanged_dirty_baseline(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "demo.py").write_text("VALUE = 'dirty before codex'\n", encoding="utf-8")
+    fake = _write_fake_codex(
+        tmp_path / "fake_codex.py",
+        "# Codex exits without changing the already dirty allowed file.\n",
+    )
+
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--dirty-baseline-policy", "allow-listed-owned")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["status"] == "review_needed"
+    assert result["dirty_baseline_policy"] == "allow-listed-owned"
+    assert result["dirty_baseline"] == ["demo.py"]
+    assert result["allowlist_violations"] == []
+    assert result["changed_files"] == ["demo.py"]
+
+
+def test_allow_listed_owned_policy_rejects_dirty_baseline_outside_allowlist(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "notes.txt").write_text("preexisting dirty\n", encoding="utf-8")
     marker = repo / "codex-ran.txt"
     fake = _write_fake_codex(
         tmp_path / "fake_codex.py",
@@ -211,9 +263,105 @@ def test_non_require_clean_dirty_policy_fails_closed_until_delta_tracking_exists
     assert proc.returncode == 3, proc.stdout + proc.stderr
     result = json.loads(proc.stdout)
     assert result["status"] == "unusable"
-    assert result["reason"] == "unsupported_dirty_baseline_policy"
+    assert result["reason"] == "dirty_baseline_outside_allowlist"
     assert result["dirty_baseline_policy"] == "allow-listed-owned"
-    assert "demo.py" in result["dirty_baseline"]
+    assert result["dirty_baseline_violations"] == ["notes.txt"]
+    assert not marker.exists()
+
+
+def test_dirty_path_overlap_detects_directory_and_child_allowlist_relationships():
+    guard = _load_guard_module()
+
+    assert guard._dirty_path_overlaps_allowlist("scratch", ["scratch/keep.txt"], []) is True
+    assert guard._dirty_path_overlaps_allowlist("scratch/keep.txt", ["scratch"], []) is True
+    assert guard._dirty_path_overlaps_allowlist("scratch", [], ["scratch/**"]) is True
+    assert guard._dirty_path_overlaps_allowlist("scratch/keep.txt", [], ["scratch/**"]) is True
+    assert guard._dirty_path_overlaps_allowlist("scratch", ["demo.py"], ["tests/**"]) is False
+
+
+def test_policy_candidate_paths_keeps_changed_dirty_directory_as_candidate(tmp_path):
+    guard = _load_guard_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    scratch = repo / "scratch"
+    scratch.mkdir()
+    (scratch / "keep.txt").write_text("before\n", encoding="utf-8")
+    baseline = guard._dirty_baseline_fingerprints(repo, ["scratch"])
+
+    (scratch / "keep.txt").write_text("after\n", encoding="utf-8")
+    candidates = guard._policy_candidate_paths(
+        ["scratch", "demo.py"],
+        policy="fail-on-overlap",
+        dirty_baseline=["scratch"],
+        baseline_fingerprints=baseline,
+        workdir=repo,
+    )
+
+    assert candidates == ["demo.py", "scratch"]
+
+
+def test_fail_on_overlap_policy_allows_unrelated_dirty_baseline(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "notes.txt").write_text("preexisting dirty\n", encoding="utf-8")
+    fake = _write_fake_codex(
+        tmp_path / "fake_codex.py",
+        f"open(os.path.join({str(repo)!r}, 'demo.py'), 'w', encoding='utf-8').write(\"VALUE = 'codex change'\\n\")\n",
+    )
+
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--dirty-baseline-policy", "fail-on-overlap")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["status"] == "review_needed"
+    assert result["dirty_baseline_policy"] == "fail-on-overlap"
+    assert result["dirty_baseline"] == ["notes.txt"]
+    assert result["allowlist_violations"] == []
+    assert result["untracked_files"] == ["notes.txt"]
+
+
+def test_fail_on_overlap_policy_blocks_mutation_inside_unrelated_dirty_directory(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    scratch = repo / "scratch"
+    scratch.mkdir()
+    (scratch / "keep.txt").write_text("preexisting dirty\n", encoding="utf-8")
+    fake = _write_fake_codex(
+        tmp_path / "fake_codex.py",
+        f"open(os.path.join({str(repo)!r}, 'demo.py'), 'w', encoding='utf-8').write(\"VALUE = 'codex change'\\n\")\n"
+        f"open(os.path.join({str(repo)!r}, 'scratch', 'keep.txt'), 'a', encoding='utf-8').write('codex touched outside allowlist\\n')\n",
+    )
+
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--dirty-baseline-policy", "fail-on-overlap")
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["status"] == "blocked_by_allowlist"
+    assert result["reason"] == "allowlist_violation"
+    assert "scratch/keep.txt" in result["allowlist_violations"]
+
+
+def test_fail_on_overlap_policy_rejects_dirty_baseline_inside_allowlist(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "demo.py").write_text("VALUE = 'dirty before codex'\n", encoding="utf-8")
+    marker = repo / "codex-ran.txt"
+    fake = _write_fake_codex(
+        tmp_path / "fake_codex.py",
+        f"open({str(marker)!r}, 'w', encoding='utf-8').write('ran')\n",
+    )
+
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--dirty-baseline-policy", "fail-on-overlap")
+
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["status"] == "unusable"
+    assert result["reason"] == "dirty_baseline_overlaps_allowlist"
+    assert result["dirty_baseline_policy"] == "fail-on-overlap"
+    assert result["dirty_baseline_overlap"] == ["demo.py"]
     assert not marker.exists()
 
 

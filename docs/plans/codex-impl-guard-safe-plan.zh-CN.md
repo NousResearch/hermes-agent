@@ -797,6 +797,297 @@ focused tests
 
 不 commit、不 push，除非用户另行授权。
 
+## Phase 12：普通 Codex 入口强制路由
+
+目标：解决“guard / runner 已存在，但其它会话仍裸跑 Codex 导致 diff flood”的接入缺口。
+
+### 12.1 范围
+
+只做最小强制路由：
+
+- `tools/terminal_tool.py` 检测裸 `codex-yuna exec` / `codex exec` implementation 调用。
+- 不论 foreground/background，只要不是受控 wrapper，就返回 `blocked`。
+- 允许以下受控入口：
+  - `python scripts/runtime/codex_stage_runner.py --plan-file <JSON>`
+  - `python scripts/runtime/codex_impl_guard.py ...`
+  - `python scripts/runtime/codex_review_guard.py ...`
+- `codex-yuna exec --help` / `codex --version` 继续放行。
+- read-only review 继续走已有 `codex_review_guard.py` / structured-output 检查。
+
+### 12.2 非目标
+
+第一版不做透明 prompt 改写，因为裸 prompt 缺少安全 contract：
+
+- `allowed_files` / `allowed_globs`
+- `dirty_baseline_policy`
+- `verify_cmd_ids`
+- `continue_policy`
+- review-needed stop 边界
+
+因此不能把任意 `codex-yuna exec "prompt"` 自动转换成 staged runner；必须先由 Hermes 生成 JSON stage plan。
+
+### 12.3 验收
+
+```bash
+python -m pytest tests/tools/test_terminal_tool.py -q -o addopts=
+python -m pytest tests/scripts/test_codex_stage_runner.py -q -o addopts=
+git diff --check -- docs/plans/codex-impl-guard-safe-plan.zh-CN.md tools/terminal_tool.py tests/tools/test_terminal_tool.py
+```
+
+### 12.4 预期效果
+
+- 其它会话如果继续裸跑写入型 Codex，会被 terminal tool 明确拦截。
+- agent 必须改用 staged runner / impl guard，才允许 Codex 写代码。
+- diff flood 从“事后收拾”前移到“入口拦截”。
+- QQ/WebUI 能收到更短的中文报错提示，并带机器字段：
+  - `code: codex_unguarded_impl_blocked`
+  - `user_message_zh`
+  - `technical_detail`
+  - `recommended_action: use_codex_staged_implement`
+
+## Phase 13：`codex_staged_implement` 正式 tool 入口（显式 scope）
+
+目标：提供唯一正式的写入型 Codex staged implementation 入口，让 agent 不再手写 shell / JSON plan，也不再裸跑 `codex-yuna exec`。
+
+### 13.1 输入 schema（第一版必须显式 scope）
+
+第一版不做自动推断，调用方必须提供明确范围：
+
+```json
+{
+  "workdir": "/workspace/repo",
+  "task": "实现一个小阶段",
+  "allowed_files": ["tools/terminal_tool.py"],
+  "allowed_globs": ["tests/tools/test_terminal_tool.py"],
+  "verify_cmd_ids": ["diff-check"],
+  "continue_policy": "stop-on-review-needed",
+  "dirty_baseline_policy": "require-clean"
+}
+```
+
+约束：
+
+- `workdir` 必须解析为 git repo root；返回 JSON 中记录 `resolved_workdir` 和 `git_head`。
+- `allowed_files` / `allowed_globs` 至少一个非空；空 scope 返回 `rejected_scope`。
+- `verify_cmd_ids` 只能来自预定义 registry，第一版只允许 `diff-check` / `none`；不接受任意 shell 字符串。
+- `continue_policy` 第一版只允许 `stop-on-review-needed`，不自动跨 review 继续。
+- `dirty_baseline_policy` 第一版只允许 `require-clean`；其它值返回 `unsupported_dirty_policy`。
+
+### 13.2 allowlist canonicalization / containment
+
+`codex_staged_implement` 必须在调用 runner 前做和 runner/impl guard 一致的 fail-closed 校验：
+
+- 所有 `allowed_files` / `allowed_globs` 都按 repo root 解析为 repo-relative pattern。
+- 拒绝绝对路径、空字符串、`.`、`/`、`*`、`**/*`、`**/*.py` 这类宽 scope。
+- 拒绝包含 `..` 的路径或 glob。
+- 拒绝 symlink escape：如果 allowed file 已存在且解析后不在 repo root 内，返回 `rejected_scope`。
+- 拒绝 `.git`、`.hg`、`.svn`、`.venv`、`venv`、`node_modules`、cache/build/output 目录。
+- `allowed_globs` 只能使用白名单模板或明确文件级 glob；不能作为全仓库兜底。
+- Codex 结束后必须重新读取 git evidence，并把实际 changed files 与 resolved allowlist 比对；越界则返回 `blocked_by_allowlist`，不能把 runner 退出当成功。
+
+### 13.3 dirty worktree policy
+
+Phase 13 必须简单、硬：
+
+- 任何 pre-existing tracked dirty、untracked、staged、conflicted、deleted、renamed、submodule/gitlink evidence 都返回 `dirty_worktree`。
+- 不自动 `stash`、`reset`、`clean`、`checkout`、`restore`。
+- 不因为 dirty 文件与 allowlist 不重叠就继续写；最多在 `recommended_next_action` 建议 clean worktree / isolated worktree。
+- 返回 JSON 记录 `dirty_paths`、`dirty_count`、`dirty_baseline_policy`。
+
+### 13.4 runner invocation boundary
+
+正式 tool 只能通过 argv list 调用：
+
+```text
+python scripts/runtime/codex_stage_runner.py --plan-file <tmp-json> --raw-dir <tmp-dir>
+```
+
+禁止：
+
+- shell 拼接裸 `codex-yuna exec` / `codex exec`。
+- shell-level background / detached execution。
+- 把 raw Codex stdout/stderr 直接放入 tool result。
+- 在 repo 内写 prompt、plan、raw log、final file。
+
+临时文件要求：
+
+- 使用 collision-resistant temp dir，例如 `/tmp/codex-staged-implement-<random>/`。
+- 权限尽量私有；raw log / prompt / final JSON 都在 repo 外。
+- 返回路径可用于审计，但内容不自动注入主上下文。
+
+### 13.5 output schema / 状态机
+
+tool 不能把 runner 退出等同于成功。返回状态必须可机读：
+
+```text
+rejected_scope
+unsupported_dirty_policy
+dirty_worktree
+runner_unusable
+implementation_failed
+blocked_by_allowlist
+takeover_candidate
+review_needed
+verification_failed
+ready_for_review
+```
+
+状态语义：
+
+- `review_needed` 是硬停，表示 Codex 留下 allowlist 内候选 diff，需要 read-only review；不是完成。
+- `ready_for_review` 只表示 tool 层证据完整、下一步应 review；不代表测试全过或可提交。
+- `takeover_candidate` 表示有安全候选 diff 但 Codex completion 不可信，必须 Hermes 接管检查。
+- `verification_failed` 表示 registry verification 没过或产生未允许 artifact。
+- 所有非通过路径都必须带 `reason`、`recommended_next_action`。
+
+最小返回字段：
+
+```json
+{
+  "status": "review_needed",
+  "reason": "slice_review_needed",
+  "resolved_workdir": "/workspace/repo",
+  "git_head": "...",
+  "resolved_allowlist": {"files": [], "globs": []},
+  "dirty_check": {"status": "clean", "paths": []},
+  "stage_plan_path": "/tmp/.../plan.json",
+  "raw_dir": "/tmp/.../raw",
+  "runner_exit_code": 1,
+  "changed_files": [],
+  "stopped_slice": "slice-1",
+  "next_required_action": "run_read_only_review"
+}
+```
+
+### 13.6 非阻塞建议细化为实现约束
+
+Codex 复审给出的非阻塞建议，在 Phase 13 实现时按以下口径落地，避免实现者自由发挥：
+
+1. `verify_cmd_ids: ["none"]` 只允许低风险场景：
+   - `none` 表示 tool 不执行额外验证命令，不代表无需验证。
+   - 返回 JSON 必须写明 `verification_policy: "deferred_to_hermes"`。
+   - `next_required_action` 不能是完成态，只能是 `run_read_only_review` / `run_hermes_verification`。
+   - 若 task/scope 属于安全边界、权限、路径、删除、部署、依赖安装、持久化迁移等高风险类别，第一版应拒绝 `none` 或返回 `rejected_verify_policy`。
+
+2. `ready_for_review` 与 `review_needed` 必须区分：
+   - `review_needed`：runner/impl guard 的 slice 硬停信号，表示已有候选 diff，必须停下来做 read-only review。
+   - `ready_for_review`：tool 自己完成证据收集和状态映射后的归一化状态，表示下一步可以进入 review；仍不是完成、不是测试通过、不是可提交。
+   - 二者都不得被 agent 或 runner 解释为 success/completed。
+
+3. 返回 JSON 字段级截断策略：
+   - 任意 string 最大 4,000 chars。
+   - 任意 list 最大 200 items。
+   - 任意 dict 最大 80 keys。
+   - runner stdout/stderr 预览最大 8,000 chars。
+   - raw Codex/stdout/stderr 不进入 tool result，只返回 repo 外路径。
+   - 截断时保留 `...[truncated]` 或计数字段，避免静默丢证据。
+
+4. dry-run / metadata 读取必须只读：
+   - 允许读取 `git rev-parse --show-toplevel`、`git rev-parse HEAD`、`git status --porcelain=v1 -z --untracked-files=all`、文件存在性和 `realpath`。
+   - 禁止执行 hooks、安装、构建、测试、format、compile、package manager、或任何会写 repo/cache/temp 的命令。
+   - 禁止在 repo 内写 prompt/plan/raw/final；所有临时产物使用 repo 外 collision-resistant temp dir。
+
+### 13.7 tests
+
+Phase 13 测试必须覆盖：
+
+- tool schema：缺 `allowed_files`/`allowed_globs` 返回 `rejected_scope`。
+- path validation：绝对路径、`..`、symlink escape、宽 glob、`.git` / cache 目录被拒。
+- dirty policy：tracked/untracked/staged/conflict fixture 均返回 `dirty_worktree`，且不修改工作区。
+- runner invocation：使用 fake runner，验证 argv list 包含 `--plan-file` / `--raw-dir`，没有裸 `codex-yuna exec`。
+- output bounded：fake runner 大 stdout 不进入 result；只返回 bounded JSON。
+- status mapping：runner `review_needed`、`blocked_by_allowlist`、`takeover_candidate`、malformed JSON、timeout 都映射正确。
+- terminal integration：`terminal_tool.py` 继续拦裸 Codex；新增 tool 是唯一写入型入口。
+
+验收命令候选：
+
+```bash
+python -m pytest tests/tools/test_codex_staged_implement_tool.py tests/tools/test_terminal_tool.py tests/scripts/test_codex_stage_runner.py -q -o addopts=
+git diff --check -- tools/codex_staged_implement_tool.py tests/tools/test_codex_staged_implement_tool.py tools/terminal_tool.py docs/plans/codex-impl-guard-safe-plan.zh-CN.md
+```
+
+## Phase 14：`dry_run_plan` 只生成计划，不执行 Codex
+
+目标：先提供 plan proposal 能力，但不写 repo、不跑 Codex。
+
+### 14.1 行为
+
+```json
+{
+  "mode": "dry_run_plan",
+  "workdir": "/workspace/repo",
+  "task": "..."
+}
+```
+
+返回：
+
+- proposed stage plan JSON。
+- risk classification：`low` / `needs_scope` / `unsupported`。
+- proposed allowlist 和理由。
+- `needs_user_confirmation: true`。
+
+硬规则：
+
+- 不调用 `codex_stage_runner.py`。
+- 不调用 `codex_impl_guard.py`。
+- 不调用 `codex-yuna` / `codex`。
+- 不在 repo 内写文件。
+- 只可读取必要 metadata，例如 repo root、HEAD、status、已知文件是否存在。
+- scope 不确定时返回 `needs_scope`，不能猜。
+
+### 14.2 tests
+
+- `dry_run_plan` 不产生 repo diff。
+- 不调用 runner / Codex（fake spy 断言）。
+- uncertain task 返回 `needs_scope`。
+- 返回 plan 可被 `codex_stage_runner.py` schema 校验接受（可用 fake repo/plan validator）。
+
+## Phase 15：保守自动 stage plan 推断
+
+目标：只对低风险、已知模板生成 allowlist；第一版仍不能静默执行 inferred plan。
+
+### 15.1 推断硬规则
+
+- 自动推断默认只用于 `dry_run_plan`。
+- inferred plan 进入执行必须有显式 `mode: execute_inferred` 或用户/agent 确认信号；不能在同一次默认调用中直接执行。
+- 禁止宽 glob：`**/*`、`**/*.py`、`tools/**`、`tests/**`、repo root glob 全部拒绝。
+- docs-only 必须来自用户/任务明确点名的 docs path；不能自动放开 `docs/plans/*.md`。
+- 一个 slice 只覆盖一个组件组；跨组件任务返回 `needs_split`。
+- dirty worktree 仍按 Phase 13 默认 fail-closed。
+
+### 15.2 第一批允许模板
+
+仅允许以下小模板：
+
+| task signal | allowed_files |
+|---|---|
+| terminal tool / terminal policy | `tools/terminal_tool.py`, `tests/tools/test_terminal_tool.py` |
+| process registry Codex metadata | `tools/process_registry.py`, `tests/tools/test_process_registry.py` |
+| stage runner | `scripts/runtime/codex_stage_runner.py`, `tests/scripts/test_codex_stage_runner.py` |
+| impl guard | `scripts/runtime/codex_impl_guard.py`, `tests/scripts/test_codex_impl_guard.py` |
+| review guard / packet | 明确二选一：`scripts/runtime/codex_review_guard.py` + 对应 test，或 `scripts/runtime/codex_review_packet.py` + 对应 test |
+| docs-only | 用户明确点名的单个 docs path |
+
+所有模板都必须验证文件存在；不存在时返回 `needs_scope` 或 `unsupported_template`。
+
+### 15.3 tests
+
+- 每个模板 positive case 生成最小 allowlist。
+- 模糊任务返回 `needs_scope`。
+- 跨组件任务返回 `needs_split`。
+- 宽 glob 永远不出现在 output。
+- inferred plan 默认不可执行；必须显式确认后才允许进入 Phase 13 execution path。
+
+## Phase 13–15 共同非目标
+
+- 不透明转换任意裸 `codex-yuna exec "prompt"`。
+- 不自动扩大 allowlist。
+- 不自动 commit / push / PR / restart / deploy。
+- 不自动 stash / reset / clean / revert。
+- 不把 raw Codex output 注入主上下文。
+- 不替代 read-only Codex review 和 Hermes verification。
+
 ## 验收标准
 
 第一阶段完成时，必须能证明：

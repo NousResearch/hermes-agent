@@ -155,6 +155,37 @@ def _file_fingerprint(path: Path) -> str:
     return f"file:{total}:{digest.hexdigest()}"
 
 
+def _directory_fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    count = 0
+    try:
+        children = sorted(path.rglob("*"), key=lambda item: item.relative_to(path).as_posix())
+    except OSError as exc:
+        return f"dir-error:{type(exc).__name__}"
+    for child in children:
+        count += 1
+        if count > 2_000:
+            return f"dir-oversized:{count}"
+        try:
+            rel = child.relative_to(path).as_posix()
+        except ValueError:
+            return "dir-unsafe"
+        digest.update(rel.encode("utf-8", errors="surrogateescape"))
+        try:
+            if child.is_symlink():
+                digest.update(b"symlink:")
+                digest.update(os.readlink(child).encode("utf-8", errors="surrogateescape"))
+            elif child.is_file():
+                digest.update(_file_fingerprint(child).encode("utf-8"))
+            elif child.is_dir():
+                digest.update(b"dir")
+            else:
+                digest.update(b"other")
+        except OSError as exc:
+            digest.update(f"error:{type(exc).__name__}".encode("utf-8"))
+    return f"dir:{count}:{digest.hexdigest()}"
+
+
 def _ignored_artifact_fingerprints(workdir: Path) -> dict[str, str]:
     raw = _run_git(workdir, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], check=False)
     paths = sorted({part for part in raw.split("\0") if part})
@@ -168,7 +199,7 @@ def _ignored_artifact_fingerprints(workdir: Path) -> dict[str, str]:
             if path.is_symlink():
                 fingerprints[repo_path] = "symlink:" + os.readlink(path)
             elif path.is_dir():
-                fingerprints[repo_path] = "dir"
+                fingerprints[repo_path] = _directory_fingerprint(path)
             elif path.is_file():
                 fingerprints[repo_path] = _file_fingerprint(path)
             else:
@@ -286,6 +317,35 @@ def _matches_allowlist(path: str, files: list[str], globs: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in globs)
 
 
+def _path_prefix_overlap(left: str, right: str) -> bool:
+    left = left.strip("/")
+    right = right.strip("/")
+    if not left or not right:
+        return False
+    return left == right or right.startswith(left + "/") or left.startswith(right + "/")
+
+
+def _literal_glob_prefix(pattern: str) -> str:
+    parts: list[str] = []
+    for part in _path_parts(pattern):
+        if any(ch in part for ch in "*?["):
+            break
+        parts.append(part)
+    return "/".join(parts)
+
+
+def _dirty_path_overlaps_allowlist(path: str, files: list[str], globs: list[str]) -> bool:
+    if _matches_allowlist(path, files, globs):
+        return True
+    if any(_path_prefix_overlap(path, file) for file in files):
+        return True
+    for pattern in globs:
+        prefix = _literal_glob_prefix(pattern)
+        if prefix and _path_prefix_overlap(path, prefix):
+            return True
+    return False
+
+
 def _classify_records(records: list[dict[str, str]], *, excluded: set[str]) -> dict[str, list[str]]:
     changed: set[str] = set()
     untracked: set[str] = set()
@@ -339,6 +399,99 @@ def _allowlist_violations(paths: list[str], *, root: Path, files: list[str], glo
         if not _candidate_path_safe(path, root) or not _matches_allowlist(path, files, globs):
             violations.append(path)
     return sorted(dict.fromkeys(violations))
+
+
+def _dirty_baseline_fingerprints(workdir: Path, paths: list[str]) -> dict[str, str]:
+    fingerprints: dict[str, str] = {}
+    for repo_path in paths:
+        if not _candidate_path_safe(repo_path, workdir):
+            fingerprints[repo_path] = "unsafe"
+            continue
+        path = workdir / repo_path
+        try:
+            if path.is_symlink():
+                fingerprints[repo_path] = "symlink:" + os.readlink(path)
+            elif path.is_dir():
+                fingerprints[repo_path] = _directory_fingerprint(path)
+            elif path.is_file():
+                fingerprints[repo_path] = _file_fingerprint(path)
+            else:
+                fingerprints[repo_path] = "missing"
+        except OSError as exc:
+            fingerprints[repo_path] = f"error:{type(exc).__name__}"
+    return fingerprints
+
+
+def _dirty_policy_error(
+    *,
+    policy: str,
+    dirty_baseline: list[str],
+    workdir: Path,
+    files: list[str],
+    globs: list[str],
+) -> dict[str, Any] | None:
+    if policy == "require-clean":
+        if dirty_baseline:
+            return {
+                "status": "unusable",
+                "reason": "dirty_baseline_not_clean",
+                "dirty_baseline": dirty_baseline,
+                "dirty_baseline_policy": policy,
+            }
+        return None
+
+    if policy == "allow-listed-owned":
+        violations = _allowlist_violations(dirty_baseline, root=workdir, files=files, globs=globs)
+        if violations:
+            return {
+                "status": "unusable",
+                "reason": "dirty_baseline_outside_allowlist",
+                "dirty_baseline": dirty_baseline,
+                "dirty_baseline_policy": policy,
+                "dirty_baseline_violations": violations,
+            }
+        return None
+
+    if policy == "fail-on-overlap":
+        overlap = sorted(path for path in dirty_baseline if _dirty_path_overlaps_allowlist(path, files, globs))
+        if overlap:
+            return {
+                "status": "unusable",
+                "reason": "dirty_baseline_overlaps_allowlist",
+                "dirty_baseline": dirty_baseline,
+                "dirty_baseline_policy": policy,
+                "dirty_baseline_overlap": overlap,
+            }
+        return None
+
+    return {
+        "status": "unusable",
+        "reason": "unsupported_dirty_baseline_policy",
+        "dirty_baseline": dirty_baseline,
+        "dirty_baseline_policy": policy,
+    }
+
+
+def _policy_candidate_paths(
+    paths: list[str],
+    *,
+    policy: str,
+    dirty_baseline: list[str],
+    baseline_fingerprints: dict[str, str],
+    workdir: Path,
+) -> list[str]:
+    if policy != "fail-on-overlap":
+        return sorted(dict.fromkeys(paths))
+
+    baseline = set(dirty_baseline)
+    candidates: set[str] = set()
+    after_fingerprints = _dirty_baseline_fingerprints(workdir, dirty_baseline)
+    for path in paths:
+        if path not in baseline:
+            candidates.add(path)
+        elif after_fingerprints.get(path) != baseline_fingerprints.get(path):
+            candidates.add(path)
+    return sorted(candidates)
 
 
 def _diff_stat(workdir: Path, paths: list[str]) -> str:
@@ -801,23 +954,16 @@ def run(argv: list[str] | None = None) -> int:
     baseline_ignored_artifacts = _ignored_artifact_fingerprints(workdir)
     baseline_git_metadata = _git_metadata_fingerprints(workdir)
     dirty_baseline = _status_paths(baseline_records)
-    if args.dirty_baseline_policy != "require-clean":
-        # The CLI reserves these policy names for future delta-aware operation,
-        # but v1 only has safe semantics for a clean baseline. Fail closed rather
-        # than mixing pre-existing dirty files with Codex candidate evidence.
-        return _emit({
-            "status": "unusable",
-            "reason": "unsupported_dirty_baseline_policy",
-            "dirty_baseline": dirty_baseline,
-            "dirty_baseline_policy": args.dirty_baseline_policy,
-        })
-    if dirty_baseline:
-        return _emit({
-            "status": "unusable",
-            "reason": "dirty_baseline_not_clean",
-            "dirty_baseline": dirty_baseline,
-            "dirty_baseline_policy": args.dirty_baseline_policy,
-        })
+    dirty_baseline_fingerprints = _dirty_baseline_fingerprints(workdir, dirty_baseline)
+    dirty_error = _dirty_policy_error(
+        policy=args.dirty_baseline_policy,
+        dirty_baseline=dirty_baseline,
+        workdir=workdir,
+        files=args.allowed_file,
+        globs=args.allowed_glob,
+    )
+    if dirty_error:
+        return _emit(dirty_error)
 
     prompt = args.prompt or Path(args.prompt_file).read_text(encoding="utf-8", errors="replace")
     codex_result = _run_codex(
@@ -847,6 +993,13 @@ def run(argv: list[str] | None = None) -> int:
     classified["ignored_artifacts"] = ignored_artifacts
     classified["git_metadata_changes"] = git_metadata_changes
     candidate_paths = sorted(dict.fromkeys([*_status_paths(final_records), *submodule_changes, *ignored_artifacts, *git_metadata_changes]))
+    candidate_paths = _policy_candidate_paths(
+        candidate_paths,
+        policy=args.dirty_baseline_policy,
+        dirty_baseline=dirty_baseline,
+        baseline_fingerprints=dirty_baseline_fingerprints,
+        workdir=workdir,
+    )
     violations = _allowlist_violations(
         candidate_paths,
         root=workdir,
@@ -907,6 +1060,13 @@ def run(argv: list[str] | None = None) -> int:
         classified["ignored_artifacts"] = ignored_artifacts
         classified["git_metadata_changes"] = git_metadata_changes
         candidate_paths = sorted(dict.fromkeys([*_status_paths(final_records), *submodule_changes, *ignored_artifacts, *git_metadata_changes]))
+        candidate_paths = _policy_candidate_paths(
+            candidate_paths,
+            policy=args.dirty_baseline_policy,
+            dirty_baseline=dirty_baseline,
+            baseline_fingerprints=dirty_baseline_fingerprints,
+            workdir=workdir,
+        )
         violations = _allowlist_violations(
             candidate_paths,
             root=workdir,

@@ -558,7 +558,15 @@ PLATFORM_HINTS = {
         "include MEDIA:/absolute/path/to/file in your response. Images are sent as native "
         "photos, videos play inline when supported, and other files arrive as downloadable "
         "documents. You can also include image URLs in markdown format ![alt](url) and they "
-        "will be downloaded and sent as native media when possible."
+        "will be downloaded and sent as native media when possible.\n\n"
+        "## 表情包使用规则\n"
+        "在回复中可以用 %情感% 标签来表达情绪，系统会自动发送对应的表情包。\n"
+        "可用标签：%愉快%、%难过%、%无语%、%惊讶%、%疑惑%、%安慰%、%害羞%\n"
+        "规则：\n"
+        "- 每次回复最多用 1 个标签\n"
+        "- 标签放在句末，如\"今天心情不错 %愉快%\"\n"
+        "- 不要每次都用，自然一点\n"
+        "- 不要直接用 MEDIA: 路径，不要调用 send_sticker 工具（已移除）"
     ),
     "wecom": (
         "You are on WeCom (企业微信 / Enterprise WeChat). Markdown formatting is supported. "

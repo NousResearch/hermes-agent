@@ -19,6 +19,7 @@ unless it is an existing deterministic inventory fact from Tier 0.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+import re
 from typing import Any, Dict, List, Optional
 
 SCHEMA_VERSION = "1.0.0"
@@ -30,6 +31,37 @@ DEFAULT_BOUNDARIES: List[str] = [
     "RLS correctness, auth correctness, runtime behavior, deployment readiness, "
     "CI success, or policy semantics."
 ]
+
+SUPABASE_MIGRATION_SURFACE = "supabase_migration"
+
+_SUPABASE_MIGRATION_PATH_RE = re.compile(
+    r"(?:^|/)supabase/migrations/[^/]+\.sql\Z",
+    re.IGNORECASE,
+)
+
+_SUPABASE_MIGRATION_MARKERS = (
+    ("enable_rls", re.compile(r"\benable\s+row\s+level\s+security\b", re.IGNORECASE)),
+    ("create_policy", re.compile(r"\bcreate\s+policy\b", re.IGNORECASE)),
+    ("drop_policy", re.compile(r"\bdrop\s+policy\b", re.IGNORECASE)),
+    ("using_clause", re.compile(r"\busing\s*\(", re.IGNORECASE)),
+    ("with_check_clause", re.compile(r"\bwith\s+check\s*\(", re.IGNORECASE)),
+    ("auth_uid", re.compile(r"\bauth\s*\.\s*uid\s*\(", re.IGNORECASE)),
+    ("auth_role", re.compile(r"\bauth\s*\.\s*role\s*\(", re.IGNORECASE)),
+    ("anon_role", re.compile(r"(?<![\w])anon(?![\w])", re.IGNORECASE)),
+    ("authenticated_role", re.compile(r"(?<![\w])authenticated(?![\w])", re.IGNORECASE)),
+    (
+        "permissive_true",
+        re.compile(r"\b(?:using|with\s+check)\s*\(\s*true\s*\)", re.IGNORECASE),
+    ),
+    ("security_definer", re.compile(r"\bsecurity\s+definer\b", re.IGNORECASE)),
+    ("service_role", re.compile(r"(?<![\w])service_role(?![\w])", re.IGNORECASE)),
+    ("grant_statement", re.compile(r"^\s*grant\b", re.IGNORECASE)),
+    ("revoke_statement", re.compile(r"^\s*revoke\b", re.IGNORECASE)),
+    (
+        "create_function",
+        re.compile(r"\bcreate\s+(?:or\s+replace\s+)?function\b", re.IGNORECASE),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -84,6 +116,65 @@ def make_signal_record(
         boundary=boundary or DEFAULT_BOUNDARIES[0],
     )
     return asdict(rec)
+
+
+def _is_supabase_migration_path(rel_path: str) -> bool:
+    """Return whether rel_path is a Supabase SQL migration surface."""
+    normalized = str(rel_path).replace("\\", "/").lstrip("./")
+    return bool(_SUPABASE_MIGRATION_PATH_RE.search(normalized))
+
+
+def _marker_snippet(line: str, limit: int = 240) -> str:
+    snippet = " ".join(line.strip().split())
+    if len(snippet) <= limit:
+        return snippet
+    return snippet[: limit - 3].rstrip() + "..."
+
+
+def extract_supabase_migration_markers(
+    rel_path: str,
+    content: str,
+    max_per_type: int = 50,
+) -> List[Dict[str, Any]]:
+    """Extract heuristic Supabase migration content markers.
+
+    This is a line-oriented marker inventory only. It does not parse SQL and
+    does not validate RLS, policy, auth, runtime, deployment, CI, or security
+    semantics.
+    """
+    if not _is_supabase_migration_path(rel_path):
+        return []
+
+    try:
+        cap = int(max_per_type)
+    except (TypeError, ValueError):
+        cap = 50
+    if cap <= 0:
+        return []
+
+    signals: List[Dict[str, Any]] = []
+    emitted_by_type: Dict[str, int] = {}
+
+    for line_number, line in enumerate(str(content).splitlines(), start=1):
+        if not line.strip():
+            continue
+        for marker_type, pattern in _SUPABASE_MIGRATION_MARKERS:
+            if emitted_by_type.get(marker_type, 0) >= cap:
+                continue
+            if not pattern.search(line):
+                continue
+            signals.append(
+                make_signal_record(
+                    surface=SUPABASE_MIGRATION_SURFACE,
+                    path=rel_path,
+                    line=line_number,
+                    marker_type=marker_type,
+                    marker=_marker_snippet(line),
+                )
+            )
+            emitted_by_type[marker_type] = emitted_by_type.get(marker_type, 0) + 1
+
+    return signals
 
 
 def _normalize_signal(sig: Any) -> Dict[str, Any]:
@@ -168,6 +259,7 @@ def build_static_signals_artifact(
 # Convenience re-exports for consumers that want the canonical names
 __all__ = [
     "build_static_signals_artifact",
+    "extract_supabase_migration_markers",
     "make_signal_record",
     "SignalRecord",
     "CLAIM_TYPE",

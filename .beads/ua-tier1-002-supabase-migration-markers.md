@@ -1,7 +1,7 @@
 ---
 id: ua-tier1-002-supabase-migration-markers
 title: Supabase Migration Marker Inventory
-status: planned-not-approved
+status: completed
 executor: codex-coder
 parallel_safe: false
 risk: medium

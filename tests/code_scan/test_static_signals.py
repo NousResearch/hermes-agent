@@ -19,6 +19,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 # Import will fail in RED phase
 from static_signals import (
     build_static_signals_artifact,
+    extract_supabase_migration_markers,
     make_signal_record,
     SignalRecord,
 )
@@ -104,7 +105,9 @@ class TestSignalRecordHelper:
         )
         assert rec["claim_type"] == "heuristic_signal"
         assert rec["semantic_status"] == "not_validated"
-        assert rec["boundary"] is not None and "content marker" in rec["boundary"].lower() or "does not prove" in rec["boundary"].lower()
+        assert rec["boundary"] is not None
+        assert "content markers only" in rec["boundary"]
+        assert "do not prove security" in rec["boundary"]
 
 
 class TestArtifactWithSignals:
@@ -191,3 +194,143 @@ class TestBoundaryContract:
         for s in artifact["signals"]:
             assert s["claim_type"] == "heuristic_signal"
             assert s["semantic_status"] == "not_validated"
+
+
+class TestSupabaseMigrationMarkers:
+    """Supabase SQL migration markers are inventory only, not validation claims."""
+
+    def test_extracts_all_required_marker_types_with_lines(self):
+        sql = "\n".join(
+            [
+                "create table public.todos (id uuid primary key);",
+                "alter table public.todos enable row level security;",
+                "create policy \"read todos\"",
+                "on public.todos",
+                "for select",
+                "to authenticated",
+                "using (auth.uid() = user_id);",
+                "create policy \"insert todos\"",
+                "on public.todos",
+                "for insert",
+                "to anon",
+                "with check (auth.role() = 'authenticated');",
+                "create policy \"public read\" on public.todos for select using (true);",
+                "drop policy if exists \"old todos\" on public.todos;",
+                "create function public.jwt_role() returns text",
+                "language sql",
+                "security definer",
+                "as $$ select auth.role(); $$;",
+                "grant select on public.todos to authenticated;",
+                "revoke all on public.todos from anon;",
+                "grant usage on schema private to service_role;",
+            ]
+        )
+
+        signals = extract_supabase_migration_markers(
+            "supabase/migrations/001_rls.sql",
+            sql,
+        )
+
+        marker_types = {signal["marker_type"] for signal in signals}
+        assert marker_types == {
+            "enable_rls",
+            "create_policy",
+            "drop_policy",
+            "using_clause",
+            "with_check_clause",
+            "auth_uid",
+            "auth_role",
+            "anon_role",
+            "authenticated_role",
+            "permissive_true",
+            "security_definer",
+            "service_role",
+            "grant_statement",
+            "revoke_statement",
+            "create_function",
+        }
+
+        first_line_by_type = {}
+        for signal in signals:
+            first_line_by_type.setdefault(signal["marker_type"], signal["line"])
+
+        assert first_line_by_type["enable_rls"] == 2
+        assert first_line_by_type["create_policy"] == 3
+        assert first_line_by_type["authenticated_role"] == 6
+        assert first_line_by_type["using_clause"] == 7
+        assert first_line_by_type["auth_uid"] == 7
+        assert first_line_by_type["anon_role"] == 11
+        assert first_line_by_type["with_check_clause"] == 12
+        assert first_line_by_type["auth_role"] == 12
+        assert first_line_by_type["permissive_true"] == 13
+        assert first_line_by_type["drop_policy"] == 14
+        assert first_line_by_type["create_function"] == 15
+        assert first_line_by_type["security_definer"] == 17
+        assert first_line_by_type["grant_statement"] == 19
+        assert first_line_by_type["revoke_statement"] == 20
+        assert first_line_by_type["service_role"] == 21
+
+        for signal in signals:
+            assert signal["surface"] == "supabase_migration"
+            assert signal["path"] == "supabase/migrations/001_rls.sql"
+            assert isinstance(signal["line"], int)
+            assert signal["line"] >= 1
+            assert signal["marker"].strip()
+            assert signal["claim_type"] == "heuristic_signal"
+            assert signal["semantic_status"] == "not_validated"
+            assert "content markers only" in signal["boundary"]
+            assert "do not prove security" in signal["boundary"]
+            assert "policy semantics" in signal["boundary"]
+
+    def test_equivalent_nested_supabase_migration_path_is_allowed(self):
+        signals = extract_supabase_migration_markers(
+            "apps/web/supabase/migrations/20260605010101_policy.sql",
+            "create policy p on public.todos for select using (true);",
+        )
+        assert [signal["marker_type"] for signal in signals] == [
+            "create_policy",
+            "using_clause",
+            "permissive_true",
+        ]
+        assert {signal["path"] for signal in signals} == {
+            "apps/web/supabase/migrations/20260605010101_policy.sql"
+        }
+
+    def test_non_migration_paths_emit_no_markers(self):
+        sql = "alter table public.todos enable row level security;"
+        assert extract_supabase_migration_markers("supabase/schema.sql", sql) == []
+        assert extract_supabase_migration_markers("migrations/001_rls.sql", sql) == []
+        assert extract_supabase_migration_markers("supabase/migrations/readme.md", sql) == []
+
+    def test_benign_sql_migration_emits_no_markers(self):
+        sql = "\n".join(
+            [
+                "create table public.todos (id uuid primary key);",
+                "insert into public.todos (id) values ('00000000-0000-0000-0000-000000000000');",
+                "create index todos_id_idx on public.todos (id);",
+            ]
+        )
+        assert extract_supabase_migration_markers("supabase/migrations/002_benign.sql", sql) == []
+
+    def test_marker_cap_limits_each_marker_type_independently(self):
+        sql = "\n".join(
+            [
+                "grant select on public.todos to authenticated;",
+                "grant insert on public.todos to authenticated;",
+                "grant update on public.todos to authenticated;",
+                "revoke delete on public.todos from anon;",
+                "revoke truncate on public.todos from anon;",
+                "create policy p on public.todos for select using (true);",
+            ]
+        )
+
+        signals = extract_supabase_migration_markers(
+            "supabase/migrations/003_cap.sql",
+            sql,
+            max_per_type=2,
+        )
+
+        grant_lines = [signal["line"] for signal in signals if signal["marker_type"] == "grant_statement"]
+        revoke_lines = [signal["line"] for signal in signals if signal["marker_type"] == "revoke_statement"]
+        assert grant_lines == [1, 2]
+        assert revoke_lines == [4, 5]

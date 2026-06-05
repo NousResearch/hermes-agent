@@ -2114,6 +2114,14 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "zai",
     "gemini",
     "google",
+    # MiniMax: the static ``_PROVIDER_MODELS`` snapshot goes stale on
+    # every new release (M2 → M2.1 → M2.5 → M2.7 → M3 …).  Including the
+    # two api_key profiles here routes ``list_authenticated_providers``
+    # through ``provider_model_ids()`` → live ``/v1/models`` fetch, with
+    # the static list as fallback on network/auth errors.  See
+    # tests/hermes_cli/test_minimax_picker.py.
+    "minimax",
+    "minimax-cn",
 })
 
 
@@ -3503,8 +3511,11 @@ def validate_requested_model(
                 ),
             }
 
-    # MiniMax providers don't expose a /models endpoint — validate against
-    # the static catalog instead, similar to openai-codex.
+    # MiniMax providers DO expose a /v1/models endpoint (the OpenAI-compat
+    # catalog on the same host), but the live fetch can still fail (401 with
+    # an invalid key, network down, custom base URL with no /models).  Use
+    # the static catalog as a fallback so validation never wedges on a
+    # transient fetch error — similar to openai-codex.
     if normalized in {"minimax", "minimax-cn"}:
         try:
             catalog_models = provider_model_ids(normalized)

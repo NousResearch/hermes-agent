@@ -1,11 +1,22 @@
-"""MiniMax provider profiles (international + China).
+"""MiniMax provider profiles (international + China + OAuth).
 
-Both use anthropic_messages api_mode — their inference_base_url
-ends with /anthropic which triggers auto-detection to anthropic_messages.
+All three use anthropic_messages api_mode — their inference ``base_url``
+ends with ``/anthropic`` which triggers auto-detection to anthropic_messages.
+
+The catalog endpoint lives at the OpenAI-compatible ``/v1/models`` path
+on the same host (NOT under ``/anthropic``), so we set ``models_url``
+explicitly.  Without this, the default ``ProviderProfile.fetch_models``
+hits ``<base_url>/models`` → ``https://api.minimax.io/anthropic/models``,
+which 404s, and the live catalog never makes it into the /model picker.
 """
 
 from providers import register_provider
 from providers.base import ProviderProfile
+
+# OpenAI-compat /v1/models catalog endpoints, paired with the inference
+# base URLs above.  Keep these in sync if MiniMax ever moves the catalog.
+_MINIMAX_INTL_MODELS_URL = "https://api.minimax.io/v1/models"
+_MINIMAX_CN_MODELS_URL = "https://api.minimaxi.com/v1/models"
 
 minimax = ProviderProfile(
     name="minimax",
@@ -13,6 +24,7 @@ minimax = ProviderProfile(
     api_mode="anthropic_messages",
     env_vars=("MINIMAX_API_KEY",),
     base_url="https://api.minimax.io/anthropic",
+    models_url=_MINIMAX_INTL_MODELS_URL,
     auth_type="api_key",
     default_aux_model="MiniMax-M2.7",
 )
@@ -23,6 +35,7 @@ minimax_cn = ProviderProfile(
     api_mode="anthropic_messages",
     env_vars=("MINIMAX_CN_API_KEY",),
     base_url="https://api.minimaxi.com/anthropic",
+    models_url=_MINIMAX_CN_MODELS_URL,
     auth_type="api_key",
     default_aux_model="MiniMax-M2.7",
 )
@@ -36,6 +49,7 @@ minimax_oauth = ProviderProfile(
     signup_url="https://api.minimax.io/",
     env_vars=(),  # OAuth — tokens in auth.json, not env
     base_url="https://api.minimax.io/anthropic",
+    models_url=_MINIMAX_INTL_MODELS_URL,
     auth_type="oauth_external",
     default_aux_model="MiniMax-M2.7-highspeed",
 )

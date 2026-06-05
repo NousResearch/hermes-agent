@@ -1,7 +1,11 @@
-"""Tests for MiniMax model validation via static catalog (issues #12611, #12460, #12399, #12547).
+"""Tests for MiniMax model validation via static catalog fallback (issues #12611, #12460, #12399, #12547).
 
-MiniMax and MiniMax-CN providers don't expose /v1/models, so validate_requested_model()
-must validate against the static catalog instead of probing the live API.
+MiniMax exposes ``/v1/models`` (OpenAI-compat catalog on the same host), so
+the live fetch in ``validate_requested_model()`` does work — but it can
+still fail with 401 on a stale key, network error, or a custom ``base_url``
+that has no ``/models`` path.  The catalog path below is the *fallback*
+that keeps validation from wedging on a transient fetch error.  Tests in
+``tests/hermes_cli/test_minimax_picker.py`` cover the live-fetch path.
 """
 
 from unittest.mock import patch
@@ -60,16 +64,21 @@ class TestMiniMaxModelValidation:
     # -------------------------------------------------------------------------
     def test_near_match_minimax_cn_suggests_similar(self):
         # "MiniMax-M2.7-highspeed" is somewhat similar to "MiniMax-M2.7" (ratio ~0.71)
-        # but below the 0.9 auto-correct cutoff. It should be accepted with a
-        # recognized=False and a similar-models suggestion (ratio > 0.5).
+        # but below the 0.9 auto-correct cutoff.  The merged catalog
+        # (static + models.dev) now lists it, so it's recognized; we
+        # still assert that no auto-correction happens (because the
+        # similarity is below the 0.9 cutoff for *equal-id* correction —
+        # the catalog already contains the exact id, so correction is
+        # unnecessary).  The "similar models" suggestion is irrelevant
+        # when the model is recognized, so the message check below is
+        # only meaningful for the unrecognized branches covered by the
+        # other tests in this class.
         result = validate_requested_model("MiniMax-M2.7-highspeed", "minimax-cn")
         assert result["accepted"] is True
         assert result["persist"] is True
-        assert result["recognized"] is False
-        # Should NOT auto-correct (ratio 0.71 < 0.9)
+        assert result["recognized"] is True
+        # Should NOT auto-correct (the exact id is already in the catalog)
         assert "corrected_model" not in result
-        # But should suggest similar models (ratio 0.71 > 0.5)
-        assert "MiniMax-M2.7" in result["message"]
 
     # -------------------------------------------------------------------------
     # Test 3: A completely unknown model is accepted (not rejected) with a warning
@@ -77,14 +86,13 @@ class TestMiniMaxModelValidation:
     def test_unknown_minimax_model_accepted_with_warning(self):
         # "NotARealModel" has very low similarity to any MiniMax model (~0.16).
         # It should still be accepted (not rejected), with recognized=False and
-        # a note that MiniMax doesn't expose /models.
+        # a note that the live /v1/models fetch (when available) didn't list it.
         result = validate_requested_model("NotARealModel", "minimax")
         assert result["accepted"] is True
         assert result["persist"] is True
         assert result["recognized"] is False
         assert "NotARealModel" in result["message"]
         assert "not found in the MiniMax catalog" in result["message"]
-        assert "MiniMax does not expose a /models endpoint" in result["message"]
 
     # -------------------------------------------------------------------------
     # Test 4: Verify catalog path is used (probe_api_models returns None)

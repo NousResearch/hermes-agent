@@ -176,6 +176,15 @@ MANUAL_NAMES = {
     "docs.md",
 }
 
+TOP_ATTENTION_ROOT_NOISE_NAMES = {
+    ".gitignore",
+    ".vercelignore",
+    "agents.md",
+    "claude.md",
+    "plan.md",
+    "package-lock.json",
+}
+
 ENTRYPOINT_NAMES = {
     "main.py",
     "app.py",
@@ -249,6 +258,53 @@ def _is_binary_like(path: str, language: str) -> bool:
     return _suffix(path) in BINARY_LIKE_EXTENSIONS
 
 
+def _normalized_path(path: str) -> str:
+    return path.replace("\\", "/")
+
+
+def _is_docs_path(path: str) -> bool:
+    lowered = _normalized_path(path).lower()
+    return lowered.startswith("docs/") or "/docs/" in lowered
+
+
+def _is_bead_path(path: str) -> bool:
+    lowered = _normalized_path(path).lower()
+    return lowered.startswith(".beads/") or "/.beads/" in lowered
+
+
+def _is_top_attention_noise(path: str, language: str = "") -> bool:
+    """Return True for files that should not dominate top handoff routing."""
+    base = _basename(path)
+    return (
+        _is_bead_path(path)
+        or _is_docs_path(path)
+        or _is_image(path)
+        or _is_binary_like(path, language)
+        or base in TOP_ATTENTION_ROOT_NOISE_NAMES
+    )
+
+
+def _preferred_entrypoint_boost(path: str) -> tuple[int, str]:
+    lowered = _normalized_path(path).lower()
+    if lowered in {"src/main.tsx", "src/main.ts", "src/main.jsx", "src/main.js"}:
+        return 220, "preferred app root: src/main"
+    if lowered in {"src/app.tsx", "src/app.ts", "src/app.jsx", "src/app.js"}:
+        return 120, "preferred app root: src/App"
+    if lowered in {
+        "vite.config.ts",
+        "vite.config.js",
+        "vite.config.mjs",
+        "vite.config.mts",
+        "vite.config.cts",
+    }:
+        return 135, "preferred framework root: vite config"
+    if lowered.startswith("supabase/functions/") and lowered.endswith(("/index.ts", "/index.js")):
+        return 100, "preferred serverless root: supabase function index"
+    if lowered == "package.json":
+        return 90, "preferred project root: package scripts"
+    return 0, ""
+
+
 def _bucket_for(path: str) -> str:
     base = _basename(path)
     lowered = path.lower().replace("\\", "/")
@@ -266,7 +322,13 @@ def _bucket_for(path: str) -> str:
         return "DB/RLS"
     if _has_any(lowered, ("/api/", "api/", "route.ts", "route.js", "controller", "endpoint", "graphql", "trpc")):
         return "data/API"
-    if base in ENTRYPOINT_NAMES or base.startswith("run_") or "src/main" in lowered or "src/index" in lowered:
+    if (
+        base in ENTRYPOINT_NAMES
+        or base.startswith("run_")
+        or "src/main" in lowered
+        or "src/app" in lowered
+        or "src/index" in lowered
+    ):
         return "entrypoints"
     if (
         base in CONFIG_NAMES
@@ -326,6 +388,13 @@ def _score_scan_file(path: str, lines: int, language: str) -> tuple[int, dict[st
         reasons.append("deprioritized oversized static artifact")
     if penalty:
         details["penalty"] = penalty
+    preferred_boost, preferred_reason = _preferred_entrypoint_boost(path)
+    if preferred_boost:
+        details["preferred_boost"] = preferred_boost
+        reasons.append(preferred_reason)
+    if _is_top_attention_noise(path, language):
+        details["top_attention_noise_penalty"] = -260
+        reasons.append("deprioritized top-attention noise")
 
     score = sum(details.values())
     return score, details, reasons, bucket
@@ -345,6 +414,8 @@ def _collect_hub_scores(analytics: Optional[dict]) -> dict[str, int]:
         if not node_id.startswith("file:"):
             continue
         path = node_id[len("file:"):]
+        if _is_top_attention_noise(path):
+            continue
         try:
             degree = int(hub.get("degree", 0))
         except (TypeError, ValueError):
@@ -463,6 +534,8 @@ def build_recommended_files(
 def _must_read_safe_path(path: str, language: str = "") -> bool:
     """Return True when a path is suitable for the bounded must-read map."""
     if not path:
+        return False
+    if _is_top_attention_noise(path, language):
         return False
     if _is_lockfile(path) or _is_image(path) or _is_binary_like(path, language):
         return False

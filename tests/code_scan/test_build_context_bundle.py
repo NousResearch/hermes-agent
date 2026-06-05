@@ -742,6 +742,63 @@ class TestRecommendedFiles:
             assert entry.get("bucket")
             assert entry.get("reason")
 
+    def test_recommended_files_filter_top_noise_but_preserve_raw_inventory(self, tmp_path: Path):
+        """Noisy handoff/docs/assets/root metadata stay in scan but not top recommendations."""
+        bundle = _make_minimal_bundle(tmp_path)
+        scan_path = bundle / "scan.json"
+        scan = json.loads(scan_path.read_text())
+        noisy_paths = [
+            ".beads/ua-tier1-004.md",
+            "docs/architecture.md",
+            "public/logo.png",
+            "public/hero.jpg",
+            "public/diagram.svg",
+            ".gitignore",
+            ".vercelignore",
+            "AGENTS.md",
+            "CLAUDE.md",
+            "PLAN.md",
+            "package-lock.json",
+        ]
+        preferred_paths = [
+            "src/main.tsx",
+            "src/App.tsx",
+            "vite.config.ts",
+            "supabase/functions/invite/index.ts",
+            "package.json",
+        ]
+        scan["files"] = (
+            [{"path": path, "lines": 500, "language": "markdown"} for path in noisy_paths]
+            + [
+                {"path": "src/main.tsx", "lines": 80, "language": "typescript"},
+                {"path": "src/App.tsx", "lines": 110, "language": "typescript"},
+                {"path": "vite.config.ts", "lines": 35, "language": "typescript"},
+                {"path": "supabase/functions/invite/index.ts", "lines": 70, "language": "typescript"},
+                {"path": "package.json", "lines": 45, "language": "json"},
+            ]
+        )
+        scan["total_files"] = len(scan["files"])
+        scan["total_lines"] = sum(item["lines"] for item in scan["files"])
+        scan_path.write_text(json.dumps(scan, indent=2))
+        (bundle / "graph_analytics.json").write_text(json.dumps({
+            "hub_nodes": [
+                {"node_id": "file:docs/architecture.md", "degree": 25, "label": "architecture.md"},
+                {"node_id": "file:AGENTS.md", "degree": 20, "label": "AGENTS.md"},
+                {"node_id": "file:src/App.tsx", "degree": 6, "label": "App.tsx"},
+            ],
+        }, indent=2))
+
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        data = json.loads(out.read_text())
+        recommended_paths = [entry["path"] for entry in data["recommended_files"]]
+        top_paths = recommended_paths[:len(preferred_paths)]
+
+        assert top_paths == preferred_paths
+        assert set(noisy_paths) <= {item["path"] for item in scan["files"]}
+        for noisy_path in noisy_paths:
+            assert noisy_path not in top_paths
+
 
 # ── FULL: integration via CLI ───────────────────────────────────────────
 

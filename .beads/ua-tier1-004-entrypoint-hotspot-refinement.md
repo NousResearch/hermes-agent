@@ -1,7 +1,7 @@
 ---
 id: ua-tier1-004-entrypoint-hotspot-refinement
 title: Entrypoint and Hotspot Refinement
-status: planned-not-approved
+status: completed
 executor: codex-coder
 parallel_safe: false
 risk: medium

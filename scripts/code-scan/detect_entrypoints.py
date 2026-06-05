@@ -24,6 +24,39 @@ if str(SCRIPT_DIR) not in sys.path:
 SCHEMA_VERSION = "1.0.0"
 
 
+def _normalize_rel_path(path: str) -> str:
+    """Return a stable POSIX-like relative path for ranking heuristics."""
+    return path.replace("\\", "/")
+
+
+def _entrypoint_rank(ep: Dict[str, Any]) -> tuple[int, float, str]:
+    """Sort likely app roots ahead of generic standalone entrypoints."""
+    path = _normalize_rel_path(str(ep.get("file") or ""))
+    lowered = path.lower()
+    base = os.path.basename(lowered)
+
+    if re.fullmatch(r"src/main\.(ts|tsx|js|jsx|mjs|cjs)", lowered):
+        priority = 0
+    elif re.fullmatch(r"src/app\.(ts|tsx|js|jsx)", lowered):
+        priority = 1
+    elif re.fullmatch(r"vite\.config\.(ts|js|mjs|mts|cts)", lowered):
+        priority = 2
+    elif re.fullmatch(r"supabase/functions/[^/]+/index\.(ts|js)", lowered):
+        priority = 3
+    elif path == "package.json":
+        priority = 4
+    elif base == "__main__.py":
+        priority = 5
+    elif base.startswith("main."):
+        priority = 6
+    elif base.startswith("app.") or base.startswith("index."):
+        priority = 7
+    else:
+        priority = 8
+
+    return (priority, -float(ep.get("confidence") or 0), path)
+
+
 def _read_file_content(abs_path: str) -> Optional[str]:
     """Read file content safely. Returns None on any read error."""
     try:
@@ -196,13 +229,23 @@ def _detect_js_ts_entrypoints(
     """Detect JavaScript/TypeScript entrypoints."""
     entrypoints = []
     signals = []
+    norm_path = _normalize_rel_path(rel_path)
+    lowered_path = norm_path.lower()
+    basename_l = basename.lower()
 
-    is_index = basename == "index.js" or basename == "index.ts"
-    is_main = basename == "main.js" or basename == "main.ts"
-    is_app = basename == "app.js" or basename == "app.ts"
+    is_index = basename_l in {"index.js", "index.jsx", "index.ts", "index.tsx"}
+    is_main = basename_l in {"main.js", "main.jsx", "main.ts", "main.tsx"}
+    is_app = basename_l in {"app.js", "app.jsx", "app.ts", "app.tsx"}
+    is_src_main = bool(re.fullmatch(r"src/main\.(ts|tsx|js|jsx|mjs|cjs)", lowered_path))
+    is_src_app = bool(re.fullmatch(r"src/app\.(ts|tsx|js|jsx)", lowered_path))
+    is_vite_config = bool(re.fullmatch(r"vite\.config\.(ts|js|mjs|mts|cts)", lowered_path))
+    is_supabase_function = bool(re.fullmatch(r"supabase/functions/[^/]+/index\.(ts|js)", lowered_path))
 
     has_app_listen = bool(re.search(r'\.listen\s*\(', content))
     has_app_listen_explicit = "app.listen" in content
+    has_react_create_root = "createRoot(" in content or "react-dom/client" in content
+    has_vite_define_config = "defineConfig" in content and "vite" in content
+    has_deno_serve = "Deno.serve" in content
 
     # Check if referenced in package.json
     pkg_main = None
@@ -237,12 +280,26 @@ def _detect_js_ts_entrypoints(
         signals.append("app.listen")
     elif has_app_listen:
         signals.append(".listen()")
+    if is_src_main:
+        signals.append("src/main app root")
+        if has_react_create_root:
+            signals.append("React createRoot")
+    if is_src_app:
+        signals.append("src/App app root")
+    if is_vite_config:
+        signals.append("vite config")
+        if has_vite_define_config:
+            signals.append("vite defineConfig")
+    if is_supabase_function:
+        signals.append("supabase function index")
+        if has_deno_serve:
+            signals.append("Deno.serve")
 
     # Entry file heuristic: index.js, main.ts, app.js in root/app/src
     if is_index and not signals:
-        signals.append("index.js entry file")
+        signals.append("index entry file")
     if is_main and not signals:
-        signals.append("main.ts entry file")
+        signals.append("main entry file")
     if is_app and not signals:
         signals.append("app entry file")
 
@@ -264,6 +321,12 @@ def _detect_js_ts_entrypoints(
         confidence += 0.25
     if is_pkg_referenced:
         confidence += 0.15
+    if is_src_main:
+        confidence += 0.25
+    if is_src_app:
+        confidence += 0.2
+    if is_vite_config or is_supabase_function:
+        confidence += 0.25
     confidence = min(round(confidence, 2), 0.98)
 
     entrypoints.append({
@@ -274,6 +337,50 @@ def _detect_js_ts_entrypoints(
         "confidence": confidence,
     })
     return entrypoints
+
+
+def _detect_package_json_entrypoints(
+    rel_path: str,
+    content: str,
+) -> List[Dict[str, Any]]:
+    """Detect package.json scripts and framework roots as entrypoint hints."""
+    if _normalize_rel_path(rel_path) != "package.json":
+        return []
+    try:
+        pkg = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+
+    signals = []
+    scripts = pkg.get("scripts")
+    if isinstance(scripts, dict):
+        for name in ("dev", "start", "build", "preview"):
+            if scripts.get(name):
+                signals.append(f"package.json:scripts.{name}")
+    for key in ("main", "module", "browser", "bin"):
+        if pkg.get(key):
+            signals.append(f"package.json:{key}")
+    deps: dict[str, Any] = {}
+    for key in ("dependencies", "devDependencies"):
+        value = pkg.get(key)
+        if isinstance(value, dict):
+            deps.update(value)
+    for framework in ("vite", "next", "react", "svelte", "vue", "@supabase/supabase-js"):
+        if framework in deps:
+            signals.append(f"package.json:dependency:{framework}")
+
+    if not signals:
+        return []
+
+    return [{
+        "file": rel_path,
+        "language": "json",
+        "type": "package_scripts",
+        "signals": signals,
+        "confidence": 0.88,
+    }]
 
 
 # ── Go entrypoint detection ──────────────────────────────────────────────
@@ -460,6 +567,12 @@ def detect_entrypoints(scan_json_path: str) -> Dict[str, Any]:
                 abs_path, rel_path, content, basename
             )
             all_entrypoints.extend(eps)
+
+        elif language == "json" and _normalize_rel_path(rel_path) == "package.json":
+            eps = _detect_package_json_entrypoints(rel_path, content)
+            all_entrypoints.extend(eps)
+
+    all_entrypoints.sort(key=_entrypoint_rank)
 
     # Build totals
     by_type: Dict[str, int] = {}

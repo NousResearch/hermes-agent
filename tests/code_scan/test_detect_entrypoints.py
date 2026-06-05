@@ -247,6 +247,60 @@ class TestTSExpress:
         assert "listen" in signals_str
 
 
+class TestTier1EntrypointRefinement:
+    """UA Tier 1: framework roots should beat noisy handoff files."""
+
+    def test_react_vite_and_supabase_roots_are_detected_and_ranked_first(self, tmp_path: Path):
+        project = tmp_path / "app"
+        files = {
+            "src/main.tsx": "import React from 'react';\nimport { createRoot } from 'react-dom/client';\ncreateRoot(document.getElementById('root')!).render(<App />);\n",
+            "src/App.tsx": "export default function App() { return <main />; }\n",
+            "vite.config.ts": "import { defineConfig } from 'vite';\nexport default defineConfig({});\n",
+            "supabase/functions/invite/index.ts": "Deno.serve((_req) => new Response('ok'));\n",
+            ".beads/ua-plan.md": "def main():\n    pass\n",
+            "docs/architecture.md": "The main app entrypoint is documented here.\n",
+            "public/logo.svg": "<svg></svg>\n",
+            "AGENTS.md": "Use src/main.tsx for the application.\n",
+            "package-lock.json": "{\"lockfileVersion\": 3}\n",
+        }
+        scan_files = []
+        for rel_path, content in files.items():
+            abs_path = project / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(content)
+            language = "typescript" if rel_path.endswith((".ts", ".tsx")) else "markdown"
+            if rel_path.endswith(".json"):
+                language = "json"
+            elif rel_path.endswith(".svg"):
+                language = "svg"
+            scan_files.append({
+                "path": str(abs_path),
+                "relative_path": rel_path,
+                "language": language,
+                "lines": content.count("\n") + 1,
+            })
+        scan_path = project / "scan.json"
+        scan_path.write_text(json.dumps({
+            "project_root": str(project),
+            "files": scan_files,
+        }, indent=2))
+
+        result = detect_entrypoints(str(scan_path))
+        ranked_files = [entry["file"] for entry in result["entrypoints"]]
+
+        assert ranked_files[:4] == [
+            "src/main.tsx",
+            "src/App.tsx",
+            "vite.config.ts",
+            "supabase/functions/invite/index.ts",
+        ]
+        assert ".beads/ua-plan.md" not in ranked_files
+        assert "docs/architecture.md" not in ranked_files
+        assert "public/logo.svg" not in ranked_files
+        assert "AGENTS.md" not in ranked_files
+        assert "package-lock.json" not in ranked_files
+
+
 # ── Go detection ────────────────────────────────────────────────────────
 
 class TestGoEntrypoints:

@@ -393,6 +393,17 @@ class TestCmdRemove:
 class TestCmdList:
     """Test the list command."""
 
+    def test_discover_all_plugins_includes_category_plugin_keys(self):
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        names = {entry[0] for entry in _discover_all_plugins()}
+        assert "observability/langfuse" in names
+
+    def test_plugin_exists_accepts_category_plugin_key(self):
+        from hermes_cli.plugins_cmd import _plugin_exists
+
+        assert _plugin_exists("observability/langfuse") is True
+
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     def test_list_empty_plugins_dir(self, mock_plugins_dir):
         from hermes_cli.plugins_cmd import cmd_list

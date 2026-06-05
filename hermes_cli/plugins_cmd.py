@@ -725,7 +725,47 @@ def _plugin_exists(name: str) -> bool:
             or (candidate / "plugin.yml").exists()
         ):
             return True
+        # Category plugins use path-derived keys such as
+        # ``observability/langfuse`` (the same key shape used by
+        # PluginManager.discover_and_load).  Keep the CLI/dashboard provider
+        # inventory aligned with the runtime loader instead of only checking
+        # flat ``plugins/<name>/`` directories.
+        try:
+            nested = _sanitize_plugin_name(name, repo_plugins, allow_subdir=True)
+        except ValueError:
+            nested = None
+        if nested and nested.is_dir() and (
+            (nested / "plugin.yaml").exists()
+            or (nested / "plugin.yml").exists()
+        ):
+            return True
     return False
+
+
+def _iter_plugin_manifest_dirs(base: Path, source: str):
+    """Yield ``(lookup_key, dir)`` for flat and category plugin manifests.
+
+    This mirrors the two-level layout supported by ``PluginManager``:
+    ``plugins/disk-cleanup/plugin.yaml`` and
+    ``plugins/observability/langfuse/plugin.yaml``.  Memory/context/model
+    provider directories keep their dedicated discovery paths.
+    """
+    if not base.is_dir():
+        return
+    skip_top = {"memory", "context_engine", "model-providers"}
+    for child in sorted(base.iterdir()):
+        if not child.is_dir():
+            continue
+        if source == "bundled" and child.name in skip_top:
+            continue
+        if (child / "plugin.yaml").exists() or (child / "plugin.yml").exists():
+            yield child.name, child
+            continue
+        for nested in sorted(child.iterdir()):
+            if not nested.is_dir():
+                continue
+            if (nested / "plugin.yaml").exists() or (nested / "plugin.yml").exists():
+                yield f"{child.name}/{nested.name}", nested
 
 
 def _discover_all_plugins() -> list:
@@ -741,43 +781,36 @@ def _discover_all_plugins() -> list:
     except ImportError:
         yaml = None
 
-    seen: dict = {}  # name -> (name, version, description, source, path)
+    seen: dict = {}  # lookup key -> (key, version, description, source, path)
 
-    # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
+    # Bundled/user plugin manifests, including category layouts such as
+    # ``observability/langfuse``.  The lookup key intentionally matches the
+    # runtime PluginManager key so ``hermes plugins list`` and the dashboard
+    # hub do not drift from what actually loads.
     from hermes_cli.plugins import get_bundled_plugins_dir
     repo_plugins = get_bundled_plugins_dir()
     for base, source in ((repo_plugins, "bundled"), (_plugins_dir(), "user")):
-        if not base.is_dir():
-            continue
-        for d in sorted(base.iterdir()):
-            if not d.is_dir():
-                continue
-            if source == "bundled" and d.name in {"memory", "context_engine"}:
-                continue
+        for lookup_key, d in _iter_plugin_manifest_dirs(base, source):
             manifest_file = d / "plugin.yaml"
             if not manifest_file.exists():
                 manifest_file = d / "plugin.yml"
-            if not manifest_file.exists():
-                continue
-            name = d.name
             version = ""
             description = ""
             if yaml:
                 try:
                     with open(manifest_file, encoding="utf-8") as f:
                         manifest = yaml.safe_load(f) or {}
-                    name = manifest.get("name", d.name)
                     version = manifest.get("version", "")
                     description = manifest.get("description", "")
                 except Exception:
                     pass
-            # User plugins override bundled on name collision.
-            if name in seen and source == "bundled":
+            # User plugins override bundled on lookup-key collision.
+            if lookup_key in seen and source == "bundled":
                 continue
             src_label = source
             if source == "user" and (d / ".git").exists():
                 src_label = "git"
-            seen[name] = (name, version, description, src_label, d)
+            seen[lookup_key] = (lookup_key, version, description, src_label, d)
     return list(seen.values())
 
 

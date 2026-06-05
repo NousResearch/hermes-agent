@@ -165,6 +165,7 @@
     "asar": true,
     "afterSign": "scripts/notarize.cjs",
     "asarUnpack": [
+      "dist/**",
       "**/*.node",
       "**/prebuilds/**"
     ],

@@ -1267,3 +1267,61 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is True
         assert "LOCAL BODY" in result["content"]
+
+    def test_reference_file_in_skill_dir_not_treated_as_skill(self, tmp_path):
+        """A <name>.md file inside a skill's references/ directory should
+        NOT be treated as a standalone legacy skill — it's a supporting
+        document within an existing skill.
+
+        Regression test for the bug where Strategy 3's rglob matched
+        ``hermes-agent/references/native-mcp.md`` as a candidate,
+        causing a false collision with the real ``mcp/native-mcp`` skill.
+        """
+        skills_dir = tmp_path / "skills"
+        external_dir = tmp_path / "external"
+        skills_dir.mkdir()
+        external_dir.mkdir()
+
+        # Create a real skill at mcp/native-mcp
+        _make_skill(skills_dir, "native-mcp", category="mcp",
+                    body="REAL SKILL")
+
+        # Create another skill (hermes-agent) that has a references/ dir
+        # containing a file called native-mcp.md — this is NOT a skill.
+        agent_skill = external_dir / "hermes-agent"
+        refs_dir = agent_skill / "references"
+        refs_dir.mkdir(parents=True)
+        (refs_dir / "native-mcp.md").write_text(
+            "# Native MCP Reference\n\nJust a reference doc.\n"
+        )
+
+        p1, p2 = self._patch_dirs(skills_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("native-mcp")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "REAL SKILL" in result["content"]
+
+    @pytest.mark.parametrize("subdir", ["references", "templates", "scripts", "assets"])
+    def test_skill_internal_subdirs_excluded(self, tmp_path, subdir):
+        """All four skill-internal subdirectory names are excluded from
+        Strategy 3 legacy file matching."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Create a real skill
+        _make_skill(skills_dir, "my-tool", body="REAL SKILL")
+
+        # Drop a same-named .md into a skill-internal subdir
+        internal_dir = skills_dir / "some-other-skill" / subdir
+        internal_dir.mkdir(parents=True)
+        (internal_dir / "my-tool.md").write_text("# Reference\n")
+
+        p1, p2 = self._patch_dirs(skills_dir, [])
+        with p1, p2:
+            raw = skill_view("my-tool")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "REAL SKILL" in result["content"]

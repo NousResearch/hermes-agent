@@ -77,6 +77,10 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    // Surface "sign in again" once per disconnect episode, not on every backoff
+    // tick — a stale OAuth ticket fails every attempt and would otherwise stack
+    // identical error toasts (and their haptics). Reset on the next clean open.
+    let reauthNotified = false
 
     // Wrap the live getter in a call so TS control-flow analysis doesn't narrow
     // `connectionState` to a constant across the early-return guards (the state
@@ -128,7 +132,8 @@ export function useGatewayBoot({
         // again" message once instead of silently looping the backoff against a
         // ticket that can never succeed. Transport failures fall through to the
         // backoff in the finally block below.
-        if (!cancelled && isGatewayReauthRequired(err)) {
+        if (!cancelled && isGatewayReauthRequired(err) && !reauthNotified) {
+          reauthNotified = true
           notifyError(err, 'Gateway sign-in required')
         }
       } finally {
@@ -188,6 +193,7 @@ export function useGatewayBoot({
 
       if (st === 'open') {
         reconnectAttempt = 0
+        reauthNotified = false
         clearReconnectTimer()
       } else if (bootCompleted && (st === 'closed' || st === 'error')) {
         // The socket dropped after a healthy boot (typically sleep/wake). Try

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
+import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
@@ -87,6 +88,22 @@ export function SidebarSessionRow({
           className
         )}
         data-working={isWorking ? 'true' : undefined}
+        draggable
+        onDragStart={event => {
+          // Reorder drags belong to dnd-kit (the grab handle) — cancel the
+          // native drag so the two DnD systems don't fight.
+          if ((event.target as HTMLElement).closest('[data-reorder-handle]')) {
+            event.preventDefault()
+
+            return
+          }
+
+          writeSessionDrag(event.dataTransfer, {
+            id: session.id,
+            profile: session.profile || 'default',
+            title
+          })
+        }}
         ref={ref}
         style={style}
         {...rest}
@@ -132,6 +149,7 @@ export function SidebarSessionRow({
                 // out instead of being clipped by this handle's overflow-hidden.
                 needsInput && 'overflow-visible'
               )}
+              data-reorder-handle
               onClick={event => event.stopPropagation()}
             >
               <SidebarRowDot

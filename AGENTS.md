@@ -1004,6 +1004,35 @@ Leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-p
 ### `_last_resolved_tool_names` is a process-global in `model_tools.py`
 `_run_single_child()` in `delegate_tool.py` saves and restores this global around subagent execution. If you add new code that reads this global, be aware it may be temporarily stale during child agent runs.
 
+### OpenRouter/upstream model IDs can be invalidated without notice
+
+Upstream hosting providers (Fireworks, DeepInfra, etc.) occasionally pull model
+deployments or rename their public identifiers on aggregators like OpenRouter.
+When this happens, the old model ID (e.g.
+``accounts/fireworks/models/deepseek-v4-pro``) returns HTTP 400 with "is not a
+valid model ID" from OpenRouter.
+
+**How Hermes handles this already:**
+- The error classifier (`agent/error_classifier.py`) matches "is not a valid
+  model" / "model not found" patterns in both 400 and 404 responses, returning
+  ``FailoverReason.model_not_found`` with ``retryable=False`` and
+  ``should_fallback=True`` — no 3x retry burn.
+- ``_classify_400()`` checks ``_MODEL_NOT_FOUND_PATTERNS`` at line ~984, so
+  OpenRouter's 400-with-message is caught correctly.
+- The auxiliary client (``agent/auxiliary_client.py``) has its own
+  ``_is_model_not_found_error()`` with the same pattern coverage for
+  cron/worker/compression paths.
+- ``conversation_loop.py`` (line ~3249) routes non-retryable client errors to
+  ``_try_activate_fallback()`` immediately, skipping the retry count.
+
+**Best practice to protect against this:**
+- Always configure at least one fallback model/provider in
+  ``config.yaml`` → ``model.fallback_providers``. Without a fallback, the
+  session aborts with a non-retryable error when the model ID is invalid.
+- For long-running cron/background workers, pin to a known-stable model
+  (e.g. ``opencode-zen/deepseek-v4-flash-free``) that is served directly by
+  a reliable provider, not through an aggregator layer that may rename IDs.
+
 ### DO NOT hardcode cross-tool references in schema descriptions
 Tool schema descriptions must not mention tools from other toolsets by name (e.g., `browser_navigate` saying "prefer web_search"). Those tools may be unavailable (missing API keys, disabled toolset), causing the model to hallucinate calls to non-existent tools. If a cross-reference is needed, add it dynamically in `get_tool_definitions()` in `model_tools.py` — see the `browser_navigate` / `execute_code` post-processing blocks for the pattern.
 

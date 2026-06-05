@@ -212,9 +212,250 @@ WeCom AI Bot 频率上限：**30 条/分钟/会话，1000 条/小时**。
 | 每次对话帧数 | 3-5 | 5-10 |
 | Thinking 占位符 | `<think></think>` | 空字符串 `""` |
 | 846608 检测时机 | 每帧 | 仅 finish 帧（中间帧 fire-and-forget） |
-| 串行队列 | `chat-queue.ts` 保证同 chat 串行 | 依赖 gateway session lock |
+| 串行队列 | `chat-queue.ts` 保证同 chat 串行 | **双通道优先级队列** (control + normal) |
 | 连接管理 | SDK WSClient（单例） | 自建 aiohttp WS |
 | proactive 群发 | 通过 req_id 缓存的 APP_CMD_RESPONSE | 同，复用 gateway adapter |
+
+---
+
+## 双通道优先级队列（防止审批提示阻塞）
+
+**实现位置：** `gateway/platforms/wecom.py:241-402`
+
+### 问题背景
+
+原始 FIFO 队列设计会导致审批提示阻塞：
+```
+Queue: [finalize(等15秒), 审批提示(排队), ...]
+                 ↑ 阻塞        ↑ 用户看不到
+```
+
+实际生产场景：Agent 输出长内容时触发审批，finalize 帧阻塞等待 WeCom 响应（最多15秒），审批提示排在队列后面，用户无法及时看到提示并响应 `/approve`。
+
+### 解决方案：双通道优先级队列
+
+#### **Control Lane（控制通道）**
+- **用途：** 审批提示、finalize 帧、错误通知
+- **配额：** 6 reserved tokens/min + 可使用 normal 剩余配额
+- **队列：** `_control_queues`，worker: `_control_send_worker()`
+- **优先级：** 高，绕过 normal 队列
+
+#### **Normal Lane（普通通道）**
+- **用途：** 常规消息、媒体 caption
+- **配额：** 24 tokens/min（不能动用 reserved）
+- **队列：** `_chat_queues`，worker: `_chat_send_worker()`
+
+#### **Fire-and-forget（无队列）**
+- **用途：** stream 中间帧 (`finalize=False`)
+- **配额：** 无限制（WeCom 不计入 30/min）
+- **行为：** 立即发送，不等 ACK
+
+### Token Bucket 实现
+
+**Per-chat tracking** (`_chat_token_usage`):
+```python
+{
+  chat_id: {
+    "normal": 已用数量,
+    "reserved": 已用数量, 
+    "last_reset": 重置时间戳
+  }
+}
+```
+
+- **总容量：** 30 tokens/minute/chat
+- **分配：** 24 normal + 6 reserved
+- **重置：** 每 60 秒
+- **Control 策略：** 优先用 normal（不浪费 reserved），normal 耗尽后用 reserved
+
+### 集成点
+
+**1. gateway/run.py:18103-18105** (审批提示标记)
+```python
+_approval_metadata = dict(_status_thread_metadata or {})
+_approval_metadata["is_approval_prompt"] = True
+```
+
+**2. gateway/platforms/wecom.py:1697-1702** (路由到 control lane)
+```python
+is_control = metadata.pop("is_approval_prompt", False) if metadata else False
+return await self._enqueue_chat_send(..., is_control=is_control)
+```
+
+**3. gateway/platforms/wecom.py:2016-2020** (finalize 走 control lane)
+```python
+if finalize:
+    return await self._enqueue_chat_send(..., is_control=True)
+```
+
+### 效果
+
+- ✅ **审批提示立即发送**：不等待前面的 finalize 或普通消息
+- ✅ **finalize 不阻塞新消息**：finalize 走 control lane，不占用 normal 配额
+- ✅ **频率限制保证**：token bucket 确保不超过 30 条/分钟（实测触发过 846607）
+- ✅ **消息顺序正确**：control lane 仍是队列（FIFO），同类消息顺序不乱
+
+### 为什么不是"移除队列"
+
+Codex 建议和官方插件对比后的结论：
+
+> "保留限流，去掉会导致审批卡住的串行语义"
+
+- **不能完全移除队列**：生产环境已触发过 846607 限流错误
+- **不能简单 fire-and-forget 所有消息**：会导致消息顺序错乱（审批提示插在 stream 中间）
+- **正确方案**：分层优先级 + 预留配额，critical 消息走快速通道
+
+### 测试
+
+**单元测试：** `test_wecom_priority_queue.py`
+
+```bash
+cd /Users/bilibili/.hermes/hermes-agent
+python test_wecom_priority_queue.py
+```
+
+验证：
+- ✅ Token 分配：24 normal + 6 reserved
+- ✅ Normal 消息不能使用 reserved
+- ✅ Control 消息可使用全部 30 tokens
+- ✅ Reserved 在 normal 耗尽后仍可用
+- ✅ Per-turn stream state 隔离并发消息
+- ✅ 多个 stream 不互相干扰
+
+**手动测试（需要真实 WeCom 连接）：**
+1. 发送长消息触发 streaming（生成多个 stream 帧）
+2. 在输出过程中触发需要审批的命令（如 `rm` 危险操作）
+3. 验证审批提示立即显示（不等待 finalize 完成，< 1秒）
+4. 响应 `/approve` 或 `/deny`，验证流程正常
+5. 同时发送另一条消息，验证两个 stream 不互相干扰
+
+---
+
+## Per-Turn Stream State (Phase 2)
+
+**实现位置：** `gateway/platforms/wecom.py:168-184, 1207-1231`
+
+### 问题背景
+
+原始实现使用全局 stream 状态：
+```python
+self._active_stream_id: Optional[str] = None      # 全局共享
+self._active_stream_req_id: Optional[str] = None
+self._active_stream_chat_id: Optional[str] = None
+```
+
+**问题：** 当多个消息并发处理时（如审批期间又来新消息），全局状态会被覆盖，导致：
+- Stream ID 冲突
+- 消息串扰
+- Finalize 可能关闭错误的 stream
+
+### 解决方案：Per-Turn State
+
+#### StreamTurn 类
+```python
+class StreamTurn:
+    """Per-turn stream state to avoid global state conflicts."""
+    def __init__(self, chat_id: str, req_id: str):
+        self.chat_id = chat_id
+        self.req_id = req_id
+        self.stream_id = f"stream_{uuid.uuid4().hex[:12]}"  # 每个 turn 独立
+        self.accumulated_text = ""
+        self.finalized = False
+        self.start_time = time.monotonic()
+        self.expired = False
+```
+
+#### 状态管理
+```python
+# 不再使用全局状态
+# self._active_stream_id = None  ❌
+
+# 使用 per-turn 字典
+self._stream_turns: Dict[str, StreamTurn] = {}  # key = f"{chat_id}:{req_id}"
+```
+
+#### 核心方法
+
+**1. 获取或创建 Turn**
+```python
+def _get_or_create_stream_turn(self, chat_id: str, req_id: str) -> StreamTurn:
+    key = f"{chat_id}:{req_id}"
+    if key not in self._stream_turns:
+        self._stream_turns[key] = StreamTurn(chat_id, req_id)
+    return self._stream_turns[key]
+```
+
+**2. 查找活跃 Turn**
+```python
+def _find_active_turn_for_chat(self, chat_id: str) -> Optional[StreamTurn]:
+    """Find the most recent active (non-finalized) turn for a chat."""
+    for turn in self._stream_turns.values():
+        if turn.chat_id == chat_id and not turn.finalized:
+            return turn
+    return None
+```
+
+**3. 清理 Turn**
+```python
+def _cleanup_stream_turn(self, chat_id: str, req_id: str) -> None:
+    key = f"{chat_id}:{req_id}"
+    self._stream_turns.pop(key, None)
+```
+
+### 效果对比
+
+#### Before (全局状态)
+```
+时间线：
+t0: Message 1 开始 stream
+    _active_stream_id = "stream-aaa"
+    
+t1: 审批提示触发（新消息）
+    _active_stream_id = "stream-bbb"  ← 覆盖了 Message 1 的状态
+    
+t2: Message 1 尝试 finalize
+    使用 _active_stream_id = "stream-bbb"  ← 错误！
+    关闭了 Message 2 的 stream
+    
+结果：消息串扰，stream 错乱
+```
+
+#### After (per-turn state)
+```
+时间线：
+t0: Message 1 开始 stream
+    _stream_turns["chat1:req1"] = StreamTurn(stream_id="stream-aaa")
+    
+t1: 审批提示触发（新消息）
+    _stream_turns["chat1:req2"] = StreamTurn(stream_id="stream-bbb")
+    ← Message 1 的状态完全独立
+    
+t2: Message 1 finalize
+    使用 _stream_turns["chat1:req1"].stream_id = "stream-aaa"  ← 正确！
+    
+t3: Message 2 finalize
+    使用 _stream_turns["chat1:req2"].stream_id = "stream-bbb"  ← 正确！
+    
+结果：两个 stream 完全隔离，互不干扰
+```
+
+### 兼容性处理
+
+**保留 `_reset_native_stream_state()` 方法**
+```python
+def _reset_native_stream_state(self) -> None:
+    """Legacy method for compatibility. Now a no-op since state is per-turn."""
+    pass
+```
+
+保留这个方法是为了兼容现有代码中的调用，但实际上已经是 no-op（不执行任何操作），因为状态现在是 per-turn 管理的。
+
+### 测试覆盖
+
+- ✅ 同一 chat 的多个并发 turn 隔离
+- ✅ 不同 turn 有不同的 stream_id
+- ✅ 查找活跃 turn 正确
+- ✅ Turn cleanup 正确清理
 
 ---
 

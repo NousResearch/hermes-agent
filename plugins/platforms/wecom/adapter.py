@@ -166,6 +166,22 @@ class WeComStreamExpiredError(RuntimeError):
         self.errmsg = errmsg
 
 
+class StreamTurn:
+    """Per-turn stream state to avoid global state conflicts.
+
+    Each inbound message creates its own StreamTurn, ensuring concurrent
+    messages don't interfere with each other's stream state.
+    """
+    def __init__(self, chat_id: str, req_id: str):
+        self.chat_id = chat_id
+        self.req_id = req_id
+        self.stream_id = f"stream_{uuid.uuid4().hex[:12]}"
+        self.accumulated_text = ""
+        self.finalized = False
+        self.start_time = time.monotonic()
+        self.expired = False
+
+
 class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
@@ -225,14 +241,11 @@ class WeComAdapter(BasePlatformAdapter):
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
 
-        # Native streaming state — one logical stream per (chat_id, req_id).
-        # ``send_stream_frame`` initializes these on the first call of a turn
-        # and clears them on finalize / failure / 846608. While set, every
-        # subsequent frame in the same turn reuses the same stream id so the
-        # WeCom client renders updates in-place instead of as new bubbles.
-        self._active_stream_id: Optional[str] = None
-        self._active_stream_req_id: Optional[str] = None
-        self._active_stream_chat_id: Optional[str] = None
+        # Per-turn stream state: keyed by (chat_id, req_id) to support concurrent messages.
+        # Replaces global _active_stream_id to avoid conflicts when multiple messages
+        # are processed simultaneously (e.g., approval during streaming).
+        self._stream_turns: Dict[str, StreamTurn] = {}  # key = f"{chat_id}:{req_id}"
+
         # Chats whose stream session has been retired (846608 / 846609 / no
         # req_id). Cleared whenever a fresh inbound callback for the chat
         # arrives — a new inbound message gives us a new req_id and the
@@ -244,59 +257,111 @@ class WeComAdapter(BasePlatformAdapter):
         # token bucket to stay within WeCom's 30 msgs/min/chat limit.
         self._chat_queues: Dict[str, asyncio.Queue] = {}
         self._chat_workers: Dict[str, asyncio.Task] = {}
-        # Token bucket state per chat: (tokens_available, last_refill_ts)
-        self._chat_buckets: Dict[str, List[float]] = {}
 
-    # Token bucket parameters: 30 tokens max, refill 1 token per 2s.
+        # Control lane: high-priority queue for approval prompts, finalize frames,
+        # and error notifications. These bypass normal queue to prevent blocking.
+        self._control_queues: Dict[str, asyncio.Queue] = {}
+        self._control_workers: Dict[str, asyncio.Task] = {}
+
+        # Token bucket with reserved tokens for control messages.
+        # Per-chat usage tracking: {chat_id: {"normal": used, "reserved": used, "last_reset": ts}}
+        self._chat_token_usage: Dict[str, Dict[str, float]] = {}
+
+    # Token bucket parameters: 30 tokens max per minute, split between normal and reserved.
     _BUCKET_MAX_TOKENS = 30
-    _BUCKET_REFILL_INTERVAL = 2.0  # seconds per token
+    _BUCKET_NORMAL_TOKENS = 24      # For normal messages
+    _BUCKET_RESERVED_TOKENS = 6     # Reserved for control lane (approval, finalize, errors)
 
-    def _get_bucket(self, chat_id: str) -> List[float]:
-        """Get or create token bucket for a chat. [tokens, last_refill_ts]"""
+    def _get_token_usage(self, chat_id: str) -> Dict[str, float]:
+        """Get or create token usage tracking for a chat."""
         key = str(chat_id or "").strip()
-        if key not in self._chat_buckets:
-            # Start with full bucket
-            self._chat_buckets[key] = [float(self._BUCKET_MAX_TOKENS), time.monotonic()]
-        return self._chat_buckets[key]
+        if key not in self._chat_token_usage:
+            self._chat_token_usage[key] = {
+                "normal": 0.0,
+                "reserved": 0.0,
+                "last_reset": time.monotonic(),
+            }
+        return self._chat_token_usage[key]
 
     def _bucket_try_consume(self, chat_id: str) -> float:
-        """Try to consume a token. Returns 0 if available, or seconds to wait."""
-        bucket = self._get_bucket(chat_id)
+        """Try to consume a normal token. Returns 0 if available, or seconds to wait."""
+        usage = self._get_token_usage(chat_id)
         now = time.monotonic()
-        # Refill tokens based on elapsed time
-        elapsed = now - bucket[1]
-        refilled = elapsed / self._BUCKET_REFILL_INTERVAL
-        bucket[0] = min(self._BUCKET_MAX_TOKENS, bucket[0] + refilled)
-        bucket[1] = now
 
-        if bucket[0] >= 1.0:
-            bucket[0] -= 1.0
+        # Reset counters every minute
+        if now - usage["last_reset"] > 60.0:
+            usage["normal"] = 0.0
+            usage["reserved"] = 0.0
+            usage["last_reset"] = now
+
+        # Normal messages can only use normal quota
+        if usage["normal"] < self._BUCKET_NORMAL_TOKENS:
+            usage["normal"] += 1.0
             return 0.0  # token available, no wait
         else:
-            # How long until next token is available
-            deficit = 1.0 - bucket[0]
-            return deficit * self._BUCKET_REFILL_INTERVAL
+            # Wait until next minute
+            return 60.0 - (now - usage["last_reset"])
 
-    async def _enqueue_chat_send(self, chat_id: str, coro_factory):
+    def _bucket_try_consume_control(self, chat_id: str) -> float:
+        """Try to consume a control token. Can use normal remaining + reserved pool."""
+        usage = self._get_token_usage(chat_id)
+        now = time.monotonic()
+
+        # Reset counters every minute
+        if now - usage["last_reset"] > 60.0:
+            usage["normal"] = 0.0
+            usage["reserved"] = 0.0
+            usage["last_reset"] = now
+
+        # Control messages prefer normal quota first (don't waste reserved)
+        normal_available = self._BUCKET_NORMAL_TOKENS - usage["normal"]
+        if normal_available > 0:
+            usage["normal"] += 1.0
+            return 0.0
+
+        # Normal exhausted, use reserved pool
+        reserved_available = self._BUCKET_RESERVED_TOKENS - usage["reserved"]
+        if reserved_available > 0:
+            usage["reserved"] += 1.0
+            return 0.0
+
+        # Both exhausted, wait until next minute
+        return 60.0 - (now - usage["last_reset"])
+
+    async def _enqueue_chat_send(self, chat_id: str, coro_factory, is_control: bool = False):
         """Enqueue a send task for a chat and await its result.
 
-        FIFO per chat, parallel across chats. Worker uses token bucket
-        so sends fire immediately when under the rate limit, and only
-        wait when the bucket is empty.
+        FIFO per chat, parallel across chats. Two lanes:
+        - Control lane: approval prompts, finalize frames, errors (uses reserved tokens)
+        - Normal lane: regular messages (uses normal tokens only)
+
+        Control messages bypass normal queue to prevent approval prompt blocking.
         """
         key = str(chat_id or "").strip()
-        if key not in self._chat_queues:
-            self._chat_queues[key] = asyncio.Queue()
-            self._chat_workers[key] = asyncio.create_task(
-                self._chat_send_worker(key)
-            )
+
+        if is_control:
+            # Control lane: high priority, reserved token pool
+            if key not in self._control_queues:
+                self._control_queues[key] = asyncio.Queue()
+                self._control_workers[key] = asyncio.create_task(
+                    self._control_send_worker(key)
+                )
+            queue = self._control_queues[key]
+        else:
+            # Normal lane
+            if key not in self._chat_queues:
+                self._chat_queues[key] = asyncio.Queue()
+                self._chat_workers[key] = asyncio.create_task(
+                    self._chat_send_worker(key)
+                )
+            queue = self._chat_queues[key]
 
         future = asyncio.get_running_loop().create_future()
-        await self._chat_queues[key].put((coro_factory, future))
+        await queue.put((coro_factory, future))
         return await future
 
     async def _chat_send_worker(self, chat_key: str) -> None:
-        """Per-chat worker: drain queue with token-bucket rate limiting."""
+        """Per-chat worker: drain normal queue with token-bucket rate limiting."""
         queue = self._chat_queues[chat_key]
         try:
             while True:
@@ -308,6 +373,38 @@ class WeComAdapter(BasePlatformAdapter):
                         await asyncio.sleep(wait)
                         # Re-consume after wait
                         self._bucket_try_consume(chat_key)
+
+                    result = await coro_factory()
+                    if not future.done():
+                        future.set_result(result)
+                except Exception as exc:
+                    if not future.done():
+                        future.set_exception(exc)
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:
+            while not queue.empty():
+                try:
+                    _, future = queue.get_nowait()
+                    if not future.done():
+                        future.set_exception(
+                            RuntimeError("WeCom adapter shutting down")
+                        )
+                except asyncio.QueueEmpty:
+                    break
+
+    async def _control_send_worker(self, chat_key: str) -> None:
+        """Control lane worker: drain control queue with reserved token pool."""
+        queue = self._control_queues[chat_key]
+        try:
+            while True:
+                coro_factory, future = await queue.get()
+                try:
+                    # Control messages use reserved + normal remaining tokens
+                    wait = self._bucket_try_consume_control(chat_key)
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+                        self._bucket_try_consume_control(chat_key)
 
                     result = await coro_factory()
                     if not future.done():
@@ -386,11 +483,13 @@ class WeComAdapter(BasePlatformAdapter):
         # a permanent typing bubble after the gateway goes down.
         self._reset_native_stream_state()
 
-        # Cancel per-chat send workers so queued tasks get cleaned up.
-        for task in self._chat_workers.values():
+        # Cancel per-chat send workers (normal + control lanes) so queued tasks get cleaned up.
+        for task in list(self._chat_workers.values()) + list(self._control_workers.values()):
             task.cancel()
         self._chat_workers.clear()
+        self._control_workers.clear()
         self._chat_queues.clear()
+        self._control_queues.clear()
 
         if self._listen_task:
             self._listen_task.cancel()
@@ -1136,11 +1235,30 @@ class WeComAdapter(BasePlatformAdapter):
             return req_id
         return self._last_chat_req_ids.get(str(chat_id or "").strip()) or None
 
+    def _get_or_create_stream_turn(self, chat_id: str, req_id: str) -> StreamTurn:
+        """Get or create a StreamTurn for the given chat and req_id."""
+        key = f"{chat_id}:{req_id}"
+        if key not in self._stream_turns:
+            self._stream_turns[key] = StreamTurn(chat_id, req_id)
+        return self._stream_turns[key]
+
+    def _cleanup_stream_turn(self, chat_id: str, req_id: str) -> None:
+        """Clean up a StreamTurn after finalization or error."""
+        key = f"{chat_id}:{req_id}"
+        self._stream_turns.pop(key, None)
+
+    def _find_active_turn_for_chat(self, chat_id: str) -> Optional[StreamTurn]:
+        """Find the most recent active (non-finalized) turn for a chat."""
+        for turn in self._stream_turns.values():
+            if turn.chat_id == chat_id and not turn.finalized:
+                return turn
+        return None
+
     def _reset_native_stream_state(self) -> None:
-        """Clear active stream tracking. Idempotent."""
-        self._active_stream_id = None
-        self._active_stream_req_id = None
-        self._active_stream_chat_id = None
+        """Legacy method for compatibility. Now a no-op since state is per-turn."""
+        # No-op: stream state is now per-turn, not global.
+        # Kept for compatibility with existing code that calls this.
+        pass
 
     async def _force_reconnect_on_stale_subscription(self, errcode: int) -> None:
         """Force-close the WS when server rejects our subscription (846609).
@@ -1653,7 +1771,8 @@ class WeComAdapter(BasePlatformAdapter):
         #    因此所有媒体统一走 aibot_send_msg 主动发送。"
         # The reply_req_id is "owned" by the stream — using it for media
         # causes the server to either ignore it or never ack.
-        if self._active_stream_id is not None or chat_id in self._stream_expired_chats:
+        active_turn = self._find_active_turn_for_chat(chat_id)
+        if active_turn or chat_id in self._stream_expired_chats:
             reply_req_id = None  # force proactive send
 
         try:
@@ -1662,19 +1781,23 @@ class WeComAdapter(BasePlatformAdapter):
                 prepared["final_type"],
                 prepared["file_name"],
             )
+            logger.info("[%s] upload_media_bytes OK: media_id=%s type=%s", self.name, upload_result.get("media_id"), prepared["final_type"])
             if reply_req_id:
                 media_response = await self._send_reply_media_message(
                     reply_req_id,
                     prepared["final_type"],
                     upload_result["media_id"],
                 )
+                logger.info("[%s] send_reply_media OK: %s", self.name, media_response)
             else:
                 media_response = await self._send_media_message(
                     chat_id,
                     prepared["final_type"],
                     upload_result["media_id"],
                 )
+                logger.info("[%s] send_media_message OK: %s", self.name, media_response)
         except asyncio.TimeoutError:
+            logger.error("[%s] TIMEOUT in _send_media_source for %s", self.name, media_source)
             return SendResult(success=False, error="Timeout sending media to WeCom")
         except Exception as exc:
             logger.error("[%s] Failed to send media %s: %s", self.name, media_source, exc)
@@ -1724,15 +1847,22 @@ class WeComAdapter(BasePlatformAdapter):
 
         All sends are serialized per chat_id to avoid exceeding WeCom's
         30 msgs/min/chat rate limit (errcode 846607).
-        """
-        del metadata
 
+        If metadata contains "is_approval_prompt": True, the message is routed
+        through the control lane for immediate delivery.
+        """
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
+
+        # Check if this is an approval prompt (should use control lane)
+        is_control = False
+        if metadata:
+            is_control = metadata.pop("is_approval_prompt", False)
 
         return await self._enqueue_chat_send(
             chat_id,
             lambda: self._send_inner(chat_id, content, reply_to),
+            is_control=is_control,
         )
 
     async def _send_inner(
@@ -1743,43 +1873,44 @@ class WeComAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Actual send logic, called under the per-chat lock."""
         try:
-            # If we have an active stream for this chat, finalize it with the
+            # If we have an active stream turn for this chat, finalize it with the
             # content — this closes the typing animation and delivers the text
             # in the same bubble the user was already watching.
             # WeCom client ignores invisible finish frames (whitespace-only),
             # so we always supply at least a visible placeholder when content
             # is empty — mirrors the official OpenClaw plugin's "📎 文件已发送"
             # pattern to prevent lingering typing bubbles.
-            if (
-                self._active_stream_id is not None
-                and self._active_stream_chat_id == chat_id.strip()
-            ):
-                logger.info("[%s] send(): closing active stream %s for chat %s", self.name, self._active_stream_id, chat_id)
+            active_turn = self._find_active_turn_for_chat(chat_id.strip())
+            if active_turn and not active_turn.finalized:
+                logger.info("[%s] send(): closing active stream %s for chat %s",
+                           self.name, active_turn.stream_id, chat_id)
                 finish_content = content.strip() if content else ""
                 if not finish_content:
                     finish_content = "✅"  # minimal visible char to close typing
                 try:
                     await self._send_stream_reply(
-                        self._active_stream_req_id,
-                        self._active_stream_id,
+                        active_turn.req_id,
+                        active_turn.stream_id,
                         finish_content,
                         finish=True,
                     )
-                    self._reset_native_stream_state()
+                    active_turn.finalized = True
+                    self._cleanup_stream_turn(active_turn.chat_id, active_turn.req_id)
                     return SendResult(
                         success=True,
-                        message_id=self._active_stream_id or uuid.uuid4().hex[:12],
+                        message_id=active_turn.stream_id or uuid.uuid4().hex[:12],
                     )
                 except WeComStreamExpiredError:
                     # Stream is dead — fall through to proactive markdown send
                     self._stream_expired_chats.add(chat_id.strip())
-                    self._reset_native_stream_state()
+                    active_turn.expired = True
+                    self._cleanup_stream_turn(active_turn.chat_id, active_turn.req_id)
                 except Exception as exc:
                     logger.warning(
                         "[%s] Stream finalize in send() failed, falling through: %s",
                         self.name, exc,
                     )
-                    self._reset_native_stream_state()
+                    self._cleanup_stream_turn(active_turn.chat_id, active_turn.req_id)
 
             reply_req_id = self._reply_req_id_for_message(reply_to)
 
@@ -1929,20 +2060,15 @@ class WeComAdapter(BasePlatformAdapter):
     ) -> bool:
         """Public entry-point for the gateway streaming consumer.
 
-        Native streaming lifecycle:
-          * **First call** for the turn (``self._active_stream_id is None``):
-            resolve a usable ``req_id`` from ``reply_to`` or the cached
-            chat req_id, mint a fresh ``stream_id``, and send an empty
-            seed frame so the WeCom client immediately renders its
-            "typing" animation.
-          * **Subsequent calls**: reuse the same ``stream_id`` and push
-            the cumulative ``text`` (not an incremental delta) so the
-            client replaces the visible content in place.
-          * **finalize=True**: send the closing ``finish: true`` frame
-            and clear stream state so the next turn starts fresh.
+        Native streaming lifecycle (per-turn):
+          * **First call** for a turn: resolve req_id, create StreamTurn,
+            and send an empty seed frame to trigger WeCom typing animation.
+          * **Subsequent calls**: reuse the same StreamTurn's stream_id
+            and push cumulative text (not deltas) for in-place updates.
+          * **finalize=True**: send closing frame and clean up turn state.
 
-        All frames are serialized per chat_id (same lock as send()) to
-        avoid exceeding WeCom's 30 msgs/min/chat rate limit.
+        Each turn (chat_id + req_id) maintains independent state, allowing
+        concurrent messages without interference (e.g., approval during streaming).
 
         Returns ``True`` when the frame landed; ``False`` when the
         stream is unavailable (no req_id, expired session, transport
@@ -1950,10 +2076,10 @@ class WeComAdapter(BasePlatformAdapter):
         :meth:`send` to deliver the remaining content as a one-shot
         markdown reply.
         """
-        chat = (chat_id or self._active_stream_chat_id or "").strip()
+        chat = (chat_id or "").strip()
         if not chat:
             logger.warning(
-                "[%s] send_stream_frame: chat_id required on first call",
+                "[%s] send_stream_frame: chat_id required",
                 self.name,
             )
             return False
@@ -1961,10 +2087,12 @@ class WeComAdapter(BasePlatformAdapter):
             return False
 
         if finalize:
-            # Finalize frame counts toward 30/min — go through the queue
+            # Finalize frame counts toward 30/min — go through the control queue
+            # (high priority) to prevent blocking by normal messages or other streams.
             return await self._enqueue_chat_send(
                 chat,
                 lambda: self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=True),
+                is_control=True,
             )
         else:
             # Intermediate frames: fire-and-forget, no queue, no rate limit.
@@ -1979,58 +2107,77 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         finalize: bool = False,
     ) -> bool:
-        """Actual stream frame logic, called under the per-chat lock."""
+        """Actual stream frame logic with per-turn state.
 
+        Each turn (identified by chat_id + req_id) maintains its own stream state.
+        This prevents concurrent messages from interfering with each other.
+        """
         try:
-            if self._active_stream_id is None:
-                req_id = self._resolve_stream_req_id(chat, reply_to)
-                if not req_id:
-                    logger.debug(
-                        "[%s] send_stream_frame: no req_id available for chat %s",
-                        self.name, chat,
-                    )
-                    return False
-                self._active_stream_req_id = req_id
-                self._active_stream_chat_id = chat
-                self._active_stream_id = f"stream_{uuid.uuid4().hex[:12]}"
-                # Seed frame with empty content — this is what triggers the
-                # WeCom client's "typing" indicator before any text exists.
+            # Resolve req_id for this turn
+            req_id = self._resolve_stream_req_id(chat, reply_to)
+            if not req_id:
+                logger.debug(
+                    "[%s] send_stream_frame: no req_id available for chat %s",
+                    self.name, chat,
+                )
+                return False
+
+            # Get or create turn-specific state
+            turn = self._get_or_create_stream_turn(chat, req_id)
+
+            # Check if this turn has expired
+            if turn.expired:
+                return False
+
+            # First frame for this turn: send seed
+            if not turn.accumulated_text and not turn.finalized:
+                # Seed frame with empty content — triggers WeCom typing indicator
                 await self._send_stream_reply(
-                    req_id, self._active_stream_id, "", finish=False,
+                    turn.req_id, turn.stream_id, "", finish=False,
                 )
 
-            assert self._active_stream_id is not None
-            assert self._active_stream_req_id is not None
+            # Send the frame
             if finalize:
                 await self._send_stream_reply(
-                    self._active_stream_req_id,
-                    self._active_stream_id,
+                    turn.req_id,
+                    turn.stream_id,
                     text,
                     finish=True,
                 )
-                self._reset_native_stream_state()
+                turn.finalized = True
+                # Clean up this turn's state
+                self._cleanup_stream_turn(chat, req_id)
             else:
                 await self._send_stream_reply(
-                    self._active_stream_req_id,
-                    self._active_stream_id,
+                    turn.req_id,
+                    turn.stream_id,
                     text,
                     finish=False,
                 )
+                turn.accumulated_text = text
+
             return True
+
         except WeComStreamExpiredError:
             logger.info(
                 "[%s] Stream expired (errcode=%d) for chat %s — switching to proactive send",
                 self.name, STREAM_EXPIRED_ERRCODE, chat,
             )
             self._stream_expired_chats.add(chat)
-            self._reset_native_stream_state()
+            # Mark all turns for this chat as expired
+            for turn in self._stream_turns.values():
+                if turn.chat_id == chat:
+                    turn.expired = True
             return False
         except Exception as exc:
             logger.warning(
-                "[%s] Stream frame failed (resetting state): %s",
-                self.name, exc,
+                "[%s] Stream frame failed (chat=%s): %s",
+                self.name, chat, exc,
             )
-            self._reset_native_stream_state()
+            # Clean up this turn on error
+            req_id = self._resolve_stream_req_id(chat, reply_to)
+            if req_id:
+                self._cleanup_stream_turn(chat, req_id)
             return False
 
     def supports_native_streaming(

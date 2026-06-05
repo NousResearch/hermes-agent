@@ -2196,3 +2196,126 @@ class TestCloseCodeClassification:
         assert 4014 in fatal_codes
         assert 4001 in fatal_codes
         assert 4915 in fatal_codes
+
+
+# ---------------------------------------------------------------------------
+# Issue #17703 — CPU-spinning tight loop regression tests
+# ---------------------------------------------------------------------------
+
+class TestCPUSpinningRegression:
+    """Regression tests for #17703: WebSocket reconnect failure causes
+    CPU-spinning tight loop with no await points."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="test", client_secret="test"))
+
+    @pytest.mark.asyncio
+    async def test_read_events_raises_when_ws_closed(self):
+        """Guard 2: _read_events() must raise when _ws exists but is closed.
+
+        Without this guard, _read_events() returns normally (skips the
+        while-loop), which resets backoff_idx in _listen_loop and creates
+        a CPU-spinning tight loop.  See #17703.
+        """
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=True, receive=mock.AsyncMock())
+
+        with pytest.raises(RuntimeError, match="WebSocket not connected"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_read_events_raises_when_ws_none(self):
+        """Guard 2: _read_events() must raise when _ws is None."""
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = None
+
+        with pytest.raises(RuntimeError, match="WebSocket not connected"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_read_events_closed_msg_raises(self):
+        """When ws.receive() returns CLOSED mid-loop, _read_events must raise
+        immediately instead of silently exiting. (Regression for #17703)"""
+        import aiohttp
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        # Simulate a ws that is open at entry but immediately reports
+        # CLOSED, causing the while-loop to exit via the CLOSED branch.
+        async def recv_closed():
+            return SimpleNamespace(
+                type=aiohttp.WSMsgType.CLOSED, data=None, extra=""
+            )
+
+        adapter._ws = SimpleNamespace(closed=False, receive=recv_closed)
+
+        with pytest.raises(RuntimeError, match="WebSocket closed"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_read_events_post_loop_guard(self):
+        """Guard 3: if ws.closed flips from False to True between entry
+        check and while condition, the loop never executes and the
+        post-loop fallback must raise. (Regression for #17703)"""
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        class ClosingWS:
+            """Returns closed=False on first check (entry guard),
+            then closed=True on second check (while condition)."""
+            def __init__(self):
+                self._closed_checks = 0
+
+            @property
+            def closed(self):
+                self._closed_checks += 1
+                return self._closed_checks >= 2
+
+        adapter._ws = ClosingWS()
+
+        with pytest.raises(RuntimeError, match="WebSocket closed"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_failure_clears_ws_and_session(self):
+        """_reconnect() must clear _ws AND _session on failure so that
+        stale references don't leak resources or confuse _read_events()."""
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        # Pre-populate stale references
+        old_ws = SimpleNamespace(closed=True)
+        old_session = SimpleNamespace(closed=False, close=mock.AsyncMock())
+        adapter._ws = old_ws
+        adapter._session = old_session
+
+        # Make _ensure_token fail to trigger the except branch
+        adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("DNS fail"))
+        adapter._http_client = mock.MagicMock()
+
+        result = await adapter._reconnect(0)
+
+        assert result is False
+        assert adapter._ws is None, "_ws should be cleared after failed reconnect"
+        assert adapter._session is None, "_session should be cleared after failed reconnect"
+        old_session.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_failure_no_session_leak(self):
+        """_reconnect() should not fail if _session is already None."""
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=True)
+        adapter._session = None  # no session to clean
+
+        adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("DNS fail"))
+        adapter._http_client = mock.MagicMock()
+
+        result = await adapter._reconnect(0)
+
+        assert result is False
+        assert adapter._ws is None
+        assert adapter._session is None

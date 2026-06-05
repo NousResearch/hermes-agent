@@ -682,6 +682,12 @@ class QQAdapter(BasePlatformAdapter):
             # backoff_idx in _listen_loop and creates a CPU-spinning
             # tight loop with no await points.  See #17703.
             self._ws = None
+            # Also close the session if _open_ws() created one before
+            # failing — otherwise it leaks until the next successful
+            # reconnect or final disconnect cleanup.
+            if self._session and not self._session.closed:
+                await self._session.close()
+            self._session = None
             return False
 
     async def _read_events(self) -> None:

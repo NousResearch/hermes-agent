@@ -6,7 +6,9 @@
 
 > **🔀 Multi-Tenant Fork** — This is `hermes-agent-mt`, patched for multi-tenant deployments with per-context memory isolation, group policy enforcement, and [Hermes Swarm Map](https://github.com/NimbleCoAI/hermes-swarm-map) integration. See [FORK-NOTICE.md](FORK-NOTICE.md) for details.
 >
-> Upstream: [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) · Image: `ghcr.io/nimblecoai/hermes-agent:latest`
+> **⚠️ Repo renamed:** `NimbleCoAI/hermes-agent` → `NimbleCoAI/hermes-agent-mt`. Git clone/remote URLs auto-redirect (no action needed). The image moved to **`ghcr.io/nimblecoai/hermes-agent-mt`**; the old `ghcr.io/nimblecoai/hermes-agent` path is a **deprecated alias** that stops updating after **2026-07-15**.
+>
+> Upstream: [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) · Image: `ghcr.io/nimblecoai/hermes-agent-mt:latest`
 
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>

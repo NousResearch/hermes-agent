@@ -2,7 +2,7 @@ name: Publish Docker Image (Fork)
 
 # Fork-specific workflow. The upstream docker-publish.yml only runs on
 # github.repository == 'NousResearch/hermes-agent'; this workflow handles
-# publishing to GHCR for NimbleCoAI/hermes-agent.
+# publishing to GHCR for NimbleCoAI/hermes-agent-mt.
 
 on:
   push:
@@ -11,7 +11,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-and-push:
@@ -34,7 +33,13 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Transitional DUAL-PUBLISH for the hermes-agent → hermes-agent-mt
+          # rename. The new path is canonical; the old path is a deprecated
+          # alias so existing pullers keep getting updates during the window.
+          # Remove the deprecated `…/hermes-agent` line after 2026-07-15.
+          images: |
+            ${{ env.REGISTRY }}/nimblecoai/hermes-agent-mt
+            ${{ env.REGISTRY }}/nimblecoai/hermes-agent
           tags: |
             type=raw,value=latest
             type=sha,prefix=

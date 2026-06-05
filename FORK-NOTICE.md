@@ -1,5 +1,9 @@
 # Multi-Tenant Fork Notice
 
+> **⚠️ This repository was renamed: `NimbleCoAI/hermes-agent` → `NimbleCoAI/hermes-agent-mt`.**
+> - **Git URLs:** clone/remote URLs **auto-redirect** — existing checkouts keep working, no action needed.
+> - **Container image:** moved to **`ghcr.io/nimblecoai/hermes-agent-mt`**. The old path `ghcr.io/nimblecoai/hermes-agent` is a **deprecated alias**, still updated during a transition window but **frozen after 2026-07-15** — repoint to the new path before then.
+
 This is **hermes-agent-mt** — a thin fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) patched for multi-tenant deployments managed by [Hermes Swarm Map](https://github.com/NimbleCoAI/hermes-swarm-map).
 
 ## What's Different
@@ -31,11 +35,11 @@ This fork adds **2 core patches** and **~8 adapter improvements** on top of upst
 
 ```bash
 # Docker (recommended)
-docker pull ghcr.io/nimblecoai/hermes-agent:latest
+docker pull ghcr.io/nimblecoai/hermes-agent-mt:latest
 
 # Or build from source
-git clone https://github.com/NimbleCoAI/hermes-agent.git
-cd hermes-agent
+git clone https://github.com/NimbleCoAI/hermes-agent-mt.git
+cd hermes-agent-mt
 pip install -e ".[all]"
 ```
 

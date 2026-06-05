@@ -2720,6 +2720,61 @@ def run_conversation(
                 # compress history and retry, not abort immediately.
                 status_code = getattr(api_error, "status_code", None)
 
+                # ── Respect disabled auto-compaction on overflow ──────
+                # Ported from anomalyco/opencode#30749.  When the user has
+                # turned auto-compaction off (``compression.enabled: false``),
+                # NO automatic compaction trigger may fire — including the
+                # provider/request-size overflow recovery paths below
+                # (long-context-tier 429, 413 payload-too-large, and
+                # context-overflow).  Without this guard the proactive
+                # threshold path correctly honours the setting (see the
+                # preflight check and the post-response ``should_compress``
+                # gate) but a provider overflow error would still silently
+                # compress + rotate the session, bypassing the user's
+                # explicit choice.  Surface a terminal error instead so the
+                # user can compact manually (``/compress``), start fresh
+                # (``/new``), switch to a larger-context model, or reduce
+                # attachments.  Forced compaction via ``/compress``
+                # (``force=True``) is unaffected — it never reaches this loop.
+                _overflow_reasons = {
+                    FailoverReason.long_context_tier,
+                    FailoverReason.payload_too_large,
+                    FailoverReason.context_overflow,
+                }
+                if (
+                    classified.reason in _overflow_reasons
+                    and not getattr(agent, "compression_enabled", True)
+                ):
+                    agent._flush_status_buffer()
+                    agent._vprint(
+                        f"{agent.log_prefix}❌ Context overflow, but auto-compaction is disabled "
+                        f"(compression.enabled: false).",
+                        force=True,
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}   💡 Run /compress to compact manually, /new to start fresh, "
+                        f"switch to a larger-context model, or reduce attachments.",
+                        force=True,
+                    )
+                    logger.error(
+                        f"{agent.log_prefix}Context overflow ({classified.reason.value}) with "
+                        f"auto-compaction disabled — not compressing."
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "messages": messages,
+                        "completed": False,
+                        "api_calls": api_call_count,
+                        "error": (
+                            "Context overflow and auto-compaction is disabled "
+                            "(compression.enabled: false). Run /compress to compact manually, "
+                            "/new to start fresh, or switch to a larger-context model."
+                        ),
+                        "partial": True,
+                        "failed": True,
+                        "compaction_disabled": True,
+                    }
+
                 # ── Anthropic Sonnet long-context tier gate ───────────
                 # Anthropic returns HTTP 429 "Extra usage is required for
                 # long context requests" when a Claude Max (or similar)

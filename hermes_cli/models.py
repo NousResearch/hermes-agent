@@ -1150,17 +1150,46 @@ _PROVIDER_ALIASES = {
 }
 
 
+# Cost-safe overrides for the *silent* auto-default
+# (``get_default_model_for_provider``). Most providers' curated lists lead with a
+# sensible default, but Nous Portal is a per-token *metered aggregator* whose
+# list is ordered best-/most-capable-first — entry [0] is the priciest flagship
+# (``anthropic/claude-opus-4.8``, $5/$25 per Mtok). Using that as the
+# non-interactive fallback when a profile sets ``provider: nous`` with no model
+# silently bills the most expensive model for traffic the user never opted into
+# (a missing default escalated to Opus and billed 863 requests before the user
+# noticed). Pin the silent default to a low-cost curated model instead so a
+# missing model can never escalate to the flagship.
+#
+# This is deliberately a fixed, side-effect-free default for the hot resolution
+# path. The *interactive* default (GUI onboarding / ``hermes model``) uses the
+# richer free/paid-tier-aware resolver — see ``get_recommended_default_model``
+# in hermes_cli/web_server.py and ``partition_nous_models_by_tier`` — which can
+# hit the Portal; this fallback must stay cheap and network-free.
+_PROVIDER_SILENT_DEFAULT_OVERRIDES: dict[str, str] = {
+    "nous": "deepseek/deepseek-v4-flash",
+}
+
+
 def get_default_model_for_provider(provider: str) -> str:
-    """Return the default model for a provider, or empty string if unknown.
+    """Return a cost-safe default model for a provider, or "" if unknown.
 
-    Uses the first entry in _PROVIDER_MODELS as the default.  This is the
-    model a user would be offered first in the ``hermes model`` picker.
+    Used as a NON-INTERACTIVE fallback when a provider is configured but no
+    model was ever selected (e.g. ``hermes auth add openai-codex`` without
+    ``hermes model``, or a profile that sets ``provider`` with no ``model``).
 
-    Used as a fallback when the user has configured a provider but never
-    selected a model (e.g. ``hermes auth add openai-codex`` without
-    ``hermes model``).
+    For most providers this is the first entry in ``_PROVIDER_MODELS`` — the
+    same model the ``hermes model`` picker offers first. For metered aggregators
+    whose curated list is ordered most-capable-first, that entry is also the
+    most EXPENSIVE one, so silently defaulting to it is a billing footgun. Such
+    providers carry an explicit low-cost override in
+    ``_PROVIDER_SILENT_DEFAULT_OVERRIDES``; a missing model must never
+    auto-escalate to the flagship.
     """
     models = _PROVIDER_MODELS.get(provider, [])
+    override = _PROVIDER_SILENT_DEFAULT_OVERRIDES.get(provider)
+    if override and override in models:
+        return override
     return models[0] if models else ""
 
 

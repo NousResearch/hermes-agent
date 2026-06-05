@@ -5,9 +5,11 @@ const test = require('node:test')
 
 const {
   bundledRuntimeImportCheck,
+  detectNvidiaDriverVersion,
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
-  isWslEnvironment
+  isWslEnvironment,
+  nvidiaDriverMajor
 } = require('./bootstrap-platform.cjs')
 
 test('isWslEnvironment detects WSL2 env vars on linux', () => {
@@ -35,8 +37,11 @@ test('bundledRuntimeImportCheck selects platform-specific import checks', () => 
 
 test('detectRemoteDisplay keeps GPU on for local sessions', () => {
   // Plain local X11, Wayland, native Windows, native macOS — no remote signal.
-  assert.equal(detectRemoteDisplay({ env: { DISPLAY: ':0' }, platform: 'linux' }), null)
-  assert.equal(detectRemoteDisplay({ env: { WAYLAND_DISPLAY: 'wayland-0' }, platform: 'linux' }), null)
+  assert.equal(detectRemoteDisplay({ env: { DISPLAY: ':0' }, nvidiaDriverVersion: null, platform: 'linux' }), null)
+  assert.equal(
+    detectRemoteDisplay({ env: { WAYLAND_DISPLAY: 'wayland-0' }, nvidiaDriverVersion: null, platform: 'linux' }),
+    null
+  )
   assert.equal(detectRemoteDisplay({ env: { SESSIONNAME: 'Console' }, platform: 'win32' }), null)
   assert.equal(detectRemoteDisplay({ env: {}, platform: 'darwin' }), null)
 })
@@ -70,6 +75,60 @@ test('detectRemoteDisplay flags RDP sessions', () => {
   assert.match(String(detectRemoteDisplay({ env: { SESSIONNAME: 'RDP-Tcp#7' }, platform: 'win32' })), /^rdp/)
 })
 
+test('nvidiaDriverMajor parses driver versions', () => {
+  assert.equal(nvidiaDriverMajor('580.159.03'), 580)
+  assert.equal(nvidiaDriverMajor('570.172.08'), 570)
+  assert.equal(nvidiaDriverMajor(''), null)
+  assert.equal(nvidiaDriverMajor('not-a-version'), null)
+})
+
+test('detectNvidiaDriverVersion reads the first nvidia-smi driver row', () => {
+  const execFileSync = (command, args) => {
+    assert.equal(command, 'nvidia-smi')
+    assert.deepEqual(args, ['--query-gpu=driver_version', '--format=csv,noheader'])
+    return '580.159.03\n580.159.03\n'
+  }
+
+  assert.equal(detectNvidiaDriverVersion({ execFileSync }), '580.159.03')
+})
+
+test('detectNvidiaDriverVersion returns null when nvidia-smi is unavailable', () => {
+  assert.equal(detectNvidiaDriverVersion({ execFileSync: () => { throw new Error('missing') } }), null)
+})
+
+test('detectRemoteDisplay disables GPU for local Linux on NVIDIA 580+', () => {
+  assert.equal(
+    detectRemoteDisplay({
+      env: { DISPLAY: ':0' },
+      nvidiaDriverVersion: '580.159.03',
+      platform: 'linux'
+    }),
+    'nvidia-driver-580.159.03'
+  )
+})
+
+test('detectRemoteDisplay keeps GPU on for pre-580 NVIDIA drivers', () => {
+  assert.equal(
+    detectRemoteDisplay({
+      env: { DISPLAY: ':0' },
+      nvidiaDriverVersion: '570.172.08',
+      platform: 'linux'
+    }),
+    null
+  )
+})
+
+test('detectRemoteDisplay skips NVIDIA detection on WSLg', () => {
+  assert.equal(
+    detectRemoteDisplay({
+      env: { WSL_DISTRO_NAME: 'Ubuntu', DISPLAY: ':0' },
+      execFileSync: () => '580.159.03\n',
+      platform: 'linux'
+    }),
+    null
+  )
+})
+
 test('detectRemoteDisplay honors the HERMES_DESKTOP_DISABLE_GPU override both ways', () => {
   // Force-on even on a local display.
   assert.match(
@@ -80,6 +139,7 @@ test('detectRemoteDisplay honors the HERMES_DESKTOP_DISABLE_GPU override both wa
   assert.equal(
     detectRemoteDisplay({
       env: { HERMES_DESKTOP_DISABLE_GPU: 'false', SSH_CONNECTION: '1.2.3.4 5 6.7.8.9 22' },
+      nvidiaDriverVersion: '580.159.03',
       platform: 'linux'
     }),
     null

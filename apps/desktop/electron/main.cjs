@@ -90,23 +90,18 @@ const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
 const APP_ROOT = app.getAppPath()
 
-// Remote displays (SSH X11 forwarding, VNC, RDP) make Chromium's GPU
-// compositor flicker — accelerated layers can't be presented cleanly over the
-// wire, so the window flashes during scroll/streaming/animation. Local
-// Windows/macOS (and WSLg, which renders locally via vGPU) composite on the
-// GPU and never see it. Fall back to software rendering when a remote display
-// is detected; it's rock-steady over the wire and the CPU cost is negligible
-// next to the connection's latency. Must run before app `ready` — these
-// switches only apply pre-launch. Override with HERMES_DESKTOP_DISABLE_GPU
-// (1/true → always disable, 0/false → keep GPU on).
-const REMOTE_DISPLAY_REASON = detectRemoteDisplay()
-if (REMOTE_DISPLAY_REASON) {
+// Some Linux display stacks cannot keep Chromium's GPU process alive: remote
+// displays flicker/crash, and NVIDIA 580.x drivers trip Electron/ANGLE during
+// startup. Fall back to software rendering before app `ready`; override with
+// HERMES_DESKTOP_DISABLE_GPU (1/true → always disable, 0/false → keep GPU on).
+const GPU_DISABLE_REASON = detectRemoteDisplay()
+if (GPU_DISABLE_REASON) {
   app.disableHardwareAcceleration()
   // Belt-and-suspenders for X11/VNC, where the Viz compositor can still glitch
   // with only --disable-gpu: force compositing onto the CPU too.
   app.commandLine.appendSwitch('disable-gpu-compositing')
   console.log(
-    `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
+    `[hermes] ${GPU_DISABLE_REASON}; disabling GPU hardware acceleration`
   )
 }
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')

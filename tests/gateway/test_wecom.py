@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 
 
@@ -284,6 +284,39 @@ class TestPolicyHelpers:
         )
         assert adapter._is_dm_allowed("user-1") is True
         assert adapter._is_dm_allowed("user-2") is False
+
+    def test_dm_allowlist_honors_env_only_allowed_users(self, monkeypatch):
+        """Env-only setup (WECOM_DM_POLICY + WECOM_ALLOWED_USERS, no config
+        ``extra``) must populate the DM allowlist. Otherwise ``dm_policy:
+        allowlist`` runs with an empty allowlist and drops every listed user
+        at intake — the documented env vars become no-ops."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        monkeypatch.setenv("WECOM_DM_POLICY", "allowlist")
+        monkeypatch.setenv("WECOM_ALLOWED_USERS", "user-1, user-2")
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        assert adapter._dm_policy == "allowlist"
+        assert adapter._allow_from == ["user-1", "user-2"]
+        assert adapter._is_dm_allowed("user-1") is True
+        assert adapter._is_dm_allowed("user-2") is True
+        assert adapter._is_dm_allowed("stranger") is False
+
+    def test_dm_allowlist_extra_takes_precedence_over_env(self, monkeypatch):
+        """Config ``extra`` wins over the env fallback, so an explicit
+        allowlist is never silently widened by a stray WECOM_ALLOWED_USERS."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        monkeypatch.setenv("WECOM_ALLOWED_USERS", "env-user")
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"dm_policy": "allowlist", "allow_from": ["cfg-user"]})
+        )
+
+        assert adapter._allow_from == ["cfg-user"]
+        assert adapter._is_dm_allowed("cfg-user") is True
+        assert adapter._is_dm_allowed("env-user") is False
 
     def test_group_allowlist_and_per_group_sender_allowlist(self):
         from gateway.platforms.wecom import WeComAdapter

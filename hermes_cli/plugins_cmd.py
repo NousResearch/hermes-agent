@@ -10,6 +10,7 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
 import shutil
@@ -728,89 +729,81 @@ def _plugin_exists(name: str) -> bool:
 
 
 def _discover_all_plugins() -> list:
-    """Return a list of (key, version, description, source, dir_path) for
-    every plugin the loader can see — user + bundled.
+    """Return a list of (name, version, description, source, dir_path) for
+    every plugin the loader can see — user + bundled + project.
 
-    Mirrors :meth:`PluginManager._scan_directory_level` so category-namespaced
-    plugins (``observability/langfuse``, ``image_gen/openai``) surface here
-    just like flat ones (``disk-cleanup``). A subdirectory with no
-    ``plugin.yaml`` of its own is treated as a category and recursed into
-    one level deeper (depth capped at 2, same as the loader).
-
-    The returned ``key`` is the path-derived registry key — the value the
-    user types into ``hermes plugins enable <key>``. For category-namespaced
-    plugins that's ``<category>/<dirname>``; for flat plugins it's the
-    manifest's ``name`` (or the directory name if the manifest omits it).
-
-    User entries override bundled on key collision, matching
-    ``PluginManager.discover_and_load``.
+    Matches the ordering/dedup of ``PluginManager.discover_and_load``:
+    bundled first, then user, then project; user overrides bundled on
+    name collision.
     """
     try:
         import yaml
     except ImportError:
         yaml = None
 
-    seen: dict = {}  # key -> (key, version, description, source, path)
+    seen: dict = {}  # name -> (name, version, description, source, path)
 
-    def _scan(base: Path, source: str, prefix: str, depth: int) -> None:
+    # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    repo_plugins = get_bundled_plugins_dir()
+    for base, source in ((repo_plugins, "bundled"), (_plugins_dir(), "user")):
         if not base.is_dir():
-            return
+            continue
         for d in sorted(base.iterdir()):
             if not d.is_dir():
                 continue
-            if (
-                depth == 0
-                and source == "bundled"
-                and d.name in {"memory", "context_engine"}
-            ):
+            if source == "bundled" and d.name in {"memory", "context_engine"}:
                 continue
             manifest_file = d / "plugin.yaml"
             if not manifest_file.exists():
                 manifest_file = d / "plugin.yml"
-
-            if manifest_file.exists():
-                manifest_name = d.name
-                version = ""
-                description = ""
-                if yaml:
-                    try:
-                        with open(manifest_file, encoding="utf-8") as f:
-                            manifest = yaml.safe_load(f) or {}
-                        manifest_name = manifest.get("name", d.name)
-                        version = manifest.get("version", "")
-                        description = manifest.get("description", "")
-                    except Exception:
-                        pass
-                # Path-derived key, intentionally ignoring the manifest
-                # ``name:`` field for category-namespaced plugins — mirrors
-                # ``PluginManager._parse_manifest`` in plugins.py:1027-1028
-                # so renaming a directory (without touching plugin.yaml) shifts
-                # the registry key in both places consistently.
-                key = f"{prefix}/{d.name}" if prefix else manifest_name
-                src_label = source
-                if source == "user" and (d / ".git").exists():
-                    src_label = "git"
-                # Bundled is scanned before user, so the user pass overwrites
-                # bundled entries with the same key — matches
-                # PluginManager.discover_and_load's "user wins" semantics.
-                seen[key] = (key, version, description, src_label, d)
+            if not manifest_file.exists():
                 continue
-
-            # No manifest at this level — treat as a category namespace and
-            # recurse one level deeper. Cap at depth 2 (same as the loader).
-            if depth >= 1:
+            name = d.name
+            version = ""
+            description = ""
+            if yaml:
+                try:
+                    with open(manifest_file, encoding="utf-8") as f:
+                        manifest = yaml.safe_load(f) or {}
+                    name = manifest.get("name", d.name)
+                    version = manifest.get("version", "")
+                    description = manifest.get("description", "")
+                except Exception:
+                    pass
+            # User plugins override bundled on name collision.
+            if name in seen and source == "bundled":
                 continue
-            sub_prefix = f"{prefix}/{d.name}" if prefix else d.name
-            _scan(d, source, sub_prefix, depth + 1)
-
-    from hermes_cli.plugins import get_bundled_plugins_dir
-    _scan(get_bundled_plugins_dir(), "bundled", "", 0)
-    _scan(_plugins_dir(), "user", "", 0)
-
+            src_label = source
+            if source == "user" and (d / ".git").exists():
+                src_label = "git"
+            seen[name] = (name, version, description, src_label, d)
     return list(seen.values())
 
 
-def cmd_list() -> None:
+def _plugin_status(name: str, enabled: set, disabled: set) -> str:
+    """Return the user-facing activation state for a plugin name."""
+    if name in disabled:
+        return "disabled"
+    if name in enabled:
+        return "enabled"
+    return "not enabled"
+
+
+def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set) -> list:
+    """Apply ``hermes plugins list`` CLI filters."""
+    filtered = entries
+    if getattr(args, "no_bundled", False) or getattr(args, "user", False):
+        filtered = [entry for entry in filtered if entry[3] != "bundled"]
+    if getattr(args, "enabled", False):
+        filtered = [
+            entry for entry in filtered
+            if _plugin_status(entry[0], enabled, disabled) == "enabled"
+        ]
+    return filtered
+
+
+def cmd_list(args: Any | None = None) -> None:
     """List all plugins (bundled + user) with enabled/disabled state."""
     from rich.console import Console
     from rich.table import Table
@@ -824,6 +817,31 @@ def cmd_list() -> None:
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
+    entries = _filter_plugin_entries(entries, args, enabled, disabled)
+
+    if getattr(args, "json", False):
+        payload = [
+            {
+                "name": name,
+                "status": _plugin_status(name, enabled, disabled),
+                "version": str(version),
+                "description": description,
+                "source": source,
+            }
+            for name, version, description, source, _dir in entries
+        ]
+        print(json.dumps(payload, indent=2))
+        return
+
+    if getattr(args, "plain", False):
+        for name, version, _description, source, _dir in entries:
+            status = _plugin_status(name, enabled, disabled)
+            print(f"{status:12} {source:8} {str(version):8} {name}")
+        return
+
+    if not entries:
+        console.print("[dim]No plugins matched the selected filters.[/dim]")
+        return
 
     table = Table(title="Plugins", show_lines=False)
     table.add_column("Name", style="bold")
@@ -833,9 +851,10 @@ def cmd_list() -> None:
     table.add_column("Source", style="dim")
 
     for name, version, description, source, _dir in entries:
-        if name in disabled:
+        status_name = _plugin_status(name, enabled, disabled)
+        if status_name == "disabled":
             status = "[red]disabled[/red]"
-        elif name in enabled:
+        elif status_name == "enabled":
             status = "[green]enabled[/green]"
         else:
             status = "[yellow]not enabled[/yellow]"
@@ -844,6 +863,7 @@ def cmd_list() -> None:
     console.print()
     console.print(table)
     console.print()
+    console.print("[dim]Compact view:[/dim] hermes plugins list --plain --no-bundled")
     console.print("[dim]Interactive toggle:[/dim] hermes plugins")
     console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
     console.print("[dim]Plugins are opt-in by default — only 'enabled' plugins load.[/dim]")
@@ -1110,7 +1130,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                 stdscr.addnstr(0, 0, "Plugins", max_x - 1, hattr)
                 stdscr.addnstr(
                     1, 0,
-                    "  \u2191\u2193 navigate  SPACE toggle  ENTER configure/confirm  ESC done",
+                    "  ↑↓/j/k navigate  PgUp/PgDn page  SPACE toggle  ENTER configure/confirm  ESC done",
                     max_x - 1, curses.A_DIM,
                 )
             except curses.error:
@@ -1150,7 +1170,9 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                         pass
                     y += 1
 
-                for i in range(n_plugins):
+                plugin_start = scroll_offset
+                plugin_stop = min(n_plugins, scroll_offset + max(visible_rows, 0))
+                for i in range(plugin_start, plugin_stop):
                     if y >= max_y - 1:
                         break
                     check = "\u2713" if i in chosen else " "
@@ -1208,6 +1230,16 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
             elif key in {curses.KEY_DOWN, ord("j")}:
                 if total_items > 0:
                     cursor = (cursor + 1) % total_items
+            elif key in {curses.KEY_NPAGE, ord("f")}:
+                if total_items > 0:
+                    cursor = min(total_items - 1, cursor + max(1, max_y - 5))
+            elif key in {curses.KEY_PPAGE, ord("b")}:
+                if total_items > 0:
+                    cursor = max(0, cursor - max(1, max_y - 5))
+            elif key == curses.KEY_HOME:
+                cursor = 0
+            elif key == curses.KEY_END:
+                cursor = max(0, total_items - 1)
             elif key == ord(" "):
                 if cursor < n_plugins:
                     # Toggle general plugin
@@ -1649,7 +1681,7 @@ def plugins_command(args) -> None:
     elif action == "disable":
         cmd_disable(args.name)
     elif action in {"list", "ls"}:
-        cmd_list()
+        cmd_list(args)
     elif action is None:
         cmd_toggle()
     else:

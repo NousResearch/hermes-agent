@@ -15,8 +15,6 @@ from tools.skills_sync import (
     sync_skills,
     reset_bundled_skill,
     restore_official_optional_skill,
-    MANIFEST_FILE,
-    SKILLS_DIR,
 )
 
 
@@ -202,6 +200,26 @@ class TestSyncSkills:
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
         return stack
+
+    def test_suppressed_builtin_not_reseeded(self, tmp_path):
+        """A curator-pruned built-in in the suppression list must NOT be
+        re-copied on sync — that's what makes the prune durable across updates.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._read_suppressed_names", return_value={"old-skill"}):
+            result = sync_skills(quiet=True)
+
+        # old-skill is suppressed → skipped, not copied.
+        assert "old-skill" in result["suppressed"]
+        assert "old-skill" not in result["copied"]
+        assert not (skills_dir / "old-skill").exists()
+        # The non-suppressed bundled skill is still copied normally.
+        assert "new-skill" in result["copied"]
+        assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
 
     def test_fresh_install_copies_all(self, tmp_path):
         bundled = self._setup_bundled(tmp_path)
@@ -600,7 +618,7 @@ class TestSyncSkills:
             result = sync_skills(quiet=True)
         assert result == {
             "copied": [], "updated": [], "skipped": 0,
-            "user_modified": [], "cleaned": [], "total_bundled": 0,
+            "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
             "optional_provenance_backfilled": [],
         }
 
@@ -847,3 +865,205 @@ class TestResetBundledSkill:
             post_manifest = _read_manifest()
             assert "google-workspace" in post_manifest
         assert (skills_dir / "productivity" / "google-workspace" / "SKILL.md").exists()
+
+    def test_reset_restore_succeeds_on_readonly_nix_tree(self, tmp_path):
+        """#34972: --restore must succeed even when the user copy is a fully
+        read-only tree (r-xr-xr-x dirs + files), as produced by copying a
+        Nix-store source. The manifest is re-baselined and bundled re-copied."""
+        import os
+        import stat
+
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        dest = skills_dir / "productivity" / "google-workspace"
+        sub = dest / "references"
+        sub.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# user version\n")
+        (sub / "ref.md").write_text("# nested ref\n")
+        manifest_file.write_text(
+            "google-workspace:STALEHASH000000000000000000000000\n"
+        )
+
+        # Read-only files AND directories — the real Nix-store case.
+        ro_dir = (
+            stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP
+            | stat.S_IROTH | stat.S_IXOTH
+        )
+        os.chmod(sub / "ref.md", stat.S_IREAD)
+        os.chmod(dest / "SKILL.md", stat.S_IREAD)
+        os.chmod(sub, ro_dir)
+        os.chmod(dest, ro_dir)
+
+        try:
+            with self._patches(bundled, skills_dir, manifest_file):
+                result = reset_bundled_skill("google-workspace", restore=True)
+
+            assert result["ok"] is True
+            assert result["action"] == "restored"
+            # Bundled version was re-copied over the (deleted) user copy.
+            assert "upstream" in (dest / "SKILL.md").read_text()
+            # The read-only nested user dir/file was fully removed, not left behind.
+            assert not (sub / "ref.md").exists()
+            # sync ran and re-copied the skill (not stuck in limbo).
+            assert "google-workspace" in result["synced"]["copied"]
+        finally:
+            # Restore perms so tmp_path teardown can remove anything left.
+            for p in (sub, dest):
+                if p.exists():
+                    os.chmod(p, stat.S_IRWXU)
+
+    def test_reset_restore_preserves_manifest_on_rmtree_failure(self, tmp_path):
+        """#34972: when the user copy genuinely cannot be removed, the manifest
+        entry must NOT be deleted — otherwise the skill enters a limbo state
+        where future syncs silently skip it forever."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        dest = skills_dir / "productivity" / "google-workspace"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# user version\n")
+        manifest_file.write_text(
+            "google-workspace:STALEHASH000000000000000000000000\n"
+        )
+
+        # Simulate an unremovable tree (e.g. a busy mountpoint or a path even
+        # chmod can't rescue) by making the removal helper raise.
+        def _boom(_path):
+            raise PermissionError(13, "Permission denied")
+
+        with self._patches(bundled, skills_dir, manifest_file), patch(
+            "tools.skills_sync._rmtree_writable", side_effect=_boom
+        ):
+            result = reset_bundled_skill("google-workspace", restore=True)
+
+        # Restore failed, and the manifest must be left untouched.
+        assert result["ok"] is False
+        assert result["action"] == "not_reset"
+        assert "Manifest entry preserved" in result["message"]
+        manifest_after = manifest_file.read_text()
+        assert "google-workspace" in manifest_after
+        # User copy is still on disk (we changed nothing).
+        assert (dest / "SKILL.md").exists()
+
+
+class TestNoBundledSkillsOptOut:
+    """The .no-bundled-skills marker makes sync_skills() a no-op.
+
+    This is what `hermes profile create --no-skills` (named profiles) and the
+    installer's `--no-skills` flag (default ~/.hermes) rely on so bundled
+    skills are never seeded at install time NOR re-injected by `hermes update`.
+    """
+
+    def _setup_bundled(self, tmp_path):
+        bundled = tmp_path / "bundled"
+        skill = bundled / "category" / "new-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: new-skill\n---\nbody\n")
+        return bundled
+
+    def test_marker_skips_sync(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        hermes_home = tmp_path / "home"
+        hermes_home.mkdir()
+        (hermes_home / ".no-bundled-skills").write_text("opted out\n")
+
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("tools.skills_sync.HERMES_HOME", hermes_home):
+            result = sync_skills(quiet=True)
+
+        # Opt-out signalled, nothing copied, nothing written to disk.
+        assert result["skipped_opt_out"] is True
+        assert result["copied"] == []
+        assert result["total_bundled"] == 0
+        assert not (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
+
+    def test_no_marker_seeds_normally(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        hermes_home = tmp_path / "home"
+        hermes_home.mkdir()
+        # No marker written.
+
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("tools.skills_sync.HERMES_HOME", hermes_home):
+            result = sync_skills(quiet=True)
+
+        assert result.get("skipped_opt_out") is not True
+        assert "new-skill" in result["copied"]
+        assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
+
+
+class TestOptOutToggleAndRemove:
+    """`hermes skills opt-out/opt-in` core: marker toggle + safe removal."""
+
+    def _setup_bundled(self, tmp_path):
+        bundled = tmp_path / "bundled"
+        for n in ("alpha", "beta"):
+            d = bundled / n
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"---\nname: {n}\n---\nbody {n}\n")
+        return bundled
+
+    def test_marker_toggle(self, tmp_path):
+        from tools.skills_sync import (
+            set_bundled_skills_opt_out, is_bundled_skills_opt_out,
+        )
+        home = tmp_path / "home"
+        home.mkdir()
+        with patch("tools.skills_sync.HERMES_HOME", home):
+            assert is_bundled_skills_opt_out() is False
+            r = set_bundled_skills_opt_out(True)
+            assert r["ok"] and r["changed"]
+            assert is_bundled_skills_opt_out() is True
+            # idempotent
+            r2 = set_bundled_skills_opt_out(True)
+            assert r2["ok"] and r2["changed"] is False
+            # opt back in
+            r3 = set_bundled_skills_opt_out(False)
+            assert r3["ok"] and r3["changed"]
+            assert is_bundled_skills_opt_out() is False
+
+    def test_remove_keeps_user_modified(self, tmp_path):
+        from tools.skills_sync import (
+            sync_skills, remove_pristine_bundled_skills,
+        )
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        home = tmp_path / "home"
+        home.mkdir()
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("tools.skills_sync.HERMES_HOME", home):
+            sync_skills(quiet=True)
+            # User edits 'beta'
+            (skills_dir / "beta" / "SKILL.md").write_text("---\nname: beta\n---\nEDITED\n")
+            # A hand-written, non-bundled skill must also survive.
+            (skills_dir / "mine").mkdir()
+            (skills_dir / "mine" / "SKILL.md").write_text("---\nname: mine\n---\nlocal\n")
+
+            preview = remove_pristine_bundled_skills(dry_run=True)
+            assert "alpha" in preview["removed"]
+            assert "beta" not in preview["removed"]
+
+            result = remove_pristine_bundled_skills(dry_run=False)
+            assert "alpha" in result["removed"]
+            assert not (skills_dir / "alpha").exists()
+            # user-modified bundled skill kept
+            assert (skills_dir / "beta" / "SKILL.md").exists()
+            assert "EDITED" in (skills_dir / "beta" / "SKILL.md").read_text()
+            # non-bundled local skill never considered
+            assert (skills_dir / "mine" / "SKILL.md").exists()

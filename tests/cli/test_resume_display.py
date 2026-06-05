@@ -10,7 +10,6 @@ import sys
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
-import pytest
 import cli as cli_mod
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -719,7 +718,6 @@ class TestResumeDisplayConfig:
 
     def test_cli_defaults_have_resume_display(self):
         """cli.py load_cli_config defaults include resume_display."""
-        import cli as _cli_mod
         from cli import load_cli_config
 
         with (

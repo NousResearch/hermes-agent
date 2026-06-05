@@ -4101,6 +4101,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             msg = await channel.send(embed=embed, view=view)
+            view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
 
         except Exception as e:
@@ -4140,6 +4141,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             msg = await channel.send(embed=embed, view=view)
+            view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -4217,6 +4219,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 view = None
 
             msg = await channel.send(embed=embed, view=view) if view else await channel.send(embed=embed)
+            if view:
+                view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
@@ -4252,6 +4256,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
             )
             msg = await channel.send(embed=embed, view=view)
+            view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -4311,6 +4316,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             msg = await channel.send(embed=embed, view=view)
+            view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
 
         except Exception as e:
@@ -5141,6 +5147,17 @@ def _define_discord_view_classes() -> None:
             self.resolved = True
             for child in self.children:
                 child.disabled = True
+            # Visually update the Discord message so buttons appear disabled.
+            msg = getattr(self, '_message', None)
+            if msg:
+                try:
+                    embed = msg.embeds[0] if msg.embeds else None
+                    if embed:
+                        embed.color = discord.Color.greyple()
+                        embed.set_footer(text="⏱ Prompt expired — no action taken")
+                    await msg.edit(embed=embed, view=self)
+                except Exception:
+                    pass  # message deleted or too old to edit
 
     class SlashConfirmView(discord.ui.View):
         """Three-button view for generic slash-command confirmations.
@@ -5245,6 +5262,17 @@ def _define_discord_view_classes() -> None:
             self.resolved = True
             for child in self.children:
                 child.disabled = True
+            # Visually update the Discord message so buttons appear disabled.
+            msg = getattr(self, '_message', None)
+            if msg:
+                try:
+                    embed = msg.embeds[0] if msg.embeds else None
+                    if embed:
+                        embed.color = discord.Color.greyple()
+                        embed.set_footer(text="⏱ Prompt expired — no action taken")
+                    await msg.edit(embed=embed, view=self)
+                except Exception:
+                    pass
 
     class UpdatePromptView(discord.ui.View):
         """Interactive Yes/No buttons for ``hermes update`` prompts.
@@ -5330,6 +5358,17 @@ def _define_discord_view_classes() -> None:
             self.resolved = True
             for child in self.children:
                 child.disabled = True
+            # Visually update the Discord message so buttons appear disabled.
+            msg = getattr(self, '_message', None)
+            if msg:
+                try:
+                    embed = msg.embeds[0] if msg.embeds else None
+                    if embed:
+                        embed.color = discord.Color.greyple()
+                        embed.set_footer(text="⏱ Prompt expired — no action taken")
+                    await msg.edit(embed=embed, view=self)
+                except Exception:
+                    pass
 
     class ModelPickerView(discord.ui.View):
         """Interactive select-menu view for model switching.
@@ -5555,6 +5594,18 @@ def _define_discord_view_classes() -> None:
         async def on_timeout(self):
             self.resolved = True
             self.clear_items()
+            # Visually update the Discord message so it appears expired.
+            msg = getattr(self, '_message', None)
+            if msg:
+                try:
+                    embed = discord.Embed(
+                        title="⚙ Model Configuration",
+                        description="⏱ Selection expired — no model change.",
+                        color=discord.Color.greyple(),
+                    )
+                    await msg.edit(embed=embed, view=self)
+                except Exception:
+                    pass
 
 
     class ClarifyChoiceView(discord.ui.View):
@@ -5740,6 +5791,17 @@ def _define_discord_view_classes() -> None:
             self.resolved = True
             for child in self.children:
                 child.disabled = True
+            # Visually update the Discord message so buttons appear disabled.
+            msg = getattr(self, '_message', None)
+            if msg:
+                try:
+                    embed = msg.embeds[0] if msg.embeds else None
+                    if embed:
+                        embed.color = discord.Color.greyple()
+                        embed.set_footer(text="⏱ Prompt expired — no action taken")
+                    await msg.edit(embed=embed, view=self)
+                except Exception:
+                    pass
 if DISCORD_AVAILABLE:
     _define_discord_view_classes()
 
@@ -6093,16 +6155,17 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``gateway/config.py::load_gateway_config()`` before this migration.
 
     The DiscordAdapter reads its runtime configuration via ``os.getenv()``
-    throughout the connect / handle code paths (``DISCORD_REQUIRE_MENTION``,
-    ``DISCORD_FREE_RESPONSE_CHANNELS``, ``DISCORD_AUTO_THREAD``,
-    ``DISCORD_REACTIONS``, ``DISCORD_IGNORED_CHANNELS``,
-    ``DISCORD_ALLOWED_CHANNELS``, ``DISCORD_NO_THREAD_CHANNELS``,
-    ``DISCORD_HISTORY_BACKFILL``, ``DISCORD_HISTORY_BACKFILL_LIMIT``,
-    ``DISCORD_ALLOW_MENTION_*``, ``DISCORD_REPLY_TO_MODE``,
-    ``DISCORD_THREAD_REQUIRE_MENTION``).  Rather than rewrite ~50 call sites
-    inside the adapter to read from ``PlatformConfig.extra`` instead, this
-    hook keeps the existing env-driven model and merely owns the
-    YAML→env translation here, next to the adapter that consumes it.
+    throughout the connect / handle code paths (``DISCORD_ALLOWED_USERS``,
+    ``DISCORD_REQUIRE_MENTION``, ``DISCORD_FREE_RESPONSE_CHANNELS``,
+    ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
+    ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
+    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
+    ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
+    ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``).
+    Rather than rewrite ~50 call sites inside the adapter to read from
+    ``PlatformConfig.extra`` instead, this hook keeps the existing
+    env-driven model and merely owns the YAML→env translation here, next to
+    the adapter that consumes it.
 
     Env vars take precedence over YAML — every assignment is guarded by
     ``not os.getenv(...)`` so explicit env vars survive a config.yaml
@@ -6113,6 +6176,22 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
+    platforms_cfg = yaml_cfg.get("platforms")
+    platform_extra_cfg = {}
+    if isinstance(platforms_cfg, dict):
+        discord_platform_cfg = platforms_cfg.get("discord")
+        if isinstance(discord_platform_cfg, dict):
+            candidate_extra = discord_platform_cfg.get("extra")
+            if isinstance(candidate_extra, dict):
+                platform_extra_cfg = candidate_extra
+    allowed_users_cfg = (
+        discord_cfg["allow_from"] if "allow_from" in discord_cfg
+        else platform_extra_cfg.get("allow_from")
+    )
+    if allowed_users_cfg is not None and not os.getenv("DISCORD_ALLOWED_USERS"):
+        if isinstance(allowed_users_cfg, list):
+            allowed_users_cfg = ",".join(str(v) for v in allowed_users_cfg)
+        os.environ["DISCORD_ALLOWED_USERS"] = str(allowed_users_cfg)
     frc = discord_cfg.get("free_response_channels")
     if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
         if isinstance(frc, list):

@@ -1275,7 +1275,6 @@ class TestRunJobSessionPersistence:
         (issue #8585)
         """
         from cron.scheduler import tick
-        from cron.jobs import load_jobs, save_jobs
 
         job = {
             "id": "empty-job",
@@ -1546,6 +1545,36 @@ class TestRunJobConfigEnvVarExpansion:
             f"Expected model='gpt-4o-mini-cron-test', got {kwargs['model']!r}. "
             "config.yaml ${VAR} was not expanded in the cron execution path."
         )
+
+    def test_legacy_agent_prefill_messages_file_is_loaded(self, tmp_path, monkeypatch):
+        """Cron accepts the legacy agent.prefill_messages_file fallback."""
+        prefill = [{"role": "system", "content": "legacy cron prefill"}]
+        (tmp_path / "prefill.json").write_text(json.dumps(prefill), encoding="utf-8")
+        (tmp_path / "config.yaml").write_text(
+            "agent:\n"
+            "  prefill_messages_file: prefill.json\n",
+            encoding="utf-8",
+        )
+
+        job = {"id": "prefill-job", "name": "prefill test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["prefill_messages"] == prefill
 
     def test_fallback_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
         """${VAR} in config.yaml fallback_providers model: is expanded."""
@@ -2300,7 +2329,6 @@ class TestParallelTick:
     def test_parallel_jobs_run_concurrently(self):
         """Two jobs launched in the same tick should overlap in time."""
         import threading
-        import time
 
         barrier = threading.Barrier(2, timeout=5)
         call_order = []

@@ -491,6 +491,7 @@ class MemoryManager:
         *,
         parent_session_id: str = "",
         reset: bool = False,
+        rewound: bool = False,
         **kwargs,
     ) -> None:
         """Notify all providers that the agent's session_id has rotated.
@@ -503,9 +504,21 @@ class MemoryManager:
         per-session state so subsequent writes land in the correct
         session's record. See ``MemoryProvider.on_session_switch`` for
         the full contract.
+
+        ``rewound=True`` signals that session_id is unchanged but the
+        transcript was truncated; providers caching per-turn document
+        state should invalidate.
         """
         if not new_session_id:
             return
+        # Only forward ``rewound`` when it's actually set. Passing it
+        # unconditionally would inject ``rewound=False`` into every
+        # provider's **kwargs for the common /resume, /branch, /new, and
+        # compression paths, polluting providers that capture extra kwargs
+        # (and breaking exact-dict assertions). The /undo path sets
+        # rewound=True explicitly; everyone else stays clean.
+        if rewound:
+            kwargs["rewound"] = True
         for provider in self._providers:
             try:
                 provider.on_session_switch(

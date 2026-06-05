@@ -107,6 +107,75 @@ from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
 
+_MATRIX_BANG_COMMAND_RE = re.compile(
+    r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$",
+    re.DOTALL,
+)
+
+
+def _resolve_matrix_bang_command(name: str) -> str | None:
+    """Resolve a ``!command`` token to a dispatchable Hermes command token.
+
+    Matrix clients often reserve leading ``/`` for local client commands.
+    Hermes accepts ``!command`` as a Matrix-friendly alias, but only for
+    commands that the gateway can actually dispatch so ordinary exclamations
+    remain normal chat text.
+
+    Returns the token form that actually resolves (which may differ from
+    *name* only by underscore→hyphen normalization, e.g. ``reload_skills`` →
+    ``reload-skills``) so the emitted ``/command`` always resolves downstream,
+    or ``None`` when *name* is not a known command. Aliases are intentionally
+    left as-is — the gateway dispatcher resolves them to their canonical name.
+    """
+    if not name:
+        return None
+    # Try the raw lowercased token first, then its hyphenated variant, so
+    # forms like ``!reload_skills`` resolve against ``reload-skills``. We emit
+    # whichever candidate resolved (not a forced canonical form) to preserve
+    # alias passthrough — the gateway dispatcher canonicalizes aliases itself.
+    candidates = [name.lower()]
+    hyphenated = name.lower().replace("_", "-")
+    if hyphenated != candidates[0]:
+        candidates.append(hyphenated)
+
+    try:
+        from hermes_cli.commands import is_gateway_known_command
+
+        for candidate in candidates:
+            if is_gateway_known_command(candidate):
+                return candidate
+    except Exception:
+        logger.debug(
+            "Matrix: is_gateway_known_command failed for %r", name, exc_info=True
+        )
+
+    try:
+        from agent.skill_commands import get_skill_commands
+
+        skill_commands = get_skill_commands() or {}
+        # Skill command keys are stored slash-prefixed (e.g. "/arxiv"), so
+        # compare against the "/candidate" form, not the bare token.
+        for candidate in candidates:
+            if f"/{candidate}" in skill_commands:
+                return candidate
+    except Exception:
+        logger.debug("Matrix: get_skill_commands failed for %r", name, exc_info=True)
+
+    return None
+
+
+def _normalize_matrix_bang_command(text: str) -> str:
+    """Convert Matrix ``!command`` aliases to normal Hermes ``/command`` text."""
+    if not text or not text.startswith("!"):
+        return text
+    match = _MATRIX_BANG_COMMAND_RE.match(text)
+    if not match:
+        return text
+    resolved = _resolve_matrix_bang_command(match.group(1))
+    if resolved is None:
+        return text
+    return f"/{resolved}{match.group(2) or ''}"
+
 
 @dataclass
 class _MatrixApprovalPrompt:
@@ -1747,8 +1816,9 @@ class MatrixAdapter(BasePlatformAdapter):
 
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
+            is_command = body.startswith("/")
             if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned:
+                if not is_mentioned and not is_command:
                     logger.debug(
                         "Matrix: ignoring message %s in %s — no @mention "
                         "(set MATRIX_REQUIRE_MENTION=false to disable)",
@@ -1815,6 +1885,7 @@ class MatrixAdapter(BasePlatformAdapter):
         body = source_content.get("body", "") or ""
         if not body:
             return
+        body = _normalize_matrix_bang_command(body)
 
         ctx = await self._resolve_message_context(
             room_id,
@@ -1850,8 +1921,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 stripped.append(line)
             body = "\n".join(stripped) if stripped else body
 
+        # Re-run bang normalization after reply-fallback stripping so a quoted
+        # reply whose actual content is a bang command (e.g. ``> quoted\n\n!model``)
+        # is treated as a command, matching how ``/command`` is recognized below.
+        body = _normalize_matrix_bang_command(body)
+
         msg_type = MessageType.TEXT
-        if body.startswith(("!", "/")):
+        if body.startswith("/"):
             msg_type = MessageType.COMMAND
 
         msg_event = MessageEvent(
@@ -2236,7 +2312,8 @@ class MatrixAdapter(BasePlatformAdapter):
             if prompt and not prompt.resolved:
                 if room_id != prompt.chat_id:
                     return
-                if self._allowed_user_ids and sender not in self._allowed_user_ids:
+                _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+                if not _allow_all and not (self._allowed_user_ids and sender in self._allowed_user_ids):
                     logger.info(
                         "Matrix: ignoring approval reaction from unauthorized user %s on %s",
                         sender, reacts_to,
@@ -2722,11 +2799,11 @@ class MatrixAdapter(BasePlatformAdapter):
     def _markdown_to_html(self, text: str) -> str:
         """Convert Markdown to Matrix-compatible HTML (org.matrix.custom.html).
 
-        Uses the ``markdown`` library when available (installed with the
-        ``matrix`` extra).  Falls back to a comprehensive regex converter
-        that handles fenced code blocks, inline code, headers, bold,
-        italic, strikethrough, links, blockquotes, lists, and horizontal
-        rules — everything the Matrix HTML spec allows.
+        Uses the ``markdown`` library (a core dependency) when available.
+        Falls back to a comprehensive regex converter that handles fenced
+        code blocks, inline code, headers, bold, italic, strikethrough,
+        links, blockquotes, lists, and horizontal rules — everything the
+        Matrix HTML spec allows.
         """
         try:
             import markdown as _md

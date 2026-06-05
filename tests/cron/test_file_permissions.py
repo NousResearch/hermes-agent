@@ -1,6 +1,5 @@
 """Tests for file permissions hardening on sensitive files."""
 
-import json
 import os
 import stat
 import tempfile

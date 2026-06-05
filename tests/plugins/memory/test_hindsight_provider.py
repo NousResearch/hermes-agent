@@ -6,7 +6,9 @@ turn counting, tags), and schema completeness.
 """
 
 import json
+import os
 import re
+import stat
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -1016,7 +1018,6 @@ class TestSessionSwitchBufferFlush:
         old session to settle before clearing _prefetch_result, otherwise
         the thread can race and re-populate the field after the clear."""
         import threading
-        import time as _time
 
         gate = threading.Event()
         finished = threading.Event()
@@ -1571,3 +1572,13 @@ class TestShutdown:
         assert embedded._client is None
         assert provider._client is None
 
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+def test_save_config_sets_owner_only_permissions(tmp_path):
+    """hindsight/config.json must be written with 0o600 so API key is not world-readable."""
+    provider = HindsightMemoryProvider()
+    provider.save_config({"api_key": "hd-test-key"}, str(tmp_path))
+    config_file = tmp_path / "hindsight" / "config.json"
+    assert config_file.exists()
+    mode = stat.S_IMODE(config_file.stat().st_mode)
+    assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"

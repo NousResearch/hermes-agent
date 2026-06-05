@@ -10,9 +10,9 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
-    MessageType,
     safe_url_for_log,
     utf16_len,
+    _log_safe_path,
     _prefix_within_utf16_limit,
 )
 
@@ -361,6 +361,238 @@ class TestExtractMedia:
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
 
+    # Windows path support — regression coverage for #34632
+
+    def test_media_tag_windows_backslash_path(self):
+        """extract_media should recognise Windows backslash paths."""
+        media, cleaned = BasePlatformAdapter.extract_media(
+            r"MEDIA:C:\Users\kotsu\file.pdf"
+        )
+        assert len(media) == 1
+        assert media[0][0].endswith("file.pdf")
+
+    def test_media_tag_windows_forward_slash_path(self):
+        """extract_media should recognise Windows forward-slash paths."""
+        media, cleaned = BasePlatformAdapter.extract_media(
+            "MEDIA:C:/Users/kotsu/file.pdf"
+        )
+        assert len(media) == 1
+        assert media[0][0].endswith("file.pdf")
+
+    def test_media_tag_windows_drive_root(self):
+        """extract_media should recognise a path at the drive root."""
+        media, cleaned = BasePlatformAdapter.extract_media(
+            r"MEDIA:D:\report.md"
+        )
+        assert len(media) == 1
+        assert media[0][0].endswith("report.md")
+
+    def test_media_tag_unix_paths_still_work(self):
+        """Unix absolute and tilde paths must still extract after Windows change."""
+        for content in ["MEDIA:/tmp/audio.ogg", r"MEDIA:~/docs/notes.md"]:
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert len(media) == 1, f"Failed for: {content}"
+
+    def test_relative_path_still_ignored(self):
+        """Relative Windows-style paths (no drive letter) must not match."""
+        media, _ = BasePlatformAdapter.extract_media(
+            r"MEDIA:Users\kotsu\file.pdf"
+        )
+        assert media == []
+
+    # --- Code block / inline code / blockquote false-positive guards (#35695) ---
+
+    def test_media_in_fenced_code_block_ignored(self):
+        """MEDIA: inside ``` fenced code blocks must not be extracted."""
+        content = "Here is an example:\n```text\nMEDIA:/path/to/example.png\n```\nDone."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "example" in cleaned.lower()
+
+    def test_media_in_inline_code_ignored(self):
+        """MEDIA: inside backtick inline code must not be extracted."""
+        content = "Use `MEDIA:/path/to/file.png` in your response."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:" in cleaned  # preserved as text
+
+    def test_media_in_blockquote_ignored(self):
+        """MEDIA: inside a > blockquote must not be extracted."""
+        content = "> To send an image, include MEDIA:/path/to/image.jpg\nEnd."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "End." in cleaned
+
+    def test_media_outside_code_blocks_still_extracted(self):
+        """Real MEDIA: tags outside protected regions must still work."""
+        content = "MEDIA:/real/file.png\n```code\nMEDIA:/fake/file.png\n```"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/real/file.png"
+
+    def test_media_mixed_code_and_prose(self):
+        """Real MEDIA: in prose + example in code block: only prose extracted,
+        and the code block survives verbatim in the delivered text."""
+        content = (
+            "Here is your file:\n"
+            "MEDIA:/output/report.pdf\n"
+            "Example usage:\n"
+            "```text\nMEDIA:/example/path.pdf\n```\n"
+            "Done."
+        )
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/output/report.pdf"
+        assert "Done." in cleaned
+        # The real tag is stripped from the delivered text...
+        assert "MEDIA:/output/report.pdf" not in cleaned
+        # ...but the fenced code block (incl. its example MEDIA: line) must
+        # survive verbatim — masking is a locator, not a text rewrite.
+        assert "```text\nMEDIA:/example/path.pdf\n```" in cleaned
+
+    def test_inline_code_survives_when_real_media_present(self):
+        """When a real MEDIA: tag is delivered, an inline-code example in the
+        same reply must not be blanked to whitespace."""
+        content = "See MEDIA:/r/a.png and `MEDIA:/ex/b.png` inline"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert [p for p, _ in media] == ["/r/a.png"]
+        assert "`MEDIA:/ex/b.png`" in cleaned
+
+
+class TestMediaInsideSerializedJson:
+    """Regression coverage for #34375 — MEDIA: embedded in serialized JSON
+    string values (e.g. a stored previous reply inside a tool result) must not
+    be re-delivered as a real attachment, while legitimate MEDIA: tags in prose,
+    at line start, indented, or as quoted-path tags keep working.
+    """
+
+    def test_media_in_json_value_not_extracted(self):
+        content = '{"result": "MEDIA:/tmp/stale.png"}'
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"JSON value MEDIA: leaked: {media}"
+
+    def test_media_in_pretty_json_value_not_extracted(self):
+        content = '{\n  "tool_result": "MEDIA:/var/old.jpg"\n}'
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"pretty JSON MEDIA: leaked: {media}"
+
+    def test_media_in_json_array_not_extracted(self):
+        content = '["MEDIA:/a/b.png", "other"]'
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"JSON array MEDIA: leaked: {media}"
+
+    def test_media_in_nested_json_value_not_extracted(self):
+        content = '{"a":{"b":"see MEDIA:/x/y.pdf here"}}'
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"nested JSON MEDIA: leaked: {media}"
+
+    def test_media_in_embedded_serialized_reply_not_extracted(self):
+        """A serialized tool result that embeds a prior reply's MEDIA: tag."""
+        content = (
+            '{"content":"previous reply MEDIA:/Users/ex/.hermes/media/'
+            'generated/stale.png and more text"}'
+        )
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"embedded serialized reply leaked: {media}"
+
+    # --- Legitimate tags must still extract (no regression vs line-start anchor) ---
+
+    def test_media_at_line_start_still_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/real/file.png")
+        assert len(media) == 1 and media[0][0] == "/real/file.png"
+
+    def test_media_after_prose_same_line_still_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media(
+            "Here is your file: MEDIA:/out/report.pdf"
+        )
+        assert len(media) == 1 and media[0][0] == "/out/report.pdf"
+
+    def test_media_indented_still_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media("  MEDIA:/tmp/x.png")
+        assert len(media) == 1 and media[0][0] == "/tmp/x.png"
+
+    def test_quoted_path_media_still_extracted(self):
+        """MEDIA:"..." quoted-path form (a real LLM output) is not JSON-masked."""
+        media, _ = BasePlatformAdapter.extract_media(
+            'MEDIA:"/path/with space/file.png"'
+        )
+        assert len(media) == 1 and media[0][0] == "/path/with space/file.png"
+
+    def test_tts_two_line_still_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media(
+            "[[audio_as_voice]]\nMEDIA:/tmp/v.ogg"
+        )
+        assert len(media) == 1 and media[0][0] == "/tmp/v.ogg"
+        assert media[0][1] is True  # voice flag
+
+    # --- cleaned-text invariants: real tags stripped, JSON data kept verbatim ---
+
+    def test_json_embedded_media_kept_verbatim_in_cleaned_text(self):
+        """A real tag is delivered+stripped; a JSON-embedded MEDIA: stays as
+        literal text (stored data must read back unchanged)."""
+        content = 'MEDIA:/real/r.png\nlog: {"old":"MEDIA:/stale/s.png"}'
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert [p for p, _ in media] == ["/real/r.png"]
+        # The JSON-embedded path must survive verbatim — not blanked to spaces.
+        assert '{"old":"MEDIA:/stale/s.png"}' in cleaned
+
+    def test_cleaned_text_after_directive_not_truncated(self):
+        """Stripping a tag preceded by a [[as_document]] directive must not
+        shift offsets and chop the path or trailing text."""
+        content = "See [[as_document]] MEDIA:/d/report.pdf now"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert [p for p, _ in media] == ["/d/report.pdf"]
+        assert "MEDIA:" not in cleaned          # real tag removed
+        assert cleaned.endswith("now")          # trailing text intact (not chopped)
+
+
+class TestMediaExtensionAllowlistParity:
+    """Regression coverage for issue #34517 — the MEDIA: extension black hole.
+
+    extract_media used to carry a narrow extension allowlist that omitted
+    .md/.json/.yaml/.xml/.html etc., while extract_local_files had a broad one.
+    Combined with an unconditional ``MEDIA:\\s*\\S+`` strip at the dispatch
+    sites, an unmatched MEDIA: tag for one of those extensions was deleted from
+    the body before extract_local_files could pick up the bare path — the file
+    was silently dropped. Both extractors now derive from the single
+    MEDIA_DELIVERY_EXTS source of truth, and the strip is anchored to that set.
+    """
+
+    DROPPED_BEFORE = ["md", "json", "yaml", "yml", "xml", "html", "htm",
+                      "tsv", "svg"]
+
+    def test_previously_dropped_extensions_now_extract(self):
+        for ext in self.DROPPED_BEFORE:
+            path = f"/tmp/report.{ext}"
+            media, _ = BasePlatformAdapter.extract_media(f"Here: MEDIA:{path}")
+            assert media == [(path, False)], f".{ext} should extract via MEDIA:"
+
+    def test_extract_media_and_local_files_share_one_extension_set(self):
+        from gateway.platforms.base import MEDIA_DELIVERY_EXTS
+        # Both functions reference MEDIA_DELIVERY_EXTS; assert the documents
+        # that motivated the bug are present in the shared set.
+        for ext in (".md", ".json", ".yaml", ".yml", ".xml", ".html", ".htm"):
+            assert ext in MEDIA_DELIVERY_EXTS
+
+    def test_unknown_extension_not_black_holed_by_cleanup(self):
+        """A MEDIA: tag with an unknown extension is NOT stripped from the
+        body — it survives so extract_local_files can still see the bare path,
+        rather than vanishing entirely (the core of issue #34517)."""
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        text = "Saved to MEDIA:/tmp/data.weirdext done"
+        media, _ = BasePlatformAdapter.extract_media(text)
+        assert media == []  # unknown extension is not a deliverable MEDIA tag
+        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text)
+        assert "/tmp/data.weirdext" in stripped  # path preserved, not dropped
+
+    def test_known_extension_tag_is_stripped_from_body(self):
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        text = "Here is your report: MEDIA:/tmp/report.md"
+        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text).strip()
+        assert "MEDIA:" not in stripped
+        assert "/tmp/report.md" not in stripped
+        assert "Here is your report:" in stripped
+
 
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
@@ -641,6 +873,45 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(env_file)) is None
 
+    def test_denylist_blocks_hermes_config_in_active_profile(self, tmp_path, monkeypatch):
+        """The active profile config stays blocked in default mode."""
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        hermes_dir.mkdir(parents=True)
+        config_file = hermes_dir / "config.yaml"
+        config_file.write_text("model:\n  provider: openai\n")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_HOME",
+            hermes_dir,
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(config_file)) is None
+
+    def test_denylist_blocks_shared_hermes_root_config_for_profiles(self, tmp_path, monkeypatch):
+        """Profile-mode gateways must still block the shared Hermes root config."""
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        profile_home = fake_home / ".hermes" / "profiles" / "work"
+        profile_home.mkdir(parents=True)
+        hermes_root = fake_home / ".hermes"
+        config_file = hermes_root / "config.yaml"
+        config_file.write_text("profiles:\n  active: work\n")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_HOME",
+            profile_home,
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_ROOT",
+            hermes_root,
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(config_file)) is None
+
     def test_strict_mode_envvar_restores_legacy_behavior(self, tmp_path, monkeypatch):
         """Setting HERMES_MEDIA_DELIVERY_STRICT=1 reactivates the older
         allowlist+recency logic. A stale file outside the allowlist is
@@ -682,6 +953,120 @@ class TestMediaDeliveryDefaultMode:
 
         out = BasePlatformAdapter.filter_local_delivery_paths([str(notes)])
         assert out == [str(notes.resolve())]
+
+    def test_root_home_deliverable_is_accepted(self, tmp_path, monkeypatch):
+        """The motivating bug (#38106): a root-run gateway has ``$HOME=/root``,
+        which is on the system-prefix denylist. A plain deliverable the agent
+        produced in its working dir (``/root/work/proposal.docx``) must still
+        deliver — the home itself is not a credential location.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "root"
+        workdir = fake_home / "work"
+        workdir.mkdir(parents=True)
+        doc = workdir / "proposal.docx"
+        doc.write_bytes(b"PK\x03\x04")
+        monkeypatch.setenv("HOME", str(fake_home))
+        # $HOME is itself on the denied-prefix list, mirroring /root.
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(fake_home),),
+        )
+
+        assert (
+            BasePlatformAdapter.validate_media_delivery_path(str(doc))
+            == str(doc.resolve())
+        )
+
+    def test_root_home_credential_subdir_still_blocked(self, tmp_path, monkeypatch):
+        """The $HOME exception must NOT un-block credential sub-dirs inside
+        home. ``/root/.ssh/id_rsa`` stays denied because ``~/.ssh`` is a
+        separate, more-specific denylist entry — even when $HOME is itself a
+        denied prefix.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "root"
+        ssh_dir = fake_home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        key = ssh_dir / "id_rsa"
+        key.write_bytes(b"-----BEGIN OPENSSH PRIVATE KEY-----")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(fake_home),),
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(key)) is None
+
+    def test_root_home_hermes_env_still_blocked(self, tmp_path, monkeypatch):
+        """``~/.hermes/.env`` stays blocked under the $HOME exception — it is a
+        more-specific denied path, not reachable just because home is allowed.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "root"
+        hermes_dir = fake_home / ".hermes"
+        hermes_dir.mkdir(parents=True)
+        env_file = hermes_dir / ".env"
+        env_file.write_text("OPENROUTER_API_KEY=sk-...")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(fake_home),),
+        )
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(env_file)) is None
+
+    def test_other_users_home_still_blocked_for_nonroot(self, tmp_path, monkeypatch):
+        """The exception only un-blocks the *running user's own* home. A
+        non-root gateway ($HOME=/home/me) must not deliver another user's home
+        (``/root/...``) — that prefix stays denied because it isn't $HOME.
+        """
+        self._patch_roots(monkeypatch)
+
+        my_home = tmp_path / "home" / "me"
+        my_home.mkdir(parents=True)
+        other_home = tmp_path / "root"
+        other_home.mkdir()
+        other_file = other_home / "secret.docx"
+        other_file.write_bytes(b"PK\x03\x04")
+        monkeypatch.setenv("HOME", str(my_home))
+        # Both my home and the other home are denied prefixes; only my home is
+        # the running user's $HOME, so the other home must stay blocked.
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(my_home), str(other_home)),
+        )
+
+        assert (
+            BasePlatformAdapter.validate_media_delivery_path(str(other_file)) is None
+        )
+
+    def test_root_home_workdir_symlink_to_credential_blocked(self, tmp_path, monkeypatch):
+        """A symlink in the workdir pointing at a credential is rejected on its
+        resolved target, even under the $HOME exception.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "root"
+        ssh_dir = fake_home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        key = ssh_dir / "id_rsa"
+        key.write_bytes(b"-----BEGIN OPENSSH PRIVATE KEY-----")
+        workdir = fake_home / "work"
+        workdir.mkdir()
+        link = workdir / "innocent.pdf"
+        link.symlink_to(key)
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(fake_home),),
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(link)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1051,3 +1436,52 @@ class TestProxyKwargsForAiohttp:
             sess_kw, req_kw = proxy_kwargs_for_aiohttp("http://proxy:8080")
             assert sess_kw == {}
             assert req_kw == {"proxy": "http://proxy:8080"}
+
+
+class TestMediaDeliveryDiagnosability:
+    """Diagnosable rejection logging + crafted-path robustness (#33251)."""
+
+    def test_rejected_path_appears_in_log(self, tmp_path, caplog):
+        outside = tmp_path / "outside.ogg"
+        outside.write_bytes(b"OggS")
+        with patch.dict(os.environ, {"HERMES_MEDIA_DELIVERY_STRICT": "1",
+                                     "HERMES_MEDIA_TRUST_RECENT_FILES": "0"}), \
+                patch("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", ()):
+            with caplog.at_level("WARNING"):
+                out = BasePlatformAdapter.filter_media_delivery_paths([(str(outside), False)])
+        assert out == []
+        # The dropped path must be in the log so operators can diagnose it.
+        assert str(outside) in caplog.text
+
+    def test_crafted_null_path_does_not_abort_batch(self, tmp_path, monkeypatch):
+        """One crafted ~\\x00 path must not drop every other attachment."""
+        good = tmp_path / "good.png"
+        good.write_bytes(b"\x89PNG")
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+        out = BasePlatformAdapter.filter_media_delivery_paths([
+            ("~\x00evil.png", False),
+            (str(good), False),
+        ])
+        assert out == [(str(good.resolve()), False)]
+
+    def test_extract_media_tolerates_crafted_null_path(self):
+        """extract_media must not raise on a crafted ~\\x00 MEDIA tag."""
+        content = "here\nMEDIA:`~\x00evil.png`\ntrailing"
+        # Must not raise ValueError("embedded null byte").
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert all("\x00" not in p for p, _ in media)
+
+    def test_log_safe_path_neutralises_line_breaks(self):
+        forged = "/tmp/a.png\nWARNING forged second line"
+        assert "\n" not in _log_safe_path(forged)
+        # Unicode separators that split log lines are also neutralised.
+        for sep in ("\u2028", "\u2029", "\x85"):
+            assert sep not in _log_safe_path(f"/tmp/a{sep}b.png")
+
+    def test_canonical_cache_roots_present(self):
+        from gateway.platforms.base import MEDIA_DELIVERY_SAFE_ROOTS
+        roots = {str(r) for r in MEDIA_DELIVERY_SAFE_ROOTS}
+        assert any(r.endswith("cache/images") for r in roots)
+        assert any(r.endswith("cache/documents") for r in roots)
+        # Legacy layout still present.
+        assert any(r.endswith("image_cache") for r in roots)

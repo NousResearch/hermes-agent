@@ -15,7 +15,7 @@ Download the latest release from the [simplex-chat GitHub releases](https://gith
 
 ```bash
 # Linux / macOS binary
-curl -L https://github.com/simplex-chat/simplex-chat/releases/latest/download/simplex-chat-ubuntu-22_04-x86-64 -o simplex-chat
+curl -L https://github.com/simplex-chat/simplex-chat/releases/latest/download/simplex-chat-ubuntu-22_04-x86_64 -o simplex-chat
 chmod +x simplex-chat
 ```
 

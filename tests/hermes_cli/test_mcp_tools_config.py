@@ -1,7 +1,6 @@
 """Tests for MCP tools interactive configuration in hermes_cli.tools_config."""
 
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from hermes_cli.tools_config import _configure_mcp_tools_interactive
 

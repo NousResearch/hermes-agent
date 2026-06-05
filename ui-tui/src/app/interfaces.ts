@@ -77,7 +77,6 @@ export interface OverlayState {
   confirm: ConfirmReq | null
   modelPicker: boolean
   pager: null | PagerState
-  picker: boolean
   secret: null | SecretReq
   sessions: boolean
   skillsHub: boolean
@@ -239,6 +238,10 @@ export interface GatewayEventHandlerContext {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
     newSession: (msg?: string, title?: string) => void
+    // Set by useMainApp's exit handler to the session that was live when the
+    // gateway died unexpectedly; consumed once by the next `gateway.ready` so a
+    // respawn resumes that session instead of forging a fresh one.
+    recoverSidRef?: MutableRefObject<null | string>
     resetSession: () => void
     resumeById: (id: string) => void
     setCatalog: StateSetter<null | SlashCatalog>
@@ -381,7 +384,7 @@ export interface AppOverlaysProps {
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
   onNewPromptSession: (prompt: string, modelArg?: string) => void
-  onPickerSelect: (sessionId: string) => void
+  onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void
   pagerPageSize: number

@@ -15,12 +15,17 @@ _VALID_MODAL_MODES = {"auto", "direct", "managed"}
 
 
 def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
-    """Return True when the user has paid Nous Portal service access.
+    """Return True when the user is entitled to the Nous Tool Gateway.
+
+    Entitlement is paid Nous Portal service access OR a live free tool pool
+    (``tool_gateway_entitled``). Per-category coverage (the pool funds image but
+    not video, etc.) is narrowed by callers via ``tool_gateway_entitled_for``;
+    this coarse gate only answers "is any managed tool usable at all".
 
     Tool Gateway availability fails closed on unknown/error entitlement.  We
     intentionally catch all exceptions and return False — never block startup.
     ``force_fresh=True`` is for interactive configuration flows that should
-    reflect a just-purchased subscription or credits immediately.
+    reflect a just-purchased subscription, credits, or pool grant immediately.
     """
     try:
         from hermes_cli.nous_account import get_nous_portal_account_info
@@ -31,7 +36,7 @@ def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
             account_info = get_nous_portal_account_info()
         if not account_info.logged_in:
             return False
-        return account_info.paid_service_access is True
+        return account_info.tool_gateway_entitled
     except Exception:
         return False
 
@@ -84,9 +89,13 @@ def normalize_modal_mode(value: object | None) -> str:
 
 def has_direct_modal_credentials() -> bool:
     """Return True when direct Modal credentials/config are available."""
+    try:
+        modal_file_exists = (Path.home() / ".modal.toml").exists()
+    except (PermissionError, OSError):
+        modal_file_exists = False
     return bool(
         (os.getenv("MODAL_TOKEN_ID") and os.getenv("MODAL_TOKEN_SECRET"))
-        or (Path.home() / ".modal.toml").exists()
+        or modal_file_exists
     )
 
 

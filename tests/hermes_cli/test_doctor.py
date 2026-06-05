@@ -792,7 +792,7 @@ class TestGitHubTokenCheck:
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
 
-        from hermes_cli.doctor import run_doctor, _DHH
+        from hermes_cli.doctor import run_doctor
         import io, contextlib
 
         buf = io.StringIO()
@@ -1274,3 +1274,87 @@ class TestDoctorCodexCliHintPlacement:
         minimax_idx = next(i for i, l in enumerate(lines) if "MiniMax OAuth" in l)
         assert self._hint_line() not in lines[minimax_idx - 1]
         assert minimax_idx + 1 >= len(lines) or self._hint_line() not in lines[minimax_idx + 1]
+
+
+class TestDoctorStaleMaxIterationsDrift:
+    """Regression for #17534: a stale HERMES_MAX_ITERATIONS in .env shadows
+    agent.max_turns in config.yaml. The repro symptom is config.yaml saying
+    400 while the gateway activity line reads N/90. Doctor must detect the
+    drift, and `--fix` must remove the .env ghost (config.yaml wins).
+
+    The detector reads the .env FILE directly, NOT os.environ — the gateway
+    startup bridge can already have overridden os.environ to the config value,
+    so the ghost is only visible in the file.
+    """
+
+    def _run_config_section(self, monkeypatch, tmp_path, *, fix, ghost, cfg_turns,
+                            os_environ_value=None):
+        import pathlib
+        import contextlib
+        import io
+        from argparse import Namespace
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text(
+            f"agent:\n  max_turns: {cfg_turns}\n", encoding="utf-8"
+        )
+        env_lines = ["OPENAI_API_KEY=sk-test\n"]
+        if ghost is not None:
+            env_lines.append(f"HERMES_MAX_ITERATIONS={ghost}\n")
+        (hermes_home / ".env").write_text("".join(env_lines), encoding="utf-8")
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+        monkeypatch.setattr(doctor_mod, "get_hermes_home", lambda: hermes_home)
+        # Point the config helpers at the temp home.
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        if os_environ_value is not None:
+            # Simulate the gateway bridge having already overridden os.environ.
+            monkeypatch.setenv("HERMES_MAX_ITERATIONS", str(os_environ_value))
+        else:
+            monkeypatch.delenv("HERMES_MAX_ITERATIONS", raising=False)
+
+        # Short-circuit at the Tool Availability stage — the drift check runs
+        # well before it in the Configuration Files section.
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
+            doctor_mod.run_doctor(Namespace(fix=fix))
+        return buf.getvalue(), hermes_home
+
+    def test_detects_drift_warn_only(self, monkeypatch, tmp_path):
+        out, hermes_home = self._run_config_section(
+            monkeypatch, tmp_path, fix=False, ghost=90, cfg_turns=400,
+            os_environ_value=400,  # bridge contaminated os.environ
+        )
+        assert "HERMES_MAX_ITERATIONS=90" in out
+        assert "shadows" in out
+        # Warn-only must NOT mutate .env.
+        assert "HERMES_MAX_ITERATIONS=90" in (hermes_home / ".env").read_text(encoding="utf-8")
+
+    def test_fix_removes_ghost(self, monkeypatch, tmp_path):
+        out, hermes_home = self._run_config_section(
+            monkeypatch, tmp_path, fix=True, ghost=90, cfg_turns=400,
+            os_environ_value=400,
+        )
+        assert "Removed stale HERMES_MAX_ITERATIONS" in out
+        env_after = (hermes_home / ".env").read_text(encoding="utf-8")
+        assert "HERMES_MAX_ITERATIONS" not in env_after
+        assert "OPENAI_API_KEY=sk-test" in env_after  # other keys preserved
+
+    def test_no_drift_when_values_match(self, monkeypatch, tmp_path):
+        out, _ = self._run_config_section(
+            monkeypatch, tmp_path, fix=False, ghost=400, cfg_turns=400,
+        )
+        assert "shadows" not in out
+
+    def test_no_drift_when_ghost_absent(self, monkeypatch, tmp_path):
+        out, _ = self._run_config_section(
+            monkeypatch, tmp_path, fix=False, ghost=None, cfg_turns=400,
+        )
+        assert "shadows" not in out

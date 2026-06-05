@@ -24,7 +24,6 @@ import os
 import subprocess
 import sys
 import textwrap
-import unittest.mock as mock
 
 import pytest
 

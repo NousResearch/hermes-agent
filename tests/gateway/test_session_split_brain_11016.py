@@ -17,7 +17,7 @@ Covers three layers of the fix:
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -27,7 +27,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
 )
-from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 
 

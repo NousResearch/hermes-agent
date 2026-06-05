@@ -28,9 +28,6 @@ from gateway.platforms.yuanbao_proto import (
     _fields_to_dict,
     _encode_msg_body_element,
     _decode_msg_body_element,
-    _encode_msg_content,
-    _decode_msg_content,
-    # conn 层
     encode_conn_msg,
     decode_conn_msg,
     encode_conn_msg_full,
@@ -49,8 +46,6 @@ from gateway.platforms.yuanbao_proto import (
     PB_MSG_TYPES,
     BIZ_SERVICES,
     CMD_TYPE,
-    CMD,
-    MODULE,
     next_seq_no,
 )
 
@@ -434,7 +429,7 @@ class TestEncodeOutbound:
 
     def test_c2c_biz_payload_contains_to_account(self):
         """验证 biz payload 包含 to_account 字段"""
-        from gateway.platforms.yuanbao_proto import _parse_fields, _fields_to_dict, _get_string
+        from gateway.platforms.yuanbao_proto import _get_string
         msg_body = [{"msg_type": "TIMTextElem", "msg_content": {"text": "test"}}]
         result = encode_send_c2c_message(
             to_account="target_user",
@@ -448,7 +443,7 @@ class TestEncodeOutbound:
         assert to_acc == "target_user"
 
     def test_group_biz_payload_contains_group_code(self):
-        from gateway.platforms.yuanbao_proto import _parse_fields, _fields_to_dict, _get_string
+        from gateway.platforms.yuanbao_proto import _get_string
         msg_body = [{"msg_type": "TIMTextElem", "msg_content": {"text": "test"}}]
         result = encode_send_group_message(
             group_code="group-xyz",
@@ -595,7 +590,7 @@ class TestEndToEnd:
 
         # 从 biz payload 中读取 to_account 和 msg_body
         from gateway.platforms.yuanbao_proto import (
-            _parse_fields, _fields_to_dict, _get_string, _get_repeated_bytes, WT_LEN
+            _get_string, _get_repeated_bytes
         )
         biz = dec["data"]
         fdict = _fields_to_dict(_parse_fields(biz))

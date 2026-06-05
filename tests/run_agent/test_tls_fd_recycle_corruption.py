@@ -26,9 +26,8 @@ import logging
 import socket as _socket
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +184,6 @@ def test_close_from_stranger_thread_aborts_only_no_close():
     the worker's eventual ``finally`` must still see the client in the
     holder so IT can be the one releasing the FD.
     """
-    from agent.chat_completion_helpers import interruptible_api_call
 
     # We can't easily invoke just `_close_request_client_once` because it's
     # a closure local to ``interruptible_api_call``. Re-extract the same

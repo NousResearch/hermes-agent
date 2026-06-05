@@ -6,7 +6,6 @@ reading arbitrary files (e.g., ~/.hermes/.env) via path traversal.
 
 import json
 import pytest
-from pathlib import Path
 from unittest.mock import patch
 
 from tools.skills_tool import skill_view

@@ -200,8 +200,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     "qwen3-coder-plus": 1000000,  # 1M context
     "qwen3-coder": 262144,        # 256K context
     "qwen": 131072,
-    # MiniMax — official docs: 204,800 context for all models
-    # https://platform.minimax.io/docs/api-reference/text-anthropic-api
+    # MiniMax — M3 is 1M context (max output 512K); M2.x series is 204,800.
+    # Keys use substring matching (longest-first), so "minimax-m3" wins over
+    # the generic "minimax" catch-all for the M3 slug on every surface
+    # (native MiniMax-M3, OpenRouter/Nous minimax/minimax-m3).
+    # https://platform.minimax.io/docs/api-reference/text-chat-openai
+    "minimax-m3": 1000000,
     "minimax": 204800,
     # GLM
     "glm": 202752,
@@ -436,6 +440,10 @@ def is_local_endpoint(base_url: str) -> bool:
         return True
     # Docker / Podman / Lima internal DNS names (e.g. host.docker.internal)
     if any(host.endswith(suffix) for suffix in _CONTAINER_LOCAL_SUFFIXES):
+        return True
+    # Unqualified hostnames (no dots) are local by definition — Docker
+    # Compose service names, /etc/hosts entries, or mDNS names.
+    if host and "." not in host:
         return True
     # RFC-1918 private ranges, link-local, and Tailscale CGNAT
     try:
@@ -1124,6 +1132,30 @@ def _model_name_suggests_kimi(model: str) -> bool:
     return lower.startswith("kimi") or "moonshot" in lower
 
 
+def _model_name_suggests_minimax_m3(model: str) -> bool:
+    """Return True if the model name looks like MiniMax M3.
+
+    Catches ``MiniMax-M3``, ``minimax/minimax-m3``, and similar variants
+    across surfaces (native MiniMax-M3, OpenRouter/Nous minimax/minimax-m3).
+    Used as a guard against stale cache entries seeded by pre-catalog builds
+    that resolved M3 via the generic ``minimax`` catch-all (204,800) before
+    the ``minimax-m3`` (1M) entry existed in DEFAULT_CONTEXT_LENGTHS.
+    """
+    return "minimax-m3" in model.lower()
+
+
+def _model_name_suggests_grok_4_3(model: str) -> bool:
+    """Return True if the model name looks like a Grok 4.3 variant.
+
+    Catches ``grok-4.3``, ``grok-4.3-latest``, and similar slugs.
+    Used as a guard against stale cache entries seeded by pre-catalog builds
+    that resolved grok-4.3 via the generic ``grok-4`` catch-all (256,000)
+    before the ``grok-4.3`` (1M) entry was added to DEFAULT_CONTEXT_LENGTHS
+    on 2026-05-15.
+    """
+    return "grok-4.3" in model.lower()
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
@@ -1531,6 +1563,32 @@ def get_model_context_length(
             elif cached <= 32768 and _model_name_suggests_kimi(model):
                 logger.info(
                     "Dropping stale Kimi cache entry %s@%s -> %s (OpenRouter underreport); "
+                    "re-resolving via hardcoded defaults",
+                    model, base_url, f"{cached:,}",
+                )
+                _invalidate_cached_context_length(model, base_url)
+            # Invalidate stale ≤204,800 cache entries for MiniMax-M3.  Pre-catalog
+            # builds resolved M3 via the generic ``minimax`` catch-all (204,800)
+            # and persisted it before the ``minimax-m3`` (1M) entry existed; that
+            # stale value would otherwise stick forever here at step 1.  M3 is 1M,
+            # so any sub-256K cached value for an M3 slug is a leftover — drop it
+            # and fall through to the hardcoded default.
+            elif cached <= 204_800 and _model_name_suggests_minimax_m3(model):
+                logger.info(
+                    "Dropping stale MiniMax-M3 cache entry %s@%s -> %s (pre-catalog value); "
+                    "re-resolving via hardcoded defaults",
+                    model, base_url, f"{cached:,}",
+                )
+                _invalidate_cached_context_length(model, base_url)
+            # Invalidate stale ≤256,000 cache entries for Grok-4.3.  The
+            # ``grok-4.3`` (1M) entry was added to DEFAULT_CONTEXT_LENGTHS on
+            # 2026-05-15; prior to that, grok-4.3 slugs resolved via the
+            # ``grok-4`` catch-all (256,000) and that value was persisted.
+            # grok-4.3 is 1M, so any sub-262K cached value is a pre-catalog
+            # leftover — drop it and fall through to the hardcoded default.
+            elif cached <= 256_000 and _model_name_suggests_grok_4_3(model):
+                logger.info(
+                    "Dropping stale Grok-4.3 cache entry %s@%s -> %s (pre-catalog value); "
                     "re-resolving via hardcoded defaults",
                     model, base_url, f"{cached:,}",
                 )

@@ -1849,19 +1849,23 @@ class WeComAdapter(BasePlatformAdapter):
         30 msgs/min/chat rate limit (errcode 846607).
 
         If metadata contains "is_approval_prompt": True, the message is routed
-        through the control lane for immediate delivery.
+        through the control lane for immediate delivery and will NOT close
+        any active stream (approval prompts are independent messages).
         """
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
 
-        # Check if this is an approval prompt (should use control lane)
+        # Check if this is an approval prompt (should use control lane and not close stream)
         is_control = False
+        skip_stream_finalize = False
         if metadata:
             is_control = metadata.pop("is_approval_prompt", False)
+            if is_control:
+                skip_stream_finalize = True  # Approval prompts don't close streams
 
         return await self._enqueue_chat_send(
             chat_id,
-            lambda: self._send_inner(chat_id, content, reply_to),
+            lambda: self._send_inner(chat_id, content, reply_to, skip_stream_finalize=skip_stream_finalize),
             is_control=is_control,
         )
 
@@ -1870,8 +1874,14 @@ class WeComAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
+        skip_stream_finalize: bool = False,
     ) -> SendResult:
-        """Actual send logic, called under the per-chat lock."""
+        """Actual send logic, called under the per-chat lock.
+
+        Args:
+            skip_stream_finalize: If True, don't finalize any active stream.
+                Used for approval prompts which should be independent messages.
+        """
         try:
             # If we have an active stream turn for this chat, finalize it with the
             # content — this closes the typing animation and delivers the text
@@ -1880,37 +1890,42 @@ class WeComAdapter(BasePlatformAdapter):
             # so we always supply at least a visible placeholder when content
             # is empty — mirrors the official OpenClaw plugin's "📎 文件已发送"
             # pattern to prevent lingering typing bubbles.
-            active_turn = self._find_active_turn_for_chat(chat_id.strip())
-            if active_turn and not active_turn.finalized:
-                logger.info("[%s] send(): closing active stream %s for chat %s",
-                           self.name, active_turn.stream_id, chat_id)
-                finish_content = content.strip() if content else ""
-                if not finish_content:
-                    finish_content = "✅"  # minimal visible char to close typing
-                try:
-                    await self._send_stream_reply(
-                        active_turn.req_id,
-                        active_turn.stream_id,
-                        finish_content,
-                        finish=True,
-                    )
-                    active_turn.finalized = True
-                    self._cleanup_stream_turn(active_turn.chat_id, active_turn.req_id)
-                    return SendResult(
-                        success=True,
-                        message_id=active_turn.stream_id or uuid.uuid4().hex[:12],
-                    )
-                except WeComStreamExpiredError:
-                    # Stream is dead — fall through to proactive markdown send
-                    self._stream_expired_chats.add(chat_id.strip())
-                    active_turn.expired = True
-                    self._cleanup_stream_turn(active_turn.chat_id, active_turn.req_id)
-                except Exception as exc:
-                    logger.warning(
-                        "[%s] Stream finalize in send() failed, falling through: %s",
-                        self.name, exc,
-                    )
-                    self._cleanup_stream_turn(active_turn.chat_id, active_turn.req_id)
+            #
+            # SKIP this logic for approval prompts (skip_stream_finalize=True):
+            # approval prompts should be independent messages that don't close
+            # the agent's streaming output.
+            if not skip_stream_finalize:
+                active_turn = self._find_active_turn_for_chat(chat_id.strip())
+                if active_turn and not active_turn.finalized:
+                    logger.info("[%s] send(): closing active stream %s for chat %s",
+                               self.name, active_turn.stream_id, chat_id)
+                    finish_content = content.strip() if content else ""
+                    if not finish_content:
+                        finish_content = "✅"  # minimal visible char to close typing
+                    try:
+                        await self._send_stream_reply(
+                            active_turn.req_id,
+                            active_turn.stream_id,
+                            finish_content,
+                            finish=True,
+                        )
+                        active_turn.finalized = True
+                        self._cleanup_stream_turn(active_turn.chat_id, active_turn.req_id)
+                        return SendResult(
+                            success=True,
+                            message_id=active_turn.stream_id or uuid.uuid4().hex[:12],
+                        )
+                    except WeComStreamExpiredError:
+                        # Stream is dead — fall through to proactive markdown send
+                        self._stream_expired_chats.add(chat_id.strip())
+                        active_turn.expired = True
+                        self._cleanup_stream_turn(active_turn.chat_id, active_turn.req_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] Stream finalize in send() failed, falling through: %s",
+                            self.name, exc,
+                        )
+                        self._cleanup_stream_turn(active_turn.chat_id, active_turn.req_id)
 
             reply_req_id = self._reply_req_id_for_message(reply_to)
 
@@ -2111,19 +2126,36 @@ class WeComAdapter(BasePlatformAdapter):
 
         Each turn (identified by chat_id + req_id) maintains its own stream state.
         This prevents concurrent messages from interfering with each other.
+
+        IMPORTANT: Once a turn is created, it locks to its req_id. Even if
+        _last_chat_req_ids[chat] changes (e.g., user sends /approve), the
+        existing turn continues with its original req_id. This prevents the
+        stream from switching to a new req_id mid-turn.
         """
         try:
-            # Resolve req_id for this turn
-            req_id = self._resolve_stream_req_id(chat, reply_to)
-            if not req_id:
+            # Check if we already have an active turn for this chat
+            # If yes, reuse it (don't resolve req_id again)
+            existing_turn = self._find_active_turn_for_chat(chat)
+            if existing_turn and not existing_turn.finalized:
+                turn = existing_turn
                 logger.debug(
-                    "[%s] send_stream_frame: no req_id available for chat %s",
-                    self.name, chat,
+                    "[%s] send_stream_frame: reusing existing turn %s for chat %s",
+                    self.name, turn.stream_id, chat,
                 )
-                return False
-
-            # Get or create turn-specific state
-            turn = self._get_or_create_stream_turn(chat, req_id)
+            else:
+                # No active turn, create a new one
+                req_id = self._resolve_stream_req_id(chat, reply_to)
+                if not req_id:
+                    logger.debug(
+                        "[%s] send_stream_frame: no req_id available for chat %s",
+                        self.name, chat,
+                    )
+                    return False
+                turn = self._get_or_create_stream_turn(chat, req_id)
+                logger.debug(
+                    "[%s] send_stream_frame: created new turn %s (req_id=%s) for chat %s",
+                    self.name, turn.stream_id, req_id, chat,
+                )
 
             # Check if this turn has expired
             if turn.expired:
@@ -2146,7 +2178,7 @@ class WeComAdapter(BasePlatformAdapter):
                 )
                 turn.finalized = True
                 # Clean up this turn's state
-                self._cleanup_stream_turn(chat, req_id)
+                self._cleanup_stream_turn(chat, turn.req_id)
             else:
                 await self._send_stream_reply(
                     turn.req_id,
@@ -2174,10 +2206,9 @@ class WeComAdapter(BasePlatformAdapter):
                 "[%s] Stream frame failed (chat=%s): %s",
                 self.name, chat, exc,
             )
-            # Clean up this turn on error
-            req_id = self._resolve_stream_req_id(chat, reply_to)
-            if req_id:
-                self._cleanup_stream_turn(chat, req_id)
+            # Clean up this turn on error (use existing_turn if available)
+            if 'turn' in locals():
+                self._cleanup_stream_turn(chat, turn.req_id)
             return False
 
     def supports_native_streaming(

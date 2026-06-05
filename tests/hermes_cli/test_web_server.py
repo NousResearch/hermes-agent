@@ -30,6 +30,36 @@ _EXAMPLE_PLUGIN_FIXTURE = (
 )
 
 
+class TestResolveWebDist:
+    def test_prefers_valid_override(self, tmp_path, monkeypatch):
+        from hermes_cli import web_server
+
+        packaged = tmp_path / "packaged"
+        packaged.mkdir()
+        (packaged / "index.html").write_text("packaged")
+
+        override = tmp_path / "override"
+        override.mkdir()
+        (override / "index.html").write_text("override")
+
+        monkeypatch.setattr(web_server, "_DEFAULT_WEB_DIST", packaged)
+        monkeypatch.setenv("HERMES_WEB_DIST", str(override))
+
+        assert web_server._resolve_web_dist() == override
+
+    def test_falls_back_when_override_is_not_a_real_directory(self, tmp_path, monkeypatch):
+        from hermes_cli import web_server
+
+        packaged = tmp_path / "packaged"
+        packaged.mkdir()
+        (packaged / "index.html").write_text("packaged")
+
+        monkeypatch.setattr(web_server, "_DEFAULT_WEB_DIST", packaged)
+        monkeypatch.setenv("HERMES_WEB_DIST", str(tmp_path / "app.asar" / "dist"))
+
+        assert web_server._resolve_web_dist() == packaged
+
+
 @pytest.fixture
 def _install_example_plugin(_isolate_hermes_home):
     """Drop the example-dashboard fixture into the per-test HERMES_HOME

@@ -87,8 +87,33 @@ except ImportError:
             f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
         )
 
-WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
+_DEFAULT_WEB_DIST = Path(__file__).parent / "web_dist"
+
+
+def _resolve_web_dist() -> Path:
+    """Prefer a valid override, but fail closed to the packaged dashboard."""
+    raw_override = os.environ.get("HERMES_WEB_DIST")
+    if not raw_override:
+        return _DEFAULT_WEB_DIST
+
+    override = Path(raw_override)
+    if override.is_dir() and (override / "index.html").is_file():
+        return override
+
+    packaged = _DEFAULT_WEB_DIST
+    if packaged.is_dir() and (packaged / "index.html").is_file():
+        _log.warning(
+            "Ignoring invalid HERMES_WEB_DIST=%s; falling back to %s",
+            override,
+            packaged,
+        )
+        return packaged
+
+    return override
+
+
+WEB_DIST = _resolve_web_dist()
 
 # ---------------------------------------------------------------------------
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)

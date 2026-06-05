@@ -70,8 +70,8 @@ ok "root 权限确认"
 PYTHON_BIN=""
 PYTHON_MAJOR="${PYTHON_VERSION%%.*}"
 PYTHON_MINOR="${PYTHON_VERSION#*.}"
-for py in "python${PYTHON_VERSION}" "python3" "python" "/usr/local/bin/python${PYTHON_VERSION}" "/usr/local/bin/python3"; do
-    if command -v "$py" &>/dev/null; then
+for py in "python${PYTHON_VERSION}" "python3" "python" "/usr/local/bin/python${PYTHON_VERSION}" "/usr/local/bin/python3" "/usr/bin/python${PYTHON_VERSION}" "/usr/bin/python3"; do
+    if command -v "$py" &>/dev/null || [[ -x "$py" ]]; then
         PY_MAJOR=$("$py" -c 'import sys; print(sys.version_info.major)' 2>/dev/null || echo 0)
         PY_MINOR=$("$py" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo 0)
         if [[ "$PY_MAJOR" -gt "$PYTHON_MAJOR" ]] || \

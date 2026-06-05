@@ -68,6 +68,8 @@ def _seed_state_db(home: Path) -> None:
             active INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE messages_fts (content TEXT);
+        CREATE TABLE summaries (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, content TEXT, updated_at REAL);
         """
     )
     now = time.time()
@@ -75,9 +77,10 @@ def _seed_state_db(home: Path) -> None:
         """
         INSERT INTO sessions (
             id, source, model, started_at, ended_at, message_count,
-            tool_call_count, input_tokens, output_tokens, reasoning_tokens,
-            estimated_cost_usd, title
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            tool_call_count, input_tokens, output_tokens, cache_read_tokens,
+            cache_write_tokens, reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+            title, api_call_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "session-1",
@@ -89,9 +92,13 @@ def _seed_state_db(home: Path) -> None:
             3,
             1200,
             800,
+            333,
+            44,
             111,
             0.42,
+            0.31,
             "Seed session",
+            5,
         ),
     )
     con.executemany(
@@ -102,6 +109,7 @@ def _seed_state_db(home: Path) -> None:
             ("session-1", "tool", "<secret should not surface>", "terminal", now - 3300),
         ],
     )
+    con.execute("INSERT INTO summaries (session_id, content, updated_at) VALUES (?, ?, ?)", ("session-1", "private summary", now - 100))
     con.commit()
     con.close()
 
@@ -122,7 +130,12 @@ def test_snapshot_uses_real_runtime_counts_and_compacts_sensitive_state(tmp_path
     home = Path(os.environ["HERMES_HOME"])
     (home / "skills" / "example").mkdir(parents=True)
     (home / "skills" / "example" / "SKILL.md").write_text(
-        "---\nname: example\ndescription: demo\n---\n\n# Example\n",
+        "---\nname: example\ndescription: demo\n---\nmetadata:\n  created_by: agent\n\n# Example\n",
+        encoding="utf-8",
+    )
+    (home / "skills" / "acme-client-lawsuit").mkdir(parents=True)
+    (home / "skills" / "acme-client-lawsuit" / "SKILL.md").write_text(
+        "---\nname: acme-client-lawsuit\ndescription: private workflow\n---\n\n# Private\n",
         encoding="utf-8",
     )
     (home / "cron").mkdir(parents=True, exist_ok=True)
@@ -156,7 +169,16 @@ mcp_servers:
 """.strip(),
         encoding="utf-8",
     )
-    (home / ".env").write_text("OPENROUTER_API_KEY=placeholder-openrouter-key\nDASHBOARD_TOKEN=placeholder-dashboard-token\n", encoding="utf-8")
+    (home / ".env").write_text(
+        "OPENROUTER_API_KEY=placeholder-openrouter-key\n"
+        "DASHBOARD_TOKEN=placeholder-dashboard-token\n"
+        "TELEGRAM_BOT_TOKEN=placeholder-telegram-token\n"
+        "ALLOWED_USER_IDS=123456,789012\n"
+        "OPENAI_API_KEY=placeholder-openai-key\n"
+        "PINECONE_API_KEY=placeholder-pinecone-key\n"
+        "PINECONE_INDEX=private-index-name\n",
+        encoding="utf-8",
+    )
     (home / "soul.md").write_text("# Identity\nA real soul file\n", encoding="utf-8")
     _seed_state_db(home)
 
@@ -177,6 +199,24 @@ mcp_servers:
     assert snapshot["runtime"]["model"]["provider"] == "openai-codex"
     assert snapshot["runtime"]["model"]["model"] == "gpt-5.5"
     assert snapshot["runtime"]["model"]["reasoning"] == "xhigh"
+    assert snapshot["runtime"]["env"]["telegram"]["allowedUserCount"] == 2
+    assert snapshot["runtime"]["env"]["dashboard"]["tokenPresent"] is True
+    assert snapshot["runtime"]["semantic"]["configured"] is True
+    assert snapshot["runtime"]["semantic"]["indexConfigured"] is True
+    assert snapshot["runtime"]["sessions"]["cacheReadTokens"] == 333
+    assert snapshot["runtime"]["sessions"]["cacheWriteTokens"] == 44
+    assert snapshot["runtime"]["sessions"]["actualCostUsd"] == 0.31
+    assert snapshot["runtime"]["sessions"]["apiCalls"] == 5
+    assert snapshot["runtime"]["sessions"]["ftsPresent"] is True
+    assert snapshot["runtime"]["memory"]["sqlite"]["summaries"] == 1
+    assert len(snapshot["runtime"]["preflight"]) == 11
+    assert len(snapshot["runtime"]["customization"]) == 9
+    assert len(snapshot["runtime"]["dataFlow"]) == 5
+    assert snapshot["runtime"]["production"]["score"] >= 0
+    assert len(snapshot["blueprint"]["architecturePieces"]) == 7
+    assert len(snapshot["blueprint"]["prerequisites"]) == 5
+    assert len(snapshot["blueprint"]["nextTools"]) == 8
+    assert len(snapshot["blueprint"]["troubleshooting"]) == 10
     assert all("id" not in item and "title" not in item for item in snapshot["runtime"]["sessions"]["recent"])
     assert any(item["id"] == "step-24" and item["missionControl"] for item in snapshot["coverage"]["steps"])
 
@@ -184,6 +224,14 @@ mcp_servers:
     assert "***" not in encoded
     assert "placeholder-openrouter-key" not in encoded
     assert "placeholder-dashboard-token" not in encoded
+    assert "placeholder-telegram-token" not in encoded
+    assert "placeholder-openai-key" not in encoded
+    assert "placeholder-pinecone-key" not in encoded
+    assert "123456" not in encoded
+    assert "789012" not in encoded
+    assert "private-index-name" not in encoded
+    assert "acme-client-lawsuit" not in encoded
+    assert "private summary" not in encoded
     assert "Seed session" not in encoded
     assert "session-1" not in encoded
     assert "<secret should not surface>" not in encoded

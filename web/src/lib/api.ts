@@ -992,6 +992,25 @@ export interface MissionControlCoverageItem {
   missionControl?: boolean;
 }
 
+
+export interface MissionControlInfoItem {
+  id: string;
+  title?: string;
+  label?: string;
+  term?: string;
+  symptom?: string;
+  summary?: string;
+  detail?: string;
+  definition?: string;
+  cause?: string;
+  fix?: string;
+  route?: string;
+  url?: string;
+  status?: string;
+  evidence?: string[];
+  [key: string]: unknown;
+}
+
 export interface MissionControlDomainScore {
   name: string;
   score: number;
@@ -1013,6 +1032,15 @@ export interface MissionControlSnapshot {
     hermesFeatureCount: number;
     openclawFeatureCount: number;
     parts: string[];
+    architecturePieces?: MissionControlInfoItem[];
+    prerequisites?: MissionControlInfoItem[];
+    preflightChecks?: MissionControlInfoItem[];
+    customizationChecklist?: MissionControlInfoItem[];
+    nextTools?: MissionControlInfoItem[];
+    glossary?: MissionControlInfoItem[];
+    troubleshooting?: MissionControlInfoItem[];
+    resources?: MissionControlInfoItem[];
+    dataFlowSurfaces?: MissionControlInfoItem[];
   };
   runtime: {
     generatedAt: string;
@@ -1029,6 +1057,17 @@ export interface MissionControlSnapshot {
     safety: Record<string, unknown>;
     voice: Record<string, unknown>;
     dashboard: Record<string, unknown>;
+    memory: Record<string, unknown>;
+    semantic: Record<string, unknown>;
+    analytics: Record<string, unknown>;
+    quality: Record<string, unknown>;
+    multiUser: Record<string, unknown>;
+    reflection: Record<string, unknown>;
+    hosting: Record<string, unknown>;
+    dataFlow: MissionControlInfoItem[];
+    preflight: MissionControlInfoItem[];
+    customization: MissionControlInfoItem[];
+    production: Record<string, unknown>;
   };
   coverage: {
     summary: {
@@ -1047,11 +1086,14 @@ export interface MissionControlSnapshot {
     title: string;
     reason: string;
     route: string;
+    category?: string;
+    effort?: string;
   }>;
   privacy: Array<{ label: string; policy: string; detail: string }>;
   deviceProof: {
     principles: string[];
     breakpoints: string[];
+    smokeTargets?: MissionControlInfoItem[];
   };
 }
 

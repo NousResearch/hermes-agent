@@ -73,3 +73,24 @@
 3. Start dashboard server locally.
 4. Browser smoke `/mission-control` on desktop and mobile widths, check console errors.
 5. Commit changes if verification passes.
+
+### Task 6: Phase 2 source-complete Mission Control
+
+**Objective:** Cover the source guide beyond the original 27 steps and feature picker, while making runtime evidence more honest and privacy-safe.
+
+**Backend scope:**
+1. Add static source sections for architecture pieces, prerequisites, data-flow surfaces, pre-flight checks, customization checklist, next-tool ideas, glossary, troubleshooting, and resources.
+2. Split static support from runtime evidence: env key booleans/counts, SQLite/FTS/cache/actual-cost/API-call metrics, semantic memory config, memory tiers, skill trust/compliance counts, cron cadence/reflection/heartbeat counts, gateway whitelist counts, prompt-injection/approval posture, hosting, quality hooks, production readiness, and action queue.
+3. Keep secrets, raw IDs, session titles, tool output, cron prompts, skill names, absolute paths, and vector index names out of the snapshot.
+
+**Frontend scope:**
+1. Add production readiness, pre-flight, customization, data-flow, source extras, and device-proof sections.
+2. Improve responsive shell with a max-width cockpit, stable `data-testid` anchors, progressbar ARIA, loading/error test IDs, focus-visible links, and React Router internal navigation.
+3. Keep dense details as compact cards so mobile/tablet/desktop do not overflow.
+
+**Verification gates:**
+1. Targeted Mission Control Python tests must cover new counts and redaction guarantees.
+2. `npm run build` must pass.
+3. Full Python suite must pass.
+4. API smoke must verify JSON shape and no sensitive strings.
+5. Browser desktop/mobile smoke must verify no horizontal overflow and no console errors.

@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import {
   Activity,
   ArrowUpRight,
+  BookOpen,
+  ClipboardCheck,
+  ListChecks,
+  Route,
+  ServerCog,
   Bot,
   Brain,
   CalendarClock,
@@ -61,6 +67,28 @@ function strArray(record: AnyRecord, key: string): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
+function recordOf(value: unknown): AnyRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as AnyRecord) : {};
+}
+
+function objectArray(value: unknown): AnyRecord[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is AnyRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    : [];
+}
+
+function slugify(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "item";
+}
+
+function checkTone(status: unknown): "success" | "warning" | "secondary" | "outline" {
+  const value = String(status ?? "unknown");
+  if (["pass", "active", "ok"].includes(value)) return "success";
+  if (["warn", "warning", "partial", "fail", "exceeded"].includes(value)) return "warning";
+  if (["watch", "unknown", "not_applicable", "target"].includes(value)) return "secondary";
+  return "outline";
+}
+
 function formatNumber(value: number): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value);
 }
@@ -83,7 +111,15 @@ function statusLabel(status: MissionControlStatus): string {
 function ScoreRing({ value, label }: { value: number; label: string }) {
   const clamped = Math.max(0, Math.min(100, value));
   return (
-    <div className="relative grid place-items-center" aria-label={`${label}: ${clamped}%`}>
+    <div
+      className="relative grid place-items-center"
+      role="progressbar"
+      aria-label={`${label}: ${clamped}%`}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={clamped}
+      data-testid="mission-score-ring"
+    >
       <div
         className="h-36 w-36 rounded-full p-[1px] shadow-[0_0_80px_rgba(255,230,203,0.16)]"
         style={{
@@ -138,12 +174,19 @@ function MetricCard({
 
 function DomainBar({ domain }: { domain: MissionControlDomainScore }) {
   return (
-    <div className="min-w-0 rounded-2xl border border-current/10 bg-background-base/35 p-3" data-testid={`mission-domain-${domain.name}`}>
+    <div className="min-w-0 rounded-2xl border border-current/10 bg-background-base/35 p-3" data-testid={`mission-domain-${slugify(domain.name)}`}>
       <div className="flex items-center justify-between gap-3 text-xs">
         <span className="min-w-0 truncate font-medium text-foreground">{domain.name}</span>
         <span className="font-mono text-text-tertiary">{domain.score}% · {domain.items}</span>
       </div>
-      <div className="mt-2 h-2 overflow-hidden rounded-full bg-midground/10">
+      <div
+        className="mt-2 h-2 overflow-hidden rounded-full bg-midground/10"
+        role="progressbar"
+        aria-label={`${domain.name} readiness`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={domain.score}
+      >
         <div
           className="h-full rounded-full bg-midground shadow-[0_0_24px_rgba(255,230,203,0.25)]"
           style={{ width: `${Math.max(4, Math.min(100, domain.score))}%` }}
@@ -182,7 +225,14 @@ function CoverageCard({ item, compact = false }: { item: MissionControlCoverageI
       {!compact && (
         <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{item.summary}</p>
       )}
-      <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-midground/10">
+      <div
+        className="mt-4 h-1.5 overflow-hidden rounded-full bg-midground/10"
+        role="progressbar"
+        aria-label={`${item.title} readiness`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={item.readiness}
+      >
         <div className="h-full rounded-full bg-midground/80" style={{ width: `${Math.max(4, item.readiness)}%` }} />
       </div>
       <div className="mt-4 flex flex-wrap gap-2 text-[11px] text-text-tertiary">
@@ -203,46 +253,50 @@ function CoverageCard({ item, compact = false }: { item: MissionControlCoverageI
 }
 
 function ActionCard({ action }: { action: MissionControlSnapshot["actionQueue"][number] }) {
-  return (
-    <a
-      href={action.route}
-      className="group block min-w-0 rounded-[1.35rem] border border-current/10 bg-background-base/40 p-4 text-left transition hover:border-current/20 hover:bg-midground/[0.06]"
-    >
-      <div className="flex items-start gap-3">
-        <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-midground/10 font-mono text-xs text-midground">
-          {action.rank}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={action.tone === "now" ? "warning" : "outline"}>{action.tone}</Badge>
-            <ArrowUpRight className="h-3.5 w-3.5 text-text-tertiary transition group-hover:text-midground" />
-          </div>
-          <h3 className="mt-2 text-sm font-semibold text-foreground">{action.title}</h3>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{action.reason}</p>
-        </div>
+  const className = "group block min-w-0 rounded-[1.35rem] border border-current/10 bg-background-base/40 p-4 text-left transition hover:border-current/20 hover:bg-midground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-midground/60";
+  const body = (
+    <div className="flex items-start gap-3">
+      <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-midground/10 font-mono text-xs text-midground">
+        {action.rank}
       </div>
-    </a>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={action.tone === "now" ? "warning" : action.tone === "watch" ? "secondary" : "outline"}>{action.tone}</Badge>
+          {action.category && <Badge tone="outline">{action.category}</Badge>}
+          {action.effort && <span className="rounded-full border border-current/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-text-tertiary">{action.effort}</span>}
+          <ArrowUpRight className="h-3.5 w-3.5 text-text-tertiary transition group-hover:text-midground" />
+        </div>
+        <h3 className="mt-2 text-sm font-semibold text-foreground">{action.title}</h3>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{action.reason}</p>
+      </div>
+    </div>
   );
+  if (action.route.startsWith("http")) {
+    return <a href={action.route} target="_blank" rel="noreferrer" className={className} data-testid={`mission-action-card-${action.rank}`}>{body}</a>;
+  }
+  return <Link to={action.route} className={className} data-testid={`mission-action-card-${action.rank}`}>{body}</Link>;
 }
 
 function Section({
+  id,
   eyebrow,
   title,
   children,
   icon: Icon,
 }: {
+  id?: string;
   eyebrow: string;
   title: string;
   children: ReactNode;
   icon: LucideIcon;
 }) {
   return (
-    <section className="space-y-4" data-testid={`mission-section-${eyebrow.toLowerCase().replace(/\s+/g, "-")}`}>
+    <section id={`mission-${id ?? slugify(eyebrow)}`} className="space-y-4" data-testid={`mission-section-${id ?? slugify(eyebrow)}`}>
       <div className="flex items-center gap-3">
         <div className="grid h-9 w-9 place-items-center rounded-2xl border border-current/10 bg-midground/10 text-midground">
           <Icon className="h-4 w-4" />
         </div>
-        <div>
+        <div className="min-w-0">
           <p className="text-[11px] uppercase tracking-[0.24em] text-text-tertiary">{eyebrow}</p>
           <h2 className="text-lg font-semibold tracking-[-0.03em] text-foreground sm:text-xl">{title}</h2>
         </div>
@@ -266,15 +320,26 @@ function RuntimePanel({ data }: { data: MissionControlSnapshot }) {
   const families = strArray(env, "families");
   const platforms = strArray(gateway, "configuredPlatforms");
 
+  const analytics = recordOf(runtime.analytics);
+  const analyticsTotals = recordOf(analytics.totals);
+  const memory = recordOf(runtime.memory);
+  const memorySqlite = recordOf(memory.sqlite);
+  const semantic = recordOf(runtime.semantic);
+  const production = recordOf(runtime.production);
+
   const rows = [
     ["Model", `${str(model, "provider")} · ${str(model, "model")}`, `Reasoning ${str(model, "reasoning")}`],
-    ["Sessions", `${num(sessions, "total")} sessions · ${num(sessions, "messages")} messages`, `${num(sessions, "toolCalls")} tool calls`],
+    ["Sessions", `${num(sessions, "total")} sessions · ${num(sessions, "messages")} messages`, `${num(sessions, "toolCalls")} tool calls · ${num(sessions, "apiCalls")} API calls`],
+    ["Memory", `${num(memorySqlite, "sessions")} sessions · FTS ${boolText(memorySqlite, "ftsPresent")}`, `${num(memorySqlite, "summaries")} summaries · ${num(memorySqlite, "archivedSessions")} archived`],
+    ["Semantic", `${str(semantic, "provider")}`, `configured ${boolText(semantic, "configured")} · index ${boolText(semantic, "indexConfigured")}`],
     ["Gateway", `${num(gateway, "configuredCount")} configured`, platforms.length ? platforms.join(", ") : `running: ${boolText(gateway, "running")}`],
-    ["Skills", `${num(skills, "total")} installed`, `${num(skills, "usageTracked")} usage-tracked`],
-    ["Cron", `${num(cron, "enabled")} enabled / ${num(cron, "total")} total`, "proactive and scheduled work"],
+    ["Skills", `${num(skills, "total")} installed`, `${num(skills, "agentskillsCompliant")} portable · ${num(skills, "autoCreatedCount")} auto-created`],
+    ["Cron", `${num(cron, "enabled")} enabled / ${num(cron, "total")} total`, `${num(cron, "reflectionJobs")} reflection · ${num(cron, "heartbeatJobs")} heartbeat`],
     ["MCP", `${num(mcp, "configured")} configured`, strArray(mcp, "servers").join(", ") || "no servers listed"],
-    ["Safety", `approvals: ${str(safety, "approvalsMode")}`, `redaction: ${boolText(safety, "redactSecrets")}`],
+    ["Safety", `approvals: ${str(safety, "approvalsMode")}`, `isolated: ${boolText(safety, "terminalIsolated")} · redaction: ${boolText(safety, "redactSecrets")}`],
     ["Voice", `STT ${boolText(voice, "sttEnabled")}`, `TTS ${str(voice, "ttsProvider", "not configured")}`],
+    ["Analytics", `${formatNumber(num(analyticsTotals, "inputTokens") + num(analyticsTotals, "outputTokens"))} tokens`, `$${formatNumber(num(analyticsTotals, "actualCostUsd"))} actual · $${formatNumber(num(analyticsTotals, "estimatedCostUsd"))} estimated`],
+    ["Production", `${num(production, "score")}% score`, `${objectArray(production.blockers).length} blocker/watch item(s)`],
     ["Env", `${num(env, "configuredKeys")} configured values`, families.length ? families.join(", ") : "no provider families exposed"],
   ];
 
@@ -288,6 +353,145 @@ function RuntimePanel({ data }: { data: MissionControlSnapshot }) {
         </div>
       ))}
     </div>
+  );
+}
+
+function StatusList({ items, testId }: { items: AnyRecord[]; testId: string }) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3" data-testid={testId}>
+      {items.map((item, index) => {
+        const title = str(item, "title", str(item, "label", str(item, "term", str(item, "symptom", `Item ${index + 1}`))));
+        const status = item.status ?? "info";
+        const evidence = objectArray(item.evidence).length ? objectArray(item.evidence).map((e) => String(e)) : strArray(item, "evidence");
+        return (
+          <div key={`${title}-${index}`} className="min-w-0 rounded-[1.35rem] border border-current/10 bg-background-base/35 p-4" data-testid={`${testId}-${slugify(title)}`}>
+            <div className="flex flex-wrap items-center gap-2">
+              {typeof item.status !== "undefined" && <Badge tone={checkTone(status)}>{String(status)}</Badge>}
+              {typeof item.route !== "undefined" && <Badge tone="outline">{str(item, "route")}</Badge>}
+            </div>
+            <h3 className="mt-3 line-clamp-2 break-words text-sm font-semibold text-foreground [overflow-wrap:anywhere]">{title}</h3>
+            <p className="mt-1 line-clamp-3 break-words text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
+              {str(item, "summary", str(item, "detail", str(item, "definition", str(item, "fix", "—"))))}
+            </p>
+            {evidence.length > 0 && (
+              <div className="mt-3 space-y-1 text-[11px] leading-relaxed text-text-tertiary">
+                {evidence.slice(0, 2).map((line) => <p key={line}>• {line}</p>)}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProductionPanel({ data }: { data: MissionControlSnapshot }) {
+  const production = recordOf(data.runtime.production);
+  const signals = objectArray(production.signals);
+  const blockers = objectArray(production.blockers);
+  return (
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]" data-testid="mission-production-readiness">
+      <Card className="overflow-hidden bg-card/65 backdrop-blur-xl">
+        <CardContent className="p-5">
+          <p className="text-[11px] uppercase tracking-[0.24em] text-text-tertiary">production score</p>
+          <div className="mt-4 flex items-end gap-2">
+            <span className="text-5xl font-semibold tracking-[-0.08em] text-midground">{num(production, "score")}</span>
+            <span className="pb-2 text-sm text-muted-foreground">/100</span>
+          </div>
+          <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
+            Auth, approvals, redaction, gateway reachability, cron, MCP, quality hooks, and hosting posture are evaluated separately so static support is not confused with verified runtime state.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Badge tone={blockers.length ? "warning" : "success"}>{blockers.length} blocker/watch item(s)</Badge>
+            <Badge tone="outline">privacy minimized</Badge>
+          </div>
+        </CardContent>
+      </Card>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {signals.map((signal, index) => (
+          <div key={`${str(signal, "id", String(index))}`} className="rounded-[1.2rem] border border-current/10 bg-background-base/35 p-4">
+            <Badge tone={checkTone(signal.status)}>{String(signal.status ?? "unknown")}</Badge>
+            <h3 className="mt-3 text-sm font-semibold text-foreground">{str(signal, "label")}</h3>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{str(signal, "detail")}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DataFlowPanel({ data }: { data: MissionControlSnapshot }) {
+  const rows = objectArray(data.runtime.dataFlow);
+  return (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5" data-testid="mission-data-flow">
+      {rows.map((row) => (
+        <div key={str(row, "id", str(row, "label"))} className="min-w-0 rounded-[1.2rem] border border-current/10 bg-background-base/35 p-4">
+          <Badge tone={row.configured ? "success" : "secondary"}>{row.configured ? "configured" : "not configured"}</Badge>
+          <h3 className="mt-3 text-sm font-semibold text-foreground">{str(row, "label")}</h3>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{str(row, "dataSent")}</p>
+          <p className="mt-2 text-[11px] leading-relaxed text-text-tertiary">{str(row, "retention")}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SourceExtrasPanel({ data }: { data: MissionControlSnapshot }) {
+  return (
+    <div className="grid gap-6 xl:grid-cols-2">
+      <div className="space-y-4">
+        <h3 className="text-sm font-semibold text-foreground">Architecture pieces</h3>
+        <StatusList items={data.blueprint.architecturePieces ?? []} testId="mission-architecture" />
+      </div>
+      <div className="space-y-4">
+        <h3 className="text-sm font-semibold text-foreground">Prerequisites</h3>
+        <StatusList items={data.blueprint.prerequisites ?? []} testId="mission-prerequisites" />
+      </div>
+      <div className="space-y-4 xl:col-span-2">
+        <h3 className="text-sm font-semibold text-foreground">What to build next</h3>
+        <StatusList items={data.blueprint.nextTools ?? []} testId="mission-next-tools" />
+      </div>
+      <div className="space-y-4 xl:col-span-2">
+        <h3 className="text-sm font-semibold text-foreground">Troubleshooting playbook</h3>
+        <StatusList items={data.blueprint.troubleshooting ?? []} testId="mission-troubleshooting" />
+      </div>
+    </div>
+  );
+}
+
+function DeviceProofPanel({ data }: { data: MissionControlSnapshot }) {
+  const smokeTargets = objectArray(data.deviceProof.smokeTargets);
+  return (
+    <Card className="overflow-hidden bg-card/65 backdrop-blur-xl" data-testid="mission-device-proof">
+      <CardHeader>
+        <CardTitle className="text-base">Responsive proof markers</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-2 sm:grid-cols-2">
+          {data.deviceProof.breakpoints.map((bp) => (
+            <div key={bp} className="rounded-2xl border border-current/10 bg-background-base/35 px-3 py-2 text-sm text-foreground" data-testid={`mission-device-breakpoint-${slugify(bp)}`}>
+              <CheckCircle2 className="mr-2 inline h-4 w-4 text-midground" />
+              {bp}
+            </div>
+          ))}
+        </div>
+        {smokeTargets.length > 0 && (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {smokeTargets.map((target) => (
+              <div key={str(target, "id", str(target, "label"))} className="rounded-2xl border border-current/10 bg-background-base/20 px-3 py-2 text-xs text-muted-foreground">
+                <Badge tone={checkTone(target.status)}>{str(target, "status")}</Badge>
+                <span className="ml-2">{str(target, "label")}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="space-y-2 text-xs leading-relaxed text-muted-foreground">
+          {data.deviceProof.principles.map((line) => (
+            <p key={line}>• {line}</p>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -315,7 +519,7 @@ export default function MissionControlPage() {
       </div>,
     );
     setEnd(
-      <Button ghost size="icon" onClick={load} disabled={loading} aria-label="Refresh Mission Control">
+      <Button ghost size="icon" onClick={load} disabled={loading} aria-label="Refresh Mission Control" data-testid="mission-refresh-button">
         {loading ? <Spinner /> : <RefreshCw />}
       </Button>,
     );
@@ -344,7 +548,7 @@ export default function MissionControlPage() {
 
   if (loading && !data) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center">
+      <div className="flex min-h-[60vh] items-center justify-center" aria-busy="true" aria-live="polite" data-testid="mission-loading">
         <Spinner className="text-3xl text-primary" />
       </div>
     );
@@ -352,10 +556,10 @@ export default function MissionControlPage() {
 
   if (error && !data) {
     return (
-      <Card>
+      <Card role="alert" data-testid="mission-error">
         <CardContent className="py-12 text-center">
           <p className="text-sm text-destructive">{error}</p>
-          <Button className="mt-4" onClick={load}>Retry</Button>
+          <Button className="mt-4" onClick={load} data-testid="mission-retry-button">Retry</Button>
         </CardContent>
       </Card>
     );
@@ -370,7 +574,7 @@ export default function MissionControlPage() {
   const summary = data.coverage.summary;
 
   return (
-    <div className="flex flex-col gap-6 pb-[max(2rem,env(safe-area-inset-bottom))]" data-testid="mission-control-page">
+    <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-6 pb-[max(2rem,env(safe-area-inset-bottom))]" data-testid="mission-control-page">
       <PluginSlot name="mission-control:top" />
 
       <section
@@ -385,28 +589,26 @@ export default function MissionControlPage() {
               <Badge tone="secondary">{data.blueprint.stepCount} tracked steps</Badge>
               <Badge tone="secondary">{data.blueprint.hermesFeatureCount + data.blueprint.openclawFeatureCount} feature-picker items</Badge>
             </div>
-            <h1 className="mt-5 max-w-4xl text-4xl font-semibold tracking-[-0.07em] text-foreground sm:text-5xl lg:text-6xl">
+            <h2 className="mt-5 max-w-4xl text-4xl font-semibold tracking-[-0.07em] text-foreground sm:text-5xl lg:text-6xl">
               Mission Control for the full agent blueprint.
-            </h1>
+            </h2>
             <p className="mt-5 max-w-3xl text-sm leading-7 text-muted-foreground sm:text-base">
               This is not a static mirror. Hermes maps every step, Hermes feature, and OpenClaw feature from the guide to live local runtime evidence — without exposing raw chat content, commands, logs, secrets, or absolute local paths.
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
-              <a href={data.source.url} target="_blank" rel="noreferrer">
-                <Button outlined>
-                  Source guide <ArrowUpRight className="ml-2 h-4 w-4" />
-                </Button>
+              <a href={data.source.url} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center rounded-xl border border-current/15 px-4 text-sm font-medium text-foreground transition hover:bg-midground/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-midground/60">
+                Source guide <ArrowUpRight className="ml-2 h-4 w-4" />
               </a>
-              <a href="/system">
-                <Button ghost>System evidence</Button>
-              </a>
+              <Link to="/system" className="inline-flex h-10 items-center rounded-xl px-4 text-sm font-medium text-muted-foreground transition hover:bg-midground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-midground/60">
+                System evidence
+              </Link>
             </div>
           </div>
           <ScoreRing value={summary.readiness} label="Mission readiness" />
         </div>
       </section>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5" data-testid="mission-metrics">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5" data-testid="mission-metrics">
         <MetricCard label="Coverage" value={`${summary.total}`} detail={`${summary.counts.active ?? 0} active · ${summary.counts.partial ?? 0} partial`} icon={Gauge} />
         <MetricCard label="Sessions" value={formatNumber(num(sessions, "total"))} detail={`${formatNumber(num(sessions, "messages"))} messages counted`} icon={Database} />
         <MetricCard label="Skills" value={formatNumber(num(skills, "total"))} detail="portable procedural memory" icon={Brain} />
@@ -414,45 +616,74 @@ export default function MissionControlPage() {
         <MetricCard label="MCP" value={formatNumber(num(mcp, "configured"))} detail="configured external tool servers" icon={Workflow} />
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
-        <Section eyebrow="operator queue" title="Smart next actions" icon={Radar}>
-          <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
+        <Section id="production" eyebrow="production" title="Production readiness, honestly separated" icon={ServerCog}>
+          <ProductionPanel data={data} />
+        </Section>
+
+        <Section id="operator-queue" eyebrow="operator queue" title="Smart next actions" icon={Radar}>
+          <div className="grid gap-3 sm:grid-cols-2" data-testid="mission-action-queue">
             {data.actionQueue.map((action) => <ActionCard key={`${action.rank}-${action.title}`} action={action} />)}
           </div>
         </Section>
 
-        <Section eyebrow="readiness heatmap" title="Weakest domains first" icon={Activity}>
+        <Section id="readiness-heatmap" eyebrow="readiness heatmap" title="Weakest domains first" icon={Activity}>
           <div className="grid gap-3">
             {data.coverage.weakestDomains.map((domain) => <DomainBar key={domain.name} domain={domain} />)}
           </div>
         </Section>
       </div>
 
-      <Section eyebrow="live runtime" title="Smart things Mission Control can honestly show" icon={Bot}>
+      <Section id="live-runtime" eyebrow="live runtime" title="Smart things Mission Control can honestly show" icon={Bot}>
         <RuntimePanel data={data} />
       </Section>
 
-      <Section eyebrow="source coverage" title="All guide steps, mapped to routes and evidence" icon={Layers3}>
-        <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3" data-testid="mission-step-grid">
-          {data.coverage.steps.map((step) => <CoverageCard key={step.id} item={step} />)}
+      <div className="grid gap-6 xl:grid-cols-2">
+        <Section id="preflight" eyebrow="pre-flight" title="Before you ship checklist" icon={ClipboardCheck}>
+          <StatusList items={objectArray(data.runtime.preflight)} testId="mission-preflight" />
+        </Section>
+        <Section id="customization" eyebrow="customization" title="Operator-specific setup" icon={ListChecks}>
+          <StatusList items={objectArray(data.runtime.customization)} testId="mission-customization" />
+        </Section>
+      </div>
+
+      <Section id="attention" eyebrow="attention" title="Lowest readiness guide steps" icon={Globe2}>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {topSteps.map((step) => <CoverageCard key={step.id} item={step} compact />)}
+        </div>
+      </Section>
+
+      <Section id="source-coverage" eyebrow="source coverage" title="All guide steps, mapped to routes and evidence" icon={Layers3}>
+        <div data-testid="mission-blueprint-steps">
+          <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3" data-testid="mission-step-grid">
+            {data.coverage.steps.map((step) => <CoverageCard key={step.id} item={step} />)}
+          </div>
         </div>
       </Section>
 
       <div className="grid gap-6 xl:grid-cols-2">
-        <Section eyebrow="Hermes picker" title="H1–H11 feature status" icon={Sparkles}>
+        <Section id="hermes-picker" eyebrow="Hermes picker" title="H1–H11 feature status" icon={Sparkles}>
           <div className="grid gap-3" data-testid="mission-hermes-features">
             {hermesFeatures.map((feature) => <CoverageCard key={feature.id} item={feature} compact />)}
           </div>
         </Section>
-        <Section eyebrow="OpenClaw picker" title="O1–O10 production feature status" icon={Zap}>
+        <Section id="openclaw-picker" eyebrow="OpenClaw picker" title="O1–O10 production feature status" icon={Zap}>
           <div className="grid gap-3" data-testid="mission-openclaw-features">
             {openClawFeatures.map((feature) => <CoverageCard key={feature.id} item={feature} compact />)}
           </div>
         </Section>
       </div>
 
+      <Section id="source-extras" eyebrow="source extras" title="Architecture, prerequisites, next tools and troubleshooting" icon={BookOpen}>
+        <SourceExtrasPanel data={data} />
+      </Section>
+
+      <Section id="data-flow" eyebrow="data flow" title="Where data goes — safely summarized" icon={Route}>
+        <DataFlowPanel data={data} />
+      </Section>
+
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-        <Section eyebrow="privacy boundary" title="Useful without leaking the operator" icon={LockKeyhole}>
+        <Section id="privacy-boundary" eyebrow="privacy boundary" title="Useful without leaking the operator" icon={LockKeyhole}>
           <div className="grid gap-3 sm:grid-cols-2">
             {data.privacy.map((item) => (
               <div key={item.label} className="rounded-[1.35rem] border border-current/10 bg-background-base/35 p-4">
@@ -467,35 +698,10 @@ export default function MissionControlPage() {
           </div>
         </Section>
 
-        <Section eyebrow="device proof" title="Desktop, tablet, mobile — no cockpit collapse" icon={Fingerprint}>
-          <Card className="overflow-hidden bg-card/65 backdrop-blur-xl">
-            <CardHeader>
-              <CardTitle className="text-base">Responsive proof markers</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-2 sm:grid-cols-2">
-                {data.deviceProof.breakpoints.map((bp) => (
-                  <div key={bp} className="rounded-2xl border border-current/10 bg-background-base/35 px-3 py-2 text-sm text-foreground">
-                    <CheckCircle2 className="mr-2 inline h-4 w-4 text-midground" />
-                    {bp}
-                  </div>
-                ))}
-              </div>
-              <div className="space-y-2 text-xs leading-relaxed text-muted-foreground">
-                {data.deviceProof.principles.map((line) => (
-                  <p key={line}>• {line}</p>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+        <Section id="device-proof" eyebrow="device proof" title="Desktop, tablet, mobile — no cockpit collapse" icon={Fingerprint}>
+          <DeviceProofPanel data={data} />
         </Section>
       </div>
-
-      <Section eyebrow="attention" title="Lowest readiness guide steps" icon={Globe2}>
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {topSteps.map((step) => <CoverageCard key={step.id} item={step} compact />)}
-        </div>
-      </Section>
 
       <p className="text-center text-xs text-text-tertiary">
         Generated {data.runtime.generatedAt}. Source checked {data.source.lastChecked}. {data.source.note}

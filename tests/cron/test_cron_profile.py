@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import contextvars
 
 import pytest
 
@@ -329,6 +330,22 @@ class TestRunJobProfileContext:
         assert success is True, error
         assert response.strip() == str(profile_home.resolve())
         assert os.environ["HERMES_HOME"] == str(root)
+        assert sched._get_hermes_home() == root
+
+    def test_profile_context_does_not_bleed_into_fresh_context(
+        self, isolated_cron_profile_home, monkeypatch
+    ):
+        import cron.scheduler as sched
+
+        root, profile_home = isolated_cron_profile_home
+        monkeypatch.setattr(sched, "_hermes_home", None)
+
+        with sched._job_profile_context("profile-job", "support"):
+            assert sched._get_hermes_home() == profile_home.resolve()
+
+            parallel_context = contextvars.Context()
+            assert parallel_context.run(sched._get_hermes_home) == root
+
         assert sched._get_hermes_home() == root
 
     def test_run_job_without_profile_leaves_hermes_home_untouched(

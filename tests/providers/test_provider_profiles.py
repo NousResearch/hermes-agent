@@ -464,6 +464,69 @@ class TestQwenProfile:
         assert isinstance(result[1]["content"], list)
         assert result[1]["content"][0]["text"] == "hello"
 
+    def test_prepare_messages_copy_on_write(self):
+        p = get_provider_profile("qwen-oauth")
+        system_part = {"type": "text", "text": "Be helpful"}
+        msgs = [
+            {"role": "system", "content": [system_part]},
+            {"role": "assistant", "content": [{"type": "text", "text": "unchanged"}]},
+            {"role": "user", "content": ["hello"]},
+        ]
+
+        result = p.prepare_messages(msgs)
+
+        assert result is not msgs
+        assert result[0] is not msgs[0]
+        assert result[0]["content"] is not msgs[0]["content"]
+        assert result[0]["content"][0] is not system_part
+        assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in system_part
+        assert result[1] is msgs[1]
+        assert result[2] is not msgs[2]
+        assert result[2]["content"] == [{"type": "text", "text": "hello"}]
+        assert msgs[2]["content"] == ["hello"]
+
+    def test_prepare_messages_does_not_poison_strict_provider_history(self):
+        qwen = get_provider_profile("qwen-oauth")
+        msgs = [
+            {"role": "system", "content": [{"type": "text", "text": "Be helpful"}]},
+            {"role": "user", "content": "hello"},
+        ]
+
+        qwen_result = qwen.prepare_messages(msgs)
+
+        assert qwen_result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in msgs[0]["content"][0]
+        assert msgs[1]["content"] == "hello"
+
+    def test_prepare_messages_protects_nested_image_url_retry_mutation(self):
+        qwen = get_provider_profile("qwen-oauth")
+        image_url = {"url": "data:image/png;base64,original"}
+        msgs = [
+            {"role": "system", "content": "Be helpful"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "see image"},
+                    {"type": "image_url", "image_url": image_url},
+                ],
+            },
+        ]
+
+        qwen_result = qwen.prepare_messages(msgs)
+
+        assert qwen_result[1] is not msgs[1]
+        assert qwen_result[1]["content"] is not msgs[1]["content"]
+        assert qwen_result[1]["content"][1] is not msgs[1]["content"][1]
+        assert qwen_result[1]["content"][1]["image_url"] is not image_url
+
+        qwen_result[1]["content"][1]["image_url"]["url"] = (
+            "data:image/png;base64,shrunk"
+        )
+        assert msgs[1]["content"][1]["image_url"]["url"] == (
+            "data:image/png;base64,original"
+        )
+
     def test_metadata_top_level(self):
         p = get_provider_profile("qwen-oauth")
         meta = {"sessionId": "s123", "promptId": "p456"}

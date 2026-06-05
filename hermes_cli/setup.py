@@ -415,7 +415,9 @@ def _print_setup_summary(config: dict, hermes_home):
         elif browser_provider == "Camofox":
             missing_browser_hint = "CAMOFOX_URL"
         elif browser_provider == "Local browser":
-            missing_browser_hint = "npm install -g agent-browser"
+            missing_browser_hint = (
+                "npm install -g agent-browser && agent-browser install --with-deps"
+            )
         tool_status.append(
             ("Browser Automation", False, missing_browser_hint)
         )

@@ -1,10 +1,10 @@
 import { useStore } from '@nanostores/react'
 
-import { type Locale, LOCALE_META, useI18n } from '@/i18n'
+import { LanguageSwitcher } from '@/components/language-switcher'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Palette } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { notifyError } from '@/store/notifications'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
@@ -53,27 +53,11 @@ function ThemePreview({ name }: { name: string }) {
 }
 
 export function AppearanceSettings() {
-  const { t, isSavingLocale, locale, setLocale } = useI18n()
+  const { t, isSavingLocale } = useI18n()
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const activeTheme = availableThemes.find(theme => theme.name === themeName)
   const a = t.settings.appearance
-  const locales = Object.keys(LOCALE_META) as Locale[]
-
-  const selectLocale = async (code: Locale) => {
-    if (code === locale || isSavingLocale) {
-      return
-    }
-
-    triggerHaptic('selection')
-
-    try {
-      await setLocale(code)
-      triggerHaptic('success')
-    } catch (error) {
-      notifyError(error, t.language.saveError)
-    }
-  }
 
   return (
     <SettingsContent>
@@ -86,45 +70,13 @@ export function AppearanceSettings() {
         </div>
 
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
               <div className="text-sm font-medium">{t.language.label}</div>
               <div className="mt-1 text-xs text-muted-foreground">{t.language.description}</div>
               {isSavingLocale && <div className="mt-1 text-xs text-muted-foreground">{t.language.saving}</div>}
             </div>
-            <Pill>{LOCALE_META[locale].name}</Pill>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {locales.map(code => {
-              const active = locale === code
-
-              return (
-                <button
-                  className={cn(
-                    'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover)',
-                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-                  )}
-                  disabled={isSavingLocale}
-                  key={code}
-                  onClick={() => void selectLocale(code)}
-                  type="button"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="text-[length:var(--conversation-text-font-size)] font-medium">
-                      {LOCALE_META[code].name}
-                    </div>
-                    {active && (
-                      <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
-                        <Check className="size-3.5" />
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 text-[length:var(--conversation-caption-font-size)] uppercase tracking-wide text-(--ui-text-tertiary)">
-                    {code}
-                  </div>
-                </button>
-              )
-            })}
+            <LanguageSwitcher />
           </div>
         </section>
 

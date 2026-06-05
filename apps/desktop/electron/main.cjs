@@ -481,6 +481,11 @@ const backendPool = new Map() // profile -> { process, port, token, connectionPr
 // exist while a non-primary profile is actively being chatted through.
 const POOL_MAX_BACKENDS = Math.max(1, Number(process.env.HERMES_DESKTOP_POOL_MAX) || 3)
 const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || 10 * 60_000)
+// A backend touched within this window has a live renderer socket (the keepalive
+// pings every 60s for every open profile). LRU eviction must spare these — a
+// concurrent multi-profile session keeps several backends "fresh" at once, and
+// killing one to honor the soft cap would abort a running agent.
+const POOL_KEEPALIVE_FRESH_MS = 90_000
 let poolIdleReaper = null
 // Auto-reload budget for renderer crashes. A deterministic startup crash would
 // otherwise loop forever (reload → crash → reload), pinning CPU and spamming
@@ -3860,16 +3865,22 @@ function touchPoolBackend(profile) {
   if (entry) entry.lastActiveAt = Date.now()
 }
 
-// Evict least-recently-used pool backends until at most `keep` remain.
+// Evict least-recently-used pool backends until at most `keep` remain — but only
+// ever evict backends without a live renderer socket (stale beyond the keepalive
+// window). When every backend is actively kept alive we let the pool exceed the
+// soft cap rather than kill a running session.
 function evictLruPoolBackends(keep) {
   if (backendPool.size <= keep) return
-  const ordered = [...backendPool.entries()].sort(
-    (a, b) => (a[1].lastActiveAt || 0) - (b[1].lastActiveAt || 0)
-  )
-  while (ordered.length > Math.max(0, keep)) {
-    const [profile] = ordered.shift()
+  const now = Date.now()
+  const evictable = [...backendPool.entries()]
+    .filter(([, entry]) => now - (entry.lastActiveAt || 0) > POOL_KEEPALIVE_FRESH_MS)
+    .sort((a, b) => (a[1].lastActiveAt || 0) - (b[1].lastActiveAt || 0))
+  let removable = backendPool.size - Math.max(0, keep)
+  for (const [profile] of evictable) {
+    if (removable <= 0) break
     rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${POOL_MAX_BACKENDS})`)
     stopPoolBackend(profile)
+    removable -= 1
   }
 }
 

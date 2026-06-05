@@ -752,12 +752,11 @@ export function useMessageStream({
           return
         }
 
-        // Turn ended — drop any blocking prompt that's still open (e.g. the
-        // agent was interrupted, or the approval already resolved). Prevents a
-        // stale overlay from outliving the turn that raised it.
-        if (isActiveEvent) {
-          clearAllPrompts()
-        }
+        // Turn ended — drop any blocking prompt still open for THIS session
+        // (e.g. interrupted, or the approval already resolved). Scoped to the
+        // session so a background turn finishing can't wipe the active chat's
+        // prompt, and vice versa.
+        clearAllPrompts(sessionId)
 
         flushQueuedDeltas(sessionId)
 
@@ -842,37 +841,34 @@ export function useMessageStream({
           }
         }
       } else if (event.type === 'approval.request') {
-        if (!isActiveEvent) {
-          return
-        }
-
-        // Dangerous-command / execute_code approval. The Python side is
-        // blocked in _await_gateway_decision() until approval.respond lands;
-        // without this the agent stalls until its 5-min timeout and the tool
-        // is BLOCKED. Approval is session-keyed (no request_id) — the overlay
-        // sends back {choice, session_id}.
+        // Dangerous-command / execute_code approval. The Python side is blocked
+        // in _await_gateway_decision() until approval.respond lands; without
+        // this the agent stalls until its 5-min timeout and the tool is BLOCKED.
+        // Park it per-session (like clarify) so a *background* profile's turn can
+        // raise it and wait — the sidebar flags "needs input" and the inline bar
+        // surfaces once the user focuses that chat.
         setApprovalRequest({
           command: typeof payload?.command === 'string' ? payload.command : '',
           description: typeof payload?.description === 'string' ? payload.description : 'dangerous command',
           sessionId: sessionId ?? null
         })
-      } else if (event.type === 'sudo.request') {
-        if (!isActiveEvent) {
-          return
-        }
 
+        if (sessionId) {
+          updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+        }
+      } else if (event.type === 'sudo.request') {
         // Sudo password capture (tools/terminal_tool.py). Blocked on
         // sudo.respond {request_id, password}.
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
         if (requestId) {
-          setSudoRequest({ requestId })
+          setSudoRequest({ requestId, sessionId: sessionId ?? null })
+
+          if (sessionId) {
+            updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+          }
         }
       } else if (event.type === 'secret.request') {
-        if (!isActiveEvent) {
-          return
-        }
-
         // Skill credential capture (tools/skills_tool.py). Blocked on
         // secret.respond {request_id, value}.
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
@@ -881,18 +877,23 @@ export function useMessageStream({
           setSecretRequest({
             requestId,
             envVar: typeof payload?.env_var === 'string' ? payload.env_var : '',
-            prompt: typeof payload?.prompt === 'string' ? payload.prompt : ''
+            prompt: typeof payload?.prompt === 'string' ? payload.prompt : '',
+            sessionId: sessionId ?? null
           })
+
+          if (sessionId) {
+            updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+          }
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
 
-        // A turn that errors out has also ended — drop any open blocking
-        // prompt so an approval/sudo/secret overlay can't linger past the
-        // failed turn (same intent as the message.complete clear).
-        if (isActiveEvent) {
-          clearAllPrompts()
+        // A turn that errors out has also ended — drop any open blocking prompt
+        // for this session so an approval/sudo/secret overlay can't linger past
+        // the failed turn (same intent as the message.complete clear).
+        if (sessionId) {
+          clearAllPrompts(sessionId)
         }
 
         if (looksLikeProviderSetup) {

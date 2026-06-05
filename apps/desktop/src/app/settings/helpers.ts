@@ -8,6 +8,13 @@ export const includesQuery = (v: unknown, q: string) => asText(v).toLowerCase().
 
 export const prettyName = (v: string) => v.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
+/** Strip leading emoji from toolset titles (CLI registry prefixes labels with icons). */
+export const stripToolsetLabel = (label: string): string =>
+  label.replace(/^[\p{Emoji}\p{Extended_Pictographic}\s]+/u, '').trim() || label
+
+export const toolsetDisplayLabel = (toolset: Pick<ToolsetInfo, 'label' | 'name'>): string =>
+  stripToolsetLabel(asText(toolset.label || toolset.name))
+
 export const toolNames = (t: ToolsetInfo) => (Array.isArray(t.tools) ? t.tools.map(asText).filter(Boolean) : [])
 
 export const withoutKey = <T>(record: Record<string, T>, key: string) => {

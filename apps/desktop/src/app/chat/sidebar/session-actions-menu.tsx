@@ -25,6 +25,7 @@ interface SessionActions {
   sessionId: string
   title: string
   pinned?: boolean
+  profile?: string
   onPin?: () => void
   onArchive?: () => void
   onDelete?: () => void
@@ -41,7 +42,7 @@ interface ItemSpec {
   variant?: 'destructive'
 }
 
-function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive, onDelete }: SessionActions) {
+function useSessionActions({ sessionId, title, pinned = false, profile, onPin, onArchive, onDelete }: SessionActions) {
   const [renameOpen, setRenameOpen] = useState(false)
 
   const items: ItemSpec[] = [
@@ -113,7 +114,13 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive,
     ))
 
   const renameDialog = (
-    <RenameSessionDialog currentTitle={title} onOpenChange={setRenameOpen} open={renameOpen} sessionId={sessionId} />
+    <RenameSessionDialog
+      currentTitle={title}
+      onOpenChange={setRenameOpen}
+      open={renameOpen}
+      profile={profile}
+      sessionId={sessionId}
+    />
   )
 
   return { renameDialog, renderItems }
@@ -170,9 +177,10 @@ interface RenameSessionDialogProps {
   onOpenChange: (open: boolean) => void
   sessionId: string
   currentTitle: string
+  profile?: string
 }
 
-function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle }: RenameSessionDialogProps) {
+function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, profile }: RenameSessionDialogProps) {
   const [value, setValue] = useState(currentTitle)
   const [submitting, setSubmitting] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -200,7 +208,7 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle }: Re
     setSubmitting(true)
 
     try {
-      const result = await renameSession(sessionId, next)
+      const result = await renameSession(sessionId, next, profile)
       const finalTitle = result.title || next || ''
       setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
       notify({ durationMs: 2_000, kind: 'success', message: 'Renamed' })

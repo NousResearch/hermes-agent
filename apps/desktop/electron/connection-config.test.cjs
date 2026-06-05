@@ -21,6 +21,7 @@ const {
   cookiesHaveSession,
   normalizeRemoteBaseUrl,
   resolveAuthMode,
+  resolveTestWsUrl,
   tokenPreview
 } = require('./connection-config.cjs')
 
@@ -53,31 +54,19 @@ test('normalizeRemoteBaseUrl rejects garbage', () => {
 // --- buildGatewayWsUrl (token) ---
 
 test('buildGatewayWsUrl uses wss for https and bakes the token', () => {
-  assert.equal(
-    buildGatewayWsUrl('https://gw.example.com', 'tok123'),
-    'wss://gw.example.com/api/ws?token=tok123'
-  )
+  assert.equal(buildGatewayWsUrl('https://gw.example.com', 'tok123'), 'wss://gw.example.com/api/ws?token=tok123')
 })
 
 test('buildGatewayWsUrl uses ws for http', () => {
-  assert.equal(
-    buildGatewayWsUrl('http://127.0.0.1:9119', 'abc'),
-    'ws://127.0.0.1:9119/api/ws?token=abc'
-  )
+  assert.equal(buildGatewayWsUrl('http://127.0.0.1:9119', 'abc'), 'ws://127.0.0.1:9119/api/ws?token=abc')
 })
 
 test('buildGatewayWsUrl honors a path prefix', () => {
-  assert.equal(
-    buildGatewayWsUrl('https://host/hermes', 't'),
-    'wss://host/hermes/api/ws?token=t'
-  )
+  assert.equal(buildGatewayWsUrl('https://host/hermes', 't'), 'wss://host/hermes/api/ws?token=t')
 })
 
 test('buildGatewayWsUrl url-encodes the token', () => {
-  assert.equal(
-    buildGatewayWsUrl('https://host', 'a/b c+d'),
-    'wss://host/api/ws?token=a%2Fb%20c%2Bd'
-  )
+  assert.equal(buildGatewayWsUrl('https://host', 'a/b c+d'), 'wss://host/api/ws?token=a%2Fb%20c%2Bd')
 })
 
 // --- buildGatewayWsUrlWithTicket (oauth) ---
@@ -89,10 +78,7 @@ test('buildGatewayWsUrlWithTicket uses ?ticket= not ?token=', () => {
 })
 
 test('buildGatewayWsUrlWithTicket url-encodes the ticket', () => {
-  assert.equal(
-    buildGatewayWsUrlWithTicket('https://host', 'a+b/c'),
-    'wss://host/api/ws?ticket=a%2Bb%2Fc'
-  )
+  assert.equal(buildGatewayWsUrlWithTicket('https://host', 'a+b/c'), 'wss://host/api/ws?ticket=a%2Bb%2Fc')
 })
 
 // --- authModeFromStatus ---
@@ -157,11 +143,7 @@ test('cookiesHaveSession handles non-arrays', () => {
 })
 
 test('AT_COOKIE_VARIANTS covers all three deploy shapes', () => {
-  assert.deepEqual(AT_COOKIE_VARIANTS, [
-    '__Host-hermes_session_at',
-    '__Secure-hermes_session_at',
-    'hermes_session_at'
-  ])
+  assert.deepEqual(AT_COOKIE_VARIANTS, ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at'])
 })
 
 // --- tokenPreview ---
@@ -177,4 +159,53 @@ test('tokenPreview returns set for short tokens', () => {
 
 test('tokenPreview returns a masked suffix for long tokens', () => {
   assert.equal(tokenPreview('abcdefghijklmnop'), '...klmnop')
+})
+
+// --- resolveTestWsUrl ---
+//
+// The "Test remote" button must exercise the same WS transport the app uses,
+// and must FAIL (not skip) when an OAuth session can't mint a ws-ticket — that
+// is the exact false-positive PR #39098 set out to eliminate.
+
+test('resolveTestWsUrl (token mode) builds a ?token= URL the WS probe can use', async () => {
+  const url = await resolveTestWsUrl('https://gw.example.com', 'token', 'tok123')
+  assert.equal(url, 'wss://gw.example.com/api/ws?token=tok123')
+})
+
+test('resolveTestWsUrl (token mode, no token) returns null — genuine skip', async () => {
+  assert.equal(await resolveTestWsUrl('https://gw.example.com', 'token', null), null)
+})
+
+test('resolveTestWsUrl (oauth, mint ok) builds a ?ticket= URL', async () => {
+  const url = await resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
+    mintTicket: async () => 'tkt-9'
+  })
+  assert.equal(url, 'wss://gw.example.com/api/ws?ticket=tkt-9')
+})
+
+test('resolveTestWsUrl (oauth, mint FAILS) throws — must NOT skip WS validation', async () => {
+  await assert.rejects(
+    () =>
+      resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
+        mintTicket: async () => {
+          throw new Error('401 ticket mint failed')
+        }
+      }),
+    err => {
+      // Actionable, points the user at re-auth, and preserves the cause + flag
+      // the boot overlay uses to offer a sign-in prompt.
+      assert.match(err.message, /WebSocket ticket/i)
+      assert.match(err.message, /sign in again/i)
+      assert.equal(err.needsOauthLogin, true)
+      assert.ok(err.cause instanceof Error)
+      return true
+    }
+  )
+})
+
+test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {
+  await assert.rejects(
+    () => resolveTestWsUrl('https://gw.example.com', 'oauth', null),
+    /mintTicket function is required/
+  )
 })

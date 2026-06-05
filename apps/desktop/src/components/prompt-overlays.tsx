@@ -4,7 +4,14 @@ import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Loader2, Lock } from '@/lib/icons'
@@ -57,7 +64,7 @@ function SudoDialog() {
           request_id: request.requestId
         })
         triggerHaptic('submit')
-        clearSudoRequest(request.requestId)
+        clearSudoRequest(request.sessionId, request.requestId)
       } catch (error) {
         notifyError(error, 'Could not send sudo password')
         setSubmitting(false)
@@ -156,7 +163,7 @@ function SecretDialog() {
           value: secret
         })
         triggerHaptic('submit')
-        clearSecretRequest(request.requestId)
+        clearSecretRequest(request.sessionId, request.requestId)
       } catch (error) {
         notifyError(error, 'Could not send secret')
         setSubmitting(false)

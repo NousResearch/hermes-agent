@@ -7,15 +7,46 @@ hide_table_of_contents: true
 displayed_sidebar: docs
 ---
 
-import Link from '@docusaurus/Link';
+import Link from "@docusaurus/Link";
 
 # Hermes Agent
 
 由 [Nous Research](https://nousresearch.com) 构建的自我改进 AI 智能体。唯一内置学习循环的智能体——它从经验中创建技能，在使用过程中持续改进，主动提示自身持久化知识，并在会话间不断深化对你的建模。
 
-<div style={{display: 'flex', gap: '1rem', marginBottom: '2rem', flexWrap: 'wrap'}}>
-  <Link to="/getting-started/installation" style={{display: 'inline-block', padding: '0.6rem 1.2rem', backgroundColor: '#FFD700', color: '#07070d', borderRadius: '8px', fontWeight: 600, textDecoration: 'none'}}>快速开始 →</Link>
-  <a href="https://github.com/NousResearch/hermes-agent" style={{display: 'inline-block', padding: '0.6rem 1.2rem', border: '1px solid rgba(255,215,0,0.2)', borderRadius: '8px', textDecoration: 'none'}}>在 GitHub 上查看</a>
+<div
+  style={{
+    display: "flex",
+    gap: "1rem",
+    marginBottom: "2rem",
+    flexWrap: "wrap",
+  }}
+>
+  <Link
+    to="/getting-started/installation"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      backgroundColor: "#FFD700",
+      color: "#07070d",
+      borderRadius: "8px",
+      fontWeight: 600,
+      textDecoration: "none",
+    }}
+  >
+    快速开始 →
+  </Link>
+  <a
+    href="https://github.com/NousResearch/hermes-agent"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      border: "1px solid rgba(255,215,0,0.2)",
+      borderRadius: "8px",
+      textDecoration: "none",
+    }}
+  >
+    在 GitHub 上查看
+  </a>
 </div>
 
 ## 安装
@@ -23,13 +54,13 @@ import Link from '@docusaurus/Link';
 **Linux / macOS / WSL2**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-**Windows（原生，PowerShell）** — *早期测试版，[详情 →](/user-guide/windows-native)*
+**Windows（原生，PowerShell）** — _早期测试版，[详情 →](/user-guide/windows-native)_
 
 ```powershell
-iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
 **Android（Termux）** — 与 Linux 相同的 curl 一行命令；安装程序会自动检测 Termux。
@@ -42,26 +73,26 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 
 ## 快速链接
 
-| | |
-|---|---|
-| 🚀 **[安装](/getting-started/installation)** | 在 Linux、macOS、WSL2 或原生 Windows（早期测试版）上 60 秒完成安装 |
-| 📖 **[快速入门教程](/getting-started/quickstart)** | 第一次对话及值得尝试的核心功能 |
-| 🗺️ **[学习路径](/getting-started/learning-path)** | 根据你的经验水平找到合适的文档 |
-| ⚙️ **[配置](/user-guide/configuration)** | 配置文件、提供商、模型及选项 |
-| 💬 **[消息网关](/user-guide/messaging)** | 配置 Telegram、Discord、Slack、WhatsApp、Teams 等平台 |
-| 🔧 **[工具与工具集](/user-guide/features/tools)** | 70+ 内置工具及其配置方式 |
-| 🧠 **[记忆系统](/user-guide/features/memory)** | 跨会话持续增长的持久记忆 |
-| 📚 **[技能系统](/user-guide/features/skills)** | 智能体创建并复用的程序性记忆 |
-| 🔌 **[MCP 集成](/user-guide/features/mcp)** | 连接 MCP 服务器、过滤其工具，并安全扩展 Hermes |
-| 🧭 **[在 Hermes 中使用 MCP](/guides/use-mcp-with-hermes)** | 实用的 MCP 配置模式、示例与教程 |
-| 🎙️ **[语音模式](/user-guide/features/voice-mode)** | 在 CLI、Telegram、Discord 及 Discord 语音频道中进行实时语音交互 |
-| 🗣️ **[在 Hermes 中使用语音模式](/guides/use-voice-mode-with-hermes)** | Hermes 语音工作流的实操配置与使用模式 |
-| 🎭 **[个性与 SOUL.md](/user-guide/features/personality)** | 通过全局 SOUL.md 定义 Hermes 的默认风格 |
-| 📄 **[上下文文件](/user-guide/features/context-files)** | 影响每次对话的项目上下文文件 |
-| 🔒 **[安全](/user-guide/security)** | 命令审批、授权与容器隔离 |
-| 💡 **[技巧与最佳实践](/guides/tips)** | 快速上手，充分发挥 Hermes 的潜力 |
-| 🏗️ **[架构](/developer-guide/architecture)** | 底层工作原理 |
-| ❓ **[常见问题与故障排查](/reference/faq)** | 常见问题及解决方案 |
+|                                                                       |                                                                    |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| 🚀 **[安装](/getting-started/installation)**                          | 在 Linux、macOS、WSL2 或原生 Windows（早期测试版）上 60 秒完成安装 |
+| 📖 **[快速入门教程](/getting-started/quickstart)**                    | 第一次对话及值得尝试的核心功能                                     |
+| 🗺️ **[学习路径](/getting-started/learning-path)**                     | 根据你的经验水平找到合适的文档                                     |
+| ⚙️ **[配置](/user-guide/configuration)**                              | 配置文件、提供商、模型及选项                                       |
+| 💬 **[消息网关](/user-guide/messaging)**                              | 配置 Telegram、Discord、Slack、WhatsApp、Teams 等平台              |
+| 🔧 **[工具与工具集](/user-guide/features/tools)**                     | 70+ 内置工具及其配置方式                                           |
+| 🧠 **[记忆系统](/user-guide/features/memory)**                        | 跨会话持续增长的持久记忆                                           |
+| 📚 **[技能系统](/user-guide/features/skills)**                        | 智能体创建并复用的程序性记忆                                       |
+| 🔌 **[MCP 集成](/user-guide/features/mcp)**                           | 连接 MCP 服务器、过滤其工具，并安全扩展 Hermes                     |
+| 🧭 **[在 Hermes 中使用 MCP](/guides/use-mcp-with-hermes)**            | 实用的 MCP 配置模式、示例与教程                                    |
+| 🎙️ **[语音模式](/user-guide/features/voice-mode)**                    | 在 CLI、Telegram、Discord 及 Discord 语音频道中进行实时语音交互    |
+| 🗣️ **[在 Hermes 中使用语音模式](/guides/use-voice-mode-with-hermes)** | Hermes 语音工作流的实操配置与使用模式                              |
+| 🎭 **[个性与 SOUL.md](/user-guide/features/personality)**             | 通过全局 SOUL.md 定义 Hermes 的默认风格                            |
+| 📄 **[上下文文件](/user-guide/features/context-files)**               | 影响每次对话的项目上下文文件                                       |
+| 🔒 **[安全](/user-guide/security)**                                   | 命令审批、授权与容器隔离                                           |
+| 💡 **[技巧与最佳实践](/guides/tips)**                                 | 快速上手，充分发挥 Hermes 的潜力                                   |
+| 🏗️ **[架构](/developer-guide/architecture)**                          | 底层工作原理                                                       |
+| ❓ **[常见问题与故障排查](/reference/faq)**                           | 常见问题及解决方案                                                 |
 
 ## 核心功能
 

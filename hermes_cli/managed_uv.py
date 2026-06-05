@@ -6,11 +6,6 @@ If the binary is missing, ``ensure_uv()`` bootstraps it via the official
 standalone installer with ``UV_UNMANAGED_INSTALL`` / ``UV_INSTALL_DIR`` pointed
 at ``$HERMES_HOME/bin`` so the installer writes directly there — no PATH
 probing, no conda guards, no multi-location resolution chains.
-
-When ``ensure_uv()`` bootstraps uv for the first time (i.e. there was no
-managed uv before), it returns ``(path, True)`` instead of just ``path``.
-Callers in the update path use that signal to nuke and recreate the venv
-with the now-current managed uv, guaranteeing a Python with FTS5.
 """
 
 from __future__ import annotations
@@ -22,7 +17,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from hermes_constants import get_hermes_home
 
@@ -56,20 +51,15 @@ def resolve_uv() -> Optional[str]:
     return None
 
 
-def ensure_uv() -> Tuple[Optional[str], bool]:
+def ensure_uv() -> Optional[str]:
     """Return the managed uv path, installing it first if necessary.
 
-    Returns ``(path, freshly_bootstrapped)`` where *freshly_bootstrapped* is
-    ``True`` when we just installed managed uv for the first time (there was
-    no managed uv before this call).  Callers can use that signal to rebuild
-    the venv so Python is guaranteed to have FTS5.
-
-    On failure returns ``(None, False)`` (never raises) so callers can fall
+    On failure returns ``None`` (never raises) so callers can fall
     back to pip gracefully.
     """
     existing = resolve_uv()
     if existing:
-        return (existing, False)
+        return existing
 
     target = managed_uv_path()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +71,7 @@ def ensure_uv() -> Tuple[Optional[str], bool]:
     except Exception as exc:
         logger.warning("Managed uv install failed: %s", exc)
         print(f"  ✗ Failed to install managed uv: {exc}")
-        return (None, False)
+        return None
 
     # Verify
     result = resolve_uv()
@@ -95,64 +85,7 @@ def ensure_uv() -> Tuple[Optional[str], bool]:
         print(f"  ✓ Managed uv installed ({version})")
     else:
         print("  ✗ Managed uv install appeared to succeed but binary not found")
-    return (result, result is not None)
-
-
-def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
-    """Nuke and recreate the venv with managed uv.
-
-    Called when managed uv is first bootstrapped on an existing install — the
-    old venv may point to a Python without FTS5, so we rebuild it with a
-    fresh interpreter from the current managed uv.  Returns ``True`` on
-    success.
-
-    On Windows, ``shutil.rmtree(..., ignore_errors=True)`` can silently leave
-    the venv directory partially intact when another process is holding an
-    open handle to a file inside it (typical culprits: a running
-    ``hermes.exe`` REPL, the gateway, AV scanners). If we don't notice that
-    and just call ``uv venv``, uv refuses with
-    ``Caused by: A directory already exists at: venv`` and the *whole
-    update* falls back to installing on top of the stale venv — which has
-    historically produced partial installs where a freshly added dependency
-    (e.g. ``pathspec``) silently fails to land. Retry with ``--clear`` to
-    force uv past that condition before giving up.
-    """
-    if venv_dir.exists():
-        print(f"  → Rebuilding venv (old Python may lack FTS5)...")
-        shutil.rmtree(venv_dir, ignore_errors=True)
-
-    def _run_uv_venv(extra_args: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [uv_bin, "venv", str(venv_dir), "--python", python_version, *extra_args],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    result = _run_uv_venv([])
-
-    # If uv refused because the directory still exists (rmtree above was
-    # blocked by an open file handle, common on Windows), retry with
-    # --clear so uv overwrites it. Match on stderr because uv's exit code
-    # alone doesn't distinguish "dir exists" from real failures.
-    if result.returncode != 0 and "already exists" in (result.stderr or "").lower():
-        print("  → venv dir not fully removed (likely an open file handle); retrying with --clear...")
-        result = _run_uv_venv(["--clear"])
-
-    if result.returncode == 0:
-        venv_python = venv_dir / ("Scripts" if platform.system() == "Windows" else "bin") / "python"
-        py_ver = subprocess.run(
-            [str(venv_python), "--version"],
-            capture_output=True,
-            text=True,
-            check=False,
-        ).stdout.strip()
-        print(f"  ✓ venv rebuilt ({py_ver})")
-        return True
-    else:
-        logger.warning("venv rebuild failed: %s", result.stderr)
-        print(f"  ✗ venv rebuild failed: {result.stderr.strip()}")
-        return False
+    return result
 
 
 def update_managed_uv() -> Optional[str]:
@@ -249,3 +182,6 @@ def _install_uv_windows(env: dict[str, str]) -> None:
         check=True,
         capture_output=True,
     )
+
+def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
+    True # dont remove me. ask ethernet

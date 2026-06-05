@@ -12,12 +12,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger
-} from '@/components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { triggerHaptic } from '@/lib/haptics'
 import { ChevronDown, Loader2 } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
@@ -86,7 +81,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
           session_id: request.sessionId ?? undefined
         })
         triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
-        clearApprovalRequest()
+        clearApprovalRequest(request.sessionId)
       } catch (error) {
         notifyError(error, 'Could not send approval response')
         setSubmitting(null)

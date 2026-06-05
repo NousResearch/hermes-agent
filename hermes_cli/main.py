@@ -7225,12 +7225,110 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
         candidates = [
             release_dir / "linux-unpacked" / "hermes",
             release_dir / "linux-unpacked" / "Hermes",
+            release_dir / "linux-arm64-unpacked" / "hermes",
+            release_dir / "linux-arm64-unpacked" / "Hermes",
         ]
 
     existing = [p for p in candidates if p.exists()]
     if not existing:
         return None
     return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+def _electron_download_cache_dirs() -> list[Path]:
+    """Return the per-user Electron download cache directories for this OS.
+
+    electron-builder's ``app-builder unpack-electron`` extracts the Electron
+    distribution from a zip stored in this cache (NOT from node_modules), so a
+    corrupt zip here — not a bad workspace install — is what poisons the build.
+    Honors the ``electron_config_cache`` / ``ELECTRON_CACHE`` overrides that
+    ``@electron/get`` respects, then falls back to the platform defaults.
+    """
+    home = Path.home()
+    candidates: list[Path] = []
+    override = os.environ.get("electron_config_cache") or os.environ.get("ELECTRON_CACHE")
+    if override:
+        candidates.append(Path(override))
+    if sys.platform == "darwin":
+        candidates.append(home / "Library" / "Caches" / "electron")
+    elif sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            candidates.append(Path(local) / "electron" / "Cache")
+        candidates.append(home / "AppData" / "Local" / "electron" / "Cache")
+    else:
+        xdg = os.environ.get("XDG_CACHE_HOME")
+        if xdg:
+            candidates.append(Path(xdg) / "electron")
+        candidates.append(home / ".cache" / "electron")
+
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for c in candidates:
+        rc = c.expanduser()
+        if rc not in seen:
+            seen.add(rc)
+            out.append(rc)
+    return out
+
+
+def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
+    """Clear the cached Electron download + half-written unpacked dir so the
+    next ``pack`` re-downloads and re-stages from scratch.
+
+    Root cause of the ``ENOENT … rename '…/linux-unpacked/electron' ->
+    '…/linux-unpacked/Hermes'`` desktop build failure: a corrupt zip in the
+    per-user Electron download cache (a partial download resumed into the same
+    file leaves prepended/concatenated junk, or an interrupted write truncates
+    it). electron-builder's ``app-builder unpack-electron`` extracts the
+    distribution from that cached zip (NOT from node_modules); a bad zip yields
+    a partial tree MISSING the 193 MB ``electron`` binary, so the final rename
+    dies. Re-running repeats the same broken extraction forever.
+
+    We deliberately do NOT try to detect corruption ourselves. stdlib
+    ``zipfile`` silently tolerates the prepended/concatenated junk that is the
+    most common corruption here — it reads from the end-of-central-directory
+    backward, so ``testzip()`` returns clean on exactly the zips ``unzip -t``
+    and ``@electron/get`` reject. Gating the purge on a self-rolled validator
+    would therefore skip the real-world case and never self-heal. Instead, on a
+    packaged-build failure we unconditionally remove the version's cached zips
+    and the stale unpacked dir, then let the caller retry once: ``@electron/get``
+    re-downloads with its own SHASUM verification (the real source of truth),
+    and ``before-pack.cjs`` re-wipes the unpacked dir. If the failure was
+    unrelated, a clean re-download is harmless and the retry fails the same way.
+
+    Best-effort: never raises. Returns the paths removed so the caller can log
+    them and decide whether a retry is worthwhile (empty list ⇒ nothing to
+    clear, so no point retrying).
+    """
+    removed: list[Path] = []
+
+    for cache_dir in _electron_download_cache_dirs():
+        if not cache_dir.is_dir():
+            continue
+        for zip_path in sorted(cache_dir.rglob("electron-*.zip")):
+            try:
+                zip_path.unlink()
+                removed.append(zip_path)
+            except OSError:
+                # Locked/permission-denied entry is out of our hands; let the
+                # build report its own error rather than masking it.
+                pass
+
+    # Drop the half-written unpacked dir too: an interrupted prior pack leaves
+    # a partial tree that poisons the rename even after the zip is fixed.
+    # (before-pack.cjs also handles this, but clearing it here makes the retry
+    # robust even if the hook is somehow skipped.)
+    release_dir = desktop_dir / "release"
+    if release_dir.is_dir():
+        for unpacked in release_dir.glob("*-unpacked"):
+            try:
+                shutil.rmtree(unpacked, ignore_errors=True)
+                removed.append(unpacked)
+            except OSError:
+                pass
+
+    return removed
 
 
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
@@ -7389,6 +7487,26 @@ def cmd_gui(args: argparse.Namespace):
             print(f"→ Building desktop {build_label}...")
             build_script = "build" if source_mode else "pack"
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            if build_result.returncode != 0 and not source_mode:
+                # A corrupt cached Electron zip makes `pack` fail with an ENOENT
+                # on the final `electron` -> `Hermes` rename: unpack-electron
+                # extracted a partial tree (missing the 193 MB binary) from the
+                # bad zip. We do NOT try to prove the zip is corrupt ourselves —
+                # stdlib zipfile silently tolerates the prepended/concatenated
+                # junk that is the most common corruption (a partial download
+                # resumed into the same file), so a `testzip()` gate would pass
+                # and never self-heal. Instead, on any packaged-build failure we
+                # purge the version's cached zip + the half-written unpacked dir
+                # and retry once: @electron/get re-downloads with its own SHASUM
+                # verification, which is the real source of truth. If the
+                # failure was something else, the clean re-download is harmless
+                # and the retry fails the same way.
+                purged = _purge_electron_build_cache(desktop_dir)
+                if purged:
+                    print("  ⚠ Desktop build failed; cleared cached Electron download and retrying once...")
+                    for p in purged:
+                        print(f"    - {p}")
+                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
@@ -7702,10 +7820,19 @@ def _kill_stale_dashboard_processes(
     exclude: set[int] | None = None
     raw_pid = os.environ.get("HERMES_DESKTOP_CHILD_PID")
     if raw_pid:
-        try:
-            exclude = {int(raw_pid)}
-        except (ValueError, TypeError):
-            pass
+        # The desktop may manage several backends (one per active profile) and
+        # passes them comma-separated; a lone int still parses for back-compat.
+        parsed: set[int] = set()
+        for part in raw_pid.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                parsed.add(int(part))
+            except (ValueError, TypeError):
+                pass
+        if parsed:
+            exclude = parsed
 
     pids = _find_stale_dashboard_pids(exclude_pids=exclude)
     if not pids:
@@ -7902,17 +8029,12 @@ def _update_via_zip(args):
     # individually so update does not silently strip working capabilities.
     print("→ Updating Python dependencies...")
 
-    from hermes_cli.managed_uv import ensure_uv, rebuild_venv, update_managed_uv
+    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
     # Keep managed uv current — runs `uv self update` if we already have one.
     update_managed_uv()
 
-    uv_bin, fresh_bootstrap = ensure_uv()
-    # First-time managed uv install on an existing checkout: the old venv
-    # may point to a Python without FTS5.  Rebuild it so the new managed
-    # uv provides a fresh interpreter with FTS5 guaranteed.
-    if fresh_bootstrap and uv_bin:
-        rebuild_venv(uv_bin, PROJECT_ROOT / "venv")
+    uv_bin = ensure_uv()
 
     pip_cmd = [sys.executable, "-m", "pip"]
     if not uv_bin:
@@ -8565,48 +8687,6 @@ def _venv_scripts_dir() -> Path | None:
         return None
     scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
     return scripts if scripts.is_dir() else None
-
-
-def _wait_for_interpreter_venv_ready(*, timeout: float = 15.0) -> bool:
-    """Ensure the venv hosting ``sys.executable`` has an intact ``pyvenv.cfg``.
-
-    During ``hermes update`` the managed-uv path can rebuild the project venv
-    (``rebuild_venv`` → ``shutil.rmtree`` + ``uv venv``) before the
-    desktop-rebuild and profile-skills-sync steps run. Both of those steps
-    spawn a child process with ``sys.executable``. If they fire while the venv
-    is mid-rewrite, the interpreter launcher finds the venv directory but no
-    ``pyvenv.cfg`` yet and aborts with the bare stderr line
-    ``No pyvenv.cfg file`` — surfacing as a spurious "Desktop build failed" /
-    "sync failed" on an update that otherwise succeeded.
-
-    A venv's ``pyvenv.cfg`` sits one level up from the interpreter's ``bin`` /
-    ``Scripts`` dir. If ``sys.executable`` is NOT a venv interpreter (no
-    sibling marker dir, e.g. a system Python on PATH), there is nothing to
-    wait for and we return True immediately. Otherwise we poll briefly for the
-    marker to (re)appear — the rewrite window is short — and return whether
-    it's present. Best-effort: never raises, callers proceed regardless.
-    """
-    try:
-        exe = Path(sys.executable).resolve()
-    except Exception:
-        return True
-
-    venv_dir = exe.parent.parent  # .../venv/{bin,Scripts}/python -> .../venv
-    bin_dir = venv_dir / ("Scripts" if _is_windows() else "bin")
-    if not bin_dir.is_dir():
-        # Not a venv-hosted interpreter — pyvenv.cfg is irrelevant.
-        return True
-
-    cfg = venv_dir / "pyvenv.cfg"
-    if cfg.is_file():
-        return True
-
-    deadline = _time.monotonic() + max(0.0, timeout)
-    while _time.monotonic() < deadline:
-        if cfg.is_file():
-            return True
-        _time.sleep(0.25)
-    return cfg.is_file()
 
 
 def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
@@ -10003,7 +10083,7 @@ def _cmd_update_pip(args):
     # Keep managed uv current before using it.
     update_managed_uv()
 
-    uv, _fresh_bootstrap = ensure_uv()
+    uv = ensure_uv()
     in_venv = sys.prefix != sys.base_prefix
     # pipx-managed installs live under .../pipx/venvs/<name>/...
     pipx_managed = "pipx" in sys.prefix.split(os.sep)
@@ -10097,7 +10177,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 return
             print("✗ Not a git repository. Please reinstall:")
             print(
-                "  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+                "  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
             )
             sys.exit(1)
 
@@ -10445,17 +10525,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
         print("→ Updating Python dependencies...")
-        from hermes_cli.managed_uv import ensure_uv, rebuild_venv, update_managed_uv
+        from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
         # Keep managed uv current — runs `uv self update` if we already have one.
         update_managed_uv()
 
-        uv_bin, fresh_bootstrap = ensure_uv()
-        # First-time managed uv install on an existing checkout: the old venv
-        # may point to a Python without FTS5.  Rebuild it so the new managed
-        # uv provides a fresh interpreter with FTS5 guaranteed.
-        if fresh_bootstrap and uv_bin:
-            rebuild_venv(uv_bin, PROJECT_ROOT / "venv")
+        uv_bin = ensure_uv()
 
         pip_cmd = [sys.executable, "-m", "pip"]
         if not uv_bin:
@@ -10518,18 +10593,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
         if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
-            # The Python-dependency step above may have rebuilt the venv that
-            # hosts sys.executable. Wait for its pyvenv.cfg to settle before
-            # spawning, or the child interpreter aborts with "No pyvenv.cfg
-            # file" and the rebuild spuriously "fails" on a successful update.
-            _wait_for_interpreter_venv_ready()
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Stream the build output live (long Electron builds otherwise
             # look hung). On the rare nonzero exit, retry once after waiting
             # again for the venv — this covers a still-settling rebuild window
             # the first wait didn't fully catch.
             build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
-            if build_result.returncode != 0 and _wait_for_interpreter_venv_ready():
+            if build_result.returncode != 0:
                 build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
@@ -10586,10 +10656,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if all_profiles:
                 print()
                 print("→ Syncing bundled skills to all profiles...")
-                # seed_profile_skills spawns sys.executable; if the venv was
-                # just rebuilt above, wait for pyvenv.cfg before the loop so
-                # the children don't abort with "No pyvenv.cfg file".
-                _wait_for_interpreter_venv_ready()
                 for p in all_profiles:
                     try:
                         r = seed_profile_skills(p.path, quiet=True)

@@ -1264,6 +1264,32 @@ def _workspace_root(dir: Path) -> Path:
     return dir
 
 
+def _termux_workspace_install_context(
+    dir: Path, *, include_child_workspaces: bool = False
+) -> tuple[Path, tuple[str, ...]]:
+    """Return Termux-only ``(cwd, npm_args)`` for installing deps for *dir* only."""
+    ws_root = _workspace_root(dir)
+    if ws_root == dir:
+        return dir, ()
+
+    try:
+        workspace = dir.relative_to(ws_root).as_posix()
+    except ValueError:
+        return ws_root, ()
+
+    workspace_args: list[str] = ["--workspace", workspace]
+    if include_child_workspaces:
+        packages_dir = dir / "packages"
+        if packages_dir.is_dir():
+            for child in sorted(packages_dir.iterdir()):
+                if child.is_dir() and (child / "package.json").is_file():
+                    workspace_args.extend(
+                        ["--workspace", child.relative_to(ws_root).as_posix()]
+                    )
+    workspace_args.append("--include-workspace-root=false")
+    return ws_root, tuple(workspace_args)
+
+
 def _tui_need_npm_install(root: Path) -> bool:
     """True when @hermes/ink is missing or node_modules is behind package-lock.json.
 
@@ -1524,16 +1550,43 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
-    #    npm install runs from the workspace root (where package-lock.json lives);
-    #    npm workspaces resolves ui-tui deps automatically.
+    #    Existing desktop behaviour runs npm from the workspace root.  Termux
+    #    scopes the install to ui-tui so launch does not pull desktop/web
+    #    dependencies into the hot path.
     did_install = False
-    if _tui_need_npm_install(tui_dir):
+    termux_startup = _is_termux_startup_environment()
+    termux_need_rebuild = False
+    if termux_startup and not tui_dev:
+        termux_need_rebuild = _tui_need_rebuild(tui_dir)
+
+    skip_install_for_fresh_termux_bundle = (
+        termux_startup and not tui_dev and not termux_need_rebuild
+    )
+    if (
+        not skip_install_for_fresh_termux_bundle
+        and _tui_need_npm_install(tui_dir)
+    ):
         npm = _node_bin("npm")
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
+        npm_cwd = _workspace_root(tui_dir)
+        npm_workspace_args: tuple[str, ...] = ()
+        if termux_startup:
+            npm_cwd, npm_workspace_args = _termux_workspace_install_context(
+                tui_dir,
+                include_child_workspaces=True,
+            )
         result = subprocess.run(
-            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
-            cwd=str(_workspace_root(tui_dir)),
+            [
+                npm,
+                "install",
+                *npm_workspace_args,
+                "--silent",
+                "--no-fund",
+                "--no-audit",
+                "--progress=false",
+            ],
+            cwd=str(npm_cwd),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1579,8 +1632,8 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     # Termux cold starts use the freshness check because esbuild startup is
     # expensive on old mobile CPUs.
     should_build = True
-    if _is_termux_startup_environment():
-        should_build = did_install or _tui_need_rebuild(tui_dir)
+    if termux_startup:
+        should_build = did_install or termux_need_rebuild
 
     if should_build:
         npm = _node_bin("npm")
@@ -7004,10 +7057,14 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             if text:
                 _say(text)
 
+    npm_cwd = _workspace_root(web_dir)
+    npm_workspace_args: tuple[str, ...] = ()
+    if _is_termux_startup_environment():
+        npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
     r1 = _run_npm_install_deterministic(
         npm,
-        _workspace_root(web_dir),
-        extra_args=("--silent",),
+        npm_cwd,
+        extra_args=(*npm_workspace_args, "--silent"),
     )
     if r1.returncode != 0:
         _say(

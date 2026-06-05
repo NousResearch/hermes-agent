@@ -4150,6 +4150,16 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            # SINGLE INTEGRATION POINT for Agente Desktop compatibility.
+            # See gateway/agente_desktop_adapter/ (plan + contract).
+            # This must remain the *only* Agente-specific call site in upstream paths.
+            try:
+                from gateway.agente_desktop_adapter import register_agente_desktop_routes
+                register_agente_desktop_routes(self._app)
+            except ImportError:
+                # upstream-only build
+                pass
+
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

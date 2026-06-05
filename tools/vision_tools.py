@@ -541,8 +541,7 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
 
     For unknown / legacy providers we conservatively return False — the
     caller falls back to the legacy aux-LLM text path.  The check is relaxed
-    when the provider's ``ProviderProfile`` declares ``supports_vision=True``
-    or when ``get_model_capabilities`` reports vision support for the model.
+    when the provider's ``ProviderProfile`` declares ``supports_vision=True``.
     """
     if not isinstance(provider, str):
         return False
@@ -586,16 +585,6 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         from providers import get_provider_profile
         profile = get_provider_profile(p)
         if profile is not None and profile.supports_vision:
-            return True
-    except Exception:
-        pass
-
-    # Check model capabilities from the models.dev catalog as a final
-    # fallback for custom providers whose models happen to be registered.
-    try:
-        from agent.models_dev import get_model_capabilities
-        caps = get_model_capabilities(provider, model)
-        if caps is not None and bool(getattr(caps, "supports_vision", False)):
             return True
     except Exception:
         pass

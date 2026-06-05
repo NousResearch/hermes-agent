@@ -159,6 +159,30 @@ def _filter_fallback_chain_for_pinned_job(
     return filtered or None
 
 
+def _resolve_job_fallback_chain(job: dict, global_chain, job_id: str):
+    """Resolve the effective fallback chain for a cron job.
+
+    Precedence:
+      1. If the job declares its OWN ``fallback`` (list or single dict), use that
+         as the base chain instead of the global config.yaml chain. This lets a
+         job add a *same-provider* fallback (e.g. codex/gpt-5.5 → codex/gpt-5.4)
+         for resilience against a single-model backend hiccup, which the global
+         chain can't provide (its only same-provider entry is the model the job
+         already runs).
+      2. Otherwise fall back to the global chain.
+
+    Either way the result passes through ``_filter_fallback_chain_for_pinned_job``
+    so a provider-pinned job can NEVER cross providers — a per-job chain cannot be
+    used as a codex→opus escape hatch. The pin-filter's revert env var still
+    applies.
+    """
+    job_fb = job.get("fallback")
+    if isinstance(job_fb, dict):
+        job_fb = [job_fb]
+    base = job_fb if job_fb else global_chain
+    return _filter_fallback_chain_for_pinned_job(job, base, job_id)
+
+
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -1738,10 +1762,12 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
         # Hard rule: a cron job that PINS a provider must never silently fall back
-        # to a different provider (the recurring codex→opus alert). Strip any
-        # cross-provider fallback entries so a pinned job runs on its provider or
-        # fails loudly. Revert with HERMES_CRON_ALLOW_CROSS_PROVIDER_FALLBACK=1.
-        fallback_model = _filter_fallback_chain_for_pinned_job(job, fallback_model, job_id)
+        # to a different provider (the recurring codex→opus alert). A job may also
+        # declare its own same-provider fallback (e.g. codex/gpt-5.5 → codex/gpt-5.4)
+        # for single-model-outage resilience; either way the chain is pin-filtered
+        # so a pinned job runs on its provider or fails loudly. Revert with
+        # HERMES_CRON_ALLOW_CROSS_PROVIDER_FALLBACK=1.
+        fallback_model = _resolve_job_fallback_chain(job, fallback_model, job_id)
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
         if runtime_provider:

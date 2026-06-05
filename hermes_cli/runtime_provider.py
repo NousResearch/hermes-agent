@@ -501,6 +501,26 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             if (canonical or "").strip().lower() == requested_norm:
                 return None
 
+    def _extract_provider_fields(entry: Dict[str, Any], name: str, base_url: str, api_key: str) -> Dict[str, Any]:
+        """Build a resolved provider result dict from a raw config entry."""
+        result: Dict[str, Any] = {
+            "name": name,
+            "base_url": base_url.strip(),
+            "api_key": api_key,
+            "model": entry.get("default_model", ""),
+        }
+        extra_body = entry.get("extra_body")
+        if isinstance(extra_body, dict):
+            result["extra_body"] = dict(extra_body)
+        # Accept both legacy ``api_mode`` and new ``transport`` spellings.
+        api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
+        if api_mode:
+            result["api_mode"] = api_mode
+        api_version = str(entry.get("api_version") or "").strip()
+        if api_version:
+            result["api_version"] = api_version
+        return result
+
     config = load_config()
     
     # First check providers: dict (new-style user-defined providers)
@@ -522,26 +542,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
-                    result = {
-                        "name": entry.get("name", ep_name),
-                        "base_url": base_url.strip(),
-                        "api_key": resolved_api_key,
-                        "model": entry.get("default_model", ""),
-                    }
-                    extra_body = entry.get("extra_body")
-                    if isinstance(extra_body, dict):
-                        result["extra_body"] = dict(extra_body)
-                    # The v11→v12 migration writes the API mode under the new
-                    # ``transport`` field, but hand-edited configs may still
-                    # use the legacy ``api_mode`` spelling.  Accept both —
-                    # the runtime normaliser ``_normalize_custom_provider_entry``
-                    # already does, so without this lift every migrated config
-                    # silently downgrades codex_responses / anthropic_messages
-                    # providers to chat_completions in the resolved runtime.
-                    api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
-                    if api_mode:
-                        result["api_mode"] = api_mode
-                    return result
+                    return _extract_provider_fields(entry, entry.get("name", ep_name), base_url, resolved_api_key)
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
             if display_name:
@@ -550,19 +551,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     # Found match by display name
                     base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                     if base_url:
-                        result = {
-                            "name": display_name,
-                            "base_url": base_url.strip(),
-                            "api_key": resolved_api_key,
-                            "model": entry.get("default_model", ""),
-                        }
-                        extra_body = entry.get("extra_body")
-                        if isinstance(extra_body, dict):
-                            result["extra_body"] = dict(extra_body)
-                        api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
-                        if api_mode:
-                            result["api_mode"] = api_mode
-                        return result
+                        return _extract_provider_fields(entry, display_name, base_url, resolved_api_key)
 
     # Fall back to custom_providers: list (legacy format)
     custom_providers = config.get("custom_providers")

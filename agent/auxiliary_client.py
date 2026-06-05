@@ -159,6 +159,8 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    "azure_foundry": "azure-foundry",
+    "azurefoundry": "azure-foundry",
 }
 
 
@@ -3620,7 +3622,9 @@ def resolve_provider_client(
                 if entry_api_mode == "anthropic_messages":
                     try:
                         from agent.anthropic_adapter import build_anthropic_client
-                        real_client = build_anthropic_client(custom_key, custom_base)
+                        _entry_api_version = str(custom_entry.get("api_version") or "").strip() or None
+                        real_client = build_anthropic_client(custom_key, custom_base,
+                                                             api_version=_entry_api_version)
                     except ImportError:
                         logger.warning(
                             "Named custom provider %r declares api_mode="

@@ -41,6 +41,9 @@ import type {
 } from '@/types/hermes'
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
+// Local STT can spend longer than the generic REST timeout on first use while
+// downloading/loading faster-whisper models or transcoding browser audio.
+const DESKTOP_AUDIO_TRANSCRIPTION_TIMEOUT_MS = 300_000
 
 export type {
   ActionResponse,
@@ -658,6 +661,7 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
   return window.hermesDesktop.api<AudioTranscriptionResponse>({
     path: '/api/audio/transcribe',
     method: 'POST',
+    timeoutMs: DESKTOP_AUDIO_TRANSCRIPTION_TIMEOUT_MS,
     body: {
       data_url: dataUrl,
       mime_type: mimeType

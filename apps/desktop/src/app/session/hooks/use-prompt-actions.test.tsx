@@ -9,6 +9,7 @@ import type { SessionInfo } from '@/types/hermes'
 import { usePromptActions } from './use-prompt-actions'
 
 vi.mock('@/hermes', () => ({
+  setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
 }))
 

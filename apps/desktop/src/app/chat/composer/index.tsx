@@ -178,7 +178,7 @@ export function ChatBar({
   const slash = useSlashCompletions({ gateway: gateway ?? null })
 
   const stacked = expanded || narrow || tight
-  const hasComposerPayload = draft.trim().length > 0 || attachments.length > 0
+  const hasComposerPayload = draftRef.current.trim().length > 0 || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
@@ -917,11 +917,11 @@ export function ChatBar({
   }
 
   const queueCurrentDraft = useCallback(() => {
-    if (!activeQueueSessionKey || (!draft.trim() && attachments.length === 0)) {
+    if (!activeQueueSessionKey || (!draftRef.current.trim() && attachments.length === 0)) {
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: draft, attachments })) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: draftRef.current, attachments })) {
       return false
     }
 
@@ -1045,8 +1045,8 @@ export function ChatBar({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(draft.trim())) {
-        const submitted = draft
+      if (!attachments.length && SLASH_COMMAND_RE.test(draftRef.current.trim())) {
+        const submitted = draftRef.current
         triggerHaptic('submit')
         clearDraft()
         void onSubmit(submitted)

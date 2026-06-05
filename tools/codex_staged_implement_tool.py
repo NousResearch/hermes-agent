@@ -43,6 +43,7 @@ _PREVIEW_LIMIT = 8000
 _LIST_LIMIT = 200
 _DICT_LIMIT = 80
 _STRING_LIMIT = 4000
+_DIRTY_PATHS_LIMIT = 100
 
 
 def _json_result(payload: dict[str, Any]) -> str:
@@ -256,7 +257,8 @@ def _dirty_check(repo: Path) -> dict[str, Any]:
         "is_clean": proc.returncode == 0 and not lines,
         "porcelain_count": len(lines),
         "dirty_count": len(paths),
-        "dirty_paths": paths,
+        "dirty_paths": paths[:_DIRTY_PATHS_LIMIT],
+        "dirty_paths_truncated": len(paths) > _DIRTY_PATHS_LIMIT,
     }
 
 

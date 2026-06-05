@@ -158,6 +158,50 @@ def test_dirty_worktree_rejects_without_runner_call(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_dirty_worktree_paths_are_bounded_without_losing_total_count(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    for index in range(105):
+        (repo / f"dirty-{index:03d}.txt").write_text("dirty\n", encoding="utf-8")
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("runner should not be invoked")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(workdir=str(repo), allowed_files=["README.md"])
+
+    assert result["status"] == "dirty_worktree"
+    assert result["dirty_check"]["dirty_count"] == 105
+    assert len(result["dirty_check"]["dirty_paths"]) == 100
+    assert result["dirty_check"]["dirty_paths_truncated"] is True
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_dirty_worktree_paths_at_limit_are_not_marked_truncated(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    for index in range(100):
+        (repo / f"dirty-{index:03d}.txt").write_text("dirty\n", encoding="utf-8")
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("runner should not be invoked")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(workdir=str(repo), allowed_files=["README.md"])
+
+    assert result["status"] == "dirty_worktree"
+    assert result["dirty_check"]["dirty_count"] == 100
+    assert len(result["dirty_check"]["dirty_paths"]) == 100
+    assert result["dirty_check"]["dirty_paths_truncated"] is False
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
 @pytest.mark.parametrize("dirty_policy", ["allow-listed-owned", "fail-on-overlap"])
 def test_non_require_clean_dirty_policy_is_rejected_without_runner_call(tmp_path, monkeypatch, dirty_policy):
     repo = _clean_repo(tmp_path)

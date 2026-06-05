@@ -1629,6 +1629,41 @@ class TestProfileArg:
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
 
+    def test_launchd_plist_sets_open_file_limit(self, tmp_path, monkeypatch):
+        """generate_launchd_plist must raise RLIMIT_NOFILE above the macOS default of 256.
+
+        launchd agents inherit a soft limit of 256 open files; a long-lived
+        gateway exhausts that and hits EMFILE on session writes. See #14210.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.delenv("HERMES_GATEWAY_MAX_FILES", raising=False)
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>SoftResourceLimits</key>" in plist
+        assert "<key>HardResourceLimits</key>" in plist
+        assert "<key>NumberOfFiles</key>" in plist
+        assert "<integer>65536</integer>" in plist
+
+    def test_launchd_plist_open_file_limit_env_override(self, tmp_path, monkeypatch):
+        """HERMES_GATEWAY_MAX_FILES overrides the default fd limit; bad values fall back to 65536."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+
+        monkeypatch.setenv("HERMES_GATEWAY_MAX_FILES", "20000")
+        assert "<integer>20000</integer>" in gateway_cli.generate_launchd_plist()
+
+        # Invalid / non-positive values fall back to the safe default.
+        monkeypatch.setenv("HERMES_GATEWAY_MAX_FILES", "not-a-number")
+        assert "<integer>65536</integer>" in gateway_cli.generate_launchd_plist()
+        monkeypatch.setenv("HERMES_GATEWAY_MAX_FILES", "0")
+        assert "<integer>65536</integer>" in gateway_cli.generate_launchd_plist()
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)

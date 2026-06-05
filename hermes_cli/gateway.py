@@ -3053,6 +3053,19 @@ def generate_launchd_plist() -> str:
     )
     prog_args_xml = "\n        ".join(prog_args)
 
+    # Raise the open-file-descriptor limit. launchd agents inherit macOS's
+    # default soft RLIMIT_NOFILE of 256, which a long-lived gateway exhausts:
+    # a large ~/.hermes/sessions/ directory plus accumulated async httpx
+    # transports hit EMFILE ("[Errno 24] Too many open files") on session
+    # writes. The kernel ceiling (kern.maxfilesperproc) is far higher, so 256
+    # is the only real constraint. See #14210.
+    try:
+        max_files = int(os.environ.get("HERMES_GATEWAY_MAX_FILES", "65536"))
+        if max_files <= 0:
+            max_files = 65536
+    except (TypeError, ValueError):
+        max_files = 65536
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -3083,6 +3096,18 @@ def generate_launchd_plist() -> str:
     
     <key>KeepAlive</key>
     <true/>
+    
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{max_files}</integer>
+    </dict>
+    
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{max_files}</integer>
+    </dict>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>

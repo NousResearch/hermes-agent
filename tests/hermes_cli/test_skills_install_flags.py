@@ -8,7 +8,6 @@ Based on PR #1595 by 333Alden333 (salvaged).
 """
 
 import sys
-from types import SimpleNamespace
 
 
 def test_cli_skills_install_yes_sets_skip_confirm(monkeypatch):

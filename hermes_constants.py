@@ -5,28 +5,71 @@ without risk of circular imports.
 """
 
 import os
+import sys
+import sysconfig
+from contextvars import ContextVar, Token
 from pathlib import Path
 
 
 _profile_fallback_warned: bool = False
+_UNSET = object()
+_HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
+    "_HERMES_HOME_OVERRIDE", default=_UNSET
+)
+
+
+def set_hermes_home_override(path: str | Path | None) -> Token:
+    """Set a context-local Hermes home override and return its reset token.
+
+    This is for in-process, per-task scoping.  It deliberately does not mutate
+    ``os.environ`` because that is shared by every thread in the process.
+    """
+    value: str | object = _UNSET if path is None else str(path)
+    return _HERMES_HOME_OVERRIDE.set(value)
+
+
+def reset_hermes_home_override(token: Token) -> None:
+    """Restore the previous context-local Hermes home override."""
+    _HERMES_HOME_OVERRIDE.reset(token)
+
+
+def get_hermes_home_override() -> str | None:
+    """Return the active context-local Hermes home override, if any."""
+    override = _HERMES_HOME_OVERRIDE.get()
+    if override is _UNSET or not override:
+        return None
+    return str(override)
+
+
+def _get_platform_default_hermes_home() -> Path:
+    """Return the platform-native default Hermes home path."""
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        return base / "hermes"
+    return Path.home() / ".hermes"
 
 
 def get_hermes_home() -> Path:
-    """Return the Hermes home directory (default: ~/.hermes).
+    """Return the Hermes home directory (default: platform-native path).
 
-    Reads HERMES_HOME env var, falls back to ~/.hermes.
+    Reads HERMES_HOME env var, falls back to the platform-native default.
     This is the single source of truth — all other copies should import this.
 
     When ``HERMES_HOME`` is unset but an ``active_profile`` file indicates
     a non-default profile is active, logs a loud one-shot warning to
     ``errors.log`` so cross-profile data corruption is diagnosable instead
     of silent.  Behavior is unchanged otherwise — we still return
-    ``~/.hermes`` — because raising here would brick 30+ module-level
+    the platform-native default — because raising here would brick 30+ module-level
     callers that import this at load time.  Subprocess spawners are
     expected to propagate ``HERMES_HOME`` explicitly (see the systemd
     template in ``hermes_cli/gateway.py`` and the kanban dispatcher in
     ``hermes_cli/kanban_db.py``).  See https://github.com/NousResearch/hermes-agent/issues/18594.
     """
+    override = get_hermes_home_override()
+    if override:
+        return Path(override)
+
     val = os.environ.get("HERMES_HOME", "").strip()
     if val:
         return Path(val)
@@ -36,10 +79,8 @@ def get_hermes_home() -> Path:
     global _profile_fallback_warned
     if not _profile_fallback_warned:
         try:
-            # Inline the default-root resolution from get_default_hermes_root()
-            # to stay import-safe (this function is called from module scope
-            # in 30+ files; we cannot afford to trigger logging setup here).
-            active_path = (Path.home() / ".hermes" / "active_profile")
+            fallback_home = _get_platform_default_hermes_home()
+            active_path = fallback_home / "active_profile"
             active = active_path.read_text().strip() if active_path.exists() else ""
         except (UnicodeDecodeError, OSError):
             active = ""
@@ -50,10 +91,9 @@ def get_hermes_home() -> Path:
             # module-import time from 30+ sites, often before logging is
             # configured, and (b) root-logger propagation would double-emit
             # on consoles where a StreamHandler is already attached.
-            import sys
             msg = (
                 f"[HERMES_HOME fallback] HERMES_HOME is unset but active "
-                f"profile is {active!r}. Falling back to ~/.hermes, which "
+                f"profile is {active!r}. Falling back to {fallback_home}, which "
                 f"is the DEFAULT profile — not {active!r}. Any data this "
                 f"process writes will land in the wrong profile. The "
                 f"subprocess spawner should pass HERMES_HOME explicitly "
@@ -65,13 +105,14 @@ def get_hermes_home() -> Path:
             except Exception:
                 pass
 
-    return Path.home() / ".hermes"
+    return _get_platform_default_hermes_home()
 
 
 def get_default_hermes_root() -> Path:
     """Return the root Hermes directory for profile-level operations.
 
-    In standard deployments this is ``~/.hermes``.
+    In standard deployments this is the platform-native Hermes home
+    (``~/.hermes`` on POSIX, ``%LOCALAPPDATA%\\hermes`` on native Windows).
 
     In Docker or custom deployments where ``HERMES_HOME`` points outside
     ``~/.hermes`` (e.g. ``/opt/data``), returns ``HERMES_HOME`` directly
@@ -84,7 +125,7 @@ def get_default_hermes_root() -> Path:
 
     Import-safe — no dependencies beyond stdlib.
     """
-    native_home = Path.home() / ".hermes"
+    native_home = _get_platform_default_hermes_home()
     env_home = os.environ.get("HERMES_HOME", "")
     if not env_home:
         return native_home
@@ -107,6 +148,23 @@ def get_default_hermes_root() -> Path:
     return env_path
 
 
+def _get_packaged_data_dir(name: str) -> Path | None:
+    """Return an installed data-files directory if one exists.
+
+    Used to discover bundled skills/optional-skills when Hermes is installed
+    from a wheel that emitted them via setuptools data_files.
+    """
+    candidates = []
+    for scheme in ("data", "purelib", "platlib"):
+        raw = sysconfig.get_path(scheme)
+        if raw:
+            candidates.append(Path(raw) / name)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def get_optional_skills_dir(default: Path | None = None) -> Path:
     """Return the optional-skills directory, honoring package-manager wrappers.
 
@@ -116,9 +174,51 @@ def get_optional_skills_dir(default: Path | None = None) -> Path:
     override = os.getenv("HERMES_OPTIONAL_SKILLS", "").strip()
     if override:
         return Path(override)
+    packaged = _get_packaged_data_dir("optional-skills")
+    if packaged is not None:
+        return packaged
     if default is not None:
         return default
     return get_hermes_home() / "optional-skills"
+
+
+def get_optional_mcps_dir(default: Path | None = None) -> Path:
+    """Return the optional-mcps directory, honoring package-manager wrappers.
+
+    Mirrors :func:`get_optional_skills_dir` for the MCP catalog (Nous-approved
+    Model Context Protocol servers shipped with the repo but disabled by
+    default). Packaged installs may ship ``optional-mcps`` outside the Python
+    package tree and expose it via ``HERMES_OPTIONAL_MCPS``.
+    """
+    override = os.getenv("HERMES_OPTIONAL_MCPS", "").strip()
+    if override:
+        return Path(override)
+    packaged = _get_packaged_data_dir("optional-mcps")
+    if packaged is not None:
+        return packaged
+    if default is not None:
+        return default
+    return get_hermes_home() / "optional-mcps"
+
+
+def get_bundled_skills_dir(default: Path | None = None) -> Path:
+    """Return the bundled skills directory for source and packaged installs.
+
+    Resolution order:
+        1. ``HERMES_BUNDLED_SKILLS`` env var (Nix wrapper / explicit override)
+        2. Wheel-installed ``<sysconfig data>/skills`` (pip install path)
+        3. Caller-supplied ``default`` (typically the source-checkout path)
+        4. ``<HERMES_HOME>/skills`` last-resort
+    """
+    override = os.getenv("HERMES_BUNDLED_SKILLS", "").strip()
+    if override:
+        return Path(override)
+    packaged = _get_packaged_data_dir("skills")
+    if packaged is not None:
+        return packaged
+    if default is not None:
+        return default
+    return get_hermes_home() / "skills"
 
 
 def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
@@ -162,6 +262,26 @@ def display_hermes_home() -> str:
         return str(home)
 
 
+def secure_parent_dir(path: Path) -> None:
+    """Chmod ``0o700`` on the parent directory of *path*, but only if safe.
+
+    Refuses to chmod ``/`` or any top-level directory (resolved parent with
+    fewer than 3 parts, i.e. ``/`` or any direct child like ``/usr``) to
+    prevent catastrophic host bricking when ``HERMES_HOME`` or other path
+    env vars resolve to an unexpected location.
+
+    See https://github.com/NousResearch/hermes-agent/issues/25821.
+    """
+    parent = path.parent.resolve()
+    # Refuse root and its direct children (/usr, /home, /var, /tmp, …).
+    if parent == Path("/") or len(parent.parts) < 3:
+        return
+    try:
+        os.chmod(parent, 0o700)
+    except OSError:
+        pass
+
+
 def get_subprocess_home() -> str | None:
     """Return a per-profile HOME directory for subprocesses, or None.
 
@@ -179,7 +299,7 @@ def get_subprocess_home() -> str | None:
     Activation is directory-based: if the ``home/`` subdirectory doesn't
     exist, returns ``None`` and behavior is unchanged.
     """
-    hermes_home = os.getenv("HERMES_HOME")
+    hermes_home = get_hermes_home_override() or os.getenv("HERMES_HOME")
     if not hermes_home:
         return None
     profile_home = os.path.join(hermes_home, "home")
@@ -339,7 +459,13 @@ def apply_ipv4_preference(force: bool = False) -> None:
     socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]
 
 
+# ─── Streaming Response Constants ────────────────────────────────────────────
+
+# Response ID for partial stream stubs used during error recovery
+PARTIAL_STREAM_STUB_ID = "partial-stream-stub"
+
+FINISH_REASON_LENGTH = "length"
+
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
-
-AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"

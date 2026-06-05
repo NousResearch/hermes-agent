@@ -105,7 +105,7 @@ def configure_windows_stdio() -> bool:
         _CONFIGURED = True
         return False
 
-    if os.environ.get("HERMES_DISABLE_WINDOWS_UTF8") in ("1", "true", "True", "yes"):
+    if os.environ.get("HERMES_DISABLE_WINDOWS_UTF8") in {"1", "true", "True", "yes"}:
         _CONFIGURED = True
         return False
 
@@ -216,7 +216,6 @@ def _augment_path_with_known_tools() -> None:
     if not is_windows():
         return
 
-    import shutil as _shutil
 
     local_appdata = os.environ.get("LOCALAPPDATA", "")
     if not local_appdata:

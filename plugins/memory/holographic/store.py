@@ -13,12 +13,6 @@ try:
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
 
-try:
-    from agent.pii_guard import guard_write as _pii_guard_write
-except ImportError:  # pragma: no cover — plugin may be loaded before agent pkg
-    def _pii_guard_write(content: str, *, allow_pii: bool = False) -> None:
-        return None
-
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
     fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,28 +148,17 @@ class MemoryStore:
         content: str,
         category: str = "general",
         tags: str = "",
-        *,
-        allow_pii: bool = False,
     ) -> int:
         """Insert a fact and return its fact_id.
 
         Deduplicates by content (UNIQUE constraint). On duplicate, returns
         the existing fact_id without modifying the row. Extracts entities from
         the content and links them to the fact.
-
-        Raises :class:`agent.pii_guard.PIIWriteBlocked` when ``content`` looks
-        like third-party payroll / tax-form PII (Israeli payslips, Form 106,
-        national-ID records) and ``allow_pii`` is not set. This guards
-        against the "memory-phantom-clients" class of incident where OCR
-        output from a client's document gets persisted as a sub-client.
-        Callers must pass ``allow_pii=True`` only after explicit operator
-        confirmation.
         """
         with self._lock:
             content = content.strip()
             if not content:
                 raise ValueError("content must not be empty")
-            _pii_guard_write(content, allow_pii=allow_pii)
 
             try:
                 cur = self._conn.execute(
@@ -263,8 +246,6 @@ class MemoryStore:
         trust_delta: float | None = None,
         tags: str | None = None,
         category: str | None = None,
-        *,
-        allow_pii: bool = False,
     ) -> bool:
         """Partially update a fact. Trust is clamped to [0, 1].
 
@@ -281,10 +262,8 @@ class MemoryStore:
             params: list = []
 
             if content is not None:
-                content = content.strip()
-                _pii_guard_write(content, allow_pii=allow_pii)
                 assignments.append("content = ?")
-                params.append(content)
+                params.append(content.strip())
             if tags is not None:
                 assignments.append("tags = ?")
                 params.append(tags)

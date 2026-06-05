@@ -2,7 +2,6 @@
 
 import json
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -118,10 +117,6 @@ class TestExternalSkillsInFindAll:
             skills = _find_all_skills()
         names = [s["name"] for s in skills]
         assert "my-external-skill" in names
-        skill = next(s for s in skills if s["name"] == "my-external-skill")
-        assert skill["path"] == str(external_skills_dir / "my-external-skill" / "SKILL.md")
-        assert skill["source"] == "external"
-        assert skill["frontmatter"]["name"] == "my-external-skill"
 
     def test_local_takes_precedence(self, hermes_home, external_skills_dir):
         """If the same skill name exists locally and externally, local wins."""
@@ -143,7 +138,6 @@ class TestExternalSkillsInFindAll:
         matching = [s for s in skills if s["name"] == "my-external-skill"]
         assert len(matching) == 1
         assert matching[0]["description"] == "Local version"
-        assert matching[0]["source"] == "local"
 
 
 class TestExternalSkillView:

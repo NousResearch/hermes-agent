@@ -122,7 +122,7 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
     # empty, drop it entirely.
     if "enum" in repaired and isinstance(repaired["enum"], list):
         node_type = repaired.get("type")
-        if node_type in ("string", "integer", "number", "boolean"):
+        if node_type in {"string", "integer", "number", "boolean"}:
             cleaned = [v for v in repaired["enum"]
                        if v is not None and v != ""]
             if cleaned:
@@ -135,7 +135,7 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
 
 def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
     """Infer a reasonable ``type`` if this schema node has none."""
-    if "type" in node and node["type"] not in (None, ""):
+    if "type" in node and node["type"] not in {None, ""}:
         return node
 
     # Heuristic: presence of ``properties`` → object, ``items`` → array, ``enum``

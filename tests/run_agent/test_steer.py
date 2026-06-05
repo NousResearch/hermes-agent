@@ -281,7 +281,7 @@ class TestSteerCommandRegistry:
         """The /steer slash command must be registered so it reaches all
         platforms (CLI, gateway, TUI autocomplete, Telegram/Slack menus).
         """
-        from hermes_cli.commands import resolve_command, ACTIVE_SESSION_BYPASS_COMMANDS
+        from hermes_cli.commands import resolve_command
 
         cmd = resolve_command("steer")
         assert cmd is not None

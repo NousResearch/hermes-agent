@@ -81,6 +81,29 @@ class TestCLIStatusBar:
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
 
+    def test_post_compression_sentinel_does_not_render_negative(self):
+        """Right after a compression, last_prompt_tokens is parked at the -1
+        sentinel until the next API call reports real usage. The status bar
+        must clamp it to 0 instead of rendering "-1/200K" / "-1%".
+        """
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=-1,
+            context_length=200_000,
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["context_tokens"] == 0
+        assert snapshot["context_percent"] == 0
+
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "-1" not in text
+        assert "0/200K" in text
+
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
 
@@ -332,6 +355,45 @@ class TestCLIStatusBar:
         assert cli_obj._tui_input_rule_height("bottom", width=50) == 0
         assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
 
+    def test_input_rules_hide_after_resize_until_next_input(self):
+        """When _status_bar_suppressed_after_resize is set, both rules hide.
+
+        See _recover_after_resize — column shrink reflows already-rendered
+        bars into scrollback, so we hide the separators until the user
+        submits the next input, at which point the flag is cleared.
+        """
+        cli_obj = _make_cli()
+        cli_obj._status_bar_suppressed_after_resize = True
+
+        assert cli_obj._tui_input_rule_height("top", width=90) == 0
+        assert cli_obj._tui_input_rule_height("bottom", width=90) == 0
+
+        cli_obj._status_bar_suppressed_after_resize = False
+        assert cli_obj._tui_input_rule_height("top", width=90) == 1
+        assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
+
+    def test_scrollback_box_width_returns_viewport_width(self):
+        """Decorative scrollback boxes use the full viewport width.
+
+        The previous clamp (max 56 cols) was reverted in favour of the
+        prompt_toolkit ``_output_screen_diff`` monkey-patch landed in
+        #26137, which keeps chrome out of scrollback at the source.
+        We accept that an aggressive column-shrink may visually reflow
+        already printed Panel borders — that's a cosmetic artifact of
+        stamped scrollback history, not a live-render bug.
+        """
+        from cli import HermesCLI
+
+        # Floor at 32 — narrow terminals still get something usable
+        # (avoids negative ``'─' * (w - 2)`` math).
+        assert HermesCLI._scrollback_box_width(20) == 32
+        assert HermesCLI._scrollback_box_width(32) == 32
+        # Above the floor, return the actual viewport width — no cap.
+        assert HermesCLI._scrollback_box_width(48) == 48
+        assert HermesCLI._scrollback_box_width(80) == 80
+        assert HermesCLI._scrollback_box_width(120) == 120
+        assert HermesCLI._scrollback_box_width(200) == 200
+
     def test_agent_spacer_reclaimed_on_narrow_terminals(self):
         cli_obj = _make_cli()
         cli_obj._agent_running = True
@@ -529,7 +591,6 @@ class TestStatusBarWidthSource:
     """Ensure status bar fragments don't overflow the terminal width."""
 
     def _make_wide_cli(self):
-        from datetime import datetime, timedelta
         cli_obj = _attach_agent(
             _make_cli(),
             prompt_tokens=100_000,

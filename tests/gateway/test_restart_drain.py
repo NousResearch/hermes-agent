@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
+from agent.i18n import t
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 from gateway.session import SessionEntry, build_session_key
@@ -32,7 +33,16 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
 
     result = await runner._handle_message(event)
 
-    assert result == "⏳ Draining 1 active agent(s) before restart..."
+    expected = t("gateway.draining", count=1)
+    assert result == expected
+    # Guard against the silent-degradation regression in #22266: if the i18n
+    # catalog cannot be resolved (e.g. xdist workers losing the locales path)
+    # then ``t("gateway.draining", count=1)`` returns the bare key
+    # ``"gateway.draining"`` instead of the formatted English string, and both
+    # sides of the equality above would still match. Assert on the catalog
+    # output explicitly so a broken locale resolution fails loudly here.
+    assert expected != "gateway.draining"
+    assert "Draining" in expected and "1" in expected
     running_agent.interrupt.assert_not_called()
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
 
@@ -104,6 +114,24 @@ def test_load_busy_input_mode_prefers_env_then_config_then_default(tmp_path, mon
     # Unknown values fall through to the safe default
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "bogus")
     assert gateway_run.GatewayRunner._load_busy_input_mode() == "interrupt"
+
+
+def test_load_busy_text_mode_defaults_to_queue_and_allows_interrupt(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
+
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  busy_text_mode: interrupt\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "interrupt"
+
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "queue")
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "bogus")
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
 
 
 def test_load_restart_drain_timeout_prefers_env_then_config_then_default(

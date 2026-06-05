@@ -25,7 +25,7 @@ import argparse
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 
 def _fmt_bytes(n: int) -> str:
@@ -139,7 +139,7 @@ def _confirm(prompt: str) -> bool:
     except (EOFError, KeyboardInterrupt):
         print()
         return False
-    return resp in ("y", "yes")
+    return resp in {"y", "yes"}
 
 
 def cmd_clear(args: argparse.Namespace) -> int:

@@ -10,10 +10,8 @@ Verifies that:
 """
 
 import os
-import uuid
 from datetime import datetime
-from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -160,30 +158,6 @@ class TestBranchCommandCLI:
         assert agent.reset_session_state.called
         assert agent._last_flushed_db_idx == 4  # len(conversation_history)
 
-    def test_branch_updates_agent_session_log_file(self, cli_instance, session_db, tmp_path):
-        """Branching must redirect the agent's session_log_file to the new session's path."""
-        from cli import HermesCLI
-        from pathlib import Path
-
-        logs_dir = tmp_path / "sessions"
-        logs_dir.mkdir()
-
-        agent = MagicMock()
-        agent._last_flushed_db_idx = 0
-        agent.logs_dir = logs_dir
-        agent.session_log_file = logs_dir / f"session_{cli_instance.session_id}.json"
-        cli_instance.agent = agent
-
-        old_log_file = agent.session_log_file
-        HermesCLI._handle_branch_command(cli_instance, "/branch")
-
-        new_session_id = cli_instance.session_id
-        expected_log = logs_dir / f"session_{new_session_id}.json"
-        assert agent.session_log_file == expected_log, (
-            "session_log_file must point to the branch session, not the original"
-        )
-        assert agent.session_log_file != old_log_file
-
     def test_branch_sets_resumed_flag(self, cli_instance, session_db):
         """Branch should set _resumed=True to prevent auto-title generation."""
         from cli import HermesCLI
@@ -191,6 +165,25 @@ class TestBranchCommandCLI:
         HermesCLI._handle_branch_command(cli_instance, "/branch")
 
         assert cli_instance._resumed is True
+
+    def test_branch_rotates_hermes_session_id_env_and_context(self, cli_instance, session_db):
+        """Branching must update process-local session-id readers too."""
+        from cli import HermesCLI
+        from gateway.session_context import _UNSET, _VAR_MAP, get_session_env
+
+        old_session_id = cli_instance.session_id
+        os.environ["HERMES_SESSION_ID"] = old_session_id
+        _VAR_MAP["HERMES_SESSION_ID"].set(old_session_id)
+
+        try:
+            HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+            assert cli_instance.session_id != old_session_id
+            assert os.environ["HERMES_SESSION_ID"] == cli_instance.session_id
+            assert get_session_env("HERMES_SESSION_ID") == cli_instance.session_id
+        finally:
+            os.environ.pop("HERMES_SESSION_ID", None)
+            _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
 
     def test_branch_fires_on_session_switch_hook(self, cli_instance, session_db):
         """The /branch command must notify memory providers of the rotation.

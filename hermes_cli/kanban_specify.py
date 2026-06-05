@@ -40,6 +40,11 @@ from typing import Optional
 
 from hermes_cli import kanban_db as kb
 
+HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(
+    1500,
+    int(os.getenv("HERMES_KANBAN_SPECIFY_MAX_TOKENS", "6000")),
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -137,7 +142,6 @@ def specify_task(
     *,
     author: Optional[str] = None,
     timeout: Optional[int] = None,
-    allow_pii: bool = False,
 ) -> SpecifyOutcome:
     """Specify a single triage task and promote it to ``todo``.
 
@@ -146,7 +150,7 @@ def specify_task(
     error, malformed response) — those surface via ``ok=False`` so the
     ``--all`` sweep can continue past individual failures.
     """
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
     if task is None:
         return SpecifyOutcome(task_id, False, "unknown task id")
@@ -156,7 +160,7 @@ def specify_task(
         )
 
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client
+        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
     except Exception as exc:  # pragma: no cover — import smoke test
         logger.debug("specify: auxiliary client import failed: %s", exc)
         return SpecifyOutcome(task_id, False, "auxiliary client unavailable")
@@ -186,8 +190,9 @@ def specify_task(
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.3,
-            max_tokens=1500,
+            max_tokens=HERMES_KANBAN_SPECIFY_MAX_TOKENS,
             timeout=timeout or 120,
+            extra_body=get_auxiliary_extra_body() or None,
         )
     except Exception as exc:
         logger.info(
@@ -199,7 +204,7 @@ def specify_task(
         )
 
     try:
-        raw = resp.choices[0].message.content or ""
+        raw = (resp.choices[0].message.content or "").strip()
     except Exception:
         raw = ""
 
@@ -234,22 +239,13 @@ def specify_task(
                 task_id, False, "LLM response missing title and body"
             )
 
-    try:
-        with kb.connect() as conn:
-            ok = kb.specify_triage_task(
-                conn,
-                task_id,
-                title=new_title,
-                body=new_body,
-                author=author or _profile_author(),
-                allow_pii=allow_pii,
-            )
-    except kb.PIIWriteBlocked:
-        return SpecifyOutcome(
+    with kb.connect_closing() as conn:
+        ok = kb.specify_triage_task(
+            conn,
             task_id,
-            False,
-            "generated body looked like payroll/tax PII; "
-            "rerun with explicit confirmation to persist it",
+            title=new_title,
+            body=new_body,
+            author=author or _profile_author(),
         )
     if not ok:
         # Race: someone else promoted / archived the task between our
@@ -265,7 +261,7 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
 
     ``tenant`` narrows the sweep; ``None`` returns every triage task.
     """
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         tasks = kb.list_tasks(
             conn,
             status="triage",

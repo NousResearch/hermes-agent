@@ -12,7 +12,6 @@ reasoning fields when content is empty.
 
 import asyncio
 import types
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -155,24 +154,6 @@ class TestSkillsGuardContentNone:
         assert content == ""
 
 
-# ── session_search_tool (line 164) ────────────────────────────────────────
-
-class TestSessionSearchContentNone:
-    """tools/session_search_tool.py — _summarize_session() return line"""
-
-    def test_none_content_raises_before_fix(self):
-        response = _make_response(None)
-
-        with pytest.raises(AttributeError):
-            response.choices[0].message.content.strip()
-
-    def test_none_content_safe_with_or_guard(self):
-        response = _make_response(None)
-
-        content = (response.choices[0].message.content or "").strip()
-        assert content == ""
-
-
 # ── integration: verify the actual source lines are guarded ───────────────
 
 class TestSourceLinesAreGuarded:
@@ -215,13 +196,6 @@ class TestSourceLinesAreGuarded:
         src = self._read_file("tools/skills_guard.py")
         assert ".message.content.strip()" not in src, (
             "tools/skills_guard.py still has unguarded "
-            ".content.strip() — apply `(... or \"\").strip()` guard"
-        )
-
-    def test_session_search_tool_guarded(self):
-        src = self._read_file("tools/session_search_tool.py")
-        assert ".message.content.strip()" not in src, (
-            "tools/session_search_tool.py still has unguarded "
             ".content.strip() — apply `(... or \"\").strip()` guard"
         )
 

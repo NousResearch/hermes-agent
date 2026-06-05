@@ -20,6 +20,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. |
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
 | **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. |
+| **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
 
 :::tip
@@ -336,6 +337,7 @@ You can designate a "home room" where the bot sends proactive messages (such as 
 ### Using the Slash Command
 
 Type `/sethome` in any Matrix room where the bot is present. That room becomes the home room.
+If your Matrix client intercepts slash commands, type `!sethome` instead.
 
 ### Manual Configuration
 
@@ -345,9 +347,60 @@ Add this to your `~/.hermes/.env`:
 MATRIX_HOME_ROOM=!abc123def456:matrix.example.org
 ```
 
+## Room allowlist (`allowed_rooms`)
+
+Restrict the bot to a fixed set of Matrix rooms. When set, the bot **only** responds in rooms whose ID appears in the list — messages from any other room are silently ignored, even if the bot is mentioned.
+
+**DMs (direct chat rooms) are exempt** from this filter, so authorized users can always reach the bot one-on-one.
+
+```yaml
+matrix:
+  allowed_rooms:
+    - "!abc123def456:matrix.example.org"
+    - "!opsroom789:matrix.example.org"
+```
+
+Or via env var (comma-separated):
+
+```bash
+MATRIX_ALLOWED_ROOMS="!abc123def456:matrix.example.org,!opsroom789:matrix.example.org"
+```
+
+Behavior:
+
+- Empty / unset → no restriction (default).
+- Non-empty → room ID must be on the list. The check runs **before** any other gating (mention requirement, sender allowlist, etc.).
+- Use the room's **internal ID** (`!abc...:server`), not its alias (`#room:server`). You can find a room's internal ID in Element via Room → Settings → Advanced.
+
+See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
+
+
 :::tip
 To find a Room ID: in Element, go to the room → **Settings** → **Advanced** → the **Internal room ID** is shown there (starts with `!`).
 :::
+
+## Commands in Matrix
+
+Hermes supports the same gateway commands in Matrix that it supports on other
+messaging platforms, including `/commands`, `/model`, `/stop`, `/queue`,
+`/steer`, `/goal`, `/subgoal`, `/background`, `/bg`, `/btw`, `/tasks`, and
+`/yolo`.
+
+Some Matrix clients reserve leading `/` for local client commands and may not
+send unknown slash commands to the room. In that case, use `!` as a Matrix-safe
+alias:
+
+```text
+!commands
+!model
+!model gpt-5.5 --provider openrouter
+!queue continue with the next task
+!stop
+```
+
+Hermes only normalizes `!command` when the command is known to the gateway, a
+registered plugin command, or an installed skill command. Ordinary exclamations
+such as `!important` remain normal chat messages.
 
 ## Troubleshooting
 
@@ -356,6 +409,23 @@ To find a Room ID: in Element, go to the room → **Settings** → **Advanced** 
 **Cause**: The bot hasn't joined the room, or `MATRIX_ALLOWED_USERS` doesn't include your User ID.
 
 **Fix**: Invite the bot to the room — it auto-joins on invite. Verify your User ID is in `MATRIX_ALLOWED_USERS` (use the full `@user:server` format). Restart the gateway.
+
+### Bot joins rooms but silently drops every message (clock skew)
+
+**Cause**: The host's system clock is set ahead of real time. The Matrix adapter applies a 5-second startup-grace filter (`event_ts < startup_ts - 5`) to ignore events replayed from initial sync. When the wall clock is ahead, every incoming event looks "older than startup" and is dropped before reaching the message handler — the bot appears connected but never replies. See [#12614](https://github.com/NousResearch/hermes-agent/issues/12614).
+
+**Symptom**: Gateway log shows `Matrix: dropped N live events as 'too old' more than 30s after startup`.
+
+**Fix**: Sync the host clock with NTP and restart the bot:
+
+```bash
+# Debian/Ubuntu
+sudo timedatectl set-ntp true
+timedatectl status   # confirm "System clock synchronized: yes"
+
+# macOS
+sudo sntp -sS time.apple.com
+```
 
 ### "Failed to authenticate" / "whoami failed" on startup
 

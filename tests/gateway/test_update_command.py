@@ -5,7 +5,6 @@ the _send_update_notification startup hook (sends results after restart).
 """
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -74,7 +73,6 @@ class TestHandleUpdateCommand:
             pass
 
         # Simpler approach — mock at method level using a wrapper
-        from gateway.run import GatewayRunner
         runner = _make_runner()
 
         with patch("gateway.run._hermes_home", tmp_path):
@@ -191,6 +189,7 @@ class TestHandleUpdateCommand:
         """Writes .update_pending.json with correct platform and chat info."""
         runner = _make_runner()
         event = _make_event(platform=Platform.TELEGRAM, chat_id="99999")
+        event.message_id = "m-update"
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
@@ -212,6 +211,8 @@ class TestHandleUpdateCommand:
         data = json.loads(pending_path.read_text())
         assert data["platform"] == "telegram"
         assert data["chat_id"] == "99999"
+        assert data["chat_type"] == "dm"
+        assert data["message_id"] == "m-update"
         assert "timestamp" in data
         assert not (hermes_home / ".update_exit_code").exists()
 
@@ -224,6 +225,7 @@ class TestHandleUpdateCommand:
             chat_id="99999",
             thread_id="777",
         )
+        event.message_id = "m-update-thread"
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
@@ -242,6 +244,7 @@ class TestHandleUpdateCommand:
 
         data = json.loads((hermes_home / ".update_pending.json").read_text())
         assert data["thread_id"] == "777"
+        assert data["message_id"] == "m-update-thread"
 
     @pytest.mark.asyncio
     async def test_spawns_setsid(self, tmp_path):
@@ -471,7 +474,9 @@ class TestSendUpdateNotification:
         pending = {
             "platform": "telegram",
             "chat_id": "67890",
+            "chat_type": "dm",
             "thread_id": "777",
+            "message_id": "m-update-thread",
             "user_id": "12345",
         }
         (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
@@ -484,7 +489,12 @@ class TestSendUpdateNotification:
         with patch("gateway.run._hermes_home", hermes_home):
             await runner._send_update_notification()
 
-        assert mock_adapter.send.call_args.kwargs["metadata"] == {"thread_id": "777"}
+        assert mock_adapter.send.call_args.kwargs["metadata"] == {
+            "thread_id": "777",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "777",
+            "telegram_reply_to_message_id": "m-update-thread",
+        }
 
     @pytest.mark.asyncio
     async def test_strips_ansi_codes(self, tmp_path):
@@ -651,8 +661,14 @@ class TestSendUpdateNotification:
         assert not pending_path.exists()
 
     @pytest.mark.asyncio
-    async def test_no_adapter_for_platform(self, tmp_path):
-        """Does not crash if the platform adapter is not connected."""
+    async def test_no_adapter_for_platform_preserves_markers(self, tmp_path):
+        """A finished update whose platform is offline keeps its markers.
+
+        When the target platform's adapter has not reconnected yet, dropping
+        the completion markers would silently lose the notification. Instead the
+        call defers (returns False) and leaves every marker on disk so a later
+        retry can deliver once the platform is back.
+        """
         runner = _make_runner()
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
@@ -670,13 +686,62 @@ class TestSendUpdateNotification:
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
-            await runner._send_update_notification()
+            result = await runner._send_update_notification()
 
-        # send should not have been called (wrong platform)
+        # No send (wrong platform offline) and the result is deferred.
+        assert result is False
         mock_adapter.send.assert_not_called()
-        # Files should still be cleaned up
+        # Markers are preserved for a later retry — NOT cleaned up.
+        assert pending_path.exists()
+        assert output_path.exists()
+        assert exit_code_path.exists()
+        # The marker stays in its canonical pending location (claim restored).
+        assert not (hermes_home / ".update_pending.claimed.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_deferred_notification_delivers_after_reconnect(self, tmp_path):
+        """A deferred completion is delivered once the platform reconnects.
+
+        Regression for the late-reconnect /update bug: the update finishes while
+        the target platform is offline, the markers survive the deferral, and
+        the next call (after the adapter is registered) delivers the result and
+        cleans up — exactly once.
+        """
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "discord", "chat_id": "111", "user_id": "222"}
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        pending_path.write_text(json.dumps(pending))
+        output_path.write_text("✓ Update complete!")
+        exit_code_path.write_text("0")
+
+        # First pass: target platform (discord) is still offline → defer.
+        with patch("gateway.run._hermes_home", hermes_home):
+            first = await runner._send_update_notification()
+
+        assert first is False
+        assert pending_path.exists()
+
+        # Platform reconnects: the reconnect watcher adds the adapter back.
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.DISCORD: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            second = await runner._send_update_notification()
+
+        assert second is True
+        mock_adapter.send.assert_called_once()
+        sent_text = mock_adapter.send.call_args[0][1]
+        assert "Update complete" in sent_text
+        # Now everything is cleaned up — no duplicate deliveries possible.
         assert not pending_path.exists()
+        assert not output_path.exists()
         assert not exit_code_path.exists()
+        assert not (hermes_home / ".update_pending.claimed.json").exists()
 
 
 # ---------------------------------------------------------------------------

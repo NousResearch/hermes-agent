@@ -66,6 +66,9 @@ def _ensure_discord_mock():
     discord_mod.DMChannel = type("DMChannel", (), {})
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
+    discord_mod.Forbidden = type("Forbidden", (Exception,), {})
+    discord_mod.MessageType = SimpleNamespace(default=0, reply=19)
+    discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
     discord_mod.Interaction = object
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
@@ -116,7 +119,7 @@ _ensure_slack_mock()
 
 import discord  # noqa: E402 — mocked above
 from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 import gateway.platforms.slack as _slack_mod  # noqa: E402
 _slack_mod.SLACK_AVAILABLE = True
@@ -216,14 +219,14 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
 
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
-    # Disable the destructive-slash confirmation gate in e2e tests — the gate
-    # behaviour has dedicated unit tests in tests/cli/test_destructive_slash_confirm.py.
-    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": False}}
     runner._handle_message_with_agent = AsyncMock(return_value="agent-handled-default")
     runner._should_send_voice_reply = lambda *_a, **_kw: False
     runner._send_voice_reply = AsyncMock()
     runner._capture_gateway_honcho_if_configured = lambda *a, **kw: None
     runner._emit_gateway_run_progress = AsyncMock()
+
+    # Disable destructive slash confirm gate so /new executes immediately
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": False}}
 
     runner.pairing_store = MagicMock()
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)

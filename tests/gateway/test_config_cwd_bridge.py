@@ -11,7 +11,6 @@ asserting the expected env var outcomes.
 
 import os
 import json
-import pytest
 
 
 def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
@@ -33,7 +32,6 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             "backend": "TERMINAL_ENV",
             "cwd": "TERMINAL_CWD",
             "timeout": "TERMINAL_TIMEOUT",
-            "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
             "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
             "container_cpu": "TERMINAL_CONTAINER_CPU",
             "container_memory": "TERMINAL_CONTAINER_MEMORY",
@@ -44,7 +42,7 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
                 val = terminal_cfg[cfg_key]
                 # Skip cwd placeholder values — don't overwrite already-resolved
                 # TERMINAL_CWD.  Mirrors the fix in gateway/run.py.
-                if cfg_key == "cwd" and str(val) in (".", "auto", "cwd"):
+                if cfg_key == "cwd" and str(val) in {".", "auto", "cwd"}:
                     continue
                 # Expand shell tilde so subprocess.Popen never receives a literal
                 # "~/" which the kernel rejects.
@@ -70,7 +68,7 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
 
     # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
     configured_cwd = env.get("TERMINAL_CWD", "")
-    if not configured_cwd or configured_cwd in (".", "auto", "cwd"):
+    if not configured_cwd or configured_cwd in {".", "auto", "cwd"}:
         messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
         env["TERMINAL_CWD"] = messaging_cwd
 
@@ -245,24 +243,3 @@ class TestTildeExpansion:
         }
         result = _simulate_config_bridge(cfg)
         assert result["TERMINAL_CWD"] == os.path.expanduser("~/nested")
-
-
-class TestVercelTerminalBridge:
-    def test_vercel_terminal_settings_bridge(self):
-        cfg = {
-            "terminal": {
-                "backend": "vercel_sandbox",
-                "vercel_runtime": "python3.13",
-                "container_persistent": True,
-                "container_cpu": 2,
-                "container_memory": 4096,
-                "container_disk": 51200,
-            }
-        }
-        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
-        assert result["TERMINAL_ENV"] == "vercel_sandbox"
-        assert result["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
-        assert result["TERMINAL_CONTAINER_PERSISTENT"] == "True"
-        assert result["TERMINAL_CONTAINER_CPU"] == "2"
-        assert result["TERMINAL_CONTAINER_MEMORY"] == "4096"
-        assert result["TERMINAL_CONTAINER_DISK"] == "51200"

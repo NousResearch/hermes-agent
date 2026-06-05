@@ -12,7 +12,7 @@ The fix adds an explicit sweep of ``_agent_cache`` after
 import asyncio
 import threading
 from collections import OrderedDict
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

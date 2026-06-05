@@ -1982,6 +1982,14 @@ class MCPServerTask:
 
 _servers: Dict[str, MCPServerTask] = {}
 
+# Server names with an in-flight connection attempt, and server names whose
+# most recent discovery attempt completed.  ``get_mcp_status()`` uses these to
+# distinguish startup/discovery races from real connection failures: a
+# configured enabled server that has not been attempted yet is "starting", not
+# "failed".
+_mcp_servers_connecting: set[str] = set()
+_mcp_servers_attempted: set[str] = set()
+
 # Circuit breaker: consecutive error counts per server.  After
 # _CIRCUIT_BREAKER_THRESHOLD consecutive failures, the handler returns
 # a "server unreachable" message that tells the model to stop retrying,
@@ -3524,6 +3532,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     if not new_servers:
         return _existing_tool_names()
 
+    with _lock:
+        _mcp_servers_connecting.update(new_servers.keys())
+
     # Start the background event loop for MCP connections
     _ensure_mcp_loop()
 
@@ -3561,6 +3572,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     try:
         _run_on_mcp_loop(_discover_all, timeout=120)
     finally:
+        with _lock:
+            _mcp_servers_connecting.difference_update(new_servers.keys())
+            _mcp_servers_attempted.update(new_servers.keys())
         if _was_interrupted:
             _set_interrupt(True)
 
@@ -3651,8 +3665,9 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
 def get_mcp_status() -> List[dict]:
     """Return status of all configured MCP servers for banner display.
 
-    Returns a list of dicts with keys: name, transport, tools, connected.
-    Includes both successfully connected servers and configured-but-failed ones.
+    Returns a list of dicts with keys: name, transport, tools, connected,
+    disabled, state. Includes connected, disabled, starting/connecting, and
+    configured-but-failed servers.
     """
     result: List[dict] = []
 
@@ -3663,6 +3678,8 @@ def get_mcp_status() -> List[dict]:
 
     with _lock:
         active_servers = dict(_servers)
+        connecting_servers = set(_mcp_servers_connecting)
+        attempted_servers = set(_mcp_servers_attempted)
 
     for name, cfg in configured.items():
         transport = cfg.get("transport", "http") if "url" in cfg else "stdio"
@@ -3675,6 +3692,7 @@ def get_mcp_status() -> List[dict]:
                 "tools": len(server._registered_tool_names) if hasattr(server, "_registered_tool_names") else len(server._tools),
                 "connected": True,
                 "disabled": False,
+                "state": "connected",
             }
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
@@ -3683,12 +3701,19 @@ def get_mcp_status() -> List[dict]:
             # A server with enabled: false is intentionally not connected — it is
             # disabled, not failed. Surface that distinction so consumers (banner,
             # TUI) can render "disabled" rather than an alarming "failed".
+            if not enabled:
+                state = "disabled"
+            elif name in connecting_servers or name not in attempted_servers:
+                state = "starting"
+            else:
+                state = "failed"
             result.append({
                 "name": name,
                 "transport": transport,
                 "tools": 0,
                 "connected": False,
                 "disabled": not enabled,
+                "state": state,
             })
 
     return result
@@ -3772,6 +3797,9 @@ def shutdown_mcp_servers():
 
     # Fast path: nothing to shut down.
     if not servers_snapshot:
+        with _lock:
+            _mcp_servers_connecting.clear()
+            _mcp_servers_attempted.clear()
         _stop_mcp_loop()
         return
 
@@ -3787,6 +3815,8 @@ def shutdown_mcp_servers():
                 )
         with _lock:
             _servers.clear()
+            _mcp_servers_connecting.clear()
+            _mcp_servers_attempted.clear()
 
     with _lock:
         loop = _mcp_loop

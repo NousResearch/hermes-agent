@@ -8,6 +8,7 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -84,7 +85,10 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         plat_name = plat.value
         if plat_name in _SKIP_SESSION_DISCOVERY or plat_name in platforms:
             continue
-        platforms[plat_name] = _build_from_sessions(plat_name)
+        entries = _build_from_sessions(plat_name)
+        if plat_name == "telegram":
+            entries = _build_telegram_configured_targets(entries)
+        platforms[plat_name] = entries
 
     # Include plugin-registered platforms (dynamic enum members aren't in
     # Platform.__members__, so the loop above misses them).
@@ -208,7 +212,7 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
     return channels
 
 
-def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
+def _build_from_sessions(platform_name: str) -> List[Dict[str, Any]]:
     """Pull known channels/contacts from sessions.json origin data."""
     sessions_path = get_hermes_home() / "sessions" / "sessions.json"
     if not sessions_path.exists():
@@ -238,6 +242,90 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
         logger.debug("Channel directory: failed to read sessions for %s: %s", platform_name, e)
 
     return entries
+
+
+def _split_configured_chat_ids(raw: Any) -> List[str]:
+    """Normalize comma/list Telegram chat allowlists from config.yaml."""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        values = raw
+    else:
+        values = str(raw).split(",")
+    ids: List[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text:
+            ids.append(text)
+    return ids
+
+
+def _telegram_prompt_label(prompt: str, chat_id: str) -> str:
+    """Best-effort human label for configured Telegram targets."""
+    text = " ".join(str(prompt or "").split())
+    if not text:
+        return f"Configured Telegram chat {chat_id}"
+    # Existing Summer prompts use either "Chief of Staff. <room label>. ..."
+    # or "Chief of Staff for Jovie. <room label>. ...".
+    match = re.search(r"Chief of Staff(?:\s+for\s+[^.!?]+)?\.\s*([^.!?]+)", text, re.IGNORECASE)
+    if match:
+        label = match.group(1).strip()
+        if label:
+            return label
+    sentence = re.split(r"[.!?]", text, maxsplit=1)[0].strip()
+    return sentence[:80] if sentence else f"Configured Telegram chat {chat_id}"
+
+
+def _build_telegram_configured_targets(existing: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge Telegram targets declared in config.yaml with session discovery.
+
+    Telegram Bot API cannot enumerate every group/channel a bot can reach. The
+    runtime allowlists and channel_prompts are the authoritative static list, so
+    include them in channel_directory.json. This lets send_message(action="list")
+    expose all configured agent rooms instead of only rooms with recent sessions.
+    """
+    seen = {str(entry.get("id")) for entry in existing if entry.get("id")}
+    merged = list(existing)
+    try:
+        import yaml
+
+        config_path = get_hermes_home() / "config.yaml"
+        with open(config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        telegram_cfg = cfg.get("telegram") or {}
+        if not isinstance(telegram_cfg, dict):
+            return merged
+
+        prompts_raw = telegram_cfg.get("channel_prompts") or {}
+        if isinstance(prompts_raw, str):
+            try:
+                prompts = json.loads(prompts_raw)
+            except Exception:
+                prompts = {}
+        elif isinstance(prompts_raw, dict):
+            prompts = prompts_raw
+        else:
+            prompts = {}
+
+        configured_ids: List[str] = []
+        for key in ("allowed_chats", "group_allowed_chats"):
+            configured_ids.extend(_split_configured_chat_ids(telegram_cfg.get(key)))
+        configured_ids.extend(str(k).strip() for k in prompts.keys() if str(k).strip())
+
+        for chat_id in configured_ids:
+            if not chat_id or chat_id in seen:
+                continue
+            seen.add(chat_id)
+            prompt = prompts.get(chat_id) or prompts.get(str(chat_id)) or ""
+            merged.append({
+                "id": chat_id,
+                "name": _telegram_prompt_label(prompt, chat_id),
+                "type": "channel" if str(chat_id).startswith("-100") else "group",
+                "thread_id": None,
+            })
+    except Exception as e:
+        logger.debug("Channel directory: failed to read Telegram config targets: %s", e)
+    return merged
 
 
 # ---------------------------------------------------------------------------

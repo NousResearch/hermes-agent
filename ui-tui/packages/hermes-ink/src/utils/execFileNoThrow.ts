@@ -1,4 +1,5 @@
 import { spawn } from 'child_process'
+import type { ChildProcess, SpawnOptions, StdioOptions } from 'child_process'
 type ExecFileOptions = {
   input?: string
   timeout?: number
@@ -32,15 +33,17 @@ export function execFileNoThrow(
     // doesn't inherit those pipe FDs — prevents handle leaks that can
     // keep the parent process alive. No output data is collected in
     // this mode; both stdout and stderr will be empty strings.
-    const stdioConfig = options.resolveOnExit
-      ? ['pipe', 'ignore', 'ignore'] as const
-      : 'pipe' as const
+    const stdioConfig: StdioOptions = options.resolveOnExit
+      ? ['pipe', 'ignore', 'ignore']
+      : 'pipe'
 
-    const child = spawn(file, args, {
+    const spawnOptions: SpawnOptions = {
       cwd: options.useCwd ? process.cwd() : undefined,
       env: options.env,
       stdio: stdioConfig
-    })
+    }
+
+    const child: ChildProcess = spawn(file, args, spawnOptions)
 
     let stdout = ''
     let stderr = ''

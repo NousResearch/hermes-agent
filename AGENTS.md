@@ -1170,3 +1170,115 @@ not the specific names.
 
 Reviewers should reject new change-detector tests; authors should convert
 them into invariants before re-requesting review.
+
+---
+
+## Agent Workflow Best Practices (2026)
+
+This section compiles battle-tested patterns from the agentic coding community (Garry Tan/GStack, Andrej Karpathy, Boris Cherny/Claude Code team, Simon Willison, OpenAI's Harness Engineering post, and our own production experience).
+
+### Merge Philosophy (Adopted from OpenAI Harness Engineering)
+
+**Throughput changes everything.** As agent throughput increases, conventional engineering norms become counterproductive.
+
+- **Minimal blocking merge gates.** PRs are short-lived. Agents generate, pre-review via automated checks, and merge fast. Corrections are cheap; waiting is expensive.
+- **Test flakes → follow-up runs, not indefinite blocks.** A flaky test should trigger an automatic re-run, not a human investigation. Block the PR only after 3+ consecutive failures.
+- **Human review = judgment, not bug-catching.** Automated checks (lint, typecheck, tests, AI review agents) handle correctness. Humans handle architecture, taste, risk, and high-stakes decisions.
+- **Never push to main.** Branch + PR always, even for small changes. But merge within hours, not days.
+- **Batch small fixes.** Agents should bundle related minor fixes into single PRs rather than flooding the review queue.
+
+This would be irresponsible in a low-throughput environment. Here, it's the right tradeoff.
+
+### Harness Engineering
+
+**Your job is to build the harness, not to write code.** Adopted from OpenAI's internal practice:
+
+- **The harness** = scaffolding, guardrails, architecture, tests, prompts, CI/CD, automated reviewers, lint rules, conventions docs (AGENTS.md, CLAUDE.md), and failure-mode rules.
+- **Engineers are banned from typing production code directly.** Their role is to build and refine the harness, steer fleets of agents, and review output.
+- **Every failure mode becomes a permanent rule.** When a bug ships or a PR review catches something, encode it into the harness so it can't recur — add a test, a lint rule, an AI review check, or a convention in AGENTS.md.
+- **PRD as code input, app as compiled output.** The handoff from spec to implementation is agent-driven. Your job is to make the spec unambiguous and the harness tight enough that agent output is production-grade.
+- **Non-engineers can ship.** PMs write a PRD on Monday → agent opens a reviewed, merged PR by Friday. The harness collapses traditional handoffs.
+
+### Core Principles
+
+**1. Plan Before You Code**
+- Default to plan mode for any non-trivial task. Invest in refining the plan so implementation can often be done in one shot.
+- Use "virtual CEO/Eng Manager/Designer" reviews before approving plans. Challenge the agent: "What am I missing?" "What's the simplest approach?"
+- When things go wrong, immediately re-plan rather than pushing forward on a flawed approach.
+
+**2. Parallel Execution**
+- Run multiple agent sessions in parallel using git worktrees. 3-5 concurrent sessions is the sweet spot.
+- Use subagents for parallel research and mechanical work. Keep the main agent's context clean for judgment and routing.
+- Route cheaper models (Haiku, local models) for read-only investigation; reserve stronger models for synthesis and writes.
+- Append "use subagents" to requests when you want more compute on a problem.
+
+**3. Verification & Quality Gates**
+- Every stage must verify its own work: run tests, check logs, review diffs.
+- Never mark a task complete without running tests first.
+- Prefer small, localized changes to minimize side effects.
+- For bugs: point at logs/errors and say "fix" rather than micromanaging the approach.
+- Write tests first, then implement to pass them (TDD compounding returns).
+
+**4. Living Documentation (Self-Improvement Loops)**
+- After every correction, tell the agent: "Update your docs so you don't make that mistake again."
+- Maintain CLAUDE.md / AGENTS.md as a living file — ruthlessly curate it. Your mistake rate will measurably drop.
+- Point future agents at specific relevant docs only; avoid "read everything" context bloat.
+- Well-maintained docs act as long-term memory across sessions and agents.
+
+**5. Reusable Skills & Commands**
+- If you do something more than once a day, turn it into a skill or slash command and commit it to git.
+- Build skills that encode your exact processes — formatting, review steps, deployment patterns.
+- These compound dramatically as models and harnesses improve. Most patterns transfer across agent platforms.
+
+**6. Prompting Patterns**
+- Provide success criteria over imperative step-by-step instructions. Give clear objectives and let the agent decompose.
+- Challenge the agent: "Prove to me this works." "Knowing everything you know now, what's the elegant solution?"
+- Use spec-driven development: write high-level specs; agents implement while you review.
+- Before coding, ask for plans. After coding, ask for permanent docs. Then approve implementation.
+
+**7. Context Management**
+- The biggest context win: keep orchestration plans OUT of the main context. Use lanes where a strong model handles planning and cheaper models handle mechanical work.
+- Use subagents specifically for reading code/exploring repos to prevent polluting the primary agent's context.
+- When context gets stale, start a fresh session with a summary of prior work rather than continuing a bloated one.
+
+**8. Model Routing & Cost Management**
+- Dynamic workflows (parallel fan-out) are expensive if every subagent uses a premium model. Route explicitly.
+- Monitor token usage and costs closely. Parallelism without observability is "expensive magic."
+- For well-scoped tasks, use auto mode (no permission prompts) to unlock true parallel execution.
+
+**9. Observability & Human-in-the-Loop**
+- Prioritize workflows that leave clear evidence: what changed, why, what was skipped, verification results, costs.
+- Use fresh-context code review or adversarial review for security/performance-critical paths.
+- Stay ready to intervene on high-stakes work. Auto mode for well-scoped tasks; manual review for critical ones.
+
+**10. Environment & Ergonomics**
+- Use git worktrees for parallel feature development. Color-code/name sessions per task.
+- Voice dictation is ~3x faster than typing and produces richer prompts.
+- Customize your agent environment with config files for consistent behavior across projects.
+
+### Voice Memo Pipeline Integration
+
+When reviewing voice memos from the inbox:
+1. Read new files from `~/gbrain/inbox/voice/`
+2. Summarize each note in 1-2 lines
+3. Identify actionable items → create tasks or delegate
+4. Flag anything needing immediate attention
+5. Archive processed files
+
+Review 2-3x per day in batch, not continuously. The inbox is for batch review, not real-time processing.
+
+### Cron Schedule Reference
+
+| Job | Frequency | Script |
+|-----|-----------|--------|
+| Voice inbox watcher | Every 2 min (launchd WatchPaths) | `voice-memos-watcher.sh` |
+| GBrain import | Every 15 min | `gbrain-voice-inbox-import.sh` |
+| Inbox review | 2-3x/day | Agent reviews `~/gbrain/inbox/voice/` |
+
+### Key Resources (2026)
+
+- **GStack** (github.com/garrytan/gstack) — Virtual engineering team pipeline with 100k+ stars
+- **Claude Code Best Practices** (code.claude.com/docs) — Official Anthropic guide
+- **Claude Code Best Practice GitHub** (shanraisshan/claude-code-best-practice) — Community patterns
+- **Simon Willison's Agentic Engineering** — Practical guides on diff-apply loops, context management
+- **Dynamic Workflows** (Anthropic research preview) — Multi-agent orchestration for large tasks

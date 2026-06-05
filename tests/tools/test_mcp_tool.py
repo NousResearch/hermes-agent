@@ -3781,6 +3781,78 @@ class TestRegisterMcpServers:
 
         _servers.pop("srv", None)
 
+    def test_status_reports_unattempted_enabled_server_as_starting(self):
+        from tools.mcp_tool import (
+            get_mcp_status,
+            _lock,
+            _mcp_servers_attempted,
+            _mcp_servers_connecting,
+            _servers,
+        )
+
+        with _lock:
+            _servers.clear()
+            _mcp_servers_connecting.clear()
+            _mcp_servers_attempted.clear()
+
+        with patch("tools.mcp_tool._load_mcp_config", return_value={"gbrain": {"command": "gbrain"}}):
+            status = get_mcp_status()
+
+        assert status == [
+            {
+                "name": "gbrain",
+                "transport": "stdio",
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "state": "starting",
+            }
+        ]
+
+    def test_status_reports_attempted_missing_enabled_server_as_failed(self):
+        from tools.mcp_tool import (
+            get_mcp_status,
+            _lock,
+            _mcp_servers_attempted,
+            _mcp_servers_connecting,
+            _servers,
+        )
+
+        with _lock:
+            _servers.clear()
+            _mcp_servers_connecting.clear()
+            _mcp_servers_attempted.clear()
+            _mcp_servers_attempted.add("gbrain")
+
+        with patch("tools.mcp_tool._load_mcp_config", return_value={"gbrain": {"command": "gbrain"}}):
+            status = get_mcp_status()
+
+        assert status[0]["connected"] is False
+        assert status[0]["state"] == "failed"
+
+    def test_status_reports_disabled_server_as_disabled(self):
+        from tools.mcp_tool import (
+            get_mcp_status,
+            _lock,
+            _mcp_servers_attempted,
+            _mcp_servers_connecting,
+            _servers,
+        )
+
+        with _lock:
+            _servers.clear()
+            _mcp_servers_connecting.clear()
+            _mcp_servers_attempted.clear()
+
+        with patch(
+            "tools.mcp_tool._load_mcp_config",
+            return_value={"gbrain": {"command": "gbrain", "enabled": False}},
+        ):
+            status = get_mcp_status()
+
+        assert status[0]["disabled"] is True
+        assert status[0]["state"] == "disabled"
+
 
 # ---------------------------------------------------------------------------
 # Tests for parallel tool call support (port from openai/codex#17667)

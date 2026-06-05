@@ -242,23 +242,34 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
     )
   }
 
+  const mcpStatusLabel = (s: { connected: boolean; disabled?: boolean; state?: string }) => {
+    if (s.connected) return { color: t.color.text, text: 'connected' }
+    if (s.disabled || s.state === 'disabled') return { color: t.color.muted, text: 'disabled' }
+    if (s.state === 'starting') return { color: t.color.muted, text: 'starting' }
+    return { color: t.color.error, text: 'failed' }
+  }
+
   // ── Collapsible MCP section ──
   const mcpBody = () => (
     <>
-      {(info.mcp_servers ?? []).map(s => (
-        <Text key={s.name} wrap="truncate">
-          <Text color={t.color.muted}>{`  ${s.name} `}</Text>
-          <Text color={t.color.muted}>{`[${s.transport}]`}</Text>
-          <Text color={t.color.muted}>: </Text>
-          {s.connected ? (
-            <Text color={t.color.text}>
-              {s.tools} tool{s.tools === 1 ? '' : 's'}
-            </Text>
-          ) : (
-            <Text color={t.color.error}>failed</Text>
-          )}
-        </Text>
-      ))}
+      {(info.mcp_servers ?? []).map(s => {
+        const status = mcpStatusLabel(s)
+
+        return (
+          <Text key={s.name} wrap="truncate">
+            <Text color={t.color.muted}>{`  ${s.name} `}</Text>
+            <Text color={t.color.muted}>{`[${s.transport}]`}</Text>
+            <Text color={t.color.muted}>: </Text>
+            {s.connected ? (
+              <Text color={t.color.text}>
+                {s.tools} tool{s.tools === 1 ? '' : 's'}
+              </Text>
+            ) : (
+              <Text color={status.color}>{status.text}</Text>
+            )}
+          </Text>
+        )
+      })}
     </>
   )
 

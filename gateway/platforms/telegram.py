@@ -1068,6 +1068,44 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             await self._handle_polling_network_error(probe_err)
 
+    async def _pool_recycler(self) -> None:
+        """Periodically recycle the general-request httpx connection pool.
+
+        Over time, especially with proxy/VPN reconnects, the general request
+        pool (used for send_message, edit_message, etc.) can accumulate
+        stale half-closed connections that occupy pool slots without being
+        usable. When the pool fills up, all sends fail with
+        ``Pool timeout: All connections in the connection pool are occupied.``
+
+        This task runs every 5 minutes and performs a graceful
+        shutdown+reinitialize of the general request pool only, leaving the
+        polling pool untouched so in-flight getUpdates are never interrupted.
+        """
+        RECYCLE_INTERVAL = 300  # 5 minutes
+        while not self.has_fatal_error:
+            try:
+                await asyncio.sleep(RECYCLE_INTERVAL)
+            except asyncio.CancelledError:
+                return
+
+            if self.has_fatal_error or not (self._app and self._app.bot):
+                return
+
+            try:
+                # PTB 22.x: _request is (get_updates, general) tuple
+                general_req = self._app.bot._request[1]  # noqa: SLF001
+            except Exception:
+                return
+
+            try:
+                await general_req.shutdown()
+                await general_req.initialize()
+                logger.debug("[%s] General request pool recycled", self.name)
+            except Exception as e:
+                logger.debug(
+                    "[%s] Pool recycle failed (non-fatal): %s", self.name, e
+                )
+
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
@@ -1117,10 +1155,26 @@ class TelegramAdapter(BasePlatformAdapter):
             await asyncio.sleep(RETRY_DELAY)
             await self._drain_polling_connections()
 
+            # Before restarting polling, call delete_webhook to fully reset
+            # Telegram's server-side session state. This cancels any lingering
+            # getUpdates sessions and drops pending updates, so the next
+            # start_polling creates a fresh session without triggering another
+            # self-conflict.
+            try:
+                if self._bot and callable(getattr(self._bot, "delete_webhook", None)):
+                    await self._bot.delete_webhook(drop_pending_updates=True)
+            except Exception:
+                logger.debug(
+                    "[%s] delete_webhook before conflict retry failed (non-fatal)",
+                    self.name, exc_info=True,
+                )
+
             try:
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=False,
+                    drop_pending_updates=True,
+                    poll_interval=2.0,
+                    timeout=30,
                     error_callback=self._polling_error_callback_ref,
                 )
                 logger.info(
@@ -1716,7 +1770,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=False,
+                    poll_interval=2.0,
+                    timeout=30,
                     error_callback=_polling_error_callback,
                 )
             
@@ -1766,6 +1822,13 @@ class TelegramAdapter(BasePlatformAdapter):
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
+
+            # Start background connection pool recycler
+            # Prevents pool saturation from stale/half-closed connections
+            recycle_task = asyncio.ensure_future(self._pool_recycler())
+            self._background_tasks.add(recycle_task)
+            recycle_task.add_done_callback(self._background_tasks.discard)
+            logger.debug("[%s] Pool recycler started (interval: 300s)", self.name)
 
             # Set up DM topics (Bot API 9.4 — Private Chat Topics)
             # Runs after connection is established so the bot can call createForumTopic.

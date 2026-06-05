@@ -372,6 +372,44 @@ _CODEX_BACKFILL_EVIDENCE_FIELDS = (
     "changedFiles, tests, commitShas, pullRequests, or artifactPaths",
     "controlOwnershipPreserved, incidentRiskReduced, or systemCapabilityChanged when applicable",
 )
+_CODEX_RUN_ID_PATTERN = re.compile(r"\bcodex_[A-Za-z0-9]+\b")
+_CODEX_SKIP_NOTE_ACTION_PATTERNS = (
+    ("skip", re.compile(r"\bskip(?:ped|ping)?\b", re.IGNORECASE)),
+    ("exempt", re.compile(r"\bexempt(?:ed|ion)?\b", re.IGNORECASE)),
+    ("remediation", re.compile(r"\bremediat(?:e|ed|ion)\b", re.IGNORECASE)),
+)
+_CODEX_NON_DURABLE_RATIONALE_PATTERNS = (
+    ("non_durable", re.compile(r"\bnon[- ]durable\b", re.IGNORECASE)),
+    ("not_durable", re.compile(r"\bnot\s+durable\b", re.IGNORECASE)),
+    (
+        "without_durable_proof",
+        re.compile(r"\bwithout\s+durable\s+(?:delivery\s+)?proof\b", re.IGNORECASE),
+    ),
+    (
+        "no_delivery_evidence",
+        re.compile(
+            r"\bno\s+[^.\n]{0,160}\b(?:commit|push|pr|pull request|publish|published|publication)\b"
+            r"[^.\n]{0,80}\bevidence\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("untracked", re.compile(r"\buntracked\b", re.IGNORECASE)),
+    (
+        "provenance_gate_failure",
+        re.compile(r"\bprovenance\s+gate\s+failure\b", re.IGNORECASE),
+    ),
+    (
+        "empty_final_message",
+        re.compile(r"\bfinal[_ ]message\b[^.\n]{0,140}\bempty\b", re.IGNORECASE),
+    ),
+    (
+        "lacks_delivery_details",
+        re.compile(
+            r"\black(?:s|ed|ing)?\s+(?:enough\s+)?(?:delivery\s+)?details\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
 _CODEX_SIDECAR_MAX_BYTES = 2_000_000
 _CODEX_SIDECAR_MESSAGE_FIELDS = (
     "final_message",
@@ -2240,6 +2278,74 @@ def _make_work_remediation(
     return remediation
 
 
+def _matching_codex_skip_note_labels(
+    text: str,
+    patterns: Iterable[tuple[str, re.Pattern[str]]],
+) -> list[str]:
+    return sorted({label for label, pattern in patterns if pattern.search(text)})
+
+
+def _journal_focus_note_segments(title: str, outcome_note: str) -> list[str]:
+    outcome_segments = [
+        segment.strip()
+        for segment in re.split(r"(?<=[.!?])\s+", outcome_note)
+        if segment.strip()
+    ]
+    if outcome_segments:
+        return [
+            " ".join(part for part in (title, segment) if part).strip()
+            for segment in outcome_segments
+        ]
+    return [title] if title else []
+
+
+def _collect_journal_codex_skip_remediations(journal_payload: Any) -> dict[str, dict[str, Any]]:
+    remediations: dict[str, dict[str, Any]] = {}
+    for entry in _iter_records(journal_payload, "entries"):
+        focus_items = entry.get(_JOURNAL_REPORTING_FOCUS_FIELD)
+        if not isinstance(focus_items, list):
+            continue
+        entry_id = _journal_reporting_string(entry.get("id"))
+        occurred_at = _journal_reporting_entry_time_text(entry)
+        for focus_index, focus_item in enumerate(focus_items):
+            if not isinstance(focus_item, dict):
+                continue
+            title = _journal_reporting_string(focus_item.get("title"))
+            outcome_note = _journal_reporting_string(focus_item.get("outcomeNote"))
+            if not title and not outcome_note:
+                continue
+            for segment in _journal_focus_note_segments(title, outcome_note):
+                run_ids = sorted(set(_CODEX_RUN_ID_PATTERN.findall(segment)))
+                if not run_ids:
+                    continue
+                action_labels = _matching_codex_skip_note_labels(
+                    segment,
+                    _CODEX_SKIP_NOTE_ACTION_PATTERNS,
+                )
+                rationale_labels = _matching_codex_skip_note_labels(
+                    segment,
+                    _CODEX_NON_DURABLE_RATIONALE_PATTERNS,
+                )
+                if not action_labels or not rationale_labels:
+                    continue
+                evidence = {
+                    "entry_id": entry_id or None,
+                    "occurredAt": occurred_at or None,
+                    "focus_index": focus_index,
+                    "title": title,
+                    "outcomeNote": _compact_operator_evidence_value(
+                        outcome_note,
+                        limit=500,
+                    ),
+                    "matched_note": _compact_operator_evidence_value(segment, limit=500),
+                    "action_markers": action_labels,
+                    "rationale_markers": rationale_labels,
+                }
+                for run_id in run_ids:
+                    remediations.setdefault(run_id, {**evidence, "run_id": run_id})
+    return remediations
+
+
 def _record_claimed_timestamp(record: dict[str, Any]) -> Optional[datetime]:
     return _record_timestamp(
         record,
@@ -3229,16 +3335,36 @@ def _evaluate_anti_make_work_check(
     journal_payload = _load_json(journal_path)
     codex_payload = _load_json(codex_runs_path)
     ctx_payload = _load_json(ctx_bindings_path)
-    assessments = [
-        _assess_make_work_item(item)
-        for item in _iter_recent_claimed_work_items(
-            journal_payload=journal_payload,
-            codex_payload=codex_payload,
-            ctx_payload=ctx_payload,
-            now=now,
-            freshness_hours=freshness_hours,
-        )
-    ]
+    journal_skip_remediations = _collect_journal_codex_skip_remediations(journal_payload)
+    assessments: list[dict[str, Any]] = []
+    journal_remediated_codex_items: list[dict[str, Any]] = []
+    ignored_journal_remediations: list[dict[str, Any]] = []
+    for item in _iter_recent_claimed_work_items(
+        journal_payload=journal_payload,
+        codex_payload=codex_payload,
+        ctx_payload=ctx_payload,
+        now=now,
+        freshness_hours=freshness_hours,
+    ):
+        assessment = _assess_make_work_item(item)
+        run_id = str(assessment.get("id") or "").strip()
+        journal_remediation = journal_skip_remediations.get(run_id)
+        if (
+            assessment.get("source") == "codex_runs"
+            and not assessment.get("durable")
+            and journal_remediation
+        ):
+            if _codex_record_is_active(item.get("record") or {}):
+                assessment["journal_remediation_ignored"] = journal_remediation
+                assessment["journal_remediation_ignored_reason"] = "codex_run_active"
+                ignored_journal_remediations.append(assessment)
+            else:
+                journal_remediated_codex_items.append(
+                    {**assessment, "journal_remediation": journal_remediation}
+                )
+                continue
+        assessments.append(assessment)
+    raw_claimed_count = len(assessments) + len(journal_remediated_codex_items)
     assessed_count = len(assessments)
     durable_count = sum(1 for item in assessments if item["durable"])
     shallow_items = [item for item in assessments if not item["durable"]]
@@ -3255,7 +3381,10 @@ def _evaluate_anti_make_work_check(
 
     if assessed_count == 0:
         score = 1.0
-        detail = "No claimed work items required anti-make-work evidence."
+        if journal_remediated_codex_items:
+            detail = "No unremediated claimed work items required anti-make-work evidence."
+        else:
+            detail = "No claimed work items required anti-make-work evidence."
     elif not shallow_items:
         score = 1.0
         passing_labels = [
@@ -3287,6 +3416,11 @@ def _evaluate_anti_make_work_check(
                 + "; ".join(_CODEX_BACKFILL_EVIDENCE_FIELDS)
                 + "."
             )
+    if journal_remediated_codex_items:
+        detail += (
+            f" Explicit journal skip/remediation notes exempted "
+            f"{len(journal_remediated_codex_items)} inactive shallow Codex run(s)."
+        )
 
     return _build_benchmark_item(
         "anti_make_work_check",
@@ -3296,11 +3430,16 @@ def _evaluate_anti_make_work_check(
         detail=detail,
         critical=True,
         metrics={
+            "raw_claimed_work_item_count": raw_claimed_count,
             "assessed_work_item_count": assessed_count,
             "durable_evidence_count": durable_count,
             "shallow_work_item_count": len(shallow_items),
             "shallow_codex_work_item_count": shallow_codex_count,
             "status_language_only_count": status_only_count,
+            "journal_remediated_codex_work_item_count": len(journal_remediated_codex_items),
+            "journal_remediated_codex_examples": journal_remediated_codex_items[:5],
+            "journal_remediation_ignored_codex_count": len(ignored_journal_remediations),
+            "journal_remediation_ignored_codex_examples": ignored_journal_remediations[:5],
             "allowed_value_categories": _allowed_value_category_guidance(),
             "value_category_counts": value_category_counts,
             "durable_examples": [item for item in assessments if item["durable"]][:5],

@@ -764,6 +764,178 @@ def test_codex_completed_value_claim_without_evidence_fails_anti_make_work_check
     assert "anti_make_work_check" in benchmark["critical_failures"]
 
 
+def test_journal_skip_notes_exempt_named_inactive_codex_runs_only(tmp_path):
+    now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    skipped_run_ids = [
+        "codex_5e2abf1b3617",
+        "codex_c3614c2aea99",
+        "codex_7c4bb00421e8",
+    ]
+    _write_json(
+        journal_path,
+        {
+            "entries": [
+                {
+                    "id": "had-271-explicit-skip-note",
+                    "occurredAt": recent,
+                    "summary": "Recorded explicit non-durable Codex skip evidence.",
+                    "operatorDecisionSupport": (
+                        "Operator can see which shallow Codex traces were skipped and why."
+                    ),
+                    "changedFiles": ["src/data/journal.json"],
+                    "tests": ["self_improvement_benchmark persist=False"],
+                    "selfImprovementFocus": [
+                        {
+                            "title": "Skip shallow blog records without durable delivery proof",
+                            "activeLinearIssueIds": ["HAD-271"],
+                            "outcomeNote": (
+                                "Skipped benchmark-listed codex_5e2abf1b3617, "
+                                "codex_c3614c2aea99, and codex_7c4bb00421e8 for "
+                                "delivery backfill because their final messages describe "
+                                "untracked hadto.co blog files with no commit, push, PR, "
+                                "or publish evidence; codex_7c4bb00421e8 also records a "
+                                "strict provenance gate failure. They are useful writing "
+                                "traces but not durable operator-delivery evidence for "
+                                "this journal batch."
+                            ),
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                **{
+                    run_id: {
+                        "run_id": run_id,
+                        "status": "completed",
+                        "completed_at": recent,
+                        "exit_code": 0,
+                        "final_message": "STATUS\nCompleted a writing update for review.",
+                    }
+                    for run_id in skipped_run_ids
+                },
+                "codex_unrelated": {
+                    "run_id": "codex_unrelated",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "exit_code": 0,
+                    "final_message": "STATUS\nCompleted a writing update for review.",
+                },
+            }
+        },
+    )
+    _write_json(ctx_path, {"sessions": {"ctx_1": {"active": False, "updated_at": recent}}})
+
+    benchmark = self_improvement_tool.evaluate_self_improvement_benchmark(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=tmp_path / "history.json",
+        now=now,
+        persist=False,
+    )
+
+    anti_make_work = benchmark["checks"]["anti_make_work_check"]
+    assert anti_make_work["status"] == "fail"
+    assert anti_make_work["metrics"]["raw_claimed_work_item_count"] == 5
+    assert anti_make_work["metrics"]["assessed_work_item_count"] == 2
+    assert anti_make_work["metrics"]["shallow_codex_work_item_count"] == 1
+    assert anti_make_work["metrics"]["journal_remediated_codex_work_item_count"] == 3
+    assert {
+        item["id"]
+        for item in anti_make_work["metrics"]["journal_remediated_codex_examples"]
+    } == set(skipped_run_ids)
+    assert [item["id"] for item in anti_make_work["metrics"]["shallow_examples"]] == [
+        "codex_unrelated"
+    ]
+    assert "anti_make_work_check" in benchmark["critical_failures"]
+
+
+def test_journal_skip_note_does_not_exempt_active_codex_run(tmp_path):
+    now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(
+        journal_path,
+        {
+            "entries": [
+                {
+                    "id": "had-271-active-skip-note",
+                    "occurredAt": recent,
+                    "summary": "Recorded explicit active Codex skip boundary.",
+                    "operatorDecisionSupport": (
+                        "Operator can see that active Codex traces are not exempted."
+                    ),
+                    "changedFiles": ["src/data/journal.json"],
+                    "tests": ["self_improvement_benchmark persist=False"],
+                    "selfImprovementFocus": [
+                        {
+                            "title": "Skip shallow active trace without durable proof",
+                            "activeLinearIssueIds": ["HAD-271"],
+                            "outcomeNote": (
+                                "Skipped benchmark-listed codex_994a122df450 because "
+                                "its final_message lacks delivery details and has no "
+                                "commit or PR evidence."
+                            ),
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                "codex_994a122df450": {
+                    "run_id": "codex_994a122df450",
+                    "status": "running",
+                    "started_at": recent,
+                    "final_message": "STATUS\nCompleted a draft update for review.",
+                }
+            }
+        },
+    )
+    _write_json(ctx_path, {"sessions": {"ctx_1": {"active": False, "updated_at": recent}}})
+
+    benchmark = self_improvement_tool.evaluate_self_improvement_benchmark(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=tmp_path / "history.json",
+        now=now,
+        persist=False,
+    )
+
+    anti_make_work = benchmark["checks"]["anti_make_work_check"]
+    assert anti_make_work["status"] == "fail"
+    assert anti_make_work["metrics"]["journal_remediated_codex_work_item_count"] == 0
+    assert anti_make_work["metrics"]["journal_remediation_ignored_codex_count"] == 1
+    assert anti_make_work["metrics"]["shallow_codex_work_item_count"] == 1
+    shallow_example = anti_make_work["metrics"]["shallow_examples"][0]
+    assert shallow_example["id"] == "codex_994a122df450"
+    assert shallow_example["journal_remediation_ignored_reason"] == "codex_run_active"
+    assert "anti_make_work_check" in benchmark["critical_failures"]
+
+
 def test_operator_decision_support_passes_anti_make_work_value_category(tmp_path):
     now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
     recent = now.isoformat()

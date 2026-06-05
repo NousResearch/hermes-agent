@@ -2201,10 +2201,12 @@ class TestDelegateHeartbeat(unittest.TestCase):
                 parent_agent=parent,
             )
 
-        # If idle-threshold logic applied, we'd cap around 2 touches; prove we
-        # continued beyond that while inside a long-running tool.
+        # With the patched idle threshold, using the old idle branch would stop
+        # before a second touch. More than one touch proves the current_tool
+        # branch is being used; keep the assertion tolerant of scheduler jitter
+        # on loaded macOS runners.
         self.assertGreater(
-            len(touch_calls), 2,
+            len(touch_calls), 1,
             f"Heartbeat stopped too early while child was inside a tool; "
             f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
         )

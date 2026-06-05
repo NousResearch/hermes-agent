@@ -145,7 +145,9 @@ async def test_gateway_stop_systemd_service_restart_uses_tempfail(tmp_path, monk
     monkeypatch.setenv("INVOCATION_ID", "systemd-test")
     runner._launch_systemd_restart_shortcut = MagicMock()
 
-    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+    with patch("gateway.run.sys.platform", "linux"), patch(
+        "gateway.status.remove_pid_file"
+    ), patch("gateway.status.write_runtime_status"):
         await runner.stop(restart=True, service_restart=True)
 
     runner._launch_systemd_restart_shortcut.assert_called_once_with()

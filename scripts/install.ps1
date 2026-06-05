@@ -5,7 +5,7 @@
 # Uses uv for fast Python provisioning and package management.
 #
 # Usage:
-#   iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+#   iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 #
 # Or download and run with options:
 #   .\install.ps1 -NoVenv -SkipSetup
@@ -1138,7 +1138,7 @@ function Install-Repository {
         Write-Info "Trying SSH clone..."
         $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
         try {
-            git -c windows.appendAtomically=false clone --branch $Branch $RepoUrlSsh $InstallDir
+            git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir
             if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
         } catch { }
         $env:GIT_SSH_COMMAND = $null
@@ -1147,7 +1147,7 @@ function Install-Repository {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Info "SSH failed, trying HTTPS..."
             try {
-                git -c windows.appendAtomically=false clone --branch $Branch $RepoUrlHttps $InstallDir
+                git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlHttps $InstallDir
                 if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
             } catch { }
         }
@@ -1268,7 +1268,19 @@ function Install-Venv {
     
     # uv creates the venv and pins the Python version in one step
     & $UvCmd venv venv --python $PythonVersion
-    
+
+    # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
+    # the user's shell). uv honours UV_PYTHON over an existing venv for the
+    # later `uv sync` / `uv pip install` tiers, so without this it would
+    # silently delete this 3.11 venv and recreate it at the inherited version
+    # -- building Rust transitives that have no wheel for that version from
+    # source via maturin, which fails. Pinning UV_PYTHON to the interpreter we
+    # just created forces every subsequent uv command onto it.
+    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    if (Test-Path $venvPythonExe) {
+        $env:UV_PYTHON = $venvPythonExe
+    }
+
     Pop-Location
     
     Write-Success "Virtual environment ready (Python $PythonVersion)"
@@ -1282,6 +1294,20 @@ function Install-Dependencies {
     if (-not $NoVenv) {
         # Tell uv to install into our venv (no activation needed)
         $env:VIRTUAL_ENV = "$InstallDir\venv"
+    }
+
+    # Re-pin UV_PYTHON to the venv interpreter. Install-Venv already does this,
+    # but the bootstrap runs install stages (venv, python-deps) as separate
+    # processes, so the env var set in Install-Venv does NOT survive into a
+    # separate python-deps invocation. Re-deriving it here covers that path.
+    # Without it, an inherited $env:UV_PYTHON = "3.14" makes the uv sync/pip
+    # tiers below recreate the venv at 3.14 and fail the maturin source build
+    # (no cp314 wheels yet).
+    if (-not $NoVenv) {
+        $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+        if (Test-Path $venvPythonExe) {
+            $env:UV_PYTHON = $venvPythonExe
+        }
     }
 
     # Hash-verified install (Tier 0) -- when uv.lock is present, prefer
@@ -1908,6 +1934,55 @@ function Install-NodeDeps {
     }
 }
 
+# Clear the cached Electron download + any half-written unpacked output so the
+# next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
+# the per-user Electron download cache - most often a partial download resumed
+# into the same file, leaving concatenated junk - makes electron-builder's
+# `app-builder unpack-electron` extract a tree MISSING the electron binary, so
+# the final `electron` -> `Hermes` rename dies with ENOENT and every re-run
+# repeats the broken extraction forever.
+#
+# We deliberately do not validate the zip ourselves: the common
+# prepended/concatenated-junk corruption slips past naive checks, so a
+# self-rolled gate would skip the real-world case. We unconditionally drop the
+# cached electron-*.zip (loose copy and any @electron/get hash-subdir copy) plus
+# the stale unpacked dir, then let the caller retry once - @electron/get
+# re-downloads with its own SHASUM verification, the real source of truth.
+#
+# Returns the removed paths. Best-effort: never throws.
+function Clear-ElectronBuildCache {
+    param([string]$DesktopDir)
+    $removed = @()
+
+    # Per-user Electron download cache dirs, honoring the overrides @electron/get
+    # respects, then the Windows default (%LOCALAPPDATA%\electron\Cache).
+    $cacheDirs = @()
+    if ($env:electron_config_cache) { $cacheDirs += $env:electron_config_cache }
+    if ($env:ELECTRON_CACHE)        { $cacheDirs += $env:ELECTRON_CACHE }
+    if ($env:LOCALAPPDATA)          { $cacheDirs += (Join-Path $env:LOCALAPPDATA 'electron\Cache') }
+    $cacheDirs += (Join-Path $HOME 'AppData\Local\electron\Cache')
+
+    foreach ($dir in $cacheDirs) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        # Recurse: the bad copy may be the top-level zip OR a copy inside an
+        # @electron/get hash subdir.
+        $removed += @(Get-ChildItem -LiteralPath $dir -Recurse -Filter 'electron-*.zip' -File -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop; $_.FullName } catch { }
+        })
+    }
+
+    # A half-written unpacked dir from an interrupted prior pack poisons the
+    # rename even after the zip is fixed (win-unpacked / win-arm64-unpacked).
+    $releaseDir = Join-Path $DesktopDir 'release'
+    if (Test-Path -LiteralPath $releaseDir) {
+        $removed += @(Get-ChildItem -LiteralPath $releaseDir -Directory -Filter '*-unpacked' -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop; $_.FullName } catch { }
+        })
+    }
+
+    return $removed
+}
+
 function Install-Desktop {
     # Build apps/desktop into a launchable Hermes.exe. Only called from
     # Stage-Desktop, which is itself only included in the manifest when
@@ -1979,8 +2054,22 @@ function Install-Desktop {
         # captures every stdout/stderr line as it's emitted, so we don't
         # need a side TEMP log file — the installer's bootstrap log
         # IS the artifact a support engineer reads.
-        & $npmExe install 2>&1 | ForEach-Object { "$_" }
+        #
+        # Prefer `npm ci`: it wipes node_modules and reinstalls from the
+        # lockfile, always producing a complete tree. Bare `npm install`
+        # can report "up to date" against a stale
+        # node_modules\.package-lock.json marker while node_modules is
+        # actually empty (Windows workspace-hoisting flake), leaving
+        # tsc/typescript unresolved so `npm run pack`'s `tsc -b` dies with
+        # no obvious cause. Fall back to `npm install` only if `npm ci`
+        # fails (lockfile out of sync / very old npm without ci).
+        & $npmExe ci 2>&1 | ForEach-Object { "$_" }
         $code = $LASTEXITCODE
+        if ($code -ne 0) {
+            Write-Info "  npm ci failed (exit $code) -- retrying with npm install..."
+            & $npmExe install 2>&1 | ForEach-Object { "$_" }
+            $code = $LASTEXITCODE
+        }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
             throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
@@ -2027,6 +2116,22 @@ function Install-Desktop {
         $env:WIN_CSC_KEY_PASSWORD = ""
         & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
         $code = $LASTEXITCODE
+        if ($code -ne 0) {
+            # A corrupt cached Electron zip makes `pack` fail with an opaque
+            # ENOENT on the final `electron` -> `Hermes` rename: app-builder's
+            # unpack-electron extracted a partial tree (missing the binary) from
+            # the bad zip, and re-running reuses the poisoned cache forever.
+            # Purge the cached download + any stale unpacked output and retry
+            # once; @electron/get re-downloads with its own SHASUM check. Without
+            # this a corrupt download hard-fails the whole installer.
+            $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
+            if ($purged.Count -gt 0) {
+                Write-Warn "Desktop build failed - cleared cached Electron download, retrying once:"
+                foreach ($p in $purged) { Write-Info "  - $p" }
+                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+                $code = $LASTEXITCODE
+            }
+        }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
             $errText = Get-Content $buildLog -Raw -ErrorAction SilentlyContinue
@@ -2804,7 +2909,7 @@ try {
     Write-Err "Installation failed: $_"
     Write-Host ""
     Write-Info "If the error is unclear, try downloading and running the script directly:"
-    Write-Host "  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
+    Write-Host "  Invoke-WebRequest -Uri 'https://hermes-agent.nousresearch.com/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
     Write-Host "  .\install.ps1" -ForegroundColor Yellow
     Write-Host ""
 }

@@ -3,12 +3,29 @@ export {}
 declare global {
   interface Window {
     hermesDesktop: {
-      getConnection: () => Promise<HermesConnection>
+      // Resolve a backend connection. Omit `profile` (or pass the primary) for
+      // the window's backend; pass a named profile to lazily spawn/reuse that
+      // profile's backend from the pool.
+      getConnection: (profile?: string | null) => Promise<HermesConnection>
+      // Keepalive: mark a pool profile backend as recently used so the idle
+      // reaper spares it while its chat is active.
+      touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
+      getGatewayWsUrl: (profile?: null | string) => Promise<string>
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: () => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
+      probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
+      oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
+      oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
+      profile: {
+        get: () => Promise<DesktopActiveProfile>
+        // Persists the desktop's profile choice and relaunches the local
+        // backend under the new HERMES_HOME (reloads the window). Pass null to
+        // clear the preference.
+        set: (name: string | null) => Promise<DesktopActiveProfile>
+      }
       api: <T>(request: HermesApiRequest) => Promise<T>
       downloadApiFile: (request: HermesApiDownloadRequest) => Promise<HermesApiDownloadResult>
       notify: (payload: HermesNotification) => Promise<boolean>
@@ -50,6 +67,7 @@ declare global {
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
+      onPowerResume?: (callback: () => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
       resetBootstrap: () => Promise<{ ok: boolean }>
@@ -152,11 +170,15 @@ export interface HermesConnection {
   baseUrl: string
   isFullscreen: boolean
   mode?: 'local' | 'remote'
+  authMode?: 'oauth' | 'token'
   nativeOverlayWidth: number
   source?: 'env' | 'local' | 'settings'
   token: string
   wsUrl: string
   logs: string[]
+  // Set for pool (non-primary) backends so the renderer knows which profile a
+  // connection belongs to.
+  profile?: string
   windowButtonPosition: { x: number; y: number } | null
 }
 
@@ -171,9 +193,17 @@ export interface HermesWindowState {
   windowButtonPosition: { x: number; y: number } | null
 }
 
+export interface DesktopActiveProfile {
+  // The desktop's stored profile preference, or null when unset (legacy launch
+  // that defers to the sticky active_profile / default).
+  profile: string | null
+}
+
 export interface DesktopConnectionConfig {
   envOverride: boolean
   mode: 'local' | 'remote'
+  remoteAuthMode: 'oauth' | 'token'
+  remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
   remoteUrl: string
@@ -181,6 +211,7 @@ export interface DesktopConnectionConfig {
 
 export interface DesktopConnectionConfigInput {
   mode: 'local' | 'remote'
+  remoteAuthMode?: 'oauth' | 'token'
   remoteToken?: string
   remoteUrl?: string
 }
@@ -189,6 +220,36 @@ export interface DesktopConnectionTestResult {
   baseUrl: string
   ok: boolean
   version: string | null
+}
+
+export interface DesktopAuthProvider {
+  name: string
+  displayName: string
+  // True when this provider authenticates with a username + password
+  // (the gateway's /login page renders a credential form) rather than an
+  // OAuth redirect. The session/cookie/ws-ticket machinery is identical;
+  // only the login-page form and the desktop's button copy differ.
+  supportsPassword?: boolean
+}
+
+export interface DesktopConnectionProbeResult {
+  baseUrl: string
+  reachable: boolean
+  authMode: 'oauth' | 'token' | 'unknown'
+  providers: DesktopAuthProvider[]
+  version: string | null
+  error: string | null
+}
+
+export interface DesktopOauthLoginResult {
+  ok: boolean
+  baseUrl: string
+  connected: boolean
+}
+
+export interface DesktopOauthLogoutResult {
+  ok: boolean
+  connected: boolean
 }
 
 export interface DesktopBootProgress {
@@ -234,7 +295,7 @@ export interface DesktopBootstrapState {
   manifest: { type: 'manifest'; stages: DesktopBootstrapStageDescriptor[]; protocolVersion: number | null } | null
   stages: Record<string, DesktopBootstrapStageResult>
   error: string | null
-  log: Array<{ ts: number; stage: string | null; line: string }>
+  log: Array<{ ts: number; stage: string | null; line: string; stream?: 'stdout' | 'stderr' }>
   startedAt: number | null
   completedAt: number | null
   unsupportedPlatform: DesktopBootstrapUnsupportedPlatform | null
@@ -250,7 +311,7 @@ export type DesktopBootstrapEvent =
       json?: DesktopBootstrapStageResult['json']
       error?: string | null
     }
-  | { type: 'log'; stage?: string | null; line: string }
+  | { type: 'log'; stage?: string | null; line: string; stream?: 'stdout' | 'stderr' }
   | { type: 'complete'; marker: Record<string, unknown> }
   | { type: 'failed'; stage?: string | null; error: string }
   | {
@@ -266,6 +327,10 @@ export interface HermesApiRequest {
   method?: string
   body?: unknown
   timeoutMs?: number
+  // Route this REST call to a specific profile's backend. Omit for the primary
+  // (window) backend. Read-only cross-profile data is served by the primary, so
+  // this is only needed for profile-scoped live/settings calls.
+  profile?: string | null
 }
 
 export interface HermesNotification {

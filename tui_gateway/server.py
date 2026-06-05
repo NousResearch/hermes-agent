@@ -125,9 +125,12 @@ _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
+_sessions_lock = threading.Lock()
+_prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _cfg_path = None
+_session_resume_lock = threading.Lock()
 try:
     _slash_timeout = float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S") or "45")
 except (ValueError, TypeError):
@@ -324,7 +327,9 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
 
 
 def _shutdown_sessions() -> None:
-    for session in list(_sessions.values()):
+    with _sessions_lock:
+        snapshot = list(_sessions.values())
+    for session in snapshot:
         _finalize_session(session, end_reason="tui_shutdown")
         try:
             worker = session.get("slash_worker")
@@ -545,7 +550,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
     key = session["session_key"]
 
     def _build() -> None:
-        current = _sessions.get(sid)
+        with _sessions_lock:
+            current = _sessions.get(sid)
         if current is None:
             ready.set()
             return
@@ -584,7 +590,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 pass
 
             _wire_callbacks(sid)
-            _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
+            with _sessions_lock:
+                if sid in _sessions:
+                    _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
             _notify_session_boundary("on_session_reset", key)
 
             info = _session_info(agent, current)
@@ -597,7 +605,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
             current["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
-            if _sessions.get(sid) is not current:
+            with _sessions_lock:
+                replaced = _sessions.get(sid) is not current
+            if replaced:
                 if worker is not None:
                     try:
                         worker.close()
@@ -818,9 +828,10 @@ def _cwd_for_session_key(session_key: str) -> str:
     """
     if not session_key:
         return ""
-    for sess in list(_sessions.values()):
-        if sess.get("session_key") == session_key:
-            return str(sess.get("cwd") or "")
+    with _sessions_lock:
+        for sess in list(_sessions.values()):
+            if sess.get("session_key") == session_key:
+                return str(sess.get("cwd") or "")
     return ""
 
 
@@ -862,16 +873,19 @@ def _enable_gateway_prompts() -> None:
 def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
-    _pending[rid] = (sid, ev)
-    payload["request_id"] = rid
-    _pending_prompt_payloads[rid] = (event, dict(payload))
+    with _prompt_lock:
+        _pending[rid] = (sid, ev)
+        payload["request_id"] = rid
+        _pending_prompt_payloads[rid] = (event, dict(payload))
     try:
         _emit(event, sid, payload)
         ev.wait(timeout=timeout)
     finally:
-        _pending.pop(rid, None)
-        _pending_prompt_payloads.pop(rid, None)
-    return _answers.pop(rid, "")
+        with _prompt_lock:
+            _pending.pop(rid, None)
+            _pending_prompt_payloads.pop(rid, None)
+    with _prompt_lock:
+        return _answers.pop(rid, "")
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -883,10 +897,11 @@ def _clear_pending(sid: str | None = None) -> None:
     sessions sharing the same tui_gateway process.  When *sid* is
     None, every pending prompt is released (used during shutdown).
     """
-    for rid, (owner_sid, ev) in list(_pending.items()):
-        if sid is None or owner_sid == sid:
-            _answers[rid] = ""
-            ev.set()
+    with _prompt_lock:
+        for rid, (owner_sid, ev) in list(_pending.items()):
+            if sid is None or owner_sid == sid:
+                _answers[rid] = ""
+                ev.set()
 
 
 # ── Agent factory ────────────────────────────────────────────────────
@@ -1582,11 +1597,31 @@ def _session_info(agent, session: dict | None = None) -> dict:
     ):
         reasoning_effort = str(reasoning_config.get("effort", "") or "")
     service_tier = getattr(agent, "service_tier", None) or ""
+    # Effective approval-bypass state — the same three sources that
+    # check_all_command_guards() ORs together: persistent config
+    # (approvals.mode=off), the process-scoped --yolo env, and the
+    # per-session flag. Reporting only the per-session flag here would lie to
+    # the desktop status bar (it would show YOLO "off" while approvals.mode=off
+    # silently auto-approves every dangerous command).
+    yolo = False
+    try:
+        from tools.approval import (
+            _YOLO_MODE_FROZEN,
+            _get_approval_mode,
+            is_session_yolo_enabled,
+        )
+
+        session_key = (session or {}).get("session_key")
+        session_yolo = bool(is_session_yolo_enabled(session_key)) if session_key else False
+        yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or _get_approval_mode() == "off"
+    except Exception:
+        yolo = False
     info: dict = {
         "model": getattr(agent, "model", ""),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
+        "yolo": yolo,
         "tools": {},
         "skills": {},
         "cwd": cwd,
@@ -2381,34 +2416,37 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
 
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     now = time.time()
-    _sessions[sid] = {
-        "agent": agent,
-        "session_key": key,
-        "history": history,
-        "history_lock": threading.Lock(),
-        "history_version": 0,
-        "inflight_turn": None,
-        "created_at": now,
-        "last_active": now,
-        "running": False,
-        "attached_images": [],
-        "image_counter": 0,
-        "cwd": _completion_cwd(),
-        "cols": cols,
-        "slash_worker": None,
-        "show_reasoning": _load_show_reasoning(),
-        "tool_progress_mode": _load_tool_progress_mode(),
-        "edit_snapshots": {},
-        "tool_started_at": {},
-        # Pin async event emissions to whichever transport created the
-        # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
-        "transport": current_transport() or _stdio_transport,
-    }
+    with _sessions_lock:
+        _sessions[sid] = {
+            "agent": agent,
+            "session_key": key,
+            "history": history,
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "inflight_turn": None,
+            "created_at": now,
+            "last_active": now,
+            "running": False,
+            "attached_images": [],
+            "image_counter": 0,
+            "cwd": _completion_cwd(),
+            "cols": cols,
+            "slash_worker": None,
+            "show_reasoning": _load_show_reasoning(),
+            "tool_progress_mode": _load_tool_progress_mode(),
+            "edit_snapshots": {},
+            "tool_started_at": {},
+            # Pin async event emissions to whichever transport created the
+            # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
+            "transport": current_transport() or _stdio_transport,
+        }
     db = _get_db()
     if db is not None:
         row = db.get_session(key)
         if row and row.get("cwd"):
-            _sessions[sid]["cwd"] = row["cwd"]
+            with _sessions_lock:
+                if sid in _sessions:
+                    _sessions[sid]["cwd"] = row["cwd"]
         else:
             try:
                 db.update_session_cwd(key, _sessions[sid]["cwd"])
@@ -2443,9 +2481,11 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         # session startup resilient).
         pass
     _wire_callbacks(sid)
-    _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
+    with _sessions_lock:
+        if sid in _sessions:
+            _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
     _notify_session_boundary("on_session_reset", key)
-    _emit("session.info", sid, _session_info(agent, _sessions[sid]))
+    _emit("session.info", sid, _session_info(agent, _sessions.get(sid, {})))
 
 
 def _new_session_key() -> str:
@@ -2797,32 +2837,33 @@ def _(rid, params: dict) -> dict:
     ready = threading.Event()
     now = time.time()
 
-    _sessions[sid] = {
-        "agent": None,
-        "agent_error": None,
-        "agent_ready": ready,
-        "attached_images": [],
-        "cols": cols,
-        "created_at": now,
-        "edit_snapshots": {},
-        "explicit_cwd": explicit_cwd,
-        "history": history,
-        "history_lock": threading.Lock(),
-        "history_version": 0,
-        "image_counter": 0,
-        "cwd": resolved_cwd,
-        "inflight_turn": None,
-        "last_active": now,
-        "pending_title": title or None,
-        "running": False,
-        "session_key": key,
-        "show_reasoning": _load_show_reasoning(),
-        "slash_worker": None,
-        "tool_progress_mode": _load_tool_progress_mode(),
-        "tool_started_at": {},
-        "transport": current_transport() or _stdio_transport,
-    }
-    _register_session_cwd(_sessions[sid])
+    with _sessions_lock:
+        _sessions[sid] = {
+            "agent": None,
+            "agent_error": None,
+            "agent_ready": ready,
+            "attached_images": [],
+            "cols": cols,
+            "created_at": now,
+            "edit_snapshots": {},
+            "explicit_cwd": explicit_cwd,
+            "history": history,
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "image_counter": 0,
+            "cwd": resolved_cwd,
+            "inflight_turn": None,
+            "last_active": now,
+            "pending_title": title or None,
+            "running": False,
+            "session_key": key,
+            "show_reasoning": _load_show_reasoning(),
+            "slash_worker": None,
+            "tool_progress_mode": _load_tool_progress_mode(),
+            "tool_started_at": {},
+            "transport": current_transport() or _stdio_transport,
+        }
+        _register_session_cwd(_sessions[sid])
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
     # launch (and every "New agent" / draft) opens a session here just to paint
     # the composer, so eagerly creating a row left an "Untitled" empty session
@@ -2959,6 +3000,10 @@ def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")
     if not target:
         return _err(rid, 4006, "session_id required")
+    try:
+        cols = int(params.get("cols", 80))
+    except (TypeError, ValueError):
+        cols = 80
     db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5000)
@@ -2969,6 +3014,25 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+    # Fast path: if the session is already live, reuse it under the lock.
+    with _session_resume_lock:
+        live = _find_live_session_by_key(target)
+        if live is not None:
+            sid, session = live
+            payload = _live_session_payload(
+                sid,
+                session,
+                cols=cols,
+                touch=True,
+                transport=current_transport() or _stdio_transport,
+            )
+            payload["resumed"] = target
+            return _ok(rid, payload)
+
+    # Build the agent OUTSIDE the lock — _make_agent can block for seconds
+    # (MCP discovery, prompt/skill build, AIAgent construction). Holding
+    # _session_resume_lock across it would stall session.close on the main
+    # dispatch thread (it's not a _LONG_HANDLER), blocking fast-path RPCs.
     sid = uuid.uuid4().hex[:8]
     _enable_gateway_prompts()
     try:
@@ -2977,15 +3041,46 @@ def _(rid, params: dict) -> dict:
         display_history = db.get_messages_as_conversation(
             target, include_ancestors=True
         )
+        display_history_prefix = display_history[
+            : max(0, len(display_history) - len(history))
+        ]
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:
             agent = _make_agent(sid, target, session_id=target)
         finally:
             _clear_session_context(tokens)
-        _init_session(sid, target, agent, history, cols=int(params.get("cols", 80)))
     except Exception as e:
         return _err(rid, 5000, f"resume failed: {e}")
+
+    # Double-checked locking: another concurrent resume may have created the
+    # live session while we were building. Re-check under the lock; if it won,
+    # discard our just-built agent and reuse theirs (no worker/poller wired yet).
+    with _session_resume_lock:
+        live = _find_live_session_by_key(target)
+        if live is not None:
+            try:
+                if hasattr(agent, "close"):
+                    agent.close()
+            except Exception:
+                pass
+            other_sid, other_session = live
+            payload = _live_session_payload(
+                other_sid,
+                other_session,
+                cols=cols,
+                touch=True,
+                transport=current_transport() or _stdio_transport,
+            )
+            payload["resumed"] = target
+            return _ok(rid, payload)
+        try:
+            _init_session(sid, target, agent, history, cols=cols)
+            if sid in _sessions:
+                _sessions[sid]["display_history_prefix"] = display_history_prefix
+        except Exception as e:
+            return _err(rid, 5000, f"resume failed: {e}")
+        session = _sessions.get(sid) or {}
     return _ok(
         rid,
         {
@@ -2993,7 +3088,12 @@ def _(rid, params: dict) -> dict:
             "resumed": target,
             "message_count": len(messages),
             "messages": messages,
-            "info": _session_info(agent, _sessions.get(sid)),
+            "info": _session_info(agent, session),
+            "inflight": None,
+            "running": False,
+            "session_key": target,
+            "started_at": float(session.get("created_at") or time.time()),
+            "status": "idle",
         },
     )
 
@@ -3086,6 +3186,15 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     }
 
 
+def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
+    for sid, session in list(_sessions.items()):
+        if session.get("_finalized"):
+            continue
+        if str(session.get("session_key") or "") == session_key:
+            return sid, session
+    return None
+
+
 def _fallback_session_info(session: dict) -> dict:
     agent = session.get("agent")
     if agent is not None:
@@ -3099,6 +3208,41 @@ def _fallback_session_info(session: dict) -> dict:
     }
 
 
+def _live_session_payload(
+    sid: str,
+    session: dict,
+    *,
+    cols: int | None = None,
+    touch: bool = False,
+    transport: Transport | None = None,
+) -> dict:
+    with session["history_lock"]:
+        if cols is not None:
+            session["cols"] = cols
+        if transport is not None:
+            session["transport"] = transport
+        if touch:
+            session["last_active"] = time.time()
+        history = list(session.get("display_history_prefix") or []) + list(
+            session.get("history") or []
+        )
+        inflight = _inflight_snapshot(session)
+        running = bool(session.get("running"))
+    payload = {
+        "info": _fallback_session_info(session),
+        "message_count": len(history),
+        "messages": _history_to_messages(history),
+        "running": running,
+        "session_id": sid,
+        "session_key": session.get("session_key") or sid,
+        "started_at": float(session.get("created_at") or time.time()),
+        "status": _session_live_status(sid, session),
+    }
+    if inflight:
+        payload["inflight"] = inflight
+    return payload
+
+
 @method("session.active_list")
 def _(rid, params: dict) -> dict:
     """Return live TUI sessions in this gateway process.
@@ -3109,7 +3253,8 @@ def _(rid, params: dict) -> dict:
     """
     current = str(params.get("current_session_id") or "")
     try:
-        snapshot = list(_sessions.items())
+        with _sessions_lock:
+            snapshot = list(_sessions.items())
     except Exception as e:
         return _err(rid, 5036, f"could not enumerate active sessions: {e}")
 
@@ -3132,27 +3277,9 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
 
-    with session["history_lock"]:
-        session["last_active"] = time.time()
-        history = list(session.get("display_history") or session.get("history") or [])
-        inflight = _inflight_snapshot(session)
-        running = bool(session.get("running"))
-    status = _session_live_status(sid, session)
-    payload = {
-        "info": _fallback_session_info(session),
-        "message_count": len(history),
-        "messages": _history_to_messages(history),
-        "running": running,
-        "session_id": sid,
-        "session_key": session.get("session_key") or sid,
-        "started_at": float(session.get("created_at") or time.time()),
-        "status": status,
-    }
-    if inflight:
-        payload["inflight"] = inflight
     return _ok(
         rid,
-        payload,
+        _live_session_payload(sid, session, touch=True),
     )
 
 
@@ -3181,7 +3308,8 @@ def _(rid, params: dict) -> dict:
     # dictionary changed size during iteration``.  If even the snapshot
     # raises, fail closed (refuse the delete) rather than fail open.
     try:
-        snapshot = list(_sessions.values())
+        with _sessions_lock:
+            snapshot = list(_sessions.values())
     except Exception as e:
         return _err(rid, 5036, f"could not enumerate active sessions: {e}")
     active = {s.get("session_key") for s in snapshot if s.get("session_key")}
@@ -3538,28 +3666,34 @@ def _(rid, params: dict) -> dict:
 @method("session.close")
 def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
-    session = _sessions.pop(sid, None)
-    if not session:
+    with _sessions_lock:
+        current = _sessions.get(sid)
+    if not current:
         return _ok(rid, {"closed": False})
-    _finalize_session(session)
-    try:
-        from tools.approval import unregister_gateway_notify
+    with _session_resume_lock:
+        with _sessions_lock:
+            session = _sessions.pop(sid, None)
+        if not session:
+            return _ok(rid, {"closed": False})
+        _finalize_session(session)
+        try:
+            from tools.approval import unregister_gateway_notify
 
-        unregister_gateway_notify(session["session_key"])
-    except Exception:
-        pass
-    try:
-        agent = session.get("agent")
-        if agent and hasattr(agent, "close"):
-            agent.close()
-    except Exception:
-        pass
-    try:
-        worker = session.get("slash_worker")
-        if worker:
-            worker.close()
-    except Exception:
-        pass
+            unregister_gateway_notify(session["session_key"])
+        except Exception:
+            pass
+        try:
+            agent = session.get("agent")
+            if agent and hasattr(agent, "close"):
+                agent.close()
+        except Exception:
+            pass
+        try:
+            worker = session.get("slash_worker")
+            if worker:
+                worker.close()
+        except Exception:
+            pass
     return _ok(rid, {"closed": True})
 
 
@@ -3592,6 +3726,12 @@ def _(rid, params: dict) -> dict:
             new_key,
             source="tui",
             model=_resolve_model(),
+            # Stable _branched_from marker so list_sessions_rich() keeps the
+            # branch visible in /resume and /sessions. The TUI branch leaves
+            # the parent live (no end_reason='branched'), so the legacy
+            # end_reason heuristic never matches it — the marker is the only
+            # thing that surfaces TUI branches. See issue #20856.
+            model_config={"_branched_from": old_key},
             parent_session_id=old_key,
             cwd=_session_cwd(session),
         )
@@ -3981,7 +4121,8 @@ def _notification_event_belongs_elsewhere(session: dict, evt: dict) -> bool:
     if evt_key == str(session.get("session_key") or ""):
         return False
     try:
-        snapshot = list(_sessions.values())
+        with _sessions_lock:
+            snapshot = list(_sessions.values())
     except Exception:
         # If we can't safely enumerate live sessions, fail open so we don't
         # crash the poller thread or drop the event.
@@ -3991,6 +4132,38 @@ def _notification_event_belongs_elsewhere(session: dict, evt: dict) -> bool:
         s is not session and str(s.get("session_key") or "") == evt_key
         for s in snapshot
     )
+
+
+def _notification_event_dedup_key(evt: dict) -> tuple:
+    """Return the UI-emission identity for a process notification event.
+
+    Completion events are terminal notifications for a background process, so
+    they remain one-shot per process session. Watch-match events are not
+    terminal: a single background process can legitimately match the same or
+    different patterns many times, so include event-specific content to avoid
+    suppressing later distinct matches from the same process.
+    """
+    evt_type = evt.get("type", "completion")
+    evt_sid = evt.get("session_id", "")
+    if evt_type == "watch_match":
+        return (
+            evt_sid,
+            evt_type,
+            evt.get("command", ""),
+            evt.get("pattern", ""),
+            evt.get("output", ""),
+            evt.get("suppressed", 0),
+            evt.get("message_id", ""),
+        )
+    if evt_type.startswith("watch_overflow_") or evt_type == "watch_disabled":
+        return (
+            evt_sid,
+            evt_type,
+            evt.get("command", ""),
+            evt.get("message", ""),
+            evt.get("suppressed", 0),
+        )
+    return (evt_sid, evt_type)
 
 
 def _notification_poller_loop(
@@ -4009,6 +4182,7 @@ def _notification_poller_loop(
     """
     from tools.process_registry import process_registry, format_process_notification
 
+    _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
     while not stop_event.is_set() and not session.get("_finalized"):
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
@@ -4033,7 +4207,14 @@ def _notification_poller_loop(
         if not text:
             continue
 
-        _emit("status.update", sid, {"kind": "process", "text": text})
+        # Only emit the same notification identity to TUI once — re-queued
+        # completions get re-emitted every 0.5s otherwise when session is busy,
+        # while distinct watch_match events from the same process must remain
+        # visible independently.
+        _dedup_key = _notification_event_dedup_key(evt)
+        if _dedup_key not in _emitted:
+            _emit("status.update", sid, {"kind": "process", "text": text})
+            _emitted.add(_dedup_key)
 
         with session["history_lock"]:
             if session.get("running"):
@@ -4073,7 +4254,10 @@ def _notification_poller_loop(
         if not text:
             continue
 
-        _emit("status.update", sid, {"kind": "process", "text": text})
+        _dedup_key = _notification_event_dedup_key(evt)
+        if _dedup_key not in _emitted:
+            _emit("status.update", sid, {"kind": "process", "text": text})
+            _emitted.add(_dedup_key)
 
         with session["history_lock"]:
             if session.get("running"):
@@ -4134,6 +4318,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
             approval_token = set_current_session_key(session["session_key"])
             session_tokens = _set_session_context(session["session_key"])
+            # The sudo password callback is thread-local (tools.terminal_tool
+            # _callback_tls), so wiring it on the build thread doesn't reach this
+            # turn thread — terminal sudo prompts would fall through to /dev/tty
+            # and hang the headless gateway. Re-wire here so the prompt routes to
+            # the sudo.request overlay. (secret capture is a module global, so
+            # re-running is a harmless no-op.)
+            _wire_callbacks(sid)
             cwd = _session_cwd(session)
             _register_session_cwd(session)
             cols = session.get("cols", 80)
@@ -4834,12 +5025,13 @@ def _(rid, params: dict) -> dict:
 
 def _respond(rid, params, key):
     r = params.get("request_id", "")
-    entry = _pending.get(r)
-    if not entry:
-        return _err(rid, 4009, f"no pending {key} request")
-    _, ev = entry
-    _answers[r] = params.get(key, "")
-    ev.set()
+    with _prompt_lock:
+        entry = _pending.get(r)
+        if not entry:
+            return _err(rid, 4009, f"no pending {key} request")
+        _, ev = entry
+        _answers[r] = params.get(key, "")
+        ev.set()
     return _ok(rid, {"status": "ok"})
 
 
@@ -5022,6 +5214,9 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"key": key, "value": nv})
 
     if key == "yolo":
+        # Per-session approval bypass — same scope as the TUI's Shift+Tab. This
+        # toggles ONLY this session's _session_yolo flag; it never writes the
+        # global approvals.mode, so it cannot change CLI / TUI / cron behavior.
         try:
             if session:
                 from tools.approval import (
@@ -5030,13 +5225,28 @@ def _(rid, params: dict) -> dict:
                     is_session_yolo_enabled,
                 )
 
-                current = is_session_yolo_enabled(session["session_key"])
-                if current:
+                raw = str(value or "").strip().lower()
+                if raw in {"1", "on", "true", "yes"}:
+                    enable_session_yolo(session["session_key"])
+                    nv = "1"
+                elif raw in {"0", "off", "false", "no"}:
                     disable_session_yolo(session["session_key"])
                     nv = "0"
                 else:
-                    enable_session_yolo(session["session_key"])
-                    nv = "1"
+                    current = is_session_yolo_enabled(session["session_key"])
+                    if current:
+                        disable_session_yolo(session["session_key"])
+                        nv = "0"
+                    else:
+                        enable_session_yolo(session["session_key"])
+                        nv = "1"
+                agent = session.get("agent")
+                if agent is not None:
+                    _emit(
+                        "session.info",
+                        params.get("session_id", ""),
+                        _session_info(agent, session),
+                    )
             else:
                 current = is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))
                 if current:

@@ -29,7 +29,6 @@ import type {
   OAuthSubmitResponse,
   PaginatedSessions,
   ProfileCreatePayload,
-  ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
   SessionMessagesResponse,
@@ -115,7 +114,6 @@ export type {
   PaginatedSessions,
   ProfileCreatePayload,
   ProfileInfo,
-  ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
   RpcEvent,
@@ -145,6 +143,22 @@ export class HermesGateway extends JsonRpcGatewayClient {
   }
 }
 
+// Profile that profile-scoped REST settings (config/env/skills/tools/model/…)
+// should target. Mirrors $activeGatewayProfile, pushed in from the store via
+// setApiRequestProfile so this module needs no store import (avoids a cycle).
+// Electron main consumes request.profile to pick which backend *process* serves
+// the call; each pooled backend already has its own HERMES_HOME, so no backend
+// change is needed. Null → primary, so single-profile users are unaffected.
+let _apiProfile: null | string = null
+
+export function setApiRequestProfile(profile: null | string): void {
+  _apiProfile = profile || null
+}
+
+function profileScoped(): { profile?: string } {
+  return _apiProfile ? { profile: _apiProfile } : {}
+}
+
 export async function listSessions(
   limit = 40,
   minMessages = 0,
@@ -160,6 +174,30 @@ export async function listSessions(
   return {
     ...result,
     sessions,
+    offset: 0
+  }
+}
+
+// Unified, read-only session list aggregated across ALL profiles. Served by the
+// primary backend straight off each profile's state.db — no per-profile backend
+// is spawned. Single-profile users get the same rows as listSessions(), tagged
+// profile="default".
+export async function listAllProfileSessions(
+  limit = 40,
+  minMessages = 0,
+  archived: 'exclude' | 'include' | 'only' = 'exclude',
+  order: 'created' | 'recent' = 'recent',
+  profile: 'all' | (string & {}) = 'all'
+): Promise<PaginatedSessions> {
+  const result = await window.hermesDesktop.api<PaginatedSessions>({
+    path:
+      `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
+      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}`
+  })
+
+  return {
+    ...result,
+    sessions: result.sessions.slice(0, limit),
     offset: 0
   }
 }
@@ -183,9 +221,13 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
     }))
 }
 
-export function getSessionMessages(id: string): Promise<SessionMessagesResponse> {
+// `profile` reads another profile's transcript straight off its state.db via the
+// primary backend (no spawn). Omit for the current/default profile.
+export function getSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
+  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+
   return window.hermesDesktop.api<SessionMessagesResponse>({
-    path: `/api/sessions/${encodeURIComponent(id)}/messages`
+    path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
   })
 }
 
@@ -196,16 +238,21 @@ export function deleteSession(id: string): Promise<{ ok: boolean }> {
   })
 }
 
-export function renameSession(id: string, title: string): Promise<{ ok: boolean; title: string }> {
+export function renameSession(
+  id: string,
+  title: string,
+  profile?: string | null
+): Promise<{ ok: boolean; title: string }> {
   return window.hermesDesktop.api<{ ok: boolean; title: string }>({
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { title }
+    body: { title, ...(profile ? { profile } : {}) }
   })
 }
 
 export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
   return window.hermesDesktop.api<ModelInfoResponse>({
+    ...profileScoped(),
     path: '/api/model/info'
   })
 }
@@ -243,36 +290,42 @@ export function getLogs(params: {
   const suffix = query.toString()
 
   return window.hermesDesktop.api<LogsResponse>({
+    ...profileScoped(),
     path: suffix ? `/api/logs?${suffix}` : '/api/logs'
   })
 }
 
 export function getHermesConfig(): Promise<HermesConfig> {
   return window.hermesDesktop.api<HermesConfig>({
+    ...profileScoped(),
     path: '/api/config'
   })
 }
 
 export function getHermesConfigRecord(): Promise<HermesConfigRecord> {
   return window.hermesDesktop.api<HermesConfigRecord>({
+    ...profileScoped(),
     path: '/api/config'
   })
 }
 
 export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
   return window.hermesDesktop.api<HermesConfigRecord>({
+    ...profileScoped(),
     path: '/api/config/defaults'
   })
 }
 
 export function getHermesConfigSchema(): Promise<ConfigSchemaResponse> {
   return window.hermesDesktop.api<ConfigSchemaResponse>({
+    ...profileScoped(),
     path: '/api/config/schema'
   })
 }
 
 export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
     path: '/api/config',
     method: 'PUT',
     body: { config }
@@ -281,12 +334,14 @@ export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: bool
 
 export function getEnvVars(): Promise<Record<string, EnvVarInfo>> {
   return window.hermesDesktop.api<Record<string, EnvVarInfo>>({
+    ...profileScoped(),
     path: '/api/env'
   })
 }
 
 export function setEnvVar(key: string, value: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
     path: '/api/env',
     method: 'PUT',
     body: { key, value }
@@ -296,8 +351,9 @@ export function setEnvVar(key: string, value: string): Promise<{ ok: boolean }> 
 export function validateProviderCredential(
   key: string,
   value: string
-): Promise<{ ok: boolean; reachable: boolean; message: string }> {
-  return window.hermesDesktop.api<{ ok: boolean; reachable: boolean; message: string }>({
+): Promise<{ ok: boolean; reachable: boolean; message: string; models?: string[] }> {
+  return window.hermesDesktop.api<{ ok: boolean; reachable: boolean; message: string; models?: string[] }>({
+    ...profileScoped(),
     path: '/api/providers/validate',
     method: 'POST',
     body: { key, value }
@@ -627,6 +683,7 @@ export function getWorkflowFiles(projectId: string): Promise<WorkflowFilesRespon
 
 export function deleteEnvVar(key: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
     path: '/api/env',
     method: 'DELETE',
     body: { key }
@@ -635,6 +692,7 @@ export function deleteEnvVar(key: string): Promise<{ ok: boolean }> {
 
 export function revealEnvVar(key: string): Promise<{ key: string; value: string }> {
   return window.hermesDesktop.api<{ key: string; value: string }>({
+    ...profileScoped(),
     path: '/api/env/reveal',
     method: 'POST',
     body: { key }
@@ -643,12 +701,14 @@ export function revealEnvVar(key: string): Promise<{ key: string; value: string 
 
 export function listOAuthProviders(): Promise<OAuthProvidersResponse> {
   return window.hermesDesktop.api<OAuthProvidersResponse>({
+    ...profileScoped(),
     path: '/api/providers/oauth'
   })
 }
 
 export function startOAuthLogin(providerId: string): Promise<OAuthStartResponse> {
   return window.hermesDesktop.api<OAuthStartResponse>({
+    ...profileScoped(),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/start`,
     method: 'POST',
     body: {}
@@ -657,6 +717,7 @@ export function startOAuthLogin(providerId: string): Promise<OAuthStartResponse>
 
 export function submitOAuthCode(providerId: string, sessionId: string, code: string): Promise<OAuthSubmitResponse> {
   return window.hermesDesktop.api<OAuthSubmitResponse>({
+    ...profileScoped(),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
     method: 'POST',
     body: { session_id: sessionId, code }
@@ -665,12 +726,14 @@ export function submitOAuthCode(providerId: string, sessionId: string, code: str
 
 export function pollOAuthSession(providerId: string, sessionId: string): Promise<OAuthPollResponse> {
   return window.hermesDesktop.api<OAuthPollResponse>({
+    ...profileScoped(),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/poll/${encodeURIComponent(sessionId)}`
   })
 }
 
 export function cancelOAuthSession(sessionId: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
     path: `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
     method: 'DELETE'
   })
@@ -678,12 +741,14 @@ export function cancelOAuthSession(sessionId: string): Promise<{ ok: boolean }> 
 
 export function getSkills(): Promise<SkillInfo[]> {
   return window.hermesDesktop.api<SkillInfo[]>({
+    ...profileScoped(),
     path: '/api/skills'
   })
 }
 
 export function toggleSkill(name: string, enabled: boolean): Promise<{ ok: boolean; name: string; enabled: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
+    ...profileScoped(),
     path: '/api/skills/toggle',
     method: 'PUT',
     body: { name, enabled }
@@ -692,6 +757,7 @@ export function toggleSkill(name: string, enabled: boolean): Promise<{ ok: boole
 
 export function getToolsets(): Promise<ToolsetInfo[]> {
   return window.hermesDesktop.api<ToolsetInfo[]>({
+    ...profileScoped(),
     path: '/api/tools/toolsets'
   })
 }
@@ -701,6 +767,7 @@ export function toggleToolset(
   enabled: boolean
 ): Promise<{ ok: boolean; name: string; enabled: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
+    ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}`,
     method: 'PUT',
     body: { enabled }
@@ -709,6 +776,7 @@ export function toggleToolset(
 
 export function getToolsetConfig(name: string): Promise<ToolsetConfig> {
   return window.hermesDesktop.api<ToolsetConfig>({
+    ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/config`
   })
 }
@@ -718,6 +786,7 @@ export function selectToolsetProvider(
   provider: string
 ): Promise<{ ok: boolean; name: string; provider: string }> {
   return window.hermesDesktop.api<{ ok: boolean; name: string; provider: string }>({
+    ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
     method: 'PUT',
     body: { provider }
@@ -847,20 +916,16 @@ export function updateProfileSoul(name: string, content: string): Promise<{ ok: 
   })
 }
 
-export function getProfileSetupCommand(name: string): Promise<ProfileSetupCommand> {
-  return window.hermesDesktop.api<ProfileSetupCommand>({
-    path: `/api/profiles/${encodeURIComponent(name)}/setup-command`
-  })
-}
-
 export function getUsageAnalytics(days = 30): Promise<AnalyticsResponse> {
   return window.hermesDesktop.api<AnalyticsResponse>({
+    ...profileScoped(),
     path: `/api/analytics/usage?days=${Math.max(1, Math.floor(days))}`
   })
 }
 
 export function getGlobalModelOptions(): Promise<ModelOptionsResponse> {
   return window.hermesDesktop.api<ModelOptionsResponse>({
+    ...profileScoped(),
     path: '/api/model/options'
   })
 }
@@ -877,6 +942,7 @@ export interface RecommendedDefaultModel {
 // free user gets a free model instead of a paid default.
 export function getRecommendedDefaultModel(provider: string): Promise<RecommendedDefaultModel> {
   return window.hermesDesktop.api<RecommendedDefaultModel>({
+    ...profileScoped(),
     path: `/api/model/recommended-default?provider=${encodeURIComponent(provider)}`
   })
 }
@@ -886,6 +952,7 @@ export function setGlobalModel(
   model: string
 ): Promise<{ ok: boolean; provider: string; model: string }> {
   return window.hermesDesktop.api<{ ok: boolean; provider: string; model: string }>({
+    ...profileScoped(),
     path: '/api/model/set',
     method: 'POST',
     body: {
@@ -898,12 +965,14 @@ export function setGlobalModel(
 
 export function getAuxiliaryModels(): Promise<AuxiliaryModelsResponse> {
   return window.hermesDesktop.api<AuxiliaryModelsResponse>({
+    ...profileScoped(),
     path: '/api/model/auxiliary'
   })
 }
 
 export function setModelAssignment(body: ModelAssignmentRequest): Promise<ModelAssignmentResponse> {
   return window.hermesDesktop.api<ModelAssignmentResponse>({
+    ...profileScoped(),
     path: '/api/model/set',
     method: 'POST',
     body

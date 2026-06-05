@@ -82,6 +82,22 @@ CONFIGURABLE_TOOLSETS = [
     ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
 ]
 
+
+def gui_toolset_label(label: str) -> str:
+    """Strip leading emoji/icons from toolset titles for GUI surfaces.
+
+    Registry labels use ``<emoji> <title>``; plugin toolsets prefix with ``🔌``.
+    CLI/TUI keeps the raw ``label`` — only HTTP APIs call this helper.
+    """
+    text = (label or "").strip()
+    if not text:
+        return text
+    parts = text.split(None, 1)
+    if len(parts) == 2 and parts[0] and not any(ch.isascii() and ch.isalnum() for ch in parts[0]):
+        return parts[1].strip()
+    return text
+
+
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
@@ -180,6 +196,30 @@ def _get_plugin_toolset_keys() -> set:
         return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
     except Exception:
         return set()
+
+
+def _checklist_toolset_keys(platform: str) -> Set[str]:
+    """Return the toolset keys the ``hermes tools`` checklist actually offers
+    for ``platform``.
+
+    This mirrors exactly what ``_prompt_toolset_checklist`` renders:
+    ``_get_effective_configurable_toolsets()`` (built-in + plugin toolsets),
+    filtered by ``_toolset_allowed_for_platform``. The checklist's returned
+    selection can therefore only ever be a subset of this universe.
+
+    Non-configurable toolsets that ``_get_platform_tools`` resolves at read
+    time — ``kanban`` and other check_fn-gated toolsets, recovered platform
+    composites, MCP server names — are NOT in this set because the checklist
+    never shows them. Use this to scope the added/removed diff the UI prints,
+    so ``hermes tools`` never claims to add or remove a toolset the user was
+    never given a checkbox for. The underlying config is unaffected — those
+    entries are preserved by ``_save_platform_tools`` regardless.
+    """
+    return {
+        ts_key
+        for ts_key, _, _ in _get_effective_configurable_toolsets()
+        if _toolset_allowed_for_platform(ts_key, platform)
+    }
 
 # Platform display config — derived from the canonical registry so every
 # module shares the same data.  Kept as dict-of-dicts for backward
@@ -3317,8 +3357,15 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             # Show checklist
             new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected, pkey)
 
-            added = new_enabled - current_enabled
-            removed = current_enabled - new_enabled
+            # Only diff against toolsets the checklist actually offered. The
+            # resolved ``current_enabled`` can include non-configurable toolsets
+            # (e.g. ``kanban``, recovered platform composites) the user was
+            # never shown a checkbox for; without this scope the summary would
+            # print spurious ``- kanban`` removals even though the config keeps
+            # them. See _checklist_toolset_keys.
+            _diff_universe = _checklist_toolset_keys(pkey)
+            added = (new_enabled - current_enabled) & _diff_universe
+            removed = (current_enabled - new_enabled) & _diff_universe
             if added:
                 for ts in sorted(added):
                     label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts), ts)
@@ -3427,8 +3474,12 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             if new_enabled != all_current:
                 for pk in platform_keys:
                     prev = _get_platform_tools(config, pk, include_default_mcp_servers=False)
-                    added = new_enabled - prev
-                    removed = prev - new_enabled
+                    # Scope the printed diff to the checklist's universe (see
+                    # _checklist_toolset_keys) so non-configurable toolsets like
+                    # ``kanban`` aren't reported as added/removed.
+                    _diff_universe = _checklist_toolset_keys(pk)
+                    added = (new_enabled - prev) & _diff_universe
+                    removed = (prev - new_enabled) & _diff_universe
                     pinfo_inner = PLATFORMS[pk]
                     if added or removed:
                         print(color(f"  {pinfo_inner['label']}:", Colors.DIM))
@@ -3474,8 +3525,12 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         )
 
         if new_enabled != current_enabled:
-            added = new_enabled - current_enabled
-            removed = current_enabled - new_enabled
+            # Scope the printed diff to the checklist's universe (see
+            # _checklist_toolset_keys) so non-configurable toolsets like
+            # ``kanban`` aren't reported as added/removed.
+            _diff_universe = _checklist_toolset_keys(pkey)
+            added = (new_enabled - current_enabled) & _diff_universe
+            removed = (current_enabled - new_enabled) & _diff_universe
 
             if added:
                 for ts in sorted(added):

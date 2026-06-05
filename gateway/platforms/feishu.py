@@ -1475,6 +1475,11 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def __init__(self, config: PlatformConfig):
+        if isinstance(config, list):
+            import traceback
+            logger.error("[FeishuAdapter] CRITICAL: config is a list (len=%d)!", len(config))
+            logger.error("[FeishuAdapter] Stack trace:\n%s", "".join(traceback.format_stack()))
+            raise TypeError(f"FeishuAdapter config must be PlatformConfig, got list with {len(config)} items")
         super().__init__(config, Platform.FEISHU)
         # Set instance ID to app_id so multiple Feishu apps are distinguishable.
         # Must call _load_settings AFTER super().__init__ sets the default.

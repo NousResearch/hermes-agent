@@ -271,10 +271,11 @@ function ActionCard({ action }: { action: MissionControlSnapshot["actionQueue"][
       </div>
     </div>
   );
+  const testKey = slugify(action.title || action.route || action.category || "action");
   if (action.route.startsWith("http")) {
-    return <a href={action.route} target="_blank" rel="noreferrer" className={className} data-testid={`mission-action-card-${action.rank}`}>{body}</a>;
+    return <a href={action.route} target="_blank" rel="noreferrer" className={className} data-testid={`mission-action-card-${testKey}`}>{body}</a>;
   }
-  return <Link to={action.route} className={className} data-testid={`mission-action-card-${action.rank}`}>{body}</Link>;
+  return <Link to={action.route} className={className} data-testid={`mission-action-card-${testKey}`}>{body}</Link>;
 }
 
 function Section({
@@ -335,7 +336,7 @@ function RuntimePanel({ data }: { data: MissionControlSnapshot }) {
     ["Gateway", `${num(gateway, "configuredCount")} configured`, platforms.length ? platforms.join(", ") : `running: ${boolText(gateway, "running")}`],
     ["Skills", `${num(skills, "total")} installed`, `${num(skills, "agentskillsCompliant")} portable · ${num(skills, "autoCreatedCount")} auto-created`],
     ["Cron", `${num(cron, "enabled")} enabled / ${num(cron, "total")} total`, `${num(cron, "reflectionJobs")} reflection · ${num(cron, "heartbeatJobs")} heartbeat`],
-    ["MCP", `${num(mcp, "configured")} configured`, strArray(mcp, "servers").join(", ") || "no servers listed"],
+    ["MCP", `${num(mcp, "configured")} configured`, `${num(mcp, "enabled")} enabled · names redacted`],
     ["Safety", `approvals: ${str(safety, "approvalsMode")}`, `isolated: ${boolText(safety, "terminalIsolated")} · redaction: ${boolText(safety, "redactSecrets")}`],
     ["Voice", `STT ${boolText(voice, "sttEnabled")}`, `TTS ${str(voice, "ttsProvider", "not configured")}`],
     ["Analytics", `${formatNumber(num(analyticsTotals, "inputTokens") + num(analyticsTotals, "outputTokens"))} tokens`, `$${formatNumber(num(analyticsTotals, "actualCostUsd"))} actual · $${formatNumber(num(analyticsTotals, "estimatedCostUsd"))} estimated`],
@@ -363,8 +364,9 @@ function StatusList({ items, testId }: { items: AnyRecord[]; testId: string }) {
         const title = str(item, "title", str(item, "label", str(item, "term", str(item, "symptom", `Item ${index + 1}`))));
         const status = item.status ?? "info";
         const evidence = objectArray(item.evidence).length ? objectArray(item.evidence).map((e) => String(e)) : strArray(item, "evidence");
+        const stableId = str(item, "id", str(item, "term", str(item, "label", title)));
         return (
-          <div key={`${title}-${index}`} className="min-w-0 rounded-[1.35rem] border border-current/10 bg-background-base/35 p-4" data-testid={`${testId}-${slugify(title)}`}>
+          <div key={`${stableId}-${index}`} className="min-w-0 rounded-[1.35rem] border border-current/10 bg-background-base/35 p-4" data-testid={`${testId}-${slugify(stableId)}`}>
             <div className="flex flex-wrap items-center gap-2">
               {typeof item.status !== "undefined" && <Badge tone={checkTone(status)}>{String(status)}</Badge>}
               {typeof item.route !== "undefined" && <Badge tone="outline">{str(item, "route")}</Badge>}
@@ -548,8 +550,9 @@ export default function MissionControlPage() {
 
   if (loading && !data) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center" aria-busy="true" aria-live="polite" data-testid="mission-loading">
+      <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3" aria-busy="true" aria-live="polite" data-testid="mission-loading">
         <Spinner className="text-3xl text-primary" />
+        <p className="text-sm text-muted-foreground">Loading Mission Control…</p>
       </div>
     );
   }

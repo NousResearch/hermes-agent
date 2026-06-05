@@ -237,6 +237,76 @@ mcp_servers:
     assert "<secret should not surface>" not in encoded
 
 
+def test_snapshot_redacts_runtime_labels_that_can_embed_private_names(tmp_path, monkeypatch):
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "skills" / "acme-client-lawsuit" / "internal").mkdir(parents=True)
+    (home / "skills" / "acme-client-lawsuit" / "internal" / "SKILL.md").write_text(
+        "---\nname: acme-private-skill\ndescription: private workflow\n---\n\n# Private\n",
+        encoding="utf-8",
+    )
+    (home / "config.yaml").write_text(
+        """
+model:
+  provider: local
+  default: /private/models/acme-client-local.gguf
+mcp_servers:
+  acme-prod-db:
+    command: npx
+    args: [server]
+""".strip(),
+        encoding="utf-8",
+    )
+    _seed_state_db(home)
+    con = sqlite3.connect(home / "state.db")
+    con.execute(
+        "UPDATE sessions SET source=?, model=? WHERE id=?",
+        ("telegram:123456789:secret-topic", "/private/models/session-secret.gguf", "session-1"),
+    )
+    con.commit()
+    con.close()
+
+    from hermes_cli.mission_control import build_mission_control_snapshot
+
+    snapshot = build_mission_control_snapshot()
+    encoded = json.dumps(snapshot, ensure_ascii=False)
+
+    assert snapshot["runtime"]["model"]["model"] == "local-model"
+    assert snapshot["runtime"]["sessions"]["sources"] == {"telegram": 1}
+    assert snapshot["runtime"]["sessions"]["recent"][0]["source"] == "telegram"
+    assert snapshot["runtime"]["sessions"]["recent"][0]["model"] == "local-model"
+    assert snapshot["runtime"]["mcp"]["servers"] == ["server-1"]
+    assert snapshot["runtime"]["mcp"]["serverNamesRedacted"] is True
+    assert set(snapshot["runtime"]["skills"]["categories"]) <= {"direct", "grouped"}
+
+    for forbidden in [
+        "/private/models",
+        "acme-client-local",
+        "session-secret",
+        "telegram:123456789",
+        "123456789",
+        "secret-topic",
+        "acme-prod-db",
+        "acme-client-lawsuit",
+        "acme-private-skill",
+    ]:
+        assert forbidden not in encoded
+
+
+def test_snapshot_uses_live_dashboard_bind_and_auth_state(tmp_path, monkeypatch):
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text("dashboard:\n  host: 127.0.0.1\n", encoding="utf-8")
+
+    from hermes_cli.mission_control import build_mission_control_snapshot
+
+    snapshot = build_mission_control_snapshot({"bound_host": "0.0.0.0", "auth_required": False})
+    dashboard = snapshot["runtime"]["dashboard"]
+
+    assert dashboard["bindExposure"] == "public"
+    assert dashboard["runtimeHostKnown"] is True
+    assert dashboard["authGated"] is False
+    assert dashboard["authMode"] == "not-gated"
+
+
 def test_dashboard_endpoint_serves_mission_control_snapshot():
     from hermes_cli import web_server
 

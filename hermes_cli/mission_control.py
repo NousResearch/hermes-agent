@@ -447,6 +447,53 @@ def _compact_path(path: Path | str | None, home: Path | None = None) -> str | No
     return name or "configured"
 
 
+def _source_label(value: Any) -> str | None:
+    """Return a platform/source family without exposing IDs or topic keys."""
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    known = {
+        "api",
+        "cli",
+        "cron",
+        "discord",
+        "email",
+        "feishu",
+        "gateway",
+        "homeassistant",
+        "local",
+        "matrix",
+        "signal",
+        "slack",
+        "sms",
+        "telegram",
+        "web",
+        "whatsapp",
+        "yuanbao",
+    }
+    for name in known:
+        if raw == name or raw.startswith(f"{name}:") or raw.startswith(f"{name}/"):
+            return name
+    return "other"
+
+
+def _safe_model_label(value: Any) -> str:
+    """Return a model label while collapsing local file paths to a filename."""
+    raw = str(value or "auto").strip()
+    if not raw:
+        return "auto"
+    lower = raw.lower()
+    looks_like_path = (
+        raw.startswith(("/", "~", "./", "../"))
+        or "\\" in raw
+        or (len(raw) > 2 and raw[1:3] == ":\\")
+        or lower.endswith((".gguf", ".safetensors", ".bin", ".pt", ".pth", ".onnx"))
+    )
+    if looks_like_path:
+        return "local-model"
+    return raw
+
+
 def _read_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -603,11 +650,12 @@ def _state_db_metrics(home: Path) -> dict[str, Any]:
                 if "actual_cost_usd" in cols:
                     base["todayActualCostUsd"] = round(float(con.execute("SELECT COALESCE(SUM(actual_cost_usd), 0) FROM sessions WHERE started_at >= ?", (day_start,)).fetchone()[0] or 0), 4)
             if "source" in cols:
-                base["sources"] = {
-                    str(row[0]): _safe_int(row[1])
-                    for row in con.execute("SELECT source, COUNT(*) FROM sessions GROUP BY source ORDER BY COUNT(*) DESC LIMIT 12")
-                    if row[0]
-                }
+                source_counts: dict[str, int] = {}
+                for row in con.execute("SELECT source, COUNT(*) FROM sessions GROUP BY source ORDER BY COUNT(*) DESC LIMIT 50"):
+                    label = _source_label(row[0])
+                    if label:
+                        source_counts[label] = source_counts.get(label, 0) + _safe_int(row[1])
+                base["sources"] = dict(sorted(source_counts.items(), key=lambda item: item[1], reverse=True)[:12])
             order_col = "started_at" if "started_at" in cols else "rowid"
             select_cols = [c for c in ["source", "model", "started_at", "message_count", "tool_call_count"] if c in cols]
             if select_cols:
@@ -616,9 +664,9 @@ def _state_db_metrics(home: Path) -> dict[str, Any]:
                     raw = dict(row)
                     item: dict[str, Any] = {}
                     if raw.get("source"):
-                        item["source"] = str(raw.get("source"))
+                        item["source"] = _source_label(raw.get("source")) or "other"
                     if raw.get("model"):
-                        item["model"] = str(raw.get("model"))
+                        item["model"] = _safe_model_label(raw.get("model"))
                     if "message_count" in raw:
                         item["messageCount"] = _safe_int(raw.get("message_count"), 0)
                     if "tool_call_count" in raw:
@@ -731,9 +779,11 @@ def _analytics_metrics(sessions: dict[str, Any], cfg: dict[str, Any]) -> dict[st
     }
 
 
-def _dashboard_metrics(cfg: dict[str, Any], env_info: dict[str, Any]) -> dict[str, Any]:
-    dashboard = cfg.get("dashboard") if isinstance(cfg.get("dashboard"), dict) else {}
-    bind = str(dashboard.get("host") or dashboard.get("bind") or "127.0.0.1")
+def _dashboard_metrics(cfg: dict[str, Any], env_info: dict[str, Any], runtime_state: dict[str, Any] | None = None) -> dict[str, Any]:
+    raw_dashboard = cfg.get("dashboard") if isinstance(cfg, dict) else None
+    dashboard: dict[str, Any] = raw_dashboard if isinstance(raw_dashboard, dict) else {}
+    runtime_state = runtime_state or {}
+    bind = str(runtime_state.get("bound_host") or dashboard.get("host") or dashboard.get("bind") or "127.0.0.1")
     if bind in {"127.0.0.1", "localhost", "::1"}:
         exposure = "loopback"
     elif bind.startswith("10.") or bind.startswith("192.168.") or bind.startswith("172."):
@@ -742,13 +792,19 @@ def _dashboard_metrics(cfg: dict[str, Any], env_info: dict[str, Any]) -> dict[st
         exposure = "public"
     else:
         exposure = "unknown"
+    oauth_required = bool(runtime_state.get("auth_required")) if "auth_required" in runtime_state else False
+    token_present = bool((env_info.get("dashboard") or {}).get("tokenPresent")) if isinstance(env_info.get("dashboard"), dict) else False
+    auth_gated = bool(oauth_required or token_present or exposure == "loopback")
+    auth_mode = "oauth-cookie" if oauth_required else ("session-token" if token_present or exposure == "loopback" else "not-gated")
     return {
         "missionControlRoute": "/mission-control",
         "sourceRoute": SOURCE_URL,
-        "authGated": True,
-        "authMode": "session-token-or-oauth-cookie",
-        "dashboardTokenPresent": bool((env_info.get("dashboard") or {}).get("tokenPresent")) if isinstance(env_info.get("dashboard"), dict) else False,
+        "authGated": auth_gated,
+        "authMode": auth_mode,
+        "oauthGateRequired": oauth_required,
+        "dashboardTokenPresent": token_present,
         "bindExposure": exposure,
+        "runtimeHostKnown": bool(runtime_state.get("bound_host")),
         "panels": {
             "memoryBrowser": True,
             "activityFeed": True,
@@ -926,10 +982,7 @@ def _skill_metrics(home: Path) -> dict[str, Any]:
     for p in files:
         try:
             rel = p.relative_to(skill_root)
-            if len(rel.parts) <= 2:
-                category = "uncategorized"
-            else:
-                category = rel.parts[0]
+            category = "direct" if len(rel.parts) <= 2 else "grouped"
             by_category[category] = by_category.get(category, 0) + 1
             raw = p.read_text(encoding="utf-8", errors="ignore")[:4000]
             low = raw.lower()
@@ -1034,7 +1087,8 @@ def _mcp_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
         servers.update(nested_servers)
     return {
         "configured": len(servers),
-        "servers": sorted(str(k) for k in servers.keys())[:12],
+        "servers": [f"server-{idx}" for idx, _ in enumerate(sorted(servers.keys())[:12], start=1)],
+        "serverNamesRedacted": True,
         "enabled": sum(1 for v in servers.values() if not (isinstance(v, dict) and v.get("enabled") is False)),
     }
 
@@ -1046,10 +1100,10 @@ def _model_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
     agent: dict[str, Any] = raw_agent if isinstance(raw_agent, dict) else {}
     delegation: dict[str, Any] = raw_delegation if isinstance(raw_delegation, dict) else {}
     if isinstance(raw_model, dict):
-        model_name = str(raw_model.get("default") or raw_model.get("model") or raw_model.get("name") or "auto")
+        model_name = _safe_model_label(raw_model.get("default") or raw_model.get("model") or raw_model.get("name") or "auto")
         provider = raw_model.get("provider") or cfg.get("provider")
     else:
-        model_name = str(raw_model or "auto")
+        model_name = _safe_model_label(raw_model or "auto")
         provider = cfg.get("provider")
     if not isinstance(provider, str) or not provider.strip():
         provider = model_name.split("/", 1)[0] if "/" in model_name else "auto"
@@ -1185,11 +1239,11 @@ def _identity_metrics(home: Path) -> dict[str, Any]:
         "files": [_compact_path(p, home) for p in files[:8]],
     }
 
-def _build_runtime(cfg: dict[str, Any], home: Path) -> dict[str, Any]:
+def _build_runtime(cfg: dict[str, Any], home: Path, dashboard_state: dict[str, Any] | None = None) -> dict[str, Any]:
     env_info = _env_families(home)
     sessions = _state_db_metrics(home)
     safety = _safety_metrics(cfg)
-    dashboard = _dashboard_metrics(cfg, env_info)
+    dashboard = _dashboard_metrics(cfg, env_info, dashboard_state)
     runtime = {
         "generatedAt": _now_iso(),
         "home": "~/.hermes",
@@ -1483,7 +1537,7 @@ def _privacy_boundaries() -> list[dict[str, str]]:
         {"label": "Source guide", "policy": "static public", "detail": "Blueprint sections are public source metadata and safe to render in full."},
     ]
 
-def build_mission_control_snapshot() -> dict[str, Any]:
+def build_mission_control_snapshot(dashboard_state: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return a deterministic, privacy-minimized Mission Control snapshot."""
     home = _home()
     try:
@@ -1492,7 +1546,7 @@ def build_mission_control_snapshot() -> dict[str, Any]:
         cfg = {}
     if not isinstance(cfg, dict):
         cfg = {}
-    runtime = _build_runtime(cfg, home)
+    runtime = _build_runtime(cfg, home, dashboard_state)
     coverage = _coverage(runtime)
     return {
         "ok": True,

@@ -28,6 +28,9 @@ export function resolvePageTitle(
   if (plugin) {
     return plugin.label;
   }
+  if (normalized === "/mission-control") {
+    return "Mission Control";
+  }
   const key = BUILTIN[normalized];
   if (key) {
     return t.app.nav[key];

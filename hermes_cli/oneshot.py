@@ -313,6 +313,12 @@ def _run_agent(
         platform="cli",
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
+        # Fallback provider chain (config.yaml `fallback_providers`). Without
+        # this, oneshot builds an agent with an empty `_fallback_chain`, so a
+        # primary that fails with rate-limit/overload/connection errors yields
+        # empty stdout instead of failing over. Mirrors how `hermes chat` and
+        # the gateway construct the agent.
+        fallback_model=cfg.get("fallback_providers"),
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

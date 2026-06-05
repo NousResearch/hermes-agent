@@ -10874,7 +10874,7 @@ class HermesCLI:
 
         if not confirm_required:
             with self._busy_command(self._slow_command_status(cmd_original)):
-                self._reload_mcp()
+                self._run_reload_mcp_with_timeout()
             return
 
         # Render warning + prompt.  Use the same prompt_toolkit-native composer
@@ -10914,7 +10914,20 @@ class HermesCLI:
                 print("⚠️  Couldn't persist opt-out — reloading once.")
 
         with self._busy_command(self._slow_command_status(cmd_original)):
-            self._reload_mcp()
+            self._run_reload_mcp_with_timeout()
+
+    def _run_reload_mcp_with_timeout(self, timeout_seconds: float = 30.0) -> bool:
+        """Run MCP reload on a worker thread so slash-command input stays recoverable."""
+        reload_thread = threading.Thread(target=self._reload_mcp, daemon=True)
+        reload_thread.start()
+        reload_thread.join(timeout=timeout_seconds)
+        if reload_thread.is_alive():
+            print(
+                f"  ⚠️  MCP reload timed out ({timeout_seconds:g}s). "
+                "Some servers may still be reconnecting."
+            )
+            return False
+        return True
 
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.

@@ -19,7 +19,6 @@ import {
   $messages,
   $sessions,
   $yoloActive,
-  getRememberedWorkspaceCwd,
   workspaceCwdForNewSession,
   sessionPinId,
   setActiveSessionId,
@@ -322,6 +321,12 @@ export function useSessionActions({
       setTurnStartedAt(null)
       // New chats start in the configured default project dir when set,
       // otherwise the sticky last-used workspace (PR #37586).
+      setCurrentModel('')
+      setCurrentProvider('')
+      setCurrentReasoningEffort('')
+      setCurrentServiceTier('')
+      setCurrentFastMode(false)
+      setYoloActive(false)
       setCurrentCwd(workspaceCwdForNewSession())
       setCurrentBranch('')
       clearComposerDraft()

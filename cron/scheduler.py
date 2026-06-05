@@ -222,10 +222,19 @@ atexit.register(_shutdown_parallel_pool)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
 
+# Thread-local override for concurrent job isolation.  The module-global
+# ``_hermes_home`` is shared across threads, so a profile-job context that
+# mutates it bleeds into parallel non-profile jobs running in the same tick.
+# Each thread stores its own override here; _get_hermes_home() checks this
+# first, then falls back to the module-global (for test monkeypatches), then
+# to the contextvar-based get_hermes_home().
+_thread_local = threading.local()
+
 
 def _get_hermes_home() -> Path:
     """Resolve Hermes home dynamically while preserving test monkeypatch hooks."""
-    return _hermes_home or get_hermes_home()
+    tl = getattr(_thread_local, "hermes_home", None)
+    return tl or _hermes_home or get_hermes_home()
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
@@ -256,8 +265,7 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
         yield None
         return
 
-    global _hermes_home
-    prior_override = _hermes_home
+    prior_override = getattr(_thread_local, "hermes_home", None)
     env_snapshot = os.environ.copy()
 
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
@@ -278,7 +286,7 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
     override_token = None
     try:
         override_token = set_hermes_home_override(profile_home)
-        _hermes_home = profile_home
+        _thread_local.hermes_home = profile_home
         logger.info(
             "Job '%s': using Hermes profile '%s' (%s)",
             job_id,
@@ -287,7 +295,7 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
         )
         yield normalized_profile
     finally:
-        _hermes_home = prior_override
+        _thread_local.hermes_home = prior_override
         if override_token is not None:
             reset_hermes_home_override(override_token)
         # Delta-based restore: remove added keys, restore changed keys.

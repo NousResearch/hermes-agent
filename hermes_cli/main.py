@@ -13822,6 +13822,16 @@ def main():
             "doctor` first to see active advisories and their IDs."
         ),
     )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a secret-safe JSON inventory instead of human-readable checks",
+    )
+    doctor_parser.add_argument(
+        "--all-profiles",
+        action="store_true",
+        help="Include every Hermes profile in --json inventory output",
+    )
     doctor_parser.set_defaults(func=cmd_doctor)
 
     # =========================================================================

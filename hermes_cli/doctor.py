@@ -4,11 +4,13 @@ Doctor command for hermes CLI.
 Diagnoses issues with Hermes Agent setup.
 """
 
+import json
 import os
 import sys
 import subprocess
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -202,6 +204,154 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     """Emit a check_fail and append the corresponding fix instruction."""
     check_fail(text, detail)
     issues.append(fix)
+
+
+def _list_doctor_profiles():
+    """Return profile summaries for doctor inventory.
+
+    Kept behind this thin wrapper so tests can supply deterministic profile
+    rows without relying on the host's real ~/.hermes tree.
+    """
+    from hermes_cli.profiles import list_profiles
+
+    return list_profiles()
+
+
+def _read_env_keys_present(profile_dir: Path) -> list[str]:
+    """Return provider-related dotenv keys present in a profile without values."""
+    env_path = profile_dir / ".env"
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+    keys: set[str] = set()
+    provider_keys = set(_PROVIDER_ENV_HINTS)
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key in provider_keys:
+            keys.add(key)
+    return sorted(keys)
+
+
+def _count_profile_skills(profile_dir: Path) -> int:
+    """Count SKILL.md files for inventory when ProfileInfo lacks skill_count."""
+    skills_dir = profile_dir / "skills"
+    if not skills_dir.is_dir():
+        return 0
+    try:
+        from agent.skill_utils import is_excluded_skill_path
+    except Exception:
+        def is_excluded_skill_path(_path):  # type: ignore[no-redef]
+            return False
+
+    count = 0
+    for skill_file in skills_dir.rglob("SKILL.md"):
+        try:
+            if is_excluded_skill_path(skill_file):
+                continue
+        except Exception:
+            continue
+        count += 1
+    return count
+
+
+def _read_profile_config_summary(profile_dir: Path) -> tuple[str | None, str | None, list[str]]:
+    """Read non-secret model/provider summary and structural config issues."""
+    config_path = profile_dir / "config.yaml"
+    if not config_path.exists():
+        return None, None, ["Missing config.yaml"]
+
+    try:
+        import yaml as _yaml
+        cfg = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        return None, None, [f"Unreadable config.yaml: {exc}"]
+
+    if not isinstance(cfg, dict):
+        return None, None, ["config.yaml is not a mapping"]
+
+    model_cfg = cfg.get("model") or {}
+    if isinstance(model_cfg, str):
+        return model_cfg, None, []
+    if isinstance(model_cfg, dict):
+        model = model_cfg.get("default") or model_cfg.get("model")
+        provider = model_cfg.get("provider")
+        return model, provider, []
+    return None, None, ["model config must be a mapping or string"]
+
+
+def _doctor_inventory_payload(*, all_profiles: bool) -> dict:
+    """Build a secret-safe JSON-serializable profile inventory payload."""
+    if all_profiles:
+        raw_profiles = _list_doctor_profiles()
+    else:
+        raw_profiles = [
+            SimpleNamespace(
+                name="current",
+                path=HERMES_HOME,
+                is_default=False,
+                gateway_running=False,
+                model=None,
+                provider=None,
+                has_env=(HERMES_HOME / ".env").exists(),
+                skill_count=_count_profile_skills(HERMES_HOME),
+                alias_path=None,
+            )
+        ]
+
+    profiles = []
+    repair_plan: list[str] = []
+    for profile in raw_profiles:
+        profile_name = str(getattr(profile, "name", "current"))
+        profile_dir = Path(getattr(profile, "path", HERMES_HOME))
+        model, provider, issues = _read_profile_config_summary(profile_dir)
+        if model is None:
+            model = getattr(profile, "model", None)
+        if provider is None:
+            provider = getattr(profile, "provider", None)
+
+        has_env = bool(getattr(profile, "has_env", (profile_dir / ".env").exists()))
+        env_keys = _read_env_keys_present(profile_dir)
+        if not has_env:
+            issues.append("Missing .env")
+        if "Missing config.yaml" in issues:
+            repair_plan.append(f"{profile_name}: create config.yaml (run `hermes --profile {profile_name} setup` or copy a known-good config)")
+        if "Missing .env" in issues:
+            repair_plan.append(f"{profile_name}: create .env with provider credentials or custom endpoint")
+
+        profiles.append(
+            {
+                "name": profile_name,
+                "path": str(profile_dir),
+                "is_default": bool(getattr(profile, "is_default", False)),
+                "gateway_running": bool(getattr(profile, "gateway_running", False)),
+                "provider": provider,
+                "model": model,
+                "has_config": (profile_dir / "config.yaml").exists(),
+                "has_env": has_env,
+                "env_keys_present": env_keys,
+                "skill_count": int(getattr(profile, "skill_count", _count_profile_skills(profile_dir)) or 0),
+                "alias_path": str(getattr(profile, "alias_path", "") or "") or None,
+                "issues": issues,
+            }
+        )
+
+    return {
+        "schema_version": 1,
+        "mode": "inventory",
+        "profile_count": len(profiles),
+        "profiles": profiles,
+        "repair_plan": repair_plan,
+    }
+
+
+def _emit_doctor_json_inventory(*, all_profiles: bool) -> None:
+    """Print the safe doctor inventory JSON and return."""
+    print(json.dumps(_doctor_inventory_payload(all_profiles=all_profiles), indent=2, sort_keys=True))
 
 
 def _read_pyproject_version() -> str | None:
@@ -449,10 +599,22 @@ def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
     ack_target = getattr(args, 'ack', None)
+    json_mode = bool(getattr(args, "json", False))
+    all_profiles = bool(getattr(args, "all_profiles", False))
 
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
     # checks (like cronjob management) should see the same context as `hermes`.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
+
+    if json_mode:
+        if ack_target:
+            print(json.dumps({"error": "--json cannot be combined with --ack"}, sort_keys=True))
+            sys.exit(2)
+        if should_fix:
+            print(json.dumps({"error": "--json cannot be combined with --fix"}, sort_keys=True))
+            sys.exit(2)
+        _emit_doctor_json_inventory(all_profiles=all_profiles)
+        return
 
     # Handle `hermes doctor --ack <id>` as a fast path. Persist the ack and
     # return without running the rest of the diagnostics — the user has
@@ -1966,7 +2128,6 @@ def run_doctor(args):
         lock_file = hub_dir / "lock.json"
         if lock_file.exists():
             try:
-                import json
                 lock_data = json.loads(lock_file.read_text())
                 count = len(lock_data.get("installed", {}))
                 check_ok(f"Lock file OK ({count} hub-installed skill(s))")

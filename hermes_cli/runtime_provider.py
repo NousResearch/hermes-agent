@@ -1497,6 +1497,17 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    # Claude Code CLI subprocess — no API calls, uses Max/Pro subscription quota
+    if provider == "claude-code":
+        return {
+            "provider": "claude-code",
+            "api_mode": "claude_code_subprocess",
+            "base_url": "",
+            "api_key": "",
+            "source": "claude-code-subprocess",
+            "requested_provider": requested_provider,
+        }
+
     # Anthropic (native Messages API)
     if provider == "anthropic":
         # Allow base URL override from config.yaml model.base_url, but only

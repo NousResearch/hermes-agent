@@ -70,10 +70,22 @@ def _send_imap_id(imap: "imaplib.IMAP4") -> None:
 
     Required by 163/NetEase mailbox after LOGIN: without it, every UID
     SEARCH/FETCH returns ``BYE Unsafe Login`` and disconnects.  Other
-    IMAP servers either honor it silently or reject the unknown command;
-    we swallow failures so non-supporting servers keep working.
+    IMAP servers either honor it silently or do not advertise the extension;
+    skip known-non-supporting servers so the parser is not desynchronized by
+    a raw unknown command.
     """
     try:
+        capabilities = getattr(imap, "capabilities", None)
+        if isinstance(capabilities, (list, tuple, set, frozenset)) and capabilities:
+            normalized = {
+                cap.decode("ascii", "ignore").upper()
+                if isinstance(cap, bytes)
+                else str(cap).upper()
+                for cap in capabilities
+            }
+            if "ID" not in normalized:
+                logger.debug("[Email] IMAP server does not advertise ID; skipping.")
+                return
         try:
             from hermes_cli import __version__ as _hermes_version
         except Exception:  # noqa: BLE001 — keep ID best-effort if import fails

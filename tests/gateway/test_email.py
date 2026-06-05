@@ -1180,6 +1180,7 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         """_fetch_new_messages must also send ID — it opens its own IMAP session."""
         adapter = self._make_adapter()
         mock_imap = MagicMock()
+        mock_imap.capabilities = (b"IMAP4rev1", b"ID")
         mock_imap.uid.return_value = ("OK", [b""])
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
@@ -1197,10 +1198,21 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         from gateway.platforms.email import _send_imap_id
 
         mock_imap = MagicMock()
+        mock_imap.capabilities = None
         mock_imap.xatom.side_effect = Exception("BAD command unknown: ID")
 
         _send_imap_id(mock_imap)
         mock_imap.xatom.assert_called_once()
+
+    def test_send_imap_id_skips_when_server_does_not_advertise_id(self):
+        """Servers without RFC 2971 support should not receive raw ID."""
+        from gateway.platforms.email import _send_imap_id
+
+        mock_imap = MagicMock()
+        mock_imap.capabilities = (b"IMAP4rev1", b"UIDPLUS")
+
+        _send_imap_id(mock_imap)
+        mock_imap.xatom.assert_not_called()
 
 
 if __name__ == "__main__":

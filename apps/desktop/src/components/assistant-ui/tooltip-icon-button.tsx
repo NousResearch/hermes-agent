@@ -14,11 +14,11 @@ export const TooltipIconButton = forwardRef<HTMLButtonElement, TooltipIconButton
   ({ children, tooltip, side: _side = 'bottom', className, ...rest }, ref) => {
     return (
       <Button
-        size="icon"
+        size="icon-xs"
         variant="ghost"
         {...rest}
         aria-label={tooltip}
-        className={cn('aui-button-icon size-6 p-1', className)}
+        className={cn('aui-button-icon', className)}
         ref={ref}
         title={tooltip}
       >

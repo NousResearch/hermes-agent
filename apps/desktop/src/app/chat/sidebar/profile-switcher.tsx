@@ -264,16 +264,7 @@ export function ProfileRail() {
 
       <DeleteProfileDialog
         onClose={() => setPendingDelete(null)}
-        onDeleted={async () => {
-          // Deleting the profile you're currently in would strand the gateway on
-          // a dead profile — fall back to default.
-          const wasActive = pendingDelete != null && normalizeProfileKey(pendingDelete.name) === activeKey
-          await refreshActiveProfile()
-
-          if (wasActive) {
-            selectProfile('default')
-          }
-        }}
+        onDeleted={refreshActiveProfile}
         open={pendingDelete !== null}
         profile={pendingDelete}
       />

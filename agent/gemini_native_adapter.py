@@ -33,6 +33,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
+# Published max output-token ceiling shared by every current Gemini text model
+# (2.5 + 3.x: flash, flash-lite, pro). Used as the default when the caller
+# passes max_tokens=None, because Gemini's native API otherwise applies a low
+# internal default and truncates output (unlike OpenAI-compat endpoints where
+# an omitted limit means full budget).
+GEMINI_DEFAULT_MAX_OUTPUT_TOKENS = 65535
+
 
 def is_native_gemini_base_url(base_url: str) -> bool:
     """Return True when the endpoint speaks Gemini's native REST API."""
@@ -414,6 +421,18 @@ def build_gemini_request(
         generation_config["temperature"] = temperature
     if max_tokens is not None:
         generation_config["maxOutputTokens"] = max_tokens
+    else:
+        # Gemini's native generateContent does NOT treat an omitted
+        # maxOutputTokens as "use the model's full output budget" — it applies
+        # a low internal default and the model stops early with
+        # finishReason=MAX_TOKENS, truncating tool calls mid-stream (Hermes
+        # then retries 3× and refuses the incomplete call). Every current
+        # Gemini text model (2.5 + 3.x, flash / flash-lite / pro) caps at
+        # 65,535 output tokens, so default to that ceiling when the caller
+        # passes None ("unlimited"). See the OpenAI-compat path where omitting
+        # the field genuinely means full budget — that assumption does not
+        # hold on the native API.
+        generation_config["maxOutputTokens"] = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
     if top_p is not None:
         generation_config["topP"] = top_p
     if stop:

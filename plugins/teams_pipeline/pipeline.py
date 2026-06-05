@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -19,7 +18,6 @@ import httpx
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from hermes_constants import get_hermes_home
 from plugins.teams_pipeline.meetings import (
-    TeamsMeetingArtifactNotFoundError,
     download_recording_artifact,
     enrich_meeting_with_call_record,
     fetch_preferred_transcript_text,

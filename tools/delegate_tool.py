@@ -134,7 +134,9 @@ MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected u
 # Configurable depth cap consulted by _get_max_spawn_depth; MAX_DEPTH
 # stays as the default fallback and is still the symbol tests import.
 _MIN_SPAWN_DEPTH = 1
-_MAX_SPAWN_DEPTH_CAP = 3
+# No upper ceiling on spawn depth — like max_concurrent_children, depth has a
+# floor of 1 and no ceiling. Deeper trees multiply API cost, so the default
+# stays flat (MAX_DEPTH = 1); raising the config knob is an explicit opt-in.
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +394,7 @@ def _get_child_timeout() -> float:
 
 
 def _get_max_spawn_depth() -> int:
-    """Read delegation.max_spawn_depth from config, clamped to [1, 3].
+    """Read delegation.max_spawn_depth from config, floored at 1 (no ceiling).
 
     depth 0 = parent agent.  max_spawn_depth = N means agents at depths
     0..N-1 can spawn; depth N is the leaf floor.  Default 1 is flat:
@@ -400,9 +402,11 @@ def _get_max_spawn_depth() -> int:
     (blocked by this guard AND, for leaf children, by the delegation
     toolset strip in _strip_blocked_tools).
 
-    Raise to 2 or 3 to unlock nested orchestration. role="orchestrator"
-    removes the toolset strip for depth-1 children when
+    Raise to 2+ to unlock nested orchestration. role="orchestrator"
+    removes the toolset strip for spawning children when
     max_spawn_depth >= 2, enabling them to spawn their own workers.
+    Like max_concurrent_children, there is no upper ceiling — but each
+    extra level multiplies API cost, so raise it deliberately.
     """
     cfg = _load_config()
     val = cfg.get("max_spawn_depth")
@@ -417,16 +421,15 @@ def _get_max_spawn_depth() -> int:
             MAX_DEPTH,
         )
         return MAX_DEPTH
-    clamped = max(_MIN_SPAWN_DEPTH, min(_MAX_SPAWN_DEPTH_CAP, ival))
-    if clamped != ival:
+    floored = max(_MIN_SPAWN_DEPTH, ival)
+    if floored != ival:
         logger.warning(
-            "delegation.max_spawn_depth=%d out of range [%d, %d]; " "clamping to %d",
+            "delegation.max_spawn_depth=%d below floor %d; using %d",
             ival,
             _MIN_SPAWN_DEPTH,
-            _MAX_SPAWN_DEPTH_CAP,
-            clamped,
+            floored,
         )
-    return clamped
+    return floored
 
 
 def _get_orchestrator_enabled() -> bool:
@@ -1146,6 +1149,7 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1170,6 +1174,21 @@ def _build_child_agent(
             child_progress_cb("subagent.spawn_requested", preview=goal)
         except Exception as exc:
             logger.debug("spawn_requested relay failed: %s", exc)
+
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "subagent_start",
+            parent_session_id=getattr(parent_agent, "session_id", None),
+            parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
+            parent_subagent_id=parent_subagent_id,
+            child_session_id=getattr(child, "session_id", None),
+            child_subagent_id=subagent_id,
+            child_role=effective_role,
+            child_goal=goal,
+        )
+    except Exception:
+        logger.debug("subagent_start hook invocation failed", exc_info=True)
 
     return child
 
@@ -1966,7 +1985,8 @@ def delegate_task(
                     f"Delegation depth limit reached (depth={depth}, "
                     f"max_spawn_depth={max_spawn}). Raise "
                     f"delegation.max_spawn_depth in config.yaml if deeper "
-                    f"nesting is required (cap: {_MAX_SPAWN_DEPTH_CAP})."
+                    f"nesting is required (no hard ceiling, but each level "
+                    f"multiplies API cost)."
                 )
             }
         )
@@ -2265,9 +2285,17 @@ def delegate_task(
         if _invoke_hook is None:
             continue
         try:
+            _child_index = entry.get("task_index", -1)
+            _child_agent = (
+                children[_child_index][2]
+                if isinstance(_child_index, int) and 0 <= _child_index < len(children)
+                else None
+            )
             _invoke_hook(
                 "subagent_stop",
                 parent_session_id=_parent_session_id,
+                parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
+                child_session_id=getattr(_child_agent, "session_id", None),
                 child_role=child_role,
                 child_summary=entry.get("summary"),
                 child_status=entry.get("status"),

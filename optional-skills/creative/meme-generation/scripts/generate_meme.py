@@ -18,7 +18,6 @@ unknown templates get smart default text positioning based on their box_count.
 import json
 import os
 import sys
-import textwrap
 from io import BytesIO
 from pathlib import Path
 

@@ -1,0 +1,55 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Dashboard service. Always declared so s6 has a supervised slot; if
+# HERMES_DASHBOARD isn't truthy the run script exits cleanly and the
+# companion finish script returns 125 (s6's "permanent failure, do
+# not restart" marker), so s6-svstat reports the slot as down. See
+# also docker/s6-rc.d/dashboard/finish.
+
+case "${HERMES_DASHBOARD:-}" in
+    1|true|TRUE|True|yes|YES|Yes) ;;
+    *)
+        # Exit 0; the finish script will exit 125 → s6-supervise won't
+        # restart us and the slot reports down. Using a clean exit
+        # (rather than `exec sleep infinity`) means s6-svstat reflects
+        # reality: when HERMES_DASHBOARD is unset, the service is NOT
+        # running, just supervised-with-permanent-failure. See PR
+        # #30136 review item I3.
+        exit 0
+        ;;
+esac
+
+# with-contenv repopulates HOME from /init as /root. Reset it before
+# dropping privileges so HOME-anchored state lands under /opt/data.
+export HOME=/opt/data
+
+cd /opt/data
+# shellcheck disable=SC1091
+. /opt/hermes/.venv/bin/activate
+
+dash_host="${HERMES_DASHBOARD_HOST:-0.0.0.0}"
+dash_port="${HERMES_DASHBOARD_PORT:-9119}"
+
+# `--insecure` is opt-in via HERMES_DASHBOARD_INSECURE. The dashboard's
+# OAuth auth gate engages automatically on non-loopback binds when a
+# DashboardAuthProvider is registered (e.g. the bundled dashboard_auth/nous
+# provider, which auto-registers when HERMES_DASHBOARD_OAUTH_CLIENT_ID is
+# set). If no provider is registered, start_server fails closed with a
+# specific operator-facing error.
+#
+# This used to derive --insecure from the bind host ("anything non-loopback
+# implies insecure"), but that predates the OAuth gate and silently
+# disabled it on every container-deployed dashboard. The gate is now the
+# authority; operators on trusted LANs / behind a reverse proxy without
+# the OAuth contract opt in explicitly.
+insecure=""
+case "${HERMES_DASHBOARD_INSECURE:-}" in
+    1|true|TRUE|True|yes|YES|Yes) insecure="--insecure" ;;
+esac
+
+# Skip the drop when already non-root.
+# shellcheck disable=SC2086  # word-splitting of $insecure is intentional
+[ "$(id -u)" = 0 ] || exec hermes dashboard --host "$dash_host" --port "$dash_port" --no-open $insecure
+# shellcheck disable=SC2086  # word-splitting of $insecure is intentional
+exec s6-setuidgid hermes hermes dashboard \
+    --host "$dash_host" --port "$dash_port" --no-open $insecure

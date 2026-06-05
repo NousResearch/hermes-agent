@@ -97,6 +97,100 @@ def test_auth_add_anthropic_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["expires_at_ms"] == 1711234567000
 
 
+def test_auth_add_google_gemini_cli_sets_active_provider(tmp_path, monkeypatch):
+    """hermes auth add google-gemini-cli must set active_provider in auth.json.
+
+    Tokens are managed by agent.google_oauth (written to the Google credential
+    file by start_oauth_flow). The auth.json entry must record active_provider
+    so get_active_provider() and _model_section_has_credentials() detect the
+    provider — without storing tokens that would become stale.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr(
+        "agent.google_oauth.run_gemini_oauth_login_pure",
+        lambda: {
+            "access_token": "ya29.test-token",
+            "refresh_token": "google-refresh",
+            "email": "user@example.com",
+            "expires_at_ms": 9999999999000,
+            "project_id": "my-project",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "google-gemini-cli"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["active_provider"] == "google-gemini-cli"
+    state = payload["providers"]["google-gemini-cli"]
+    # Only email stored — no access_token/refresh_token (those live in
+    # the Google OAuth credential file managed by agent.google_oauth).
+    assert state.get("email") == "user@example.com"
+    assert "access_token" not in state
+    assert "refresh_token" not in state
+    # pool entry from pool.add_entry() still present for hermes auth list
+    entries = payload["credential_pool"]["google-gemini-cli"]
+    entry = next(item for item in entries if item["source"] == "manual:google_pkce")
+    assert entry["access_token"] == "ya29.test-token"
+
+
+def test_auth_add_qwen_oauth_sets_active_provider(tmp_path, monkeypatch):
+    """hermes auth add qwen-oauth must set active_provider in auth.json.
+
+    Tokens are managed by the Qwen CLI credential file via
+    resolve_qwen_runtime_credentials(). The auth.json entry must record
+    active_provider — without storing tokens that would become stale.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    _fake_creds = {
+        "provider": "qwen-oauth",
+        "base_url": "https://portal.qwen.ai/v1",
+        "api_key": "qwen-test-token",
+        "source": "qwen-cli",
+        "expires_at_ms": None,
+        "auth_file": "/home/user/.qwen/oauth_creds.json",
+    }
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_qwen_runtime_credentials",
+        lambda **kw: _fake_creds,
+    )
+    # Prevent _seed_from_singletons from calling the real Qwen CLI file path
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "qwen-oauth"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["active_provider"] == "qwen-oauth"
+    state = payload["providers"]["qwen-oauth"]
+    # Only base_url stored — no api_key (that lives in the Qwen CLI file).
+    assert state.get("base_url") == "https://portal.qwen.ai/v1"
+    assert "api_key" not in state
+    # pool entry from pool.add_entry() still present for hermes auth list
+    entries = payload["credential_pool"]["qwen-oauth"]
+    entry = next(item for item in entries if item["source"] == "manual:qwen_cli")
+    assert entry["access_token"] == "qwen-test-token"
+
+
 def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
@@ -107,15 +201,15 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
             "portal_base_url": "https://portal.example.com",
             "inference_base_url": "https://inference.example.com/v1",
             "client_id": "hermes-cli",
-            "scope": "inference:invoke inference:mint_agent_key",
+            "scope": "inference:invoke",
             "token_type": "Bearer",
             "access_token": token,
             "refresh_token": "refresh-token",
             "obtained_at": "2026-03-23T10:00:00+00:00",
             "expires_at": "2026-03-23T11:00:00+00:00",
             "expires_in": 3600,
-            "agent_key": "ak-test",
-            "agent_key_id": "ak-id",
+            "agent_key": token,
+            "agent_key_id": None,
             "agent_key_expires_at": "2026-03-23T10:30:00+00:00",
             "agent_key_expires_in": 1800,
             "agent_key_reused": False,
@@ -155,17 +249,17 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert not any(item["source"] == "manual:device_code" for item in entries)
     entry = device_code_entries[0]
     assert entry["source"] == "device_code"
-    assert entry["agent_key"] == "ak-test"
+    assert entry["agent_key"] == token
     assert entry["portal_base_url"] == "https://portal.example.com"
 
     # `hermes auth add nous` must also populate providers.nous so the
-    # 401-recovery path (resolve_nous_runtime_credentials) can mint a fresh
-    # agent_key when the 24h TTL expires. If this mirror is missing, recovery
+    # 401-recovery path (resolve_nous_runtime_credentials) can refresh an
+    # invoke JWT when the token expires. If this mirror is missing, recovery
     # raises "Hermes is not logged into Nous Portal" and the agent dies.
     singleton = payload["providers"]["nous"]
     assert singleton["access_token"] == token
     assert singleton["refresh_token"] == "refresh-token"
-    assert singleton["agent_key"] == "ak-test"
+    assert singleton["agent_key"] == token
     assert singleton["portal_base_url"] == "https://portal.example.com"
     assert singleton["inference_base_url"] == "https://inference.example.com/v1"
 
@@ -228,15 +322,15 @@ def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
             "portal_base_url": "https://portal.example.com",
             "inference_base_url": "https://inference.example.com/v1",
             "client_id": "hermes-cli",
-            "scope": "inference:invoke inference:mint_agent_key",
+            "scope": "inference:invoke",
             "token_type": "Bearer",
             "access_token": token,
             "refresh_token": "refresh-token",
             "obtained_at": "2026-03-23T10:00:00+00:00",
             "expires_at": "2026-03-23T11:00:00+00:00",
             "expires_in": 3600,
-            "agent_key": "ak-test",
-            "agent_key_id": "ak-id",
+            "agent_key": token,
+            "agent_key_id": None,
             "agent_key_expires_at": "2026-03-23T10:30:00+00:00",
             "agent_key_expires_in": 1800,
             "agent_key_reused": False,
@@ -303,11 +397,65 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
 
     payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     entries = payload["credential_pool"]["openai-codex"]
-    entry = next(item for item in entries if item["source"] == "manual:device_code")
+    entry = next(item for item in entries if item["source"] == "device_code")
+    assert payload["active_provider"] == "openai-codex"
+    assert payload["providers"]["openai-codex"]["tokens"]["access_token"] == token
     assert entry["label"] == "codex@example.com"
-    assert entry["source"] == "manual:device_code"
+    assert entry["source"] == "device_code"
     assert entry["refresh_token"] == "refresh-token"
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
+def test_auth_add_xai_oauth_sets_active_provider(tmp_path, monkeypatch):
+    """hermes auth add xai-oauth must write providers singleton and set active_provider.
+
+    Previously pool.add_entry() was called directly, which wrote only the
+    credential-pool entry without setting active_provider. _model_section_has_credentials()
+    checks get_active_provider() first; with it unset, the setup wizard would
+    report "No inference provider configured" after a successful OAuth login.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    access_token = "xai-test-access-token"
+    monkeypatch.setattr(
+        "hermes_cli.auth._xai_oauth_loopback_login",
+        lambda **kwargs: {
+            "tokens": {
+                "access_token": access_token,
+                "refresh_token": "xai-refresh-token",
+                "id_token": "",
+                "token_type": "Bearer",
+            },
+            "discovery": {"token_endpoint": "https://auth.x.ai/token"},
+            "redirect_uri": "http://127.0.0.1:7777/callback",
+            "base_url": "https://api.x.ai/v1",
+            "last_refresh": "2026-06-02T10:00:00Z",
+            "source": "oauth-loopback",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "xai-oauth"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        timeout = None
+        no_browser = False
+        manual_paste = False
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    # active_provider must be set — the core of this regression
+    assert payload["active_provider"] == "xai-oauth"
+    # providers singleton written by _save_xai_oauth_tokens
+    assert payload["providers"]["xai-oauth"]["tokens"]["access_token"] == access_token
+    # pool seeded from singleton by _seed_from_singletons("xai-oauth")
+    entries = payload["credential_pool"]["xai-oauth"]
+    entry = next(item for item in entries if item["source"] == "loopback_pkce")
+    assert entry["refresh_token"] == "xai-refresh-token"
 
 
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
@@ -1129,10 +1277,6 @@ def test_auth_remove_codex_manual_source_suppresses_reseed(tmp_path, monkeypatch
 def test_auth_add_codex_clears_suppression_marker(tmp_path, monkeypatch):
     """Re-linking codex via `hermes auth add openai-codex` must clear any suppression marker."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setattr(
-        "agent.credential_pool._seed_from_singletons",
-        lambda provider, entries: (False, set()),
-    )
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
 
@@ -1171,7 +1315,8 @@ def test_auth_add_codex_clears_suppression_marker(tmp_path, monkeypatch):
     assert "openai-codex" not in payload.get("suppressed_sources", {})
     # New pool entry must be present
     entries = payload["credential_pool"]["openai-codex"]
-    assert any(e["source"] == "manual:device_code" for e in entries)
+    assert any(e["source"] == "device_code" for e in entries)
+    assert payload["active_provider"] == "openai-codex"
 
 
 def test_seed_from_singletons_respects_codex_suppression(tmp_path, monkeypatch):
@@ -1590,20 +1735,16 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
     hermes_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
+    # The copilot pool entry is no longer persisted directly in auth.json —
+    # `(copilot, gh_cli)` is borrowed and stripped by
+    # sanitize_borrowed_credential_payload (PR #31416, May 2026). Tokens are
+    # hydrated at runtime via resolve_copilot_token(). Mock that path so the
+    # pool has an entry to remove.
     _write_auth_store(
         tmp_path,
         {
             "version": 1,
-            "credential_pool": {
-                "copilot": [{
-                    "id": "c1",
-                    "label": "gh auth token",
-                    "auth_type": "api_key",
-                    "priority": 0,
-                    "source": "gh_cli",
-                    "access_token": "ghp_fake",
-                }]
-            },
+            "credential_pool": {"copilot": []},
         },
     )
 
@@ -1611,7 +1752,14 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
     from hermes_cli.auth import is_source_suppressed
     from hermes_cli.auth_commands import auth_remove_command
 
-    auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
+    with patch(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        return_value=("ghp_fake", "gh"),
+    ), patch(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        return_value="ghu_fake_api",
+    ):
+        auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
 
     assert is_source_suppressed("copilot", "gh_cli")
     assert is_source_suppressed("copilot", "env:COPILOT_GITHUB_TOKEN")

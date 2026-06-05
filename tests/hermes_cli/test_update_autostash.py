@@ -1,12 +1,43 @@
 from pathlib import Path
 from subprocess import CalledProcessError
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 
+
+# ---------------------------------------------------------------------------
+# Managed-uv compatibility for tests that patch shutil.which
+# ---------------------------------------------------------------------------
+# The production code now uses ``ensure_uv()`` / ``update_managed_uv()``
+# instead of ``shutil.which("uv")``.  Many tests in this file patch
+# ``shutil.which`` to control whether uv is "available" — these autouse
+# fixtures make the managed_uv functions delegate to the patched
+# ``shutil.which`` so the existing test setup keeps working without
+# per-test changes.
+@pytest.fixture(autouse=True)
+def _patch_managed_uv(request):
+    """Make managed_uv helpers follow shutil.which mocking in tests."""
+    import shutil
+
+    # resolve_uv delegates to shutil.which("uv") so that test patches
+    # on shutil.which flow through naturally.
+    def _fake_resolve_uv():
+        return shutil.which("uv")
+
+    def _fake_ensure_uv():
+        return shutil.which("uv")
+
+    def _fake_update_managed_uv():
+        return None  # never actually self-update in tests
+
+    with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
+         patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
+        yield
 
 def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch, tmp_path):
     calls = []
@@ -666,3 +697,133 @@ def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, 
 
     out = capsys.readouterr().out
     assert "preserved in stash" in out
+
+
+# ---------------------------------------------------------------------------
+# Non-interactive update.non_interactive_local_changes setting
+# (chat app / gateway): "discard" throws stashed changes away, "stash"
+# (default) restores them. Interactive terminal updates ignore the setting
+# and always go through the restore path.
+# ---------------------------------------------------------------------------
+
+def _setup_setting_test(monkeypatch, tmp_path, mode):
+    """Common wiring: real stash returns a ref, restore + discard are
+    recorded, and load_config reports the given non_interactive_local_changes
+    mode."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        hermes_main, "_stash_local_changes_if_needed",
+        lambda *a, **kw: "abc123deadbeef",
+    )
+    restore_calls = []
+    discard_calls = []
+    monkeypatch.setattr(
+        hermes_main, "_restore_stashed_changes",
+        lambda *a, **kw: restore_calls.append(1) or True,
+    )
+    monkeypatch.setattr(
+        hermes_main, "_discard_stashed_changes",
+        lambda *a, **kw: discard_calls.append(1) or True,
+    )
+    monkeypatch.setattr(
+        hermes_config, "load_config",
+        lambda *a, **kw: {"updates": {"non_interactive_local_changes": mode}},
+    )
+    side_effect, recorded = _make_update_side_effect()
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+    return restore_calls, discard_calls, recorded
+
+
+def test_non_interactive_discard_throws_changes_away(monkeypatch, tmp_path):
+    """Gateway/chat-app update with discard mode drops the stash, never restores."""
+    restore_calls, discard_calls, _ = _setup_setting_test(monkeypatch, tmp_path, "discard")
+
+    hermes_main.cmd_update(SimpleNamespace(gateway=True))
+
+    assert len(discard_calls) == 1
+    assert len(restore_calls) == 0
+
+
+def test_non_interactive_stash_restores_changes(monkeypatch, tmp_path):
+    """Gateway/chat-app update with the default stash mode restores, never discards."""
+    restore_calls, discard_calls, _ = _setup_setting_test(monkeypatch, tmp_path, "stash")
+
+    hermes_main.cmd_update(SimpleNamespace(gateway=True))
+
+    assert len(restore_calls) == 1
+    assert len(discard_calls) == 0
+
+
+def test_interactive_update_ignores_discard_setting(monkeypatch, tmp_path):
+    """An interactive (TTY) terminal update always restores — the discard
+    setting only governs non-interactive updates."""
+    restore_calls, discard_calls, _ = _setup_setting_test(monkeypatch, tmp_path, "discard")
+    # Force an interactive TTY so _non_interactive_update is False even though
+    # the config says discard.
+    monkeypatch.setattr(hermes_main.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(hermes_main.sys.stdout, "isatty", lambda: True)
+
+    hermes_main.cmd_update(SimpleNamespace())  # no gateway, no --yes
+
+    assert len(restore_calls) == 1
+    assert len(discard_calls) == 0
+
+
+def test_non_interactive_defaults_to_stash_when_setting_absent(monkeypatch, tmp_path):
+    """A config with no update section falls back to stash (safe default)."""
+    restore_calls, discard_calls, _ = _setup_setting_test(monkeypatch, tmp_path, "stash")
+    # Override load_config to return a config with NO update section at all.
+    monkeypatch.setattr(hermes_config, "load_config", lambda *a, **kw: {"model": {}})
+
+    hermes_main.cmd_update(SimpleNamespace(gateway=True))
+
+    assert len(restore_calls) == 1
+    assert len(discard_calls) == 0
+
+
+def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
+    """#38529: the Desktop bootstrap marker must be git-ignored so that
+    ``hermes update``'s ``git stash push --include-untracked`` does not sweep it
+    into an autostash on every run.
+
+    Behavioral + hermetic: build a throwaway repo that adopts the project's real
+    ``.gitignore`` (the contract under test), drop the marker, and confirm the
+    same stash invocation the updater uses leaves it untouched.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    repo_gitignore = Path(hermes_main.__file__).resolve().parents[1] / ".gitignore"
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / ".gitignore").write_text(repo_gitignore.read_text())
+    (tmp_path / "tracked.txt").write_text("x\n")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    marker = tmp_path / ".hermes-bootstrap-complete"
+    marker.write_text("")
+
+    # Exact flags used by hermes update (hermes_cli/main.py).
+    git("stash", "push", "--include-untracked", "-m", "hermes-update-autostash")
+
+    assert marker.exists(), (
+        ".hermes-bootstrap-complete was swept into the update autostash — it must "
+        "be listed in .gitignore so `git stash -u` skips it (#38529)."
+    )
+    # It must not even register as a dirty/untracked change.
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
+    ).stdout
+    assert ".hermes-bootstrap-complete" not in status

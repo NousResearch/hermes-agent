@@ -4,10 +4,9 @@ Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
-import uuid
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment, _cwd_marker
+from tools.environments.base import BaseEnvironment
 
 
 class _TestableEnv(BaseEnvironment):

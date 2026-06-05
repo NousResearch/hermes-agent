@@ -1,9 +1,6 @@
 """Tests for Matrix platform adapter (mautrix-python backend)."""
 import asyncio
-import json
-import re
 import sys
-import time
 import types
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -536,6 +533,200 @@ class TestMatrixReplyFallbackStripping:
 
 
 # ---------------------------------------------------------------------------
+# Matrix-friendly command aliases
+# ---------------------------------------------------------------------------
+
+class TestMatrixBangCommandAlias:
+    """Matrix clients may reserve /commands, so Hermes supports !commands."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter._text_batch_delay_seconds = 0
+
+    async def _dispatch_text(self, body: str, *, is_dm: bool = True):
+        captured_event = None
+        self.adapter._is_dm_room = AsyncMock(return_value=is_dm)
+        self.adapter._require_mention = True
+        self.adapter._free_rooms = set()
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        self.adapter.handle_message = capture
+        await self.adapter._handle_text_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$matrix-command-test",
+            event_ts=0.0,
+            source_content={"msgtype": "m.text", "body": body},
+            relates_to={},
+        )
+        return captured_event
+
+    async def _dispatch_text_reply(self, body: str, *, is_dm: bool = True):
+        """Dispatch a message that is a Matrix reply (m.in_reply_to set), so
+        the reply-fallback quote stripping path runs before command detection.
+        """
+        captured_event = None
+        self.adapter._is_dm_room = AsyncMock(return_value=is_dm)
+        self.adapter._require_mention = True
+        self.adapter._free_rooms = set()
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        self.adapter.handle_message = capture
+        await self.adapter._handle_text_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$matrix-reply-command-test",
+            event_ts=0.0,
+            source_content={"msgtype": "m.text", "body": body},
+            relates_to={"m.in_reply_to": {"event_id": "$parent-event"}},
+        )
+        return captured_event
+
+    def test_known_bang_command_normalizes_to_slash_command(self):
+        from gateway.platforms.matrix import _normalize_matrix_bang_command
+
+        assert _normalize_matrix_bang_command("!model") == "/model"
+        assert (
+            _normalize_matrix_bang_command("!queue continue the plan")
+            == "/queue continue the plan"
+        )
+        assert (
+            _normalize_matrix_bang_command("!btw research this")
+            == "/btw research this"
+        )
+        assert _normalize_matrix_bang_command("!tasks") == "/tasks"
+
+    def test_unknown_bang_text_is_not_treated_as_command(self):
+        from gateway.platforms.matrix import _normalize_matrix_bang_command
+
+        assert _normalize_matrix_bang_command("!important note") == "!important note"
+        assert _normalize_matrix_bang_command("! wow") == "! wow"
+        assert _normalize_matrix_bang_command("plain text") == "plain text"
+        assert _normalize_matrix_bang_command("/model") == "/model"
+
+    @pytest.mark.asyncio
+    async def test_bang_model_reaches_gateway_as_slash_command(self):
+        captured_event = await self._dispatch_text("!model")
+
+        assert captured_event is not None
+        assert captured_event.text == "/model"
+        assert captured_event.message_type == MessageType.COMMAND
+        assert captured_event.get_command() == "model"
+
+    @pytest.mark.asyncio
+    async def test_bang_queue_preserves_arguments(self):
+        captured_event = await self._dispatch_text("!queue keep going")
+
+        assert captured_event is not None
+        assert captured_event.text == "/queue keep going"
+        assert captured_event.message_type == MessageType.COMMAND
+        assert captured_event.get_command() == "queue"
+        assert captured_event.get_command_args() == "keep going"
+
+    @pytest.mark.asyncio
+    async def test_unknown_bang_text_stays_normal_text(self):
+        captured_event = await self._dispatch_text("!important note")
+
+        assert captured_event is not None
+        assert captured_event.text == "!important note"
+        assert captured_event.message_type == MessageType.TEXT
+        assert captured_event.get_command() is None
+
+    @pytest.mark.asyncio
+    async def test_bang_command_bypasses_room_mention_requirement(self):
+        captured_event = await self._dispatch_text("!commands", is_dm=False)
+
+        assert captured_event is not None
+        assert captured_event.text == "/commands"
+        assert captured_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_slash_command_bypasses_room_mention_requirement(self):
+        captured_event = await self._dispatch_text("/sethome", is_dm=False)
+
+        assert captured_event is not None
+        assert captured_event.text == "/sethome"
+        assert captured_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_unknown_bang_text_does_not_bypass_room_mention_requirement(self):
+        captured_event = await self._dispatch_text("!important note", is_dm=False)
+
+        assert captured_event is None
+
+    def test_bang_alias_underscore_resolves_to_hyphen_form(self):
+        """!set_home must emit a dispatchable token even though set_home is
+        not itself registered — the hyphenated alias set-home is."""
+        from gateway.platforms.matrix import _normalize_matrix_bang_command
+
+        # set_home (underscore) is NOT a registered command/alias, but
+        # set-home (hyphen) is. The normalizer must emit the resolvable form.
+        assert _normalize_matrix_bang_command("!set_home") == "/set-home"
+        # The hyphen alias passes through unchanged.
+        assert _normalize_matrix_bang_command("!set-home") == "/set-home"
+        # The canonical command resolves directly.
+        assert _normalize_matrix_bang_command("!sethome") == "/sethome"
+
+    def test_bang_skill_command_normalizes(self):
+        """The get_skill_commands() branch normalizes installed skill
+        commands, not just built-in gateway commands. Skill keys are stored
+        slash-prefixed (e.g. "/arxiv"), which the resolver must account for."""
+        import agent.skill_commands as skill_commands_mod
+
+        fake_skills = {"/arxiv": {}, "/obsidian": {}}
+        with patch.object(
+            skill_commands_mod, "get_skill_commands", return_value=fake_skills
+        ):
+            from gateway.platforms.matrix import _normalize_matrix_bang_command
+
+            # is_gateway_known_command won't know these; the skill branch must.
+            assert _normalize_matrix_bang_command("!arxiv") == "/arxiv"
+            assert (
+                _normalize_matrix_bang_command("!obsidian search foo")
+                == "/obsidian search foo"
+            )
+            # A name in neither registry stays plain text.
+            assert (
+                _normalize_matrix_bang_command("!definitelynotacommand")
+                == "!definitelynotacommand"
+            )
+
+    @pytest.mark.asyncio
+    async def test_bang_command_in_quoted_reply_normalizes(self):
+        """A bang command that follows a Matrix reply-fallback quote is
+        normalized after the quote is stripped, matching /command behavior."""
+        captured_event = await self._dispatch_text_reply(
+            "> <@bob:example.org> earlier message\n\n!model"
+        )
+
+        assert captured_event is not None
+        assert captured_event.text == "/model"
+        assert captured_event.message_type == MessageType.COMMAND
+        assert captured_event.get_command() == "model"
+
+    @pytest.mark.asyncio
+    async def test_slash_command_in_quoted_reply_normalizes(self):
+        """Sanity: the slash equivalent already works post-strip — the bang
+        form above must reach parity with this."""
+        captured_event = await self._dispatch_text_reply(
+            "> <@bob:example.org> earlier message\n\n/model"
+        )
+
+        assert captured_event is not None
+        assert captured_event.text == "/model"
+        assert captured_event.message_type == MessageType.COMMAND
+
+
+# ---------------------------------------------------------------------------
 # Thread detection
 # ---------------------------------------------------------------------------
 
@@ -797,6 +988,79 @@ class TestMatrixRequirements:
                 with patch("tools.lazy_deps.ensure", side_effect=ImportError("mautrix unavailable")):
                     assert matrix_mod.check_matrix_requirements() is False
 
+    def test_check_e2ee_deps_requires_asyncpg(self, monkeypatch):
+        """E2EE deps check must reject when asyncpg is missing — even if olm is present.
+
+        Regression for #31116: ``mautrix[encryption]`` extra installs python-olm
+        but NOT asyncpg/aiosqlite, which are required by mautrix's crypto store
+        at connect time.  ``_check_e2ee_deps`` previously only tested
+        ``OlmMachine`` import and returned True, so the failure manifested as
+        a confusing ``No module named 'asyncpg'`` deep in
+        ``MatrixAdapter.connect()``.
+        """
+        from gateway.platforms.matrix import _check_e2ee_deps
+        import builtins
+        real_import = builtins.__import__
+
+        def _blocking_import(name, *args, **kwargs):
+            if name == "asyncpg" or name.startswith("asyncpg."):
+                raise ImportError("blocked for test")
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", _blocking_import):
+            assert _check_e2ee_deps() is False
+
+    def test_check_e2ee_deps_requires_aiosqlite(self):
+        """E2EE deps check must reject when aiosqlite is missing.
+
+        Mautrix's ``Database.create("sqlite:///...")`` driver lookup imports
+        aiosqlite lazily — without it, connect fails at ``crypto_db.start()``.
+        """
+        from gateway.platforms.matrix import _check_e2ee_deps
+        import builtins
+        real_import = builtins.__import__
+
+        def _blocking_import(name, *args, **kwargs):
+            if name == "aiosqlite" or name.startswith("aiosqlite."):
+                raise ImportError("blocked for test")
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", _blocking_import):
+            assert _check_e2ee_deps() is False
+
+    def test_check_requirements_runs_lazy_install_when_partial(self, monkeypatch):
+        """When mautrix is installed but asyncpg/aiosqlite are missing,
+        check_matrix_requirements must still run the lazy installer.
+
+        Regression for #31116: the previous ``try: import mautrix`` gate
+        short-circuited the install of the OTHER 4 platform.matrix packages,
+        so a partial install (mautrix only) was treated as fully installed.
+        """
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
+
+        from gateway.platforms import matrix as matrix_mod
+
+        # Simulate "mautrix installed, asyncpg missing" → feature_missing
+        # returns a non-empty tuple → ensure_and_bind MUST be called.
+        called = {"ensure_and_bind": False}
+
+        def _fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
+            called["ensure_and_bind"] = True
+            assert feature == "platform.matrix"
+            return True  # Pretend install succeeded.
+
+        with patch("tools.lazy_deps.feature_missing", return_value=("asyncpg==0.31.0",)), \
+             patch("tools.lazy_deps.ensure_and_bind", side_effect=_fake_ensure_and_bind):
+            matrix_mod.check_matrix_requirements()
+
+        assert called["ensure_and_bind"], (
+            "check_matrix_requirements must call ensure_and_bind whenever ANY "
+            "platform.matrix dep is missing, not just when mautrix itself is "
+            "missing (#31116)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Access-token auth / E2EE bootstrap
@@ -901,7 +1165,6 @@ class TestDeviceKeyReVerification:
         mock_olm.account.identity_keys = {"ed25519": "local_new_key"}
         mock_olm.share_keys = AsyncMock()
 
-        from gateway.platforms.matrix import MatrixAdapter
         result = await adapter._verify_device_keys_on_server(mock_client, mock_olm)
 
         assert result is False
@@ -913,7 +1176,7 @@ class TestMatrixE2EEHardFail:
 
     @pytest.mark.asyncio
     async def test_connect_fails_when_encryption_true_but_no_e2ee_deps(self):
-        from gateway.platforms.matrix import MatrixAdapter, _check_e2ee_deps
+        from gateway.platforms.matrix import MatrixAdapter
 
         config = PlatformConfig(
             enabled=True,
@@ -1135,7 +1398,6 @@ class TestMatrixPasswordLoginDeviceId:
 
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
 
-        from gateway.platforms import matrix as matrix_mod
         with patch.dict("sys.modules", fake_mautrix_mods):
             with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
                 with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):

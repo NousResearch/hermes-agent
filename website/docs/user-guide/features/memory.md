@@ -185,7 +185,7 @@ Beyond MEMORY.md and USER.md, the agent can search its past conversations using 
 hermes sessions list    # Browse past sessions
 ```
 
-See [Session Search Tool](/docs/user-guide/sessions#session-search-tool) for the three calling shapes (discovery / scroll / browse) and the response format.
+See [Session Search Tool](/user-guide/sessions#session-search-tool) for the three calling shapes (discovery / scroll / browse) and the response format.
 
 ### session_search vs memory
 

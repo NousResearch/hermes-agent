@@ -12,8 +12,6 @@ from tools.skill_manager_tool import (
     _validate_category,
     _validate_frontmatter,
     _validate_file_path,
-    _find_skill,
-    _resolve_skill_dir,
     _create_skill,
     _edit_skill,
     _patch_skill,
@@ -21,8 +19,6 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     skill_manage,
-    VALID_NAME_RE,
-    ALLOWED_SUBDIRS,
     MAX_NAME_LENGTH,
 )
 

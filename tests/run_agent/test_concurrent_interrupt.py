@@ -1,9 +1,8 @@
 """Tests for interrupt handling in concurrent tool execution."""
 
-import concurrent.futures
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

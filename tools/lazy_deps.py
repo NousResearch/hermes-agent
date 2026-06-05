@@ -97,15 +97,16 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (see comment at top of [project.dependencies]). When bumping, update
     # both this map AND the corresponding extra in pyproject.toml.
     #
-    # NOTE: tts.mistral / stt.mistral entries are intentionally absent —
-    # the `mistralai` PyPI project is quarantined as of 2026-05-12 (Mini
-    # Shai-Hulud worm). Re-add when PyPI restores a clean release; see
-    # comment in pyproject.toml above the (removed) `mistral` extra for
-    # the full restoration checklist.
+    # mistralai pin tracks the `mistral` extra in pyproject.toml. PyPI
+    # quarantined the project 2026-05-12 (malicious 2.4.6, Mini Shai-Hulud);
+    # 2.4.6 was removed and clean releases resumed (2.4.7, 2.4.8). Voxtral
+    # STT + TTS share the same SDK.
+    "tts.mistral": ("mistralai==2.4.8",),
     "tts.edge": ("edge-tts==7.2.7",),
     "tts.elevenlabs": ("elevenlabs==1.59.0",),
 
     # ─── Speech-to-text providers ──────────────────────────────────────────
+    "stt.mistral": ("mistralai==2.4.8",),
     "stt.faster_whisper": (
         "faster-whisper==1.2.1",
         "sounddevice==0.5.5",
@@ -134,7 +135,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",
-        "Markdown==3.10.2",
         "aiosqlite==0.22.1",
         "asyncpg==0.31.0",
         "aiohttp-socks==0.11.0",
@@ -148,11 +148,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "lark-oapi==1.5.3",
         "qrcode==7.4.2",
     ),
+    # WeCom callback-mode adapter — parses untrusted XML POST bodies. Pulls
+    # defusedxml only; aiohttp/httpx are core dependencies of every messaging
+    # adapter and ship via `platform.discord` / `platform.slack` / etc.
+    "platform.wecom_callback": ("defusedxml==0.7.1",),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
     "terminal.daytona": ("daytona==0.155.0",),
-    "terminal.vercel": ("vercel==0.5.7",),
 
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": (
@@ -169,7 +172,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
+        "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
     ),
+    # Vision image-resize recovery (Pillow). Soft dependency: vision_tools and
+    # conversation_compression degrade gracefully without it, but the byte AND
+    # pixel-dimension shrink paths no-op when it's absent, so an oversized
+    # image can brick a session on Anthropic's non-retryable 400. Keep in sync
+    # with pyproject [vision].
+    "tool.vision": ("Pillow==12.2.0",),
 }
 
 

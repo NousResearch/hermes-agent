@@ -222,9 +222,12 @@ gateway:
     no_named_sessions:     "名前付きセッションが見つかりません。\n`/title セッション名` で現在のセッションに名前を付けると、後で `/resume セッション名` で戻れます。"
     list_header:           "📋 **名前付きセッション**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\n使い方: `/resume <セッション名>`"
+    list_footer_numbered:  "\n使い方: `/resume <セッション名>` または `/resume <番号>`（例: 最新のセッションには `/resume 1`）"
     list_failed:           "セッションを一覧表示できませんでした: {error}"
+    out_of_range:          "再開インデックス {index} は範囲外です。\n引数なしで `/resume` を実行すると、利用可能なセッションが表示されます。"
     not_found:             "'**{name}**' に一致するセッションが見つかりません。\n引数なしで `/resume` を実行すると利用可能なセッションを表示します。"
     already_on:            "📌 既にセッション **{name}** にいます。"
     switch_failed:         "セッションの切り替えに失敗しました。"
@@ -287,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "元に戻せる操作がありません。"
-    removed:               "↩️ {count} 件のメッセージを取り消しました。\n削除: 「{preview}」"
+    removed:               "↩️ {turns} ターンを取り消しました（{count} 件のメッセージ）。\nバックアップ先: 「{preview}」\n上のテキストをコピー／編集して送信すると、ここから再入力できます。"
+    invalid_count:         "無効な数値「{arg}」— /undo または /undo N を使用してください。"
 
   update:
     platform_not_messaging:  "✗ /update はメッセージングプラットフォームでのみ利用可能です。ターミナルで `hermes update` を実行してください。"
@@ -339,6 +343,8 @@ gateway:
     label_off:             "オフ (テキストのみ)"
     label_voice_only:      "オン (音声メッセージにのみ音声で返信)"
     label_all:             "TTS (すべてのメッセージに音声で返信)"
+    help:                  "{toggle}\n\n**/voice の使い方**\n• `/voice on` — 音声メッセージを送ると音声で返信\n• `/voice tts` — *すべての*メッセージに音声で返信\n• `/voice off` — テキストのみの返信に戻す\n• `/voice status` — 現在のモードを表示\n• `/voice`（引数なし）— オンとオフをすばやく切り替え{channels}"
+    help_channels:         "\n\n**ライブ音声チャンネル (Discord)**\n• 先に音声チャンネルに参加してから `/voice channel` — 参加して聞き取り、音声で返信します\n• `/voice leave` — 音声チャンネルから切断"
 
   yolo:
     disabled:                   "⚠️ このセッションの YOLO モードは **OFF** — 危険なコマンドには承認が必要です。"

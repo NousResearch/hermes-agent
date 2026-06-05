@@ -222,9 +222,12 @@ gateway:
     no_named_sessions:     "Keine benannten Sitzungen gefunden.\nVerwenden Sie `/title Meine Sitzung`, um die aktuelle Sitzung zu benennen, dann `/resume Meine Sitzung`, um später dorthin zurückzukehren."
     list_header:           "📋 **Benannte Sitzungen**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nVerwendung: `/resume <Sitzungsname>`"
+    list_footer_numbered:  "\nVerwendung: `/resume <Sitzungsname>` oder `/resume <Nummer>` (z. B. `/resume 1` für die zuletzt verwendete)"
     list_failed:           "Sitzungen konnten nicht aufgelistet werden: {error}"
+    out_of_range:          "Wiederaufnahme-Index {index} liegt außerhalb des gültigen Bereichs.\nVerwenden Sie `/resume` ohne Argumente, um verfügbare Sitzungen anzuzeigen."
     not_found:             "Keine Sitzung passend zu '**{name}**' gefunden.\nVerwenden Sie `/resume` ohne Argumente, um verfügbare Sitzungen zu sehen."
     already_on:            "📌 Bereits in Sitzung **{name}**."
     switch_failed:         "Sitzungswechsel fehlgeschlagen."
@@ -252,7 +255,7 @@ gateway:
     title:                 "**Titel:** {title}"
     created:               "**Erstellt:** {timestamp}"
     last_activity:         "**Letzte Aktivität:** {timestamp}"
-    tokens:                "**Tokens:** {tokens}"
+    tokens:                "**Kumulierte API-Tokens (bei jedem Aufruf erneut gesendet):** {tokens}"
     agent_running:         "**Agent läuft:** {state}"
     state_yes:             "Ja ⚡"
     state_no:              "Nein"
@@ -287,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "Nichts zum Rückgängigmachen."
-    removed:               "↩️ {count} Nachricht(en) rückgängig gemacht.\nEntfernt: \"{preview}\""
+    removed:               "↩️ {turns} Zug/Züge rückgängig gemacht ({count} Nachricht(en)).\nGesichert nach: \"{preview}\"\nKopieren/bearbeiten Sie den obigen Text und senden Sie ihn, um von hier aus erneut zu fragen."
+    invalid_count:         "Ungültige Anzahl \"{arg}\" — verwenden Sie /undo oder /undo N."
 
   update:
     platform_not_messaging:  "✗ /update ist nur auf Messaging-Plattformen verfügbar. Führen Sie `hermes update` im Terminal aus."
@@ -339,6 +343,8 @@ gateway:
     label_off:             "Aus (nur Text)"
     label_voice_only:      "An (Sprachantwort auf Sprachnachrichten)"
     label_all:             "TTS (Sprachantwort auf alle Nachrichten)"
+    help:                  "{toggle}\n\n**So funktioniert /voice**\n• `/voice on` — Sprachantwort, wenn du eine Sprachnachricht sendest\n• `/voice tts` — Sprachantwort auf *jede* Nachricht\n• `/voice off` — zurück zu reinen Textantworten\n• `/voice status` — aktuellen Modus anzeigen\n• `/voice` (ohne Argument) — schnelles Umschalten zwischen an und aus{channels}"
+    help_channels:         "\n\n**Live-Sprachkanäle (Discord)**\n• Tritt zuerst einem Sprachkanal bei, dann `/voice channel` — ich trete bei, höre zu und spreche meine Antworten\n• `/voice leave` — vom Sprachkanal trennen"
 
   yolo:
     disabled:                   "⚠️ YOLO-Modus für diese Sitzung **AUS** — gefährliche Befehle benötigen eine Genehmigung."

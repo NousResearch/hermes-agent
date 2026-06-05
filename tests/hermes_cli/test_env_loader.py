@@ -1,7 +1,6 @@
 import importlib
 import os
 import sys
-from pathlib import Path
 
 from hermes_cli.env_loader import load_hermes_dotenv
 
@@ -68,6 +67,23 @@ def test_user_env_takes_precedence_over_project_env(tmp_path, monkeypatch):
     assert loaded == [user_env, project_env]
     assert os.getenv("OPENAI_BASE_URL") == "https://user.example/v1"
     assert os.getenv("OPENAI_API_KEY") == "project-key"
+
+
+def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    # Null bytes can be introduced when copy-pasting API keys.
+    env_file.write_text("GLM_API_KEY=abc\x00\x00\nOPENAI_API_KEY=sk-123\n", encoding="utf-8")
+
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("GLM_API_KEY") == "abc"
+    assert os.getenv("OPENAI_API_KEY") == "sk-123"
 
 
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):

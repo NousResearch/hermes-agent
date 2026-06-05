@@ -15,6 +15,15 @@ describe('asCommandDispatch', () => {
       type: 'send',
       message: 'hello world'
     })
+    expect(asCommandDispatch({ type: 'prefill', message: 'edit me' })).toEqual({
+      type: 'prefill',
+      message: 'edit me'
+    })
+    expect(asCommandDispatch({ type: 'prefill', message: 'edit me', notice: '↶ rewound' })).toEqual({
+      type: 'prefill',
+      message: 'edit me',
+      notice: '↶ rewound'
+    })
   })
 
   it('rejects malformed payloads', () => {
@@ -23,5 +32,7 @@ describe('asCommandDispatch', () => {
     expect(asCommandDispatch({ type: 'skill', name: 1 })).toBeNull()
     expect(asCommandDispatch({ type: 'send' })).toBeNull()
     expect(asCommandDispatch({ type: 'send', message: 42 })).toBeNull()
+    expect(asCommandDispatch({ type: 'prefill' })).toBeNull()
+    expect(asCommandDispatch({ type: 'prefill', message: 42 })).toBeNull()
   })
 })

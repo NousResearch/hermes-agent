@@ -31,7 +31,6 @@ def _force_local_terminal(monkeypatch):
     """
     monkeypatch.setenv("TERMINAL_ENV", "local")
 import sys
-import time
 import threading
 import unittest
 from unittest.mock import patch, MagicMock

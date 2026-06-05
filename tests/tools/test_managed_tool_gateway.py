@@ -12,6 +12,7 @@ assert MODULE_SPEC and MODULE_SPEC.loader
 managed_tool_gateway = module_from_spec(MODULE_SPEC)
 sys.modules[MODULE_SPEC.name] = managed_tool_gateway
 MODULE_SPEC.loader.exec_module(managed_tool_gateway)
+is_managed_tool_gateway_ready = managed_tool_gateway.is_managed_tool_gateway_ready
 resolve_managed_tool_gateway = managed_tool_gateway.resolve_managed_tool_gateway
 
 
@@ -97,3 +98,37 @@ def test_read_nous_access_token_refreshes_expiring_cached_token(tmp_path, monkey
     )
 
     assert managed_tool_gateway.read_nous_access_token() == "fresh-token"
+
+
+def test_is_managed_tool_gateway_ready_skips_refresh_for_expired_cached_token(tmp_path, monkeypatch):
+    monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    expired_at = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+    (tmp_path / "auth.json").write_text(json.dumps({
+        "providers": {
+            "nous": {
+                "access_token": "expired-token",
+                "refresh_token": "refresh-token",
+                "expires_at": expired_at,
+            }
+        }
+    }))
+    refresh_calls = []
+
+    def _record_refresh(*, refresh_skew_seconds=120, **_kwargs):
+        refresh_calls.append(refresh_skew_seconds)
+        return "fresh-token"
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_nous_access_token",
+        _record_refresh,
+    )
+
+    with patch.dict(
+        os.environ,
+        {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"},
+        clear=False,
+    ), patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
+        assert is_managed_tool_gateway_ready("modal") is True
+
+    assert refresh_calls == []

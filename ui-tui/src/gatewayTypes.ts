@@ -48,6 +48,7 @@ export type CommandDispatchResponse =
   | { target: string; type: 'alias' }
   | { message?: string; name: string; type: 'skill' }
   | { message: string; notice?: string; type: 'send' }
+  | { message: string; notice?: string; type: 'prefill' }
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -62,6 +63,12 @@ export interface ConfigDisplayConfig {
   show_reasoning?: boolean
   streaming?: boolean
   thinking_mode?: string
+  /**
+   * Nudge the user toward the /agents spawn-tree dashboard the first time a
+   * turn starts delegating, via a one-time transient activity hint.  Opens
+   * nothing — just advertises the command.  Default true.
+   */
+  tui_agents_nudge?: boolean
   tui_auto_resume_recent?: boolean
   tui_compact?: boolean
   /** Legacy alias for display.mouse_tracking. */
@@ -82,7 +89,7 @@ export interface ConfigVoiceConfig {
 }
 
 export interface ConfigFullResponse {
-  config?: { display?: ConfigDisplayConfig; voice?: ConfigVoiceConfig }
+  config?: { display?: ConfigDisplayConfig; voice?: ConfigVoiceConfig; paste_collapse_threshold?: number; paste_collapse_char_threshold?: number }
 }
 
 export interface ConfigMtimeResponse {
@@ -115,11 +122,52 @@ export interface SessionCreateResponse {
 }
 
 export interface SessionResumeResponse {
+  inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
   messages: GatewayTranscriptMessage[]
   resumed?: string
+  running?: boolean
   session_id: string
+  started_at?: number
+  status?: LiveSessionStatus
+}
+
+export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working'
+
+export interface SessionActiveItem {
+  current?: boolean
+  id: string
+  last_active?: number
+  message_count?: number
+  model?: string
+  preview?: string
+  session_key?: string
+  started_at?: number
+  status: LiveSessionStatus
+  title?: string
+}
+
+export interface SessionActiveListResponse {
+  sessions?: SessionActiveItem[]
+}
+
+export interface SessionInflightTurn {
+  assistant?: string
+  streaming?: boolean
+  user?: string
+}
+
+export interface SessionActivateResponse {
+  inflight?: null | SessionInflightTurn
+  info?: SessionInfo
+  message_count?: number
+  messages: GatewayTranscriptMessage[]
+  running?: boolean
+  session_id: string
+  session_key?: string
+  started_at?: number
+  status?: LiveSessionStatus
 }
 
 export interface SessionListItem {
@@ -203,6 +251,7 @@ export interface SessionBranchResponse {
 }
 
 export interface SessionCloseResponse {
+  closed?: boolean
   ok?: boolean
 }
 
@@ -477,11 +526,11 @@ export type GatewayEvent =
       type: 'gateway.start_timeout'
     }
   | { payload?: { preview?: string }; session_id?: string; type: 'gateway.protocol_error' }
-  | { payload?: { text?: string }; session_id?: string; type: 'reasoning.delta' | 'reasoning.available' }
+  | { payload?: { text?: string; verbose?: boolean }; session_id?: string; type: 'reasoning.delta' | 'reasoning.available' }
   | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
   | { payload: { name?: string }; session_id?: string; type: 'tool.generating' }
   | {
-      payload: { context?: string; name?: string; tool_id: string; todos?: unknown[] }
+      payload: { args_text?: string; context?: string; name?: string; tool_id: string; todos?: unknown[] }
       session_id?: string
       type: 'tool.start'
     }
@@ -491,6 +540,7 @@ export type GatewayEvent =
         error?: string
         inline_diff?: string
         name?: string
+        result_text?: string
         summary?: string
         tool_id: string
         todos?: unknown[]

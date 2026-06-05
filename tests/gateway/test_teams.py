@@ -1,13 +1,10 @@
 """Tests for the Microsoft Teams platform adapter plugin."""
 
-import asyncio
 import json
-import os
 import sys
 import types
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest

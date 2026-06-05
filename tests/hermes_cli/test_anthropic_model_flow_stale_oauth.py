@@ -6,11 +6,8 @@ Claude Code credentials are available. The fast-path silently proceeds to
 model selection with a broken token instead of offering re-auth.
 """
 
-import json
-import pytest
-from unittest.mock import patch, MagicMock
 
-from hermes_cli.config import load_env, save_env_value
+from hermes_cli.config import save_env_value
 
 
 class TestStaleOAuthTokenDetection:
@@ -54,7 +51,7 @@ class TestStaleOAuthTokenDetection:
 
         # Simulate user types "3" (Cancel) when prompted for re-auth
         monkeypatch.setattr("builtins.input", lambda _: "3")
-        monkeypatch.setattr("getpass.getpass", lambda _: "")
+        monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _: "")
 
         from hermes_cli.main import _model_flow_anthropic
         cfg = {}

@@ -22,7 +22,6 @@ import pytest
 pytestmark = pytest.mark.integration
 
 import json
-import os
 import shutil
 import sys
 import time

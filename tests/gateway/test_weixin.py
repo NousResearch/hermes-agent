@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 import os
-from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -12,6 +11,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
 from gateway.platforms.base import SendResult
+from gateway.platforms.base import MessageEvent, MessageType
 from gateway.platforms import weixin
 from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
 from tools.send_message_tool import _parse_target_ref, _send_to_platform
@@ -854,15 +854,27 @@ class TestWeixinContentDedup:
         adapter = _make_adapter()
         adapter._poll_session = object()
         adapter.handle_message = AsyncMock()
+        # Tighten the text-debounce delay so the flush completes quickly.
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
 
         base_msg = {
             "from_user_id": "wxid_user1",
             "item_list": [{"type": 1, "text_item": {"text": "hello world"}}],
         }
 
-        asyncio.run(adapter._process_message({**base_msg, "message_id": "msg-1"}))
-        asyncio.run(adapter._process_message({**base_msg, "message_id": "msg-2"}))
+        async def _drive():
+            # Both inbound messages share the same event loop so the debounce
+            # task created by the first one survives to be flushed.
+            await adapter._process_message({**base_msg, "message_id": "msg-1"})
+            await adapter._process_message({**base_msg, "message_id": "msg-2"})
+            # Wait out the quiet period so the buffered text batch flushes.
+            await asyncio.sleep(0.2)
 
+        asyncio.run(_drive())
+
+        # Content-dedup drops the second (duplicate) message before it is even
+        # enqueued, so only one combined dispatch reaches handle_message.
         assert adapter.handle_message.await_count == 1
         event = adapter.handle_message.await_args[0][0]
         assert event.text == "hello world"
@@ -883,3 +895,221 @@ class TestWeixinContentDedup:
         assert adapter.handle_message.await_count == 0
         # is_duplicate should only be called for message_id, never for content
         assert all("content:" not in str(call) for call in adapter._dedup.is_duplicate.call_args_list)
+
+
+class TestWeixinTextDebounce:
+    """Text-debounce batching for rapid multi-message bursts (issue #35301).
+
+    Delays are read from ``config.extra`` (config.yaml), not env vars.
+    """
+
+    def test_batch_delays_default_from_config(self):
+        adapter = _make_adapter()
+        assert adapter._text_batch_delay_seconds == 3.0
+        assert adapter._text_batch_split_delay_seconds == 5.0
+
+    def test_batch_delays_overridden_via_config_extra(self):
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={
+                    "account_id": "test-account",
+                    "text_batch_delay_seconds": "0.5",
+                    "text_batch_split_delay_seconds": 1.5,
+                },
+            )
+        )
+        assert adapter._text_batch_delay_seconds == 0.5
+        assert adapter._text_batch_split_delay_seconds == 1.5
+
+    def test_invalid_config_value_falls_back_to_default(self):
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={
+                    "account_id": "test-account",
+                    "text_batch_delay_seconds": "not-a-number",
+                    "text_batch_split_delay_seconds": -4,
+                },
+            )
+        )
+        assert adapter._text_batch_delay_seconds == 3.0
+        assert adapter._text_batch_split_delay_seconds == 5.0
+
+    def test_rapid_texts_collapse_into_single_dispatch(self):
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
+        dispatched = []
+
+        async def _capture(event):
+            dispatched.append(event.text)
+
+        adapter.handle_message = _capture
+
+        def _event(text):
+            return MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=adapter.build_source(
+                    chat_id="wxid_user1", chat_type="dm",
+                    user_id="wxid_user1", user_name="wxid_user1",
+                ),
+            )
+
+        async def _drive():
+            adapter._enqueue_text_event(_event("one"))
+            adapter._enqueue_text_event(_event("two"))
+            adapter._enqueue_text_event(_event("three"))
+            assert dispatched == []  # nothing flushed during the burst
+            await asyncio.sleep(0.2)
+
+        asyncio.run(_drive())
+        assert dispatched == ["one\ntwo\nthree"]
+
+
+class _StubResponse:
+    def __init__(self, *, status=200, body="{}", delay=0.0):
+        self.status = status
+        self.ok = 200 <= status < 300
+        self._body = body
+        self._delay = delay
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    async def text(self):
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        return self._body
+
+
+class _StubSession:
+    """Records request kwargs and returns a configurable async-CM response.
+
+    Unlike aiohttp.ClientSession it installs no TimerContext, so it cannot
+    reproduce aiohttp's cross-loop crash directly; these tests instead pin the
+    observable contract of the asyncio.wait_for migration.
+    """
+
+    def __init__(self, response):
+        self._response = response
+        self.post_calls = []
+        self.get_calls = []
+
+    def post(self, url, **kwargs):
+        self.post_calls.append((url, kwargs))
+        return self._response
+
+    def get(self, url, **kwargs):
+        self.get_calls.append((url, kwargs))
+        return self._response
+
+
+class TestWeixinApiTimeout:
+    def test_api_post_does_not_pass_aiohttp_timeout_kwarg(self):
+        session = _StubSession(_StubResponse(body='{"ret": 0}'))
+        result = asyncio.run(
+            weixin._api_post(
+                session,
+                base_url="https://weixin.example.com",
+                endpoint="ep",
+                payload={"k": "v"},
+                token="tok",
+                timeout_ms=5000,
+            )
+        )
+        assert result == {"ret": 0}
+        # The fix enforces the timeout via asyncio.wait_for, so ClientTimeout is
+        # gone and `timeout` is no longer forwarded to session.post().
+        [(_url, kwargs)] = session.post_calls
+        assert "timeout" not in kwargs
+
+    def test_api_get_does_not_pass_aiohttp_timeout_kwarg(self):
+        session = _StubSession(_StubResponse(body='{"ret": 0}'))
+        result = asyncio.run(
+            weixin._api_get(
+                session,
+                base_url="https://weixin.example.com",
+                endpoint="ep",
+                timeout_ms=5000,
+            )
+        )
+        assert result == {"ret": 0}
+        [(_url, kwargs)] = session.get_calls
+        assert "timeout" not in kwargs
+
+    def test_api_post_raises_timeout_when_response_is_slow(self):
+        # 1 ms budget against a 1 s response: wait_for must cancel and raise.
+        session = _StubSession(_StubResponse(delay=1.0))
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(
+                weixin._api_post(
+                    session,
+                    base_url="https://weixin.example.com",
+                    endpoint="ep",
+                    payload={"k": "v"},
+                    token="tok",
+                    timeout_ms=1,
+                )
+            )
+
+    def test_api_get_raises_timeout_when_response_is_slow(self):
+        session = _StubSession(_StubResponse(delay=1.0))
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(
+                weixin._api_get(
+                    session,
+                    base_url="https://weixin.example.com",
+                    endpoint="ep",
+                    timeout_ms=1,
+                )
+            )
+
+    def test_api_post_raises_runtime_error_on_non_ok_status(self):
+        # The non-2xx branch now lives inside the wait_for-wrapped inner coro;
+        # confirm it still raises with the HTTP status and truncated body.
+        session = _StubSession(_StubResponse(status=500, body="boom"))
+        with pytest.raises(RuntimeError, match="iLink POST ep HTTP 500: boom"):
+            asyncio.run(
+                weixin._api_post(
+                    session,
+                    base_url="https://weixin.example.com",
+                    endpoint="ep",
+                    payload={"k": "v"},
+                    token="tok",
+                    timeout_ms=5000,
+                )
+            )
+
+    def test_api_get_raises_runtime_error_on_non_ok_status(self):
+        session = _StubSession(_StubResponse(status=500, body="boom"))
+        with pytest.raises(RuntimeError, match="iLink GET ep HTTP 500: boom"):
+            asyncio.run(
+                weixin._api_get(
+                    session,
+                    base_url="https://weixin.example.com",
+                    endpoint="ep",
+                    timeout_ms=5000,
+                )
+            )
+
+    def test_get_updates_returns_empty_sentinel_on_timeout(self):
+        # wait_for raises asyncio.TimeoutError, which _get_updates swallows into
+        # an empty long-poll batch rather than propagating.
+        session = _StubSession(_StubResponse(delay=1.0))
+        result = asyncio.run(
+            weixin._get_updates(
+                session,
+                base_url="https://weixin.example.com",
+                token="tok",
+                sync_buf="buf-123",
+                timeout_ms=1,
+            )
+        )
+        assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-123"}

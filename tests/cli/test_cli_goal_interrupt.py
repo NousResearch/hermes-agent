@@ -12,7 +12,6 @@ minimal ``HermesCLI`` stub (pattern used elsewhere in tests/cli).
 from __future__ import annotations
 
 import queue
-import sys
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch

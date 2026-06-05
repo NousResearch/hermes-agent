@@ -10,7 +10,7 @@ Covers:
 - Cron module unavailability (501 when _CRON_AVAILABLE is False)
 """
 
-import json
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -151,6 +151,9 @@ class TestCreateJob:
                     "name": "test-job",
                     "schedule": "*/5 * * * *",
                     "prompt": "do something",
+                }, headers={
+                    "X-Forwarded-For": "203.0.113.11",
+                    "User-Agent": "cron-client",
                 })
                 assert resp.status == 200
                 data = await resp.json()
@@ -160,6 +163,10 @@ class TestCreateJob:
                 assert call_kwargs["name"] == "test-job"
                 assert call_kwargs["schedule"] == "*/5 * * * *"
                 assert call_kwargs["prompt"] == "do something"
+                assert call_kwargs["origin"]["platform"] == "api_server"
+                assert call_kwargs["origin"]["chat_id"] == "api"
+                assert call_kwargs["origin"]["forwarded_for"] == "203.0.113.11"
+                assert call_kwargs["origin"]["user_agent"] == "cron-client"
 
     @pytest.mark.asyncio
     async def test_create_job_missing_name(self, adapter):
@@ -279,6 +286,29 @@ class TestGetJob:
                 assert resp.status == 400
                 data = await resp.json()
                 assert "Invalid" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_job_id_logs_source_context(self, adapter, caplog):
+        """Invalid job-id probes log source metadata for later investigation."""
+        app = _create_app(adapter)
+        caplog.set_level(logging.WARNING, logger="gateway.platforms.api_server")
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                resp = await cli.get(
+                    "/api/jobs/..%2F..%2F..%2Fetc%2Fpasswd",
+                    headers={
+                        "X-Forwarded-For": "203.0.113.9",
+                        "User-Agent": "probe scanner",
+                    },
+                )
+                assert resp.status == 400
+
+        message = caplog.text
+        assert "Cron jobs API rejected invalid job_id" in message
+        assert "203.0.113.9" in message
+        assert "GET" in message
+        assert "/api/jobs/" in message
+        assert "probe scanner" in message
 
 
 # ---------------------------------------------------------------------------

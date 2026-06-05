@@ -1593,6 +1593,79 @@ class TestQuickSnapshot:
 # Pre-update backup (hermes update safety net)
 # ---------------------------------------------------------------------------
 
+    # -- security: path traversal regression coverage -----------------------
+    # Per @egilewski audit on PR #9217: restore_quick_snapshot must reject
+    # malicious snapshot_id values (the directory selector) AND malicious
+    # rel paths inside the manifest (the per-file selector). Both surfaces
+    # need explicit regression tests because they validate independent
+    # traversal vectors.
+
+    def test_restore_rejects_snapshot_id_traversal(self, hermes_home):
+        """restore_quick_snapshot must reject snapshot_id values that
+        contain path separators, POSIX traversal entries, or are empty.
+        These are rejected on the input string before any filesystem
+        lookup, so the guard cannot be bypassed by arranging a directory
+        layout that would otherwise satisfy ``snap_dir.is_dir()``.
+
+        Regression for the path-traversal surface where ``root /
+        snapshot_id`` could resolve above the snapshots root."""
+        from hermes_cli.backup import restore_quick_snapshot
+
+        hostile_ids = [
+            "../../etc",                # parent traversal
+            "../outside",               # single parent
+            "..",                       # bare parent dir
+            ".",                        # bare current dir
+            "subdir/snap",              # forward slash
+            "subdir\\snap",           # backslash (Windows-style)
+            "",                         # empty string
+        ]
+        for hostile in hostile_ids:
+            assert restore_quick_snapshot(
+                hostile, hermes_home=hermes_home
+            ) is False, f"hostile snapshot_id was not rejected: {hostile!r}"
+
+    def test_restore_rejects_manifest_rel_traversal(self, hermes_home):
+        """A snapshot whose manifest.json contains a rel path that escapes
+        the snapshot directory (e.g. ``../../outside.txt``) must skip that
+        entry rather than restoring outside HERMES_HOME."""
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+
+        # Inject a traversal entry into manifest.json AND seed the source
+        # file outside the snapshot directory so a vulnerable implementation
+        # would actually write something at the escaped destination.
+        manifest_path = snap_dir / "manifest.json"
+        with open(manifest_path) as f:
+            meta = json.load(f)
+        meta["files"]["../../outside.txt"] = 9
+        with open(manifest_path, "w") as f:
+            json.dump(meta, f)
+
+        # Source: ../../outside.txt resolves above the snapshot root.
+        # Place a payload there so we can detect a successful escape.
+        escape_src = snap_dir.parent.parent / "outside.txt"
+        escape_src.write_text("pwned-source")
+
+        # Pre-condition: the destination must not exist before restore.
+        escape_dst = hermes_home.parent.parent / "outside.txt"
+        assert not escape_dst.exists()
+
+        # Restore should succeed for legitimate files but skip the hostile
+        # entry. We don't assert on the return value (other legitimate
+        # entries may still restore); we assert on the file-system effect.
+        restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+
+        assert not escape_dst.exists(), (
+            f"manifest rel traversal escaped HERMES_HOME: {escape_dst} exists"
+        )
+
+        # Cleanup the seeded escape source so the test is hermetic.
+        escape_src.unlink()
+
 class TestPreUpdateBackup:
     """Tests for create_pre_update_backup — the auto-backup ``hermes update``
     runs before touching anything."""

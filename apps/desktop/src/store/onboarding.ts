@@ -162,7 +162,8 @@ const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const patch = (update: Partial<DesktopOnboardingState>) =>
   $desktopOnboarding.set({ ...$desktopOnboarding.get(), ...update })
 
-const setFlow = (flow: OnboardingFlow) => patch({ flow })
+const setFlow = (flow: OnboardingFlow) =>
+  patch(flow.status === 'idle' ? { flow } : { flow, reason: null })
 
 const sessionIdFor = (flow: OnboardingFlow) => ('start' in flow && flow.start ? flow.start.session_id : undefined)
 

@@ -77,7 +77,7 @@ def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
 
 @pytest.mark.asyncio
 async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
-    """When the tokens file mtime changes, provider._initialized flips False.
+    """When the tokens file mtime changes after baseline, provider reloads.
 
     This is the behaviour Claude Code ships as
     invalidateOAuthCacheIfDiskChanged (CC-1096 / GH#24317) and is the core
@@ -99,10 +99,14 @@ async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     mgr = MCPOAuthManager()
     provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
     assert provider is not None
+    await provider._initialize()
+    assert provider._initialized is True
 
-    # First call: records mtime (zero -> real) -> returns True
+    # First call only records the baseline mtime. Reloading here would reset
+    # the provider during its first auth handshake.
     changed1 = await mgr.invalidate_if_disk_changed("srv")
-    assert changed1 is True
+    assert changed1 is False
+    assert provider._initialized is True
 
     # No file change -> False
     changed2 = await mgr.invalidate_if_disk_changed("srv")

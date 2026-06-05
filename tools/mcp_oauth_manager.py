@@ -355,6 +355,11 @@ class MCPOAuthManager:
             if mtime_ns == entry.last_mtime_ns:
                 return False
             old, entry.last_mtime_ns = entry.last_mtime_ns, mtime_ns
+            if old == 0:
+                # First observation only seeds the baseline. Forcing a
+                # reload here can reset the provider in the middle of its
+                # first auth handshake and tear down HTTP MCP discovery.
+                return False
             # `_initialized` is private SDK API but stable across the pinned versions (>=1.26.0).
             if hasattr(entry.provider, "_initialized"):
                 entry.provider._initialized = False  # noqa: SLF001

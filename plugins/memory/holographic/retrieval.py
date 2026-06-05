@@ -65,6 +65,30 @@ class FactRetriever:
         # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
 
+        # FTS5 fallback: CJK-heavy queries often return 0 because FTS5
+        # uses AND semantics and Chinese tokens rarely match. Retry with
+        # ASCII-only keywords extracted from the query.
+        if not candidates:
+            import re
+            ascii_words = re.findall(r'[a-zA-Z0-9_]{2,}', query)
+            if ascii_words:
+                fallback_query = " OR ".join(ascii_words)
+                candidates = self._fts_candidates(fallback_query, category, min_trust, limit * 3)
+
+        # P2.5: CJK LIKE fallback. FTS5 does not tokenize Chinese, so
+        # MATCH queries on bigrams are useless. Fall back to SQL LIKE
+        # which does substring matching — acceptable for <1000 facts.
+        if not candidates:
+            cjk_chars = [c for c in query if '\u4e00' <= c <= '\u9fff']
+            if len(cjk_chars) >= 3:
+                bigrams = set()
+                for i in range(len(cjk_chars) - 1):
+                    bigrams.add(cjk_chars[i] + cjk_chars[i+1])
+                if bigrams:
+                    candidates = self._like_fallback(
+                        list(bigrams)[:10], category, min_trust, limit * 3
+                    )
+
         if not candidates:
             return []
 
@@ -109,6 +133,21 @@ class FactRetriever:
         # Strip raw HRR bytes — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
+
+        # Increment retrieval_count for matched facts so telemetry
+        # reflects ALL retrieval paths (prefetch + explicit tool calls).
+        if results:
+            try:
+                ids = [r["fact_id"] for r in results]
+                placeholders = ",".join("?" * len(ids))
+                self.store._conn.execute(
+                    f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                    ids,
+                )
+                self.store._conn.commit()
+            except Exception:
+                pass  # best-effort telemetry
+
         return results
 
     def probe(
@@ -539,6 +578,53 @@ class FactRetriever:
             fact["fts_rank"] = raw_rank / max_rank  # normalize to [0, 1]
             results.append(fact)
 
+        return results
+
+    def _like_fallback(
+        self,
+        bigrams: list[str],
+        category: str | None,
+        min_trust: float,
+        limit: int,
+    ) -> list[dict]:
+        """CJK fallback: SQL LIKE with bigrams (FTS5 doesn't index Chinese).
+
+        Builds ``content LIKE '%bg1%' OR content LIKE '%bg2%'`` and returns
+        matching rows scored by number of bigram hits. Acceptable performance
+        for <1000 facts (full scan).
+        """
+        conn = self.store._conn
+        clauses = ["f.content LIKE ?" for _ in bigrams]
+        params: list = [f"%{bg}%" for bg in bigrams]
+        where = " OR ".join(clauses)
+
+        if category:
+            where = f"({where}) AND f.category = ?"
+            params.append(category)
+
+        params.append(min_trust)
+        params.append(limit)
+        sql = f"""
+            SELECT f.*, 0 as fts_rank_raw
+            FROM facts f
+            WHERE ({where})
+              AND f.trust_score >= ?
+            ORDER BY f.trust_score DESC
+            LIMIT ?
+        """
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except Exception:
+            return []
+
+        results = []
+        for row in rows:
+            fact = dict(row)
+            fact.pop("fts_rank_raw", None)
+            # Score: number of bigram hits / total bigrams
+            hits = sum(1 for bg in bigrams if bg in fact.get("content", ""))
+            fact["fts_rank"] = hits / len(bigrams) if bigrams else 0.0
+            results.append(fact)
         return results
 
     @staticmethod

@@ -120,6 +120,7 @@ class HolographicMemoryProvider(MemoryProvider):
         self._store = None
         self._retriever = None
         self._min_trust = float(self._config.get("min_trust_threshold", 0.3))
+        self._last_prefetch_results: list[dict] = []  # P0.1 utilization telemetry
 
     @property
     def name(self) -> str:
@@ -205,9 +206,11 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not self._retriever or not query:
+            self._last_prefetch_results = []
             return ""
         try:
             results = self._retriever.search(query, min_trust=self._min_trust, limit=5)
+            self._last_prefetch_results = results  # save for utilization telemetry
             if not results:
                 return ""
             lines = []
@@ -217,12 +220,153 @@ class HolographicMemoryProvider(MemoryProvider):
             return "## Holographic Memory\n" + "\n".join(lines)
         except Exception as e:
             logger.debug("Holographic prefetch failed: %s", e)
+            self._last_prefetch_results = []
             return ""
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         # Holographic memory stores explicit facts via tools, not auto-sync.
         # The on_session_end hook handles auto-extraction if configured.
-        pass
+
+        # --- P0.1 Utilization Telemetry ---
+        if not self._last_prefetch_results or not assistant_content:
+            return
+        try:
+            used_count = 0
+            total = len(self._last_prefetch_results)
+            resp_lower = assistant_content.lower()
+            for fact in self._last_prefetch_results:
+                content = fact.get("content", "")
+                if not content:
+                    continue
+                content_lower = content.lower()
+                # Strategy 1: word overlap (for English / mixed content)
+                fact_words = {w for w in content_lower.split() if len(w) >= 4}
+                word_matched = sum(1 for w in fact_words if w in resp_lower)
+
+                # Threshold: at least 2 words AND ≥30% of content words
+                if fact_words and word_matched >= max(2, len(fact_words) * 0.3):
+                    used_count += 1
+                    continue
+
+                # Strategy 2: character n-gram fallback (for Chinese / no-space content)
+                # Trigger when: (a) no English-like words exist, OR (b) word
+                # overlap found nothing AND content is CJK-dominant
+                is_cjk = any('\u4e00' <= c <= '\u9fff' for c in content_lower)
+                if (not fact_words or (word_matched == 0 and is_cjk)) and len(content) >= 6:
+                    ngrams = {content_lower[i:i+2] for i in range(len(content_lower)-1)}
+                    ng_matched = sum(1 for ng in ngrams if ng in resp_lower)
+                    if ng_matched >= 4:
+                        used_count += 1
+
+            rate = used_count / total if total > 0 else 0
+            logger.info(
+                "Holographic utilization: %d/%d facts used (%.0f%%) | query_matched=%d",
+                used_count, total, rate * 100, total,
+            )
+            self._last_utilization = {
+                "used": used_count,
+                "total": total,
+                "rate": rate,
+            }
+
+            # --- P2.6: Increment utilization_count for facts that were used ---
+            if used_count > 0 and self._store:
+                # Track which facts were used (those that passed the check)
+                used_ids = []
+                resp_lower = assistant_content.lower()
+                for fact in self._last_prefetch_results:
+                    content = fact.get("content", "")
+                    if not content:
+                        continue
+                    content_lower = content.lower()
+                    fact_words = {w for w in content_lower.split() if len(w) >= 4}
+                    word_matched = sum(1 for w in fact_words if w in resp_lower)
+                    if fact_words and word_matched >= max(2, len(fact_words) * 0.3):
+                        used_ids.append(fact["fact_id"])
+                        continue
+                    is_cjk = any('\u4e00' <= c <= '\u9fff' for c in content_lower)
+                    if (not fact_words or (word_matched == 0 and is_cjk)) and len(content) >= 6:
+                        ngrams = {content_lower[i:i+2] for i in range(len(content_lower)-1)}
+                        ng_matched = sum(1 for ng in ngrams if ng in resp_lower)
+                        if ng_matched >= 4:
+                            used_ids.append(fact["fact_id"])
+                if used_ids:
+                    placeholders = ",".join("?" * len(used_ids))
+                    self._store._conn.execute(
+                        f"UPDATE facts SET utilization_count = utilization_count + 1, last_utilized_at = datetime('now') WHERE fact_id IN ({placeholders})",
+                        used_ids,
+                    )
+                    self._store._conn.commit()
+        except Exception:
+            pass  # telemetry is best-effort, never block the turn
+        finally:
+            self._last_prefetch_results = []  # clear for next turn
+
+        # --- P2 Promotion/Demotion Engine ---
+        self._run_promotion_check()
+
+    def _run_promotion_check(self) -> None:
+        """Periodic promotion/demotion of facts based on utilization activity.
+
+        Promotion (utilization_count = times the model actually used the fact):
+          - utilization_count >= 10 → tag ``promoted:longterm``, trust=0.9
+          - utilization_count >= 3  → tag ``promoted:candidate``, trust=0.7
+        Demotion:
+          - last_utilized_at > 30 days ago AND trust > 0.3 → trust -= 0.1
+
+        Also recalculates utilization_rate = utilization_count / retrieval_count
+        for all facts with retrieval_count > 0, enabling quality-weighted ranking.
+
+        Best-effort; failures silently skipped so memory lifecycle never
+        blocks the conversation turn.
+        """
+        if not self._store:
+            return
+        try:
+            conn = self._store._conn
+
+            # Recalculate utilization_rate for all active facts
+            conn.execute("""
+                UPDATE facts SET
+                    utilization_rate = CAST(utilization_count AS REAL) / MAX(retrieval_count, 1)
+                WHERE retrieval_count > 0
+            """)
+
+            # Promote: utilization_count >= 10
+            conn.execute("""
+                UPDATE facts SET
+                    tags = CASE WHEN tags = '' OR tags IS NULL THEN 'promoted:longterm'
+                                ELSE tags || ',promoted:longterm' END,
+                    trust_score = MAX(trust_score, 0.9),
+                    updated_at = datetime('now')
+                WHERE utilization_count >= 10
+                  AND (tags IS NULL OR tags NOT LIKE '%promoted:longterm%')
+            """)
+
+            # Promote: utilization_count >= 3
+            conn.execute("""
+                UPDATE facts SET
+                    tags = CASE WHEN tags = '' OR tags IS NULL THEN 'promoted:candidate'
+                                ELSE tags || ',promoted:candidate' END,
+                    trust_score = MAX(trust_score, 0.7),
+                    updated_at = datetime('now')
+                WHERE utilization_count >= 3
+                  AND (tags IS NULL OR tags NOT LIKE '%promoted%')
+            """)
+
+            # Demote: last utilized > 30 days ago
+            conn.execute("""
+                UPDATE facts SET
+                    trust_score = MAX(0.1, trust_score - 0.1),
+                    updated_at = datetime('now')
+                WHERE last_utilized_at IS NOT NULL
+                  AND last_utilized_at < datetime('now', '-30 days')
+                  AND trust_score > 0.3
+            """)
+
+            conn.commit()
+        except Exception:
+            pass  # best-effort; promotion failure must not block the turn
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA]

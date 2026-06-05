@@ -17,7 +17,13 @@ def test_version_string_no_v_prefix():
 
 
 def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
-    """When cache is fresh, check_for_updates should return cached value without calling git."""
+    """When cache is fresh AND HEAD matches, return cached value without a fetch.
+
+    The cache key includes the local HEAD SHA, so the cached entry must carry
+    the current HEAD for the fast-path to fire. A cheap ``git rev-parse HEAD``
+    still runs to read the current HEAD, but no ``git fetch`` / ``rev-list``
+    network/compute work happens.
+    """
     from hermes_cli.banner import check_for_updates
     from hermes_cli import __version__
 
@@ -26,15 +32,24 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     repo_dir.mkdir()
     (repo_dir / ".git").mkdir()
 
+    head = "a" * 40
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}))
+    cache_file.write_text(
+        json.dumps({"ts": time.time(), "behind": 3, "ver": __version__, "head": head})
+    )
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run") as mock_run:
+
+    def fake_run(cmd, *a, **k):
+        # Only the HEAD read should occur; fetch/rev-list must NOT.
+        if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout=head + "\n")
+        raise AssertionError(f"unexpected git call on cache hit: {cmd}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
         result = check_for_updates()
 
     assert result == 3
-    mock_run.assert_not_called()
 
 
 def test_check_for_updates_invalidates_on_version_change(tmp_path, monkeypatch):
@@ -75,7 +90,11 @@ def test_check_for_updates_invalidates_on_version_change(tmp_path, monkeypatch):
 
 
 def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
-    """When cache is expired, check_for_updates should call git fetch."""
+    """When cache is expired, check_for_updates should call git fetch.
+
+    Call sequence now: cache-key HEAD + origin/shallow probes + fetch +
+    rev-list = 5 subprocess calls.
+    """
     from hermes_cli.banner import check_for_updates
 
     repo_dir = tmp_path / "hermes-agent"
@@ -86,15 +105,22 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     cache_file = tmp_path / ".update_check"
     cache_file.write_text(json.dumps({"ts": 0, "behind": 1}))
 
-    mock_result = MagicMock(returncode=0, stdout="5\n")
+    def fake_run(cmd, *a, **k):
+        if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout="abc123\n")
+        if cmd[:2] == ["git", "fetch"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return MagicMock(returncode=0, stdout="5\n")
+        return MagicMock(returncode=0, stdout="")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run) as mock_run:
         result = check_for_updates()
 
     assert result == 5
-    # origin probe + is-shallow probe + git fetch + git rev-list
-    assert mock_run.call_count == 4
+    # cache-key HEAD + origin probe + shallow probe + git fetch + git rev-list
+    assert mock_run.call_count == 5
 
 
 def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
@@ -220,8 +246,6 @@ def test_check_via_local_git_full_clone_keeps_exact_count(tmp_path):
         result = banner._check_via_local_git(repo_dir)
 
     assert result == 7
-
-
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
     """Falls back to PyPI check when .git directory doesn't exist anywhere."""
     import hermes_cli.banner as banner

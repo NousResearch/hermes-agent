@@ -1841,6 +1841,28 @@ DEFAULT_CONFIG = {
         # real memory cost. Default 32 MiB matches the historical hardcoded
         # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
+        # Voice-channel audio effects (the continuous mixer). OFF by default.
+        # When enabled, the bot installs a software mixer on the outgoing voice
+        # stream so a low ambient "thinking" bed, verbal acknowledgements, and
+        # TTS replies can OVERLAP (ducking the ambient under speech) instead of
+        # stop-and-swap — the Grok-voice-mode feel. discord.py ships no mixer;
+        # this is implemented in plugins/platforms/discord/voice_mixer.py.
+        "voice_fx": {
+            "enabled": False,         # master switch for the mixer subsystem
+            "ambient_enabled": True,  # play the idle "thinking" bed while tools run
+            "ambient_path": "",       # custom loop audio file; "" = synthesised pad
+            "ambient_gain": 0.18,     # idle bed loudness, 0.0–1.0
+            "duck_gain": 0.06,        # ambient loudness while speech plays
+            "speech_gain": 1.0,       # TTS / ack loudness, 0.0–1.0
+            "ack_enabled": True,      # speak a short phrase before the first tool call
+            "ack_phrases": [          # picked at random; set [] to disable phrases
+                "Let me look into that.",
+                "One moment.",
+                "Checking on that now.",
+                "Give me a sec.",
+                "On it.",
+            ],
+        },
     },
 
     # WhatsApp platform settings (gateway mode)

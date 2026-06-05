@@ -2,6 +2,9 @@
 
 Regression tests for issue #220: skill_view file_path parameter allowed
 reading arbitrary files (e.g., ~/.hermes/.env) via path traversal.
+
+Regression tests for issue #38643: skill_view name parameter allowed
+reading arbitrary files via path traversal in the skill name itself.
 """
 
 import json
@@ -80,3 +83,53 @@ class TestPathTraversalBlocked:
         assert result["success"] is False
         assert "sk-do-not-leak" not in result.get("content", "")
         assert "sk-do-not-leak" not in json.dumps(result)
+
+
+class TestNameTraversalBlocked:
+    """Regression tests for #38643: path traversal via the skill name parameter.
+
+    The 'name' is used in Path arithmetic (search_dir / name), so a name
+    containing '..' components or absolute path separators can escape the
+    skills directory and read arbitrary files.
+    """
+
+    def test_dotdot_in_name_rejected(self, fake_skills):
+        """A name containing '..' should be rejected before any file I/O."""
+        result = json.loads(skill_view("../../.env"))
+        assert result["success"] is False
+        assert "traversal" in result["error"].lower()
+
+    def test_dotdot_nested_in_name_rejected(self, fake_skills):
+        """Nested '..' in the skill name should also be rejected."""
+        result = json.loads(skill_view("mlops/../../.env"))
+        assert result["success"] is False
+        assert "traversal" in result["error"].lower()
+
+    def test_absolute_path_name_rejected(self, fake_skills, tmp_path):
+        """An absolute path as skill name should be rejected."""
+        sensitive = tmp_path / ".env"
+        result = json.loads(skill_view(str(sensitive)))
+        assert result["success"] is False
+        # Either the absolute-path guard or the outside-dir guard fires
+        assert result["error"]
+
+    def test_sensitive_content_not_leaked_via_name(self, fake_skills):
+        """Secret file content must never appear in the response for a traversal name."""
+        result = json.loads(skill_view("../../.env"))
+        assert result["success"] is False
+        assert "sk-do-not-leak" not in result.get("content", "")
+        assert "sk-do-not-leak" not in json.dumps(result)
+
+    def test_valid_name_still_loads(self, fake_skills):
+        """A legitimate skill name must still load successfully after the guard."""
+        result = json.loads(skill_view("test-skill"))
+        assert result["success"] is True
+
+    def test_categorized_name_still_loads(self, fake_skills):
+        """A category/skill-name path (no '..') must still load successfully."""
+        skills_dir = fake_skills["skills_dir"]
+        cat_dir = skills_dir / "mlops" / "axolotl"
+        cat_dir.mkdir(parents=True)
+        (cat_dir / "SKILL.md").write_text("---\nname: axolotl\ndescription: Fine-tuning skill\n---\n# Axolotl")
+        result = json.loads(skill_view("mlops/axolotl"))
+        assert result["success"] is True

@@ -848,6 +848,34 @@ def skill_view(
     """
     try:
         local_category_name: str | None = None
+
+        # ── Security: block path traversal in skill name ─────────────
+        # Reject names that contain '..' components or are absolute paths.
+        # The name is used directly in Path arithmetic (search_dir / name),
+        # so an attacker could read arbitrary files with a name like
+        # '../../.env' or '/etc/passwd'.
+        from tools.path_security import has_traversal_component
+
+        _name_path = Path(name)
+        if has_traversal_component(name):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "Path traversal ('..') is not allowed in skill names.",
+                    "hint": "Use a plain skill name or relative category/skill-name path",
+                },
+                ensure_ascii=False,
+            )
+        if _name_path.is_absolute():
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "Absolute paths are not allowed as skill names.",
+                    "hint": "Use a plain skill name or relative category/skill-name path",
+                },
+                ensure_ascii=False,
+            )
+
         # ── Qualified name dispatch (plugin skills) ──────────────────
         # Names containing ':' are routed to the plugin skill registry.
         # Bare names fall through to the existing flat-tree scan below.
@@ -1037,7 +1065,10 @@ def skill_view(
                 ensure_ascii=False,
             )
 
-        # Security: warn if skill is loaded from outside trusted directories
+        # Security: block skill files resolved outside trusted directories.
+        # This is a defence-in-depth check that catches traversal via the
+        # skill name (e.g. '../../.env') even if the early name check above
+        # were somehow bypassed, as well as symlink escapes.
         # (local skills dir + configured external_dirs are all trusted)
         _outside_skills_dir = True
         _trusted_dirs = [SKILLS_DIR.resolve()]
@@ -1053,18 +1084,33 @@ def skill_view(
             except ValueError:
                 continue
 
+        if _outside_skills_dir:
+            logging.getLogger(__name__).warning(
+                "Skill security: '%s' resolved outside trusted directories (%s)",
+                name, skill_md,
+            )
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        f"Skill '{name}' resolves outside the trusted skills directory "
+                        "and cannot be loaded."
+                    ),
+                    "hint": "Use a plain skill name or relative category/skill-name path",
+                },
+                ensure_ascii=False,
+            )
+
         # Security: detect common prompt injection patterns
         # (pattern list at module level as _INJECTION_PATTERNS)
         _content_lower = content.lower()
         _injection_detected = any(p in _content_lower for p in _INJECTION_PATTERNS)
 
-        if _outside_skills_dir or _injection_detected:
-            _warnings = []
-            if _outside_skills_dir:
-                _warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
-            if _injection_detected:
-                _warnings.append("skill content contains patterns that may indicate prompt injection")
-            logging.getLogger(__name__).warning("Skill security warning for '%s': %s", name, "; ".join(_warnings))
+        if _injection_detected:
+            logging.getLogger(__name__).warning(
+                "Skill security warning for '%s': skill content contains patterns that may indicate prompt injection",
+                name,
+            )
 
         parsed_frontmatter: Dict[str, Any] = {}
         try:

@@ -102,10 +102,15 @@ from tools.tool_backend_helpers import (  # noqa: F401
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
-from tools.url_safety import async_is_safe_url
+from tools.url_safety import is_safe_url
 import sys
 
 logger = logging.getLogger(__name__)
+
+
+async def async_is_safe_url(url: str) -> bool:
+    """Async wrapper around the module-level URL-safety oracle."""
+    return await asyncio.to_thread(is_safe_url, url)
 
 
 # ─── Backend Selection ────────────────────────────────────────────────────────

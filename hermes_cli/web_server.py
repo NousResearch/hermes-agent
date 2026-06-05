@@ -7998,11 +7998,13 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # --- auth + loopback check (before accept so we can close cleanly) ---
-    if not _ws_auth_ok(ws):
+    auth_reason, cred = _ws_auth_reason(ws)
+    if auth_reason is not None:
         await ws.close(code=4401)
         return
 
     await ws.accept()
+    mode = _ws_auth_mode()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
     # On native Windows, the POSIX PTY bridge can't be imported.  Tell the

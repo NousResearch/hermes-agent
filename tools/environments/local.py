@@ -191,6 +191,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "TWILIO_PHONE_NUMBER",
         "TWILIO_PHONE_NUMBER_SID",
         "GATEWAY_ALLOWED_USERS",
+        "HERMES_DASHBOARD_SESSION_TOKEN",
         "DINGTALK_CLIENT_ID",
         "DINGTALK_CLIENT_SECRET",
         "FEISHU_APP_ID",

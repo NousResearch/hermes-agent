@@ -276,6 +276,7 @@ all = [
   "hermes-agent[google]",
   "hermes-agent[web]",
   "hermes-agent[youtube]",
+  "hermes-agent[vision]",
 ]
 
 [project.scripts]

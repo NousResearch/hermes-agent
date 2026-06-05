@@ -24,6 +24,7 @@ __pycache__/
 .hermes-docker/
 .hermes/
 **/.hermes/
+.hermes-bootstrap-complete
 .notebooklm-home/
 .notebooklm-cli-venv/
 .notebooklm-playwright/

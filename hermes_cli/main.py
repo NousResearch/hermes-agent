@@ -6400,7 +6400,7 @@ def _update_via_zip(args):
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(_update_target_venv_dir())}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -7272,13 +7272,183 @@ def _run_install_with_heartbeat(
         t.join(timeout=0.2)
 
 
+_UPDATE_VENV_REEXEC_ENV = "HERMES_UPDATE_VENV_REEXEC"
+
+
 def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _venv_python_path(venv_dir: Path) -> Path:
+    """Return the platform-specific Python executable path for a venv."""
+    scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
+    return scripts / ("python.exe" if _is_windows() else "python")
+
+
+def _python_belongs_to_venv(python_executable: str | Path, venv_dir: Path) -> bool:
+    """Return True when ``python_executable`` is the venv's interpreter.
+
+    Do not rely only on ``Path.resolve()``: POSIX venvs often implement
+    ``bin/python`` as a symlink to the base interpreter, so resolving the path
+    can incorrectly make an active venv look like system Python.
+    """
+    try:
+        python_path = Path(python_executable).expanduser().absolute()
+        venv_path = venv_dir.expanduser().absolute()
+        python_path.relative_to(venv_path)
+        return True
+    except (OSError, ValueError):
+        pass
+
+    try:
+        python_path = Path(python_executable).resolve()
+        venv_path = venv_dir.resolve()
+        python_path.relative_to(venv_path)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _candidate_update_venvs(project_root: Path = PROJECT_ROOT) -> list[Path]:
+    """Return candidate Hermes-managed venvs in project-preferred order."""
+    candidates = [project_root / ".venv", project_root / "venv"]
+    try:
+        if (
+            project_root.resolve() == PROJECT_ROOT.resolve()
+            and (project_root / ".git").is_dir()
+        ):
+            from hermes_constants import get_hermes_home
+
+            hermes_home = get_hermes_home()
+            candidates.extend(
+                [
+                    hermes_home / "hermes-agent" / ".venv",
+                    hermes_home / "hermes-agent" / "venv",
+                ]
+            )
+    except Exception:
+        pass
+
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            key = candidate.expanduser().resolve()
+        except OSError:
+            key = candidate.expanduser().absolute()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _select_update_venv(project_root: Path = PROJECT_ROOT) -> tuple[Path, Path] | None:
+    """Find the venv Python that should drive ``hermes update``.
+
+    Hermes' development and install scripts prefer ``.venv`` first for source
+    checkouts and then ``venv`` for managed installs. Profile-aware
+    ``$HERMES_HOME/hermes-agent`` candidates are included only for git
+    checkouts, as a fallback for worktrees that share the main install's
+    environment.
+    """
+    for venv_dir in _candidate_update_venvs(project_root):
+        python = _venv_python_path(venv_dir)
+        if python.is_file():
+            return venv_dir, python
+    return None
+
+
+def _update_target_venv_dir(project_root: Path = PROJECT_ROOT) -> Path:
+    """Return the venv directory update subprocesses should mutate."""
+    selected = _select_update_venv(project_root)
+    if selected is not None:
+        venv_dir, _python = selected
+        return venv_dir
+
+    # Historical fallback for unusual source checkouts where no venv exists yet.
+    return project_root / "venv"
+
+
+def _venv_python_can_import_hermes_cli(venv_python: Path) -> bool:
+    """Return True when ``venv_python`` can import Hermes outside the CWD."""
+    probe_env = {**os.environ}
+    probe_env.pop("PYTHONPATH", None)
+    try:
+        result = subprocess.run(
+            [
+                str(venv_python),
+                "-P",
+                "-c",
+                "import hermes_cli.main",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=probe_env,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def _maybe_reexec_update_in_managed_venv(args) -> bool:
+    """Re-exec ``hermes update`` inside the managed venv when one exists.
+
+    Returns ``False`` when no re-exec is needed. On the re-exec path this
+    function replaces the process with ``os.execvpe`` on POSIX, or exits
+    with the child update process' status on Windows.
+    """
+    if getattr(args, "check", False):
+        return False
+
+    selected = _select_update_venv(PROJECT_ROOT)
+    if selected is None:
+        return False
+
+    venv_dir, venv_python = selected
+    if _python_belongs_to_venv(sys.executable, venv_dir):
+        return False
+
+    if os.environ.get(_UPDATE_VENV_REEXEC_ENV):
+        print(
+            "✗ Hermes update re-exec was requested, but this process is "
+            "still not running inside the expected virtual environment."
+        )
+        print(f"  Expected venv: {venv_dir}")
+        print(f"  Current Python: {sys.executable}")
+        print("  Run `hermes doctor` or reinstall Hermes.")
+        sys.exit(1)
+
+    if not _venv_python_can_import_hermes_cli(venv_python):
+        print(
+            "⚠ Skipping Hermes update venv re-exec because the selected "
+            "virtual environment cannot import hermes_cli."
+        )
+        print(f"  Selected venv: {venv_dir}")
+        print("  Continuing with the current Python process.")
+        return False
+
+    scripts_dir = venv_dir / ("Scripts" if _is_windows() else "bin")
+    env = {**os.environ, _UPDATE_VENV_REEXEC_ENV: "1", "VIRTUAL_ENV": str(venv_dir)}
+    env.pop("PYTHONPATH", None)
+    env["PATH"] = f"{scripts_dir}{os.pathsep}{env.get('PATH', '')}"
+    cmd = [str(venv_python), "-P", "-m", "hermes_cli.main", *sys.argv[1:]]
+    print(f"Re-running update inside Hermes virtual environment: {venv_dir}")
+    if _is_windows():
+        try:
+            result = subprocess.run(cmd, env=env, check=False)
+        except OSError as exc:
+            print(f"✗ Failed to re-run update inside Hermes virtual environment: {exc}")
+            sys.exit(1)
+        sys.exit(result.returncode)
+    os.execvpe(str(venv_python), cmd, env)
+
+
 def _venv_scripts_dir() -> Path | None:
-    """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
+    """Return the active update venv's Scripts/bin directory when present."""
+    venv_dir = _update_target_venv_dir(PROJECT_ROOT)
     if not venv_dir.is_dir():
         return None
     scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
@@ -9637,13 +9807,15 @@ def cmd_update(args):
         managed_error("update Hermes Agent")
         return
 
+    install_method = detect_install_method(PROJECT_ROOT)
+
     # Docker users can't ``git pull`` — the image excludes ``.git`` from
     # the build context.  Bail with a friendly explanation pointing at
     # ``docker pull`` BEFORE any of the apply-path / check-path branches
     # below get a chance to error out with misleading "Not a git
     # repository" text.  See format_docker_update_message() for the full
     # rationale and tag-pinning / config-persistence notes.
-    if detect_install_method(PROJECT_ROOT) == "docker":
+    if install_method == "docker":
         print(format_docker_update_message())
         sys.exit(1)
 
@@ -9656,6 +9828,9 @@ def cmd_update(args):
             branch_explicit=bool(getattr(args, "branch", None)),
         )
         return
+
+    if install_method == "git":
+        _maybe_reexec_update_in_managed_venv(args)
 
     gateway_mode = getattr(args, "gateway", False)
 
@@ -10214,7 +10389,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(_update_target_venv_dir())}
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)

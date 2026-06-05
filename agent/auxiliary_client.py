@@ -106,6 +106,42 @@ from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_
 
 logger = logging.getLogger(__name__)
 
+# ── Neutral SDK headers for custom OpenAI-compatible providers ──────────
+# Some upstream gateways reject requests that carry OpenAI Python SDK
+# default headers (User-Agent: OpenAI/Python, X-Stainless-*).  For generic
+# custom providers that don't have their own header setup, we inject these
+# neutral overrides to avoid identification-based filtering.  Issue #40033.
+
+_NEUTRAL_SDK_HEADERS: dict = {"User-Agent": "hermes-agent"}
+
+
+def _strip_stainless_headers(request: Any) -> None:
+    """Remove OpenAI SDK telemetry headers from an outgoing httpx request."""
+    for key in tuple(request.headers.keys()):
+        if key.lower().startswith("x-stainless-"):
+            del request.headers[key]
+
+
+def _neutral_custom_openai_kwargs(async_client: bool = False) -> Dict[str, Any]:
+    """Return OpenAI kwargs that make generic custom endpoints look neutral.
+
+    ``default_headers`` alone cannot remove all SDK-identifying headers: the
+    OpenAI SDK also injects per-request ``X-Stainless-Retry-Count`` and
+    ``X-Stainless-Read-Timeout``.  A tiny httpx request hook strips the final
+    header set immediately before transport send.
+    """
+    if async_client:
+        import httpx
+        return {
+            "default_headers": dict(_NEUTRAL_SDK_HEADERS),
+            "http_client": httpx.AsyncClient(event_hooks={"request": [_strip_stainless_headers]}),
+        }
+    import httpx
+    return {
+        "default_headers": dict(_NEUTRAL_SDK_HEADERS),
+        "http_client": httpx.Client(event_hooks={"request": [_strip_stainless_headers]}),
+    }
+
 
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
     """Return False instead of raising when a patched symbol is not a type."""
@@ -1901,6 +1937,10 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         )
     # URL-based anthropic detection for custom endpoints that didn't set
     # api_mode explicitly (e.g. kimi.com/coding reached via custom config).
+    # Inject neutral headers for generic custom endpoints to suppress
+    # OpenAI SDK identification (#40033).  Provider-specific overrides
+    # (Kimi, Copilot, NVIDIA) are handled in resolve_provider_client().
+    _extra.update(_neutral_custom_openai_kwargs())
     _fallback_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
     _fallback_client = _maybe_wrap_anthropic(
         _fallback_client, model, custom_key, custom_base, custom_mode,
@@ -3248,6 +3288,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
                     async_kwargs["default_headers"] = dict(_ph_async.default_headers)
         except Exception:
             pass
+        if "default_headers" not in async_kwargs:
+            try:
+                if getattr(sync_client, "default_headers", {}).get("User-Agent") == _NEUTRAL_SDK_HEADERS["User-Agent"]:
+                    async_kwargs.update(_neutral_custom_openai_kwargs(async_client=True))
+            except Exception:
+                pass
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -3528,13 +3574,21 @@ def resolve_provider_client(
             else:
                 # Fall back to profile.default_headers for providers that
                 # declare client-level attribution headers on their profile.
+                _got_profile_headers = False
                 try:
                     from providers import get_provider_profile as _gpf_custom
                     _ph_custom = _gpf_custom(provider)
                     if _ph_custom and _ph_custom.default_headers:
                         extra["default_headers"] = dict(_ph_custom.default_headers)
+                        _got_profile_headers = True
                 except Exception:
                     pass
+                if not _got_profile_headers:
+                    # No provider-specific headers — inject neutral headers
+                    # and strip SDK telemetry immediately before request send.
+                    # Some upstream OpenAI-compatible gateways reject requests
+                    # carrying SDK defaults (#40033).
+                    extra.update(_neutral_custom_openai_kwargs())
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode

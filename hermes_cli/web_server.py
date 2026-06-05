@@ -11005,7 +11005,12 @@ def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
         return None
     client_host = ws.client.host if ws.client else ""
     if not client_host:
-        return None
+        # Fail-closed: a loopback-bound dashboard with auth disabled must
+        # not accept a WebSocket with no identifiable peer. ASGI servers
+        # behind a misconfigured proxy or unix socket can deliver
+        # ws.client == None or "" — treating that as "allowed" would let
+        # an unidentified peer reach a loopback-only surface.
+        return f"missing_or_empty_peer bound={bound_host or '?'}"
     if client_host in _LOOPBACK_HOSTS:
         return None
     return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
@@ -11047,7 +11052,10 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
-        return True
+        # Fail-closed: see _ws_client_reason for rationale. An empty
+        # client_host on a loopback-bound dashboard with auth disabled
+        # must be rejected, not accepted as a default-allow.
+        return False
     return client_host in _LOOPBACK_HOSTS
 
 

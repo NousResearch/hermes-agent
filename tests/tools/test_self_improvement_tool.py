@@ -1814,6 +1814,39 @@ def test_leading_indicator_drift_fails_when_operator_value_regresses(tmp_path):
     assert benchmark["trend"] == "regressing"
 
 
+def test_leading_indicator_drift_warns_on_minor_untriggered_regression():
+    history = {
+        "runs": [
+            {
+                "checks": {
+                    "operator_value_alignment": {
+                        "score": score,
+                        "status": "warn" if score >= 0.6 else "fail",
+                    }
+                }
+            }
+            for score in [0.4993, 0.5357, 0.5691, 0.6889]
+        ]
+    }
+    operator_value = {"score": 0.6779, "status": "warn", "metrics": {}}
+
+    drift = self_improvement_tool._evaluate_leading_indicator_drift_check(
+        operator_value,
+        history,
+        {
+            "reliability_gate": {"score": 1.0, "status": "pass"},
+            "anti_make_work_check": {"score": 1.0, "status": "pass"},
+            "operator_value_alignment": operator_value,
+        },
+    )
+
+    assert drift["status"] == "warn"
+    assert drift["score"] == 0.65
+    assert drift["metrics"]["operator_value_delta"] == -0.011
+    assert drift["metrics"]["triggered_harbingers"] == []
+    assert "without a triggered harbinger" in drift["detail"]
+
+
 def test_leading_indicator_drift_reads_legacy_top_level_history_fields():
     history = {
         "version": 1,

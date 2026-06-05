@@ -138,6 +138,8 @@ _LEADING_INDICATOR_HARBINGERS = (
     "flickering",
     "correlation_explosion",
 )
+_LEADING_INDICATOR_WARN_DELTA = -0.01
+_LEADING_INDICATOR_FAIL_DELTA = -0.05
 _LEGACY_BENCHMARK_CHECK_FIELD_ALIASES = {
     "reliability_gate": ("reliability_gate",),
     "anti_make_work_check": ("anti_make_work_check", "anti_make_work"),
@@ -4083,7 +4085,10 @@ def _evaluate_leading_indicator_drift_check(
     prior_scores = _history_check_scores(history, "operator_value_alignment")
     previous_score = prior_scores[-1] if prior_scores else None
     delta = round(current_score - previous_score, 4) if previous_score is not None else None
-    regressing = delta is not None and delta < -0.01
+    regressing = delta is not None and delta < _LEADING_INDICATOR_WARN_DELTA
+    materially_regressing = (
+        delta is not None and delta <= _LEADING_INDICATOR_FAIL_DELTA
+    )
     indicator_payload = _build_leading_indicator_scorecard(
         history,
         current_checks or {"operator_value_alignment": operator_value_check},
@@ -4113,9 +4118,15 @@ def _evaluate_leading_indicator_drift_check(
     elif previous_score is None:
         score = 1.0
         detail = "No prior operator-value score; drift not assessed."
-    elif regressing:
+    elif materially_regressing:
         score = 0.5
         detail = "Operator-value alignment is regressing; keep quantity guardrail active."
+    elif regressing:
+        score = 0.65
+        detail = (
+            "Operator-value alignment moved slightly lower without a triggered "
+            "harbinger; keep watching the guardrail without blocking recovery."
+        )
     else:
         score = 1.0
         detail = "Operator-value leading indicator is stable or improving."

@@ -108,10 +108,14 @@ class TestEnsureUvUpdateBoundary:
     ``(path, fresh_bootstrap)`` call conventions.
 
     ``hermes update`` runs the call site from the old, already-imported
-    ``hermes_cli.main`` against the freshly pulled ``managed_uv``. When the two
-    disagree on ``ensure_uv()``'s arity the first update crashed with a
-    ``ValueError`` (root cause behind PR #39763). The result must therefore be
-    usable as a bare path *and* unpackable as a 2-tuple, in success and failure.
+    ``hermes_cli.main`` against the freshly pulled ``managed_uv``. A release
+    parked on a ``(path, fresh)`` tuple runs ``uv_bin, fresh = ensure_uv()``
+    against the single-value module; the path is an iterable ``str`` so the
+    2-target unpack walked its characters and raised
+    ``ValueError: too many values to unpack (expected 2)`` (root cause behind
+    PR #39763), or ``TypeError`` on the ``None`` failure path. The result must
+    therefore be usable as a bare path *and* unpackable as a 2-tuple, in both
+    the success and failure cases.
     """
 
     def test_success_usable_as_single_value(self, tmp_path):

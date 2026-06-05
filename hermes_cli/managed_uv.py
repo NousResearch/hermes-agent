@@ -58,9 +58,13 @@ class _UvResult(str):
     ``(path, fresh_bootstrap)`` tuple across releases. ``hermes update`` runs
     the call site from the *old*, already-imported ``hermes_cli.main`` against
     this *freshly pulled* module, so the two can disagree on how many values
-    ``ensure_uv()`` returns — which crashed the first update with
-    ``ValueError: not enough values to unpack (expected 2, got 1)`` for installs
-    parked on a 2-tuple release. This wrapper answers to both conventions:
+    ``ensure_uv()`` returns. An install parked on a 2-tuple release runs
+    ``uv_bin, fresh_bootstrap = ensure_uv()`` against the single-value module
+    and crashes the first update: the returned path is a plain ``str``, which is
+    itself iterable, so the 2-target unpack walks its characters and raises
+    ``ValueError: too many values to unpack (expected 2)`` (and on the failure
+    path the ``None`` return raises ``TypeError: cannot unpack non-iterable
+    NoneType``). This wrapper answers to both conventions:
 
         uv_bin = ensure_uv()         # behaves as the path str ("" when absent)
         uv_bin, fresh = ensure_uv()  # unpacks as (path|None, fresh_bootstrap)

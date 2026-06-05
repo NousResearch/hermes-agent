@@ -68,10 +68,14 @@ ok "root 权限确认"
 
 # Python
 PYTHON_BIN=""
+PYTHON_MAJOR="${PYTHON_VERSION%%.*}"
+PYTHON_MINOR="${PYTHON_VERSION#*.}"
 for py in "python${PYTHON_VERSION}" "python3" "python"; do
     if command -v "$py" &>/dev/null; then
-        PY_VER=$("$py" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)
-        if [[ "$PY_VER" == "$PYTHON_VERSION" ]] || [[ "$PY_VER" > "$PYTHON_VERSION" ]]; then
+        PY_MAJOR=$("$py" -c 'import sys; print(sys.version_info.major)' 2>/dev/null || echo 0)
+        PY_MINOR=$("$py" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo 0)
+        if [[ "$PY_MAJOR" -gt "$PYTHON_MAJOR" ]] || \
+           { [[ "$PY_MAJOR" -eq "$PYTHON_MAJOR" ]] && [[ "$PY_MINOR" -ge "$PYTHON_MINOR" ]]; }; then
             PYTHON_BIN="$py"
             break
         fi

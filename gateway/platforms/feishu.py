@@ -3615,7 +3615,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if preferred == "photo":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.PHOTO)
         if preferred == "audio":
-            return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.AUDIO)
+            # Feishu "audio" messages are real-time voice messages (Opus/OGG),
+            # not file attachments — map to VOICE so gateway/run.py sends
+            # them through the STT pipeline instead of treating them as
+            # audio file attachments (which would skip transcription).
+            return MessageType.VOICE
         if preferred == "document":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.DOCUMENT)
         return MessageType.TEXT

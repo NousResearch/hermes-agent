@@ -2,7 +2,7 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with seven providers:
+Provides speech-to-text transcription with eight providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
@@ -12,6 +12,11 @@ Provides speech-to-text transcription with seven providers:
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
   - **elevenlabs** — ElevenLabs Scribe API, requires ``ELEVENLABS_API_KEY``.
+  - **stepfun** (opt-in) — StepFun StepAudio 2.5 ASR API, requires
+    ``STEPFUN_API_KEY``. Uses SSE streaming (``POST /v1/audio/asr/sse``).
+    Languages: ``ko``/``zh``/``en``/``ja`` and others — set
+    ``stt.stepfun.language``. **Not in auto-detect fallback chain** —
+    users must set ``stt.provider: stepfun`` explicitly.
   - **moonshine** (free) — Moonshine on-device multilingual STT
     (8 languages: en/es/ja/ko/zh/ar/vi/uk), requires the ``moonshine_voice``
     package (``pip install moonshine-voice``). Sub-100ms latency on Apple
@@ -38,6 +43,9 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import json
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
@@ -104,6 +112,14 @@ DEFAULT_MOONSHINE_STT_LANGUAGE = os.getenv("STT_MOONSHINE_LANGUAGE", "auto")
 MOONSHINE_SUPPORTED_LANGUAGES = frozenset({
     "ar", "es", "en", "ja", "ko", "vi", "uk", "zh", "auto",
 })
+
+# StepFun StepAudio 2.5 ASR model catalogue. Both models work on either
+# /v1 (PAYG) or /step_plan/v1 (Step Plan tier). Subscribers with a Step
+# Fun plan (Flash-Plus / Flash-Max) should keep STEPFUN_BASE_URL set to
+# https://api.stepfun.ai/step_plan/v1 so plan quota is consumed, not PAYG.
+# See https://platform.stepfun.ai/docs/en/api-reference/audio/asr-sse
+STEPFUN_STT_MODELS = frozenset({"stepaudio-2.5-asr", "stepaudio-2-asr-pro"})
+DEFAULT_STEPFUN_STT_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -841,6 +857,14 @@ def _get_provider(stt_config: dict) -> str:
             logger.warning(
                 "STT provider 'moonshine' configured but the 'moonshine_voice' "
                 "package is not installed (pip install moonshine-voice)"
+            )
+            return "none"
+
+        if provider == "stepfun":
+            if get_env_value("STEPFUN_API_KEY"):
+                return "stepfun"
+            logger.warning(
+                "STT provider 'stepfun' configured but STEPFUN_API_KEY not set"
             )
             return "none"
 
@@ -1887,6 +1911,152 @@ def _transcribe_moonshine(
 
 
 # ---------------------------------------------------------------------------
+# Provider: StepFun (StepAudio 2.5 ASR)
+# ---------------------------------------------------------------------------
+
+
+def _normalize_stepfun_stt_base_url(raw: object, model: str | None = None) -> str:
+    """Return a base URL valid for the requested StepFun STT model.
+
+    Model / base-URL matrix (verified against the StepFun API):
+
+    - ``stepaudio-2.5-asr``   → works on BOTH ``/v1`` (PAYG) and
+      ``/step_plan/v1`` (Step Plan tier). The Step Plan URL is preferred
+      so Flash-Plus / Flash-Max subscribers consume plan quota, not
+      pay-as-you-go credit.
+    - ``stepaudio-2-asr-pro`` → same as above; both endpoints supported.
+
+    Always anchor on ``/v1`` — the audio endpoints are namespaced under it.
+    Handles ``https://api.stepfun.ai`` → ``https://api.stepfun.ai/v1``
+    and ``https://api.stepfun.ai/v2`` → ``https://api.stepfun.ai/v1``.
+
+    If ``model`` is unknown (custom or future) we keep whatever the user
+    configured — we don't second-guess. Only known PAYG-only models would
+    trigger a strip (none exist in STT today).
+    """
+    base = str(raw or "").strip().rstrip("/") or DEFAULT_STEPFUN_STT_BASE_URL
+
+    if not base.endswith("/v1"):
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(base)
+        base = urlunparse(parsed._replace(path="/v1"))
+    return base
+
+
+def _transcribe_stepfun(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using StepFun StepAudio 2.5 ASR API.
+
+    Uses ``POST /v1/audio/asr/sse`` with SSE streaming response.
+    Requires ``STEPFUN_API_KEY`` environment variable.
+    """
+    api_key = get_env_value("STEPFUN_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "STEPFUN_API_KEY not set"}
+
+    stt_config = _load_stt_config()
+    stepfun_cfg = stt_config.get("stepfun", {})
+    base_url = _normalize_stepfun_stt_base_url(
+        stepfun_cfg.get("base_url") or get_env_value("STEPFUN_BASE_URL"),
+        model_name,
+    )
+    language = str(
+        stepfun_cfg.get("language")
+        or os.getenv("HERMES_LOCAL_STT_LANGUAGE")
+        or "ko"
+    ).strip()
+
+    audio_path = Path(file_path)
+    if audio_path.suffix.lower() == ".ogg":
+        audio_format = {"type": "ogg", "codec": "opus"}
+    else:
+        audio_format = {"type": "mp3", "codec": "mp3"}
+
+    payload = {
+        "audio": {
+            "data": _encode_audio_base64(file_path),
+            "input": {
+                "transcription": {
+                    "model": model_name,
+                    "language": language,
+                    "enable_itn": True,
+                },
+                "format": audio_format,
+            },
+        }
+    }
+
+    try:
+        req = urllib.request.Request(
+            f"{base_url}/audio/asr/sse",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
+            method="POST",
+        )
+
+        transcript_parts = []
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            for raw_line in resp:
+                try:
+                    line = raw_line.decode("utf-8").strip()
+                except UnicodeDecodeError:
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    event = json.loads(data_str)
+                    event_type = event.get("type", "")
+                    if event_type == "transcript.text.delta":
+                        transcript_parts.append(event.get("delta", ""))
+                    elif event_type == "transcript.text.done":
+                        break
+                except Exception:
+                    continue
+
+        transcript = "".join(transcript_parts).strip()
+
+        if not transcript:
+            return {"success": False, "transcript": "", "error": "StepFun ASR returned empty transcript"}
+
+        logger.info(
+            "Transcribed %s via StepFun ASR (lang=%s, model=%s, %d chars)",
+            audio_path.name,
+            language,
+            model_name,
+            len(transcript),
+        )
+
+        return {"success": True, "transcript": transcript, "provider": "stepfun"}
+
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", errors="replace")[:300]
+        except Exception:
+            detail = str(e)
+        return {"success": False, "transcript": "", "error": f"StepFun ASR API error (HTTP {e.code}): {detail}"}
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("StepFun ASR transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"StepFun ASR transcription failed: {e}"}
+
+
+def _encode_audio_base64(file_path: str) -> str:
+    """Read an audio file and return base64-encoded bytes as a string."""
+    import base64
+
+    with open(file_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1969,6 +2139,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or moonshine_cfg.get("model", DEFAULT_MOONSHINE_STT_MODEL)
         return _transcribe_moonshine(file_path, model_name, moonshine_cfg)
 
+    if provider == "stepfun":
+        stepfun_cfg = stt_config.get("stepfun", {})
+        model_name = model or stepfun_cfg.get("model", "stepaudio-2.5-asr")
+        return _transcribe_stepfun(file_path, model_name)
+
     # User-declared command-type provider
     # (``stt.providers.<name>: type: command``). Fires after the built-in
     # elif chain — built-in names short-circuit upstream so a user's
@@ -2021,8 +2196,9 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             f"configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
             "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
-            "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "
-            "or OPENAI_API_KEY for the OpenAI Whisper API."
+            "set ELEVENLABS_API_KEY for ElevenLabs Scribe, set STEPFUN_API_KEY for "
+            "StepFun StepAudio 2.5 ASR, or set VOICE_TOOLS_OPENAI_KEY or "
+            "OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }
 

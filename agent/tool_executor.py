@@ -199,8 +199,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     # ── Parse args + pre-execution bookkeeping ───────────────────────
     parsed_calls = []  # list of (tool_call, function_name, function_args)
+    # Reverse-map for truncated Copilot Opus tool names (see chat_completion_helpers.py)
+    _copilot_name_map = getattr(agent, "_copilot_tool_name_map", None) or {}
     for tool_call in tool_calls:
         function_name = tool_call.function.name
+        # If the model returned a truncated name, restore the original
+        if function_name in _copilot_name_map:
+            function_name = _copilot_name_map[function_name]
 
         # Reset nudge counters
         if function_name == "memory":
@@ -689,6 +694,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
+    # Reverse-map for truncated Copilot Opus tool names (see chat_completion_helpers.py)
+    _copilot_name_map = getattr(agent, "_copilot_tool_name_map", None) or {}
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
@@ -709,6 +716,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             break
 
         function_name = tool_call.function.name
+        # If the model returned a truncated name, restore the original
+        if function_name in _copilot_name_map:
+            function_name = _copilot_name_map[function_name]
 
         try:
             function_args = json.loads(tool_call.function.arguments)

@@ -697,6 +697,35 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     # ── Provider profile path (registered providers) ───────────────────
     # Profiles handle per-provider quirks via hooks. When a profile is
     # found, delegate fully; otherwise fall through to the legacy flag path.
+
+    # GitHub Copilot API enforces a 64-character limit on tool function
+    # names for Opus models (Sonnet is permissive). Exceeding the limit
+    # causes HTTP 400 "Bad Request" with no useful detail. Deep-copy and
+    # truncate before sending; store the reverse map on the agent so
+    # tool_executor can map truncated names back to originals. See #copilot-opus-400.
+    if _is_gh and "opus" in (agent.model or "").lower():
+        _has_long = any(
+            len((t.get("function") or {}).get("name", "")) > 64
+            for t in (tools_for_api or [])
+            if isinstance(t, dict)
+        )
+        if _has_long:
+            try:
+                import copy as _copy
+                from tools.schema_sanitizer import enforce_tool_name_length
+                tools_for_api = _copy.deepcopy(tools_for_api)
+                tools_for_api, _name_map = enforce_tool_name_length(tools_for_api)
+                agent._copilot_tool_name_map = _name_map
+            except Exception as exc:
+                logger.warning(
+                    "%s⚠️ Failed to enforce tool name length for Copilot Opus: %s",
+                    getattr(agent, "log_prefix", ""), exc,
+                )
+        else:
+            agent._copilot_tool_name_map = {}
+    else:
+        agent._copilot_tool_name_map = {}
+
     try:
         from providers import get_provider_profile
         _profile = get_provider_profile(agent.provider)

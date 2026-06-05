@@ -3028,18 +3028,22 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     if not schema:
         return {"type": "object", "properties": {}}
 
-    def _rewrite_local_refs(node):
+    def _rewrite_local_refs(node, *, _is_root=True):
         if isinstance(node, dict):
             normalized = {}
             for key, value in node.items():
-                out_key = "$defs" if key == "definitions" else key
-                normalized[out_key] = _rewrite_local_refs(value)
+                # Only rename "definitions" → "$defs" at the schema root level.
+                # Inside "properties" dicts, "definitions" is a legitimate
+                # property name (e.g. Azure DevOps pipelines_get_builds uses
+                # "definitions" as a parameter for build definition IDs).
+                out_key = "$defs" if key == "definitions" and _is_root else key
+                normalized[out_key] = _rewrite_local_refs(value, _is_root=False)
             ref = normalized.get("$ref")
             if isinstance(ref, str) and ref.startswith("#/definitions/"):
                 normalized["$ref"] = "#/$defs/" + ref[len("#/definitions/"):]
             return normalized
         if isinstance(node, list):
-            return [_rewrite_local_refs(item) for item in node]
+            return [_rewrite_local_refs(item, _is_root=False) for item in node]
         return node
 
     def _strip_nullable_union(node):
@@ -3102,6 +3106,14 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         return {"type": "object", "properties": {}}
     if normalized.get("type") == "object" and "properties" not in normalized:
         normalized = {**normalized, "properties": {}}
+
+    # Strip $-prefixed meta-keys that aren't needed for tool calling and
+    # violate strict API validators (Anthropic/Copilot reject keys not
+    # matching ^[a-zA-Z0-9_.-]{1,64}$). Common offender: $schema from
+    # @azure-devops/mcp which includes it in every tool inputSchema.
+    _STRIP_DOLLAR_KEYS = {"$schema"}
+    for key in _STRIP_DOLLAR_KEYS:
+        normalized.pop(key, None)
 
     return normalized
 

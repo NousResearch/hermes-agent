@@ -443,3 +443,67 @@ def strip_slash_enum(tools: list[dict]) -> tuple[list[dict], int]:
             stripped,
         )
     return tools, stripped
+
+
+# ── Tool name length enforcement ────────────────────────────────────────
+# GitHub Copilot's /chat/completions endpoint enforces a 64-character limit
+# on tool function names for Opus models (Sonnet does not enforce this).
+# Exceeding the limit causes an opaque HTTP 400 "Bad Request" with no
+# field-level detail. This function truncates long names and returns a
+# mapping to reverse the truncation on tool_call responses.
+
+MAX_TOOL_NAME_LENGTH = 64
+
+
+def enforce_tool_name_length(
+    tools: list[dict],
+    max_length: int = MAX_TOOL_NAME_LENGTH,
+) -> tuple[list[dict], dict[str, str]]:
+    """Truncate tool function names exceeding *max_length* characters.
+
+    Returns ``(tools, name_map)`` where *name_map* maps truncated names
+    back to their originals. Tools list is mutated in place — callers that
+    need to preserve the original should deep-copy first.
+
+    The truncation preserves as much of the original name as possible by
+    simple prefix truncation. A disambiguation suffix is appended when
+    multiple tools collide after truncation.
+    """
+    if not tools:
+        return tools, {}
+
+    name_map: dict[str, str] = {}  # truncated → original
+    seen_truncated: dict[str, int] = {}  # truncated → collision count
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name", "")
+        if len(name) <= max_length:
+            continue
+
+        truncated = name[:max_length]
+
+        # Handle collisions: if two different names truncate to the same
+        # string, append a numeric suffix to disambiguate.
+        if truncated in seen_truncated and name_map.get(truncated) != name:
+            seen_truncated[truncated] += 1
+            suffix = str(seen_truncated[truncated])
+            truncated = name[: max_length - len(suffix)] + suffix
+        else:
+            seen_truncated[truncated] = 0
+
+        name_map[truncated] = name
+        fn["name"] = truncated
+
+    if name_map:
+        logger.info(
+            "schema_sanitizer: truncated %d tool name(s) exceeding %d chars "
+            "(Copilot API Opus compatibility)",
+            len(name_map),
+            max_length,
+        )
+    return tools, name_map

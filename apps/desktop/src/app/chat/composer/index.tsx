@@ -65,7 +65,8 @@ import {
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
-  RICH_INPUT_SLOT
+  RICH_INPUT_SLOT,
+  syncComposerDraft
 } from './rich-editor'
 import { SkinSlashPopover } from './skin-slash-popover'
 import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
@@ -568,6 +569,19 @@ export function ChatBar({
     }
   }, [trigger])
 
+  // Commit the live editor DOM into draftRef + the assistant-ui composer
+  // state. Used by the input path and, critically, by compositionend so an
+  // IME-finalised message still reaches app state when the trailing input
+  // event is dropped (Windows/Electron, #39025).
+  const syncDraftFromEditor = useCallback(
+    (editor: HTMLElement | null = editorRef.current) => {
+      draftRef.current = syncComposerDraft(editor, draftRef.current, text => aui.composer().setText(text))
+
+      return draftRef.current
+    },
+    [aui]
+  )
+
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
     // During IME composition the DOM contains uncommitted preedit text
     // mixed with real content.  Skip state writes — compositionend will
@@ -582,12 +596,7 @@ export function ChatBar({
       editor.replaceChildren()
     }
 
-    const nextDraft = composerPlainText(editor)
-
-    if (nextDraft !== draftRef.current) {
-      draftRef.current = nextDraft
-      aui.composer().setText(nextDraft)
-    }
+    syncDraftFromEditor(editor)
 
     window.setTimeout(refreshTrigger, 0)
   }
@@ -936,11 +945,16 @@ export function ChatBar({
   }
 
   const queueCurrentDraft = useCallback(() => {
-    if (!activeQueueSessionKey || (!draft.trim() && attachments.length === 0)) {
+    // Read draftRef (kept synchronously in sync with the editor) rather than
+    // the async `draft` state, so an IME-finalised message queued in the same
+    // tick as compositionend isn't dropped (#39025).
+    const text = draftRef.current
+
+    if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: draft, attachments })) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
       return false
     }
 
@@ -949,7 +963,7 @@ export function ChatBar({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draft])
+  }, [activeQueueSessionKey, attachments, clearDraft])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.
@@ -1054,6 +1068,13 @@ export function ChatBar({
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submitDraft = () => {
+    // Commit the live editor DOM first so the decision below reads the visible
+    // text, not a draft left stale by a dropped post-composition input event
+    // (#39025). draftRef is updated synchronously, so this is robust even when
+    // compositionend and the submit fire in the same tick.
+    const liveDraft = syncDraftFromEditor()
+    const liveHasPayload = liveDraft.trim().length > 0 || attachments.length > 0
+
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
@@ -1064,12 +1085,12 @@ export function ChatBar({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(draft.trim())) {
-        const submitted = draft
+      if (!attachments.length && SLASH_COMMAND_RE.test(liveDraft.trim())) {
+        const submitted = liveDraft
         triggerHaptic('submit')
         clearDraft()
         void onSubmit(submitted)
-      } else if (hasComposerPayload) {
+      } else if (liveHasPayload) {
         queueCurrentDraft()
       } else {
         // Stop button: an explicit interrupt must actually halt the running
@@ -1081,10 +1102,10 @@ export function ChatBar({
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }
-    } else if (!hasComposerPayload && queuedPrompts.length > 0) {
+    } else if (!liveHasPayload && queuedPrompts.length > 0) {
       void drainNextQueued()
-    } else if (draft.trim() || attachments.length > 0) {
-      const submitted = draft
+    } else if (liveDraft.trim() || attachments.length > 0) {
+      const submitted = liveDraft
       triggerHaptic('submit')
       clearDraft()
       clearComposerAttachments()
@@ -1229,6 +1250,10 @@ export function ChatBar({
         onBlur={() => window.setTimeout(closeTrigger, 80)}
         onCompositionEnd={() => {
           composingRef.current = false
+          // The trailing input event that normally commits the finalised text
+          // isn't always delivered on Windows/Electron, leaving the draft stale
+          // so Enter no-ops (#39025). Commit straight from the DOM here.
+          syncDraftFromEditor()
         }}
         onCompositionStart={() => {
           composingRef.current = true

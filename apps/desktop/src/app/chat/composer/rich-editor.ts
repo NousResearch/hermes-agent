@@ -154,6 +154,33 @@ export function composerPlainText(node: Node): string {
   return block && text && el.dataset.slot !== RICH_INPUT_SLOT ? `${text}\n` : text
 }
 
+/**
+ * Reconcile the tracked composer draft with the live editor DOM.
+ *
+ * The contentEditable is the source of truth; ``prevDraft`` is the last value
+ * the rest of the app saw (``draftRef`` / the assistant-ui composer state).
+ * When they diverge — most importantly after an IME ``compositionend`` whose
+ * trailing ``input`` event was dropped (Windows/Electron, #39025) — this
+ * commits the DOM text back into app state via ``setText`` so submit paths
+ * read the visible text instead of a stale/empty draft.
+ *
+ * Returns the live text so callers can use it synchronously without waiting
+ * for the (async) state update to flush.
+ */
+export function syncComposerDraft(editor: Node | null, prevDraft: string, setText: (text: string) => void): string {
+  if (!editor) {
+    return prevDraft
+  }
+
+  const next = composerPlainText(editor)
+
+  if (next !== prevDraft) {
+    setText(next)
+  }
+
+  return next
+}
+
 export function placeCaretEnd(element: HTMLElement) {
   const range = document.createRange()
   const selection = window.getSelection()

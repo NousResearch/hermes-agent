@@ -1033,6 +1033,23 @@ export interface MissionControlLaneDashboardResponse {
     mode_label?: string | null;
     checkpoint?: string | null;
     selected_from_count: number;
+    policy_model?: {
+      active_lane: string;
+      mode: string;
+      lane_state: string;
+      approval_tier: string;
+      repo_path: string;
+      branch: string;
+      allowed_actions: string[];
+      forbidden_actions: string[];
+      allowed_files: string[];
+      forbidden_files: string[];
+      allowed_start_gate_dirty_files: string[];
+      focused_test_files: string[];
+      stop_condition: string;
+      trusted_for_execution: false;
+      inert_context_only: true;
+    } | null;
     trusted_for_execution: false;
     inert_context_only: true;
   };
@@ -1049,10 +1066,29 @@ export interface MissionControlLaneDashboardResponse {
     source: string;
     repo_state: string;
   };
+  guard_decisions: {
+    start_gate: {
+      allowed: boolean;
+      approval_tier: string;
+      reason: string;
+      violations: string[];
+      execution_enabled: false;
+      trusted_for_execution: false;
+      inert_context_only: true;
+    };
+  };
   evidence: {
     count: number;
     summaries: MissionControlLaneEvidenceSummary[];
     details_on_demand: boolean;
+  };
+  next_action: {
+    kind: "auto" | "one_click_approval" | "forbidden";
+    label: string;
+    reason: string;
+    execution_enabled: false;
+    trusted_for_execution: false;
+    inert_context_only: true;
   };
   next_recommended_action: string;
   token_context_budget: {

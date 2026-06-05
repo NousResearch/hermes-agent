@@ -24,6 +24,8 @@ def test_lane_dashboard_component_renders_required_read_only_sections():
         "Allowed actions",
         "Forbidden actions",
         "Start Gate",
+        "Guard decision",
+        "Next action type",
         "Evidence summaries",
         "Next recommended action",
         "Token/context budget",
@@ -73,6 +75,7 @@ def test_lane_dashboard_omits_transcript_and_execution_controls():
         "getSessionMessages",
         "getSessionLatestDescendant",
         "window.location",
+        "nextAction",
     ):
         assert token not in source
 

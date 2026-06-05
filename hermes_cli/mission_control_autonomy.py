@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class LaneState(str, Enum):
@@ -114,6 +115,118 @@ class GuardDecision:
         object.__setattr__(self, "evidence_cards", tuple(self.evidence_cards))
 
 
+def task_control_envelope_model_from_record(record: dict[str, Any]) -> TaskControlEnvelopeModel:
+    """Convert a stored Mission Control envelope record into an inert policy model.
+
+    The record is treated as opaque stored data. This helper does not resolve
+    paths, inspect git state, load transcripts, execute tools, or authorize
+    future action.
+    """
+    lane_lock = _dict(record.get("lane_lock"))
+    repo_context = _dict(record.get("repo_context"))
+    metadata = _dict(record.get("metadata"))
+    return TaskControlEnvelopeModel(
+        active_lane=_text(lane_lock.get("active_lane"), _text(record.get("title"), "No active lane")),
+        mode=_text(record.get("mode"), "unknown"),
+        lane_state=_lane_state(record.get("status")),
+        approval_tier=_approval_tier(metadata.get("approval_tier")),
+        repo_path=_text(repo_context.get("path")),
+        branch=_text(repo_context.get("branch")),
+        allowed_actions=_string_tuple(record.get("allowed_actions")),
+        forbidden_actions=_string_tuple(record.get("forbidden_actions")),
+        allowed_files=_string_tuple(metadata.get("allowed_files")),
+        forbidden_files=_string_tuple(metadata.get("forbidden_files")),
+        allowed_start_gate_dirty_files=_string_tuple(
+            metadata.get("allowed_start_gate_dirty_files")
+        ),
+        focused_test_files=_string_tuple(metadata.get("focused_test_files")),
+        stop_condition=_text(metadata.get("stop_condition")),
+    )
+
+
+def task_control_envelope_model_summary(model: TaskControlEnvelopeModel) -> dict[str, Any]:
+    return {
+        "active_lane": model.active_lane,
+        "mode": model.mode,
+        "lane_state": model.lane_state.value,
+        "approval_tier": model.approval_tier.value,
+        "repo_path": model.repo_path,
+        "branch": model.branch,
+        "allowed_actions": list(model.allowed_actions),
+        "forbidden_actions": list(model.forbidden_actions),
+        "allowed_files": list(model.allowed_files),
+        "forbidden_files": list(model.forbidden_files),
+        "allowed_start_gate_dirty_files": list(model.allowed_start_gate_dirty_files),
+        "focused_test_files": list(model.focused_test_files),
+        "stop_condition": model.stop_condition,
+        "trusted_for_execution": False,
+        "inert_context_only": True,
+    }
+
+
+def summarize_guard_decision(decision: GuardDecision | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(decision, dict):
+        allowed = bool(decision.get("allowed"))
+        approval_tier = _approval_tier(decision.get("approval_tier"))
+        reason = _text(decision.get("reason"), "unknown")
+        violations = _string_tuple(decision.get("violations"))
+    else:
+        allowed = decision.allowed
+        approval_tier = decision.approval_tier
+        reason = decision.reason
+        violations = decision.violations
+    return {
+        "allowed": allowed,
+        "approval_tier": approval_tier.value,
+        "reason": reason,
+        "violations": list(violations),
+        "execution_enabled": False,
+        "trusted_for_execution": False,
+        "inert_context_only": True,
+    }
+
+
+def next_action_decision_summary(
+    envelope: TaskControlEnvelopeModel | None,
+    start_gate_decision: GuardDecision | dict[str, Any] | None,
+) -> dict[str, Any]:
+    decision = (
+        summarize_guard_decision(start_gate_decision)
+        if start_gate_decision is not None
+        else summarize_guard_decision(
+            GuardDecision(
+                allowed=False,
+                approval_tier=ApprovalTier.FORBIDDEN,
+                reason="no_start_gate_decision",
+            )
+        )
+    )
+    if envelope is None:
+        kind = "forbidden"
+        label = "Forbidden"
+        reason = "no_task_control_envelope"
+    elif not decision["allowed"] or envelope.approval_tier is ApprovalTier.FORBIDDEN:
+        kind = "forbidden"
+        label = "Forbidden"
+        reason = decision["reason"]
+    elif envelope.approval_tier is ApprovalTier.READ_ONLY:
+        kind = "auto"
+        label = "Auto read-only"
+        reason = "read_only_lane_after_start_gate"
+    else:
+        kind = "one_click_approval"
+        label = "One-click approval required"
+        reason = "approval_required_for_non_read_only_lane"
+    return {
+        "kind": kind,
+        "label": label,
+        "reason": reason,
+        "execution_enabled": False,
+        "trusted_for_execution": False,
+        "inert_context_only": True,
+    }
+
+
 def validate_start_gate(
     envelope: TaskControlEnvelopeModel,
     *,
@@ -209,3 +322,49 @@ def _tuple_of_text(values: tuple[str, ...]) -> tuple[str, ...]:
     if values is None:
         return ()
     return tuple(str(value) for value in values)
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _text(value: Any, fallback: str = "") -> str:
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    return text or fallback
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(str(item) for item in value if isinstance(item, str))
+
+
+def _lane_state(value: Any) -> LaneState:
+    text = _text(value, "stopped")
+    if text == "completed":
+        return LaneState.COMPLETE
+    if text == "archived":
+        return LaneState.STOPPED
+    try:
+        return LaneState(text)
+    except ValueError:
+        return LaneState.STOPPED
+
+
+def _approval_tier(value: Any) -> ApprovalTier:
+    text = _text(value, "forbidden").lower().replace("-", "_").replace("/", "_")
+    text = "_".join(part for part in text.split() if part)
+    aliases = {
+        "read_only": ApprovalTier.READ_ONLY,
+        "read_only_only": ApprovalTier.READ_ONLY,
+        "readonly": ApprovalTier.READ_ONLY,
+        "code_test": ApprovalTier.CODE_TEST,
+        "code_test_only": ApprovalTier.CODE_TEST,
+        "code_testing": ApprovalTier.CODE_TEST,
+        "code": ApprovalTier.CODE_TEST,
+        "elevated": ApprovalTier.ELEVATED,
+        "forbidden": ApprovalTier.FORBIDDEN,
+    }
+    return aliases.get(text, ApprovalTier.FORBIDDEN)

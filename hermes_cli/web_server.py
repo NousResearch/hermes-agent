@@ -2963,6 +2963,45 @@ def _token_estimates(envelope: dict[str, Any] | None, evidence: list[dict[str, A
     }
 
 
+def _lane_policy_read_model(envelope: dict[str, Any] | None) -> dict[str, Any]:
+    from hermes_cli.mission_control_autonomy import (
+        ApprovalTier,
+        GuardDecision,
+        next_action_decision_summary,
+        summarize_guard_decision,
+        task_control_envelope_model_from_record,
+        task_control_envelope_model_summary,
+        validate_start_gate,
+    )
+
+    if not envelope:
+        start_gate = GuardDecision(
+            allowed=False,
+            approval_tier=ApprovalTier.FORBIDDEN,
+            reason="no_task_control_envelope",
+        )
+        return {
+            "policy_model": None,
+            "start_gate": summarize_guard_decision(start_gate),
+            "next_action": next_action_decision_summary(None, start_gate),
+        }
+
+    model = task_control_envelope_model_from_record(envelope)
+    metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+    start_gate_dirty_files = _safe_string_list(metadata.get("start_gate_dirty_files"))
+    start_gate = validate_start_gate(
+        model,
+        repo_path=model.repo_path,
+        branch=model.branch,
+        dirty_files=tuple(start_gate_dirty_files),
+    )
+    return {
+        "policy_model": task_control_envelope_model_summary(model),
+        "start_gate": summarize_guard_decision(start_gate),
+        "next_action": next_action_decision_summary(model, start_gate),
+    }
+
+
 def _active_lane_dashboard_payload() -> dict[str, Any]:
     from hermes_cli.mission_control_approval_slices import state_dir as approval_slice_state_dir
     from hermes_cli.mission_control_evidence_cards import state_dir as evidence_card_state_dir
@@ -3020,6 +3059,7 @@ def _active_lane_dashboard_payload() -> dict[str, Any]:
         metadata.get("quarantine_warning"),
         "No parent scans or quarantined path access are allowed from this dashboard.",
     )
+    policy_read_model = _lane_policy_read_model(envelope)
 
     return {
         "mode": "local_read_only",
@@ -3036,6 +3076,7 @@ def _active_lane_dashboard_payload() -> dict[str, Any]:
             "mode_label": (envelope or {}).get("mode_label", ""),
             "checkpoint": checkpoint,
             "selected_from_count": len(envelopes),
+            "policy_model": policy_read_model["policy_model"],
             "trusted_for_execution": False,
             "inert_context_only": True,
         },
@@ -3052,11 +3093,15 @@ def _active_lane_dashboard_payload() -> dict[str, Any]:
             "source": _first_text(repo_context.get("source"), "not_probed"),
             "repo_state": _first_text(repo_context.get("dirty_state"), "unknown"),
         },
+        "guard_decisions": {
+            "start_gate": policy_read_model["start_gate"],
+        },
         "evidence": {
             "count": len(evidence_cards),
             "summaries": evidence_summaries,
             "details_on_demand": True,
         },
+        "next_action": policy_read_model["next_action"],
         "next_recommended_action": next_action,
         "token_context_budget": _token_estimates(envelope, evidence_cards),
         "safety": {

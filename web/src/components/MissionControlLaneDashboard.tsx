@@ -29,6 +29,11 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
+function decisionText(values?: string[] | null): string {
+  if (!values?.length) return "No violations";
+  return values.join(", ");
+}
+
 function Section({
   title,
   children,
@@ -88,6 +93,7 @@ function DashboardContent({ data }: { data: MissionControlLaneDashboardResponse 
           <Metric label="Active lane" value={data.active_lane.label} />
           <Metric label="Approval tier" value={data.approval_tier.label} />
           <Metric label="Start Gate" value={`${data.start_gate.status} · ${data.start_gate.repo_state}`} />
+          <Metric label="Next action type" value={data.next_action.label} />
           <Metric label="Evidence summaries" value={`${data.evidence.count} recorded`} />
         </section>
 
@@ -117,6 +123,18 @@ function DashboardContent({ data }: { data: MissionControlLaneDashboardResponse 
             <div className="break-words text-sm leading-6 text-text-secondary">{listText(data.forbidden_actions)}</div>
           </Section>
         </div>
+
+        <Section title="Guard decision">
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            <Metric label="Start gate" value={data.guard_decisions.start_gate.allowed ? "Allowed" : "Forbidden"} />
+            <Metric label="Reason" value={data.guard_decisions.start_gate.reason} />
+            <Metric label="Approval model" value={data.guard_decisions.start_gate.approval_tier} />
+            <Metric label="Execution enabled" value={String(data.guard_decisions.start_gate.execution_enabled)} />
+          </div>
+          <div className="mt-2 rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-sm leading-6 text-text-secondary">
+            {decisionText(data.guard_decisions.start_gate.violations)}
+          </div>
+        </Section>
 
         <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
           <Section title="Evidence summaries">

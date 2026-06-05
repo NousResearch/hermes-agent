@@ -181,6 +181,34 @@ def test_lane_dashboard_summarizes_envelope_slice_and_evidence_without_runtime_a
         "source": "OR1C Start Gate",
         "repo_state": "only excluded generated website files",
     }
+    assert body["task_control_envelope"]["policy_model"] == {
+        "active_lane": "Hermes OS lane dashboard MVP",
+        "mode": "implement-slice",
+        "lane_state": "active",
+        "approval_tier": "code_test",
+        "repo_path": "/home/jenny/.hermes/hermes-context-routing-e1d-integration",
+        "branch": "mission-control-os-stateful-foundation",
+        "allowed_actions": _envelope_payload()["allowed_actions"],
+        "forbidden_actions": _envelope_payload()["forbidden_actions"],
+        "allowed_files": [],
+        "forbidden_files": [],
+        "allowed_start_gate_dirty_files": [],
+        "focused_test_files": [],
+        "stop_condition": "",
+        "trusted_for_execution": False,
+        "inert_context_only": True,
+    }
+    assert body["guard_decisions"]["start_gate"] == {
+        "allowed": True,
+        "approval_tier": "code_test",
+        "reason": "start_gate_passed",
+        "violations": [],
+        "execution_enabled": False,
+        "trusted_for_execution": False,
+        "inert_context_only": True,
+    }
+    assert body["next_action"]["kind"] == "one_click_approval"
+    assert body["next_action"]["execution_enabled"] is False
     assert body["allowed_actions"] == _envelope_payload()["allowed_actions"]
     assert body["forbidden_actions"] == _envelope_payload()["forbidden_actions"]
     assert body["evidence"]["count"] == 2

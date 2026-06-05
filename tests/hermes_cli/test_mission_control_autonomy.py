@@ -214,3 +214,105 @@ def test_autonomy_models_are_frozen_dataclasses_and_module_has_no_runtime_wiring
     }
     for symbol in forbidden_symbols:
         assert symbol not in source
+
+
+def test_stored_task_control_envelope_converts_to_inert_policy_model():
+    from hermes_cli.mission_control_autonomy import (
+        ApprovalTier,
+        LaneState,
+        task_control_envelope_model_from_record,
+    )
+
+    model = task_control_envelope_model_from_record(
+        {
+            "status": "active",
+            "title": "Fallback lane",
+            "mode": "implement-slice",
+            "allowed_actions": ["read_files", "edit_files", "run_focused_tests"],
+            "forbidden_actions": ["deploy", "restart_service"],
+            "repo_context": {
+                "path": "/repo",
+                "branch": "feature-branch",
+            },
+            "lane_lock": {"active_lane": "Hermes OS autonomy read-model wiring"},
+            "metadata": {
+                "approval_tier": "code/test only",
+                "allowed_files": ["hermes_cli/mission_control_autonomy.py"],
+                "forbidden_files": ["website/static/api/skills.json"],
+                "allowed_start_gate_dirty_files": ["website/static/api/skills.json"],
+                "focused_test_files": ["tests/hermes_cli/test_mission_control_autonomy.py"],
+                "stop_condition": "stop before commit",
+            },
+        }
+    )
+
+    assert model.active_lane == "Hermes OS autonomy read-model wiring"
+    assert model.mode == "implement-slice"
+    assert model.lane_state is LaneState.ACTIVE
+    assert model.approval_tier is ApprovalTier.CODE_TEST
+    assert model.repo_path == "/repo"
+    assert model.branch == "feature-branch"
+    assert model.allowed_actions == ("read_files", "edit_files", "run_focused_tests")
+    assert model.forbidden_actions == ("deploy", "restart_service")
+    assert model.allowed_files == ("hermes_cli/mission_control_autonomy.py",)
+    assert model.forbidden_files == ("website/static/api/skills.json",)
+    assert model.allowed_start_gate_dirty_files == ("website/static/api/skills.json",)
+    assert model.focused_test_files == ("tests/hermes_cli/test_mission_control_autonomy.py",)
+    assert model.stop_condition == "stop before commit"
+
+
+def test_policy_read_summaries_are_decision_only_and_classify_next_action():
+    from hermes_cli.mission_control_autonomy import (
+        ApprovalTier,
+        ToolRequest,
+        decide_tool_request,
+        next_action_decision_summary,
+        summarize_guard_decision,
+        task_control_envelope_model_from_record,
+        validate_start_gate,
+    )
+
+    model = task_control_envelope_model_from_record(
+        {
+            "status": "active",
+            "title": "Read-only lane",
+            "mode": "inspection-only",
+            "allowed_actions": ["read_files"],
+            "forbidden_actions": ["deploy"],
+            "repo_context": {"path": "/repo", "branch": "main"},
+            "metadata": {"approval_tier": "read_only"},
+        }
+    )
+    start_gate = validate_start_gate(model, repo_path="/repo", branch="main", dirty_files=())
+    guard_summary = summarize_guard_decision(start_gate)
+
+    assert guard_summary == {
+        "allowed": True,
+        "approval_tier": "read_only",
+        "reason": "start_gate_passed",
+        "violations": [],
+        "execution_enabled": False,
+        "trusted_for_execution": False,
+        "inert_context_only": True,
+    }
+    assert next_action_decision_summary(model, start_gate)["kind"] == "auto"
+
+    code_model = dataclasses.replace(model, approval_tier=ApprovalTier.CODE_TEST)
+    code_start_gate = validate_start_gate(code_model, repo_path="/repo", branch="main", dirty_files=())
+    assert next_action_decision_summary(code_model, code_start_gate)["kind"] == "one_click_approval"
+
+    blocked = summarize_guard_decision(
+        validate_start_gate(code_model, repo_path="/repo", branch="wrong", dirty_files=())
+    )
+    assert blocked["allowed"] is False
+    assert blocked["approval_tier"] == "forbidden"
+    assert next_action_decision_summary(code_model, blocked)["kind"] == "forbidden"
+
+    tool_summary = summarize_guard_decision(
+        decide_tool_request(
+            code_model,
+            ToolRequest(tool_name="deploy", action="deploy", executes=True),
+        )
+    )
+    assert tool_summary["allowed"] is False
+    assert tool_summary["execution_enabled"] is False

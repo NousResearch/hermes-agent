@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import locale
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -255,6 +256,8 @@ def test_gateway_force_kill_hides_taskkill_window(monkeypatch):
                 "capture_output": True,
                 "text": True,
                 "timeout": 10,
+                "encoding": locale.getpreferredencoding(False),
+                "errors": "replace",
                 "creationflags": _CREATE_NO_WINDOW,
             },
         )

@@ -14,11 +14,14 @@ from contextlib import asynccontextmanager
 import asyncio
 import base64
 import binascii
+from dataclasses import dataclass
+from datetime import datetime, timezone
 import hmac
 import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
 import stat
 import subprocess
@@ -26,6 +29,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -135,9 +139,13 @@ app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 _SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
-# In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
-# or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
-_DASHBOARD_EMBEDDED_CHAT_ENABLED = False
+# In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
+# desktop app and the dashboard's own Chat tab both drive the agent over the
+# `/api/ws` + `/api/pty` WebSockets, so the embedded-chat surface is an
+# unconditional part of the dashboard.  Kept as a module-level constant (rather
+# than inlining ``True`` at every gate) so the WS endpoints and the SPA token
+# injection share a single, testable seam.
+_DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
@@ -551,6 +559,14 @@ class MessagingPlatformUpdate(BaseModel):
     enabled: Optional[bool] = None
     env: Dict[str, str] = {}
     clear_env: List[str] = []
+
+
+class TelegramOnboardingStart(BaseModel):
+    bot_name: Optional[str] = None
+
+
+class TelegramOnboardingApply(BaseModel):
+    allowed_user_ids: List[str]
 
 
 class AudioTranscriptionRequest(BaseModel):
@@ -1588,6 +1604,7 @@ async def get_sessions(
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
+                exclude_children=True,
             )
             now = time.time()
             for s in sessions:
@@ -1605,16 +1622,125 @@ async def get_sessions(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.get("/api/profiles/sessions")
+async def get_profiles_sessions(
+    limit: int = 20,
+    offset: int = 0,
+    min_messages: int = 0,
+    archived: str = "exclude",
+    order: str = "recent",
+    profile: str = "all",
+):
+    """Unified, read-only session list aggregated across ALL profiles.
+
+    Intentionally process-light: this opens each profile's ``state.db`` directly
+    from disk — it does NOT spawn a dashboard backend per profile. Each returned
+    session is tagged with its owning ``profile`` so the desktop renders one
+    browsable list and only spins up a profile's backend when the user actually
+    interacts (sends a message). A user with a single (default) profile gets the
+    same rows as ``/api/sessions``, just tagged ``profile="default"``.
+    """
+    if archived not in ("exclude", "only", "include"):
+        raise HTTPException(status_code=400, detail="archived must be one of: exclude, only, include")
+    if order not in ("created", "recent"):
+        raise HTTPException(status_code=400, detail="order must be one of: created, recent")
+
+    from hermes_state import SessionDB
+    from hermes_cli import profiles as profiles_mod
+
+    targets: List[Tuple[str, Path]] = []
+    if profile and profile != "all":
+        name, home = _cron_profile_home(profile)
+        targets.append((name, home))
+    else:
+        try:
+            infos = profiles_mod.list_profiles()
+            targets = [(info.name, info.path) for info in infos]
+        except Exception:
+            _log.exception("GET /api/profiles/sessions: list_profiles failed")
+            targets = []
+        if not targets:
+            targets.append(("default", profiles_mod.get_profile_dir("default")))
+
+    min_message_count = max(0, min_messages)
+    archived_only = archived == "only"
+    include_archived = archived == "include"
+    # Over-fetch per profile so the merged+sorted window is correct for the
+    # requested page. Capped so a huge profile can't blow up the response.
+    per_profile = min(max(limit + offset, limit), 500)
+
+    merged: List[Dict[str, Any]] = []
+    total = 0
+    profile_totals: Dict[str, int] = {}
+    errors: List[Dict[str, str]] = []
+    now = time.time()
+    for name, home in targets:
+        db_path = Path(home) / "state.db"
+        if not db_path.exists():
+            continue
+        try:
+            # Read-only: this loop runs on every sidebar refresh, so it must
+            # never DDL/write-lock another profile's live DB (see SessionDB
+            # read_only docstring).
+            db = SessionDB(db_path=db_path, read_only=True)
+        except Exception as exc:
+            errors.append({"profile": name, "error": str(exc)})
+            continue
+        try:
+            rows = db.list_sessions_rich(
+                limit=per_profile,
+                offset=0,
+                min_message_count=min_message_count,
+                include_archived=include_archived,
+                archived_only=archived_only,
+                order_by_last_active=order == "recent",
+            )
+            profile_total = db.session_count(
+                min_message_count=min_message_count,
+                include_archived=include_archived,
+                archived_only=archived_only,
+                exclude_children=True,
+            )
+            total += profile_total
+            profile_totals[name] = profile_total
+            for s in rows:
+                s["profile"] = name
+                s["is_default_profile"] = name == "default"
+                s["is_active"] = (
+                    s.get("ended_at") is None
+                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                )
+                s["archived"] = bool(s.get("archived"))
+                merged.append(s)
+        except Exception as exc:
+            errors.append({"profile": name, "error": str(exc)})
+        finally:
+            db.close()
+
+    sort_key = "last_active" if order == "recent" else "started_at"
+    merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
+    window = merged[offset:offset + limit]
+    return {
+        "sessions": window,
+        "total": total,
+        "profile_totals": profile_totals,
+        "limit": limit,
+        "offset": offset,
+        "errors": errors,
+    }
+
+
 @app.get("/api/sessions/search")
 async def search_sessions(q: str = "", limit: int = 20):
-    """Full-text search across session message content using FTS5.
+    """Search sessions by ID plus full-text message content using FTS5.
 
-    Results are deduped by compression lineage, not by raw ``session_id``.
-    Auto-compression rotates a conversation onto a fresh session id (and leaves
-    the old segment's messages in the FTS index), so one logical chat can own
-    many ``sessions`` rows that all match the same query. Branches also use
-    ``parent_session_id``, but they are real alternate conversations; don't
-    collapse branch-specific hits back into the parent.
+    Direct session-id matches are surfaced first, then FTS message-content
+    matches. Results are deduped by compression lineage, not by raw
+    ``session_id``. Auto-compression rotates a conversation onto a fresh
+    session id (and leaves the old segment's messages in the FTS index), so one
+    logical chat can own many ``sessions`` rows that all match the same query.
+    Branches also use ``parent_session_id``, but they are real alternate
+    conversations; don't collapse branch-specific hits back into the parent.
     """
     if not q or not q.strip():
         return {"results": []}
@@ -1622,21 +1748,7 @@ async def search_sessions(q: str = "", limit: int = 20):
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            # Auto-add prefix wildcards so partial words match
-            # e.g. "nimb" → "nimb*" matches "nimby"
-            # Preserve quoted phrases and existing wildcards as-is
-            import re
-            terms = []
-            for token in re.findall(r'"[^"]*"|\S+', q.strip()):
-                if token.startswith('"') or token.endswith("*"):
-                    terms.append(token)
-                else:
-                    terms.append(token + "*")
-            prefix_query = " ".join(terms)
-            # Over-fetch so lineage dedup can still surface `limit` distinct
-            # conversations even when several hits collapse onto one root.
-            fetch_limit = max(limit * 5, 50)
-            matches = db.search_messages(query=prefix_query, limit=fetch_limit)
+            safe_limit = max(1, min(int(limit or 20), 100))
 
             # Walk parent_session_id to the compression root, memoized so a
             # chain of compression segments only costs one walk. We deliberately
@@ -1708,24 +1820,71 @@ async def search_sessions(q: str = "", limit: int = 20):
                 tip_cache[root_id] = tip
                 return tip
 
-            # Keep the best (first / most relevant) hit per compression root.
+            # Both ID matches and content matches share one keyspace, keyed by
+            # compression lineage root, so an id-hit and a content-hit on the
+            # same logical conversation collapse to a single result. The first
+            # hit for a lineage wins; ID matches run first and take priority.
             seen: dict = {}
-            for m in matches:
-                raw_sid = m["session_id"]
+
+            def add_lineage_result(raw_sid: str, payload: dict) -> None:
+                if not raw_sid:
+                    return
                 root = compression_root(raw_sid)
-                if root in seen:
-                    continue
-                seen[root] = {
-                    "session_id": lineage_tip(root),
-                    "lineage_root": root,
-                    "snippet": m.get("snippet", ""),
-                    "role": m.get("role"),
-                    "source": m.get("source"),
-                    "model": m.get("model"),
-                    "session_started": m.get("session_started"),
-                }
-                if len(seen) >= limit:
+                if root in seen or len(seen) >= safe_limit:
+                    return
+                payload = dict(payload)
+                payload["session_id"] = lineage_tip(root)
+                payload["lineage_root"] = root
+                seen[root] = payload
+
+            # Direct ID matches first: users often paste a session id from CLI,
+            # logs, or another Hermes surface. FTS can't find those unless the
+            # id happens to appear in message text. search_sessions_by_id is
+            # SQL-bounded, so this stays cheap even with thousands of sessions.
+            for row in db.search_sessions_by_id(q, limit=safe_limit, include_archived=True):
+                sid = row.get("id")
+                preview = (row.get("preview") or "").strip()
+                snippet = preview or f"Session ID: {sid}"
+                add_lineage_result(
+                    sid,
+                    {
+                        "snippet": snippet,
+                        "role": None,
+                        "source": row.get("source"),
+                        "model": row.get("model"),
+                        "session_started": row.get("started_at"),
+                    },
+                )
+
+            # Auto-add prefix wildcards so partial words match
+            # e.g. "nimb" → "nimb*" matches "nimby"
+            # Preserve quoted phrases and existing wildcards as-is
+            import re
+            terms = []
+            for token in re.findall(r'"[^"]*"|\S+', q.strip()):
+                if token.startswith('"') or token.endswith("*"):
+                    terms.append(token)
+                else:
+                    terms.append(token + "*")
+            prefix_query = " ".join(terms)
+            # Over-fetch so lineage dedup can still surface `limit` distinct
+            # conversations even when several hits collapse onto one root.
+            fetch_limit = max(safe_limit * 5, 50)
+            matches = db.search_messages(query=prefix_query, limit=fetch_limit)
+
+            for m in matches:
+                if len(seen) >= safe_limit:
                     break
+                add_lineage_result(
+                    m["session_id"],
+                    {
+                        "snippet": m.get("snippet", ""),
+                        "role": m.get("role"),
+                        "source": m.get("source"),
+                        "model": m.get("model"),
+                        "session_started": m.get("session_started"),
+                    },
+                )
             return {"results": list(seen.values())}
         finally:
             db.close()
@@ -2795,18 +2954,66 @@ def _channel_managed_env_keys() -> frozenset[str]:
         return frozenset()
 
 
+# Cross-cutting gateway / relay knobs stay on the Keys → Settings tab even though
+# they use the ``messaging`` category in OPTIONAL_ENV_VARS. Platform-scoped vars
+# (``DISCORD_*``, ``MATRIX_*``, …) are owned by the Messaging UI instead.
+_MESSAGING_KEYS_PAGE_KEYS = frozenset({
+    "GATEWAY_ALLOW_ALL_USERS",
+    "GATEWAY_PROXY_KEY",
+    "GATEWAY_PROXY_URL",
+})
+
+
+def _platform_env_prefixes(platform_id: str) -> tuple[str, ...]:
+    """Env-var prefixes owned by a messaging platform card."""
+    aliases: dict[str, tuple[str, ...]] = {
+        "email": ("EMAIL_",),
+        "homeassistant": ("HASS_",),
+        "qqbot": ("QQ_", "QQBOT_"),
+        "sms": ("TWILIO_",),
+        "wecom": ("WECOM_BOT_", "WECOM_SECRET"),
+        "wecom_callback": ("WECOM_CALLBACK_",),
+    }
+    if platform_id in aliases:
+        return aliases[platform_id]
+    return (platform_id.upper().replace("-", "_") + "_",)
+
+
+def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:
+    """All messaging-category env vars for a platform (override + plugin + prefix)."""
+    prefixes = _platform_env_prefixes(platform_id)
+    keys: list[str] = []
+    for name, info in OPTIONAL_ENV_VARS.items():
+        if info.get("category") != "messaging":
+            continue
+        if name in _MESSAGING_KEYS_PAGE_KEYS:
+            continue
+        if not any(name.startswith(prefix) for prefix in prefixes):
+            continue
+        keys.append(name)
+    return tuple(sorted(set(keys)))
+
+
+def _merge_platform_env_vars(
+    platform_id: str,
+    override: dict[str, Any],
+    plugin_entry: Any | None,
+) -> tuple[str, ...]:
+    """Canonical env-var list for a messaging platform card."""
+    discovered = _discover_platform_env_vars(platform_id)
+    if "env_vars" in override:
+        return tuple(dict.fromkeys((*override["env_vars"], *discovered)))
+    if plugin_entry is not None and plugin_entry.required_env:
+        return tuple(dict.fromkeys((*tuple(plugin_entry.required_env), *discovered)))
+    return discovered
+
+
 def _build_catalog_entry(
     platform_id: str, plugin_entry: Any | None = None
 ) -> dict[str, Any]:
     override = _PLATFORM_OVERRIDES.get(platform_id, {})
 
-    if "env_vars" in override:
-        env_vars: tuple[str, ...] = tuple(override["env_vars"])
-    elif plugin_entry is not None and plugin_entry.required_env:
-        env_vars = tuple(plugin_entry.required_env)
-    else:
-        prefix = platform_id.upper() + "_"
-        env_vars = tuple(k for k in OPTIONAL_ENV_VARS if k.startswith(prefix))
+    env_vars = _merge_platform_env_vars(platform_id, override, plugin_entry)
 
     if "required_env" in override:
         required_env = tuple(override["required_env"])
@@ -2962,6 +3169,329 @@ def _write_platform_enabled(platform_id: str, enabled: bool) -> None:
         platforms[platform_id] = platform_config
     platform_config["enabled"] = enabled
     save_config(config)
+
+
+_TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
+_TELEGRAM_USER_ID_RE = re.compile(r"^\d+$")
+
+
+@dataclass
+class _TelegramOnboardingPairing:
+    poll_token: str
+    expires_at: str
+    expires_at_ts: float
+    bot_token: str | None = None
+    bot_username: str | None = None
+    owner_user_id: str | None = None
+
+
+_telegram_onboarding_pairings: dict[str, _TelegramOnboardingPairing] = {}
+_telegram_onboarding_lock = threading.RLock()
+
+
+def _telegram_onboarding_base_url() -> str:
+    return (
+        os.getenv("TELEGRAM_ONBOARDING_URL", _TELEGRAM_ONBOARDING_DEFAULT_URL)
+        .strip()
+        .rstrip("/")
+    )
+
+
+def _parse_expiry_ts(value: str) -> float:
+    try:
+        normalized = value.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except Exception:
+        return time.time() + 600
+
+
+def _prune_telegram_onboarding_pairings() -> None:
+    now = time.time()
+    expired = [
+        pairing_id
+        for pairing_id, record in _telegram_onboarding_pairings.items()
+        if record.expires_at_ts <= now
+    ]
+    for pairing_id in expired:
+        _telegram_onboarding_pairings.pop(pairing_id, None)
+
+
+def _normalize_telegram_user_id(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    if _TELEGRAM_USER_ID_RE.fullmatch(normalized):
+        return normalized
+    return None
+
+
+def _telegram_onboarding_error_message(error: str, fallback: str) -> str:
+    return {
+        "not_found": "Telegram pairing was not found. Start a new setup.",
+        "expired": "Telegram setup expired. Start a new setup.",
+        "claimed": "Telegram setup was already claimed. Start a new setup.",
+        "unauthorized": "Telegram setup service rejected this request.",
+        "telegram_manager_bot_token_not_configured": "Telegram setup service is not configured.",
+        "telegram_token_fetch_failed": "Telegram could not finish bot setup. Try again.",
+    }.get(error, fallback)
+
+
+def _telegram_onboarding_request_sync(
+    method: str,
+    path: str,
+    *,
+    body: dict[str, Any] | None = None,
+    bearer_token: str | None = None,
+) -> dict[str, Any]:
+    data = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+
+    request = urllib.request.Request(
+        f"{_telegram_onboarding_base_url()}{path}",
+        data=data,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as exc:
+        payload = exc.read()
+        try:
+            parsed = json.loads(payload.decode("utf-8"))
+        except Exception:
+            parsed = {}
+        error = str(parsed.get("error") or parsed.get("status") or "")
+        detail = _telegram_onboarding_error_message(
+            error,
+            "Telegram setup service returned an error.",
+        )
+        status_code = 404 if exc.code == 404 else 502
+        if error in {"expired", "claimed"}:
+            status_code = 410
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Telegram setup service is unavailable. Try again shortly.",
+        ) from exc
+
+    try:
+        parsed = json.loads(payload.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Telegram setup service returned an invalid response.",
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(
+            status_code=502,
+            detail="Telegram setup service returned an invalid response.",
+        )
+    return parsed
+
+
+async def _telegram_onboarding_request(
+    method: str,
+    path: str,
+    *,
+    body: dict[str, Any] | None = None,
+    bearer_token: str | None = None,
+) -> dict[str, Any]:
+    return await asyncio.to_thread(
+        _telegram_onboarding_request_sync,
+        method,
+        path,
+        body=body,
+        bearer_token=bearer_token,
+    )
+
+
+@app.post("/api/messaging/telegram/onboarding/start")
+async def start_telegram_onboarding(body: TelegramOnboardingStart):
+    bot_name = (body.bot_name or "Hermes Agent").strip() or "Hermes Agent"
+    payload = await _telegram_onboarding_request(
+        "POST",
+        "/v1/telegram/pairings",
+        body={"bot_name": bot_name},
+    )
+
+    pairing_id = str(payload.get("pairing_id") or "").strip()
+    poll_token = str(payload.get("poll_token") or "").strip()
+    expires_at = str(payload.get("expires_at") or "").strip()
+    deep_link = str(payload.get("deep_link") or "").strip()
+    qr_payload = str(payload.get("qr_payload") or deep_link).strip()
+    suggested_username = str(payload.get("suggested_username") or "").strip()
+    if not pairing_id or not poll_token or not expires_at or not deep_link:
+        raise HTTPException(
+            status_code=502,
+            detail="Telegram setup service returned an incomplete response.",
+        )
+
+    with _telegram_onboarding_lock:
+        _prune_telegram_onboarding_pairings()
+        _telegram_onboarding_pairings[pairing_id] = _TelegramOnboardingPairing(
+            poll_token=poll_token,
+            expires_at=expires_at,
+            expires_at_ts=_parse_expiry_ts(expires_at),
+        )
+
+    return {
+        "pairing_id": pairing_id,
+        "suggested_username": suggested_username,
+        "deep_link": deep_link,
+        "qr_payload": qr_payload,
+        "expires_at": expires_at,
+    }
+
+
+@app.get("/api/messaging/telegram/onboarding/{pairing_id}")
+async def get_telegram_onboarding_status(pairing_id: str):
+    with _telegram_onboarding_lock:
+        _prune_telegram_onboarding_pairings()
+        record = _telegram_onboarding_pairings.get(pairing_id)
+        if not record:
+            raise HTTPException(
+                status_code=404,
+                detail="Telegram setup session was not found. Start a new setup.",
+            )
+        if record.bot_token:
+            return {
+                "status": "ready",
+                "bot_username": record.bot_username,
+                "owner_user_id": record.owner_user_id,
+                "expires_at": record.expires_at,
+            }
+        poll_token = record.poll_token
+
+    payload = await _telegram_onboarding_request(
+        "GET",
+        f"/v1/telegram/pairings/{urllib.parse.quote(pairing_id, safe='')}",
+        bearer_token=poll_token,
+    )
+    status = str(payload.get("status") or "").strip()
+    if status == "waiting":
+        with _telegram_onboarding_lock:
+            current = _telegram_onboarding_pairings.get(pairing_id)
+            expires_at = current.expires_at if current else ""
+        return {"status": "waiting", "expires_at": expires_at}
+
+    if status == "ready":
+        bot_token = str(payload.get("token") or "").strip()
+        bot_username = str(payload.get("bot_username") or "").strip()
+        if not bot_token:
+            raise HTTPException(
+                status_code=502,
+                detail="Telegram setup service returned an incomplete response.",
+            )
+        owner_user_id = _normalize_telegram_user_id(payload.get("owner_user_id"))
+        with _telegram_onboarding_lock:
+            record = _telegram_onboarding_pairings.get(pairing_id)
+            if not record:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Telegram setup session was not found. Start a new setup.",
+                )
+            record.bot_token = bot_token
+            record.bot_username = bot_username or None
+            record.owner_user_id = owner_user_id
+            return {
+                "status": "ready",
+                "bot_username": record.bot_username,
+                "owner_user_id": record.owner_user_id,
+                "expires_at": record.expires_at,
+            }
+
+    if status in {"expired", "claimed"}:
+        with _telegram_onboarding_lock:
+            _telegram_onboarding_pairings.pop(pairing_id, None)
+        raise HTTPException(
+            status_code=410,
+            detail=_telegram_onboarding_error_message(
+                status,
+                "Telegram setup is no longer available. Start a new setup.",
+            ),
+        )
+
+    raise HTTPException(
+        status_code=502,
+        detail="Telegram setup service returned an unknown status.",
+    )
+
+
+@app.post("/api/messaging/telegram/onboarding/{pairing_id}/apply")
+async def apply_telegram_onboarding(
+    pairing_id: str, body: TelegramOnboardingApply
+):
+    allowed_user_ids = []
+    seen = set()
+    for raw_id in body.allowed_user_ids:
+        normalized = _normalize_telegram_user_id(raw_id)
+        if not normalized:
+            raise HTTPException(
+                status_code=400,
+                detail="Allowed Telegram user IDs must be numeric.",
+            )
+        if normalized not in seen:
+            seen.add(normalized)
+            allowed_user_ids.append(normalized)
+    if not allowed_user_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Add at least one allowed Telegram user ID.",
+        )
+
+    with _telegram_onboarding_lock:
+        _prune_telegram_onboarding_pairings()
+        record = _telegram_onboarding_pairings.get(pairing_id)
+        if not record:
+            raise HTTPException(
+                status_code=404,
+                detail="Telegram setup session was not found. Start a new setup.",
+            )
+        bot_token = record.bot_token
+        bot_username = record.bot_username
+        if not bot_token:
+            raise HTTPException(
+                status_code=409,
+                detail="Telegram setup is not ready yet.",
+            )
+
+    try:
+        save_env_value("TELEGRAM_BOT_TOKEN", bot_token)
+        save_env_value("TELEGRAM_ALLOWED_USERS", ",".join(allowed_user_ids))
+        _write_platform_enabled("telegram", True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        _log.exception("Telegram onboarding apply failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save Telegram setup.",
+        ) from exc
+
+    with _telegram_onboarding_lock:
+        _telegram_onboarding_pairings.pop(pairing_id, None)
+
+    return {
+        "ok": True,
+        "platform": "telegram",
+        "bot_username": bot_username,
+        "needs_restart": True,
+    }
+
+
+@app.delete("/api/messaging/telegram/onboarding/{pairing_id}")
+async def cancel_telegram_onboarding(pairing_id: str):
+    with _telegram_onboarding_lock:
+        _telegram_onboarding_pairings.pop(pairing_id, None)
+    return {"ok": True}
 
 
 @app.get("/api/messaging/platforms")
@@ -4659,15 +5189,31 @@ async def get_session_stats():
         db.close()
 
 
-@app.get("/api/sessions/{session_id}")
-async def get_session_detail(session_id: str):
+def _open_session_db_for_profile(profile: Optional[str]):
+    """Open a SessionDB for read paths, optionally for another profile.
+
+    ``profile`` None/empty → this process's own ``state.db`` (the common,
+    single-profile case). A named profile opens that profile's on-disk
+    ``state.db`` directly so the primary backend can serve cross-profile reads
+    (transcripts, detail) without spawning that profile's backend.
+    """
     from hermes_state import SessionDB
-    db = SessionDB()
+    if not profile:
+        return SessionDB()
+    _name, home = _cron_profile_home(profile)
+    return SessionDB(db_path=Path(home) / "state.db")
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session_detail(session_id: str, profile: Optional[str] = None):
+    db = _open_session_db_for_profile(profile)
     try:
         sid = db.resolve_session_id(session_id)
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        if profile:
+            session["profile"] = _cron_profile_home(profile)[0]
         return session
     finally:
         db.close()
@@ -4687,9 +5233,8 @@ async def get_session_latest_descendant(session_id: str):
     }
 
 @app.get("/api/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str):
-    from hermes_state import SessionDB
-    db = SessionDB()
+async def get_session_messages(session_id: str, profile: Optional[str] = None):
+    db = _open_session_db_for_profile(profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
@@ -4715,6 +5260,9 @@ async def delete_session_endpoint(session_id: str):
 class SessionRename(BaseModel):
     title: Optional[str] = None
     archived: Optional[bool] = None
+    # Mutate a session belonging to another profile (opens its state.db). Omit
+    # for the current/default profile.
+    profile: Optional[str] = None
 
 
 @app.patch("/api/sessions/{session_id}")
@@ -4722,10 +5270,10 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
     """Update a session: rename (or clear its title) and/or archive it.
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
-    restores the session. Either field may be omitted.
+    restores the session. Either field may be omitted. ``profile`` targets
+    another profile's session.
     """
-    from hermes_state import SessionDB
-    db = SessionDB()
+    db = _open_session_db_for_profile(body.profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
@@ -6152,6 +6700,11 @@ class ProfileCreate(BaseModel):
     clone_all: bool = False
     no_skills: bool = False
     description: Optional[str] = None
+    # Explicit source profile to clone from (e.g. duplicating an existing
+    # profile). When set, it takes precedence over ``clone_from_default``,
+    # which always sources from "default". ``clone_all`` still selects a full
+    # state copytree vs. a config/skills/SOUL copy.
+    clone_from: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
 
@@ -6312,13 +6865,23 @@ async def list_profiles_endpoint():
 @app.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod
-    clone = body.clone_from_default or body.clone_all
+    explicit_source = (body.clone_from or "").strip()
+    if explicit_source:
+        # Duplicating a specific profile: clone its config/skills/SOUL (or full
+        # state when clone_all) from the named source rather than "default".
+        clone = True
+        clone_from = explicit_source
+        clone_config = not body.clone_all
+    else:
+        clone = body.clone_from_default or body.clone_all
+        clone_from = "default" if clone else None
+        clone_config = body.clone_from_default and not body.clone_all
     try:
         path = profiles_mod.create_profile(
             name=body.name,
-            clone_from="default" if clone else None,
+            clone_from=clone_from,
             clone_all=body.clone_all,
-            clone_config=body.clone_from_default and not body.clone_all,
+            clone_config=clone_config,
             no_skills=body.no_skills,
             description=body.description,
         )
@@ -6625,6 +7188,7 @@ async def get_toolsets():
         _get_effective_configurable_toolsets,
         _get_platform_tools,
         _toolset_has_keys,
+        gui_toolset_label,
     )
     from toolsets import resolve_toolset
 
@@ -6642,7 +7206,9 @@ async def get_toolsets():
             tools = []
         is_enabled = name in enabled_toolsets
         result.append({
-            "name": name, "label": label, "description": desc,
+            "name": name,
+            "label": gui_toolset_label(label),
+            "description": desc,
             "enabled": is_enabled,
             "available": is_enabled,
             "configured": _toolset_has_keys(name, config),
@@ -6988,8 +7554,6 @@ async def get_models_analytics(days: int = 30):
 # REST.  Localhost-only — we defensively reject non-loopback clients even
 # though uvicorn binds to 127.0.0.1.
 # ---------------------------------------------------------------------------
-
-import re
 
 # PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native
 # Windows the import raises; catch and leave PtyBridge=None so the rest of
@@ -8677,14 +9241,9 @@ def start_server(
     port: int = 9119,
     open_browser: bool = True,
     allow_public: bool = False,
-    *,
-    embedded_chat: bool = False,
 ):
     """Start the web UI server."""
     import uvicorn
-
-    global _DASHBOARD_EMBEDDED_CHAT_ENABLED
-    _DASHBOARD_EMBEDDED_CHAT_ENABLED = embedded_chat
 
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5

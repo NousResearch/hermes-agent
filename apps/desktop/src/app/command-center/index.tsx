@@ -6,14 +6,8 @@ import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
-import {
-  getActionStatus,
-  getLogs,
-  getStatus,
-  getUsageAnalytics,
-  restartGateway,
-  updateHermes
-} from '@/hermes'
+import { Tip } from '@/components/ui/tooltip'
+import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { Activity, AlertCircle, BarChart3, type IconComponent, Pin } from '@/lib/icons'
@@ -100,17 +94,18 @@ function RowIconButton({
   title: string
 }) {
   return (
-    <Button
-      aria-label={title}
-      className={cn('text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground', className)}
-      onClick={onClick}
-      size="icon-xs"
-      title={title}
-      type="button"
-      variant="ghost"
-    >
-      {children}
-    </Button>
+    <Tip label={title}>
+      <Button
+        aria-label={title}
+        className={cn('text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground', className)}
+        onClick={onClick}
+        size="icon-xs"
+        type="button"
+        variant="ghost"
+      >
+        {children}
+      </Button>
+    </Tip>
   )
 }
 
@@ -128,12 +123,7 @@ function EmptyPanel({ action, description, title }: { action?: ReactNode; descri
   )
 }
 
-export function CommandCenterView({
-  initialSection,
-  onClose,
-  onDeleteSession,
-  onOpenSession
-}: CommandCenterViewProps) {
+export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
 
@@ -168,7 +158,7 @@ export function CommandCenterView({
     }
 
     return sorted.filter(session => {
-      const haystack = `${sessionTitle(session)} ${session.id}`.toLowerCase()
+      const haystack = `${sessionTitle(session)} ${session.id} ${session._lineage_root_id ?? ''}`.toLowerCase()
 
       return haystack.includes(needle)
     })
@@ -586,20 +576,21 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
                 const outputH = Math.round(((entry.output_tokens || 0) / maxTokens) * 96)
 
                 return (
-                  <div
-                    className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
+                  <Tip
                     key={entry.day}
-                    title={`${entry.day} · in ${formatTokens(entry.input_tokens)} · out ${formatTokens(entry.output_tokens)}`}
+                    label={`${entry.day} · in ${formatTokens(entry.input_tokens)} · out ${formatTokens(entry.output_tokens)}`}
                   >
-                    <div
-                      className="w-full rounded-t-[1px] bg-[color:var(--dt-primary)]/50"
-                      style={{ height: Math.max(inputH, entry.input_tokens > 0 ? 1 : 0) }}
-                    />
-                    <div
-                      className="w-full bg-emerald-500/60"
-                      style={{ height: Math.max(outputH, entry.output_tokens > 0 ? 1 : 0) }}
-                    />
-                  </div>
+                    <div className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end">
+                      <div
+                        className="w-full rounded-t-[1px] bg-[color:var(--dt-primary)]/50"
+                        style={{ height: Math.max(inputH, entry.input_tokens > 0 ? 1 : 0) }}
+                      />
+                      <div
+                        className="w-full bg-emerald-500/60"
+                        style={{ height: Math.max(outputH, entry.output_tokens > 0 ? 1 : 0) }}
+                      />
+                    </div>
+                  </Tip>
                 )
               })}
             </div>

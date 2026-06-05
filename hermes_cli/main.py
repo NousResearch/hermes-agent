@@ -7225,12 +7225,110 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
         candidates = [
             release_dir / "linux-unpacked" / "hermes",
             release_dir / "linux-unpacked" / "Hermes",
+            release_dir / "linux-arm64-unpacked" / "hermes",
+            release_dir / "linux-arm64-unpacked" / "Hermes",
         ]
 
     existing = [p for p in candidates if p.exists()]
     if not existing:
         return None
     return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+def _electron_download_cache_dirs() -> list[Path]:
+    """Return the per-user Electron download cache directories for this OS.
+
+    electron-builder's ``app-builder unpack-electron`` extracts the Electron
+    distribution from a zip stored in this cache (NOT from node_modules), so a
+    corrupt zip here — not a bad workspace install — is what poisons the build.
+    Honors the ``electron_config_cache`` / ``ELECTRON_CACHE`` overrides that
+    ``@electron/get`` respects, then falls back to the platform defaults.
+    """
+    home = Path.home()
+    candidates: list[Path] = []
+    override = os.environ.get("electron_config_cache") or os.environ.get("ELECTRON_CACHE")
+    if override:
+        candidates.append(Path(override))
+    if sys.platform == "darwin":
+        candidates.append(home / "Library" / "Caches" / "electron")
+    elif sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            candidates.append(Path(local) / "electron" / "Cache")
+        candidates.append(home / "AppData" / "Local" / "electron" / "Cache")
+    else:
+        xdg = os.environ.get("XDG_CACHE_HOME")
+        if xdg:
+            candidates.append(Path(xdg) / "electron")
+        candidates.append(home / ".cache" / "electron")
+
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for c in candidates:
+        rc = c.expanduser()
+        if rc not in seen:
+            seen.add(rc)
+            out.append(rc)
+    return out
+
+
+def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
+    """Clear the cached Electron download + half-written unpacked dir so the
+    next ``pack`` re-downloads and re-stages from scratch.
+
+    Root cause of the ``ENOENT … rename '…/linux-unpacked/electron' ->
+    '…/linux-unpacked/Hermes'`` desktop build failure: a corrupt zip in the
+    per-user Electron download cache (a partial download resumed into the same
+    file leaves prepended/concatenated junk, or an interrupted write truncates
+    it). electron-builder's ``app-builder unpack-electron`` extracts the
+    distribution from that cached zip (NOT from node_modules); a bad zip yields
+    a partial tree MISSING the 193 MB ``electron`` binary, so the final rename
+    dies. Re-running repeats the same broken extraction forever.
+
+    We deliberately do NOT try to detect corruption ourselves. stdlib
+    ``zipfile`` silently tolerates the prepended/concatenated junk that is the
+    most common corruption here — it reads from the end-of-central-directory
+    backward, so ``testzip()`` returns clean on exactly the zips ``unzip -t``
+    and ``@electron/get`` reject. Gating the purge on a self-rolled validator
+    would therefore skip the real-world case and never self-heal. Instead, on a
+    packaged-build failure we unconditionally remove the version's cached zips
+    and the stale unpacked dir, then let the caller retry once: ``@electron/get``
+    re-downloads with its own SHASUM verification (the real source of truth),
+    and ``before-pack.cjs`` re-wipes the unpacked dir. If the failure was
+    unrelated, a clean re-download is harmless and the retry fails the same way.
+
+    Best-effort: never raises. Returns the paths removed so the caller can log
+    them and decide whether a retry is worthwhile (empty list ⇒ nothing to
+    clear, so no point retrying).
+    """
+    removed: list[Path] = []
+
+    for cache_dir in _electron_download_cache_dirs():
+        if not cache_dir.is_dir():
+            continue
+        for zip_path in sorted(cache_dir.rglob("electron-*.zip")):
+            try:
+                zip_path.unlink()
+                removed.append(zip_path)
+            except OSError:
+                # Locked/permission-denied entry is out of our hands; let the
+                # build report its own error rather than masking it.
+                pass
+
+    # Drop the half-written unpacked dir too: an interrupted prior pack leaves
+    # a partial tree that poisons the rename even after the zip is fixed.
+    # (before-pack.cjs also handles this, but clearing it here makes the retry
+    # robust even if the hook is somehow skipped.)
+    release_dir = desktop_dir / "release"
+    if release_dir.is_dir():
+        for unpacked in release_dir.glob("*-unpacked"):
+            try:
+                shutil.rmtree(unpacked, ignore_errors=True)
+                removed.append(unpacked)
+            except OSError:
+                pass
+
+    return removed
 
 
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
@@ -7389,6 +7487,26 @@ def cmd_gui(args: argparse.Namespace):
             print(f"→ Building desktop {build_label}...")
             build_script = "build" if source_mode else "pack"
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            if build_result.returncode != 0 and not source_mode:
+                # A corrupt cached Electron zip makes `pack` fail with an ENOENT
+                # on the final `electron` -> `Hermes` rename: unpack-electron
+                # extracted a partial tree (missing the 193 MB binary) from the
+                # bad zip. We do NOT try to prove the zip is corrupt ourselves —
+                # stdlib zipfile silently tolerates the prepended/concatenated
+                # junk that is the most common corruption (a partial download
+                # resumed into the same file), so a `testzip()` gate would pass
+                # and never self-heal. Instead, on any packaged-build failure we
+                # purge the version's cached zip + the half-written unpacked dir
+                # and retry once: @electron/get re-downloads with its own SHASUM
+                # verification, which is the real source of truth. If the
+                # failure was something else, the clean re-download is harmless
+                # and the retry fails the same way.
+                purged = _purge_electron_build_cache(desktop_dir)
+                if purged:
+                    print("  ⚠ Desktop build failed; cleared cached Electron download and retrying once...")
+                    for p in purged:
+                        print(f"    - {p}")
+                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
@@ -7702,10 +7820,19 @@ def _kill_stale_dashboard_processes(
     exclude: set[int] | None = None
     raw_pid = os.environ.get("HERMES_DESKTOP_CHILD_PID")
     if raw_pid:
-        try:
-            exclude = {int(raw_pid)}
-        except (ValueError, TypeError):
-            pass
+        # The desktop may manage several backends (one per active profile) and
+        # passes them comma-separated; a lone int still parses for back-compat.
+        parsed: set[int] = set()
+        for part in raw_pid.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                parsed.add(int(part))
+            except (ValueError, TypeError):
+                pass
+        if parsed:
+            exclude = parsed
 
     pids = _find_stale_dashboard_pids(exclude_pids=exclude)
     if not pids:
@@ -7902,17 +8029,12 @@ def _update_via_zip(args):
     # individually so update does not silently strip working capabilities.
     print("→ Updating Python dependencies...")
 
-    from hermes_cli.managed_uv import ensure_uv, rebuild_venv, update_managed_uv
+    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
     # Keep managed uv current — runs `uv self update` if we already have one.
     update_managed_uv()
 
-    uv_bin, fresh_bootstrap = ensure_uv()
-    # First-time managed uv install on an existing checkout: the old venv
-    # may point to a Python without FTS5.  Rebuild it so the new managed
-    # uv provides a fresh interpreter with FTS5 guaranteed.
-    if fresh_bootstrap and uv_bin:
-        rebuild_venv(uv_bin, PROJECT_ROOT / "venv")
+    uv_bin = ensure_uv()
 
     pip_cmd = [sys.executable, "-m", "pip"]
     if not uv_bin:
@@ -9023,6 +9145,222 @@ def _install_python_dependencies_with_optional_fallback(
             f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}"
         )
 
+    # Belt-and-suspenders: verify every declared core dependency from
+    # pyproject.toml's [project.dependencies] is actually importable in the
+    # target venv. uv's incremental resolver has — in the wild — produced
+    # partial installs where a newly added base dep (e.g. ``pathspec``)
+    # silently fails to land on top of a half-stale venv, and the only
+    # symptom is a downstream subprocess crashing with ModuleNotFoundError
+    # hours later inside ``hermes update``'s desktop-rebuild or skill-sync
+    # stage. Reinstall with --reinstall to force resolution if anything is
+    # missing, then re-verify so the failure surfaces here instead of
+    # downstream.
+    _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
+
+
+def _verify_core_dependencies_installed(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    group: str = "all",
+) -> None:
+    """Check that every base dep from pyproject.toml is importable; if not, retry.
+
+    Reads ``pyproject.toml`` directly (so we don't trust the venv's stale
+    metadata), filters out deps gated by ``;`` environment markers that don't
+    apply to this platform, and runs ``importlib.metadata.version()`` in the
+    venv interpreter for each one. If anything is missing we reinstall the
+    base group with ``--reinstall`` to force uv to re-resolve, then check
+    again. We treat the final state as a warning rather than a hard failure
+    so a single broken-on-PyPI dep can't block an otherwise-successful
+    update — but the warning makes the partial install visible at the spot
+    that caused it, instead of hours later in a downstream subprocess.
+    """
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:  # pragma: no cover — Python < 3.11 unsupported but be safe
+        return
+
+    pyproject = PROJECT_ROOT / "pyproject.toml"
+    if not pyproject.is_file():
+        return
+
+    try:
+        with open(pyproject, "rb") as f:
+            data = tomllib.load(f)
+        raw_deps = data.get("project", {}).get("dependencies", []) or []
+    except Exception as e:
+        logger.debug("dep verification: failed to read pyproject.toml: %s", e)
+        return
+
+    # Parse each "name OP version ; marker" string into (dist_name, marker_obj).
+    # We use packaging.requirements when available (it ships with pip/uv envs),
+    # falling back to a naive split that's good enough for the canonical
+    # ``name==version[; marker]`` style this repo uses.
+    deps: list[tuple[str, "object | None"]] = []
+    try:
+        from packaging.requirements import Requirement  # type: ignore
+
+        for spec in raw_deps:
+            try:
+                req = Requirement(spec)
+                deps.append((req.name, req.marker))
+            except Exception:
+                continue
+    except Exception:
+        for spec in raw_deps:
+            head = spec.split(";", 1)[0]
+            for op in ("==", ">=", "<=", "~=", ">", "<", "!="):
+                if op in head:
+                    head = head.split(op, 1)[0]
+                    break
+            name = head.strip().split("[", 1)[0].strip()
+            if name:
+                deps.append((name, None))
+
+    # Apply environment markers to drop deps that don't apply on this platform
+    # (e.g. ``ptyprocess ; sys_platform != 'win32'`` is correctly skipped on
+    # Windows). Without markers we'd false-positive every cross-platform exclusion.
+    applicable: list[str] = []
+    for name, marker in deps:
+        if marker is None:
+            applicable.append(name)
+            continue
+        try:
+            if marker.evaluate():  # type: ignore[union-attr]
+                applicable.append(name)
+        except Exception:
+            applicable.append(name)
+
+    if not applicable:
+        return
+
+    # Run the check inside the venv Python — sys.executable here may be the
+    # outer Python that drove ``hermes update``, not the venv we just wrote
+    # to. The uv install_cmd_prefix encodes which environment we targeted
+    # (either ``[uv, pip]`` with VIRTUAL_ENV in env, or
+    # ``[sys.executable, -m, pip]`` for the in-process Python); resolve the
+    # right interpreter for the verification.
+    venv_python = _resolve_install_target_python(install_cmd_prefix, env)
+    if venv_python is None:
+        return
+
+    def _missing_deps() -> list[str]:
+        check_script = (
+            "import importlib.metadata as md, sys\n"
+            "missing=[]\n"
+            "for name in sys.argv[1:]:\n"
+            "    try: md.version(name)\n"
+            "    except md.PackageNotFoundError: missing.append(name)\n"
+            "print('\\n'.join(missing))\n"
+        )
+        try:
+            result = subprocess.run(
+                [str(venv_python), "-c", check_script, *applicable],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+        except Exception as e:
+            logger.debug("dep verification: subprocess failed: %s", e)
+            return []
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    missing = _missing_deps()
+    if not missing:
+        return
+
+    print(
+        f"  ⚠ Verification: {len(missing)} declared dep(s) missing after install: "
+        f"{', '.join(missing[:8])}{'...' if len(missing) > 8 else ''}"
+    )
+    print("  → Reinstalling base group with --reinstall to repair...")
+
+    # Reinstall base group with --reinstall so uv re-resolves from scratch
+    # against the current pyproject. We don't pass ``[{group}]`` here on
+    # purpose — the missing dep is in *base* deps; rerunning the full all-
+    # extras install can cost minutes and trips on whatever optional extra
+    # was already broken upstream. Base is fast and is what's actually wrong.
+    repair_args = ["install", "--reinstall", "-e", "."]
+    try:
+        _run_install_with_heartbeat(install_cmd_prefix + repair_args, env=env)
+    except subprocess.CalledProcessError as e:
+        logger.warning("dep verification: repair install failed: %s", e)
+        print("  ⚠ Repair install failed; check `hermes update` output above.")
+        return
+
+    still_missing = _missing_deps()
+    if not still_missing:
+        print("  ✓ All declared core dependencies now installed")
+        return
+
+    # Last-ditch: install each remaining missing dep with its pin directly.
+    # Useful when uv's resolver thinks the env is satisfied but the on-disk
+    # package metadata says otherwise (rare but observed).
+    name_to_spec = {}
+    for spec in raw_deps:
+        head = spec.split(";", 1)[0].strip()
+        bare = head
+        for op in ("==", ">=", "<=", "~=", ">", "<", "!="):
+            if op in bare:
+                bare = bare.split(op, 1)[0]
+                break
+        name_to_spec[bare.strip().split("[", 1)[0].strip()] = head
+
+    specs = [name_to_spec.get(n, n) for n in still_missing]
+    print(
+        f"  → Force-installing remaining missing dep(s): {', '.join(specs)}"
+    )
+    try:
+        _run_install_with_heartbeat(
+            install_cmd_prefix + ["install", "--reinstall", *specs], env=env
+        )
+    except subprocess.CalledProcessError as e:
+        logger.warning("dep verification: per-package repair failed: %s", e)
+        print(
+            f"  ⚠ Could not install: {', '.join(still_missing)}. "
+            "Run `hermes update --force` after closing other hermes processes."
+        )
+        return
+
+    final_missing = _missing_deps()
+    if final_missing:
+        print(
+            f"  ⚠ Still missing after repair: {', '.join(final_missing)}. "
+            "Run `hermes update --force` after closing other hermes processes."
+        )
+    else:
+        print("  ✓ All declared core dependencies now installed")
+
+
+def _resolve_install_target_python(
+    install_cmd_prefix: list[str], env: dict[str, str] | None
+) -> Path | None:
+    """Figure out which Python interpreter the install just targeted.
+
+    ``_install_python_dependencies_with_optional_fallback`` is called with
+    either ``[uv, pip]`` (and a ``VIRTUAL_ENV`` env var pointing at the
+    target venv) or ``[sys.executable, -m, pip]`` (the in-process Python).
+    The verification step needs the *resulting* environment's Python so
+    ``importlib.metadata`` queries the right site-packages.
+    """
+    if env and "VIRTUAL_ENV" in env:
+        venv_root = Path(env["VIRTUAL_ENV"])
+        scripts = venv_root / ("Scripts" if _is_windows() else "bin")
+        candidate = scripts / ("python.exe" if _is_windows() else "python")
+        if candidate.exists():
+            return candidate
+
+    # Fallback: assume install_cmd_prefix[0] is the python interpreter (the
+    # ``[sys.executable, -m, pip]`` shape). Skip if it looks like ``uv``.
+    if install_cmd_prefix:
+        first = Path(install_cmd_prefix[0])
+        if first.exists() and "uv" not in first.name.lower():
+            return first
+
+    return None
+
 
 def _is_termux_env(env: dict[str, str] | None = None) -> bool:
     return _is_termux_startup_environment(env)
@@ -9745,7 +10083,7 @@ def _cmd_update_pip(args):
     # Keep managed uv current before using it.
     update_managed_uv()
 
-    uv, _fresh_bootstrap = ensure_uv()
+    uv = ensure_uv()
     in_venv = sys.prefix != sys.base_prefix
     # pipx-managed installs live under .../pipx/venvs/<name>/...
     pipx_managed = "pipx" in sys.prefix.split(os.sep)
@@ -9839,7 +10177,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 return
             print("✗ Not a git repository. Please reinstall:")
             print(
-                "  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+                "  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
             )
             sys.exit(1)
 
@@ -10187,17 +10525,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
         print("→ Updating Python dependencies...")
-        from hermes_cli.managed_uv import ensure_uv, rebuild_venv, update_managed_uv
+        from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
         # Keep managed uv current — runs `uv self update` if we already have one.
         update_managed_uv()
 
-        uv_bin, fresh_bootstrap = ensure_uv()
-        # First-time managed uv install on an existing checkout: the old venv
-        # may point to a Python without FTS5.  Rebuild it so the new managed
-        # uv provides a fresh interpreter with FTS5 guaranteed.
-        if fresh_bootstrap and uv_bin:
-            rebuild_venv(uv_bin, PROJECT_ROOT / "venv")
+        uv_bin = ensure_uv()
 
         pip_cmd = [sys.executable, "-m", "pip"]
         if not uv_bin:
@@ -10260,11 +10593,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
         if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
-            build_result = subprocess.run(
-                [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"],
-                cwd=PROJECT_ROOT,
-                check=False,
-            )
+            _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
+            # Stream the build output live (long Electron builds otherwise
+            # look hung). On the rare nonzero exit, retry once after waiting
+            # again for the venv — this covers a still-settling rebuild window
+            # the first wait didn't fully catch.
+            build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
+            if build_result.returncode != 0:
+                build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
 
@@ -11968,13 +12304,14 @@ def cmd_dashboard(args):
 
     from hermes_cli.web_server import start_server
 
-    embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"
+    # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
+    # available — the desktop app and the dashboard's own Chat tab both rely on
+    # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.
     start_server(
         host=args.host,
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
-        embedded_chat=embedded_chat,
     )
 
 
@@ -15259,14 +15596,6 @@ Examples:
         "--insecure",
         action="store_true",
         help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
-    )
-    dashboard_parser.add_argument(
-        "--tui",
-        action="store_true",
-        help=(
-            "Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). "
-            "Alternatively set HERMES_DASHBOARD_TUI=1."
-        ),
     )
     dashboard_parser.add_argument(
         "--skip-build",

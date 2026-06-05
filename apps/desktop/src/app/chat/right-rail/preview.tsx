@@ -3,6 +3,7 @@ import { useEffect, useMemo } from 'react'
 
 import type { SetTitlebarToolGroup } from '@/app/shell/titlebar-controls'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import {
   $rightRailActiveTabId,
@@ -101,27 +102,33 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                 // memory. `onMouseDown` swallows the middle-button press so
                 // Chromium doesn't switch into autoscroll mode.
                 onAuxClick={event => {
-                  if (event.button !== 1) return
+                  if (event.button !== 1) {
+                    return
+                  }
+
                   event.preventDefault()
                   closeRightRailTab(tab.id)
                 }}
                 onMouseDown={event => {
-                  if (event.button === 1) event.preventDefault()
+                  if (event.button === 1) {
+                    event.preventDefault()
+                  }
                 }}
               >
                 {active && (
                   <span aria-hidden="true" className="absolute inset-x-0 top-0 h-px bg-(--ui-stroke-primary)" />
                 )}
-                <button
-                  aria-selected={active}
-                  className="flex h-full min-w-0 max-w-full items-center overflow-hidden pl-3 pr-2 text-left outline-none"
-                  onClick={() => selectRightRailTab(tab.id)}
-                  role="tab"
-                  title={tab.label}
-                  type="button"
-                >
-                  <span className="block min-w-0 truncate">{tab.label}</span>
-                </button>
+                <Tip label={tab.label}>
+                  <button
+                    aria-selected={active}
+                    className="flex h-full min-w-0 max-w-full items-center overflow-hidden pl-3 pr-2 text-left outline-none"
+                    onClick={() => selectRightRailTab(tab.id)}
+                    role="tab"
+                    type="button"
+                  >
+                    <span className="block min-w-0 truncate">{tab.label}</span>
+                  </button>
+                </Tip>
                 <span
                   aria-hidden="true"
                   className="pointer-events-none absolute inset-y-0 right-0 w-9 bg-[linear-gradient(to_right,transparent,var(--tab-bg)_55%)] opacity-0 transition-opacity group-hover/tab:opacity-100 group-focus-within/tab:opacity-100"
@@ -130,7 +137,6 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                   aria-label={`Close ${tab.label}`}
                   className="pointer-events-none absolute right-1.5 top-1/2 grid size-4 -translate-y-1/2 place-items-center rounded-sm text-(--ui-text-tertiary) opacity-0 transition-[background-color,color,opacity] hover:bg-(--ui-bg-secondary) hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/tab:pointer-events-auto group-hover/tab:opacity-100 group-focus-within/tab:pointer-events-auto group-focus-within/tab:opacity-100"
                   onClick={() => closeRightRailTab(tab.id)}
-                  title={`Close ${tab.label}`}
                   type="button"
                 >
                   <Codicon name="close" size="0.75rem" />
@@ -143,7 +149,6 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
           aria-label="Close preview pane"
           className="mr-1.5 grid size-6 shrink-0 self-center place-items-center rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/rail-tabs:opacity-100 [-webkit-app-region:no-drag]"
           onClick={closeRightRail}
-          title="Close preview pane"
           type="button"
         >
           <Codicon name="close" size="0.75rem" />

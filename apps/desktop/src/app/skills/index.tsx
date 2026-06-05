@@ -14,7 +14,7 @@ import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
-import { asText, includesQuery, prettyName, toolNames } from '../settings/helpers'
+import { asText, includesQuery, prettyName, toolNames, toolsetDisplayLabel } from '../settings/helpers'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
@@ -52,14 +52,17 @@ function filteredToolsets(toolsets: ToolsetInfo[], query: string): ToolsetInfo[]
         return true
       }
 
+      const label = toolsetDisplayLabel(toolset)
+
       return (
         includesQuery(toolset.name, q) ||
+        includesQuery(label, q) ||
         includesQuery(toolset.label, q) ||
         includesQuery(toolset.description, q) ||
         toolNames(toolset).some(name => includesQuery(name, q))
       )
     })
-    .sort((a, b) => asText(a.label || a.name).localeCompare(asText(b.label || b.name)))
+    .sort((a, b) => toolsetDisplayLabel(a).localeCompare(toolsetDisplayLabel(b)))
 }
 
 interface SkillsViewProps extends React.ComponentProps<'section'> {
@@ -160,16 +163,17 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
     try {
       await toggleToolset(toolset.name, enabled)
-      setToolsets(current =>
-        current?.map(row => (row.name === toolset.name ? { ...row, enabled, available: enabled } : row)) ?? current
+      setToolsets(
+        current =>
+          current?.map(row => (row.name === toolset.name ? { ...row, enabled, available: enabled } : row)) ?? current
       )
       notify({
         kind: 'success',
         title: enabled ? 'Toolset enabled' : 'Toolset disabled',
-        message: `${asText(toolset.label || toolset.name)} applies to new sessions.`
+        message: `${toolsetDisplayLabel(toolset)} applies to new sessions.`
       })
     } catch (err) {
-      notifyError(err, `Failed to update ${asText(toolset.label || toolset.name)}`)
+      notifyError(err, `Failed to update ${toolsetDisplayLabel(toolset)}`)
     } finally {
       setSavingToolset(null)
     }
@@ -263,7 +267,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
               <div>
                 {visibleToolsets.map(toolset => {
                   const tools = toolNames(toolset)
-                  const label = asText(toolset.label || toolset.name)
+                  const label = toolsetDisplayLabel(toolset)
                   const expanded = expandedToolset === toolset.name
 
                   return (
@@ -275,7 +279,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                             aria-expanded={expanded}
                             aria-label={`Configure ${label}`}
                             className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                            onClick={() => setExpandedToolset(current => (current === toolset.name ? null : toolset.name))}
+                            onClick={() =>
+                              setExpandedToolset(current => (current === toolset.name ? null : toolset.name))
+                            }
                             type="button"
                           >
                             <StatusPill active={toolset.configured}>
@@ -321,7 +327,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 function StatusPill({ active, children }: { active: boolean; children: string }) {
   return (
     <Badge
-      className={active ? 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)' : 'bg-(--ui-bg-quinary) text-(--ui-text-tertiary)'}
+      className={
+        active ? 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)' : 'bg-(--ui-bg-quinary) text-(--ui-text-tertiary)'
+      }
     >
       {children}
     </Badge>

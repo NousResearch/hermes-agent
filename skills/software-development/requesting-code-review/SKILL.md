@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [code-review, security, verification, quality, pre-commit, auto-fix]
-    related_skills: [subagent-driven-development, writing-plans, test-driven-development, github-code-review]
+    related_skills: [subagent-driven-development, plan, test-driven-development, github-code-review]
 ---
 
 # Pre-Commit Code Verification
@@ -266,7 +266,7 @@ The two-stage review (spec compliance + code quality) uses this pipeline.
 **test-driven-development:** This pipeline verifies TDD discipline was followed —
 tests exist, tests pass, no regressions.
 
-**writing-plans:** Validates implementation matches the plan requirements.
+**plan:** Validates implementation matches the plan requirements.
 
 ## Pitfalls
 

@@ -6,7 +6,7 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+#   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -451,7 +451,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)"
+            log_info "  iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
             exit 1
             ;;
         *)
@@ -836,16 +836,20 @@ install_node() {
         return 0
     fi
 
-    # Place into ~/.hermes/node/ and symlink binaries to ~/.local/bin/
+    # Place into ~/.hermes/node/ and symlink binaries into the same bin dir
+    # the hermes command uses (get_command_link_dir): /usr/local/bin for root
+    # FHS installs, $PREFIX/bin on Termux, ~/.local/bin otherwise.
     rm -rf "$HERMES_HOME/node"
     mkdir -p "$HERMES_HOME"
     mv "$extracted_dir" "$HERMES_HOME/node"
     rm -rf "$tmp_dir"
 
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$HERMES_HOME/node/bin/node" "$HOME/.local/bin/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$HOME/.local/bin/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$HOME/.local/bin/npx"
+    local node_link_dir
+    node_link_dir="$(get_command_link_dir)"
+    mkdir -p "$node_link_dir"
+    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
+    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
+    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
 
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
@@ -1122,12 +1126,12 @@ clone_repo() {
         # so SSH fails fast instead of hanging when no key is configured.
         log_info "Trying SSH clone..."
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+           git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
             log_success "Cloned via SSH"
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
             log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+            if git clone --depth 1 --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"

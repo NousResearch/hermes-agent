@@ -1126,12 +1126,12 @@ clone_repo() {
         # so SSH fails fast instead of hanging when no key is configured.
         log_info "Trying SSH clone..."
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+           git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
             log_success "Cloned via SSH"
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
             log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+            if git clone --depth 1 --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"

@@ -134,6 +134,24 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     assert f"{project_dir}:/workspace" in run_args_str
 
 
+def test_auto_mount_preserves_posix_host_cwd(monkeypatch):
+    """POSIX-style host paths should not be rewritten before the docker mount."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.os.path, "isdir", lambda p: p == "/home/demo/project")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        cwd="/workspace",
+        host_cwd="/home/demo/project",
+        auto_mount_cwd=True,
+    )
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert "/home/demo/project:/workspace" in run_args_str
+
+
 def test_auto_mount_disabled_by_default(monkeypatch, tmp_path):
     """Host cwd should not be mounted unless the caller explicitly opts in."""
     project_dir = tmp_path / "my-project"

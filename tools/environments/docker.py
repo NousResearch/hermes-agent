@@ -589,7 +589,10 @@ class DockerEnvironment(BaseEnvironment):
             else:
                 logger.warning(f"Docker volume '{vol}' missing colon, skipping")
 
-        host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        if host_cwd and host_cwd.startswith(("/Users/", "/home/")):
+            host_cwd_abs = host_cwd
+        else:
+            host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
         bind_host_cwd = (
             auto_mount_cwd
             and bool(host_cwd_abs)

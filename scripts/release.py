@@ -722,6 +722,7 @@ AUTHOR_MAP = {
     "shokatalishaikh95@gmail.com": "areu01or00",
     "bryan@intertwinesys.com": "bryanyoung",
     "christo.mitov@gmail.com": "christomitov",
+    "xowiekk@gmail.com": "Xowiek",
     "hermes@nousresearch.com": "NousResearch",
     "reginaldasr@gmail.com": "ReginaldasR",
     "ntconguit@gmail.com": "0xharryriddle",

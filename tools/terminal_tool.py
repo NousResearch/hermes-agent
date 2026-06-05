@@ -1059,7 +1059,10 @@ def _get_env_config() -> Dict[str, Any]:
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:
         docker_cwd_source = os.getenv("TERMINAL_CWD") or os.getcwd()
-        candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
+        if docker_cwd_source.startswith(("/Users/", "/home/")):
+            candidate = docker_cwd_source
+        else:
+            candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in host_prefixes)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))

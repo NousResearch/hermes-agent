@@ -78,7 +78,11 @@ function cleanErrorText(value: string) {
 
 const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string) => string }[] = [
   {
-    test: msg => /incorrect api key provided/i.test(msg) || /['"]code['"]\s*:\s*['"]invalid_api_key['"]/i.test(msg),
+    test: msg => /['"']code['"']\s*:\s*['"']gateway_auth_failed['"']/i.test(msg),
+    summarize: () => 'Gateway authentication failed — check your API_SERVER_KEY.'
+  },
+  {
+    test: msg => /incorrect api key provided/i.test(msg) || /['"']code['"']\s*:\s*['"']invalid_api_key['"']/i.test(msg),
     summarize: msg => {
       const status = msg.match(/(?:error code|status(?:Code)?)[^\d]*(\d{3})/i)?.[1]
 

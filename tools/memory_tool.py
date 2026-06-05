@@ -13,7 +13,9 @@ Mid-session writes update files on disk immediately (durable) but do NOT change
 the system prompt -- this preserves the prefix cache for the entire session.
 The snapshot refreshes on the next session start.
 
-Entry delimiter: § (section sign). Entries can be multiline.
+Internal delimiter: § (section sign) for prompt rendering / char counting.
+On disk, MEMORY.md / USER.md may be stored either as legacy §-delimited
+entries or as human-readable markdown bullets with H1/H2 headings.
 Character limits (not tokens) because char counts are model-independent.
 
 Design:
@@ -26,6 +28,7 @@ Design:
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from contextlib import contextmanager
@@ -57,6 +60,102 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+MARKDOWN_TITLES = {"memory": "MEMORY", "user": "USER"}
+
+
+def _target_from_path(path: Path) -> str:
+    return "user" if path.name.upper() == "USER.MD" else "memory"
+
+
+def _split_multiline_bullet(entry: str) -> List[str]:
+    lines = entry.splitlines() or [entry]
+    return [line.rstrip() for line in lines]
+
+
+def _markdown_section_for_entry(target: str, entry: str) -> str:
+    text = entry.lower()
+
+    if target == "user":
+        rules = [
+            ("PR / Issue descriptions", ["pr/issue", "pr description", "issue description", "mermaid", "plantuml"]),
+            ("Markdown preferences", ["markdown", "bullet", "sections", "render"]),
+            ("Profile", ["username", "reverse-engineer", "tool ổn định", "tool on dinh", "dev;", "dev,"]),
+            ("Git workflow", ["git workflow", "feature branch", "feature branches", "push trực tiếp `main`", "auto-merge", "branch"]),
+            ("Workspace", ["workspace"]),
+            ("UI/theme regressions", ["viewport", "visual reference", "ui/theme", "theme regression", "root-cause tracing"]),
+            ("Creative revisions", ["creative", "audio/legibility", "frustrated"]),
+            ("Credentials", ["credential", "plain-text", "plain text", "password"]),
+            ("Memory usage", ["memories/", "memory.md", "personal-memories", "update memory", "memory "]),
+        ]
+    else:
+        rules = [
+            ("Environment notes", ["mini pc", "thinkcentre", "searxng", "cloakbrowser", "ngrok", "host.docker.internal", "endpoint", "browser backend", "tailscale", "http://", "https://", "ws://"]),
+            ("Workspace", ["workspace"]),
+            ("Conventions", ["memory layout", "main memory", "format:", "repo private", "credentials/password", "git pull", "infra", "convention"]),
+        ]
+
+    for section, needles in rules:
+        if any(needle in text for needle in needles):
+            return section
+
+    return "Other"
+
+
+def _serialize_markdown_entries(target: str, entries: List[str]) -> str:
+    title = MARKDOWN_TITLES[target]
+    grouped: Dict[str, List[str]] = {}
+    order: List[str] = []
+    for entry in entries:
+        section = _markdown_section_for_entry(target, entry)
+        if section not in grouped:
+            grouped[section] = []
+            order.append(section)
+        grouped[section].append(entry)
+
+    lines: List[str] = [f"# {title}", ""]
+    for section in order:
+        lines.append(f"## {section}")
+        for entry in grouped[section]:
+            bullet_lines = _split_multiline_bullet(entry)
+            if bullet_lines:
+                lines.append(f"- {bullet_lines[0]}")
+                for continuation in bullet_lines[1:]:
+                    lines.append(f"  {continuation}")
+            else:
+                lines.append("-")
+            lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _parse_markdown_entries(raw: str, target: str) -> Optional[List[str]]:
+    lines = raw.splitlines()
+    nonempty = [line.strip() for line in lines if line.strip()]
+    if not nonempty:
+        return []
+
+    first = nonempty[0]
+    expected_title = f"# {MARKDOWN_TITLES.get(target, target.upper())}"
+    if first != expected_title and not re.fullmatch(r"#\s+.+", first):
+        return None
+
+    entries: List[str] = []
+
+    for line in lines[1:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if re.fullmatch(r"##\s+.+", stripped):
+            continue
+        if line.startswith("- "):
+            entries.append(line[2:].rstrip())
+            continue
+        if line.startswith("  ") and entries:
+            entries[-1] = entries[-1] + "\n" + line[2:].rstrip()
+            continue
+        return None
+
+    return [entry for entry in entries if entry.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -96,8 +195,9 @@ def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
             f"wouldn't round-trip through the memory tool (likely added by "
             f"the patch tool, a shell append, a manual edit, or a "
             f"concurrent session). A snapshot was saved to {bak_path}. "
-            f"Resolve the drift first — either rewrite the file as a clean "
-            f"§-delimited list of entries, or move the extra content out — "
+            f"Resolve the drift first — either rewrite the file as clean "
+            f"markdown bullets / headings (or legacy §-delimited entries), "
+            f"or move the extra content out — "
             f"then retry. This guard exists to prevent silent data loss "
             f"(issue #26045)."
         ),
@@ -185,8 +285,8 @@ class MemoryStore:
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        self.memory_entries = self._read_file(mem_dir / "MEMORY.md", target="memory")
+        self.user_entries = self._read_file(mem_dir / "USER.md", target="user")
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -301,7 +401,7 @@ class MemoryStore:
         """
         path = self._path_for(target)
         bak = None if skip_drift else self._detect_external_drift(target)
-        fresh = self._read_file(path)
+        fresh = self._read_file(path, target=target)
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
         return bak
@@ -680,7 +780,7 @@ class MemoryStore:
         return f"{separator}\n{header}\n{separator}\n{content}"
 
     @staticmethod
-    def _read_file(path: Path) -> List[str]:
+    def _read_file(path: Path, target: Optional[str] = None) -> List[str]:
         """Read a memory file and split into entries.
 
         No file locking needed: _write_file uses atomic rename, so readers
@@ -696,20 +796,29 @@ class MemoryStore:
         if not raw.strip():
             return []
 
-        # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
-        # alone would incorrectly split entries that contain "§" in their content.
-        entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
-        return [e for e in entries if e]
+        target = target or _target_from_path(path)
+
+        if ENTRY_DELIMITER in raw:
+            entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
+            return [e for e in entries if e]
+
+        markdown_entries = _parse_markdown_entries(raw, target)
+        if markdown_entries is not None:
+            return markdown_entries
+
+        return [raw.strip()]
 
     def _detect_external_drift(self, target: str) -> Optional[str]:
         """Return a backup-path string if on-disk content shows external drift.
 
         The memory file is supposed to be a list of small entries the tool
-        wrote, joined by §. Detect drift via two signals:
+        can parse either from legacy §-delimited storage or the human-readable
+        markdown bullets/H1/H2 format used in the repo. Detect drift via two
+        signals:
 
-        1. Round-trip mismatch — re-parsing and re-serializing the file
-           doesn't produce identical bytes (rare; would catch oddly-encoded
-           delimiters).
+        1. Structured-but-unrecognized content — the file looks like a
+           multi-line structured document, but matches neither supported
+           format. Flushing would drop the unsupported structure.
         2. Entry-size overflow — any single parsed entry exceeds the
            store's whole-file char limit. The tool budgets the ENTIRE store
            against that limit; no single tool-written entry can exceed it.
@@ -735,13 +844,22 @@ class MemoryStore:
         if not raw.strip():
             return None
 
-        parsed = [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
-        roundtrip = ENTRY_DELIMITER.join(parsed)
+        if ENTRY_DELIMITER in raw:
+            parsed = [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
+            structured_unrecognized = False
+        else:
+            parsed_markdown = _parse_markdown_entries(raw, target)
+            if parsed_markdown is not None:
+                parsed = parsed_markdown
+                structured_unrecognized = False
+            else:
+                parsed = [raw.strip()] if raw.strip() else []
+                structured_unrecognized = len(raw.strip().splitlines()) > 1 or raw.lstrip().startswith("#")
 
         char_limit = self._char_limit(target)
         max_entry_len = max((len(e) for e in parsed), default=0)
 
-        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
+        drift_detected = structured_unrecognized or (max_entry_len > char_limit)
         if not drift_detected:
             return None
 
@@ -765,7 +883,8 @@ class MemoryStore:
         concurrent readers see an empty file. Atomic rename avoids this:
         readers always see either the old complete file or the new one.
         """
-        content = ENTRY_DELIMITER.join(entries) if entries else ""
+        target = _target_from_path(path)
+        content = _serialize_markdown_entries(target, entries) if entries else ""
         try:
             # Write to temp file in same directory (same filesystem for atomic rename)
             fd, tmp_path = tempfile.mkstemp(

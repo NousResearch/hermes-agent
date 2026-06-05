@@ -3924,11 +3924,17 @@ function configuredRemoteProfileNames() {
 
 // GET a profile's resolved backend (remote pool or local primary), parsed JSON.
 async function fetchJsonForProfile(profile, path) {
+  return requestJsonForProfile(profile, path, 'GET')
+}
+
+// Issue an arbitrary method against a profile's resolved backend, parsed JSON.
+async function requestJsonForProfile(profile, path, method, body) {
   const conn = await ensureBackend(profile)
   const url = `${conn.baseUrl}${path}`
+  const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
   return conn.authMode === 'oauth'
-    ? fetchJsonViaOauthSession(url, { method: 'GET', timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
-    : fetchJson(url, conn.token, { method: 'GET', timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+    ? fetchJsonViaOauthSession(url, opts)
+    : fetchJson(url, conn.token, opts)
 }
 
 async function probeRemoteAuthMode(rawUrl) {
@@ -4720,16 +4726,20 @@ ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
   return systemPreferences.askForMediaAccess('microphone')
 })
 
-// Re-route remote-profile session reads to the owning remote backend. Returns
-// `undefined` when the request isn't an interceptable session GET (caller takes
-// the normal local path), else the response. Mutations (DELETE/PATCH) carry
-// their own profile semantics and are out of scope.
-//   GET /api/profiles/sessions      → splice each remote profile's real rows in
-//   GET /api/sessions/{id}[/messages] → for a remote profile, read from remote
-async function interceptSessionReadForRemote(request) {
-  if ((request?.method || 'GET').toUpperCase() !== 'GET' || typeof request?.path !== 'string') {
+// Re-route remote-profile session requests to the owning remote backend. Returns
+// `undefined` when not interceptable (caller takes the normal local path), else
+// the response. Reads tag the profile as ?profile=<name>; mutations carry it in
+// request.profile. Either way, a remote profile's session lives only on its
+// remote host, so the request must go there (where it serves its own state.db).
+//   GET    /api/profiles/sessions        → splice each remote profile's rows in
+//   GET    /api/sessions/{id}[/messages] → read from remote
+//   DELETE /api/sessions/{id}            → delete on remote
+//   PATCH  /api/sessions/{id}            → rename/archive on remote
+async function interceptSessionRequestForRemote(request) {
+  if (typeof request?.path !== 'string') {
     return undefined
   }
+  const method = (request.method || 'GET').toUpperCase()
 
   let parsed
   try {
@@ -4739,7 +4749,7 @@ async function interceptSessionReadForRemote(request) {
   }
   const { pathname, searchParams } = parsed
 
-  if (pathname === '/api/profiles/sessions') {
+  if (method === 'GET' && pathname === '/api/profiles/sessions') {
     const remoteProfiles = configuredRemoteProfileNames()
     if (remoteProfiles.length === 0) {
       return undefined // no remote profiles → local fast path
@@ -4751,11 +4761,20 @@ async function interceptSessionReadForRemote(request) {
     return mergeRemoteProfileSessions(searchParams, remoteProfiles)
   }
 
-  // Per-session detail/messages. The renderer tags the owner as ?profile=<name>;
-  // for a remote profile, drop it and let the remote serve its own state.db.
+  // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile
+  // (mutations); route to the remote sans profile param — it serves its own
+  // state.db, with no cross-profile semantics.
   if (/^\/api\/sessions\/[^/]+(\/messages)?$/.test(pathname)) {
-    const profile = (searchParams.get('profile') || '').trim()
-    return profile && profileHasRemoteOverride(profile) ? fetchJsonForProfile(profile, pathname) : undefined
+    const profile = (searchParams.get('profile') || request.profile || '').trim()
+    if (!profile || !profileHasRemoteOverride(profile)) {
+      return undefined
+    }
+    if (method === 'GET') {
+      return fetchJsonForProfile(profile, pathname)
+    }
+    const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
+    if (body) delete body.profile
+    return requestJsonForProfile(profile, pathname, method, body)
   }
 
   return undefined
@@ -4777,31 +4796,55 @@ async function remoteSessionList(profile, searchParams) {
 }
 
 // Unified list: primary's local aggregate, with each remote profile's stale local
-// rows swapped for the remote's real ones, re-sorted by recency. A dead remote
-// contributes nothing rather than breaking the sidebar.
+// rows/totals swapped for the remote's real ones, re-sorted by recency and
+// re-windowed to the requested page. A dead remote contributes nothing rather
+// than breaking the sidebar.
 async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
+  const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
+  const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
+  const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
+
   const primary = await ensureBackend(null)
   const base = await fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
     method: 'GET',
     timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
-  }).catch(() => ({ sessions: [], total: 0 }))
+  }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))
+
+  // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
+  // is correct for this page — mirrors the primary's per-profile over-fetch.
+  const remoteParams = new URLSearchParams(searchParams)
+  remoteParams.set('limit', String(limit + offset))
+  remoteParams.set('offset', '0')
 
   const remoteSet = new Set(remoteProfiles)
   const merged = rowsOf(base).filter(s => !remoteSet.has(s?.profile))
-  const remoteRows = await Promise.all(remoteProfiles.map(name => remoteSessionList(name, searchParams).then(rowsOf, () => [])))
-  for (const rows of remoteRows) merged.push(...rows)
+  const profileTotals = { ...(base.profile_totals || {}) }
+  let total = (Number(base.total) || 0) - remoteProfiles.reduce((n, p) => n + (profileTotals[p] || 0), 0)
 
-  const recency = s => s?.last_active ?? s?.started_at ?? 0
+  // Swap each remote profile's stale local rows/total for the remote's real ones.
+  await Promise.all(remoteProfiles.map(async name => {
+    const list = await remoteSessionList(name, remoteParams).catch(() => null)
+    if (!list) {
+      delete profileTotals[name] // dead remote → drop its stale local total too
+      return
+    }
+    const rows = rowsOf(list)
+    merged.push(...rows)
+    profileTotals[name] = Number(list.total) || rows.length
+    total += profileTotals[name]
+  }))
+
+  const recency = s => s?.[order] ?? s?.started_at ?? 0
   merged.sort((a, b) => recency(b) - recency(a))
-  return { ...base, sessions: merged }
+  return { ...base, sessions: merged.slice(offset, offset + limit), total, profile_totals: profileTotals }
 }
 
 ipcMain.handle('hermes:api', async (_event, request) => {
-  // Remote-profile session reads would otherwise hit the local primary off each
-  // profile's on-disk state.db — fine for local profiles, but a remote profile's
-  // sessions live on its remote host, so the UI's IDs 404 the moment resume runs
-  // there (the "session not found → new session" bug). Route them to the remote.
-  const rerouted = await interceptSessionReadForRemote(request)
+  // Remote-profile session requests would otherwise hit the local primary off
+  // each profile's on-disk state.db — fine for local profiles, but a remote
+  // profile's sessions live on its remote host, so the UI's IDs 404 (or mutations
+  // no-op) the moment they run there. Route reads + mutations to the remote.
+  const rerouted = await interceptSessionRequestForRemote(request)
   if (rerouted !== undefined) {
     return rerouted
   }

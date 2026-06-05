@@ -269,6 +269,43 @@ async def test_discord_free_response_in_threads(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discord_env_require_mention_false_overrides_stale_config_true(adapter, monkeypatch):
+    """SaaS env pushes must override stale config.yaml mention gates."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["require_mention"] = True
+
+    message = make_message(channel=FakeTextChannel(channel_id=123), content="hello from env-open channel")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello from env-open channel"
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_env_thread_require_mention_false_overrides_stale_config_true(adapter, monkeypatch):
+    """Thread mention policy follows env pushes even when config.yaml is stale."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["thread_require_mention"] = True
+
+    thread = FakeThread(channel_id=456, name="active support thread")
+    adapter._threads.mark("456")
+    message = make_message(channel=thread, content="thread follow-up without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "thread follow-up without mention"
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
 async def test_discord_forum_threads_are_handled_as_threads(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)

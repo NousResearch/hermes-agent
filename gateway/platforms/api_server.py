@@ -1335,7 +1335,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._request_audit_log_suffix(request),
         )
         return web.json_response(
-            {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
+            {"error": {"message": "Invalid gateway API key (API_SERVER_KEY)", "type": "gateway_auth_error", "code": "gateway_auth_failed"}},
             status=401,
         )
 

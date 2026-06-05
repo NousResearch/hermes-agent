@@ -154,6 +154,7 @@ export function ChatBar({
   const [focusRequestId, setFocusRequestId] = useState(0)
   const dragDepthRef = useRef(0)
   const composingRef = useRef(false) // true during IME composition (CJK input)
+  const [composingVersion, setComposingVersion] = useState(0)
   const lastSpokenIdRef = useRef<string | null>(null)
 
   const narrow = useMediaQuery('(max-width: 30rem)')
@@ -162,7 +163,7 @@ export function ChatBar({
   const slash = useSlashCompletions({ gateway: gateway ?? null })
 
   const stacked = expanded || narrow || tight
-  const hasComposerPayload = draft.trim().length > 0 || attachments.length > 0
+  const hasComposerPayload = draft.trim().length > 0 || attachments.length > 0 || (editorRef.current && composerPlainText(editorRef.current).trim().length > 0)
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
@@ -1210,9 +1211,11 @@ export function ChatBar({
         onBlur={() => window.setTimeout(closeTrigger, 80)}
         onCompositionEnd={() => {
           composingRef.current = false
+          setComposingVersion(v => v + 1)
         }}
         onCompositionStart={() => {
           composingRef.current = true
+          setComposingVersion(v => v + 1)
         }}
         onDragOver={handleInputDragOver}
         onDrop={handleInputDrop}

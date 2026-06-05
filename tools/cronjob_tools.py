@@ -476,6 +476,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
+    fallback_providers: Optional[List[Dict[str, Any]]] = None,
     no_agent: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
@@ -538,6 +539,7 @@ def cronjob(
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                fallback_providers=fallback_providers,
                 script=_normalize_optional_job_value(script),
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
@@ -646,6 +648,9 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if fallback_providers is not None:
+                from cron.jobs import _normalize_fallback_providers as _norm_fb
+                updates["fallback_providers"] = _norm_fb(fallback_providers)
             if script is not None:
                 # Pass empty string to clear an existing script
                 if script:
@@ -790,6 +795,20 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 },
                 "required": ["model"]
             },
+            "fallback_providers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "provider": {"type": "string", "description": "Provider name (e.g. 'deepseek', 'anthropic')"},
+                        "model": {"type": "string", "description": "Model name (e.g. 'deepseek-v4-flash', 'claude-opus-4-8')"},
+                        "reasoning_effort": {"type": "string", "description": "Optional reasoning effort: minimal, low, medium, high, xhigh"},
+                        "min_effort": {"type": "string", "description": "Optional minimum reasoning effort for this entry to activate. At or above this threshold the entry is tried; below it is skipped."}
+                    },
+                    "required": ["provider", "model"]
+                },
+                "description": "Optional per-job fallback provider chain. When set, overrides the profile's fallback_providers. An explicit empty array [] means no fallback — the job fails on primary failure. Each entry requires at least 'provider' and 'model'. On update, pass an empty array to clear."
+            },
             "script": {
                 "type": "string",
                 "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
@@ -887,6 +906,7 @@ registry.register(
         model=_mo[1],
         provider=_mo[0] or args.get("provider"),
         base_url=args.get("base_url"),
+        fallback_providers=args.get("fallback_providers"),
         reason=args.get("reason"),
         script=args.get("script"),
         context_from=args.get("context_from"),

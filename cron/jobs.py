@@ -500,9 +500,6 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
       - The path must exist and be a directory at create/update time.  We do
         NOT re-check at run time (a user might briefly unmount the dir; the
         scheduler will just fall back to old behaviour with a logged warning).
-
-    Returns the absolute path string, or None when disabled.
-    Raises ValueError on invalid input.
     """
     if workdir is None:
         return None
@@ -521,6 +518,23 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     if not resolved.is_dir():
         raise ValueError(f"Cron workdir is not a directory: {resolved}")
     return str(resolved)
+
+
+def _normalize_fallback_providers(
+    fb: Optional[List[Dict[str, Any]]],
+) -> Optional[List[Dict[str, Any]]]:
+    """Normalize a fallback_providers list for storage.
+
+    Returns None when ``fb`` is None (inherit profile default).
+    Returns a list of dicts otherwise — including explicit empty ``[]``
+    which means "no fallback".
+    """
+    if fb is None:
+        return None
+    if isinstance(fb, list):
+        cleaned = [{str(k): v for k, v in e.items()} for e in fb if isinstance(e, dict)]
+        return cleaned if cleaned or fb == [] else None
+    return None
 
 
 def _normalize_profile(profile: Optional[str]) -> Optional[str]:
@@ -559,6 +573,7 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    fallback_providers: Optional[List[Dict[str, Any]]] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
@@ -610,6 +625,12 @@ def create_job(
                 credentials, scripts, skills, and memory paths resolve
                 consistently. ``default`` selects the root profile; empty /
                 None preserves the scheduler's existing behaviour.
+        fallback_providers: Optional list of fallback provider dicts for this
+                job.  When set, overrides the profile's ``fallback_providers``
+                chain.  An explicit empty list ``[]`` means no fallback — the
+                job fails on primary failure.  Each entry is a dict with keys
+                ``provider``, ``model``, and optional ``reasoning_effort``
+                and ``min_effort``.
         no_agent: When True, skip the agent entirely — run ``script`` on schedule
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
@@ -649,6 +670,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_profile = _normalize_profile(profile)
     normalized_no_agent = bool(no_agent)
+    normalized_fallback = _normalize_fallback_providers(fallback_providers)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -680,6 +702,7 @@ def create_job(
         "base_url": normalized_base_url,
         "script": normalized_script,
         "no_agent": normalized_no_agent,
+        "fallback_providers": normalized_fallback,
         "context_from": context_from,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),

@@ -7590,6 +7590,186 @@ def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
     return Run.from_row(row) if row else None
 
 
+def reconcile_post_review_closure(
+    conn: sqlite3.Connection,
+    *,
+    original_task_id: str,
+    review_task_id: str,
+    closure_task_id: str,
+    evidence: dict,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    complete_closure: bool = True,
+) -> dict[str, Any]:
+    """Privileged post-review closure reconciliation path.
+
+    Worker tools intentionally reject destructive cross-task mutations via
+    ``_enforce_worker_task_ownership``.  Post-review closure lanes are the
+    narrow exception: a runner/orchestrator that has explicit evidence that a
+    review-required task's PR was approved and merged may close the stale
+    original task without respawning the implementation worker or asking a
+    human to click through a false-positive block.
+
+    This helper is deliberately *not* registered as a worker tool.  Call it
+    from unscoped CLI/runner code after collecting live evidence.  Evidence is
+    fail-closed: both ``pr_merged`` and ``review_approved`` must be true, and
+    the review task's latest run must itself be completed with
+    ``metadata.approved=true`` for the same original task.
+    """
+    if not original_task_id or not review_task_id or not closure_task_id:
+        raise ValueError("original_task_id, review_task_id, and closure_task_id are required")
+    if not isinstance(evidence, dict):
+        raise ValueError("evidence must be a JSON object/dict")
+    if evidence.get("pr_merged") is not True:
+        raise ValueError("post-review reconciliation requires evidence.pr_merged=true")
+    if evidence.get("review_approved") is not True:
+        raise ValueError("post-review reconciliation requires evidence.review_approved=true")
+
+    original = get_task(conn, original_task_id)
+    review = get_task(conn, review_task_id)
+    closure = get_task(conn, closure_task_id)
+    if original is None:
+        raise ValueError(f"original task {original_task_id} not found")
+    if review is None:
+        raise ValueError(f"review task {review_task_id} not found")
+    if closure is None:
+        raise ValueError(f"closure task {closure_task_id} not found")
+    if len({original_task_id, review_task_id, closure_task_id}) != 3:
+        raise ValueError("original, review, and closure tasks must be distinct")
+
+    review_run = latest_run(conn, review_task_id)
+    review_meta = review_run.metadata if review_run and isinstance(review_run.metadata, dict) else {}
+    reviewed_task = review_meta.get("reviewed_task") or review_meta.get("original_task")
+    if review.status != "done" or review_run is None or review_run.outcome != "completed":
+        raise ValueError("review task must be completed before post-review reconciliation")
+    if review_meta.get("approved") is not True:
+        raise ValueError("review task latest run must carry metadata.approved=true")
+    if reviewed_task and reviewed_task != original_task_id:
+        raise ValueError(
+            f"review task metadata points at {reviewed_task}, not {original_task_id}"
+        )
+
+    pr_number = evidence.get("pr_number") or evidence.get("pr")
+    pr_label = f"PR #{pr_number}" if pr_number is not None else "the reviewed PR"
+    if summary is None:
+        summary = (
+            f"Reconciled post-review closure: {pr_label} is reviewer-approved "
+            f"and merged; closure task {closure_task_id} provided explicit live "
+            "evidence, so the stale original task is closed without respawning "
+            "the implementation lane."
+        )
+    reconciliation_metadata = dict(metadata or {})
+    reconciliation_metadata.update({
+        "post_review_reconciled": True,
+        "reconciled_from_live_evidence": True,
+        "original_task": original_task_id,
+        "review_task": review_task_id,
+        "closure_task": closure_task_id,
+        "evidence": dict(evidence),
+    })
+
+    if original.status == "done":
+        with write_txn(conn):
+            _append_event(
+                conn,
+                original_task_id,
+                "post_review_reconcile_noop",
+                {
+                    "reason": "original_already_done",
+                    "review_task": review_task_id,
+                    "closure_task": closure_task_id,
+                    "evidence": dict(evidence),
+                },
+            )
+        closure_completed = False
+        if complete_closure and closure.status != "done":
+            closure_completed = complete_task(
+                conn,
+                closure_task_id,
+                summary=(
+                    f"Post-review closure observed original task {original_task_id} "
+                    f"already reconciled from approved+merged evidence for {pr_label}; "
+                    "no human block emitted."
+                ),
+                metadata={
+                    "post_review_reconciled": True,
+                    "original_task": original_task_id,
+                    "review_task": review_task_id,
+                    "original_task_reconciled": True,
+                    "reason": "original_already_done",
+                    "evidence": dict(evidence),
+                },
+            )
+        return {
+            "ok": True,
+            "reconciled": False,
+            "reason": "original_already_done",
+            "original_task_id": original_task_id,
+            "review_task_id": review_task_id,
+            "closure_task_id": closure_task_id,
+            "closure_completed": closure_completed,
+        }
+
+    with write_txn(conn):
+        _append_event(
+            conn,
+            original_task_id,
+            "post_review_reconcile_requested",
+            {
+                "review_task": review_task_id,
+                "closure_task": closure_task_id,
+                "evidence": dict(evidence),
+            },
+        )
+        _append_event(
+            conn,
+            closure_task_id,
+            "post_review_reconcile_requested",
+            {
+                "original_task": original_task_id,
+                "review_task": review_task_id,
+                "evidence": dict(evidence),
+            },
+        )
+
+    if not complete_task(
+        conn,
+        original_task_id,
+        summary=summary,
+        metadata=reconciliation_metadata,
+    ):
+        raise RuntimeError(f"could not reconcile original task {original_task_id}")
+
+    closure_completed = False
+    if complete_closure and closure.status != "done":
+        closure_summary = (
+            f"Post-review closure reconciled original task {original_task_id} "
+            f"from approved+merged evidence for {pr_label}; no human block emitted."
+        )
+        closure_meta = {
+            "post_review_reconciled": True,
+            "original_task": original_task_id,
+            "review_task": review_task_id,
+            "original_task_reconciled": True,
+            "evidence": dict(evidence),
+        }
+        closure_completed = complete_task(
+            conn,
+            closure_task_id,
+            summary=closure_summary,
+            metadata=closure_meta,
+        )
+
+    return {
+        "ok": True,
+        "reconciled": True,
+        "original_task_id": original_task_id,
+        "review_task_id": review_task_id,
+        "closure_task_id": closure_task_id,
+        "closure_completed": closure_completed,
+    }
+
+
 def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return the latest non-null ``task_runs.summary`` for ``task_id``.
 

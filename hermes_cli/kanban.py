@@ -528,6 +528,30 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
 
+    p_reconcile = sub.add_parser(
+        "reconcile-post-review",
+        help="Privileged: close a stale original task after approved+merged PR evidence",
+    )
+    p_reconcile.add_argument("--original", required=True, help="Original review-required task id")
+    p_reconcile.add_argument("--review", required=True, help="Reviewer bridge task id")
+    p_reconcile.add_argument("--closure", required=True, help="Post-review closure lane task id")
+    p_reconcile.add_argument(
+        "--evidence",
+        required=True,
+        help=(
+            "JSON object with explicit live evidence; must include "
+            "pr_merged=true and review_approved=true"
+        ),
+    )
+    p_reconcile.add_argument("--summary", default=None, help="Summary for the reconciled original task")
+    p_reconcile.add_argument("--metadata", default=None, help="JSON object merged into original task metadata")
+    p_reconcile.add_argument(
+        "--no-complete-closure",
+        action="store_true",
+        help="Only reconcile the original task; leave the closure task open",
+    )
+    p_reconcile.add_argument("--json", action="store_true", help="Emit machine-readable JSON result")
+
     p_edit = sub.add_parser(
         "edit",
         help="Edit recovery fields on an already-completed task",
@@ -937,6 +961,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "claim":    _cmd_claim,
             "comment":  _cmd_comment,
             "complete": _cmd_complete,
+            "reconcile-post-review": _cmd_reconcile_post_review,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
@@ -1906,6 +1931,69 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             else:
                 print(f"Completed {tid}")
     return 0 if not failed else 1
+
+
+def _cmd_reconcile_post_review(args: argparse.Namespace) -> int:
+    """Privileged, evidence-gated closure for approved+merged review lanes."""
+    # This command is an operator/runner surface, not a worker escape hatch.
+    # A dispatcher-spawned worker has HERMES_KANBAN_TASK set; require the
+    # embedding runner to explicitly opt into the privileged path (or run from
+    # an unscoped CLI/orchestrator context) so normal task workers do not gain
+    # a shell-level bypass for cross-task completion.
+    if os.environ.get("HERMES_KANBAN_TASK") and os.environ.get(
+        "HERMES_KANBAN_PRIVILEGED_RECONCILE"
+    ) != "1":
+        print(
+            "kanban: reconcile-post-review is privileged; run it from an "
+            "unscoped runner/orchestrator context, or set "
+            "HERMES_KANBAN_PRIVILEGED_RECONCILE=1 in trusted runner code",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        evidence = json.loads(args.evidence)
+        if not isinstance(evidence, dict):
+            raise ValueError("must be a JSON object")
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"kanban: --evidence: {exc}", file=sys.stderr)
+        return 2
+
+    metadata = None
+    raw_meta = getattr(args, "metadata", None)
+    if raw_meta:
+        try:
+            metadata = json.loads(raw_meta)
+            if not isinstance(metadata, dict):
+                raise ValueError("must be a JSON object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"kanban: --metadata: {exc}", file=sys.stderr)
+            return 2
+
+    with kb.connect_closing() as conn:
+        result = kb.reconcile_post_review_closure(
+            conn,
+            original_task_id=args.original,
+            review_task_id=args.review,
+            closure_task_id=args.closure,
+            evidence=evidence,
+            summary=getattr(args, "summary", None),
+            metadata=metadata,
+            complete_closure=not getattr(args, "no_complete_closure", False),
+        )
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    elif result.get("reconciled"):
+        print(
+            f"Reconciled {result['original_task_id']} via review "
+            f"{result['review_task_id']} and closure {result['closure_task_id']}"
+        )
+    else:
+        print(
+            f"No-op: {result['original_task_id']} already reconciled "
+            f"({result.get('reason', 'no change')})"
+        )
+    return 0
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:

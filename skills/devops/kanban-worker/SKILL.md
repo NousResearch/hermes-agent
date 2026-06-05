@@ -181,6 +181,8 @@ You can configure the gateway to receive cross-profile Kanban task notifications
 
 **Don't rely on the CLI when the guidance is available.** The `kanban_*` tools work across all terminal backends (Docker, Modal, SSH). `hermes kanban <verb>` from your terminal tool will fail in containerized backends because the CLI isn't installed there. When in doubt, use the tool.
 
+**Approved review + merged PR belongs to privileged post-review reconciliation.** A closure worker must not use `kanban_complete(task_id=<original>)` to mutate a foreign original task, and should not human-block when live evidence already proves the reviewed PR is approved and merged. The trusted runner/orchestrator should call the unscoped `hermes kanban reconcile-post-review --original <task> --review <bridge> --closure <closure> --evidence '{"review_approved":true,"pr_merged":true,...}'` path (or the equivalent DB helper) so the original stale task and closure lane close without weakening worker task-ownership guards.
+
 ## CLI fallback (for scripting)
 
 Every tool has a CLI equivalent for human operators and scripts:

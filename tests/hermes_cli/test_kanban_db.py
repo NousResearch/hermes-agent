@@ -109,6 +109,143 @@ def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     assert "53 51 4c 69 74 17 03 03 00 13" in msg
 
 
+def test_post_review_closure_reconciles_original_from_privileged_evidence(kanban_home):
+    """Approved review + merged PR should close stale original/closure lanes.
+
+    This is the runner/orchestrator path for the incident where a closure
+    worker had explicit PR-merged evidence but could not call the worker tool
+    ``kanban_complete(task_id=<original>)`` because task ownership guards must
+    reject foreign destructive mutations. The DB helper is privileged and
+    evidence-gated; it is not registered as a worker tool.
+    """
+    with kb.connect() as conn:
+        original = kb.create_task(
+            conn,
+            title="[sdk] Migrate economy importer path to Codex TypeScript SDK",
+            assignee="coder",
+        )
+        kb.claim_task(conn, original)
+        assert kb.block_task(
+            conn,
+            original,
+            reason="review-required: PR #65 needs eyes before merge",
+            expected_run_id=kb.get_task(conn, original).current_run_id,
+        )
+
+        review = kb.create_task(
+            conn,
+            title=f"Review blocked task {original}",
+            assignee="reviewer",
+        )
+        kb.claim_task(conn, review)
+        assert kb.complete_task(
+            conn,
+            review,
+            summary="Reviewed PR #65 and approved it",
+            metadata={"approved": True, "reviewed_task": original},
+            expected_run_id=kb.get_task(conn, review).current_run_id,
+        )
+
+        closure = kb.create_task(
+            conn,
+            title=f"Close approved PR for reviewed task {original}",
+            assignee="coder",
+        )
+        kb.claim_task(conn, closure)
+
+        result = kb.reconcile_post_review_closure(
+            conn,
+            original_task_id=original,
+            review_task_id=review,
+            closure_task_id=closure,
+            evidence={
+                "review_approved": True,
+                "pr_merged": True,
+                "pr_number": 65,
+                "merge_commit": "37deeb369a50b6b3769b0f93dceaf5f4023a242a",
+                "checks_passed": True,
+            },
+        )
+
+        assert result["ok"] is True
+        assert result["reconciled"] is True
+        assert result["closure_completed"] is True
+        assert kb.get_task(conn, original).status == "done"
+        assert kb.get_task(conn, closure).status == "done"
+
+        original_run = kb.latest_run(conn, original)
+        closure_run = kb.latest_run(conn, closure)
+        assert original_run.outcome == "completed"
+        assert original_run.metadata["post_review_reconciled"] is True
+        assert original_run.metadata["review_task"] == review
+        assert original_run.metadata["closure_task"] == closure
+        assert closure_run.outcome == "completed"
+        assert closure_run.metadata["original_task_reconciled"] is True
+
+        original_event_kinds = [e.kind for e in kb.list_events(conn, original)]
+        closure_event_kinds = [e.kind for e in kb.list_events(conn, closure)]
+        assert "post_review_reconcile_requested" in original_event_kinds
+        assert "post_review_reconcile_requested" in closure_event_kinds
+
+
+def test_post_review_reconciliation_fails_closed_without_merged_pr_evidence(kanban_home):
+    with kb.connect() as conn:
+        original = kb.create_task(conn, title="implementation", assignee="coder")
+        review = kb.create_task(conn, title="review", assignee="reviewer")
+        kb.claim_task(conn, review)
+        assert kb.complete_task(
+            conn,
+            review,
+            summary="approved",
+            metadata={"approved": True, "reviewed_task": original},
+            expected_run_id=kb.get_task(conn, review).current_run_id,
+        )
+        closure = kb.create_task(conn, title="closure", assignee="coder")
+
+        with pytest.raises(ValueError, match="pr_merged=true"):
+            kb.reconcile_post_review_closure(
+                conn,
+                original_task_id=original,
+                review_task_id=review,
+                closure_task_id=closure,
+                evidence={"review_approved": True, "pr_merged": False},
+            )
+
+        assert kb.get_task(conn, original).status == "ready"
+
+
+def test_post_review_reconciliation_closes_closure_when_original_already_done(kanban_home):
+    """If the original was already operator-reconciled, closure still ends."""
+    with kb.connect() as conn:
+        original = kb.create_task(conn, title="implementation", assignee="coder")
+        assert kb.complete_task(conn, original, summary="already reconciled")
+        review = kb.create_task(conn, title="review", assignee="reviewer")
+        kb.claim_task(conn, review)
+        assert kb.complete_task(
+            conn,
+            review,
+            summary="approved",
+            metadata={"approved": True, "reviewed_task": original},
+            expected_run_id=kb.get_task(conn, review).current_run_id,
+        )
+        closure = kb.create_task(conn, title="closure", assignee="coder")
+        kb.claim_task(conn, closure)
+
+        result = kb.reconcile_post_review_closure(
+            conn,
+            original_task_id=original,
+            review_task_id=review,
+            closure_task_id=closure,
+            evidence={"review_approved": True, "pr_merged": True, "pr_number": 65},
+        )
+
+        assert result["reconciled"] is False
+        assert result["reason"] == "original_already_done"
+        assert result["closure_completed"] is True
+        assert kb.get_task(conn, closure).status == "done"
+        assert kb.latest_run(conn, closure).metadata["reason"] == "original_already_done"
+
+
 def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     """Legacy DBs missing additive indexed columns must migrate cleanly.
 

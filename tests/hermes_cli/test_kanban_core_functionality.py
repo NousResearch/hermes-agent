@@ -3673,7 +3673,7 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
 def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     monkeypatch, tmp_path, caplog, corrupt_exc
 ):
-    """Corrupt board DBs log one actionable error and stop retrying per tick."""
+    """Corrupt board DBs log one actionable error and back off per tick."""
     import asyncio
     import logging
     import sqlite3
@@ -3694,6 +3694,7 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
             "kanban": {
                 "dispatch_in_gateway": True,
                 "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
             }
         },
     )
@@ -3722,13 +3723,6 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
         raise sqlite3.DatabaseError("file is not a database")
 
     async def _to_thread(fn, *args, **kwargs):
-        # PR salvage (#32857 commit 7): the dispatcher now reaps zombies at
-        # the top of each tick via ``asyncio.to_thread(_kb.reap_worker_zombies)``
-        # BEFORE the per-board tick work. Each tick now issues 3 ``to_thread``
-        # calls (reaper + ``_tick_once`` + ``_ready_nonempty``) instead of 2,
-        # so this counter must reach 6 to allow the same 2 dispatch ticks the
-        # pre-reaper test expected at 4. Connect counts in the assertion below
-        # are unchanged.
         calls["to_thread"] += 1
         result = fn(*args, **kwargs)
         if calls["to_thread"] >= 6:
@@ -3754,19 +3748,16 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     assert sum("not a valid SQLite database" in msg for msg in messages) == 1
     assert not any("tick failed on board" in msg for msg in messages)
     assert not any(record.exc_info for record in caplog.records)
-    # First tick connect (dispatch) + two probes per `_has_ready_work` call
-    # (ready then review, both via _kb.connect). The second dispatch tick
-    # skips the dispatch connect because the corrupt board fingerprint is
-    # disabled, but the ready/review probes still each connect. PR f55d94a1e
-    # added the review-column probe alongside the existing ready-column
-    # probe, bumping this from 3 → 5.
-    assert calls["connect"] == 5
+    # First tick connect (dispatch) + one swallowed health-probe connect
+    # per tick. The second dispatch tick skips the dispatch connect because
+    # the corrupt board fingerprint is disabled.
+    assert calls["connect"] == 3
 
 
-def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
+def test_gateway_dispatcher_retries_corrupt_board_after_backoff(
     monkeypatch, tmp_path, caplog
 ):
-    """A corrupt-looking board is retried after the quarantine TTL expires."""
+    """A confirmed corrupt board is retried after the backoff expires."""
     import asyncio
     import inspect
     import logging
@@ -3788,6 +3779,7 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
             "kanban": {
                 "dispatch_in_gateway": True,
                 "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
             }
         },
     )
@@ -3804,16 +3796,19 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
     monkeypatch.setattr(_kb, "kanban_db_path", lambda board=None: corrupt_db)
 
     real_monotonic = time.monotonic
-    time_values = iter([1000.0, 1001.0, 1301.0, 1301.0])
+    time_values = iter([1000.0, 1030.0, 1030.0])
 
     def _monotonic_for_gateway_dispatcher():
         caller = inspect.currentframe().f_back  # type: ignore[union-attr]
         code = caller.f_code if caller is not None else None
         filename = code.co_filename if code is not None else ""
-        # The kanban dispatcher/notifier watcher loops were extracted from
-        # gateway/run.py into gateway/kanban_watchers.py (god-file Phase 3),
-        # so accept either filename for the time-travel mock.
-        if filename.endswith("gateway/run.py") or filename.endswith("gateway/kanban_watchers.py"):
+        function_name = code.co_name if code is not None else ""
+        if filename.replace("\\", "/").endswith(
+            "gateway/kanban_watchers.py"
+        ) and function_name in {
+            "_record_confirmed_corrupt_board",
+            "_tick_once_for_board",
+        }:
             return next(time_values, 1301.0)
         return real_monotonic()
 
@@ -3826,10 +3821,15 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
         raise sqlite3.DatabaseError("file is not a database")
 
     async def _to_thread(fn, *args, **kwargs):
+        name = getattr(fn, "__name__", "")
+        if name == "reap_worker_zombies":
+            return []
+        if name == "_ready_nonempty":
+            return False
         result = fn(*args, **kwargs)
-        if getattr(fn, "__name__", "") == "_tick_once":
+        if name == "_tick_once":
             calls["tick"] += 1
-            if calls["tick"] >= 3:
+            if calls["tick"] >= 2:
                 runner._running = False
         return result
 
@@ -3850,8 +3850,8 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
 
     messages = [record.getMessage() for record in caplog.records]
     assert sum("not a valid SQLite database" in msg for msg in messages) == 2
-    assert any("database fingerprint unchanged" in msg for msg in messages)
-    assert calls["tick"] == 3
+    assert any("after 30s corrupt-board backoff" in msg for msg in messages)
+    assert calls["tick"] == 2
 
 
 # ---------------------------------------------------------------------------

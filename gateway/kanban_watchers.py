@@ -940,13 +940,12 @@ class GatewayKanbanWatchersMixin:
         HEALTH_WINDOW = 6
         bad_ticks = 0
         last_warn_at = 0
-        # Avoid hot-looping corrupt-looking board DBs, but do not suppress
+        # Avoid hot-looping confirmed corrupt board DBs, but do not suppress
         # same-fingerprint retries forever: transient WAL/open races can
         # surface as "database disk image is malformed" for one tick.
-        CORRUPT_BOARD_RETRY_AFTER_SECONDS = 300
-        disabled_corrupt_boards: dict[
-            str, tuple[tuple[str, int | None, int | None], float]
-        ] = {}
+        CORRUPT_BOARD_INITIAL_BACKOFF_SECONDS = 30.0
+        CORRUPT_BOARD_MAX_BACKOFF_SECONDS = 900.0
+        disabled_corrupt_boards: dict[str, dict[str, Any]] = {}
 
         def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
             path = _kb.kanban_db_path(slug)
@@ -972,6 +971,91 @@ class GatewayKanbanWatchersMixin:
                 or "database disk image is malformed" in msg
             )
 
+        def _readonly_sqlite_uri(path: Path) -> str:
+            try:
+                resolved = path.expanduser().resolve()
+            except Exception:
+                resolved = path
+            try:
+                uri = resolved.as_uri()
+            except ValueError:
+                uri = f"file:{resolved}"
+            separator = "&" if "?" in uri else "?"
+            return f"{uri}{separator}mode=ro"
+
+        def _confirm_corruption(slug: str, exc: Exception) -> bool:
+            """Confirm a corrupt-looking dispatch error without mutating the DB."""
+            try:
+                path = _kb.kanban_db_path(slug)
+                conn = sqlite3.connect(_readonly_sqlite_uri(path), uri=True)
+            except Exception as probe_exc:
+                return _is_corrupt_board_db_error(probe_exc)
+            try:
+                rows = conn.execute("PRAGMA quick_check").fetchall()
+            except Exception as probe_exc:
+                return _is_corrupt_board_db_error(probe_exc)
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            for row in rows:
+                if not row:
+                    continue
+                if str(row[0]).strip().lower() != "ok":
+                    return True
+            return False
+
+        def _record_confirmed_corrupt_board(
+            slug: str, fingerprint: tuple[str, int | None, int | None]
+        ) -> float:
+            previous = disabled_corrupt_boards.get(slug)
+            if previous and previous.get("fingerprint") == fingerprint:
+                previous_backoff = float(
+                    previous.get(
+                        "backoff_seconds", CORRUPT_BOARD_INITIAL_BACKOFF_SECONDS
+                    )
+                )
+                backoff_seconds = min(
+                    previous_backoff * 2.0, CORRUPT_BOARD_MAX_BACKOFF_SECONDS
+                )
+            else:
+                backoff_seconds = CORRUPT_BOARD_INITIAL_BACKOFF_SECONDS
+            disabled_corrupt_boards[slug] = {
+                "fingerprint": fingerprint,
+                "disabled_until_ts": time.monotonic() + backoff_seconds,
+                "backoff_seconds": backoff_seconds,
+            }
+            return backoff_seconds
+
+        def _handle_corrupt_board_error(
+            slug: str,
+            fingerprint: tuple[str, int | None, int | None],
+            exc: Exception,
+        ) -> bool:
+            if not _is_corrupt_board_db_error(exc):
+                return False
+            if not _confirm_corruption(slug, exc):
+                logger.warning(
+                    "kanban dispatcher: board %s database %s raised a "
+                    "corrupt-looking error, but read-only quick_check passed; "
+                    "retrying on the next dispatcher tick",
+                    slug,
+                    fingerprint[0],
+                )
+                return True
+            backoff_seconds = _record_confirmed_corrupt_board(slug, fingerprint)
+            logger.error(
+                "kanban dispatcher: board %s database %s is not a valid "
+                "SQLite database; pausing dispatch for this board for %.0fs "
+                "or until the file changes. Move or restore the file, "
+                "then run `hermes kanban init` if you need a fresh board.",
+                slug,
+                fingerprint[0],
+                backoff_seconds,
+            )
+            return True
+
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
@@ -985,26 +1069,31 @@ class GatewayKanbanWatchersMixin:
             fingerprint = _board_db_fingerprint(slug)
             disabled_entry = disabled_corrupt_boards.get(slug)
             if disabled_entry is not None:
-                disabled_fingerprint, disabled_at = disabled_entry
-                age = time.monotonic() - disabled_at
-                if (
-                    disabled_fingerprint == fingerprint
-                    and age < CORRUPT_BOARD_RETRY_AFTER_SECONDS
-                ):
+                disabled_fingerprint = disabled_entry.get("fingerprint")
+                disabled_until_ts = float(
+                    disabled_entry.get("disabled_until_ts", 0.0) or 0.0
+                )
+                backoff_seconds = float(
+                    disabled_entry.get(
+                        "backoff_seconds", CORRUPT_BOARD_INITIAL_BACKOFF_SECONDS
+                    )
+                )
+                now = time.monotonic()
+                if disabled_fingerprint == fingerprint and now < disabled_until_ts:
                     return None
                 if disabled_fingerprint == fingerprint:
                     logger.info(
                         "kanban dispatcher: board %s database fingerprint unchanged "
-                        "after %.0fs quarantine; retrying dispatch",
+                        "after %.0fs corrupt-board backoff; retrying dispatch",
                         slug,
-                        age,
+                        backoff_seconds,
                     )
                 else:
                     logger.info(
                         "kanban dispatcher: board %s database changed; retrying dispatch",
                         slug,
                     )
-                disabled_corrupt_boards.pop(slug, None)
+                    disabled_corrupt_boards.pop(slug, None)
             try:
                 conn = _kb.connect(board=slug)
                 # `connect()` runs the schema + idempotent migration on
@@ -1013,7 +1102,7 @@ class GatewayKanbanWatchersMixin:
                 # re-ran the migration on a second connection, racing
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
-                return _kb.dispatch_once(
+                result = _kb.dispatch_once(
                     conn,
                     board=slug,
                     max_spawn=max_spawn,
@@ -1023,33 +1112,15 @@ class GatewayKanbanWatchersMixin:
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
                 )
+                disabled_corrupt_boards.pop(slug, None)
+                return result
             except sqlite3.DatabaseError as exc:
-                if _is_corrupt_board_db_error(exc):
-                    disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
-                    logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; pausing dispatch for this board until "
-                        "the file changes, the gateway restarts, or the "
-                        "quarantine timer expires. Move or restore the file, "
-                        "then run `hermes kanban init` if you need a fresh board.",
-                        slug,
-                        fingerprint[0],
-                    )
+                if _handle_corrupt_board_error(slug, fingerprint, exc):
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None
             except Exception as exc:
-                if _is_corrupt_board_db_error(exc):
-                    disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
-                    logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; pausing dispatch for this board until "
-                        "the file changes, the gateway restarts, or the "
-                        "quarantine timer expires. Move or restore the file, "
-                        "then run `hermes kanban init` if you need a fresh board.",
-                        slug,
-                        fingerprint[0],
-                    )
+                if _handle_corrupt_board_error(slug, fingerprint, exc):
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None

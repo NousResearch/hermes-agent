@@ -103,49 +103,66 @@ ok "目录已创建"
 step "1/6 下载 Linux 二进制"
 
 # --- Node.js ---
-sub "下载 Node.js v${NODE_MAJOR}.x ..."
-NODE_HTML=$(curl -sL --connect-timeout 10 --max-time 30 "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/" 2>/dev/null || true)
-NODE_VER=$(echo "$NODE_HTML" | grep -oP "node-v(\d+\.\d+\.\d+)-linux-x64\.tar\.xz" | head -1 | grep -oP '\d+\.\d+\.\d+')
-if [[ -n "$NODE_VER" ]]; then
-    NODE_FILE="node-v${NODE_VER}-linux-x64.tar.xz"
-    NODE_URL="https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/$NODE_FILE"
-    if curl -fSL --connect-timeout 15 --max-time 300 --progress-bar -o "$OUTPUT_DIR/binaries/$NODE_FILE" "$NODE_URL"; then
-        ok "Node.js v$NODE_VER ($(du -m "$OUTPUT_DIR/binaries/$NODE_FILE" | cut -f1) MB)"
-    else
-        warn "Node.js 下载失败"
-    fi
+NODE_EXIST=$(find "$OUTPUT_DIR/binaries" -name "node-v*-linux-x64.tar.xz" 2>/dev/null | head -1)
+if [[ -n "$NODE_EXIST" ]]; then
+    ok "Node.js 已存在: $(basename "$NODE_EXIST")，跳过"
 else
-    warn "无法解析 Node.js 版本，跳过"
+    sub "下载 Node.js v${NODE_MAJOR}.x ..."
+    NODE_HTML=$(curl -sL --connect-timeout 10 --max-time 30 "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/" 2>/dev/null || true)
+    NODE_VER=$(echo "$NODE_HTML" | grep -oP "node-v(\d+\.\d+\.\d+)-linux-x64\.tar\.xz" | head -1 | grep -oP '\d+\.\d+\.\d+')
+    if [[ -n "$NODE_VER" ]]; then
+        NODE_FILE="node-v${NODE_VER}-linux-x64.tar.xz"
+        NODE_URL="https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/$NODE_FILE"
+        if curl -fSL --connect-timeout 15 --max-time 300 --progress-bar -o "$OUTPUT_DIR/binaries/$NODE_FILE" "$NODE_URL"; then
+            ok "Node.js v$NODE_VER ($(du -m "$OUTPUT_DIR/binaries/$NODE_FILE" | cut -f1) MB)"
+        else
+            warn "Node.js 下载失败"
+        fi
+    else
+        warn "无法解析 Node.js 版本，跳过"
+    fi
 fi
 
 # --- ripgrep ---
-sub "下载 ripgrep ..."
-RG_URL="https://github.com/BurntSushi/ripgrep/releases/latest/download/ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz"
 RG_FILE="ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz"
-if curl -fSL --http1.1 --connect-timeout 15 --max-time 120 --progress-bar -o "$OUTPUT_DIR/binaries/$RG_FILE" "$RG_URL"; then
-    ok "ripgrep 15.1.0 ($(du -m "$OUTPUT_DIR/binaries/$RG_FILE" | cut -f1) MB)"
+if [[ -f "$OUTPUT_DIR/binaries/$RG_FILE" ]]; then
+    ok "ripgrep 已存在，跳过"
 else
-    warn "ripgrep 下载失败，跳过"
+    sub "下载 ripgrep ..."
+    RG_URL="https://github.com/BurntSushi/ripgrep/releases/latest/download/$RG_FILE"
+    if curl -fSL --http1.1 --connect-timeout 15 --max-time 120 --progress-bar -o "$OUTPUT_DIR/binaries/$RG_FILE" "$RG_URL"; then
+        ok "ripgrep 15.1.0 ($(du -m "$OUTPUT_DIR/binaries/$RG_FILE" | cut -f1) MB)"
+    else
+        warn "ripgrep 下载失败，跳过"
+    fi
 fi
 
 # --- ffmpeg ---
-sub "下载 ffmpeg (静态构建) ..."
-FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
 FFMPEG_FILE="ffmpeg-release-amd64-static.tar.xz"
-if curl -fSL --connect-timeout 15 --max-time 300 --progress-bar -o "$OUTPUT_DIR/binaries/$FFMPEG_FILE" "$FFMPEG_URL"; then
-    ok "ffmpeg ($(du -m "$OUTPUT_DIR/binaries/$FFMPEG_FILE" | cut -f1) MB)"
+if [[ -f "$OUTPUT_DIR/binaries/$FFMPEG_FILE" ]]; then
+    ok "ffmpeg 已存在，跳过"
 else
-    warn "ffmpeg 下载失败"
+    sub "下载 ffmpeg (静态构建) ..."
+    FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+    if curl -fSL --connect-timeout 15 --max-time 300 --progress-bar -o "$OUTPUT_DIR/binaries/$FFMPEG_FILE" "$FFMPEG_URL"; then
+        ok "ffmpeg ($(du -m "$OUTPUT_DIR/binaries/$FFMPEG_FILE" | cut -f1) MB)"
+    else
+        warn "ffmpeg 下载失败"
+    fi
 fi
 
 # --- uv (Linux 二进制) ---
-sub "下载 uv (Linux 二进制) ..."
 UV_FILE="uv-x86_64-unknown-linux-gnu.tar.gz"
-UV_URL="https://github.com/astral-sh/uv/releases/latest/download/$UV_FILE"
-if curl -fSL --http1.1 --connect-timeout 15 --max-time 120 --progress-bar -o "$OUTPUT_DIR/binaries/$UV_FILE" "$UV_URL"; then
-    ok "uv ($(du -m "$OUTPUT_DIR/binaries/$UV_FILE" | cut -f1) MB)"
+if [[ -f "$OUTPUT_DIR/binaries/$UV_FILE" ]]; then
+    ok "uv 已存在，跳过"
 else
-    warn "uv 下载失败"
+    sub "下载 uv (Linux 二进制) ..."
+    UV_URL="https://github.com/astral-sh/uv/releases/latest/download/$UV_FILE"
+    if curl -fSL --http1.1 --connect-timeout 15 --max-time 120 --progress-bar -o "$OUTPUT_DIR/binaries/$UV_FILE" "$UV_URL"; then
+        ok "uv ($(du -m "$OUTPUT_DIR/binaries/$UV_FILE" | cut -f1) MB)"
+    else
+        warn "uv 下载失败"
+    fi
 fi
 
 # ============================================================
@@ -154,39 +171,43 @@ fi
 step "2/6 下载 Python wheels"
 
 WHEEL_DIR="$OUTPUT_DIR/python-wheels"
+EXISTING_WHEELS=$(find "$WHEEL_DIR" -name "*.whl" 2>/dev/null | wc -l)
 
-# 导出 requirements
-sub "从 uv.lock 导出依赖列表 ..."
-REQ_FILE="$OUTPUT_DIR/requirements.txt"
-cd "$PROJECT_ROOT"
-if uv export --extra all --no-hashes -o "$REQ_FILE" 2>/dev/null; then
-    PKG_COUNT=$(grep -c '==' "$REQ_FILE" || echo 0)
-    ok "导出 $PKG_COUNT 个包"
+if [[ "$EXISTING_WHEELS" -gt 50 ]]; then
+    ok "已有 $EXISTING_WHEELS 个 wheel 包，跳过下载"
 else
-    warn "uv export 失败，使用 hermes-agent[all]"
-    echo "hermes-agent[all]" > "$REQ_FILE"
-fi
+    # 导出 requirements
+    sub "从 uv.lock 导出依赖列表 ..."
+    REQ_FILE="$OUTPUT_DIR/requirements.txt"
+    cd "$PROJECT_ROOT"
+    if uv export --extra all --no-hashes -o "$REQ_FILE" 2>/dev/null; then
+        PKG_COUNT=$(grep -c '==' "$REQ_FILE" || echo 0)
+        ok "导出 $PKG_COUNT 个包"
+    else
+        warn "uv export 失败，使用 hermes-agent[all]"
+        echo "hermes-agent[all]" > "$REQ_FILE"
+    fi
 
-# 下载 [all] extras wheels (本机平台 = Linux)
-sub "下载 hermes-agent[all] wheels ..."
-uv pip install \
-    --python-version "$PYTHON_VERSION" \
-    --only-binary :all: \
-    --target "$WHEEL_DIR" \
-    --no-install \
-    -r "$REQ_FILE" 2>&1 | tail -5 || {
-    warn "uv pip install --target 失败，重试不限制二进制 ..."
+    # 下载 [all] extras wheels (本机平台 = Linux)
+    sub "下载 hermes-agent[all] wheels ..."
     uv pip install \
         --python-version "$PYTHON_VERSION" \
+        --only-binary :all: \
         --target "$WHEEL_DIR" \
         --no-install \
-        -r "$REQ_FILE" 2>&1 | tail -5 || true
-}
+        -r "$REQ_FILE" 2>&1 | tail -5 || {
+        warn "uv pip install --target 失败，重试不限制二进制 ..."
+        uv pip install \
+            --python-version "$PYTHON_VERSION" \
+            --target "$WHEEL_DIR" \
+            --no-install \
+            -r "$REQ_FILE" 2>&1 | tail -5 || true
+    }
 
-# Lazy deps
-sub "下载 lazy deps ..."
-LAZY_REQ="$OUTPUT_DIR/requirements-lazy.txt"
-cat > "$LAZY_REQ" << 'EOF'
+    # Lazy deps
+    sub "下载 lazy deps ..."
+    LAZY_REQ="$OUTPUT_DIR/requirements-lazy.txt"
+    cat > "$LAZY_REQ" << 'EOF'
 anthropic==0.87.0
 boto3==1.42.89
 azure-identity==1.25.3
@@ -244,6 +265,7 @@ uv pip install \
 WHEEL_COUNT=$(find "$WHEEL_DIR" -name "*.whl" 2>/dev/null | wc -l)
 WHEEL_SIZE=$(du -sm "$WHEEL_DIR" 2>/dev/null | cut -f1)
 ok "Python wheels: $WHEEL_COUNT 个, ${WHEEL_SIZE} MB"
+fi
 
 # ============================================================
 # 3/6 打包源码
@@ -258,26 +280,30 @@ ok "源码打包完成 ($(du -m "$OUTPUT_DIR/hermes-agent.tar.gz" | cut -f1) MB)
 # 4/6 下载 Playwright Chromium (Linux 原生)
 # ============================================================
 if [[ "$SKIP_BROWSER" != "true" ]]; then
-    step "4/6 下载 Playwright Chromium (Linux 原生)"
+    if ls "$OUTPUT_DIR/playwright-browsers/chromium-"* &>/dev/null 2>&1; then
+        step "4/6 Playwright Chromium 已存在，跳过"
+    else
+        step "4/6 下载 Playwright Chromium (Linux 原生)"
 
-    export PLAYWRIGHT_BROWSERS_PATH="$OUTPUT_DIR/playwright-browsers"
+        export PLAYWRIGHT_BROWSERS_PATH="$OUTPUT_DIR/playwright-browsers"
 
-    # 先安装 node_modules (agent-browser 需要)
-    cd "$PROJECT_ROOT"
-    sub "安装 npm 依赖 (Playwright 需要) ..."
-    npm install --silent 2>/dev/null || true
+        # 先安装 node_modules (agent-browser 需要)
+        cd "$PROJECT_ROOT"
+        sub "安装 npm 依赖 (Playwright 需要) ..."
+        npm install --silent 2>/dev/null || true
 
-    sub "下载 Chromium ..."
-    npx -y playwright install chromium 2>&1 | tail -3 || {
-        warn "Playwright 下载失败"
+        sub "下载 Chromium ..."
+        npx -y playwright install chromium 2>&1 | tail -3 || {
+            warn "Playwright 下载失败"
+            unset PLAYWRIGHT_BROWSERS_PATH
+        }
+
+        if [[ -d "$OUTPUT_DIR/playwright-browsers/chromium-"* ]]; then
+            ok "Playwright Chromium 已下载"
+        fi
+
         unset PLAYWRIGHT_BROWSERS_PATH
-    }
-
-    if [[ -d "$OUTPUT_DIR/playwright-browsers/chromium-"* ]]; then
-        ok "Playwright Chromium 已下载"
     fi
-
-    unset PLAYWRIGHT_BROWSERS_PATH
 else
     step "4/6 跳过 Playwright Chromium"
 fi
@@ -286,46 +312,51 @@ fi
 # 5/6 创建 npm 离线缓存
 # ============================================================
 if [[ "$SKIP_NPM" != "true" ]]; then
-    step "5/6 创建 npm 离线缓存"
-
     NPM_OFFLINE="$OUTPUT_DIR/npm-offline"
-    cd "$PROJECT_ROOT"
+    NPM_EXISTING=$(find "$NPM_OFFLINE" -name "*.tgz" 2>/dev/null | wc -l)
+    if [[ "$NPM_EXISTING" -gt 10 ]]; then
+        step "5/6 npm 离线缓存已存在 ($NPM_EXISTING 个包)，跳过"
+    else
+        step "5/6 创建 npm 离线缓存"
 
-    # 确保 node_modules 完整
-    sub "安装 npm 依赖 ..."
-    npm install --silent 2>/dev/null || true
+        cd "$PROJECT_ROOT"
 
-    sub "打包 npm 依赖 ..."
-    PACKED=0
+        # 确保 node_modules 完整
+        sub "安装 npm 依赖 ..."
+        npm install --silent 2>/dev/null || true
 
-    # 从 package.json 收集依赖名
-    for pkg_json in package.json web/package.json ui-tui/package.json; do
-        if [[ -f "$pkg_json" ]]; then
-            # 提取非 file: 的依赖名
-            deps=$(node -e "
-                const pkg = require('./$pkg_json');
-                const deps = pkg.dependencies || {};
-                for (const [name, ver] of Object.entries(deps)) {
-                    if (!ver.startsWith('file:')) console.log(name);
-                }
-            " 2>/dev/null || true)
+        sub "打包 npm 依赖 ..."
+        PACKED=0
 
-            while IFS= read -r dep; do
-                [[ -z "$dep" ]] && continue
-                dep_dir="node_modules/$dep"
-                if [[ -d "$dep_dir" ]]; then
-                    tarball=$(cd "$dep_dir" && npm pack --silent 2>/dev/null || true)
-                    if [[ -n "$tarball" && -f "$dep_dir/$tarball" ]]; then
-                        mv "$dep_dir/$tarball" "$NPM_OFFLINE/" 2>/dev/null || true
-                        PACKED=$((PACKED + 1))
+        # 从 package.json 收集依赖名
+        for pkg_json in package.json web/package.json ui-tui/package.json; do
+            if [[ -f "$pkg_json" ]]; then
+                # 提取非 file: 的依赖名
+                deps=$(node -e "
+                    const pkg = require('./$pkg_json');
+                    const deps = pkg.dependencies || {};
+                    for (const [name, ver] of Object.entries(deps)) {
+                        if (!ver.startsWith('file:')) console.log(name);
+                    }
+                " 2>/dev/null || true)
+
+                while IFS= read -r dep; do
+                    [[ -z "$dep" ]] && continue
+                    dep_dir="node_modules/$dep"
+                    if [[ -d "$dep_dir" ]]; then
+                        tarball=$(cd "$dep_dir" && npm pack --silent 2>/dev/null || true)
+                        if [[ -n "$tarball" && -f "$dep_dir/$tarball" ]]; then
+                            mv "$dep_dir/$tarball" "$NPM_OFFLINE/" 2>/dev/null || true
+                            PACKED=$((PACKED + 1))
+                        fi
                     fi
-                fi
-            done <<< "$deps"
-        fi
-    done
+                done <<< "$deps"
+            fi
+        done
 
-    NPM_SIZE=$(du -sm "$NPM_OFFLINE" 2>/dev/null | cut -f1)
-    ok "npm 离线包: $PACKED 个, ${NPM_SIZE} MB"
+        NPM_SIZE=$(du -sm "$NPM_OFFLINE" 2>/dev/null | cut -f1)
+        ok "npm 离线包: $PACKED 个, ${NPM_SIZE} MB"
+    fi
 else
     step "5/6 跳过 npm 离线缓存"
 fi
@@ -334,17 +365,12 @@ fi
 # 6/6 下载 Playwright 系统依赖 (deb 包)
 # ============================================================
 if [[ "$SKIP_DEBS" != "true" ]]; then
-    step "6/6 下载 Playwright 系统依赖 (deb 包)"
-
     DEB_DIR="$OUTPUT_DIR/deb-packages"
-
-    # Playwright Chromium 需要的系统库
-    DEB_PKGS=(
-        libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2
-        libxkbcommon0 libgbm1 libpango-1.0-0 libcairo2 libasound2
-        libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2
-        libwayland-client0 libwayland-cursor0 libwayland-egl1
-        libnspr4 libfontconfig1 libfreetype6 libxshmfence1
+    DEB_EXISTING=$(find "$DEB_DIR" -name "*.deb" 2>/dev/null | wc -l)
+    if [[ "$DEB_EXISTING" -gt 20 ]]; then
+        step "6/6 deb 包已存在 ($DEB_EXISTING 个)，跳过"
+    else
+        step "6/6 下载 Playwright 系统依赖 (deb 包)"
     )
 
     sub "下载 ${#DEB_PKGS[@]} 个 deb 包及其依赖 ..."

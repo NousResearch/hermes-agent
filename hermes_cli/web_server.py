@@ -1193,7 +1193,14 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         "stdin": subprocess.DEVNULL,
         "stdout": log_file,
         "stderr": subprocess.STDOUT,
-        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1"},
+        # Strip _HERMES_GATEWAY so the child does not inherit the
+        # running gateway's marker — prevents the self-targeting guard
+        # from refusing the restart/stop command (issue #39969).
+        "env": {
+            k: v
+            for k, v in {**os.environ, "HERMES_NONINTERACTIVE": "1"}.items()
+            if k != "_HERMES_GATEWAY"
+        },
     }
     if sys.platform == "win32":
         popen_kwargs["creationflags"] = (

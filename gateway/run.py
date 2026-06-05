@@ -3989,6 +3989,14 @@ class GatewayRunner:
 
         current_pid = os.getpid()
 
+        # Strip _HERMES_GATEWAY from the child environment so the restarted
+        # gateway process does not inherit the marker from the parent.
+        # Without this, the detached restart helper runs
+        # ``hermes gateway restart`` with _HERMES_GATEWAY=1 still set, and
+        # the self-targeting guard (gateway.py) refuses to proceed — leaving
+        # the gateway stopped with no replacement (issue #39969).
+        clean_env = {k: v for k, v in os.environ.items() if k != "_HERMES_GATEWAY"}
+
         # On Windows there's no bash/setsid chain — spawn a tiny Python
         # watcher directly via sys.executable instead.  The watcher polls
         # current_pid, waits for our exit, then runs `hermes gateway
@@ -4040,6 +4048,8 @@ class GatewayRunner:
                 _CREATE_NEW_PROCESS_GROUP = 0x00000200
                 _DETACHED_PROCESS = 0x00000008
                 _CREATE_NO_WINDOW = 0x08000000
+                # Pass through the clean env inherited from the watcher
+                # parent — _HERMES_GATEWAY was already stripped there.
                 subprocess.Popen(
                     cmd,
                     stdout=subprocess.DEVNULL,
@@ -4052,6 +4062,7 @@ class GatewayRunner:
                 [sys.executable, "-c", watcher, str(current_pid), *cmd_argv],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=clean_env,
                 **windows_detach_popen_kwargs(),
             )
             return
@@ -4067,6 +4078,7 @@ class GatewayRunner:
                 [setsid_bin, "bash", "-lc", shell_cmd],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=clean_env,
                 start_new_session=True,
             )
         else:
@@ -4074,6 +4086,7 @@ class GatewayRunner:
                 ["bash", "-lc", shell_cmd],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=clean_env,
                 start_new_session=True,
             )
 

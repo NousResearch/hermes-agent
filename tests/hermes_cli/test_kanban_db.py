@@ -4287,3 +4287,120 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+
+
+# ---------------------------------------------------------------------------
+# release_task (worker-initiated transient retry)
+# ---------------------------------------------------------------------------
+
+def test_release_task_running_returns_to_ready(kanban_home):
+    """A running task can be released back to ready via release_task."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="transient", assignee="gond-cc")
+        kb.claim_task(conn, tid, claimer="host:99")
+        assert kb.get_task(conn, tid).status == "running"
+        ok, err = kb.release_task(conn, tid, reason="dependency timeout", actor="worker")
+    assert ok is True, err
+    assert err is None
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.claim_lock is None
+        assert task.claim_expires is None
+        # run closed with outcome=released
+        run = kb.latest_run(conn, tid)
+        assert run.outcome == "released"
+        # event recorded
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "released" in kinds
+        released_evt = next(e for e in events if e.kind == "released")
+        assert released_evt.payload["reason"] == "dependency timeout"
+        assert released_evt.payload["actor"] == "worker"
+
+
+def test_release_task_not_found_returns_false(kanban_home):
+    """release_task returns (False, message) for a nonexistent task."""
+    with kb.connect() as conn:
+        ok, err = kb.release_task(conn, "t_doesnotexist", reason="test")
+    assert ok is False
+    assert err is not None
+
+
+def test_release_task_non_running_rejected(kanban_home):
+    """release_task rejects tasks that are not in 'running' state."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ready task", assignee="gond-cc")
+        # Task is in 'ready', not 'running'
+        ok, err = kb.release_task(conn, tid, reason="test")
+    assert ok is False
+    assert "running" in (err or "")
+
+
+def test_release_task_done_rejected(kanban_home):
+    """release_task rejects already-completed tasks."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="done task", assignee="gond-cc")
+        kb.claim_task(conn, tid)
+        kb.complete_task(conn, tid, summary="done")
+        ok, err = kb.release_task(conn, tid, reason="test")
+    assert ok is False
+    assert "running" in (err or "")
+
+
+def test_release_task_guarded_assignee_rejected(kanban_home):
+    """release_task rejects tasks assigned to approval/sentinel lanes without force."""
+    for guarded in ("approval-hold", "filip", "sentinel", "human", "andrea", "daily"):
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title=f"gate-{guarded}", assignee=guarded)
+            # Directly set status to running to simulate a claimed task
+            # (the dispatcher claims these via a terminal/human lane, not auto-spawn).
+            conn.execute("UPDATE tasks SET status='running', claim_lock='test:1' WHERE id=?", (tid,))
+            ok, err = kb.release_task(conn, tid, reason="test")
+        assert ok is False, f"expected rejection for assignee={guarded!r}"
+        assert "guarded" in (err or "").lower() or "approval" in (err or "").lower() or "sentinel" in (err or "").lower(), \
+            f"expected guard error for {guarded!r}, got {err!r}"
+
+
+def test_release_task_force_overrides_guard(kanban_home):
+    """release_task with force=True bypasses the approval-lane guard."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="force-release", assignee="filip")
+        conn.execute("UPDATE tasks SET status='running', claim_lock='test:1' WHERE id=?", (tid,))
+        ok, err = kb.release_task(conn, tid, reason="forced transient", force=True)
+    assert ok is True, err
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_release_task_consecutive_failures_not_cleared(kanban_home):
+    """release_task does not reset the consecutive_failures counter."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="failing", assignee="gond-cc")
+        # Simulate two prior failures by patching the counter directly.
+        conn.execute("UPDATE tasks SET consecutive_failures = 2 WHERE id = ?", (tid,))
+        kb.claim_task(conn, tid)
+        ok, err = kb.release_task(conn, tid, reason="transient")
+    assert ok is True
+    with kb.connect() as conn:
+        row = conn.execute(
+            "SELECT consecutive_failures FROM tasks WHERE id = ?", (tid,)
+        ).fetchone()
+        assert row["consecutive_failures"] == 2, "release_task must not reset failure counter"
+
+
+def test_release_task_event_payload_fields(kanban_home):
+    """The 'released' event captures reason, actor, prev_lock, and forced."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="audit", assignee="gond-cc")
+        kb.claim_task(conn, tid, claimer="host:42")
+        kb.release_task(conn, tid, reason="probe-timeout", actor="readiness-gate")
+        events = kb.list_events(conn, tid)
+    released = next(e for e in events if e.kind == "released")
+    pl = released.payload
+    assert pl["reason"] == "probe-timeout"
+    assert pl["actor"] == "readiness-gate"
+    assert pl["prev_lock"] is not None
+    assert pl["forced"] is False

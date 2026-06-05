@@ -3396,6 +3396,100 @@ def reclaim_task(
     return True
 
 
+# Assignees that indicate a human / approval gate lane.  Releasing a task
+# assigned to one of these back to 'ready' is almost always wrong: the
+# dispatcher will put it in ``skipped_nonspawnable`` every tick, and it will
+# never be claimed automatically.  Require an explicit ``force=True`` to
+# override so callers cannot accidentally promote human-gated tasks.
+_RELEASE_GUARDED_ASSIGNEES: frozenset = frozenset({
+    "approval-hold",
+    "daily",
+    "sentinel",
+    "human",
+    "filip",
+    "andrea",
+})
+
+
+def release_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    actor: Optional[str] = None,
+    force: bool = False,
+) -> tuple:
+    """Worker-initiated transient retry: move ``running`` -> ``ready``.
+
+    Use this when a worker cannot proceed due to a transient dependency
+    failure (e.g. a readiness-gate timeout) and wants the card returned to
+    the dispatch queue for a later retry, without counting the attempt as
+    a hard failure.
+
+    Differs from :func:`reclaim_task` in several ways:
+
+    * Intended to be called by the **worker itself**, not an operator.
+    * Does **not** send SIGTERM — the caller IS the process being released.
+    * Does **not** clear the consecutive-failures counter; transient retries
+      still count toward the circuit-breaker limit so a mis-configured probe
+      cannot spin forever.
+    * Guards against releasing tasks assigned to human / approval-gate lanes
+      (see :data:`_RELEASE_GUARDED_ASSIGNEES`) unless ``force=True``.
+
+    Returns ``(True, None)`` on success.
+    Returns ``(False, reason_string)`` if the release was rejected:
+      - Task not found or not currently ``running``.
+      - Assignee is a guarded approval/human lane (without ``force=True``).
+      - Concurrent writer already changed state (CAS miss).
+    """
+    row = conn.execute(
+        "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return False, "task not found"
+    if row["status"] != "running":
+        return (
+            False,
+            f"cannot release task in status={row['status']!r} (only 'running' is valid)",
+        )
+    assignee = row["assignee"] or ""
+    if not force and assignee in _RELEASE_GUARDED_ASSIGNEES:
+        return (
+            False,
+            f"assignee {assignee!r} is a guarded approval/sentinel lane — "
+            "use --force to override",
+        )
+    prev_lock = row["claim_lock"]
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
+            (task_id, prev_lock),
+        )
+        if cur.rowcount != 1:
+            return False, "concurrent write — task state changed before release could land"
+        run_id = _end_run(
+            conn, task_id,
+            outcome="released",
+            status="released",
+            error=f"transient_release: {reason}",
+            metadata={"actor": actor or "worker", "reason": reason, "forced": force},
+        )
+        _append_event(
+            conn, task_id, "released",
+            {
+                "reason": reason,
+                "actor": actor or "worker",
+                "prev_lock": prev_lock,
+                "forced": force,
+            },
+            run_id=run_id,
+        )
+    return True, None
+
+
 def reassign_task(
     conn: sqlite3.Connection,
     task_id: str,

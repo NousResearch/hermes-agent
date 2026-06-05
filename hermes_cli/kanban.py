@@ -451,6 +451,35 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Human-readable reason (recorded on the reclaimed event)",
     )
 
+    # --- release / requeue (worker-initiated transient retry) ---
+    p_release = sub.add_parser(
+        "release",
+        aliases=["requeue"],
+        help=(
+            "Return a running task to 'ready' for transient retry "
+            "(worker-initiated; does not count as a hard failure)"
+        ),
+    )
+    p_release.add_argument("task_id")
+    p_release.add_argument(
+        "--reason",
+        required=True,
+        help="Human-readable reason for the transient release (recorded in task events)",
+    )
+    p_release.add_argument(
+        "--actor",
+        default=None,
+        help="Who is requesting the release (defaults to 'worker')",
+    )
+    p_release.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Override the approval/sentinel lane guard. Use only if you are certain "
+            "the task can be re-dispatched automatically."
+        ),
+    )
+
     p_reassign = sub.add_parser(
         "reassign",
         help="Reassign a task to a different profile, optionally reclaiming first",
@@ -930,6 +959,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "assign":   _cmd_assign,
             "reclaim":  _cmd_reclaim,
             "reassign": _cmd_reassign,
+            "release":  _cmd_release,
+            "requeue":  _cmd_release,
             "diagnostics": _cmd_diagnostics,
             "diag":     _cmd_diagnostics,
             "link":     _cmd_link,
@@ -1639,6 +1670,22 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
         )
         return 1
     print(f"Reclaimed {args.task_id}")
+    return 0
+
+
+def _cmd_release(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        ok, err = kb.release_task(
+            conn,
+            args.task_id,
+            reason=args.reason,
+            actor=getattr(args, "actor", None),
+            force=bool(getattr(args, "force", False)),
+        )
+    if not ok:
+        print(f"cannot release {args.task_id}: {err}", file=sys.stderr)
+        return 1
+    print(f"Released {args.task_id} (back to ready for retry)")
     return 0
 
 

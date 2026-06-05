@@ -268,3 +268,12 @@ class TestRegistration:
 
         for name in ("ONEBOT_HTTP_URL", "ONEBOT_WS_URL", "ONEBOT_ACCESS_TOKEN"):
             assert name in OPTIONAL_ENV_VARS
+
+    def test_onebot_endpoint_metadata_does_not_require_both_http_and_ws(self):
+        from tools.registry import registry
+
+        entry = registry.get_entry("qq_send_voice")
+        assert entry is not None
+        assert "ONEBOT_HTTP_URL" not in entry.requires_env
+        assert "ONEBOT_WS_URL" not in entry.requires_env
+        assert entry.check_fn is voice.onebot_configured

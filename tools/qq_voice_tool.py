@@ -229,5 +229,5 @@ registry.register(
     schema=QQ_SEND_VOICE_SCHEMA,
     handler=_handle_qq_send_voice,
     check_fn=onebot_configured,
-    requires_env=["ONEBOT_HTTP_URL", "ONEBOT_WS_URL"],
+    requires_env=[],
 )

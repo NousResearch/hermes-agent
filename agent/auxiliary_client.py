@@ -4904,6 +4904,58 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── MiniMax OAuth (PKCE bearer → Anthropic Messages API) ─────────
+    # Reuse the main runtime resolver instead of the registry default: the
+    # persisted OAuth state may select a region-specific inference endpoint.
+    # Keep the credential callable so long-lived auxiliary/MoA clients observe
+    # token refreshes persisted by this process or a sibling process.
+    if provider == "minimax-oauth":
+        try:
+            from hermes_cli.auth import AuthError, resolve_minimax_oauth_runtime_credentials
+
+            creds = resolve_minimax_oauth_runtime_credentials(as_token_provider=True)
+        except (AuthError, ImportError) as exc:
+            logger.debug("Auxiliary minimax-oauth: %s", exc)
+            return None, None
+
+        token_provider = creds.get("api_key")
+        base_url = str(creds.get("base_url") or "").strip().rstrip("/")
+        if not callable(token_provider) or not base_url:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth credentials are incomplete"
+            )
+            return None, None
+
+        final_model = _normalize_resolved_model(
+            model or _get_aux_model_for_provider(provider) or "MiniMax-M2.7",
+            provider,
+        )
+        try:
+            from agent.anthropic_adapter import build_anthropic_client
+
+            real_client = build_anthropic_client(token_provider, base_url)
+        except ImportError:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth requires the anthropic SDK"
+            )
+            return None, None
+
+        sync_client = AnthropicAuxiliaryClient(
+            real_client,
+            final_model,
+            token_provider,
+            base_url,
+            # MiniMax uses OAuth for bearer authentication, but it is a
+            # third-party Anthropic-compatible endpoint.  ``is_oauth=True``
+            # means *native Anthropic/Claude Code wire compatibility* here;
+            # enabling it would inject Claude Code identity and rewrite tool
+            # names.  The callable token provider already handles auth.
+            is_oauth=False,
+        )
+        if async_mode:
+            return AsyncAnthropicAuxiliaryClient(sync_client), final_model
+        return sync_client, final_model
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         custom_base = ""

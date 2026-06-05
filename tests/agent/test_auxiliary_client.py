@@ -604,6 +604,109 @@ class TestResolveXaiOAuthForAux:
         )
 
 
+class TestResolveMiniMaxOAuthForAux:
+    """MiniMax OAuth must use its refreshable PKCE state in auxiliary paths."""
+
+    def test_builds_refreshable_anthropic_client(self):
+        from agent.auxiliary_client import AnthropicAuxiliaryClient, resolve_provider_client
+
+        token_provider = MagicMock(name="minimax_token_provider")
+        real_client = MagicMock(name="anthropic_client")
+        with (
+            patch(
+                "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+                return_value={
+                    "provider": "minimax-oauth",
+                    "api_key": token_provider,
+                    "base_url": "https://api.minimaxi.com/anthropic/",
+                    "source": "oauth",
+                },
+            ) as mock_resolve,
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=real_client,
+            ) as mock_build,
+        ):
+            client, model = resolve_provider_client(
+                "minimax-oauth", "MiniMax-M2.7"
+            )
+
+        mock_resolve.assert_called_once_with(as_token_provider=True)
+        mock_build.assert_called_once_with(
+            token_provider, "https://api.minimaxi.com/anthropic"
+        )
+        assert isinstance(client, AnthropicAuxiliaryClient)
+        assert client._real_client is real_client
+        assert client.api_key is token_provider
+        assert client.base_url == "https://api.minimaxi.com/anthropic"
+        assert client.chat.completions._is_oauth is False
+        assert model == "MiniMax-M2.7"
+
+    def test_request_shape_does_not_enable_claude_code_oauth(self):
+        """MiniMax bearer auth must not activate native Anthropic transforms."""
+        token_provider = MagicMock(name="minimax_token_provider")
+        real_client = MagicMock(name="anthropic_client")
+        normalized = SimpleNamespace(
+            content="ok",
+            tool_calls=[],
+            reasoning=None,
+            finish_reason="stop",
+        )
+        with (
+            patch(
+                "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+                return_value={
+                    "provider": "minimax-oauth",
+                    "api_key": token_provider,
+                    "base_url": "https://api.minimaxi.com/anthropic/",
+                    "source": "oauth",
+                },
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=real_client,
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_kwargs",
+                return_value={"model": "MiniMax-M2.7", "messages": [], "max_tokens": 16},
+            ) as mock_kwargs,
+            patch(
+                "agent.anthropic_adapter.create_anthropic_message",
+                return_value=SimpleNamespace(usage=None),
+            ),
+            patch("agent.transports.get_transport") as mock_transport,
+        ):
+            mock_transport.return_value.normalize_response.return_value = normalized
+            client, _ = resolve_provider_client("minimax-oauth", "MiniMax-M2.7")
+            client.chat.completions.create(
+                model="MiniMax-M2.7",
+                messages=[{"role": "user", "content": "hello"}],
+                max_tokens=16,
+            )
+
+        assert mock_kwargs.call_args.kwargs["is_oauth"] is False
+
+    def test_missing_login_does_not_fall_through_to_fake_api_key(self):
+        from agent.auxiliary_client import resolve_provider_client
+        from hermes_cli.auth import AuthError
+
+        with patch(
+            "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+            side_effect=AuthError(
+                "not logged in",
+                provider="minimax-oauth",
+                code="not_logged_in",
+                relogin_required=True,
+            ),
+        ):
+            client, model = resolve_provider_client(
+                "minimax-oauth", "MiniMax-M2.7"
+            )
+
+        assert client is None
+        assert model is None
+
+
 class TestAnthropicOAuthFlag:
     """Test that OAuth tokens get is_oauth=True in auxiliary Anthropic client."""
 

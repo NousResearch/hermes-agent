@@ -453,6 +453,8 @@ skills:
 memory:
   memory_enabled: true
   user_profile_enabled: true
+  builtin_tool:
+    enabled: true       # 设为 false 可隐藏内置 memory 工具
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
 ```

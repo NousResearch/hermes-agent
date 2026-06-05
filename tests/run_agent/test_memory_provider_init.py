@@ -7,9 +7,10 @@ from unittest.mock import patch
 class RecordingMemoryProvider:
     name = "recording"
 
-    def __init__(self):
+    def __init__(self, tool_schemas=None):
         self.init_kwargs = None
         self.init_session_id = None
+        self._tool_schemas = list(tool_schemas or [])
 
     def is_available(self):
         return True
@@ -19,7 +20,7 @@ class RecordingMemoryProvider:
         self.init_kwargs = dict(kwargs)
 
     def get_tool_schemas(self):
-        return []
+        return list(self._tool_schemas)
 
     def shutdown(self):
         pass
@@ -90,3 +91,49 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert provider.init_kwargs["user_id"] == "open-id"
     assert provider.init_kwargs["user_id_alt"] == "union-id"
     assert provider.init_kwargs["platform"] == "feishu"
+
+
+def test_builtin_memory_tool_can_be_disabled_without_disabling_provider_tools():
+    provider = RecordingMemoryProvider(
+        tool_schemas=[
+            {
+                "name": "recording_recall",
+                "description": "Recall from external memory",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+    )
+    cfg = {
+        "memory": {
+            "provider": "recording",
+            "builtin_tool": {"enabled": False},
+        },
+        "agent": {},
+    }
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            enabled_toolsets=["memory"],
+            session_id="sess-provider",
+        )
+
+    assert provider.init_session_id == "sess-provider"
+    assert "memory" not in agent.valid_tool_names
+    assert "recording_recall" in agent.valid_tool_names
+    assert all(
+        tool.get("function", {}).get("name") != "memory"
+        for tool in agent.tools
+    )

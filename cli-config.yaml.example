@@ -473,6 +473,11 @@ memory:
   
   # User profile: preferences, communication style, expectations
   user_profile_enabled: true
+
+  # Built-in global memory tool (writes to MEMORY.md / USER.md).
+  # Set enabled: false to hide this tool while keeping memory providers active.
+  builtin_tool:
+    enabled: true
   
   # Character limits (~2.75 chars per token, model-independent)
   memory_char_limit: 2200   # ~800 tokens

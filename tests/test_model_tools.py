@@ -6,8 +6,10 @@ from unittest.mock import ANY, call, patch
 
 from model_tools import (
     handle_function_call,
+    get_tool_definitions,
     get_all_tool_names,
     get_toolset_for_tool,
+    _clear_tool_defs_cache,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
@@ -160,6 +162,38 @@ class TestAgentLoopTools:
     def test_no_regular_tools_in_set(self):
         assert "web_search" not in _AGENT_LOOP_TOOLS
         assert "terminal" not in _AGENT_LOOP_TOOLS
+
+
+class TestBuiltinMemoryToolConfig:
+    def teardown_method(self):
+        _clear_tool_defs_cache()
+
+    @staticmethod
+    def _tool_names(tool_defs):
+        return {
+            tool.get("function", {}).get("name")
+            for tool in tool_defs
+            if isinstance(tool, dict)
+        }
+
+    def test_builtin_memory_tool_enabled_by_default(self):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            tools = get_tool_definitions(
+                enabled_toolsets=["memory"],
+                quiet_mode=True,
+            )
+
+        assert "memory" in self._tool_names(tools)
+
+    def test_builtin_memory_tool_can_be_disabled(self):
+        cfg = {"memory": {"builtin_tool": {"enabled": False}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            tools = get_tool_definitions(
+                enabled_toolsets=["memory"],
+                quiet_mode=True,
+            )
+
+        assert "memory" not in self._tool_names(tools)
 
 
 # =========================================================================

@@ -524,9 +524,14 @@ When on, any flagged `skill_manage` write surfaces as an approval prompt with th
 memory:
   memory_enabled: true
   user_profile_enabled: true
+  builtin_tool:
+    enabled: true       # set false to hide the built-in memory tool
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
 ```
+
+Set `memory.builtin_tool.enabled: false` to hide the built-in global `memory`
+tool while leaving external memory providers enabled.
 
 ## File Read Safety
 

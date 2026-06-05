@@ -29,6 +29,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
+from agent.memory_config import builtin_memory_tool_enabled
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
@@ -261,6 +262,30 @@ def _clear_tool_defs_cache() -> None:
     _tool_defs_cache.clear()
 
 
+def _load_builtin_memory_tool_enabled() -> bool:
+    """Read the built-in memory tool exposure flag from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        return builtin_memory_tool_enabled(load_config())
+    except Exception:
+        return True
+
+
+def _filter_builtin_memory_tool(
+    tool_defs: List[Dict[str, Any]],
+    *,
+    enabled: bool,
+) -> List[Dict[str, Any]]:
+    """Remove the built-in ``memory`` tool when config disables it."""
+    if enabled:
+        return tool_defs
+    return [
+        tool
+        for tool in tool_defs
+        if tool.get("function", {}).get("name") != "memory"
+    ]
+
+
 def get_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -293,6 +318,8 @@ def get_tool_definitions(
     # user-visible config edits that affect dynamic schemas (execute_code
     # mode, discord action allowlist, etc.) without needing an explicit
     # invalidate hook on every config-writer.
+    _builtin_memory_tool_enabled = _load_builtin_memory_tool_enabled()
+
     if quiet_mode:
         try:
             from hermes_cli.config import get_config_path
@@ -306,6 +333,7 @@ def get_tool_definitions(
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
             cfg_fp,
+            _builtin_memory_tool_enabled,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
         )
@@ -319,8 +347,13 @@ def get_tool_definitions(
             # schemas are treated as read-only by all known callers.
             return list(cached)
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
+    result = _compute_tool_definitions(
+        enabled_toolsets,
+        disabled_toolsets,
+        quiet_mode,
+        skip_tool_search_assembly=skip_tool_search_assembly,
+        builtin_memory_tool_enabled=_builtin_memory_tool_enabled,
+    )
     if quiet_mode:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -339,6 +372,7 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    builtin_memory_tool_enabled: bool = True,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -399,6 +433,10 @@ def _compute_tool_definitions(
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    filtered_tools = _filter_builtin_memory_tool(
+        filtered_tools,
+        enabled=builtin_memory_tool_enabled,
+    )
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references

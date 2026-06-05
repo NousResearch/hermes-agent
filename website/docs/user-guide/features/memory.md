@@ -207,6 +207,8 @@ See [Session Search Tool](/user-guide/sessions#session-search-tool) for the thre
 memory:
   memory_enabled: true
   user_profile_enabled: true
+  builtin_tool:
+    enabled: true       # set false to hide the built-in memory tool
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
 ```

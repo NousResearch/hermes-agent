@@ -2147,3 +2147,31 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+    def test_persisted_tool_calls_json_string_is_not_serialized_per_character(self):
+        import json as _json
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test/model", quiet_mode=True)
+
+        tool_calls = _json.dumps([
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "arguments": _json.dumps({
+                        "cmd": "pytest tests/agent/test_context_compressor.py",
+                        "workdir": "/repo",
+                    }),
+                },
+            }
+        ])
+        serialized = c._serialize_for_summary([
+            {"role": "assistant", "content": "", "tool_calls": tool_calls}
+        ])
+
+        assert "terminal(" in serialized
+        assert "pytest tests/agent/test_context_compressor.py" in serialized
+        assert "?(...)" not in serialized
+        assert len(serialized) < 1000

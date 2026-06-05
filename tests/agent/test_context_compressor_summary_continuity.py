@@ -85,3 +85,32 @@ def test_handoff_in_protected_head_populates_previous_summary_before_update():
     assert compressor._previous_summary == old_summary
     assert seen_turns
     assert all(old_summary not in str(msg.get("content", "")) for msg in seen_turns)
+
+
+def test_summary_only_compression_window_reuses_handoff_without_llm_call():
+    """Do not ask the LLM to rewrite an existing handoff when there are no new turns."""
+    compressor = _compressor()
+    old_summary = "SUMMARY-ONLY-WINDOW durable facts"
+    messages = [
+        {"role": "user", "content": "head user"},
+        {"role": "assistant", "content": "head assistant"},
+        {"role": "user", "content": "head user 2"},
+        {"role": "user", "content": f"{SUMMARY_PREFIX}\n{old_summary}"},
+        {"role": "assistant", "content": "tail assistant"},
+        {"role": "user", "content": "tail user"},
+        {"role": "assistant", "content": "tail assistant 2"},
+        {"role": "user", "content": "latest request"},
+    ]
+
+    with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=4), \
+         patch.object(compressor, "_generate_summary") as mock_generate:
+        result = compressor.compress(messages, current_tokens=90_000)
+
+    mock_generate.assert_not_called()
+    summary_messages = [
+        msg for msg in result
+        if isinstance(msg.get("content"), str)
+        and msg["content"].startswith(SUMMARY_PREFIX)
+    ]
+    assert len(summary_messages) == 1
+    assert old_summary in summary_messages[0]["content"]

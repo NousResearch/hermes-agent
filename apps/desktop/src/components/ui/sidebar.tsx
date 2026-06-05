@@ -347,7 +347,7 @@ function SidebarContent({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
       className={cn(
-        'flex min-h-0 flex-1 flex-col gap-2 overflow-auto group-data-[collapsible=icon]:overflow-hidden',
+        'flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden group-data-[collapsible=icon]:overflow-hidden',
         className
       )}
       data-sidebar="content"
@@ -415,7 +415,7 @@ function SidebarGroupAction({
 function SidebarGroupContent({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
-      className={cn('w-full text-sm', className)}
+      className={cn('w-full min-w-0 text-sm', className)}
       data-sidebar="group-content"
       data-slot="sidebar-group-content"
       {...props}

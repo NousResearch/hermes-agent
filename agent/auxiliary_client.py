@@ -613,6 +613,21 @@ def _convert_content_for_responses(content: Any) -> Any:
     return converted or ""
 
 
+def _responses_input_contains_image(input_messages: Any) -> bool:
+    if not isinstance(input_messages, list):
+        return False
+    for msg in input_messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "input_image":
+                return True
+    return False
+
+
 class _CodexCompletionsAdapter:
     """Drop-in shim that accepts chat.completions.create() kwargs and
     routes them through the Codex Responses streaming API."""
@@ -786,40 +801,43 @@ class _CodexCompletionsAdapter:
                 timeout_timer.start()
             _check_cancelled()
 
-            # Event-driven Responses streaming via the low-level
-            # ``responses.create(stream=True)`` path.  The high-level
-            # ``responses.stream(...)`` helper does post-hoc typed
-            # reconstruction from ``response.completed.response.output``,
-            # which the chatgpt.com Codex backend has been observed to
-            # return as ``null`` (gpt-5.5, May 2026) — that crashes the SDK
-            # with ``TypeError: 'NoneType' object is not iterable``.
-            # Consuming raw events and assembling the final response
-            # ourselves from ``response.output_item.done`` makes us
-            # structurally immune to that drift.
-            from agent.codex_runtime import _consume_codex_event_stream
+            if _responses_input_contains_image(resp_kwargs.get("input")):
+                final = self._client.responses.create(**resp_kwargs)
+            else:
+                # Event-driven Responses streaming via the low-level
+                # ``responses.create(stream=True)`` path.  The high-level
+                # ``responses.stream(...)`` helper does post-hoc typed
+                # reconstruction from ``response.completed.response.output``,
+                # which the chatgpt.com Codex backend has been observed to
+                # return as ``null`` (gpt-5.5, May 2026) — that crashes the SDK
+                # with ``TypeError: 'NoneType' object is not iterable``.
+                # Consuming raw events and assembling the final response
+                # ourselves from ``response.output_item.done`` makes us
+                # structurally immune to that drift.
+                from agent.codex_runtime import _consume_codex_event_stream
 
-            stream_kwargs = dict(resp_kwargs)
-            stream_kwargs["stream"] = True
+                stream_kwargs = dict(resp_kwargs)
+                stream_kwargs["stream"] = True
 
-            def _on_each_event(_event: Any) -> None:
-                # Re-check timeout/cancellation per event, matching the
-                # cadence the old in-line ``_check_cancelled()`` used.
-                _check_cancelled()
+                def _on_each_event(_event: Any) -> None:
+                    # Re-check timeout/cancellation per event, matching the
+                    # cadence the old in-line ``_check_cancelled()`` used.
+                    _check_cancelled()
 
-            event_stream = self._client.responses.create(**stream_kwargs)
-            try:
-                final = _consume_codex_event_stream(
-                    event_stream,
-                    model=resp_kwargs.get("model"),
-                    on_event=_on_each_event,
-                )
-            finally:
-                close_fn = getattr(event_stream, "close", None)
-                if callable(close_fn):
-                    try:
-                        close_fn()
-                    except Exception:
-                        pass
+                event_stream = self._client.responses.create(**stream_kwargs)
+                try:
+                    final = _consume_codex_event_stream(
+                        event_stream,
+                        model=resp_kwargs.get("model"),
+                        on_event=_on_each_event,
+                    )
+                finally:
+                    close_fn = getattr(event_stream, "close", None)
+                    if callable(close_fn):
+                        try:
+                            close_fn()
+                        except Exception:
+                            pass
 
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
@@ -2036,7 +2054,7 @@ def _try_azure_foundry(
 
     api_key = runtime.get("api_key")
     base_url = str(runtime.get("base_url", "") or "")
-    runtime_api_mode = api_mode or runtime.get("api_mode") or "chat_completions"
+    runtime_api_mode = str(api_mode or runtime.get("api_mode") or "chat_completions").strip().lower()
 
     # Empty-string check on api_key here would be wrong for callable
     # token providers (callables are truthy and non-empty by definition).
@@ -2069,7 +2087,7 @@ def _try_azure_foundry(
 
     client = OpenAI(api_key=api_key, base_url=_clean_base, **extra)
 
-    if runtime_api_mode == "codex_responses":
+    if runtime_api_mode in {"codex_responses", "responses"}:
         # GPT-5.x / o-series / codex models on Azure Foundry are
         # Responses-API-only — wrap so chat.completions.create() is
         # translated to /responses behind the scenes.
@@ -5001,10 +5019,11 @@ def call_llm(
     effective_extra_body.update(extra_body or {})
 
     if task == "vision":
+        vision_base_url = resolved_base_url if resolved_provider == "custom" else base_url
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
             model=resolved_model or model,
-            base_url=resolved_base_url or base_url,
+            base_url=vision_base_url,
             api_key=resolved_api_key or api_key,
             async_mode=False,
         )
@@ -5485,10 +5504,11 @@ async def async_call_llm(
     effective_extra_body.update(extra_body or {})
 
     if task == "vision":
+        vision_base_url = resolved_base_url if resolved_provider == "custom" else base_url
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
             model=resolved_model or model,
-            base_url=resolved_base_url or base_url,
+            base_url=vision_base_url,
             api_key=resolved_api_key or api_key,
             async_mode=True,
         )

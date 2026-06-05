@@ -2268,6 +2268,83 @@ class _AsyncFailingThenSuccessCompletions:
         return _DummyResponse("async-ok")
 
 
+class TestVisionAzureFoundryRouting:
+    def test_call_llm_does_not_replay_config_base_url_as_explicit_override(self, monkeypatch):
+        calls = []
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = _DummyResponse("vision-ok")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *args, **kwargs: (
+                "azure-foundry",
+                "gpt-5.4",
+                "https://r.openai.azure.com/openai/v1",
+                None,
+                "responses",
+            ),
+        )
+
+        def fake_resolve_vision_provider_client(**kwargs):
+            calls.append(kwargs)
+            return "azure-foundry", fake_client, "gpt-5.4"
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            fake_resolve_vision_provider_client,
+        )
+
+        resp = call_llm(
+            task="vision",
+            messages=[{"role": "user", "content": "describe this image"}],
+        )
+
+        assert resp.choices[0].message.content == "vision-ok"
+        assert calls[0]["provider"] == "azure-foundry"
+        assert calls[0]["base_url"] is None
+        assert calls[0]["async_mode"] is False
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_does_not_replay_config_base_url_as_explicit_override(
+        self, monkeypatch,
+    ):
+        calls = []
+        create = AsyncMock(return_value=_DummyResponse("vision-async-ok"))
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+        )
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *args, **kwargs: (
+                "azure-foundry",
+                "gpt-5.4",
+                "https://r.openai.azure.com/openai/v1",
+                None,
+                "responses",
+            ),
+        )
+
+        def fake_resolve_vision_provider_client(**kwargs):
+            calls.append(kwargs)
+            return "azure-foundry", fake_client, "gpt-5.4"
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            fake_resolve_vision_provider_client,
+        )
+
+        resp = await async_call_llm(
+            task="vision",
+            messages=[{"role": "user", "content": "describe this image"}],
+        )
+
+        assert resp.choices[0].message.content == "vision-async-ok"
+        assert calls[0]["provider"] == "azure-foundry"
+        assert calls[0]["base_url"] is None
+        assert calls[0]["async_mode"] is True
+
+
 class TestAuxiliaryAuthRefreshRetry:
     def test_call_llm_refreshes_codex_on_401_for_vision(self):
         failing_client = MagicMock()
@@ -2648,6 +2725,46 @@ class TestCodexAdapterReasoningTranslation:
         adapter.create(messages=[{"role": "user", "content": "hi"}])
         assert "reasoning" not in captured
         assert "include" not in captured
+
+    def test_image_input_uses_non_streaming_responses_create(self):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        final = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="image ok")],
+                ),
+            ],
+            usage=SimpleNamespace(input_tokens=3, output_tokens=2, total_tokens=5),
+        )
+        captured = {}
+
+        def _create(**kwargs):
+            captured.update(kwargs)
+            return final
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(create=_create))
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.4")
+
+        response = adapter.create(messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,abc", "detail": "low"},
+                },
+            ],
+        }])
+
+        assert "stream" not in captured
+        assert captured["input"][0]["content"][1] == {
+            "type": "input_image",
+            "image_url": "data:image/png;base64,abc",
+            "detail": "low",
+        }
+        assert response.choices[0].message.content == "image ok"
 
     def test_extra_body_without_reasoning_key_is_noop(self):
         adapter, captured = self._build_adapter()

@@ -115,6 +115,21 @@ class TestAuxAzureFoundryApiKey:
         assert isinstance(client, CodexAuxiliaryClient)
         assert client.api_key == "sk-azure-static-key"
 
+    def test_responses_api_mode_wraps_in_codex_aux_client(self, monkeypatch, patch_load_config):
+        from agent.auxiliary_client import _try_azure_foundry, CodexAuxiliaryClient
+
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk-azure-static-key")
+        patch_load_config({
+            "provider": "azure-foundry",
+            "base_url": "https://r.openai.azure.com/openai/v1",
+            "api_mode": "responses",
+            "default": "gpt-4o",
+        })
+        client, resolved = _try_azure_foundry(model="gpt-4o", api_mode="responses")
+        assert resolved == "gpt-4o"
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert client.api_key == "sk-azure-static-key"
+
     def test_no_key_returns_none(self, monkeypatch, patch_load_config):
         from agent.auxiliary_client import _try_azure_foundry
 

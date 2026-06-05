@@ -471,7 +471,22 @@ class WeComAdapter(BasePlatformAdapter):
         if cmd in CALLBACK_COMMANDS:
             await self._on_message(payload)
             return
-        if cmd in {APP_CMD_PING, APP_CMD_EVENT_CALLBACK}:
+        if cmd == APP_CMD_PING:
+            return
+        if cmd == APP_CMD_EVENT_CALLBACK:
+            # Check for "kicked by server" event — WeCom sends this when a new
+            # connection is established elsewhere (another instance). Mirror the
+            # official OpenClaw SDK: suppress reconnect to avoid mutual kicking.
+            body = payload.get("body") or {}
+            event_type = str(body.get("event_type") or "")
+            if event_type == "disconnected_event":
+                logger.warning(
+                    "[%s] Kicked by server (another WS connection established). "
+                    "Suppressing reconnect to avoid mutual kicking. "
+                    "Check for duplicate gateway instances.",
+                    self.name,
+                )
+                self._running = False  # stop _listen_loop from reconnecting
             return
 
         logger.debug("[%s] Ignoring websocket payload: %s", self.name, cmd or payload)
@@ -1044,19 +1059,19 @@ class WeComAdapter(BasePlatformAdapter):
         if errcode != STREAM_NOT_SUBSCRIBED_ERRCODE:
             return
         logger.warning(
-            "[%s] Got errcode %d (subscription lost) — forcing WS reconnect",
+            "[%s] Got errcode %d (subscription lost) — clearing stale state",
             self.name, errcode,
         )
-        # Invalidate all cached req_ids — they're bound to the dead session.
+        # Only invalidate cached req_ids (bound to the dead session).
+        # Do NOT close the WS — closing triggers _listen_loop to reconnect,
+        # which opens a second WS connection. WeCom only allows one long-lived
+        # connection per bot; the server kicks the second one and invalidates
+        # the first's session, creating an infinite kick-reconnect loop.
+        # The WS will be closed by the server side naturally; _listen_loop
+        # handles the reconnect when that happens.
         self._last_chat_req_ids.clear()
         self._reply_req_ids.clear()
         self._reset_native_stream_state()
-        # Close WS — _listen_loop will detect the closure and reconnect.
-        try:
-            if self._ws and not self._ws.closed:
-                await self._ws.close()
-        except Exception:
-            pass
 
     def _reply_req_id_for_message(self, reply_to: Optional[str]) -> Optional[str]:
         normalized = str(reply_to or "").strip()

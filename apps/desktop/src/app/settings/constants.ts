@@ -15,34 +15,202 @@ import type { ThemeMode } from '@/themes/context'
 
 import type { DesktopConfigSection } from './types'
 
+// Provider group definitions used to fold raw env-var names like
+// ``XAI_API_KEY`` into a single "xAI" card with a friendly label, short
+// description, and signup URL. Membership is determined by longest
+// prefix match (see ``providerGroup`` in helpers.ts) so more specific
+// prefixes (``MINIMAX_CN_``) correctly beat their general parents
+// (``MINIMAX_``). New providers should be added here so they get their
+// own card in Settings → Keys instead of being lumped into "Other".
 interface ProviderPrefix {
   prefix: string
   name: string
+  /** Optional one-line tagline shown beneath the group name. */
+  description?: string
+  /** Optional canonical signup/console URL surfaced from the card header. */
+  docsUrl?: string
+  /** Lower numbers float to the top of the providers list. */
   priority: number
 }
 
 export const EMPTY_SELECT_VALUE = '__hermes_empty__'
-export const CONTROL_TEXT = 'text-[0.8125rem]'
+export const CONTROL_TEXT = 'text-xs'
 
 export const PROVIDER_GROUPS: ProviderPrefix[] = [
-  { prefix: 'NOUS_', name: 'Nous Portal', priority: 0 },
-  { prefix: 'ANTHROPIC_', name: 'Anthropic', priority: 1 },
-  { prefix: 'DASHSCOPE_', name: 'DashScope (Qwen)', priority: 2 },
-  { prefix: 'HERMES_QWEN_', name: 'DashScope (Qwen)', priority: 2 },
-  { prefix: 'DEEPSEEK_', name: 'DeepSeek', priority: 3 },
-  { prefix: 'GOOGLE_', name: 'Gemini', priority: 4 },
+  {
+    prefix: 'NOUS_',
+    name: 'Nous Portal',
+    description: 'Hosted Hermes & Nous-trained models',
+    docsUrl: 'https://portal.nousresearch.com',
+    priority: 0
+  },
+  {
+    prefix: 'OPENROUTER_',
+    name: 'OpenRouter',
+    description: 'Aggregator for hundreds of frontier models',
+    docsUrl: 'https://openrouter.ai/keys',
+    priority: 1
+  },
+  {
+    prefix: 'ANTHROPIC_',
+    name: 'Anthropic',
+    description: 'Claude API access (Sonnet, Opus, Haiku)',
+    docsUrl: 'https://console.anthropic.com/settings/keys',
+    priority: 2
+  },
+  {
+    prefix: 'XAI_',
+    name: 'xAI',
+    description: 'Grok models (use OAuth for SuperGrok / Premium+)',
+    docsUrl: 'https://console.x.ai/',
+    priority: 3
+  },
+  {
+    prefix: 'GOOGLE_',
+    name: 'Gemini',
+    description: 'Google AI Studio (Gemini 1.5 / 2.0 / 2.5)',
+    docsUrl: 'https://aistudio.google.com/app/apikey',
+    priority: 4
+  },
   { prefix: 'GEMINI_', name: 'Gemini', priority: 4 },
-  { prefix: 'GLM_', name: 'GLM / Z.AI', priority: 5 },
-  { prefix: 'ZAI_', name: 'GLM / Z.AI', priority: 5 },
-  { prefix: 'Z_AI_', name: 'GLM / Z.AI', priority: 5 },
-  { prefix: 'HF_', name: 'Hugging Face', priority: 6 },
-  { prefix: 'KIMI_', name: 'Kimi / Moonshot', priority: 7 },
-  { prefix: 'MINIMAX_', name: 'MiniMax', priority: 8 },
-  { prefix: 'MINIMAX_CN_', name: 'MiniMax (China)', priority: 9 },
-  { prefix: 'OPENCODE_GO_', name: 'OpenCode Go', priority: 10 },
-  { prefix: 'OPENCODE_ZEN_', name: 'OpenCode Zen', priority: 11 },
-  { prefix: 'OPENROUTER_', name: 'OpenRouter', priority: 12 },
-  { prefix: 'XIAOMI_', name: 'Xiaomi MiMo', priority: 13 }
+  { prefix: 'HERMES_GEMINI_', name: 'Gemini', priority: 4 },
+  {
+    prefix: 'DEEPSEEK_',
+    name: 'DeepSeek',
+    description: 'Direct DeepSeek API (V3.x, R1)',
+    docsUrl: 'https://platform.deepseek.com/api_keys',
+    priority: 5
+  },
+  {
+    prefix: 'DASHSCOPE_',
+    name: 'DashScope (Qwen)',
+    description: 'Alibaba Cloud DashScope — Qwen and multi-vendor models',
+    docsUrl: 'https://modelstudio.console.alibabacloud.com/',
+    priority: 6
+  },
+  { prefix: 'HERMES_QWEN_', name: 'DashScope (Qwen)', priority: 6 },
+  {
+    prefix: 'GLM_',
+    name: 'GLM / Z.AI',
+    description: 'Zhipu GLM-4.6 and Z.AI hosted endpoints',
+    docsUrl: 'https://z.ai/',
+    priority: 7
+  },
+  { prefix: 'ZAI_', name: 'GLM / Z.AI', priority: 7 },
+  { prefix: 'Z_AI_', name: 'GLM / Z.AI', priority: 7 },
+  {
+    prefix: 'KIMI_',
+    name: 'Kimi / Moonshot',
+    description: 'Moonshot Kimi K2 / coding endpoints',
+    docsUrl: 'https://platform.moonshot.cn/',
+    priority: 8
+  },
+  {
+    prefix: 'KIMI_CN_',
+    name: 'Kimi (China)',
+    description: 'Moonshot China endpoint',
+    docsUrl: 'https://platform.moonshot.cn/',
+    priority: 9
+  },
+  {
+    prefix: 'MINIMAX_',
+    name: 'MiniMax',
+    description: 'MiniMax-M2 and Hailuo international endpoints',
+    docsUrl: 'https://www.minimax.io/',
+    priority: 10
+  },
+  {
+    prefix: 'MINIMAX_CN_',
+    name: 'MiniMax (China)',
+    description: 'MiniMax mainland China endpoint',
+    docsUrl: 'https://www.minimaxi.com/',
+    priority: 11
+  },
+  {
+    prefix: 'HF_',
+    name: 'Hugging Face',
+    description: 'Inference Providers — 20+ open models via router.huggingface.co',
+    docsUrl: 'https://huggingface.co/settings/tokens',
+    priority: 12
+  },
+  {
+    prefix: 'OPENCODE_ZEN_',
+    name: 'OpenCode Zen',
+    description: 'Pay-as-you-go access to curated coding models',
+    docsUrl: 'https://opencode.ai/auth',
+    priority: 13
+  },
+  {
+    prefix: 'OPENCODE_GO_',
+    name: 'OpenCode Go',
+    description: '$10/month subscription for open coding models',
+    docsUrl: 'https://opencode.ai/auth',
+    priority: 14
+  },
+  {
+    prefix: 'NVIDIA_',
+    name: 'NVIDIA NIM',
+    description: 'build.nvidia.com or your own local NIM endpoint',
+    docsUrl: 'https://build.nvidia.com/',
+    priority: 15
+  },
+  {
+    prefix: 'OLLAMA_',
+    name: 'Ollama Cloud',
+    description: 'Cloud-hosted open models from ollama.com',
+    docsUrl: 'https://ollama.com/settings',
+    priority: 16
+  },
+  {
+    prefix: 'LM_',
+    name: 'LM Studio',
+    description: 'Local LM Studio server (OpenAI-compatible)',
+    docsUrl: 'https://lmstudio.ai/docs/local-server',
+    priority: 17
+  },
+  {
+    prefix: 'STEPFUN_',
+    name: 'StepFun',
+    description: 'StepFun Step Plan coding models',
+    docsUrl: 'https://platform.stepfun.com/',
+    priority: 18
+  },
+  {
+    prefix: 'XIAOMI_',
+    name: 'Xiaomi MiMo',
+    description: 'MiMo-V2.5 and Xiaomi proprietary models',
+    docsUrl: 'https://platform.xiaomimimo.com',
+    priority: 19
+  },
+  {
+    prefix: 'ARCEEAI_',
+    name: 'Arcee AI',
+    description: 'Arcee-hosted small + medium models',
+    docsUrl: 'https://chat.arcee.ai/',
+    priority: 20
+  },
+  { prefix: 'ARCEE_', name: 'Arcee AI', priority: 20 },
+  {
+    prefix: 'GMI_',
+    name: 'GMI Cloud',
+    description: 'GMI Cloud GPU + model serving',
+    docsUrl: 'https://www.gmicloud.ai/',
+    priority: 21
+  },
+  {
+    prefix: 'AZURE_FOUNDRY_',
+    name: 'Azure Foundry',
+    description: 'Azure AI Foundry custom endpoints (OpenAI / Anthropic-compatible)',
+    docsUrl: 'https://ai.azure.com/',
+    priority: 22
+  },
+  {
+    prefix: 'AWS_',
+    name: 'AWS Bedrock',
+    description: 'Authenticate via AWS profile + region',
+    docsUrl: 'https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html',
+    priority: 23
+  }
 ]
 
 export const BUILTIN_PERSONALITIES = [
@@ -141,13 +309,7 @@ export const FIELD_LABELS: Record<string, string> = {
   'delegation.max_iterations': 'Subagent Turn Limit',
   'delegation.max_concurrent_children': 'Parallel Subagents',
   'delegation.child_timeout_seconds': 'Subagent Timeout',
-  'delegation.reasoning_effort': 'Subagent Reasoning Effort',
-  'auxiliary.vision.provider': 'Vision Provider',
-  'auxiliary.vision.model': 'Vision Model',
-  'auxiliary.compression.provider': 'Compression Provider',
-  'auxiliary.compression.model': 'Compression Model',
-  'auxiliary.title_generation.provider': 'Title Provider',
-  'auxiliary.title_generation.model': 'Title Model'
+  'delegation.reasoning_effort': 'Subagent Reasoning Effort'
 }
 
 export const FIELD_DESCRIPTIONS: Record<string, string> = {
@@ -183,7 +345,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'model',
     label: 'Model',
     icon: Sparkles,
-    keys: ['model', 'model_context_length', 'fallback_providers']
+    keys: ['model_context_length', 'fallback_providers']
   },
   {
     id: 'chat',
@@ -287,13 +449,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'delegation.max_iterations',
       'delegation.max_concurrent_children',
       'delegation.child_timeout_seconds',
-      'delegation.reasoning_effort',
-      'auxiliary.vision.provider',
-      'auxiliary.vision.model',
-      'auxiliary.compression.provider',
-      'auxiliary.compression.model',
-      'auxiliary.title_generation.provider',
-      'auxiliary.title_generation.model'
+      'delegation.reasoning_effort'
     ]
   }
 ]
@@ -301,21 +457,11 @@ export const SECTIONS: DesktopConfigSection[] = [
 export interface ModeOption {
   id: ThemeMode
   label: string
-  description: string
   icon: IconComponent
 }
 
 export const MODE_OPTIONS: ModeOption[] = [
-  { id: 'light', label: 'Light', description: 'Bright desktop surfaces', icon: Sun },
-  { id: 'dark', label: 'Dark', description: 'Low-glare workspace', icon: Moon },
-  { id: 'system', label: 'System', description: 'Follow OS appearance', icon: Monitor }
+  { id: 'light', label: 'Light', icon: Sun },
+  { id: 'dark', label: 'Dark', icon: Moon },
+  { id: 'system', label: 'System', icon: Monitor }
 ]
-
-export const SEARCH_PLACEHOLDER: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'tools', string> = {
-  about: 'About Hermes Desktop',
-  config: 'Search settings...',
-  gateway: 'Gateway connection...',
-  keys: 'Search API keys...',
-  mcp: 'Search MCP servers...',
-  tools: 'Search skills and tools...'
-}

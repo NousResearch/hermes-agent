@@ -7,6 +7,9 @@
   "author": "Nous Research",
   "type": "module",
   "main": "electron/main.cjs",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:fake-boot": "cross-env HERMES_DESKTOP_BOOT_FAKE=1 HERMES_DESKTOP_BOOT_FAKE_STEP_MS=650 npm run dev",
@@ -32,7 +35,7 @@
     "test:desktop:nsis": "node scripts/test-desktop.mjs nsis",
     "test:desktop:existing": "node scripts/test-desktop.mjs existing",
     "test:desktop:fresh": "node scripts/test-desktop.mjs fresh",
-    "test:desktop:platforms": "node --test electron/bootstrap-platform.test.cjs electron/hardening.test.cjs electron/backend-probes.test.cjs",
+    "test:desktop:platforms": "node --test electron/bootstrap-platform.test.cjs electron/hardening.test.cjs electron/backend-probes.test.cjs electron/bootstrap-runner.test.cjs electron/connection-config.test.cjs electron/gateway-ws-probe.test.cjs",
     "type-check": "tsc -b",
     "lint": "eslint src/ electron/",
     "lint:fix": "eslint src/ electron/ --fix",
@@ -50,6 +53,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@hermes/shared": "file:../shared",
+    "@icons-pack/react-simple-icons": "^13.13.0",
     "@nanostores/react": "^1.1.0",
     "@nous-research/ui": "^0.13.0",
     "@radix-ui/react-slot": "^1.2.4",
@@ -80,7 +84,7 @@
     "react": "^19.2.5",
     "react-arborist": "^3.5.0",
     "react-dom": "^19.2.5",
-    "react-router-dom": "^7.14.2",
+    "react-router-dom": "^7.17.0",
     "react-shiki": "^0.9.3",
     "remark-math": "^6.0.0",
     "shiki": "^4.0.2",
@@ -96,6 +100,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.3.2",
     "@types/hast": "^3.0.4",
     "@types/node": "^24.12.2",
@@ -141,6 +146,7 @@
       "package.json"
     ],
     "beforeBuild": "scripts/before-build.cjs",
+    "beforePack": "scripts/before-pack.cjs",
     "afterPack": "scripts/after-pack.cjs",
     "extraResources": [
       {

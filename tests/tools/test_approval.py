@@ -389,6 +389,102 @@ class TestTeePattern:
         assert key is None
 
 
+class TestHermesConfigWriteProtection:
+    """Terminal-side pairing for the file_tools write_file/patch deny on
+    ~/.hermes/config.yaml (#14639). config.yaml IS the security policy
+    (approvals.mode/yolo live there, mtime-keyed cache reloads mid-session),
+    so a write_file deny without terminal-side coverage is unpaired theater.
+    These pin every terminal write idiom against the config file."""
+
+    def test_redirect_overwrite(self):
+        dangerous, key, desc = detect_dangerous_command("echo 'approvals:' > ~/.hermes/config.yaml")
+        assert dangerous is True
+        assert key is not None
+
+    def test_append(self):
+        dangerous, key, desc = detect_dangerous_command("echo '  mode: off' >> ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_tee(self):
+        dangerous, key, desc = detect_dangerous_command("echo x | tee ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_cp_over_config(self):
+        dangerous, key, desc = detect_dangerous_command("cp /tmp/evil.yaml ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_sed_in_place(self):
+        # The gap the pairing closes: sed -i mutates the file directly,
+        # bypassing the redirection/tee patterns.
+        dangerous, key, desc = detect_dangerous_command("sed -i 's/manual/off/' ~/.hermes/config.yaml")
+        assert dangerous is True
+        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+
+    def test_sed_in_place_long_flag(self):
+        dangerous, key, desc = detect_dangerous_command("sed --in-place 's/manual/off/' ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_custom_hermes_home(self):
+        dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/config.yaml")
+        assert dangerous is True
+
+    def test_perl_in_place_config(self):
+        # perl -i performs the same in-place mutation as sed -i but was not
+        # caught by the -e/-c pattern (which targets code evaluation).
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/approvals.mode: on/approvals.mode: off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+        assert "in-place" in desc.lower() or "perl" in desc.lower()
+
+    def test_ruby_in_place_config(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "ruby -i -pe 'gsub(/manual/, \"off\")' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_perl_in_place_env(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/SECRET=old/SECRET=new/' ~/.hermes/.env"
+        )
+        assert dangerous is True
+
+    def test_perl_in_place_separate_flag_token(self):
+        # The -i flag does not have to be the first token. `perl -p -i -e`
+        # splits the in-place flag out as its own token after -p; the pattern
+        # must catch it the same as `perl -i -pe`.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -p -i -e 's/approvals.mode: on/approvals.mode: off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_perl_in_place_backup_suffix(self):
+        # `perl -i.bak` keeps a backup but still mutates the file in place.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i.bak -pe 's/x/y/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_perl_eval_no_inplace_safe(self):
+        # `perl -e` with no -i flag is code evaluation, not file mutation —
+        # the perl/ruby -i pattern must not fire on it.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -wne 'print' ~/.hermes/config.yaml"
+        )
+        assert dangerous is False
+
+    def test_read_is_safe(self):
+        # Reading config is not a write — must not trip.
+        dangerous, key, desc = detect_dangerous_command("cat ~/.hermes/config.yaml")
+        assert dangerous is False
+
+    def test_normal_yaml_write_safe(self):
+        # A non-Hermes config.yaml in a project dir is handled by the project
+        # patterns, but a plain temp write must not false-positive.
+        dangerous, key, desc = detect_dangerous_command("echo data > /tmp/scratch.txt")
+        assert dangerous is False
+
+
 class TestFindExecFullPathRm:
     """Detect find -exec with full-path rm bypasses."""
 
@@ -1344,11 +1440,16 @@ class TestApprovalTimeoutIsNotConsent:
 
         self._saved_env = {
             k: os.environ.get(k)
-            for k in ("HERMES_GATEWAY_SESSION", "HERMES_YOLO_MODE",
+            for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION",
+                      "HERMES_YOLO_MODE",
                       "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
         }
         os.environ.pop("HERMES_YOLO_MODE", None)
         os.environ.pop("HERMES_INTERACTIVE", None)
+        # HERMES_CRON_SESSION takes priority over HERMES_GATEWAY_SESSION in
+        # _is_gateway_approval_context(); a leaked value from a parent cron
+        # process would force the cron path and break these gateway tests.
+        os.environ.pop("HERMES_CRON_SESSION", None)
         os.environ["HERMES_GATEWAY_SESSION"] = "1"
         os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
 

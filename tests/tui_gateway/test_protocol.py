@@ -394,6 +394,290 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
     ]
 
 
+def test_session_resume_reuses_existing_live_session(server, monkeypatch):
+    """Repeated resume must not allocate duplicate live agents."""
+
+    target = "20260409_010101_abc123"
+    created_sids: list[str] = []
+    closed_sids: list[str] = []
+    first_agent_started = threading.Event()
+    agent_can_finish = threading.Event()
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "yo"},
+            ]
+
+    class _Worker:
+        def close(self):
+            pass
+
+    class _Agent:
+        def __init__(self, sid, session_id):
+            self.sid = sid
+            self.model = "test/model"
+            self.session_id = session_id
+
+        def close(self):
+            closed_sids.append(self.sid)
+
+    def make_agent(sid, key, session_id=None):
+        created_sids.append(sid)
+        first_agent_started.set()
+        assert agent_can_finish.wait(timeout=1)
+        return _Agent(sid, session_id or key)
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_SlashWorker", lambda _key, _model: _Worker())
+    monkeypatch.setattr(
+        server,
+        "_start_notification_poller",
+        lambda _sid, _session: threading.Event(),
+    )
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    fake_approval = types.SimpleNamespace(
+        load_permanent_allowlist=lambda: None,
+        register_gateway_notify=lambda *_args, **_kwargs: None,
+    )
+
+    with patch.dict(sys.modules, {"tools.approval": fake_approval}):
+        first_holder = {}
+
+        def resume_first():
+            first_holder["resp"] = server.handle_request(
+                {
+                    "id": "first",
+                    "method": "session.resume",
+                    "params": {"session_id": target, "cols": 100},
+                }
+            )
+
+        first_thread = threading.Thread(target=resume_first)
+        first_thread.start()
+        assert first_agent_started.wait(timeout=1)
+
+        second_holder = {}
+
+        def resume_second():
+            second_holder["resp"] = server.handle_request(
+                {
+                    "id": "second",
+                    "method": "session.resume",
+                    "params": {"session_id": target, "cols": 120},
+                }
+            )
+
+        second_thread = threading.Thread(target=resume_second)
+        second_thread.start()
+        agent_can_finish.set()
+
+        first_thread.join(timeout=1)
+        second_thread.join(timeout=1)
+        assert not first_thread.is_alive()
+        assert not second_thread.is_alive()
+        first = first_holder["resp"]
+        second = second_holder["resp"]
+
+    assert "error" not in first
+    assert "error" not in second
+    # Both resumes resolve to the SAME single live session — the core invariant.
+    assert second["result"]["session_id"] == first["result"]["session_id"]
+    assert len(server._sessions) == 1
+    assert [s.get("session_key") for s in server._sessions.values()].count(target) == 1
+    winner = first["result"]["session_id"]
+    # The agent build happens outside the resume lock, so a racing resume may
+    # build a redundant agent; double-checked locking keeps only one live
+    # session and closes any loser's agent (no worker/poller is wired for it).
+    assert winner in created_sids
+    survivors = [sid for sid in created_sids if sid not in closed_sids]
+    assert survivors == [winner]
+    assert all(sid == winner for sid in server._sessions)
+
+
+def test_session_resume_live_payload_uses_current_history_with_ancestors(server, monkeypatch):
+    """Live resume should not reuse a stale ancestor-inclusive snapshot."""
+
+    target = "20260409_010101_child"
+    ancestor_history = [{"role": "user", "content": "ancestor"}]
+    current_history = [
+        {"role": "user", "content": "current"},
+        {"role": "assistant", "content": "current reply"},
+    ]
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            if include_ancestors:
+                return ancestor_history + current_history
+            return list(current_history)
+
+    class _Worker:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda _sid, key, session_id=None: types.SimpleNamespace(
+            model="test/model", session_id=session_id or key
+        ),
+    )
+    monkeypatch.setattr(server, "_SlashWorker", lambda _key, _model: _Worker())
+    monkeypatch.setattr(
+        server,
+        "_start_notification_poller",
+        lambda _sid, _session: threading.Event(),
+    )
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    fake_approval = types.SimpleNamespace(
+        load_permanent_allowlist=lambda: None,
+        register_gateway_notify=lambda *_args, **_kwargs: None,
+    )
+
+    with patch.dict(sys.modules, {"tools.approval": fake_approval}):
+        first = server.handle_request(
+            {
+                "id": "first",
+                "method": "session.resume",
+                "params": {"session_id": target, "cols": 100},
+            }
+        )
+
+        assert "error" not in first
+        sid = first["result"]["session_id"]
+        assert first["result"]["messages"] == [
+            {"role": "user", "text": "ancestor"},
+            {"role": "user", "text": "current"},
+            {"role": "assistant", "text": "current reply"},
+        ]
+
+        with server._sessions[sid]["history_lock"]:
+            server._sessions[sid]["history"] = current_history + [
+                {"role": "user", "content": "new live turn"},
+                {"role": "assistant", "content": "new live reply"},
+            ]
+
+        second = server.handle_request(
+            {
+                "id": "second",
+                "method": "session.resume",
+                "params": {"session_id": target, "cols": 120},
+            }
+        )
+
+    assert "error" not in second
+    assert second["result"]["session_id"] == sid
+    assert second["result"]["messages"] == [
+        {"role": "user", "text": "ancestor"},
+        {"role": "user", "text": "current"},
+        {"role": "assistant", "text": "current reply"},
+        {"role": "user", "text": "new live turn"},
+        {"role": "assistant", "text": "new live reply"},
+    ]
+
+
+def test_session_branch_persists_branched_from_marker(server, monkeypatch):
+    """TUI /branch must persist a _branched_from marker so the branch stays
+    visible in /resume and /sessions.
+
+    Regression for issue #20856: the TUI branch leaves the parent live (it
+    never ends it with end_reason='branched'), so list_sessions_rich's legacy
+    heuristic never surfaces it — the stable model_config marker is the only
+    thing that keeps a TUI branch visible.
+    """
+    create_calls = []
+
+    class _DB:
+        def get_session_title(self, _key):
+            return "parent-title"
+
+        def get_next_title_in_lineage(self, base):
+            return f"{base} 2"
+
+        def create_session(self, new_key, **kwargs):
+            create_calls.append((new_key, kwargs))
+            return new_key
+
+        def append_message(self, **_kwargs):
+            return None
+
+        def set_session_title(self, _key, _title):
+            return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
+    monkeypatch.setattr(server, "_new_session_key", lambda: "20260101_000001_child0")
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda _sid, key, session_id=None: types.SimpleNamespace(
+            model="test/model", session_id=session_id or key
+        ),
+    )
+    monkeypatch.setattr(server, "_init_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda *_a, **_k: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda _s: "/tmp/branch-cwd")
+
+    parent_sid = "parent01"
+    parent_key = "20260101_000000_parent"
+    server._sessions[parent_sid] = {
+        "session_key": parent_key,
+        "history": [{"role": "user", "content": "hello"}],
+        "history_lock": threading.Lock(),
+        "cols": 80,
+    }
+
+    resp = server.handle_request(
+        {"id": "b1", "method": "session.branch", "params": {"session_id": parent_sid}}
+    )
+
+    assert "error" not in resp, resp
+    assert len(create_calls) == 1
+    new_key, kwargs = create_calls[0]
+    assert new_key == "20260101_000001_child0"
+    assert kwargs["parent_session_id"] == parent_key
+    # The marker — without it the branch is invisible in /resume and /sessions.
+    assert kwargs["model_config"] == {"_branched_from": parent_key}
+
+
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
     captured = {}
 

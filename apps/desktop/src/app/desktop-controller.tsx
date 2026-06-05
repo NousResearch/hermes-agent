@@ -1,18 +1,21 @@
 import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
-import { lazy, Suspense, useCallback, useEffect, useRef } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
+import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getSessionMessages, listSessions } from '../hermes'
+import { getSessionMessages, listAllProfileSessions, type SessionInfo } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { toggleCommandPalette } from '../store/command-palette'
 import {
+  $panesFlipped,
   $pinnedSessionIds,
   $sessionsLimit,
   bumpSessionsLimit,
@@ -22,20 +25,29 @@ import {
   pinSession,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
+  SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '../store/layout'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
+import { $freshSessionRequest, normalizeProfileKey, refreshActiveProfile } from '../store/profile'
 import {
   $activeSessionId,
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
   $selectedStoredSessionId,
+  $sessions,
+  $workingSessionIds,
+  mergeSessionPage,
+  sessionPinId,
   setAwaitingResponse,
   setBusy,
+  setCurrentBranch,
+  setCurrentCwd,
   setCurrentModel,
   setCurrentProvider,
   setMessages,
+  setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
   setSessionsTotal
@@ -51,13 +63,15 @@ import {
   PREVIEW_RAIL_PANE_WIDTH
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
+import { CommandPalette } from './command-palette'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { ModelPickerOverlay } from './model-picker-overlay'
+import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
-import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from './routes'
+import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
@@ -72,6 +86,7 @@ import { AppShell } from './shell/app-shell'
 import { useOverlayRouting } from './shell/hooks/use-overlay-routing'
 import { useStatusSnapshot } from './shell/hooks/use-status-snapshot'
 import { useStatusbarItems } from './shell/hooks/use-statusbar-items'
+import { ModelMenuPanel } from './shell/model-menu-panel'
 import type { StatusbarItem } from './shell/statusbar-controls'
 import type { TitlebarTool } from './shell/titlebar-controls'
 import { useGroupRegistry } from './shell/use-group-registry'
@@ -85,6 +100,26 @@ const MessagingView = lazy(async () => ({ default: (await import('./messaging'))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
+
+// Rows a session refresh must preserve even if the aggregator omits them:
+// in-flight first turns (message_count 0), pinned rows aged off the page, and
+// the actively-viewed chat (its "working" flag clears a beat before the
+// aggregator sees the persisted row). Pass `scope` to only keep the active row
+// when it belongs to the profile being paged.
+function sessionsToKeep(scope?: string): Set<string> {
+  const keep = new Set<string>([...$workingSessionIds.get(), ...$pinnedSessionIds.get()])
+  const active = $selectedStoredSessionId.get()
+
+  if (active) {
+    const session = scope ? $sessions.get().find(s => s.id === active) : null
+
+    if (!scope || !session || normalizeProfileKey(session.profile) === scope) {
+      keep.add(active)
+    }
+  }
+
+  return keep
+}
 
 export function DesktopController() {
   const queryClient = useQueryClient()
@@ -103,6 +138,7 @@ export function DesktopController() {
   const previewTarget = useStore($previewTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const terminalTakeover = useStore($terminalTakeover)
+  const panesFlipped = useStore($panesFlipped)
 
   const routedSessionId = routeSessionId(location.pathname)
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
@@ -116,12 +152,15 @@ export function DesktopController() {
     closeOverlayToPreviousRoute,
     commandCenterInitialSection,
     commandCenterOpen,
+    cronOpen,
     currentView,
     openAgents,
     openCommandCenterSection,
+    profilesOpen,
     settingsOpen,
     toggleCommandCenter
   } = useOverlayRouting()
+
   const terminalTakeoverActive = chatOpen && terminalTakeover
 
   const titlebarToolGroups = useGroupRegistry<TitlebarTool>()
@@ -185,6 +224,31 @@ export function DesktopController() {
     }
   }, [])
 
+  // Global chrome shortcuts (plain Cmd/Ctrl, no alt/shift): Cmd+K / Cmd+P →
+  // command palette (the composer's "drain next queued" moved to Cmd+Shift+K),
+  // Cmd+. → command center (sessions / system / usage).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) {
+        return
+      }
+
+      const key = event.key.toLowerCase()
+
+      if (key === 'k' || key === 'p') {
+        event.preventDefault()
+        toggleCommandPalette()
+      } else if (key === '.') {
+        event.preventDefault()
+        toggleCommandCenter()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [toggleCommandCenter])
+
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
@@ -192,11 +256,18 @@ export function DesktopController() {
 
     try {
       const limit = $sessionsLimit.get()
-      const result = await listSessions(limit)
+      // Require at least one message so abandoned/empty "Untitled" drafts (one
+      // was created per TUI/desktop launch before the lazy-create fix) don't
+      // clutter the sidebar.
+      // Unified cross-profile list (served read-only off each profile's
+      // state.db; no per-profile backend is spawned). Single-profile users get
+      // the same rows tagged profile="default".
+      const result = await listAllProfileSessions(limit, 1)
 
       if (refreshSessionsRequestRef.current === requestId) {
-        setSessions(result.sessions)
+        setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
+        setSessionProfileTotals(result.profile_totals ?? {})
       }
     } finally {
       if (refreshSessionsRequestRef.current === requestId) {
@@ -210,6 +281,21 @@ export function DesktopController() {
     void refreshSessions()
   }, [refreshSessions])
 
+  // ALL-profiles view pages one profile at a time: fetch that profile's next
+  // page and merge it in place, leaving every other profile's rows untouched.
+  const loadMoreSessionsForProfile = useCallback(async (profile: string) => {
+    const key = normalizeProfileKey(profile)
+    const inKey = (s: SessionInfo) => normalizeProfileKey(s.profile) === key
+    const loaded = $sessions.get().filter(inKey).length
+    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key)
+    const keep = sessionsToKeep(key)
+
+    setSessions(prev => [...prev.filter(s => !inKey(s)), ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)])
+
+    const total = result.profile_totals?.[key] ?? result.total ?? result.sessions.length
+    setSessionProfileTotals(prev => ({ ...prev, [key]: Math.max(total, result.sessions.length) }))
+  }, [])
+
   const toggleSelectedPin = useCallback(() => {
     const sessionId = $selectedStoredSessionId.get()
 
@@ -217,10 +303,14 @@ export function DesktopController() {
       return
     }
 
-    if ($pinnedSessionIds.get().includes(sessionId)) {
-      unpinSession(sessionId)
+    // Pin on the durable lineage-root id so the pin survives auto-compression.
+    const session = $sessions.get().find(s => s.id === sessionId || s._lineage_root_id === sessionId)
+    const pinId = session ? sessionPinId(session) : sessionId
+
+    if ($pinnedSessionIds.get().includes(pinId)) {
+      unpinSession(pinId)
     } else {
-      pinSession(sessionId)
+      pinSession(pinId)
     }
   }, [])
 
@@ -261,6 +351,22 @@ export function DesktopController() {
     requestGateway
   })
 
+  const openProviderSettings = useCallback(() => {
+    navigate(`${SETTINGS_ROUTE}?tab=providers`)
+  }, [navigate])
+
+  const modelMenuContent = useMemo(
+    () =>
+      gatewayState === 'open' ? (
+        <ModelMenuPanel
+          gateway={gatewayRef.current || undefined}
+          onSelectModel={selectModel}
+          requestGateway={requestGateway}
+        />
+      ) : null,
+    [gatewayRef, gatewayState, requestGateway, selectModel]
+  )
+
   useContextSuggestions({
     activeSessionId,
     activeSessionIdRef,
@@ -279,9 +385,11 @@ export function DesktopController() {
         return
       }
 
+      const storedProfile = $sessions.get().find(session => session.id === storedSessionId)?.profile
+
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
-          const latest = await getSessionMessages(storedSessionId)
+          const latest = await getSessionMessages(storedSessionId, storedProfile)
           updateSessionState(
             runtimeSessionId,
             state => ({
@@ -324,6 +432,7 @@ export function DesktopController() {
   })
 
   const {
+    archiveSession,
     branchCurrentSession,
     createBackendSessionForSend,
     openSettings,
@@ -358,20 +467,44 @@ export function DesktopController() {
         target instanceof HTMLTextAreaElement ||
         target instanceof HTMLSelectElement
 
-      if (editing || event.defaultPrevented || event.repeat || event.altKey || event.ctrlKey || event.metaKey) {
+      if (event.defaultPrevented || event.repeat || event.altKey || event.code !== 'KeyN') {
         return
       }
 
-      if (event.shiftKey && event.code === 'KeyN') {
-        event.preventDefault()
-        startFreshSessionDraft()
+      // Two accelerators for "new session":
+      //   - Cmd/Ctrl+N (browser-like, works while typing in any input)
+      //   - Shift+N    (single-key, only when no input is focused)
+      const accelerator = event.metaKey || event.ctrlKey
+      const singleKey = !accelerator && !editing && event.shiftKey
+
+      if (!accelerator && !singleKey) {
+        return
       }
+
+      event.preventDefault()
+      startFreshSessionDraft()
+      // Briefly light up the sidebar's ⌘N hint so the shortcut is discoverable.
+      window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     }
 
     window.addEventListener('keydown', onKeyDown)
 
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [startFreshSessionDraft])
+
+  // A profile switch/create drops to a fresh new-session draft so the previously
+  // open session doesn't bleed across contexts. Skip the initial value.
+  const freshSessionRequest = useStore($freshSessionRequest)
+  const lastFreshRef = useRef(freshSessionRequest)
+
+  useEffect(() => {
+    if (freshSessionRequest === lastFreshRef.current) {
+      return
+    }
+
+    lastFreshRef.current = freshSessionRequest
+    startFreshSessionDraft()
+  }, [freshSessionRequest, startFreshSessionDraft])
 
   const composer = useComposerActions({
     activeSessionId,
@@ -392,6 +525,29 @@ export function DesktopController() {
     [branchCurrentSession, refreshSessions]
   )
 
+  const startSessionInWorkspace = useCallback(
+    (path: null | string) => {
+      startFreshSessionDraft()
+
+      const target = path?.trim()
+
+      if (!target) {
+        return
+      }
+
+      // The next message creates the backend session in $currentCwd, so seed
+      // it (and the branch) from the workspace the user clicked the + on.
+      setCurrentCwd(target)
+      void requestGateway<{ branch?: string; cwd?: string }>('config.get', { key: 'project', cwd: target })
+        .then(info => {
+          setCurrentCwd(info.cwd || target)
+          setCurrentBranch(info.branch || '')
+        })
+        .catch(() => undefined)
+    },
+    [requestGateway, startFreshSessionDraft]
+  )
+
   const handleSkinCommand = useSkinCommand()
 
   const { cancelRun, editMessage, handleThreadMessagesChange, reloadFromMessage, submitText, transcribeVoiceAudio } =
@@ -402,6 +558,7 @@ export function DesktopController() {
       busyRef,
       createBackendSessionForSend,
       handleSkinCommand,
+      refreshSessions,
       requestGateway,
       selectedStoredSessionIdRef,
       startFreshSessionDraft,
@@ -424,6 +581,7 @@ export function DesktopController() {
   useEffect(() => {
     if (gatewayState === 'open') {
       void refreshCurrentModel()
+      void refreshActiveProfile()
       void refreshSessions().catch(() => undefined)
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
@@ -452,8 +610,11 @@ export function DesktopController() {
     gatewayLogLines,
     gatewayState,
     inferenceStatus,
+    modelMenuContent,
     openAgents,
+    freshDraftReady,
     openCommandCenterSection,
+    requestGateway,
     statusSnapshot,
     toggleCommandCenter
   })
@@ -461,9 +622,12 @@ export function DesktopController() {
   const sidebar = (
     <ChatSidebar
       currentView={currentView}
+      onArchiveSession={sessionId => void archiveSession(sessionId)}
       onDeleteSession={sessionId => void removeSession(sessionId)}
+      onLoadMoreProfileSessions={loadMoreSessionsForProfile}
       onLoadMoreSessions={loadMoreSessions}
       onNavigate={selectSidebarItem}
+      onNewSessionInWorkspace={startSessionInWorkspace}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
     />
   )
@@ -484,8 +648,11 @@ export function DesktopController() {
         requestGateway={requestGateway}
       />
       <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModel} />
+      <ModelVisibilityOverlay gateway={gatewayRef.current || undefined} onOpenProviders={openProviderSettings} />
       <UpdatesOverlay />
+      <GatewayConnectingOverlay />
       <BootFailureOverlay />
+      <CommandPalette />
 
       {settingsOpen && (
         <Suspense fallback={null}>
@@ -494,6 +661,13 @@ export function DesktopController() {
             onClose={closeOverlayToPreviousRoute}
             onConfigSaved={() => {
               void refreshHermesConfig()
+              void refreshCurrentModel()
+              void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+            }}
+            onMainModelChanged={(provider, model) => {
+              setCurrentProvider(provider)
+              setCurrentModel(model)
+              updateModelOptionsCache(provider, model, true)
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
@@ -507,14 +681,6 @@ export function DesktopController() {
             initialSection={commandCenterInitialSection}
             onClose={closeOverlayToPreviousRoute}
             onDeleteSession={removeSession}
-            onMainModelChanged={(provider, model) => {
-              setCurrentProvider(provider)
-              setCurrentModel(model)
-              updateModelOptionsCache(provider, model, true)
-              void refreshCurrentModel()
-              void queryClient.invalidateQueries({ queryKey: ['model-options'] })
-            }}
-            onNavigateRoute={path => navigate(path)}
             onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
           />
         </Suspense>
@@ -523,6 +689,18 @@ export function DesktopController() {
       {agentsOpen && (
         <Suspense fallback={null}>
           <AgentsView onClose={closeOverlayToPreviousRoute} />
+        </Suspense>
+      )}
+
+      {cronOpen && (
+        <Suspense fallback={null}>
+          <CronView onClose={closeOverlayToPreviousRoute} />
+        </Suspense>
+      )}
+
+      {profilesOpen && (
+        <Suspense fallback={null}>
+          <ProfilesView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
     </>
@@ -536,7 +714,7 @@ export function DesktopController() {
       onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}
       onAttachDroppedItems={composer.attachDroppedItems}
       onAttachImageBlob={composer.attachImageBlob}
-      onBranchInNewChat={messageId => void branchInNewChat(messageId)}
+      onBranchInNewChat={branchInNewChat}
       onCancel={cancelRun}
       onDeleteSelectedSession={() => {
         if (selectedStoredSessionId) {
@@ -563,24 +741,64 @@ export function DesktopController() {
     </div>
   )
 
+  // Flipped layout mirrors the default: sessions sidebar → right, file
+  // browser + preview rail → left. Same panes, swapped sides.
+  const sidebarSide = panesFlipped ? 'right' : 'left'
+  const railSide = panesFlipped ? 'left' : 'right'
+
+  const previewPane = (
+    <Pane
+      disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
+      id="preview"
+      key="preview"
+      maxWidth={PREVIEW_RAIL_MAX_WIDTH}
+      minWidth={PREVIEW_RAIL_MIN_WIDTH}
+      resizable
+      side={railSide}
+      width={PREVIEW_RAIL_PANE_WIDTH}
+    >
+      {chatOpen ? (
+        <ChatPreviewRail onRestartServer={restartPreviewServer} setTitlebarToolGroup={setTitlebarToolGroup} />
+      ) : null}
+    </Pane>
+  )
+
+  const fileBrowserPane = (
+    <Pane
+      defaultOpen={false}
+      disabled={!chatOpen}
+      id="file-browser"
+      key="file-browser"
+      maxWidth={FILE_BROWSER_MAX_WIDTH}
+      minWidth={FILE_BROWSER_MIN_WIDTH}
+      resizable
+      side={railSide}
+      width={FILE_BROWSER_DEFAULT_WIDTH}
+    >
+      <RightSidebarPane
+        onActivateFile={composer.attachContextFilePath}
+        onActivateFolder={composer.attachContextFolderPath}
+        onChangeCwd={changeSessionCwd}
+      />
+    </Pane>
+  )
+
   return (
     <AppShell
-      commandCenterOpen={commandCenterOpen}
       leftStatusbarItems={leftStatusbarItems}
       leftTitlebarTools={titlebarToolGroups.flat.left}
-      onOpenSearch={() => openCommandCenterSection('sessions')}
       onOpenSettings={openSettings}
       overlays={overlays}
       statusbarItems={statusbarItems}
       titlebarTools={titlebarToolGroups.flat.right}
     >
       <Pane
+        disabled={terminalTakeoverActive}
         id="chat-sidebar"
         maxWidth={SIDEBAR_MAX_WIDTH}
         minWidth={SIDEBAR_DEFAULT_WIDTH}
-        disabled={terminalTakeoverActive}
         resizable
-        side="left"
+        side={sidebarSide}
         width={`${SIDEBAR_DEFAULT_WIDTH}px`}
       >
         {sidebar}
@@ -613,25 +831,8 @@ export function DesktopController() {
             }
             path="artifacts"
           />
-          <Route
-            element={
-              <Suspense fallback={null}>
-                <CronView setStatusbarItemGroup={setStatusbarItemGroup} />
-              </Suspense>
-            }
-            path="cron"
-          />
-          <Route
-            element={
-              <Suspense fallback={null}>
-                <ProfilesView
-                  setStatusbarItemGroup={setStatusbarItemGroup}
-                  setTitlebarToolGroup={setTitlebarToolGroup}
-                />
-              </Suspense>
-            }
-            path="profiles"
-          />
+          <Route element={null} path="cron" />
+          <Route element={null} path="profiles" />
           <Route element={null} path="settings" />
           <Route element={null} path="command-center" />
           <Route element={null} path="agents" />
@@ -640,35 +841,13 @@ export function DesktopController() {
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />
         </Routes>
       </PaneMain>
-      <Pane
-        disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
-        id="preview"
-        maxWidth={PREVIEW_RAIL_MAX_WIDTH}
-        minWidth={PREVIEW_RAIL_MIN_WIDTH}
-        resizable
-        side="right"
-        width={PREVIEW_RAIL_PANE_WIDTH}
-      >
-        {chatOpen ? (
-          <ChatPreviewRail onRestartServer={restartPreviewServer} setTitlebarToolGroup={setTitlebarToolGroup} />
-        ) : null}
-      </Pane>
-      <Pane
-        defaultOpen={false}
-        disabled={!chatOpen}
-        id="file-browser"
-        maxWidth={FILE_BROWSER_MAX_WIDTH}
-        minWidth={FILE_BROWSER_MIN_WIDTH}
-        resizable
-        side="right"
-        width={FILE_BROWSER_DEFAULT_WIDTH}
-      >
-        <RightSidebarPane
-          onActivateFile={composer.attachContextFilePath}
-          onActivateFolder={composer.attachContextFolderPath}
-          onChangeCwd={changeSessionCwd}
-        />
-      </Pane>
+      {/*
+        Order within a side maps to column order. Default (rail on the right):
+        main | preview | file-browser. Flipped (rail on the left): mirror it to
+        file-browser | preview | main so preview stays adjacent to the chat.
+      */}
+      {panesFlipped ? fileBrowserPane : previewPane}
+      {panesFlipped ? previewPane : fileBrowserPane}
     </AppShell>
   )
 }

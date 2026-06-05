@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Codicon } from '@/components/ui/codicon'
@@ -63,10 +64,16 @@ export function NotificationStack() {
   const [latest, ...olderNotifications] = notifications
   const overflowCount = olderNotifications.length
 
-  return (
+  // Portaled to <body> with a z above the Radix dialog layer (overlay z-[120],
+  // content z-[130]). Without the portal the stack lives inside the React root
+  // subtree, which any body-level dialog/overlay portal paints over — so a
+  // success toast fired while a dialog is open (or over an OverlayView page)
+  // was invisible. The titlebar-height var only exists inside the app shell
+  // scope, so fall back to its constant (34px) when mounted on <body>.
+  return createPortal(
     <div
       aria-label="Notifications"
-      className="pointer-events-none absolute left-1/2 top-[calc(var(--titlebar-height)+0.75rem)] z-1050 flex w-[min(32rem,calc(100%-2rem))] -translate-x-1/2 flex-col gap-2"
+      className="pointer-events-none fixed left-1/2 top-[calc(var(--titlebar-height,34px)+0.75rem)] z-[200] flex w-[min(32rem,calc(100%-2rem))] -translate-x-1/2 flex-col gap-2"
       role="region"
     >
       <NotificationItem notification={latest} />
@@ -81,7 +88,8 @@ export function NotificationStack() {
           </button>
         </div>
       )}
-    </div>
+    </div>,
+    document.body
   )
 }
 
@@ -132,9 +140,7 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
 function NotificationDetail({ detail }: { detail: string }) {
   return (
     <details className="mt-2 text-xs text-muted-foreground">
-      <summary className="cursor-pointer select-none font-medium text-muted-foreground hover:text-foreground">
-        Details
-      </summary>
+      <summary className="select-none font-medium text-muted-foreground hover:text-foreground">Details</summary>
       <div className="mt-1 rounded-md border border-border/70 bg-background/65 p-2">
         <pre className="max-h-32 whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem] leading-relaxed">
           {detail}

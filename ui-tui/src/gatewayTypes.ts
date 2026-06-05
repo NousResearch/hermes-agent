@@ -48,6 +48,7 @@ export type CommandDispatchResponse =
   | { target: string; type: 'alias' }
   | { message?: string; name: string; type: 'skill' }
   | { message: string; notice?: string; type: 'send' }
+  | { message: string; notice?: string; type: 'prefill' }
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -121,11 +122,15 @@ export interface SessionCreateResponse {
 }
 
 export interface SessionResumeResponse {
+  inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
   messages: GatewayTranscriptMessage[]
   resumed?: string
+  running?: boolean
   session_id: string
+  started_at?: number
+  status?: LiveSessionStatus
 }
 
 export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working'

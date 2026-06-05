@@ -47,33 +47,30 @@ Pick the row that matches your goal:
 ---
 
 ## 1. Install Hermes Agent
+### With the Hermes Desktop installer on macOS or Windows (recommended)
+To easily install the command-line and desktop applications, [download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
 
-**Option A — pip (simplest):**
-
+### With the Hermes Desktop installer on Linux:
 ```bash
-pip install hermes-agent
-hermes postinstall     # optional: installs Node.js, browser, ripgrep, ffmpeg + runs setup
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh --include-desktop | bash
+```
+### Without Hermes Desktop:
+For a command-line only install without Hermes Desktop, run:
+
+#### Linux / macOS / WSL2 / Android (Termux)
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-PyPI releases track tagged versions (major/minor releases), not every commit on `main`. For bleeding-edge, use Option B.
+#### Windows (native)
 
-**Option B — git installer (tracks main branch):**
-
-```bash
-# Linux / macOS / WSL2 / Android (Termux)
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+Run in powershell:
+```powershell
+iex (irm https://hermes-agent.nousresearch.com/install.ps1) 
 ```
-
-Prefer native installers for desktop use?
-
-- **Desktop downloads:** [GitHub Releases](https://github.com/NousResearch/hermes-agent/releases/latest)
 
 :::tip Android / Termux
 If you're installing on a phone, see the dedicated [Termux guide](./termux.md) for the tested manual path, supported extras, and current Android-specific limitations.
-:::
-
-:::tip Windows Users
-Install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) first, then run the command above inside your WSL2 terminal.
 :::
 
 After it finishes, reload your shell:
@@ -285,12 +282,30 @@ Then in the CLI: `/voice on`. Press `Ctrl+B` to record. See [Voice Mode](../user
 
 ### Skills
 
+Skills are on-demand instruction documents that teach Hermes how to do a specific task — deploy to Kubernetes, open a GitHub PR, fine-tune a model, search for GIFs. Each is a `SKILL.md` file with a name, a description, and a step-by-step procedure. The agent reads the short descriptions for free and only loads a skill's full content when a task actually calls for it, so adding skills doesn't bloat every request.
+
+Hermes ships with a catalog of bundled skills already installed in `~/.hermes/skills/`. You can add more from the Skills Hub, or write your own.
+
+**Browse and install from the hub:**
+
 ```bash
-hermes skills search kubernetes
-hermes skills install openai/skills/k8s
+hermes skills browse                      # list everything available
+hermes skills search kubernetes           # find skills by keyword
+hermes skills install openai/skills/k8s   # install one (runs a security scan first)
 ```
 
-Or use `/skills` inside a chat session.
+The install argument is a `source/path` slug from the hub — `openai/skills/k8s` means the `k8s` skill from OpenAI's catalog. `hermes skills browse` shows the exact slugs to use.
+
+**Use a skill** — every installed skill becomes a slash command automatically:
+
+```bash
+/k8s deploy the staging manifest          # run the skill with a request
+/k8s                                       # load it and let Hermes ask what you need
+```
+
+This works in the CLI and in any connected messaging platform. You don't have to install everything up front — the agent picks the right bundled skill on its own during normal conversation when a task matches one.
+
+See [Skills System](../user-guide/features/skills.md) for writing your own, external skill directories, and the full hub source list.
 
 ### MCP servers
 

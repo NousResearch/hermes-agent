@@ -4,10 +4,60 @@ import sys
 import threading
 import time
 import types
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
 from tui_gateway import server
+
+
+def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
+    """Desktop/TUI sessions must pin the agent cwd per session.
+
+    The gateway process itself is often launched from apps/desktop in dev, so
+    falling back to os.getcwd() makes agents answer from the desktop app folder
+    even when the sidebar/session cwd is a real project.
+    """
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    sid = "cwd-sid"
+    session_key = "cwd-key"
+    project = tmp_path / "project"
+    project.mkdir()
+    launcher = tmp_path / "apps" / "desktop"
+    launcher.mkdir(parents=True)
+
+    server._sessions[sid] = {"session_key": session_key, "cwd": str(project)}
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.chdir(launcher)
+
+    tokens = server._set_session_context(session_key)
+    try:
+        assert resolve_agent_cwd() == project
+    finally:
+        server._clear_session_context(tokens)
+        server._sessions.pop(sid, None)
+
+
+def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
+    """Background/preview tasks use ephemeral ids absent from `_sessions`, so the
+    parent workspace is passed explicitly; it must pin instead of clearing back
+    to the gateway launch dir."""
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    project = tmp_path / "project"
+    project.mkdir()
+    launcher = tmp_path / "apps" / "desktop"
+    launcher.mkdir(parents=True)
+
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.chdir(launcher)
+
+    tokens = server._set_session_context("bg_deadbe", cwd=str(project))
+    try:
+        assert resolve_agent_cwd() == project
+    finally:
+        server._clear_session_context(tokens)
 
 
 class _ChunkyStdout:
@@ -82,6 +132,20 @@ def test_tui_verbose_tool_details_are_capped_before_emit(monkeypatch):
     assert capped.startswith("[showing verbose tail; omitted ")
     assert capped.endswith("three\nfour")
     assert "one" not in capped
+
+
+def test_tui_verbose_default_cap_stays_small(monkeypatch):
+    # Regression guard for #34095: the verbose tool text shipped to the TUI is
+    # rendered into a persisted, expanded-by-default trail block for the whole
+    # session. Raising this cap back toward the old 16KB re-introduces the Ink
+    # render-tree blowup that silently OOM-killed the TUI. Keep it small.
+    assert server._TUI_VERBOSE_TEXT_MAX_CHARS <= 2_000
+
+    huge = "x" * 40_000
+    capped = server._cap_tui_verbose_text(huge)
+
+    assert len(capped) < 2_000
+    assert capped.startswith("[showing verbose tail; omitted ")
 
 
 def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
@@ -812,6 +876,73 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
+    """A detached WS session past its grace window has its slash_worker closed.
+
+    Regression for #38591 fallout: every dashboard refresh spawned a fresh
+    session + _SlashWorker but never reaped the previous one, leaking one
+    python subprocess per refresh.
+    """
+    closed = {"worker": False}
+
+    class _FakeWorker:
+        def close(self):
+            closed["worker"] = True
+
+    server._sessions["orphan-sid"] = _session(
+        transport=server._stdio_transport,
+        slash_worker=_FakeWorker(),
+        running=False,
+    )
+    # Run the reap body synchronously (no real timer/grace) to assert behaviour.
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    try:
+        # Directly invoke the orphaned-check + teardown the timer would run.
+        assert server._ws_session_is_orphaned(server._sessions["orphan-sid"]) is True
+        session = server._sessions.pop("orphan-sid")
+        server._teardown_session(session)
+        assert closed["worker"] is True
+    finally:
+        server._sessions.pop("orphan-sid", None)
+
+
+def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
+    """A session that rebinds a live transport is NOT considered orphaned."""
+
+    class _LiveTransport:
+        def write(self, *a, **k):
+            return True
+
+    # Reattached: transport is a live (non-stdio) transport.
+    reattached = _session(transport=_LiveTransport(), running=False)
+    assert server._ws_session_is_orphaned(reattached) is False
+
+    # Mid-turn sessions are also spared even if detached.
+    mid_turn = _session(transport=server._stdio_transport, running=True)
+    assert server._ws_session_is_orphaned(mid_turn) is False
+
+    # Already finalized sessions are spared (idempotency).
+    done = _session(transport=server._stdio_transport, running=False, _finalized=True)
+    assert server._ws_session_is_orphaned(done) is False
+
+
+def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
+    """Grace=0 disables the reaper entirely (pre-fix park-forever behaviour)."""
+    fired = {"timer": False}
+
+    class _Timer:
+        def __init__(self, *a, **k):
+            fired["timer"] = True
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.0)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    server._schedule_ws_orphan_reap("any-sid")
+    assert fired["timer"] is False
+
+
 def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
 
@@ -882,6 +1013,90 @@ def test_session_title_queues_when_db_row_not_ready(monkeypatch):
         assert get_resp["result"]["title"] == "queued title"
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_notification_event_routing_by_session_key(monkeypatch):
+    """Background-process events surface only in the session that owns them."""
+    mine = _session(session_key="mine")
+    other = _session(session_key="other")
+    monkeypatch.setattr(server, "_sessions", {"a": mine, "b": other})
+
+    # My own event → handle it.
+    assert server._notification_event_belongs_elsewhere(mine, {"session_key": "mine"}) is False
+    # Global/system event with no owner → handle it.
+    assert server._notification_event_belongs_elsewhere(mine, {"session_key": ""}) is False
+    assert server._notification_event_belongs_elsewhere(mine, {}) is False
+    # Owned by another *live* session → defer to that session's poller.
+    assert server._notification_event_belongs_elsewhere(mine, {"session_key": "other"}) is True
+    # Owner is gone (not in _sessions) → handle as fallback so it isn't lost.
+    assert server._notification_event_belongs_elsewhere(mine, {"session_key": "ghost"}) is False
+
+
+def test_session_create_does_not_persist_empty_row(monkeypatch):
+    """session.create must NOT eagerly write a DB row.
+
+    Every TUI/desktop launch opens a session here just to paint the composer;
+    eagerly creating a row left an empty "Untitled" session behind for every
+    launch the user never typed into. The row is created lazily on first prompt.
+    """
+    created = []
+
+    class _FakeDB:
+        def create_session(self, *args, **kwargs):
+            created.append((args, kwargs))
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(
+        server.threading,
+        "Timer",
+        lambda *a, **k: types.SimpleNamespace(daemon=False, start=lambda: None),
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
+    sid = resp["result"]["session_id"]
+    try:
+        assert resp["result"]["stored_session_id"]
+        assert created == [], "session.create should not persist an empty DB row"
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
+    """An explicitly chosen workspace is persisted as the session cwd."""
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, cwd=None):
+            created.append({"key": key, "source": source, "model": model, "cwd": cwd})
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path), "explicit_cwd": True})
+
+    assert created == [
+        {"key": "k1", "source": "tui", "model": "test-model", "cwd": str(tmp_path)}
+    ]
+
+
+def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
+    """Without an explicit workspace, cwd is left null so the session groups
+    under "No workspace" rather than the gateway's launch directory."""
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, cwd=None):
+            created.append({"key": key, "source": source, "model": model, "cwd": cwd})
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
+
+    assert created == [{"key": "k1", "source": "tui", "model": "test-model", "cwd": None}]
 
 
 def test_session_title_clears_pending_after_persist(monkeypatch):
@@ -1666,12 +1881,21 @@ def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypa
     assert resp["result"]["provider"] == "bedrock"
 
 
-def test_complete_slash_includes_provider_alias():
+def test_complete_slash_drops_removed_provider_alias():
+    # `/provider` was folded into a single `/model` command, so autocomplete
+    # must no longer offer the dead alias...
     resp = server.handle_request(
         {"id": "1", "method": "complete.slash", "params": {"text": "/pro"}}
     )
 
-    assert any(item["text"] == "provider" for item in resp["result"]["items"])
+    assert not any(item["text"] == "provider" for item in resp["result"]["items"])
+
+    # ...while `/model` stays the canonical command.
+    resp_model = server.handle_request(
+        {"id": "2", "method": "complete.slash", "params": {"text": "/mod"}}
+    )
+
+    assert any(item["text"] == "model" for item in resp_model["result"]["items"])
 
 
 def test_complete_slash_returns_plain_string_fields():
@@ -5317,3 +5541,156 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         assert requeued["session_id"] == "proc_busy_test"
     finally:
         server._sessions.pop("sid_busy", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):
+    """TUI /save (session.save RPC) must snapshot under the Hermes profile
+    home — not the project/workspace CWD — and include the system prompt,
+    mirroring the classic CLI /save and the dashboard save export.
+
+    Regression: the gateway handler wrote ``hermes_conversation_*.json`` to
+    ``os.path.abspath(...)`` (the workspace CWD) and only exported ``model``
+    and ``messages``, so ``system_prompt`` was missing.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    # Run from a different CWD to prove the snapshot does NOT leak there.
+    work = tmp_path / "workspace"
+    work.mkdir()
+    monkeypatch.chdir(work)
+
+    sid = "save-sid"
+    agent = types.SimpleNamespace(
+        model="hermes-test",
+        session_id="20260101_120000_abc123",
+        session_start=datetime(2026, 1, 1, 12, 0, 0),
+        _cached_system_prompt="You are Hermes.",
+    )
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    server._sessions[sid] = {
+        "agent": agent,
+        "session_key": "save-key",
+        "history": history,
+        "history_lock": threading.Lock(),
+        "created_at": 1735732800.0,
+    }
+    try:
+        resp = server._methods["session.save"]("1", {"session_id": sid})
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert "result" in resp, resp
+    saved_file = Path(resp["result"]["file"])
+
+    # Must NOT leak into the workspace/project CWD.
+    assert not list(work.glob("hermes_conversation_*.json"))
+
+    saved_dir = home / "sessions" / "saved"
+    assert saved_file.parent == saved_dir
+    assert saved_file.exists()
+
+    payload = json.loads(saved_file.read_text())
+    assert payload["model"] == "hermes-test"
+    assert payload["session_id"] == "20260101_120000_abc123"
+    assert payload["session_start"] == "2026-01-01T12:00:00"
+    assert payload["system_prompt"] == "You are Hermes."
+    assert payload["messages"] == history
+
+
+def test_notification_event_dedup_key_preserves_distinct_watch_matches():
+    """Watch-match identity includes match content, not just session/type."""
+    base = {
+        "type": "watch_match",
+        "session_id": "proc_watch",
+        "command": "tail -f app.log",
+        "pattern": "READY",
+        "output": "READY on port 8000",
+        "suppressed": 0,
+    }
+
+    identical = dict(base)
+    distinct_output = {**base, "output": "READY on port 9000"}
+    distinct_pattern = {**base, "pattern": "MIGRATION_DONE"}
+
+    base_key = server._notification_event_dedup_key(base)
+    assert server._notification_event_dedup_key(identical) == base_key
+    assert server._notification_event_dedup_key(distinct_output) != base_key
+    assert server._notification_event_dedup_key(distinct_pattern) != base_key
+
+
+def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
+    """Distinct watch matches from one process emit; exact replay is deduped."""
+    from tools.process_registry import process_registry
+
+    turns = []
+    emitted = []
+
+    def _fake_run_prompt_submit(rid, sid, session, text):
+        turns.append(text)
+        with session["history_lock"]:
+            session["running"] = False
+
+    sess = _session()
+    server._sessions["sid_watch_dedup"] = sess
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    monkeypatch.setattr(server, "_run_prompt_submit", _fake_run_prompt_submit)
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    base = {
+        "type": "watch_match",
+        "session_id": "proc_watch_dedup",
+        "command": "tail -f app.log",
+        "pattern": "READY",
+        "output": "READY on port 8000",
+        "suppressed": 0,
+    }
+    process_registry.completion_queue.put(base)
+    process_registry.completion_queue.put({**base, "output": "READY on port 9000"})
+    process_registry.completion_queue.put(dict(base))
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_watch_dedup", sess)
+        status_calls = [a for a in emitted if a[0] == "status.update"]
+        assert len(status_calls) == 2
+        status_text = "\n".join(call[2]["text"] for call in status_calls)
+        assert "READY on port 8000" in status_text
+        assert "READY on port 9000" in status_text
+        assert len(turns) == 3
+    finally:
+        server._sessions.pop("sid_watch_dedup", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_event_dedup_key_keeps_completions_one_shot():
+    """Completion identity remains process-session scoped to avoid floods."""
+    first = {
+        "type": "completion",
+        "session_id": "proc_done",
+        "command": "make build",
+        "exit_code": 0,
+        "output": "first output",
+    }
+    replay = {
+        "type": "completion",
+        "session_id": "proc_done",
+        "command": "make build --again",
+        "exit_code": 1,
+        "output": "different output should not change completion key",
+    }
+
+    assert server._notification_event_dedup_key(first) == server._notification_event_dedup_key(
+        replay
+    )

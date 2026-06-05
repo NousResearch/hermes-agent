@@ -48,7 +48,7 @@ export interface OAuthProviderStatus {
 export interface OAuthProvider {
   cli_command: string
   docs_url: string
-  flow: 'device_code' | 'external' | 'pkce'
+  flow: 'device_code' | 'external' | 'loopback' | 'pkce'
   id: string
   name: string
   status: OAuthProviderStatus
@@ -73,6 +73,12 @@ export type OAuthStartResponse =
       user_code: string
       verification_url: string
     }
+  | {
+      auth_url: string
+      expires_in: number
+      flow: 'loopback'
+      session_id: string
+    }
 
 export interface OAuthSubmitResponse {
   message?: string
@@ -90,6 +96,10 @@ export interface OAuthPollResponse {
 export interface EnvVarInfo {
   advanced: boolean
   category: string
+  // True when this var is a messaging-platform credential owned by a card on
+  // the dedicated Messaging page. The Keys page hides these to avoid
+  // duplicating the richer channel-configuration UI.
+  channel_managed?: boolean
   description: string
   is_password: boolean
   is_set: boolean
@@ -210,6 +220,14 @@ export interface ModelOptionProvider {
   free_tier?: boolean
   /** Nous only: paid models a free-tier user cannot select (shown disabled). */
   unavailable_models?: string[]
+  /** Per-model option support, keyed by model id (present when the picker
+   *  requested capabilities). Lets the UI gate fast/reasoning controls. */
+  capabilities?: Record<string, ModelCapabilities>
+}
+
+export interface ModelCapabilities {
+  fast: boolean
+  reasoning: boolean
 }
 
 export interface ModelOptionsResponse {
@@ -223,6 +241,14 @@ export interface PaginatedSessions {
   offset: number
   sessions: SessionInfo[]
   total: number
+  /** Listable conversation count per profile (children excluded), keyed by
+   *  profile name. Lets the sidebar scope its "Load more" footer to the active
+   *  profile instead of the global total. Present only on
+   *  `/api/profiles/sessions`. */
+  profile_totals?: Record<string, number>
+  /** Per-profile read failures from the cross-profile aggregator (e.g. a locked
+   *  or corrupt state.db). Present only on `/api/profiles/sessions`. */
+  errors?: Array<{ profile: string; error: string }>
 }
 
 export interface RpcEvent<T = unknown> {
@@ -240,9 +266,14 @@ export interface SessionCreateResponse {
 }
 
 export interface SessionInfo {
+  archived?: boolean
   cwd?: null | string
   ended_at: null | number
   id: string
+  /** Original root id of a compression chain, when this entry is a projected
+   *  continuation tip. Stable across compressions — used as the durable id for
+   *  pins so a pinned conversation survives auto-compression. */
+  _lineage_root_id?: null | string
   input_tokens: number
   is_active: boolean
   last_active: number
@@ -254,6 +285,12 @@ export interface SessionInfo {
   started_at: number
   title: null | string
   tool_call_count: number
+  /** Owning profile name, set by the cross-profile aggregator
+   *  (`/api/profiles/sessions`). Absent on legacy single-profile responses,
+   *  which the UI treats as the default profile. */
+  profile?: string
+  /** True when {@link profile} is the default profile. */
+  is_default_profile?: boolean
 }
 
 export interface SessionMessage {
@@ -302,6 +339,7 @@ export interface SessionRuntimeInfo {
   tools?: Record<string, string[]>
   usage?: Partial<UsageStats>
   version?: string
+  yolo?: boolean
 }
 
 export interface UsageStats {
@@ -411,6 +449,8 @@ export interface CronJobUpdates {
 }
 
 export interface ProfileCreatePayload {
+  clone_all?: boolean
+  clone_from?: string
   clone_from_default?: boolean
   name: string
   no_skills?: boolean
@@ -424,10 +464,6 @@ export interface ProfileInfo {
   path: string
   provider: null | string
   skill_count: number
-}
-
-export interface ProfileSetupCommand {
-  command: string
 }
 
 export interface ProfileSoul {
@@ -470,17 +506,26 @@ export interface ToolProvider {
   env_vars: ToolEnvVar[]
   post_setup: string | null
   requires_nous_auth: boolean
+  /** True when this is the provider currently written to config (mirrors the
+   *  CLI `hermes tools` active-provider detection). */
+  is_active: boolean
 }
 
 export interface ToolsetConfig {
   name: string
   has_category: boolean
   providers: ToolProvider[]
+  /** Name of the currently active provider, or null if none is configured. */
+  active_provider: string | null
 }
 
 export interface SessionSearchResult {
+  /** Lineage root of the matched conversation. Stable across compression and
+   *  used as the durable pin id; falls back to session_id when absent. */
+  lineage_root?: string | null
   model: string | null
   role: string | null
+  /** Live compression tip of the matched conversation — resume by this id. */
   session_id: string
   session_started: number | null
   snippet: string
@@ -548,6 +593,9 @@ export interface AuxiliaryModelsResponse {
 }
 
 export interface ModelAssignmentRequest {
+  /** OpenAI-compatible endpoint URL. Only honored for custom/local providers
+   *  on the main slot — wires a self-hosted endpoint into runtime resolution. */
+  base_url?: string
   model: string
   provider: string
   scope: 'main' | 'auxiliary'
@@ -555,6 +603,8 @@ export interface ModelAssignmentRequest {
 }
 
 export interface ModelAssignmentResponse {
+  /** Persisted endpoint URL for custom/local providers (echoed back). */
+  base_url?: string
   /** Toolset keys auto-routed through the Nous Tool Gateway as a result of
    *  switching the main provider to Nous. Empty unless provider === 'nous'
    *  and the user is a paid subscriber with unconfigured tools. */

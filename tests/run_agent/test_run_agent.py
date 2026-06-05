@@ -2792,6 +2792,60 @@ class TestConcurrentToolExecution:
         # Second (allowed) write must checkpoint even though first was blocked.
         cp_mock.assert_called_once()
 
+    def test_invoke_tool_model_switch_emits_post_tool_hook_exactly_once(self, agent, monkeypatch):
+        """model_switch on the concurrent (invoke_tool) path must wrap its result
+        with _finish_agent_tool so the post_tool_call telemetry hook fires exactly
+        once — the same guarantee every peer branch (todo, clarify, delegate_task)
+        already provides.
+
+        Why: The concurrent executor calls invoke_tool directly. If model_switch
+        returns without going through _finish_agent_tool the post_tool_call hook
+        is silently dropped, losing telemetry and breaking any plugin that
+        depends on the span being closed.
+
+        How to test: monkeypatch the pre-tool-call gate to pass, monkeypatch
+        invoke_hook to record calls, then call _invoke_tool("model_switch", …)
+        and assert exactly one post_tool_call event with the correct field values.
+        """
+        hook_calls: list = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+
+        switch_result = '{"success": true, "model": "hermes-3-8b"}'
+        with patch(
+            "tools.model_switch_tool.model_switch_tool",
+            return_value=switch_result,
+        ) as mock_switch:
+            result = agent._invoke_tool(
+                "model_switch",
+                {"slug": "hermes-3-8b", "reason": "cheaper for simple task", "scope": "session"},
+                "task-1",
+                tool_call_id="ms-1",
+            )
+
+        mock_switch.assert_called_once()
+        assert result == switch_result
+
+        post_calls = [c for c in hook_calls if c[0] == "post_tool_call"]
+        assert len(post_calls) == 1, (
+            f"Expected exactly 1 post_tool_call hook emission for model_switch, "
+            f"got {len(post_calls)}. Hook calls: {hook_calls}"
+        )
+        post_kw = post_calls[0][1]
+        assert post_kw["tool_name"] == "model_switch"
+        assert post_kw["tool_call_id"] == "ms-1"
+        assert post_kw["result"] == switch_result
+        assert post_kw["status"] == "ok"
+        assert post_kw["error_type"] is None
+        assert isinstance(post_kw["duration_ms"], int)
+
 
 class TestAgentRuntimePostHookOwnershipSync:
     """Pin the inline-dispatch tool list against the post-hook ownership set.

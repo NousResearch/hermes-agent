@@ -1750,11 +1750,13 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         )
     elif function_name == "model_switch":
         from tools.model_switch_tool import model_switch_tool as _model_switch_tool
-        return _model_switch_tool(
-            agent,
-            slug=function_args.get("slug", ""),
-            reason=function_args.get("reason", ""),
-            scope=function_args.get("scope", "session"),
+        return _finish_agent_tool(
+            _model_switch_tool(
+                agent,
+                slug=function_args.get("slug", ""),
+                reason=function_args.get("reason", ""),
+                scope=function_args.get("scope", "session"),
+            )
         )
     elif function_name == "delegate_task":
         return _finish_agent_tool(agent._dispatch_delegate_task(function_args))

@@ -1,0 +1,7 @@
+name: leonardo
+version: 1.0.0
+description: "Leonardo.AI image generation backend (Phoenix, SDXL, Flux). Text-to-image with multiple styles."
+author: aimanmalib
+kind: backend
+requires_env:
+  - LEONARDO_API_KEY

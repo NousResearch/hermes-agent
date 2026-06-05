@@ -131,6 +131,54 @@ class TestApplyAnthropicCacheControl:
         # Original should be unmodified
         assert "cache_control" not in msgs[0].get("content", "")
 
+    def test_request_copy_protects_unmarked_nested_content(self):
+        msgs = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": [{"type": "text", "text": "msg1"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "msg2"}]},
+            {"role": "user", "content": [{"type": "text", "text": "msg3"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "msg4"}]},
+        ]
+
+        result = apply_anthropic_cache_control(msgs)
+
+        assert result is not msgs
+        assert result[0] is not msgs[0]
+        assert result[1] is not msgs[1]
+        assert result[1]["content"] is not msgs[1]["content"]
+        assert result[1]["content"][0] is not msgs[1]["content"][0]
+        assert result[2] is not msgs[2]
+        assert result[2]["content"] is not msgs[2]["content"]
+        assert result[2]["content"][0] is not msgs[2]["content"][0]
+        assert "cache_control" not in msgs[2]["content"][0]
+        assert result[2]["content"][0]["cache_control"] == MARKER
+
+        result[1]["content"][0]["text"] = "mutated request copy"
+        assert msgs[1]["content"][0]["text"] == "msg1"
+
+    def test_request_copy_protects_nested_image_url_retry_mutation(self):
+        image_url = {"url": "data:image/png;base64,original"}
+        msgs = [
+            {"role": "system", "content": "System"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "see image"},
+                    {"type": "image_url", "image_url": image_url},
+                ],
+            },
+        ]
+
+        result = apply_anthropic_cache_control(msgs)
+
+        assert result[1]["content"][1] is not msgs[1]["content"][1]
+        assert result[1]["content"][1]["image_url"] is not image_url
+
+        result[1]["content"][1]["image_url"]["url"] = "data:image/png;base64,shrunk"
+        assert msgs[1]["content"][1]["image_url"]["url"] == (
+            "data:image/png;base64,original"
+        )
+
     def test_system_message_gets_marker(self):
         msgs = [
             {"role": "system", "content": "You are helpful"},

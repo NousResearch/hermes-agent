@@ -331,7 +331,14 @@ export function useSessionActions({
         // so single-profile users are unaffected).
         await ensureGatewayProfile($newChatProfile.get())
         const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
-        const created = await requestGateway<SessionCreateResponse>('session.create', { cols: 96, ...(cwd && { cwd }) })
+        // Pass the owning profile so a new chat under a non-launch profile (global
+        // remote mode) builds its agent + persists against THAT profile's home/db.
+        const newChatProfile = $newChatProfile.get()
+        const created = await requestGateway<SessionCreateResponse>('session.create', {
+          cols: 96,
+          ...(cwd && { cwd }),
+          ...(newChatProfile ? { profile: newChatProfile } : {})
+        })
         const stored = created.stored_session_id ?? null
 
         if (

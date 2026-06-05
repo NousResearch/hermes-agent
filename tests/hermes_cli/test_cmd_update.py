@@ -825,3 +825,49 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+class TestCmdUpdateWebUiBuildCrash:
+    """Regression tests for issue #39549: _build_web_ui crash leaves half-updated state."""
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_build_web_ui_crash_does_not_abort_update(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """_build_web_ui raising ValueError must not crash cmd_update."""
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="3"
+        )
+
+        with patch.object(hm, "_build_web_ui", side_effect=ValueError("too many values to unpack (expected 2)")):
+            # Must not raise — the crash should be caught
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr()
+        assert "Web UI build failed (non-fatal)" in captured.out
+        assert "too many values to unpack" in captured.out
+        # The update should still print "Code updated!" since the crash was non-fatal
+        assert "Code updated!" in captured.out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_build_web_ui_crash_does_not_prevent_desktop_rebuild(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """After _build_web_ui crash, desktop rebuild should still be attempted."""
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="3"
+        )
+
+        with patch.object(hm, "_build_web_ui", side_effect=RuntimeError("npm exploded")), \
+             patch.object(hm, "_desktop_packaged_executable", return_value="/path/to/exe"), \
+             patch.object(hm, "_desktop_dist_exists", return_value=True):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr()
+        assert "Web UI build failed (non-fatal)" in captured.out

@@ -10580,7 +10580,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _refresh_active_lazy_features()
 
         _update_node_dependencies()
-        _build_web_ui(PROJECT_ROOT / "web")
+        try:
+            _build_web_ui(PROJECT_ROOT / "web")
+        except Exception as exc:
+            # Non-fatal — the web UI build can fail for environment-specific
+            # reasons (npm version mismatch, stale __pycache__, platform
+            # quirks) without affecting the CLI or gateway.  Catching the
+            # broad ``Exception`` here mirrors the desktop-build guard below
+            # and prevents a web-UI build crash from leaving the update in a
+            # half-finished state where ``hermes update`` reports "Already up
+            # to date" but the venv is stale.  See issue #39549.
+            print(f"  ⚠ Web UI build failed (non-fatal): {exc}")
+            print("    Run `hermes web` later to retry the build manually.")
 
         # Rebuild the desktop app if the source tree changed since the last
         # build.  ``hermes desktop --build-only`` uses the content-hash stamp

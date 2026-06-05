@@ -549,16 +549,10 @@ export function ChatBar({
     }
   }, [trigger])
 
-  const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
-    // During IME composition the DOM contains uncommitted preedit text
-    // mixed with real content.  Skip state writes — compositionend will
-    // deliver the finalized text via a clean input event.
-    if (composingRef.current) {
-      return
-    }
-
-    const editor = event.currentTarget
-
+  // Pull the live contentEditable text into draftRef + the AUI composer state
+  // (which drives `hasComposerPayload` → the send button). Shared by the input
+  // and compositionend paths so committed IME text reaches state through either.
+  const flushEditorToDraft = (editor: HTMLDivElement) => {
     if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
       editor.replaceChildren()
     }
@@ -571,6 +565,17 @@ export function ChatBar({
     }
 
     window.setTimeout(refreshTrigger, 0)
+  }
+
+  const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
+    // During IME composition the DOM contains uncommitted preedit text
+    // mixed with real content.  Skip state writes — compositionend flushes
+    // the finalized text (see onCompositionEnd).
+    if (composingRef.current) {
+      return
+    }
+
+    flushEditorToDraft(event.currentTarget)
   }
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
@@ -1208,8 +1213,17 @@ export function ChatBar({
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBlur={() => window.setTimeout(closeTrigger, 80)}
-        onCompositionEnd={() => {
+        onCompositionEnd={event => {
           composingRef.current = false
+
+          // The input events fired *during* composition were skipped (they
+          // carried uncommitted preedit text), and Chromium does NOT reliably
+          // emit a trailing input event after compositionend on Windows IMEs.
+          // Without flushing here, committed multi-character IME input (e.g.
+          // Chinese "你好", Japanese, Korean) never reaches composer state, so
+          // `hasComposerPayload` stays false and the send button stays hidden
+          // until an unrelated edit forces a sync (#39614).
+          flushEditorToDraft(event.currentTarget)
         }}
         onCompositionStart={() => {
           composingRef.current = true

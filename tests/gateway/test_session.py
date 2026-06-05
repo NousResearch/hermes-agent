@@ -970,6 +970,20 @@ class TestWhatsAppIdentifierPublicHelpers:
         assert canonical == "15551234567"
         assert canonical_whatsapp_identifier("15551234567@s.whatsapp.net") == "15551234567"
 
+    def test_canonical_walks_modern_lid_mapping(self, tmp_path, monkeypatch):
+        """Fresh installs store WhatsApp bridge mappings under platforms/."""
+        mapping_dir = tmp_path / "platforms" / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        canonical = canonical_whatsapp_identifier("999999999999999@lid")
+        assert canonical == "15551234567"
+        assert canonical_whatsapp_identifier("15551234567@s.whatsapp.net") == "15551234567"
+
     def test_canonical_empty_input(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert canonical_whatsapp_identifier("") == ""

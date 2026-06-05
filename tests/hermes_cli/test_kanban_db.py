@@ -1945,6 +1945,42 @@ def test_cleanup_workspace_removes_managed_scratch_dir(kanban_home):
     assert not ws.exists(), "Hermes-managed scratch dir should be cleaned up"
 
 
+def test_complete_task_preserves_scratch_artifacts_before_cleanup(kanban_home):
+    """Scratch-local completion artifacts survive workspace cleanup."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="artifact")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        artifact = ws / "reports" / "summary.txt"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("done", encoding="utf-8")
+
+        assert kb.complete_task(
+            conn,
+            t,
+            summary="finished",
+            metadata={"artifacts": [str(artifact)]},
+        )
+        events = kb.list_events(conn, t)
+        completed = next(e for e in events if e.kind == "completed")
+        payload = completed.payload or {}
+        run = kb.latest_run(conn, t)
+
+    assert not ws.exists(), "Hermes-managed scratch dir should be cleaned up"
+    preserved = payload.get("artifacts")
+    assert isinstance(preserved, list)
+    assert len(preserved) == 1
+    preserved_path = Path(preserved[0])
+    cache_root = kanban_home / "cache" / "documents" / "kanban-artifacts" / t
+    assert preserved_path.is_relative_to(cache_root)
+    assert preserved_path.relative_to(cache_root) == Path("reports") / "summary.txt"
+    assert preserved_path.read_text(encoding="utf-8") == "done"
+    assert run is not None
+    assert run.metadata is not None
+    assert run.metadata.get("artifacts") == preserved
+
+
 def test_cleanup_workspace_refuses_path_outside_scratch_root(kanban_home, tmp_path):
     """A scratch task with a user path outside the workspaces root must NOT be deleted (#28818).
 

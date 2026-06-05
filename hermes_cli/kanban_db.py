@@ -3660,11 +3660,25 @@ def complete_task(
             )
         if cur.rowcount != 1:
             return False
+        metadata_for_run = metadata
+        completed_artifacts: Optional[list[str]] = None
+        if isinstance(metadata, dict):
+            md_artifacts = metadata.get("artifacts")
+            if isinstance(md_artifacts, (list, tuple)):
+                cleaned_artifacts = [
+                    str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()
+                ]
+                if cleaned_artifacts:
+                    completed_artifacts = _preserve_completion_artifacts(
+                        conn, task_id, cleaned_artifacts
+                    )
+                    metadata_for_run = dict(metadata)
+                    metadata_for_run["artifacts"] = completed_artifacts
         run_id = _end_run(
             conn, task_id,
             outcome="completed", status="done",
             summary=summary if summary is not None else result,
-            metadata=metadata,
+            metadata=metadata_for_run,
         )
         # If complete_task was called on a never-claimed task (ready or
         # blocked → done with no run in flight), synthesize a
@@ -3675,7 +3689,7 @@ def complete_task(
                 conn, task_id,
                 outcome="completed",
                 summary=summary if summary is not None else result,
-                metadata=metadata,
+                metadata=metadata_for_run,
             )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
@@ -3695,14 +3709,8 @@ def complete_task(
         # ``kanban_complete(artifacts=[...])`` which stashes the list in
         # ``metadata["artifacts"]`` — we promote it onto the event so
         # consumers don't have to fetch the run row to find it.
-        if isinstance(metadata, dict):
-            md_artifacts = metadata.get("artifacts")
-            if isinstance(md_artifacts, (list, tuple)):
-                cleaned_artifacts = [
-                    str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()
-                ]
-                if cleaned_artifacts:
-                    completed_payload["artifacts"] = cleaned_artifacts
+        if completed_artifacts:
+            completed_payload["artifacts"] = completed_artifacts
         _append_event(
             conn, task_id, "completed",
             completed_payload,
@@ -3818,6 +3826,71 @@ def _is_managed_scratch_path(p: Path) -> bool:
         except ValueError:
             continue
     return False
+
+
+def _preserve_completion_artifacts(
+    conn: sqlite3.Connection,
+    task_id: str,
+    artifact_paths: list[str],
+) -> list[str]:
+    """Copy scratch-local completion artifacts to durable media cache paths."""
+    try:
+        row = conn.execute(
+            "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return artifact_paths
+        kind: Optional[str] = row["workspace_kind"]
+        workspace_path: Optional[str] = row["workspace_path"]
+        if kind != "scratch" or not workspace_path:
+            return artifact_paths
+        workspace = Path(workspace_path)
+        if not _is_managed_scratch_path(workspace):
+            return artifact_paths
+        workspace_resolved = workspace.resolve(strict=False)
+    except Exception:
+        return artifact_paths
+
+    try:
+        cache_root = kanban_home() / "cache" / "documents" / "kanban-artifacts" / task_id
+    except Exception:
+        return artifact_paths
+    preserved: list[str] = []
+    for raw in artifact_paths:
+        try:
+            src = Path(raw).expanduser()
+            if not src.is_absolute():
+                candidate = workspace / src
+                if not candidate.is_file():
+                    preserved.append(raw)
+                    continue
+                src = candidate
+            if not src.is_file():
+                preserved.append(raw)
+                continue
+            src_resolved = src.resolve(strict=True)
+            try:
+                relative = src_resolved.relative_to(workspace_resolved)
+            except ValueError:
+                preserved.append(raw)
+                continue
+            if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+                safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", src.name).strip("._-")
+                relative = Path(safe_name or hashlib.sha256(raw.encode("utf-8")).hexdigest())
+            dest = cache_root / relative
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_resolved, dest)
+            preserved.append(str(dest))
+        except Exception:
+            _log.debug(
+                "Failed to preserve completion artifact for task %s: %s",
+                task_id,
+                raw,
+                exc_info=True,
+            )
+            preserved.append(raw)
+    return preserved
 
 
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:

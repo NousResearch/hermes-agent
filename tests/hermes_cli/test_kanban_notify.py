@@ -583,6 +583,91 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_notifier_uploads_preserved_scratch_artifact(kanban_home, monkeypatch):
+    """Scratch-local artifacts are copied before cleanup and remain uploadable."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="render scratch report", assignee="worker1")
+        task = kb.get_task(conn, tid)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, ws)
+        report_path = ws / "reports" / "scratch-report.pdf"
+        report_path.parent.mkdir(parents=True)
+        report_path.write_bytes(b"%PDF-scratch")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+    finally:
+        conn.close()
+
+    import os
+    os.environ["HERMES_KANBAN_TASK"] = tid
+    try:
+        out = kt._handle_complete({
+            "summary": "rendered scratch report",
+            "artifacts": [str(report_path)],
+        })
+    finally:
+        os.environ.pop("HERMES_KANBAN_TASK", None)
+    import json as _json
+    assert _json.loads(out)["ok"] is True
+    assert not ws.exists()
+
+    conn = kb.connect()
+    try:
+        completed = next(e for e in kb.list_events(conn, tid) if e.kind == "completed")
+        preserved = (completed.payload or {}).get("artifacts")
+    finally:
+        conn.close()
+    assert isinstance(preserved, list)
+    assert len(preserved) == 1
+    preserved_path = Path(preserved[0])
+    assert preserved_path.exists()
+    assert preserved_path.is_relative_to(
+        kanban_home / "cache" / "documents" / "kanban-artifacts" / tid
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+    fake_adapter.name = "telegram"
+
+    documents_uploaded: list = []
+
+    async def _send(chat_id, msg, metadata=None):
+        runner._running = False
+
+    async def _send_document(chat_id, file_path, metadata=None, **_kw):
+        documents_uploaded.append(file_path)
+
+    fake_adapter.send = AsyncMock(side_effect=_send)
+    fake_adapter.send_document = AsyncMock(side_effect=_send_document)
+    fake_adapter.send_multiple_images = AsyncMock()
+    from gateway.platforms.base import BasePlatformAdapter
+    fake_adapter.extract_local_files = BasePlatformAdapter.extract_local_files
+
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    assert documents_uploaded == [str(preserved_path)]
+
+
+@pytest.mark.asyncio
 async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_path, monkeypatch):
     """Missing artifact paths are silently skipped — they may have been
     referenced by name only. The notifier must not crash and must still

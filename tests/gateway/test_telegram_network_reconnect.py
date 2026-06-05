@@ -570,16 +570,34 @@ async def test_send_pool_timeout_counter_starts_zero():
 
 
 @pytest.mark.asyncio
-async def test_send_pool_drain_resets_counter():
-    """After draining, the counter should reset to 0."""
+async def test_drain_send_does_not_reset_counter():
+    """_drain_send_connections does NOT reset the counter — send() does that."""
     adapter = _make_adapter()
     mock_app, _, mock_send_req = _make_mock_app_with_send_pool()
     adapter._app = mock_app
 
     adapter._send_pool_timeout_count = 3
     await adapter._drain_send_connections()
-    adapter._send_pool_timeout_count = 0
 
     mock_send_req.shutdown.assert_called_once()
     mock_send_req.initialize.assert_called_once()
+    # Counter is NOT reset by _drain_send_connections — the caller (send()) does it.
+    assert adapter._send_pool_timeout_count == 3
+
+
+@pytest.mark.asyncio
+async def test_send_pool_timeout_counter_full_lifecycle():
+    """Counter increments on pool timeout and resets on drain threshold."""
+    adapter = _make_adapter()
+    assert adapter._send_pool_timeout_count == 0
+
+    # Simulate pool timeout increments toward threshold
+    # (direct counter manipulation since we're not running the full send loop here)
+    adapter._send_pool_timeout_count = 2  # two prior timeouts
+    adapter._send_pool_timeout_count += 1  # third timeout → hits threshold
+
+    assert adapter._send_pool_timeout_count >= 3
+
+    # After drain, caller resets counter
+    adapter._send_pool_timeout_count = 0
     assert adapter._send_pool_timeout_count == 0

@@ -2096,9 +2096,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         # unless we drain the pool. Count consecutive pool
                         # timeouts and drain after the threshold.
                         if self._looks_like_pool_timeout(send_err):
-                            if not hasattr(self, '_send_pool_timeout_count'):
-                                self._send_pool_timeout_count = 0
-                            self._send_pool_timeout_count += 1
+                            pc = getattr(self, '_send_pool_timeout_count', 0)
+                            self._send_pool_timeout_count = pc + 1
                             if self._send_pool_timeout_count >= 3:
                                 logger.warning(
                                     "[%s] Send pool timeout count %d — draining send connections",
@@ -2107,8 +2106,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 await self._drain_send_connections()
                                 self._send_pool_timeout_count = 0
                         else:
-                            if hasattr(self, '_send_pool_timeout_count'):
-                                self._send_pool_timeout_count = 0
+                            self._send_pool_timeout_count = 0
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
                             logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
@@ -2133,8 +2131,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         raise
                 message_ids.append(str(msg.message_id))
                 # Reset send pool timeout counter on successful send
-                if getattr(self, '_send_pool_timeout_count', 0):
-                    self._send_pool_timeout_count = 0
+                self._send_pool_timeout_count = 0
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,

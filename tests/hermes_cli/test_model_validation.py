@@ -253,6 +253,35 @@ class TestFetchApiModels:
         assert probe["resolved_base_url"] == "http://localhost:8000/v1"
         assert probe["used_fallback"] is True
 
+    def test_probe_api_models_preserves_router_metadata(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data": ['
+                    b'{"id": "qwen3.6-35b", "router_backend": "llama-swap", '
+                    b'"router_host": "ko-mac", "router_hosts": ["ko-mac", "ko-taro"]}, '
+                    b'{"id": "plain-model", "owned_by": "test"}'
+                    b"]}"
+                )
+
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            probe = probe_api_models("key", "http://localhost:8000/v1")
+
+        assert probe["models"] == ["qwen3.6-35b", "plain-model"]
+        assert probe["model_metadata"] == {
+            "qwen3.6-35b": {
+                "router_backend": "llama-swap",
+                "router_host": "ko-mac",
+                "router_hosts": ["ko-mac", "ko-taro"],
+            }
+        }
+
     def test_probe_api_models_uses_copilot_catalog(self):
         class _Resp:
             def __enter__(self):

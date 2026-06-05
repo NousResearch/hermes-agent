@@ -1659,16 +1659,18 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
+            model_metadata: dict[str, dict] = {}
             if api_url and api_key and discover:
                 try:
-                    from hermes_cli.models import fetch_api_models
+                    from hermes_cli.models import cached_api_model_metadata, fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
                     if live_models:
                         models_list = live_models
+                        model_metadata = cached_api_model_metadata(api_url)
                 except Exception:
                     pass
 
-            results.append({
+            row = {
                 "slug": ep_name,
                 "name": display_name,
                 "is_current": ep_name == current_provider,
@@ -1677,7 +1679,10 @@ def list_authenticated_providers(
                 "total_models": len(models_list) if models_list else 0,
                 "source": "user-config",
                 "api_url": api_url,
-            })
+            }
+            if model_metadata:
+                row["model_metadata"] = model_metadata
+            results.append(row)
             seen_slugs.add(ep_name.lower())
             seen_slugs.add(custom_provider_slug(display_name).lower())
             _pair = (
@@ -1753,6 +1758,7 @@ def list_authenticated_providers(
                     "name": display_name,
                     "api_url": api_url,
                     "api_key": api_key,
+                    "model_metadata": {},
                     "models": [],
                 }
             elif api_key and not groups[group_key].get("api_key"):
@@ -1848,11 +1854,12 @@ def list_authenticated_providers(
             should_probe = bool(api_url) and (bool(api_key) or not grp["models"])
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
+                    from hermes_cli.models import cached_api_model_metadata, fetch_api_models
 
                     live_models = fetch_api_models(api_key, api_url)
                     if live_models:
                         grp["models"] = live_models
+                        grp["model_metadata"] = cached_api_model_metadata(api_url)
                         grp["total_models"] = len(live_models)
                 except Exception:
                     pass
@@ -1870,6 +1877,7 @@ def list_authenticated_providers(
                 "total_models": len(grp["models"]),
                 "source": "user-config",
                 "api_url": grp["api_url"],
+                "model_metadata": grp.get("model_metadata", {}),
             })
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())

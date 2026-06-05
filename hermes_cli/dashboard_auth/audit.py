@@ -4,10 +4,12 @@ Profile-aware location: ``$HERMES_HOME/logs/dashboard-auth.log``.
 Format: one JSON object per line. Token-like fields are stripped before
 serialisation to avoid leaking refresh tokens or JWTs to disk.
 
-This module deliberately keeps a minimal dependency surface — no imports
-from ``hermes_constants`` or other hermes_cli modules — so it can be
+This module keeps a minimal *import-time* dependency surface so it can be
 imported safely from middleware code that loads early in the startup
-sequence.
+sequence. The Hermes-home lookup is deferred to call time (inside
+``_resolve_log_path``) via ``hermes_constants.get_hermes_home`` — the single
+source of truth for the profile- and platform-native data directory — so the
+only import this module adds is itself stdlib-only and import-safe.
 """
 from __future__ import annotations
 
@@ -15,7 +17,6 @@ import datetime as _dt
 import enum
 import json
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -50,14 +51,21 @@ class AuditEvent(enum.Enum):
 
 
 def _resolve_log_path() -> Path:
-    """``$HERMES_HOME/logs/dashboard-auth.log`` with the standard fallback.
+    """Return ``<HERMES_HOME>/logs/dashboard-auth.log``.
 
-    Mirrors ``hermes_constants.get_hermes_home`` semantics: env var wins,
-    else ``~/.hermes``. A local copy avoids an import cycle with the
-    middleware which lives below ``hermes_cli``.
+    Delegates to ``hermes_constants.get_hermes_home`` so the audit trail lands
+    in the same profile- and platform-native location as every other Hermes
+    log: ``%LOCALAPPDATA%\\hermes`` on native Windows, ``~/.hermes`` on POSIX,
+    honoring any active profile / ``HERMES_HOME`` override. The previous
+    hand-rolled fallback hardcoded ``~/.hermes`` and so wrote auth audit events
+    to the wrong directory on native Windows. The import is deferred to call
+    time to keep this module's import-time dependency surface minimal for
+    early-loading middleware; ``hermes_constants`` is stdlib-only and
+    import-safe.
     """
-    home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
-    return Path(home) / "logs" / "dashboard-auth.log"
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "logs" / "dashboard-auth.log"
 
 
 def audit_log(event: AuditEvent, **fields: Any) -> None:

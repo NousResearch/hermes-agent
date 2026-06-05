@@ -7,6 +7,8 @@ serialisation so we never leak refresh tokens or JWTs to disk.
 from __future__ import annotations
 
 import json
+import sys
+
 import pytest
 
 from hermes_cli.dashboard_auth.audit import audit_log, AuditEvent
@@ -79,3 +81,31 @@ def test_audit_creates_logs_dir_if_missing(tmp_path, monkeypatch):
     audit_log(AuditEvent.LOGIN_START, provider="nous")
     assert (home / "logs").is_dir()
     assert (home / "logs" / "dashboard-auth.log").exists()
+
+
+def test_audit_uses_platform_native_home_on_windows(tmp_path, monkeypatch):
+    """On native Windows with HERMES_HOME unset, the audit log must land under
+    %LOCALAPPDATA%\\hermes\\logs — the same platform-native location as every
+    other Hermes log — not under %USERPROFILE%\\.hermes\\logs.
+
+    Regression for the hand-rolled ``Path.home() / '.hermes'`` fallback that
+    diverged from ``get_hermes_home`` on native Windows, scattering login /
+    logout / WS-ticket audit events into the wrong directory.
+    """
+    local_appdata = tmp_path / "AppData" / "Local"
+    local_appdata.mkdir(parents=True)
+    user_profile = tmp_path / "userprofile"
+    user_profile.mkdir()
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+    # Old code fell back here via Path.home(); pin it so we can assert it stays empty.
+    monkeypatch.setattr("pathlib.Path.home", lambda: user_profile)
+
+    audit_log(AuditEvent.WS_TICKET_MINTED, provider="nous")
+
+    native = local_appdata / "hermes" / "logs" / "dashboard-auth.log"
+    legacy = user_profile / ".hermes" / "logs" / "dashboard-auth.log"
+    assert native.exists(), f"audit log not written to platform-native home: {native}"
+    assert not legacy.exists(), f"audit log leaked to legacy ~/.hermes path: {legacy}"

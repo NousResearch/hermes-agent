@@ -32,7 +32,19 @@ class TestResolveDisplaySetting:
                 "platforms": {},
             }
         }
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
+        assert resolve_display_setting(config, "discord", "tool_progress") == "new"
+
+    def test_telegram_tool_progress_does_not_inherit_global_setting(self):
+        """Telegram tool-progress requires explicit per-platform opt-in."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress": "all",
+                "platforms": {},
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
 
     def test_platform_default_when_no_user_config(self):
         """Falls back to built-in platform default."""
@@ -76,7 +88,8 @@ class TestResolveDisplaySetting:
             }
         }
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
+        assert resolve_display_setting(config, "discord", "tool_progress") == "all"
+        assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
 
 
 # ---------------------------------------------------------------------------
@@ -140,14 +153,14 @@ class TestYAMLNormalisation:
         from gateway.display_config import resolve_display_setting
 
         config = {"display": {"tool_progress": False}}
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting(config, "discord", "tool_progress") == "off"
 
     def test_tool_progress_true_normalised_to_all(self):
         """YAML's bare `on` parses as True — normalised to 'all'."""
         from gateway.display_config import resolve_display_setting
 
         config = {"display": {"tool_progress": True}}
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
+        assert resolve_display_setting(config, "discord", "tool_progress") == "all"
 
     def test_show_reasoning_string_true(self):
         """String 'true' is normalised to bool True."""

@@ -481,8 +481,18 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 account=self._account, user=self._user, agent=self._agent,
             )
             if not self._client.health():
-                logger.warning("OpenViking server at %s is not reachable", self._endpoint)
-                self._client = None
+                # Server not reachable — attempt auto-start so the user doesn't
+                # have to run `openviking-server` by hand (mirrors Hindsight's
+                # local_embedded auto-spawn behaviour).  Ref: issue #39981.
+                if self._try_autostart_server():
+                    logger.info("OpenViking server auto-started at %s", self._endpoint)
+                else:
+                    logger.warning(
+                        "OpenViking server at %s is not reachable and could not be "
+                        "auto-started (is openviking-server installed and on PATH?)",
+                        self._endpoint,
+                    )
+                    self._client = None
         except ImportError:
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None
@@ -490,6 +500,44 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Register as the last active provider for atexit safety net
         global _last_active_provider
         _last_active_provider = self
+
+    def _try_autostart_server(self) -> bool:
+        """Spawn `openviking-server` in the background and wait for it to start.
+
+        Mirrors the auto-start pattern used by Hindsight's local_embedded mode.
+        Returns True if the server is healthy after spawning, False otherwise.
+        The server process is started with ``start_new_session=True`` so it
+        survives the parent process and is not killed when the agent exits.
+        """
+        import shutil
+        import subprocess
+        import time
+
+        bin_path = shutil.which("openviking-server")
+        if bin_path is None:
+            logger.debug("openviking-server not found on PATH — skipping auto-start")
+            return False
+        try:
+            subprocess.Popen(
+                [bin_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as exc:
+            logger.debug("Failed to spawn openviking-server: %s", exc)
+            return False
+
+        # Poll health for up to 15 s
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            time.sleep(0.5)
+            try:
+                if self._client and self._client.health():
+                    return True
+            except Exception:
+                pass
+        return False
 
     def system_prompt_block(self) -> str:
         if not self._client:
@@ -627,9 +675,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
             logger.warning("OpenViking session commit failed: %s", e)
 
     def _build_memory_uri(self, subdir: str) -> str:
-        """Build a viking:// memory URI under the configured user/subdir."""
+        """Build a viking:// memory URI under the configured user/agent/subdir."""
         slug = uuid.uuid4().hex[:12]
-        return f"viking://user/{self._user}/memories/{subdir}/mem_{slug}.md"
+        return f"viking://user/{self._user}/agent/{self._agent}/memories/{subdir}/mem_{slug}.md"
 
     def on_memory_write(
         self,

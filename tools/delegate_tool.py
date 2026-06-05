@@ -3151,11 +3151,7 @@ DELEGATE_TASK_SCHEMA = {
             "skills": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": (
-                    "Optional skill names to preload into this subagent using "
-                    "the same canonical skill-loading path as CLI --skills. "
-                    "If any named skill cannot be resolved, delegate_task fails."
-                ),
+                "description": "Optional skill names to preload.",
             },
             "tasks": {
                 "type": "array",
@@ -3170,7 +3166,7 @@ DELEGATE_TASK_SCHEMA = {
                         "skills": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Skill names to preload for this specific task. Missing skills are a hard error.",
+                            "description": "Optional skill names for this specific task to preload.",
                         },
                         "toolsets": {
                             "type": "array",

@@ -2,6 +2,7 @@
 
 import logging
 import sys
+import time
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -708,6 +709,118 @@ class TestPluginHooks:
 
         # Should not raise despite 1/0
         mgr.invoke_hook("post_tool_call", tool_name="x", args={}, result="r", task_id="")
+
+    def test_slow_hook_times_out_and_later_callbacks_still_run(self, caplog):
+        """A hung callback is skipped after the deadline and dispatch continues."""
+        mgr = PluginManager()
+        mgr._hook_timeout_seconds = 0.02
+        calls = []
+
+        def before(**kwargs):
+            calls.append("before")
+            return "before-result"
+
+        def slow(**kwargs):
+            calls.append("slow-start")
+            time.sleep(0.25)
+            calls.append("slow-end")
+            return "slow-result"
+
+        def after(**kwargs):
+            calls.append("after")
+            return "after-result"
+
+        mgr._hooks["pre_llm_call"] = [before, slow, after]
+
+        start = time.perf_counter()
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            results = mgr.invoke_hook(
+                "pre_llm_call",
+                session_id="s1",
+                user_message="hi",
+                conversation_history=[],
+                is_first_turn=True,
+                model="test",
+            )
+        elapsed = time.perf_counter() - start
+
+        assert elapsed < 0.20
+        assert results == ["before-result", "after-result"]
+        assert calls[:3] == ["before", "slow-start", "after"]
+        assert any("timed out" in r.getMessage() for r in caplog.records)
+
+    def test_timed_out_hook_is_suppressed_without_blocking_healthy_hooks(self, caplog):
+        """A repeatedly hung callback does not consume the shared executor forever."""
+        mgr = PluginManager()
+        mgr._hook_timeout_seconds = 0.02
+        mgr._hook_timeout_suppression_seconds = 30.0
+        calls = []
+
+        def slow(**kwargs):
+            calls.append("slow-start")
+            time.sleep(0.30)
+            calls.append("slow-end")
+            return "slow-result"
+
+        def healthy(**kwargs):
+            calls.append("healthy")
+            return "healthy-result"
+
+        mgr._hooks["pre_llm_call"] = [slow, healthy]
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            first = mgr.invoke_hook(
+                "pre_llm_call",
+                session_id="s1",
+                user_message="hi",
+                conversation_history=[],
+                is_first_turn=True,
+                model="test",
+            )
+            second = mgr.invoke_hook(
+                "pre_llm_call",
+                session_id="s1",
+                user_message="hi",
+                conversation_history=[],
+                is_first_turn=True,
+                model="test",
+            )
+
+        assert first == ["healthy-result"]
+        assert second == ["healthy-result"]
+        assert calls.count("slow-start") == 1
+        assert calls.count("healthy") == 2
+        assert any("timed out" in r.getMessage() for r in caplog.records)
+        assert any("skipped after previous timeout" in r.getMessage() for r in caplog.records)
+
+    def test_hook_exception_still_allows_later_return_values(self, caplog):
+        """Bounded dispatch keeps the prior fail-open exception behavior."""
+        mgr = PluginManager()
+        mgr._hook_timeout_seconds = 0.1
+
+        def before(**kwargs):
+            return "before-result"
+
+        def broken(**kwargs):
+            raise RuntimeError("boom")
+
+        def after(**kwargs):
+            return "after-result"
+
+        mgr._hooks["pre_llm_call"] = [before, broken, after]
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            results = mgr.invoke_hook(
+                "pre_llm_call",
+                session_id="s1",
+                user_message="hi",
+                conversation_history=[],
+                is_first_turn=True,
+                model="test",
+            )
+
+        assert results == ["before-result", "after-result"]
+        assert any("raised: boom" in r.getMessage() for r in caplog.records)
 
     def test_hook_return_values_collected(self, tmp_path, monkeypatch):
         """invoke_hook() collects non-None return values from callbacks."""

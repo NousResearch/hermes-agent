@@ -122,6 +122,16 @@ function ConvertTo-LongPath {
     return $Path
 }
 
+foreach ($tmpVar in @('TEMP', 'TMP')) {
+    $current = [Environment]::GetEnvironmentVariable($tmpVar)
+    if ($current) {
+        $expanded = ConvertTo-LongPath $current
+        if ($expanded -and $expanded -ne $current) {
+            Set-Item -Path "Env:$tmpVar" -Value $expanded
+        }
+    }
+}
+
 # ============================================================================
 # Configuration
 # ============================================================================

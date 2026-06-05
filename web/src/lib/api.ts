@@ -645,6 +645,10 @@ export const api = {
 
   // ── Admin: Memory provider ──────────────────────────────────────────
   getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
+  getKnowledgeEntries: () =>
+    fetchJSON<{ entries: KnowledgeEntry[] }>("/api/knowledge"),
+  readKnowledgeEntry: (id: string) =>
+    fetchJSON<KnowledgeReadResponse>(`/api/knowledge/read?id=${encodeURIComponent(id)}`),
   setMemoryProvider: (provider: string) =>
     fetchJSON<{ ok: boolean; active: string }>("/api/memory/provider", {
       method: "PUT",
@@ -904,6 +908,21 @@ export interface MemoryProviderInfo {
   name: string;
   description: string;
   configured: boolean;
+}
+
+export interface KnowledgeEntry {
+  id: string;
+  source: "memory" | "wiki";
+  kind: string;
+  title: string;
+  group: string;
+  path: string;
+  size: number;
+  updated_at?: number | null;
+}
+
+export interface KnowledgeReadResponse extends KnowledgeEntry {
+  content: string;
 }
 
 export interface MemoryStatus {

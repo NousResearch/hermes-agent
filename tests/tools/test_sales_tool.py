@@ -226,3 +226,100 @@ def test_customer_workspace_url_and_email_send(monkeypatch):
     assert sent["to_email"] == "client@example.com"
     assert "https://zeus.kidu.app/w/q-token" in sent["text"]
     assert any("INSERT INTO sales.customer_workspaces" in statement for statement in statements)
+
+
+def test_stripe_checkout_adapter_builds_checkout_session(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return json.dumps({
+                "id": "cs_test_123",
+                "url": "https://checkout.stripe.com/c/pay/cs_test_123",
+                "status": "open",
+                "payment_status": "unpaid",
+                "amount_total": 10440,
+                "currency": "usd",
+            }).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        captured["body"] = request.data.decode()
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(sales_tool.sql, "runtime_env", lambda: {
+        "SALES_PAYMENT_ADAPTER": "stripe_checkout",
+        "STRIPE_SECRET_KEY": "sk_test_fake",
+        "COMMERCE_WORKSPACE_BASE_URL": "https://zeus-sandbox.kidu.app",
+    })
+    monkeypatch.setattr(sales_tool.urllib.request, "urlopen", fake_urlopen)
+
+    result = sales_tool._payment_adapter_request({
+        "payment_request_id": "pay-1",
+        "invoice_id": "invoice-1",
+        "amount": 104.4,
+        "currency": "USD",
+        "description": "Invoice 1",
+        "customer_email": "client@example.com",
+        "metadata": {"workspace_id": "workspace-1"},
+    })
+
+    assert result["ok"] is True
+    assert result["adapter"] == "stripe_checkout"
+    assert result["checkout_session_id"] == "cs_test_123"
+    assert result["payment_url"].startswith("https://checkout.stripe.com/")
+    assert captured["url"] == "https://api.stripe.com/v1/checkout/sessions"
+    assert "mode=payment" in captured["body"]
+    assert "line_items%5B0%5D%5Bprice_data%5D%5Bunit_amount%5D=10440" in captured["body"]
+    assert "customer_email=client%40example.com" in captured["body"]
+    assert captured["headers"]["Authorization"] == "Bearer sk_test_fake"
+
+
+def test_payment_request_can_send_stripe_link_by_whatsapp(monkeypatch):
+    statements = []
+    sends = []
+
+    monkeypatch.setattr(sales_tool.sql, "one", lambda query, **_kwargs: {
+        "invoice_id": "invoice-1",
+        "title": "Invoice 1",
+        "total": 104.4,
+        "currency": "USD",
+        "organization_id": "org-1",
+        "contact_id": "contact-1",
+    } if "FROM sales.invoices" in query else None)
+    monkeypatch.setattr(sales_tool, "_payment_adapter_request", lambda payload: {
+        "ok": True,
+        "adapter": "stripe_checkout",
+        "payment_url": "https://checkout.stripe.com/c/pay/cs_test_123",
+        "checkout_session_id": "cs_test_123",
+    })
+    monkeypatch.setattr(sales_tool.sql, "statement_one", lambda statement, **_kwargs: statements.append(statement) or {
+        "payment_request_id": "pay-1",
+        "payment_url": "https://checkout.stripe.com/c/pay/cs_test_123",
+        "status": "pending",
+    })
+
+    from tools import send_message_tool
+    monkeypatch.setattr(send_message_tool, "send_message_tool", lambda payload: sends.append(payload) or json.dumps({"success": True}))
+
+    payload = json.loads(sales_tool._handle_payment_request_create({
+        "payment_request_id": "pay-1",
+        "invoice_id": "invoice-1",
+        "send_whatsapp": True,
+        "whatsapp_target": "+13059274824",
+        "customer_name": "Client",
+    }))
+
+    assert payload["ok"] is True
+    assert payload["whatsapp"]["success"] is True
+    assert sends[0]["target"] == "whatsapp:+13059274824"
+    assert "https://checkout.stripe.com/c/pay/cs_test_123" in sends[0]["message"]
+    assert any("INSERT INTO sales.payment_requests" in statement for statement in statements)

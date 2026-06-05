@@ -31,6 +31,7 @@ from scripts.runtime.delivery_document_actions import (  # noqa: E402
     OTP_REQUIRED_DOCUMENT_EVENT_TYPES,
 )
 from tools import sales_tool  # noqa: E402
+from hermes_cli.commerce_workspace_surface import reconcile_stripe_webhook_event  # noqa: E402
 
 EVENT_TYPES_WITH_OWNER_ACTION = DOCUMENT_ACTION_EVENT_TYPES | {"change_requested", "payment_failed"}
 SALES_EVENT_TYPES = {"opened", "paid", "payment_started", "cancelled", "expired"} | DOCUMENT_ACTION_EVENT_TYPES
@@ -260,6 +261,19 @@ def _convert_quote_on_approval(workspace: dict[str, Any], event: dict[str, Any])
     return {"order_id": order_id, "invoice_id": invoice_payload.get("invoice", {}).get("invoice_id")}
 
 
+def ingest_stripe_event(event: dict[str, Any]) -> str | None:
+    if event.get("event_type") != "stripe_webhook":
+        return None
+    metadata = _metadata(event)
+    stripe_event = metadata.get("stripe_event") if isinstance(metadata.get("stripe_event"), dict) else None
+    if not stripe_event:
+        return None
+    result = reconcile_stripe_webhook_event(stripe_event)
+    if result.get("status") == "ignored":
+        return "stripe:ignored"
+    return "stripe:ingested" if result.get("ok") else None
+
+
 def ingest_sales_event(event: dict[str, Any], public_root: Path) -> str | None:
     event_type = str(event.get("event_type") or "").strip()
     if event_type not in SALES_EVENT_TYPES:
@@ -358,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
         if since_dt.tzinfo is None:
             since_dt = since_dt.replace(tzinfo=timezone.utc)
 
-    counts: dict[str, int] = {"seen": 0, "sales_ingested": 0, "receipt_ingested": 0, "duplicates": 0, "unmatched": 0, "dry_run": 0}
+    counts: dict[str, int] = {"seen": 0, "sales_ingested": 0, "receipt_ingested": 0, "stripe_ingested": 0, "duplicates": 0, "unmatched": 0, "dry_run": 0}
     for event in load_events(events_path):
         if args.deliverable_id and str(event.get("deliverable_id")) != args.deliverable_id:
             continue
@@ -374,10 +388,14 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"would_process": event.get("event_id"), "event_type": event.get("event_type"), "deliverable_id": event.get("deliverable_id")}, ensure_ascii=False))
             counts["dry_run"] += 1
             continue
-        result = ingest_sales_event(event, public_root)
+        result = ingest_stripe_event(event)
+        if result is None:
+            result = ingest_sales_event(event, public_root)
         if result is None:
             result = ingest_receipt_event(event, public_root)
-        if result == "sales:ingested":
+        if result == "stripe:ingested":
+            counts["stripe_ingested"] += 1
+        elif result == "sales:ingested":
             counts["sales_ingested"] += 1
         elif result == "receipt:ingested":
             counts["receipt_ingested"] += 1

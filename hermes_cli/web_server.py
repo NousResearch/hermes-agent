@@ -5064,6 +5064,174 @@ async def reset_memory(body: MemoryReset):
 
 
 # ---------------------------------------------------------------------------
+# Knowledge viewer endpoints — read-only Memory + ~/wiki browser
+# ---------------------------------------------------------------------------
+
+
+def _display_path(path: Path) -> str:
+    try:
+        home = Path.home().resolve()
+        resolved = path.resolve()
+        if resolved == home:
+            return "~"
+        if home in resolved.parents:
+            return "~/" + str(resolved.relative_to(home))
+    except Exception:
+        pass
+    return str(path)
+
+
+def _knowledge_title_from_markdown(path: Path, fallback: str) -> str:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for _ in range(80):
+                line = fh.readline()
+                if not line:
+                    break
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    return stripped.lstrip("#").strip() or fallback
+    except OSError:
+        pass
+    return fallback
+
+
+def _knowledge_entry(entry_id: str, source: str, kind: str, title: str, group: str, path: Path) -> Dict[str, Any]:
+    try:
+        stat_info = path.stat()
+        size = int(stat_info.st_size)
+        updated_at = float(stat_info.st_mtime)
+    except OSError:
+        size = 0
+        updated_at = None
+    return {
+        "id": entry_id,
+        "source": source,
+        "kind": kind,
+        "title": title,
+        "group": group,
+        "path": _display_path(path),
+        "size": size,
+        "updated_at": updated_at,
+    }
+
+
+def _list_memory_knowledge_entries() -> List[Dict[str, Any]]:
+    from hermes_cli import profiles as profiles_mod
+
+    entries: List[Dict[str, Any]] = []
+
+    def add_profile_files(profile_name: str, mem_dir: Path) -> None:
+        for fname, label in (("MEMORY.md", "Memory"), ("USER.md", "User profile")):
+            path = mem_dir / fname
+            if not path.exists() or not path.is_file():
+                continue
+            title = f"{label} · {profile_name}"
+            entries.append(
+                _knowledge_entry(
+                    f"memory:{profile_name}:{fname}",
+                    "memory",
+                    fname.removesuffix(".md").lower(),
+                    title,
+                    profile_name,
+                    path,
+                )
+            )
+
+    add_profile_files("default", get_hermes_home() / "memories")
+    profiles_root = profiles_mod._get_profiles_root()
+    if profiles_root.is_dir():
+        for profile_dir in sorted(profiles_root.iterdir()):
+            if not profile_dir.is_dir() or not profiles_mod._PROFILE_ID_RE.match(profile_dir.name):
+                continue
+            add_profile_files(profile_dir.name, profile_dir / "memories")
+    return entries
+
+
+def _list_wiki_knowledge_entries() -> List[Dict[str, Any]]:
+    wiki_root = Path.home() / "wiki"
+    if not wiki_root.is_dir():
+        return []
+    entries: List[Dict[str, Any]] = []
+    for path in sorted(wiki_root.rglob("*.md")):
+        if any(part.startswith(".") for part in path.relative_to(wiki_root).parts):
+            continue
+        rel = path.relative_to(wiki_root).as_posix()
+        fallback = path.stem.replace("-", " ").replace("_", " ").title()
+        group = rel.split("/", 1)[0] if "/" in rel else "wiki"
+        entries.append(
+            _knowledge_entry(
+                f"wiki:{rel}",
+                "wiki",
+                "markdown",
+                _knowledge_title_from_markdown(path, fallback),
+                group,
+                path,
+            )
+        )
+    return entries[:750]
+
+
+def _resolve_knowledge_id(entry_id: str) -> Tuple[Dict[str, Any], Path]:
+    from hermes_cli import profiles as profiles_mod
+
+    if entry_id.startswith("memory:"):
+        parts = entry_id.split(":", 2)
+        if len(parts) != 3:
+            raise HTTPException(status_code=400, detail="Invalid memory entry id")
+        _source, profile_name, fname = parts
+        if fname not in {"MEMORY.md", "USER.md"}:
+            raise HTTPException(status_code=400, detail="Invalid memory file")
+        if profile_name == "default":
+            path = get_hermes_home() / "memories" / fname
+        else:
+            try:
+                profiles_mod.validate_profile_name(profile_name)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            path = profiles_mod.get_profile_dir(profile_name) / "memories" / fname
+        if not path.exists() or not path.is_file():
+            raise HTTPException(status_code=404, detail="Memory document not found")
+        kind = fname.removesuffix(".md").lower()
+        label = "Memory" if fname == "MEMORY.md" else "User profile"
+        return _knowledge_entry(entry_id, "memory", kind, f"{label} · {profile_name}", profile_name, path), path
+
+    if entry_id.startswith("wiki:"):
+        rel_raw = entry_id.removeprefix("wiki:")
+        wiki_root = (Path.home() / "wiki").resolve()
+        target = (wiki_root / rel_raw).resolve()
+        try:
+            rel = target.relative_to(wiki_root)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid wiki path")
+        if target.suffix.lower() != ".md" or not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail="Wiki document not found")
+        rel_posix = rel.as_posix()
+        group = rel_posix.split("/", 1)[0] if "/" in rel_posix else "wiki"
+        fallback = target.stem.replace("-", " ").replace("_", " ").title()
+        return _knowledge_entry(entry_id, "wiki", "markdown", _knowledge_title_from_markdown(target, fallback), group, target), target
+
+    raise HTTPException(status_code=400, detail="Unknown knowledge entry id")
+
+
+@app.get("/api/knowledge")
+async def list_knowledge_entries():
+    entries = _list_memory_knowledge_entries() + _list_wiki_knowledge_entries()
+    entries.sort(key=lambda item: (item.get("source") != "memory", str(item.get("group", "")), str(item.get("title", ""))))
+    return {"entries": entries}
+
+
+@app.get("/api/knowledge/read")
+async def read_knowledge_entry(id: str):
+    meta, path = _resolve_knowledge_id(id)
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read document: {exc}")
+    return {**meta, "content": content}
+
+
+# ---------------------------------------------------------------------------
 # Operations endpoints — doctor / security audit / backup / import /
 # checkpoints / hooks.
 #

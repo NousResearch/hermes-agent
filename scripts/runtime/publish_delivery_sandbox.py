@@ -134,6 +134,8 @@ ALLOWED_HOSTS = {
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 OTP_RE = re.compile(r"^\d{6}$")
 VAPI_SERVER_AUTH_TOKEN = os.environ.get("VAPI_SERVER_AUTH_TOKEN", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_SIGNATURE_TOLERANCE_SECONDS = int(os.environ.get("STRIPE_SIGNATURE_TOLERANCE_SECONDS", "300"))
 VAPI_ALLOWED_TOOL_NAMES = {
     "capture_voice_lead",
     "schedule_followup",
@@ -663,6 +665,81 @@ def _vapi_authorized(handler: BaseHTTPRequestHandler) -> bool:
     return hmac.compare_digest(_bearer_token(handler), VAPI_SERVER_AUTH_TOKEN)
 
 
+def _parse_stripe_signature(signature_header: str) -> dict[str, list[str]]:
+    parts: dict[str, list[str]] = {}
+    for item in signature_header.split(","):
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        parts.setdefault(key.strip(), []).append(value.strip())
+    return parts
+
+
+def _stripe_signature_valid(raw_body: bytes, signature_header: str) -> bool:
+    if not STRIPE_WEBHOOK_SECRET or not signature_header:
+        return False
+    parts = _parse_stripe_signature(signature_header)
+    try:
+        timestamp = int((parts.get("t") or [""])[0])
+    except ValueError:
+        return False
+    if STRIPE_SIGNATURE_TOLERANCE_SECONDS and abs(_now() - timestamp) > STRIPE_SIGNATURE_TOLERANCE_SECONDS:
+        return False
+    signed_payload = str(timestamp).encode("utf-8") + b"." + raw_body
+    expected = hmac.new(STRIPE_WEBHOOK_SECRET.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+    return any(hmac.compare_digest(expected, candidate) for candidate in parts.get("v1", []))
+
+
+def _stripe_event_identity(event: dict[str, Any]) -> tuple[str, str, str]:
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    obj = data.get("object") if isinstance(data.get("object"), dict) else {}
+    metadata = obj.get("metadata") if isinstance(obj.get("metadata"), dict) else {}
+    payment_intent = obj.get("payment_intent") if isinstance(obj.get("payment_intent"), dict) else {}
+    pi_metadata = payment_intent.get("metadata") if isinstance(payment_intent.get("metadata"), dict) else {}
+    merged_metadata = {**pi_metadata, **metadata}
+    invoice_id = str(merged_metadata.get("invoice_id") or "").strip()
+    payment_request_id = str(merged_metadata.get("payment_request_id") or obj.get("client_reference_id") or "").strip()
+    session_id = str(obj.get("id") or "").strip() if obj.get("object") == "checkout.session" else ""
+    return invoice_id, payment_request_id, session_id
+
+
+def _handle_stripe_webhook(handler: BaseHTTPRequestHandler) -> None:
+    if not STRIPE_WEBHOOK_SECRET:
+        _json_response(handler, 503, {"ok": False, "error": "stripe_webhook_secret_missing"})
+        return
+    raw_body = _read_body(handler)
+    if not _stripe_signature_valid(raw_body, handler.headers.get("Stripe-Signature", "")):
+        _json_response(handler, 400, {"ok": False, "error": "invalid_stripe_signature"})
+        return
+    try:
+        event = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        _json_response(handler, 400, {"ok": False, "error": "invalid_json"})
+        return
+    if not isinstance(event, dict):
+        _json_response(handler, 400, {"ok": False, "error": "invalid_event"})
+        return
+    invoice_id, payment_request_id, session_id = _stripe_event_identity(event)
+    _audit({
+        "event_type": "stripe_webhook",
+        "deliverable_id": invoice_id or payment_request_id or session_id or str(event.get("id") or "stripe_event"),
+        "actor_type": "stripe",
+        "actor_ref": event.get("id"),
+        "ip_address": handler.client_address[0] if handler.client_address else None,
+        "user_agent": handler.headers.get("User-Agent"),
+        "metadata": {
+            "invoice_id": invoice_id,
+            "payment_request_id": payment_request_id,
+            "checkout_session_id": session_id,
+            "stripe_event_id": event.get("id"),
+            "stripe_event_type": event.get("type"),
+            "stripe_event": event,
+        },
+        "status": "pending_agent_ingest",
+    })
+    _json_response(handler, 200, {"ok": True, "status": "queued", "event_type": event.get("type"), "invoice_id": invoice_id, "payment_request_id": payment_request_id})
+
+
 def _read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     payload = json.loads(_read_body(handler).decode("utf-8"))
     if not isinstance(payload, dict):
@@ -1012,6 +1089,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path in {"/api/payments/stripe/webhook", "/payments/stripe/webhook", "/stripe/webhook"}:
+            try:
+                _handle_stripe_webhook(self)
+            except ValueError as exc:
+                _json_response(self, 413, {"ok": False, "error": str(exc)})
+            except Exception:
+                _json_response(self, 500, {"ok": False, "error": "stripe_webhook_failed"})
+            return
         if path in {"/api/voice/vapi/tools", "/voice/vapi/tools"}:
             try:
                 _handle_vapi_tools(self)
@@ -1177,6 +1262,8 @@ def compose(agent_id: str, agent_name: str, bind_ip: str, public_port: int, even
       VAPI_SERVER_AUTH_TOKEN: "${{VAPI_SERVER_AUTH_TOKEN:-}}"
     env_file:
       - path: ./vapi-public.env
+        required: false
+      - path: ./stripe-public.env
         required: false
     ports:
       - "{bind_ip}:{event_port}:8080"

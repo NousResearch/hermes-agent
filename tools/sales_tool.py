@@ -10,6 +10,9 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Any
 
 from hermes_cli import agent_core_sql as sql
@@ -115,6 +118,126 @@ def _workspace_url(public_token: str) -> str:
     return f"{_workspace_base_url()}/w/{public_token}"
 
 
+def _minor_units(amount: Any, currency: str) -> int:
+    """Return Stripe minor units for an amount/currency pair."""
+    zero_decimal = {
+        "bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga",
+        "pyg", "rwf", "ugx", "vnd", "vuv", "xaf", "xof", "xpf",
+    }
+    value = float(amount or 0)
+    if value <= 0:
+        raise ValueError("Stripe payment amount must be greater than zero")
+    multiplier = 1 if str(currency or "").lower() in zero_decimal else 100
+    return int(round(value * multiplier))
+
+
+def _stripe_env() -> dict[str, str]:
+    env = sql.runtime_env()
+    return {
+        "secret_key": env.get("STRIPE_SECRET_KEY") or os.getenv("STRIPE_SECRET_KEY") or "",
+        "success_url": env.get("STRIPE_SUCCESS_URL") or os.getenv("STRIPE_SUCCESS_URL") or "",
+        "cancel_url": env.get("STRIPE_CANCEL_URL") or os.getenv("STRIPE_CANCEL_URL") or "",
+        "api_version": env.get("STRIPE_API_VERSION") or os.getenv("STRIPE_API_VERSION") or "",
+    }
+
+
+def _stripe_checkout_request(payload: dict[str, Any]) -> dict[str, Any]:
+    """Create a Stripe-hosted Checkout Session for an invoice payment."""
+    cfg = _stripe_env()
+    secret_key = cfg["secret_key"].strip()
+    if not secret_key:
+        return {
+            "ok": False,
+            "configured": False,
+            "status": "unavailable",
+            "adapter": "stripe_checkout",
+            "error": "Stripe Checkout is selected but STRIPE_SECRET_KEY is missing from Infisical/runtime env.",
+        }
+
+    invoice_id = str(payload.get("invoice_id") or "").strip()
+    request_id = str(payload.get("payment_request_id") or "").strip()
+    currency = str(payload.get("currency") or "USD").lower()
+    description = str(payload.get("description") or f"Factura {invoice_id or request_id or 'SitioUno'}").strip()
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    workspace_url = str(metadata.get("workspace_url") or payload.get("workspace_url") or "").strip()
+    success_url = str(payload.get("success_url") or cfg["success_url"] or "").strip()
+    cancel_url = str(payload.get("cancel_url") or cfg["cancel_url"] or workspace_url or "").strip()
+    if not success_url:
+        success_url = f"{_workspace_base_url()}/payments/stripe/success?session_id={{CHECKOUT_SESSION_ID}}"
+    if not cancel_url:
+        cancel_url = _workspace_base_url()
+
+    stripe_metadata = {
+        "payment_request_id": request_id,
+        "invoice_id": invoice_id,
+        "source": "sitiouno_sales_core",
+    }
+    for key, value in metadata.items():
+        if value is None or isinstance(value, (dict, list)):
+            continue
+        key_s = str(key)[:40]
+        stripe_metadata.setdefault(key_s, str(value)[:500])
+
+    form: dict[str, Any] = {
+        "mode": "payment",
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "client_reference_id": request_id or invoice_id,
+        "line_items[0][quantity]": "1",
+        "line_items[0][price_data][currency]": currency,
+        "line_items[0][price_data][unit_amount]": str(_minor_units(payload.get("amount"), currency)),
+        "line_items[0][price_data][product_data][name]": description[:250],
+        "payment_intent_data[metadata][payment_request_id]": request_id,
+        "payment_intent_data[metadata][invoice_id]": invoice_id,
+    }
+    customer_email = str(payload.get("customer_email") or "").strip()
+    if customer_email:
+        form["customer_email"] = customer_email
+    for key, value in stripe_metadata.items():
+        if value:
+            form[f"metadata[{key}]"] = value
+
+    request = urllib.request.Request(
+        "https://api.stripe.com/v1/checkout/sessions",
+        data=urllib.parse.urlencode(form).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer " + secret_key,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "sitiouno-sales-core-stripe/1.0",
+        },
+        method="POST",
+    )
+    if cfg["api_version"].strip():
+        request.add_header("Stripe-Version", cfg["api_version"].strip())
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            session = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:2000]
+        return {
+            "ok": False,
+            "configured": True,
+            "status": "error",
+            "adapter": "stripe_checkout",
+            "http_status": exc.code,
+            "error": body,
+        }
+
+    return {
+        "ok": True,
+        "configured": True,
+        "status": "pending",
+        "adapter": "stripe_checkout",
+        "checkout_session_id": session.get("id"),
+        "payment_url": session.get("url"),
+        "stripe_status": session.get("status"),
+        "payment_status": session.get("payment_status"),
+        "amount_total": session.get("amount_total"),
+        "currency": session.get("currency"),
+        "expires_at": session.get("expires_at"),
+    }
+
+
 def _payment_adapter_request(payload: dict[str, Any]) -> dict[str, Any]:
     env = sql.runtime_env()
     adapter = (
@@ -131,12 +254,14 @@ def _payment_adapter_request(payload: dict[str, Any]) -> dict[str, Any]:
             "status": "unavailable",
             "error": "Payment adapter is not configured. Set PAYMENT_ADAPTER or SALES_PAYMENT_ADAPTER via Infisical/runtime env.",
         }
+    if adapter.lower() in {"stripe", "stripe_checkout", "stripe-checkout", "checkout"}:
+        return _stripe_checkout_request(payload)
     return {
         "ok": False,
         "configured": True,
         "status": "unsupported",
         "adapter": adapter,
-        "error": f"Payment adapter {adapter!r} is declared but not implemented in Sales Core Sprint 1.",
+        "error": f"Payment adapter {adapter!r} is declared but not implemented. Supported adapter: stripe_checkout.",
         "request": payload,
     }
 
@@ -346,21 +471,59 @@ def _handle_customer_workspace_create(args: dict, **_kwargs) -> str:
 
 
 
+def _send_payment_link_whatsapp(args: dict[str, Any], payment_url: str, invoice: dict[str, Any] | None, amount: Any, currency: str) -> dict[str, Any] | None:
+    if not args.get("send_whatsapp"):
+        return None
+    target = str(args.get("whatsapp_target") or "").strip()
+    if not target:
+        raise ValueError("whatsapp_target is required when send_whatsapp=true")
+    if not target.startswith("whatsapp"):
+        target = f"whatsapp:{target}"
+    message = args.get("whatsapp_message") or (
+        f"Hola {args.get('customer_name') or ''}. "
+        f"Tu link de pago para la factura {args.get('invoice_id') or (invoice or {}).get('invoice_id') or ''} "
+        f"por {currency} {float(amount or 0):,.2f} está listo: {payment_url}"
+    ).strip()
+    from tools.send_message_tool import send_message_tool
+    raw = send_message_tool({"action": "send", "target": target, "message": message})
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"raw": raw}
+
+
 def _handle_payment_request_create(args: dict, **_kwargs) -> str:
     try:
         invoice = sql.one(f"SELECT * FROM sales.invoices WHERE invoice_id={_q(args.get('invoice_id'))}", user=_user()) if args.get("invoice_id") else None
         amount = args.get("amount", (invoice or {}).get("total", 0))
         currency = args.get("currency") or (invoice or {}).get("currency") or "USD"
         request_id = args.get("payment_request_id") or _slug("sales-pay", f"{args.get('invoice_id') or args.get('organization_id') or ''}-{amount}-{currency}")
-        adapter_result = _payment_adapter_request({"invoice_id": args.get("invoice_id"), "amount": amount, "currency": currency, "metadata": args.get("metadata") or {}})
+        metadata = args.get("metadata") or {}
+        adapter_result = _payment_adapter_request({
+            "payment_request_id": request_id,
+            "invoice_id": args.get("invoice_id"),
+            "amount": amount,
+            "currency": currency,
+            "description": args.get("payment_description") or (invoice or {}).get("title"),
+            "customer_email": args.get("customer_email"),
+            "success_url": args.get("success_url"),
+            "cancel_url": args.get("cancel_url"),
+            "workspace_url": args.get("workspace_url"),
+            "metadata": metadata,
+        })
         status = "pending" if adapter_result.get("ok") else "unavailable"
+        whatsapp_result = None
+        if adapter_result.get("payment_url"):
+            whatsapp_result = _send_payment_link_whatsapp(args, adapter_result["payment_url"], invoice, amount, currency)
+            if whatsapp_result is not None:
+                adapter_result = {**adapter_result, "whatsapp": whatsapp_result}
         row = sql.statement_one(f"""
           INSERT INTO sales.payment_requests (payment_request_id, invoice_id, organization_id, contact_id, amount, currency, status, adapter, payment_url, adapter_response, metadata, created_at, updated_at)
-          VALUES ({_q(request_id)}, {_q(args.get('invoice_id'))}, {_q(args.get('organization_id') or (invoice or {}).get('organization_id'))}, {_q(args.get('contact_id') or (invoice or {}).get('contact_id'))}, {_num(amount, '0')}, {_q(currency)}, {_q(args.get('status') or status)}, {_q(adapter_result.get('adapter'))}, {_q(adapter_result.get('payment_url'))}, {_j(adapter_result)}, {_j(args.get('metadata') or {})}, now(), now())
+          VALUES ({_q(request_id)}, {_q(args.get('invoice_id'))}, {_q(args.get('organization_id') or (invoice or {}).get('organization_id'))}, {_q(args.get('contact_id') or (invoice or {}).get('contact_id'))}, {_num(amount, '0')}, {_q(currency)}, {_q(args.get('status') or status)}, {_q(adapter_result.get('adapter'))}, {_q(adapter_result.get('payment_url'))}, {_j(adapter_result)}, {_j(metadata)}, now(), now())
           ON CONFLICT (payment_request_id) DO UPDATE SET invoice_id=EXCLUDED.invoice_id, organization_id=EXCLUDED.organization_id, contact_id=EXCLUDED.contact_id, amount=EXCLUDED.amount, currency=EXCLUDED.currency, status=EXCLUDED.status, adapter=EXCLUDED.adapter, payment_url=EXCLUDED.payment_url, adapter_response=EXCLUDED.adapter_response, metadata=EXCLUDED.metadata, updated_at=now()
           RETURNING *
         """, user=_user())
-        return _ok(payment_request=row, adapter_result=adapter_result)
+        return _ok(payment_request=row, adapter_result=adapter_result, whatsapp=whatsapp_result)
     except Exception as exc:
         return _err(exc)
 
@@ -400,5 +563,5 @@ registry.register(name="sales_inventory_adjust", toolset="sales", schema=_schema
 registry.register(name="sales_quote_create", toolset="sales", schema=_schema("sales_quote_create", "Create or replace an operational quote with line items and computed totals.", {"quote_id": {"type": "string"}, **_COMMON_ENTITY_PROPS, "title": {"type": "string"}, "status": {"type": "string"}, "valid_until": {"type": "string"}, "currency": {"type": "string"}, "items": {"type": "array", "items": {"type": "object"}}, **_meta_props()}, ["title"]), handler=_handle_quote_create, check_fn=_check_sales, emoji="🧾")
 registry.register(name="sales_order_create", toolset="sales", schema=_schema("sales_order_create", "Create or update an operational order, optionally from a Sales Core quote.", {"order_id": {"type": "string"}, "quote_id": {"type": "string"}, **_COMMON_ENTITY_PROPS, "title": {"type": "string"}, "status": {"type": "string"}, "currency": {"type": "string"}, "items": {"type": "array", "items": {"type": "object"}}, **_meta_props()}), handler=_handle_order_create, check_fn=_check_sales, emoji="🧾")
 registry.register(name="sales_invoice_create", toolset="sales", schema=_schema("sales_invoice_create", "Create or update an operational invoice, optionally from an order. Not fiscal unless an adapter is configured.", {"invoice_id": {"type": "string"}, "order_id": {"type": "string"}, **_COMMON_ENTITY_PROPS, "title": {"type": "string"}, "status": {"type": "string"}, "issue_date": {"type": "string"}, "due_date": {"type": "string"}, "currency": {"type": "string"}, "subtotal": {"type": "number"}, "discount_amount": {"type": "number"}, "tax_amount": {"type": "number"}, "total": {"type": "number"}, **_meta_props()}), handler=_handle_invoice_create, check_fn=_check_sales, emoji="🧾")
-registry.register(name="sales_payment_request_create", toolset="sales", schema=_schema("sales_payment_request_create", "Create a payment request for an invoice. Returns graceful unavailable status if no payment adapter is configured.", {"payment_request_id": {"type": "string"}, "invoice_id": {"type": "string"}, "organization_id": {"type": "string"}, "contact_id": {"type": "string"}, "amount": {"type": "number"}, "currency": {"type": "string"}, "status": {"type": "string"}, **_meta_props()}), handler=_handle_payment_request_create, check_fn=_check_sales, emoji="🧾")
+registry.register(name="sales_payment_request_create", toolset="sales", schema=_schema("sales_payment_request_create", "Create a payment request for an invoice. With SALES_PAYMENT_ADAPTER=stripe_checkout it creates a Stripe Checkout URL and can send it by WhatsApp.", {"payment_request_id": {"type": "string"}, "invoice_id": {"type": "string"}, "organization_id": {"type": "string"}, "contact_id": {"type": "string"}, "amount": {"type": "number"}, "currency": {"type": "string"}, "status": {"type": "string"}, "customer_email": {"type": "string"}, "customer_name": {"type": "string"}, "payment_description": {"type": "string"}, "workspace_url": {"type": "string"}, "success_url": {"type": "string"}, "cancel_url": {"type": "string"}, "send_whatsapp": {"type": "boolean"}, "whatsapp_target": {"type": "string", "description": "WhatsApp target, e.g. whatsapp:+130****1212 or +130****1212"}, "whatsapp_message": {"type": "string"}, **_meta_props()}), handler=_handle_payment_request_create, check_fn=_check_sales, emoji="🧾")
 registry.register(name="sales_customer_workspace_create", toolset="sales", schema=_schema("sales_customer_workspace_create", "Create a customer-facing workspace URL for a quote, catalog, or invoice. Optionally send it by email via the generic notification adapter.", {"workspace_id": {"type": "string"}, "document_type": {"type": "string", "enum": ["quote", "catalog", "invoice"]}, "document_id": {"type": "string"}, "customer_email": {"type": "string"}, "customer_name": {"type": "string"}, "public_url": {"type": "string"}, "public_token": {"type": "string"}, "status": {"type": "string"}, "expires_at": {"type": "string"}, "send_email": {"type": "boolean"}, "email_subject": {"type": "string"}, "email_text": {"type": "string"}, "email_html": {"type": "string"}, **_meta_props()}, ["document_type", "document_id"]), handler=_handle_customer_workspace_create, check_fn=_check_sales, emoji="🧾")

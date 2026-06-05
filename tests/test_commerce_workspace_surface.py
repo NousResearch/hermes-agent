@@ -1,6 +1,11 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import hashlib
+import hmac
+import json
+import time
+
 from hermes_cli import commerce_workspace_surface as surface
 
 
@@ -179,6 +184,151 @@ def test_workspace_actions_use_stored_customer_identity_and_no_email_fields(monk
     assert "Rechazar" in html
     assert "button approve" in html
     assert "button reject" in html
+
+
+def test_invoice_workspace_renders_stripe_payment_button(monkeypatch):
+    statements = []
+
+    def fake_one(query, **_kwargs):
+        if "FROM sales.customer_workspaces" in query:
+            return {
+                "workspace_id": "workspace-invoice-1",
+                "document_type": "invoice",
+                "document_id": "invoice-1",
+                "customer_name": "Client Name",
+                "customer_email": "client@example.com",
+                "status": "viewed",
+            }
+        if "FROM sales.invoices" in query:
+            return {
+                "invoice_id": "invoice-1",
+                "title": "Invoice build",
+                "currency": "USD",
+                "total": 104.4,
+                "status": "sent",
+            }
+        if "FROM sales.payment_requests" in query:
+            return {
+                "payment_request_id": "pay-1",
+                "invoice_id": "invoice-1",
+                "payment_url": "https://checkout.stripe.com/c/pay/cs_test_123",
+                "status": "pending",
+            }
+        return None
+
+    def fake_rows(query, **_kwargs):
+        if "FROM sales.invoice_items" in query:
+            return [{"description": "Design", "quantity": 1, "unit_price": 104.4, "line_total": 104.4}]
+        if "FROM sales.customer_workspace_events" in query:
+            return []
+        return []
+
+    monkeypatch.setattr(surface.sql, "one", fake_one)
+    monkeypatch.setattr(surface.sql, "rows", fake_rows)
+    monkeypatch.setattr(surface.sql, "statement_one", lambda statement, **_kwargs: statements.append(statement) or {})
+
+    html = surface.render_workspace_html("token-1")
+
+    assert "Pagar factura con Stripe" in html
+    assert "https://checkout.stripe.com/c/pay/cs_test_123" in html
+    assert "Pagar ahora" in html
+    assert any("opened" in statement for statement in statements)
+
+
+def test_stripe_success_and_cancel_routes_render():
+    app = FastAPI()
+    app.include_router(surface.router)
+    client = TestClient(app)
+
+    success = client.get("/payments/stripe/success?session_id=cs_test_123")
+    cancel = client.get("/payments/stripe/cancel")
+
+    assert success.status_code == 200
+    assert "Pago recibido" in success.text
+    assert "cs_test_123" in success.text
+    assert cancel.status_code == 200
+    assert "Pago pendiente" in cancel.text
+
+
+def test_stripe_webhook_reconciles_checkout_completed(monkeypatch):
+    app = FastAPI()
+    app.include_router(surface.router)
+    client = TestClient(app)
+    statements = []
+    rows_queries = []
+    events = []
+
+    monkeypatch.setattr(surface.sql, "runtime_env", lambda: {"STRIPE_WEBHOOK_SECRET": "whsec_test"})
+
+    def fake_statement_one(statement, **_kwargs):
+        statements.append(statement)
+        if "UPDATE sales.payment_requests" in statement:
+            return {"payment_request_id": "pay-1", "invoice_id": "invoice-1", "status": "paid"}
+        if "UPDATE sales.invoices" in statement:
+            return {"invoice_id": "invoice-1", "status": "paid"}
+        if "INSERT INTO sales.customer_workspace_events" in statement:
+            events.append(statement)
+            return {"workspace_event_id": 1}
+        return {}
+
+    def fake_rows(query, **_kwargs):
+        rows_queries.append(query)
+        if "UPDATE sales.customer_workspaces" in query:
+            return [{"workspace_id": "workspace-invoice-1", "document_id": "invoice-1"}]
+        return []
+
+    monkeypatch.setattr(surface.sql, "statement_one", fake_statement_one)
+    monkeypatch.setattr(surface.sql, "rows", fake_rows)
+
+    payload = {
+        "id": "evt_test_123",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_test_123",
+                "object": "checkout.session",
+                "client_reference_id": "pay-1",
+                "metadata": {"payment_request_id": "pay-1", "invoice_id": "invoice-1"},
+                "payment_status": "paid",
+            }
+        },
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    timestamp = int(time.time())
+    signature = hmac.new(b"whsec_test", str(timestamp).encode() + b"." + raw, hashlib.sha256).hexdigest()
+
+    response = client.post(
+        "/api/payments/stripe/webhook",
+        content=raw,
+        headers={"stripe-signature": f"t={timestamp},v1={signature}", "content-type": "application/json"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "paid"
+    assert body["invoice_status"] == "paid"
+    assert body["workspace_count"] == 1
+    assert any("UPDATE sales.payment_requests" in statement and "paid" in statement for statement in statements)
+    assert any("UPDATE sales.invoices" in statement and "paid" in statement for statement in statements)
+    assert any("UPDATE sales.customer_workspaces" in query and "paid" in query for query in rows_queries)
+    assert any("paid" in statement and "evt_test_123" in statement for statement in events)
+
+
+def test_stripe_webhook_rejects_invalid_signature(monkeypatch):
+    app = FastAPI()
+    app.include_router(surface.router)
+    client = TestClient(app)
+
+    monkeypatch.setattr(surface.sql, "runtime_env", lambda: {"STRIPE_WEBHOOK_SECRET": "whsec_test"})
+
+    response = client.post(
+        "/api/payments/stripe/webhook",
+        content=b'{"id":"evt_bad","type":"checkout.session.completed"}',
+        headers={"stripe-signature": "t=123,v1=bad"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_stripe_signature"
 
 
 def test_comment_reject_and_approve_use_workspace_customer_and_create_agent_followups(monkeypatch):

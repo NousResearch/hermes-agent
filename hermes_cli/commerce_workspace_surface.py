@@ -7,13 +7,16 @@ that token.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import html
 import json
 import os
+import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from hermes_cli import agent_core_sql as sql
 from tools import sales_tool
@@ -43,6 +46,167 @@ def _money(value: Any, currency: str = "USD") -> str:
 
 def _e(value: Any) -> str:
     return html.escape(str(value or ""), quote=True)
+
+
+def _stripe_webhook_secret() -> str:
+    env = sql.runtime_env()
+    return env.get("STRIPE_WEBHOOK_SECRET") or os.getenv("STRIPE_WEBHOOK_SECRET") or ""
+
+
+def _verify_stripe_signature(raw_body: bytes, signature_header: str, endpoint_secret: str, tolerance: int = 300) -> bool:
+    """Verify Stripe-Signature using Stripe's t.payload HMAC-SHA256 scheme."""
+    if not endpoint_secret or not signature_header:
+        return False
+    parts: dict[str, list[str]] = {}
+    for item in signature_header.split(","):
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        parts.setdefault(key.strip(), []).append(value.strip())
+    try:
+        timestamp = int((parts.get("t") or [""])[0])
+    except ValueError:
+        return False
+    if tolerance and abs(time.time() - timestamp) > tolerance:
+        return False
+    signed_payload = str(timestamp).encode("utf-8") + b"." + raw_body
+    expected = hmac.new(endpoint_secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+    return any(hmac.compare_digest(expected, candidate) for candidate in parts.get("v1", []))
+
+
+def _stripe_object_metadata(obj: dict[str, Any]) -> dict[str, Any]:
+    raw_metadata = obj.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+    raw_payment_intent = obj.get("payment_intent")
+    payment_intent = raw_payment_intent if isinstance(raw_payment_intent, dict) else {}
+    raw_pi_metadata = payment_intent.get("metadata")
+    pi_metadata = raw_pi_metadata if isinstance(raw_pi_metadata, dict) else {}
+    return {**pi_metadata, **metadata}
+
+
+def _stripe_payment_identity(event: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    obj = (event.get("data") or {}).get("object") if isinstance(event.get("data"), dict) else {}
+    obj = obj if isinstance(obj, dict) else {}
+    metadata = _stripe_object_metadata(obj)
+    session_id = obj.get("id") if obj.get("object") == "checkout.session" else None
+    payment_request_id = metadata.get("payment_request_id") or obj.get("client_reference_id")
+    invoice_id = metadata.get("invoice_id")
+    return (
+        str(payment_request_id) if payment_request_id else None,
+        str(invoice_id) if invoice_id else None,
+        str(session_id) if session_id else None,
+    )
+
+
+def reconcile_stripe_webhook_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Apply Stripe payment status to Sales Core rows idempotently."""
+    event_type = str(event.get("type") or "")
+    event_id = str(event.get("id") or "")
+    payment_request_id, invoice_id, checkout_session_id = _stripe_payment_identity(event)
+    if not (payment_request_id or invoice_id or checkout_session_id):
+        return {"ok": True, "status": "ignored", "reason": "missing_sales_metadata", "event_type": event_type}
+
+    paid_events = {"checkout.session.completed", "checkout.session.async_payment_succeeded", "payment_intent.succeeded"}
+    failed_events = {"checkout.session.async_payment_failed", "payment_intent.payment_failed"}
+    expired_events = {"checkout.session.expired"}
+    if event_type in paid_events:
+        payment_status = "paid"
+        invoice_status = "paid"
+        workspace_status = "paid"
+        workspace_event_type = "paid"
+    elif event_type in failed_events:
+        payment_status = "failed"
+        invoice_status = None
+        workspace_status = None
+        workspace_event_type = "payment_failed"
+    elif event_type in expired_events:
+        payment_status = "expired"
+        invoice_status = None
+        workspace_status = None
+        workspace_event_type = "payment_failed"
+    else:
+        return {"ok": True, "status": "ignored", "event_type": event_type}
+
+    response_patch = {
+        "stripe_webhook_event_id": event_id,
+        "stripe_webhook_event_type": event_type,
+        "stripe_webhook_received_at": int(time.time()),
+    }
+    where_parts = []
+    if payment_request_id:
+        where_parts.append(f"payment_request_id={_q(payment_request_id)}")
+    if invoice_id:
+        where_parts.append(f"invoice_id={_q(invoice_id)}")
+    if checkout_session_id:
+        where_parts.append(f"adapter_response->>'checkout_session_id'={_q(checkout_session_id)}")
+    payment_request = sql.statement_one(
+        f"""
+        UPDATE sales.payment_requests
+        SET status={_q(payment_status)},
+            adapter_response=COALESCE(adapter_response, '{{}}'::jsonb) || {_j(response_patch)},
+            updated_at=now()
+        WHERE {' OR '.join(where_parts)}
+        RETURNING *
+        """,
+        user=_user(),
+    )
+    if payment_request and not invoice_id:
+        invoice_id = payment_request.get("invoice_id")
+
+    invoice = None
+    if invoice_id and invoice_status:
+        invoice = sql.statement_one(
+            f"""
+            UPDATE sales.invoices
+            SET status={_q(invoice_status)},
+                metadata=COALESCE(metadata, '{{}}'::jsonb) || {_j({'stripe_webhook_event_id': event_id, 'paid_via': 'stripe_checkout'})},
+                updated_at=now()
+            WHERE invoice_id={_q(invoice_id)}
+            RETURNING *
+            """,
+            user=_user(),
+        )
+
+    workspaces = []
+    if invoice_id:
+        if workspace_status:
+            workspaces = sql.rows(
+                f"""
+                UPDATE sales.customer_workspaces
+                SET status={_q(workspace_status)}, updated_at=now()
+                WHERE document_type='invoice' AND document_id={_q(invoice_id)}
+                RETURNING *
+                """,
+                user=_user(),
+            )
+        else:
+            workspaces = sql.rows(
+                f"SELECT * FROM sales.customer_workspaces WHERE document_type='invoice' AND document_id={_q(invoice_id)}",
+                user=_user(),
+            )
+        for workspace in workspaces:
+            _record_event(
+                workspace["workspace_id"],
+                workspace_event_type,
+                actor_type="stripe",
+                actor_ref=event_id,
+                metadata={
+                    "invoice_id": invoice_id,
+                    "payment_request_id": payment_request_id or (payment_request or {}).get("payment_request_id"),
+                    "checkout_session_id": checkout_session_id,
+                    "stripe_event_type": event_type,
+                },
+            )
+
+    return {
+        "ok": True,
+        "status": payment_status,
+        "event_type": event_type,
+        "payment_request_id": (payment_request or {}).get("payment_request_id") or payment_request_id,
+        "invoice_id": invoice_id,
+        "invoice_status": (invoice or {}).get("status"),
+        "workspace_count": len(workspaces),
+    }
 
 
 def _get_workspace(public_token: str) -> dict[str, Any]:
@@ -287,6 +451,23 @@ def _set_workspace_status(workspace_id: str, status: str) -> dict[str, Any] | No
     )
 
 
+def _payment_request_for_workspace(workspace: dict[str, Any]) -> dict[str, Any] | None:
+    if workspace.get("document_type") != "invoice":
+        return None
+    return sql.one(
+        f"""
+        SELECT *
+        FROM sales.payment_requests
+        WHERE invoice_id={_q(workspace.get('document_id'))}
+          AND payment_url IS NOT NULL
+          AND status IN ('pending', 'sent')
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 1
+        """,
+        user=_user(),
+    )
+
+
 def _document_for_workspace(workspace: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     document_type = workspace.get("document_type")
     document_id = workspace.get("document_id")
@@ -361,6 +542,7 @@ def _events_html(events: list[dict[str, Any]]) -> str:
 def render_workspace_html(public_token: str, banner: str | None = None) -> str:
     workspace = _get_workspace(public_token)
     document, items = _document_for_workspace(workspace)
+    payment_request = _payment_request_for_workspace(workspace)
     events = _workspace_events(workspace["workspace_id"])
     _mark_opened(workspace)
 
@@ -373,6 +555,15 @@ def render_workspace_html(public_token: str, banner: str | None = None) -> str:
     total = document.get("total")
     customer_identity = workspace.get("customer_email") or workspace.get("customer_name") or "este enlace seguro"
     action_buttons = ""
+    payment_button = ""
+    if payment_request and payment_request.get("payment_url"):
+        payment_button = f"""
+          <a class="payment-card" href="{_e(payment_request.get('payment_url'))}" rel="noopener noreferrer">
+            <span class="decision-label">Pagar factura con Stripe</span>
+            <span class="decision-copy">Abre una página segura de Stripe Checkout para completar el pago.</span>
+            <span class="button pay">Pagar ahora</span>
+          </a>
+        """
     if workspace.get("status") not in {"approved", "rejected", "paid", "cancelled"}:
         action_buttons = f"""
           <div class="decision-grid" aria-label="Opciones de respuesta">
@@ -448,7 +639,8 @@ def render_workspace_html(public_token: str, banner: str | None = None) -> str:
     tr:last-child td {{ border-bottom: 0; }}
     .actions, .comment-box {{ display: grid; gap: 14px; }}
     .decision-grid {{ display: grid; gap: 14px; }}
-    .decision-card {{ border: 1px solid var(--line); border-radius: 24px; padding: 18px; background: var(--surface-strong); display: grid; gap: 12px; }}
+    .decision-card, .payment-card {{ border: 1px solid var(--line); border-radius: 24px; padding: 18px; background: var(--surface-strong); display: grid; gap: 12px; text-decoration: none; color: inherit; }}
+    .payment-card {{ border-color: color-mix(in srgb, #635bff, transparent 52%); }}
     .approve-card {{ border-color: color-mix(in srgb, var(--green), transparent 58%); }}
     .reject-card {{ border-color: color-mix(in srgb, var(--red), transparent 62%); }}
     .decision-label {{ margin: 0; font-weight: 900; }}
@@ -459,6 +651,7 @@ def render_workspace_html(public_token: str, banner: str | None = None) -> str:
     .button {{ border: 0; border-radius: 999px; min-height: 46px; padding: 0 18px; font-weight: 900; cursor: pointer; transition: transform .18s ease, filter .18s ease; }}
     .button:active {{ transform: translateY(1px) scale(.99); }}
     .approve {{ background: var(--green); color: var(--green-ink); }}
+    .pay {{ background: #635bff; color: #ffffff; width: fit-content; }}
     .reject {{ background: var(--red); color: var(--red-ink); }}
     .secondary {{ background: var(--ink); color: var(--bg); width: fit-content; }}
     .banner {{ background: color-mix(in srgb, var(--green), transparent 84%); border: 1px solid color-mix(in srgb, var(--green), transparent 52%); border-radius: 18px; padding: 14px 16px; margin-bottom: 18px; }}
@@ -499,6 +692,7 @@ def render_workspace_html(public_token: str, banner: str | None = None) -> str:
           </div>
         </div>
         <aside class="actions">
+          {payment_button}
           {action_buttons}
           <div class="comment-box">
             <h2 class="section-title">Comentarios</h2>
@@ -588,6 +782,39 @@ async def _form_text(request: Request, field: str) -> str | None:
 
 def _request_lang(request: Request) -> str:
     return request.query_params.get("lang", "es")
+
+
+@router.post("/api/payments/stripe/webhook")
+async def stripe_payment_webhook(request: Request) -> JSONResponse:
+    raw_body = await request.body()
+    endpoint_secret = _stripe_webhook_secret().strip()
+    if not endpoint_secret:
+        return JSONResponse({"ok": False, "error": "stripe_webhook_secret_missing"}, status_code=503)
+    signature = request.headers.get("stripe-signature", "")
+    if not _verify_stripe_signature(raw_body, signature, endpoint_secret):
+        return JSONResponse({"ok": False, "error": "invalid_stripe_signature"}, status_code=400)
+    try:
+        event = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid_json"}, status_code=400)
+    if not isinstance(event, dict):
+        return JSONResponse({"ok": False, "error": "invalid_event"}, status_code=400)
+    result = reconcile_stripe_webhook_event(event)
+    return JSONResponse(result, status_code=200)
+
+
+@router.get("/payments/stripe/success", response_class=HTMLResponse)
+async def stripe_payment_success(request: Request) -> HTMLResponse:
+    session_id = request.query_params.get("session_id", "")
+    note = "Recibimos la confirmación de Stripe. El agente validará el pago y actualizará la factura."
+    if session_id:
+        note = f"Recibimos la confirmación de Stripe para la sesión {_e(session_id)}. El agente validará el pago y actualizará la factura."
+    return HTMLResponse(f"<!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Pago recibido</title><style>body{{margin:0;min-height:100vh;display:grid;place-items:center;font-family:system-ui,sans-serif;background:#0c110d;color:#f0f7f0}}main{{width:min(680px,calc(100% - 32px));padding:32px;border:1px solid rgba(255,255,255,.15);border-radius:28px;background:rgba(255,255,255,.06)}}h1{{font-size:clamp(34px,7vw,64px);line-height:.95;margin:0 0 14px}}p{{color:#a8b5aa;line-height:1.55}}</style></head><body><main><h1>Pago recibido</h1><p>{note}</p></main></body></html>")
+
+
+@router.get("/payments/stripe/cancel", response_class=HTMLResponse)
+async def stripe_payment_cancel() -> HTMLResponse:
+    return HTMLResponse("<!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Pago pendiente</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;font-family:system-ui,sans-serif;background:#0c110d;color:#f0f7f0}main{width:min(680px,calc(100% - 32px));padding:32px;border:1px solid rgba(255,255,255,.15);border-radius:28px;background:rgba(255,255,255,.06)}h1{font-size:clamp(34px,7vw,64px);line-height:.95;margin:0 0 14px}p{color:#a8b5aa;line-height:1.55}</style></head><body><main><h1>Pago pendiente</h1><p>No se completó el checkout. Puedes volver al enlace de la factura para intentar de nuevo o contactar al agente.</p></main></body></html>")
 
 
 @router.get("/w", response_class=HTMLResponse)

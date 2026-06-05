@@ -195,6 +195,45 @@ class TestMemoryManager:
         result = mgr.build_system_prompt()
         assert result == "Has content"
 
+    def test_system_prompt_and_prefetch_keep_honcho_context_separate(self):
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("honcho")
+        p._prompt_block = "# Honcho Memory\nActive (hybrid mode)."
+        p._prefetch_result = (
+            "## Session Summary\nfresh session\n\n"
+            "## User Representation\nfresh peer\n\n"
+            "dialectic: current turn synthesis"
+        )
+        mgr.add_provider(p)
+
+        system_prompt = mgr.build_system_prompt()
+        prefetch = mgr.prefetch_all("query")
+
+        assert "Honcho Memory" in system_prompt
+        assert "Session Summary" not in system_prompt
+        assert "User Representation" not in system_prompt
+        assert "current turn synthesis" not in system_prompt
+        assert "Session Summary" in prefetch
+        assert "User Representation" in prefetch
+        assert "current turn synthesis" in prefetch
+
+    def test_real_honcho_system_prompt_is_static(self):
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        provider._config = object()
+        provider._recall_mode = "hybrid"
+
+        system_prompt = provider.system_prompt_block()
+
+        assert "Honcho Memory" in system_prompt
+        assert "Active (hybrid mode)." in system_prompt
+        assert "Session Summary" not in system_prompt
+        assert "User Representation" not in system_prompt
+        assert "User Peer Card" not in system_prompt
+        assert "AI Self-Representation" not in system_prompt
+        assert "AI Identity Card" not in system_prompt
+
     def test_prefetch_merges_results(self):
         mgr = MemoryManager()
         p1 = FakeMemoryProvider("builtin")

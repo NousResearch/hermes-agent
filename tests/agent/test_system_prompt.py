@@ -3,7 +3,23 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.system_prompt import build_system_prompt_parts
+from agent.system_prompt import build_system_prompt, build_system_prompt_parts
+
+
+class HonchoLikeMemoryManager:
+    def __init__(self):
+        self.prefetch_called = False
+
+    def build_system_prompt(self):
+        return "# Honcho Memory\nActive (hybrid mode)."
+
+    def prefetch_all(self, query, *, session_id=""):
+        self.prefetch_called = True
+        return (
+            "## Session Summary\nfresh session\n\n"
+            "## User Representation\nfresh peer\n\n"
+            "dialectic: current turn synthesis"
+        )
 
 
 def _make_agent(**overrides):
@@ -99,3 +115,26 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestHonchoPromptCacheBoundary:
+    def test_dynamic_honcho_context_stays_out_of_cached_prompt(self):
+        memory_manager = HonchoLikeMemoryManager()
+        agent = _make_agent(
+            skip_context_files=True,
+            _memory_manager=memory_manager,
+        )
+
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+        ):
+            prompt = build_system_prompt(agent)
+
+        assert "Honcho Memory" in prompt
+        assert "Active (hybrid mode)." in prompt
+        assert "Session Summary" not in prompt
+        assert "User Representation" not in prompt
+        assert "current turn synthesis" not in prompt
+        assert memory_manager.prefetch_called is False

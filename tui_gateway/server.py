@@ -4731,26 +4731,41 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
-    raw = str(params.get("path", "") or "").strip()
-    if not raw:
-        return _err(rid, 4015, "path required")
+    remainder = ""
     try:
-        from cli import (
-            _IMAGE_EXTENSIONS,
-            _detect_file_drop,
-            _resolve_attachment_path,
-            _split_path_input,
-        )
-
-        dropped = _detect_file_drop(raw)
-        if dropped:
-            image_path = dropped["path"]
-            remainder = dropped["remainder"]
+        from cli import _IMAGE_EXTENSIONS
+        b64_data = str(params.get("data", "") or "").strip()
+        if b64_data:
+            import base64, tempfile, time
+            from pathlib import Path
+            if "," in b64_data:
+                header, b64_data = b64_data.split(",", 1)
+                ext = ".jpg" if "jpeg" in header else ".png" if "png" in header else ".webp" if "webp" in header else ".png"
+            else:
+                ext = str(params.get("ext", ".png") or ".png")
+            img_bytes = base64.b64decode(b64_data)
+            upload_dir = Path(tempfile.gettempdir()) / "hermes-uploads"
+            upload_dir.mkdir(exist_ok=True)
+            image_path = upload_dir / f"upload_{int(time.time() * 1000)}{ext}"
+            image_path.write_bytes(img_bytes)
         else:
-            path_token, remainder = _split_path_input(raw)
-            image_path = _resolve_attachment_path(path_token)
-            if image_path is None:
-                return _err(rid, 4016, f"image not found: {path_token}")
+            raw = str(params.get("path", "") or "").strip()
+            if not raw:
+                return _err(rid, 4015, "path or data required")
+            from cli import (
+                _detect_file_drop,
+                _resolve_attachment_path,
+                _split_path_input,
+            )
+            dropped = _detect_file_drop(raw)
+            if dropped:
+                image_path = dropped["path"]
+                remainder = dropped["remainder"]
+            else:
+                path_token, remainder = _split_path_input(raw)
+                image_path = _resolve_attachment_path(path_token)
+                if image_path is None:
+                    return _err(rid, 4016, f"image not found: {path_token}")
         if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
             return _err(rid, 4016, f"unsupported image: {image_path.name}")
         session.setdefault("attached_images", []).append(str(image_path))

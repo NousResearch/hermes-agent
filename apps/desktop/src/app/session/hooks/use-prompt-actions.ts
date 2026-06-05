@@ -191,10 +191,17 @@ export function usePromptActions({
           continue
         }
 
-        const result = await requestGateway<ImageAttachResponse>('image.attach', {
-          session_id: sessionId,
-          path: attachment.path
-        })
+        // Windows paths (C:\...) can't be read by a remote Linux backend.
+        // The previewUrl is already a base64 data URL � send the bytes instead.
+        const isWindowsPath = /^[a-zA-Z]:[/\\]|\\/.test(attachment.path ?? '')
+        const attachParams: Record<string, unknown> = { session_id: sessionId }
+        if (isWindowsPath && attachment.previewUrl) {
+          attachParams.data = attachment.previewUrl
+        } else {
+          attachParams.path = attachment.path
+        }
+
+        const result = await requestGateway<ImageAttachResponse>('image.attach', attachParams)
 
         if (!result.attached) {
           const label = attachment.label || (attachment.path ? pathLabel(attachment.path) : 'image')

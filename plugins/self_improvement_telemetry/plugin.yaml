@@ -1,0 +1,9 @@
+name: self_improvement_telemetry
+version: 0.1.0
+description: "Low-noise local telemetry for Hermes self-improvement reviews. Records structured metrics only; no raw transcripts."
+author: "NousResearch"
+hooks:
+  - pre_tool_call
+  - post_tool_call
+  - on_session_end
+  - on_session_reset

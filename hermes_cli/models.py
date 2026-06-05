@@ -1158,7 +1158,7 @@ _PROVIDER_ALIASES = {
 # non-interactive fallback when a profile sets ``provider: nous`` with no model
 # silently bills the most expensive model for traffic the user never opted into
 # (a missing default escalated to Opus and billed 863 requests before the user
-# noticed). Pin the silent default to the cheapest curated tier instead so a
+# noticed). Pin the silent default to a low-cost curated model instead so a
 # missing model can never escalate to the flagship.
 #
 # This is deliberately a fixed, side-effect-free default for the hot resolution
@@ -1167,7 +1167,7 @@ _PROVIDER_ALIASES = {
 # in hermes_cli/web_server.py and ``partition_nous_models_by_tier`` — which can
 # hit the Portal; this fallback must stay cheap and network-free.
 _PROVIDER_SILENT_DEFAULT_OVERRIDES: dict[str, str] = {
-    "nous": "nvidia/nemotron-3-super-120b-a12b",
+    "nous": "deepseek/deepseek-v4-flash",
 }
 
 

@@ -10,8 +10,8 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { useTranslation } from '@/i18n'
-import { Eye, EyeOff, ExternalLink, Trash2 } from '@/lib/icons'
 import { triggerHaptic } from '@/lib/haptics'
+import { ExternalLink, Eye, EyeOff, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 interface EnvVarActionsMenuProps
@@ -52,7 +52,7 @@ export function EnvVarActionsMenu({
       <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
       <DropdownMenuContent
         align={align}
-        aria-label={`Actions for ${label}`}
+        aria-label={t('settings.keys.actions.actionsFor', { label })}
         className="w-44"
         sideOffset={sideOffset}
       >
@@ -119,12 +119,14 @@ interface EnvVarActionsTriggerProps extends Omit<React.ComponentProps<typeof But
 }
 
 export function EnvVarActionsTrigger({ className, label, ...props }: EnvVarActionsTriggerProps) {
+  const t = useTranslation()
+
   return (
     <Button
-      aria-label={`Actions for ${label}`}
+      aria-label={t('settings.keys.actions.actionsFor', { label })}
       className={cn('text-muted-foreground hover:text-foreground', className)}
       size="icon-sm"
-      title="Credential actions"
+      title={t('settings.keys.actions.credentialActions')}
       variant="ghost"
       {...props}
     >

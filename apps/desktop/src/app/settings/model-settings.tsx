@@ -37,11 +37,6 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
     hintKey: 'settings.model.auxiliary.hints.compression'
   },
   {
-    key: 'session_search',
-    labelKey: 'settings.model.auxiliary.tasks.sessionSearch',
-    hintKey: 'settings.model.auxiliary.hints.sessionSearch'
-  },
-  {
     key: 'skills_hub',
     labelKey: 'settings.model.auxiliary.tasks.skillsHub',
     hintKey: 'settings.model.auxiliary.hints.skillsHub'
@@ -56,6 +51,21 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
     key: 'title_generation',
     labelKey: 'settings.model.auxiliary.tasks.titleGeneration',
     hintKey: 'settings.model.auxiliary.hints.titleGeneration'
+  },
+  {
+    key: 'triage_specifier',
+    labelKey: 'settings.model.auxiliary.tasks.triageSpecifier',
+    hintKey: 'settings.model.auxiliary.hints.triageSpecifier'
+  },
+  {
+    key: 'kanban_decomposer',
+    labelKey: 'settings.model.auxiliary.tasks.kanbanDecomposer',
+    hintKey: 'settings.model.auxiliary.hints.kanbanDecomposer'
+  },
+  {
+    key: 'profile_describer',
+    labelKey: 'settings.model.auxiliary.tasks.profileDescriber',
+    hintKey: 'settings.model.auxiliary.hints.profileDescriber'
   },
   {
     key: 'curator',

@@ -56,6 +56,10 @@ describe('ModelSettings', () => {
     await renderModelSettings()
 
     expect(await screen.findByText('Vision')).toBeTruthy()
+    expect(screen.getByText('Triage specifier')).toBeTruthy()
+    expect(screen.getByText('Kanban decomposer')).toBeTruthy()
+    expect(screen.getByText('Profile describer')).toBeTruthy()
+    expect(screen.queryByText('Session search')).toBeNull()
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
   })
 

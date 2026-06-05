@@ -1,0 +1,7 @@
+name: web-crawl4ai
+version: 1.0.0
+description: "Crawl4AI (local self-hosted read) + Firecrawl fallback. extract-only; reads pages via the localhost hermes-crawl4ai-read service (Chromium render, free, no API key) and falls back to Firecrawl only on captcha/empty/block/timeout. Pair with brave-free for search."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - crawl4ai

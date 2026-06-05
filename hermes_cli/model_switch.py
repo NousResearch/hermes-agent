@@ -1117,6 +1117,62 @@ def switch_model(
 # Authenticated providers listing (for /model no-args display)
 # ---------------------------------------------------------------------------
 
+# Process-level guard so the picker prewarm thread is spawned at most once per
+# process — mirrors run_agent's _openrouter_prewarm_done. Without a guard a
+# long-lived process (or repeated triggers) would leak one OS thread per call.
+import threading as _threading  # noqa: E402
+
+_picker_prewarm_done = _threading.Event()
+
+
+def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
+    """Warm the provider-models disk cache in a background daemon thread.
+
+    The no-args ``/model`` picker calls ``list_authenticated_providers()``,
+    which fetches each authenticated provider's live ``/v1/models`` list on a
+    cold/stale cache. Those fetches are independent HTTP round-trips but run
+    serially, so the first ``/model`` open in a session (or any open after the
+    1h cache TTL expires) blocks ~1-2s on the user's critical path.
+
+    This pre-warms that exact path off-thread during idle session time: it
+    runs ``list_authenticated_providers()`` once, which populates
+    ``provider_models_cache.json`` for every authed provider. By the time the
+    user types ``/model``, the picker hits the warm disk cache and renders in
+    ~100ms.
+
+    Fire-and-forget. Process-level Event guard ensures it runs at most once.
+    Fully exception-isolated — a slow or offline provider can never affect the
+    session. Returns the spawned thread (for tests) or None if already warmed.
+    """
+    if _picker_prewarm_done.is_set():
+        return None
+    _picker_prewarm_done.set()
+
+    def _warm() -> None:
+        try:
+            from hermes_cli.inventory import load_picker_context
+
+            ctx = load_picker_context()
+            # Calling this is what populates cached_provider_model_ids() ->
+            # provider_models_cache.json for each authed provider. We discard
+            # the result; the side effect (warm disk cache) is the point.
+            list_authenticated_providers(
+                current_provider=ctx.current_provider,
+                current_base_url=ctx.current_base_url,
+                current_model=ctx.current_model,
+                user_providers=ctx.user_providers,
+                custom_providers=ctx.custom_providers,
+                max_models=50,
+            )
+        except Exception:
+            # Best-effort warmup — never surface errors into the session.
+            logger.debug("picker cache prewarm failed", exc_info=True)
+
+    t = _threading.Thread(target=_warm, daemon=True, name="picker-cache-prewarm")
+    t.start()
+    return t
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     current_base_url: str = "",

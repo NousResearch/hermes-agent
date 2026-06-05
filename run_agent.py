@@ -2770,10 +2770,23 @@ class AIAgent:
                 (" · disabled=%s" % state.disabled_reason) if state.disabled_reason else "",
             )
 
-        # ── Threshold notices ── only when a consumer is bound (messaging binds none →
-        # state is still cached above for /usage, but no policy runs). Separate try so a
-        # policy/emit bug WARNS rather than being swallowed by the parse path (R1-M2).
+        # Threshold notices — shared with the cold-start seed (see _emit_credits_notices).
+        self._emit_credits_notices()
+
+    def _emit_credits_notices(self) -> None:
+        """Run the threshold policy on the current credits state and emit notices.
+
+        Shared by the warm path (_capture_credits) and the L3 cold-start seed, so a
+        session that opens already depleted warns immediately — not only after the first
+        inference header. Runs only when a notice consumer is bound (messaging binds none
+        → state still cached for /usage, no policy). WARNS on failure rather than
+        swallowing (R1-M2): a depletion-path bug must not vanish silently. Emits clears
+        FIRST, then shows (so depleted lands last in a latest-wins slot).
+        """
         if getattr(self, "notice_callback", None) is None and getattr(self, "notice_clear_callback", None) is None:
+            return
+        state = getattr(self, "_credits_state", None)
+        if state is None:
             return
         try:
             from agent.credits_tracker import evaluate_credits_notices

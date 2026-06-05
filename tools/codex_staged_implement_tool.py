@@ -10,6 +10,7 @@ from tools.registry import registry
 
 
 _ALLOWED_VERIFY_IDS = {"diff-check", "none"}
+_SUPPORTED_MODES = {"execute", "dry_run_plan"}
 _SUPPORTED_CONTINUE_POLICY = "stop-on-review-needed"
 _SUPPORTED_DIRTY_POLICIES = {"require-clean"}
 _DANGER_PARTS = {
@@ -324,6 +325,105 @@ def _write_stage_files(
     return plan_path, prompt_path, raw_dir
 
 
+def _dry_run_stage_plan(
+    *,
+    repo: Path,
+    task: str,
+    allowlist: dict[str, list[str]],
+    verify_ids: list[str],
+    continue_policy: str,
+    dirty_policy: str,
+) -> dict[str, Any]:
+    return {
+        "repo": str(repo),
+        "continue_policy": continue_policy,
+        "dirty_baseline_policy": dirty_policy,
+        "slices": [
+            {
+                "id": "slice-1",
+                "goal": task,
+                "prompt_file": "<create-outside-repo-before-execution>",
+                "allowed_files": allowlist["files"],
+                "allowed_globs": allowlist["globs"],
+                "verify_cmd_ids": verify_ids,
+                "dirty_baseline_policy": dirty_policy,
+            }
+        ],
+    }
+
+
+def _dry_run_plan_result(
+    *,
+    repo: Path,
+    git_head: str | None,
+    task_text: str,
+    verify_ids: list[str],
+    continue_policy: str,
+    dirty_policy: str,
+    verification_policy: str,
+    allowlist: dict[str, list[str]] | None,
+    scope_error: str | None,
+) -> dict[str, Any]:
+    dirty = _dirty_check(repo)
+    empty_allowlist = {"files": [], "globs": []}
+    if scope_error:
+        risk = "needs_scope" if scope_error == "scope is required" else "unsupported"
+        next_action = "provide_explicit_scope" if risk == "needs_scope" else "provide_narrow_explicit_scope"
+        return _base_result(
+            status="dry_run_plan",
+            resolved_workdir=str(repo),
+            git_head=git_head,
+            resolved_allowlist=empty_allowlist,
+            dirty_baseline_policy=dirty_policy,
+            dirty_check=dirty,
+            verification_policy=verification_policy,
+            risk_classification=risk,
+            needs_user_confirmation=True,
+            proposed_allowlist=empty_allowlist,
+            proposed_stage_plan=None,
+            next_required_action=next_action,
+            reason=scope_error,
+        )
+    assert allowlist is not None
+    if not dirty["is_clean"]:
+        return _base_result(
+            status="dry_run_plan",
+            resolved_workdir=str(repo),
+            git_head=git_head,
+            resolved_allowlist=allowlist,
+            dirty_baseline_policy=dirty_policy,
+            dirty_check=dirty,
+            verification_policy=verification_policy,
+            risk_classification="unsupported",
+            needs_user_confirmation=True,
+            proposed_allowlist=allowlist,
+            proposed_stage_plan=None,
+            next_required_action="clean_worktree_before_execution",
+            reason="dirty_worktree",
+        )
+    return _base_result(
+        status="dry_run_plan",
+        resolved_workdir=str(repo),
+        git_head=git_head,
+        resolved_allowlist=allowlist,
+        dirty_baseline_policy=dirty_policy,
+        dirty_check=dirty,
+        verification_policy=verification_policy,
+        risk_classification="low",
+        needs_user_confirmation=True,
+        proposed_allowlist=allowlist,
+        proposed_stage_plan=_dry_run_stage_plan(
+            repo=repo,
+            task=task_text,
+            allowlist=allowlist,
+            verify_ids=verify_ids,
+            continue_policy=continue_policy,
+            dirty_policy=dirty_policy,
+        ),
+        next_required_action="confirm_or_execute_with_explicit_scope",
+    )
+
+
 def _runner_impl_result(runner_payload: dict[str, Any]) -> dict[str, Any]:
     slice_results = runner_payload.get("slice_results")
     if isinstance(slice_results, list) and slice_results:
@@ -472,6 +572,142 @@ def _completion_trusted(
     return runner_status in {"completed", "passed"} or impl_status in {"completed", "passed"}
 
 
+def _dry_run_contract_rejection(
+    *,
+    reason: str,
+    next_action: str = "provide_supported_policy",
+    resolved_workdir: str | None = None,
+    git_head: str | None = None,
+    dirty_baseline_policy: str | None = None,
+    dirty_check: dict[str, Any] | None = None,
+    verification_policy: str | None = None,
+) -> dict[str, Any]:
+    empty_allowlist = {"files": [], "globs": []}
+    return _base_result(
+        status="dry_run_plan",
+        resolved_workdir=resolved_workdir,
+        git_head=git_head,
+        resolved_allowlist=empty_allowlist,
+        dirty_baseline_policy=dirty_baseline_policy,
+        dirty_check=dirty_check,
+        verification_policy=verification_policy,
+        risk_classification="unsupported",
+        needs_user_confirmation=True,
+        proposed_allowlist=empty_allowlist,
+        proposed_stage_plan=None,
+        next_required_action=next_action,
+        reason=reason,
+    )
+
+
+def _dry_run_repo_context(args: dict[str, Any], *, dirty_policy: str | None) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    repo, git_head = _resolve_repo_root(args.get("workdir"))
+    if repo is None:
+        return None, None, None
+    return str(repo), git_head, _dirty_check(repo)
+
+
+def _codex_staged_dry_run_plan(args: dict[str, Any]) -> dict[str, Any]:
+    default_verification_policy = _verification_policy(["diff-check"])
+    default_dirty_policy = "require-clean"
+    resolved_workdir, git_head, dirty_check = _dry_run_repo_context(args, dirty_policy=default_dirty_policy)
+
+    continue_policy = args.get("continue_policy", _SUPPORTED_CONTINUE_POLICY)
+    if continue_policy != _SUPPORTED_CONTINUE_POLICY:
+        return _dry_run_contract_rejection(
+            reason="unsupported_continue_policy",
+            resolved_workdir=resolved_workdir,
+            git_head=git_head,
+            dirty_baseline_policy=default_dirty_policy,
+            dirty_check=dirty_check,
+            verification_policy=default_verification_policy,
+        )
+
+    dirty_policy = args.get("dirty_baseline_policy", default_dirty_policy)
+    if dirty_policy not in _SUPPORTED_DIRTY_POLICIES:
+        return _dry_run_contract_rejection(
+            reason="unsupported_dirty_policy",
+            resolved_workdir=resolved_workdir,
+            git_head=git_head,
+            dirty_baseline_policy=dirty_policy,
+            dirty_check=dirty_check,
+            verification_policy=default_verification_policy,
+        )
+
+    verify_ids = args.get("verify_cmd_ids", ["diff-check"])
+    if verify_ids is None:
+        verify_ids = ["diff-check"]
+    if not isinstance(verify_ids, list) or not verify_ids:
+        return _dry_run_contract_rejection(
+            reason="rejected_verify_policy",
+            resolved_workdir=resolved_workdir,
+            git_head=git_head,
+            dirty_baseline_policy=dirty_policy,
+            dirty_check=dirty_check,
+        )
+    if any(not isinstance(item, str) or item not in _ALLOWED_VERIFY_IDS for item in verify_ids):
+        return _dry_run_contract_rejection(
+            reason="unsupported_verify_cmd_id",
+            resolved_workdir=resolved_workdir,
+            git_head=git_head,
+            dirty_baseline_policy=dirty_policy,
+            dirty_check=dirty_check,
+        )
+    if "none" in verify_ids and verify_ids != ["none"]:
+        return _dry_run_contract_rejection(
+            reason="rejected_verify_policy",
+            resolved_workdir=resolved_workdir,
+            git_head=git_head,
+            dirty_baseline_policy=dirty_policy,
+            dirty_check=dirty_check,
+        )
+    verification_policy = _verification_policy(verify_ids)
+
+    task = args.get("task")
+    if not isinstance(task, str) or not task.strip():
+        return _dry_run_contract_rejection(
+            reason="missing_task",
+            next_action="provide_task_and_explicit_scope",
+            resolved_workdir=resolved_workdir,
+            git_head=git_head,
+            dirty_baseline_policy=dirty_policy,
+            dirty_check=dirty_check,
+            verification_policy=verification_policy,
+        )
+    task_text = task.strip()
+    if verify_ids == ["none"] and _verify_none_high_risk(task_text):
+        return _dry_run_contract_rejection(
+            reason="verify_none_high_risk_task",
+            resolved_workdir=resolved_workdir,
+            git_head=git_head,
+            dirty_baseline_policy=dirty_policy,
+            dirty_check=dirty_check,
+            verification_policy=verification_policy,
+        )
+
+    repo, git_head = _resolve_repo_root(args.get("workdir"))
+    if repo is None:
+        return _dry_run_contract_rejection(
+            reason="invalid_workdir",
+            next_action="provide_valid_workdir",
+            dirty_baseline_policy=dirty_policy,
+            verification_policy=verification_policy,
+        )
+
+    allowlist, scope_error = _validate_scope(args, repo)
+    return _dry_run_plan_result(
+        repo=repo,
+        git_head=git_head,
+        task_text=task_text,
+        verify_ids=verify_ids,
+        continue_policy=continue_policy,
+        dirty_policy=dirty_policy,
+        verification_policy=verification_policy,
+        allowlist=allowlist,
+        scope_error=scope_error,
+    )
+
+
 def _map_runner_status(
     runner_payload: dict[str, Any],
     *,
@@ -527,6 +763,12 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
     if not isinstance(args, dict):
         args = {}
 
+    mode = args.get("mode", "execute")
+    if mode not in _SUPPORTED_MODES:
+        return _json_result(_base_result(status="unsupported_mode", mode=mode))
+    if mode == "dry_run_plan":
+        return _json_result(_codex_staged_dry_run_plan(args))
+
     continue_policy = args.get("continue_policy", _SUPPORTED_CONTINUE_POLICY)
     if continue_policy != _SUPPORTED_CONTINUE_POLICY:
         return _json_result(_base_result(status="rejected_verify_policy"))
@@ -540,7 +782,7 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
         verify_ids = ["diff-check"]
     if not isinstance(verify_ids, list) or not verify_ids:
         return _json_result(_base_result(status="rejected_verify_policy"))
-    if any(item not in _ALLOWED_VERIFY_IDS for item in verify_ids):
+    if any(not isinstance(item, str) or item not in _ALLOWED_VERIFY_IDS for item in verify_ids):
         return _json_result(_base_result(status="unsupported_verify_cmd_id"))
     if "none" in verify_ids and verify_ids != ["none"]:
         return _json_result(_base_result(status="rejected_verify_policy"))
@@ -764,6 +1006,11 @@ _SCHEMA = {
                 "type": "string",
                 "enum": ["require-clean"],
                 "description": "Dirty baseline policy. Phase 13 v1 is fail-closed and only supports clean worktrees.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["execute", "dry_run_plan"],
+                "description": "Use dry_run_plan to propose a bounded stage plan without invoking runner/Codex or writing repo files.",
             },
         },
         "required": ["workdir", "task"],

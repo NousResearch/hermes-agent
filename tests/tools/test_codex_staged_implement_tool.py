@@ -202,6 +202,215 @@ def test_dirty_worktree_paths_at_limit_are_not_marked_truncated(tmp_path, monkey
     assert calls == []
 
 
+def test_dry_run_plan_with_explicit_scope_is_read_only_and_does_not_invoke_runner(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+    before_status = _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
+
+    result = _call(
+        mode="dry_run_plan",
+        workdir=str(repo),
+        task="update readme",
+        allowed_files=["README.md"],
+        verify_cmd_ids=["diff-check"],
+    )
+    after_status = _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "low"
+    assert result["needs_user_confirmation"] is True
+    assert result["resolved_workdir"] == str(repo.resolve())
+    assert result["resolved_allowlist"]["files"] == ["README.md"]
+    assert result["stage_plan_path"] is None
+    assert result["raw_dir"] is None
+    assert result["runner_exit_code"] is None
+    assert result["next_required_action"] == "confirm_or_execute_with_explicit_scope"
+    assert result["proposed_allowlist"] == {"files": ["README.md"], "globs": []}
+    proposed = result["proposed_stage_plan"]
+    assert proposed["repo"] == str(repo.resolve())
+    assert proposed["continue_policy"] == "stop-on-review-needed"
+    assert proposed["dirty_baseline_policy"] == "require-clean"
+    assert proposed["slices"] == [
+        {
+            "id": "slice-1",
+            "goal": "update readme",
+            "prompt_file": "<create-outside-repo-before-execution>",
+            "allowed_files": ["README.md"],
+            "allowed_globs": [],
+            "verify_cmd_ids": ["diff-check"],
+            "dirty_baseline_policy": "require-clean",
+        }
+    ]
+    assert calls == []
+    assert after_status == before_status == ""
+
+
+def test_dry_run_plan_uncertain_scope_returns_needs_scope_without_runner_call(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(mode="dry_run_plan", workdir=str(repo), task="make the tool better")
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "needs_scope"
+    assert result["needs_user_confirmation"] is True
+    assert result["proposed_stage_plan"] is None
+    assert result["proposed_allowlist"] == {"files": [], "globs": []}
+    assert result["next_required_action"] == "provide_explicit_scope"
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_dry_run_plan_invalid_scope_returns_unsupported_without_runner_call(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(
+        mode="dry_run_plan",
+        workdir=str(repo),
+        task="update python files",
+        allowed_globs=["**/*.py"],
+    )
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "unsupported"
+    assert result["needs_user_confirmation"] is True
+    assert result["proposed_stage_plan"] is None
+    assert result["next_required_action"] == "provide_narrow_explicit_scope"
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_dry_run_plan_dirty_worktree_is_not_classified_low(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    (repo / "README.md").write_text("dirty\n", encoding="utf-8")
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(
+        mode="dry_run_plan",
+        workdir=str(repo),
+        task="update readme",
+        allowed_files=["README.md"],
+    )
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "unsupported"
+    assert result["dirty_check"]["is_clean"] is False
+    assert result["proposed_stage_plan"] is None
+    assert result["next_required_action"] == "clean_worktree_before_execution"
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"continue_policy": "keep-going", "allowed_files": ["README.md"]}, "unsupported_continue_policy"),
+        ({"dirty_baseline_policy": "allow-listed-owned", "allowed_files": ["README.md"]}, "unsupported_dirty_policy"),
+        ({"verify_cmd_ids": ["pytest"], "allowed_files": ["README.md"]}, "unsupported_verify_cmd_id"),
+        ({"verify_cmd_ids": ["none"], "task": "delete files and restart deployment", "allowed_files": ["README.md"]}, "verify_none_high_risk_task"),
+    ],
+)
+def test_dry_run_plan_policy_rejections_keep_dry_run_contract(tmp_path, monkeypatch, kwargs, reason):
+    repo = _clean_repo(tmp_path)
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(mode="dry_run_plan", workdir=str(repo), **kwargs)
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "unsupported"
+    assert result["needs_user_confirmation"] is True
+    assert result["resolved_workdir"] == str(repo.resolve())
+    assert result["dirty_check"]["is_clean"] is True
+    assert result["proposed_stage_plan"] is None
+    assert result["next_required_action"] == "provide_supported_policy"
+    assert result["reason"] == reason
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_execute_mode_preserves_phase13_policy_rejection(tmp_path):
+    repo = _clean_repo(tmp_path)
+
+    result = _call(
+        mode="execute",
+        workdir=str(repo),
+        allowed_files=["README.md"],
+        continue_policy="keep-going",
+    )
+
+    assert result["status"] == "rejected_verify_policy"
+    assert result["runner_exit_code"] is None
+
+
+@pytest.mark.parametrize(
+    ("verify_ids", "reason"),
+    [
+        ([[]], "unsupported_verify_cmd_id"),
+        ([{}], "unsupported_verify_cmd_id"),
+        (["none", "diff-check"], "rejected_verify_policy"),
+    ],
+)
+def test_dry_run_plan_verify_id_type_errors_fail_closed(tmp_path, monkeypatch, verify_ids, reason):
+    repo = _clean_repo(tmp_path)
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("dry_run_plan must not invoke runner")
+
+    def fake_write_stage_files(**kwargs):
+        raise AssertionError("dry_run_plan must not write stage files")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+    monkeypatch.setattr(tool, "_write_stage_files", fake_write_stage_files)
+
+    result = _call(
+        mode="dry_run_plan",
+        workdir=str(repo),
+        task="update readme",
+        allowed_files=["README.md"],
+        verify_cmd_ids=verify_ids,
+    )
+
+    assert result["status"] == "dry_run_plan"
+    assert result["risk_classification"] == "unsupported"
+    assert result["reason"] == reason
+    assert result["proposed_stage_plan"] is None
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
 @pytest.mark.parametrize("dirty_policy", ["allow-listed-owned", "fail-on-overlap"])
 def test_non_require_clean_dirty_policy_is_rejected_without_runner_call(tmp_path, monkeypatch, dirty_policy):
     repo = _clean_repo(tmp_path)

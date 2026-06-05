@@ -61,6 +61,15 @@ DEFAULT_THRESHOLDS = {
         "oap_url": "http://localhost:12800",
         "service_name": "mes-service",
     },
+    "upstream": {
+        "targets": [
+            {"name": "mes-app-1", "url": "http://10.0.0.1:8080/health"},
+            {"name": "mes-app-2", "url": "http://10.0.0.2:8080/health"},
+        ],
+        "timeout": 5,
+        "response_time_warn": 2.0,
+        "response_time_critical": 5.0,
+    },
     "alerter": {
         "feishu_webhook_url": "",
         "feishu_app_id_env": "FEISHU_APP_ID",

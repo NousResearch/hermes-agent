@@ -36,7 +36,7 @@ export function ChatSwapOverlay({ profile }: { profile: string | null }) {
         profile ? 'opacity-100' : 'opacity-0'
       )}
     >
-      <div className="flex items-center gap-2 rounded-full border border-[color-mix(in_srgb,var(--dt-composer-ring)_45%,transparent)] bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 font-mono text-[0.8125rem] text-foreground shadow-composer">
+      <div className="flex items-center gap-2 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 font-mono text-[0.8125rem] text-foreground shadow-composer">
         <span className="w-3 text-(--ui-accent)">{FRAMES[frame]}</span>
         Waking up {label}…
       </div>

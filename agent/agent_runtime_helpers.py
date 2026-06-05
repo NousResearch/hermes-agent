@@ -1296,8 +1296,12 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent._client_log_context(),
         )
         return client
-    if agent.provider == "gemini":
-        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+    from agent.gemini_native_adapter import is_gemini_native_provider
+    if is_gemini_native_provider(agent.provider):
+        from agent.gemini_native_adapter import (
+            GeminiNativeClient,
+            is_native_gemini_base_url,
+        )
 
         base_url = str(client_kwargs.get("base_url", "") or "")
         if is_native_gemini_base_url(base_url):

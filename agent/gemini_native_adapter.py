@@ -35,13 +35,49 @@ DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
 def is_native_gemini_base_url(base_url: str) -> bool:
-    """Return True when the endpoint speaks Gemini's native REST API."""
+    """Return True when the endpoint speaks Gemini's native REST API.
+
+    Recognizes both:
+    - generativelanguage.googleapis.com (Google AI Studio API-key endpoint)
+    - aiplatform.googleapis.com (Vertex AI express-mode API-key endpoint)
+
+    Returns False for ``/openai`` subpath (OpenAI-compat shim) on AI Studio,
+    since that path uses the standard OpenAI transport instead.
+    """
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
         return False
-    if "generativelanguage.googleapis.com" not in normalized:
+    if "generativelanguage.googleapis.com" in normalized:
+        return not normalized.endswith("/openai")
+    if "aiplatform.googleapis.com" in normalized:
+        # Vertex express mode — same native REST shape, no /openai subpath
+        return True
+    return False
+
+
+# Provider IDs whose default base_url routes through GeminiNativeClient.
+# Extend this set when adding a new ProviderProfile that targets one of
+# the URLs accepted by ``is_native_gemini_base_url``. Keeping the list
+# here (instead of hardcoding ``provider == "gemini"`` checks in core)
+# lets the gemini plugin own its own routing surface.
+NATIVE_GEMINI_PROVIDERS: frozenset[str] = frozenset({
+    "gemini",          # Google AI Studio (API key)
+    "gemini-vertex",   # Vertex AI Express Mode (API key)
+})
+
+
+def is_gemini_native_provider(provider_id: Optional[str]) -> bool:
+    """Return True when the given provider routes through GeminiNativeClient.
+
+    This is the canonical check used by ``agent_runtime_helpers`` and
+    ``auxiliary_client`` to decide whether to instantiate the native
+    transport instead of the default OpenAI client. It keeps the routing
+    decision in one place so plugins can extend the gemini family
+    without touching core.
+    """
+    if not provider_id:
         return False
-    return not normalized.endswith("/openai")
+    return str(provider_id).lower() in NATIVE_GEMINI_PROVIDERS
 
 
 def probe_gemini_tier(
@@ -273,10 +309,46 @@ def _translate_tool_result_to_gemini(
     }
 
 
+def _collect_matched_tool_call_ids(messages: List[Dict[str, Any]]) -> set[str]:
+    """Return tool_call_ids that have BOTH an assistant tool_call and a tool response.
+
+    Gemini rejects requests where function_call parts and function_response
+    parts don't match 1:1 (HTTP 400 INVALID_ARGUMENT). This happens after
+    mid-session model switches: history contains tool calls from a prior
+    provider, and Hermes hasn't paired them yet, or the user typed `/new`
+    in a way that severed pairs.
+
+    We pre-scan the message list to build the set of "complete" pairs and
+    later drop any orphan call or orphan response during translation.
+    """
+    call_ids: set[str] = set()
+    response_ids: set[str] = set()
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        if role == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    cid = str(tc.get("id") or tc.get("call_id") or "")
+                    if cid:
+                        call_ids.add(cid)
+        elif role in {"tool", "function"}:
+            cid = str(msg.get("tool_call_id") or "")
+            if cid:
+                response_ids.add(cid)
+    return call_ids & response_ids
+
+
 def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     system_text_parts: List[str] = []
     contents: List[Dict[str, Any]] = []
     tool_name_by_call_id: Dict[str, str] = {}
+
+    # Gemini requires exact 1:1 between functionCall and functionResponse parts.
+    # Drop orphans before translation so a mid-session provider switch doesn't
+    # poison the request with calls that never got their response (or vice versa).
+    matched_ids = _collect_matched_tool_call_ids(messages)
 
     for msg in messages:
         if not isinstance(msg, dict):
@@ -288,17 +360,31 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
             continue
 
         if role in {"tool", "function"}:
-            contents.append(
-                {
-                    "role": "user",
-                    "parts": [
-                        _translate_tool_result_to_gemini(
-                            msg,
-                            tool_name_by_call_id=tool_name_by_call_id,
-                        )
-                    ],
-                }
+            tcid = str(msg.get("tool_call_id") or "")
+            if tcid and tcid not in matched_ids:
+                # Orphan response — no matching upstream tool_call. Skip.
+                continue
+            translated = _translate_tool_result_to_gemini(
+                msg,
+                tool_name_by_call_id=tool_name_by_call_id,
             )
+            # Gemini requires N functionCall parts in a model turn to be
+            # followed by exactly N functionResponse parts in a SINGLE user
+            # turn — not N separate user turns. Coalesce consecutive tool
+            # responses into the most recent user turn that already holds
+            # functionResponse parts; otherwise start a new one.
+            if (
+                contents
+                and contents[-1].get("role") == "user"
+                and contents[-1].get("parts")
+                and all(
+                    isinstance(p, dict) and "functionResponse" in p
+                    for p in contents[-1]["parts"]
+                )
+            ):
+                contents[-1]["parts"].append(translated)
+            else:
+                contents.append({"role": "user", "parts": [translated]})
             continue
 
         gemini_role = "model" if role == "assistant" else "user"

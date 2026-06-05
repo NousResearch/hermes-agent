@@ -423,7 +423,8 @@ class ChatCompletionsTransport(ProviderTransport):
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 
-        if provider_name == "gemini":
+        from agent.gemini_native_adapter import is_gemini_native_provider
+        if is_gemini_native_provider(provider_name):
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
             if _is_gemini_openai_compat_base_url(base_url):
                 thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)

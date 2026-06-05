@@ -1430,8 +1430,12 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if model is None:
                 continue  # skip provider if we don't know a valid aux model
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
-            if provider_id == "gemini":
-                from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+            from agent.gemini_native_adapter import is_gemini_native_provider
+            if is_gemini_native_provider(provider_id):
+                from agent.gemini_native_adapter import (
+                    GeminiNativeClient,
+                    is_native_gemini_base_url,
+                )
 
                 if is_native_gemini_base_url(base_url):
                     return GeminiNativeClient(api_key=api_key, base_url=base_url), model
@@ -1467,8 +1471,12 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if model is None:
             continue  # skip provider if we don't know a valid aux model
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
-        if provider_id == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+        from agent.gemini_native_adapter import is_gemini_native_provider
+        if is_gemini_native_provider(provider_id):
+            from agent.gemini_native_adapter import (
+                GeminiNativeClient,
+                is_native_gemini_base_url,
+            )
 
             if is_native_gemini_base_url(base_url):
                 return GeminiNativeClient(api_key=api_key, base_url=base_url), model
@@ -3749,8 +3757,12 @@ def resolve_provider_client(
         default_model = _get_aux_model_for_provider(provider)
         final_model = _normalize_resolved_model(model or default_model, provider)
 
-        if provider == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+        from agent.gemini_native_adapter import is_gemini_native_provider
+        if is_gemini_native_provider(provider):
+            from agent.gemini_native_adapter import (
+                GeminiNativeClient,
+                is_native_gemini_base_url,
+            )
 
             if is_native_gemini_base_url(base_url):
                 client = GeminiNativeClient(api_key=api_key, base_url=base_url)

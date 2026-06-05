@@ -237,6 +237,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         base_url_env_var="GEMINI_BASE_URL",
     ),
+    "gemini-vertex": ProviderConfig(
+        id="gemini-vertex",
+        name="Google Cloud Vertex AI (Express Mode)",
+        auth_type="api_key",
+        # Vertex express-mode endpoint — API key in x-goog-api-key header,
+        # no project/location prefix needed. Sign up at:
+        # https://console.cloud.google.com/expressmode
+        inference_base_url="https://aiplatform.googleapis.com/v1beta1/publishers/google",
+        api_key_env_vars=("VERTEX_API_KEY", "GOOGLE_VERTEX_API_KEY", "GOOGLE_CLOUD_API_KEY"),
+        base_url_env_var="VERTEX_BASE_URL",
+    ),
     "zai": ProviderConfig(
         id="zai",
         name="Z.AI / GLM",

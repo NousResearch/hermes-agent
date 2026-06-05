@@ -235,12 +235,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-2.5-pro",
     ],
     "gemini": [
+        "gemini-3.5-flash",
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
         "gemini-3.5-flash",
         "gemini-3.1-flash-lite-preview",
     ],
     "google-gemini-cli": [
+        "gemini-3.5-flash",
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
         # Code Assist serves two flash slugs with different access gates
@@ -250,6 +252,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # aren't stuck with a slug cloudcode-pa 404s for them.
         "gemini-3-flash-preview",
         "gemini-3.5-flash",
+    ],
+    "gemini-vertex": [
+        "gemini-3.5-flash",
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
     ],
     "zai": [
         "glm-5.1",
@@ -1084,6 +1095,10 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "vertex": "gemini-vertex",
+    "vertex-ai": "gemini-vertex",
+    "google-vertex": "gemini-vertex",
+    "vertex-express": "gemini-vertex",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn",

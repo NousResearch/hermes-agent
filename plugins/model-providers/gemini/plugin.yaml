@@ -1,5 +1,5 @@
 name: gemini-provider
 kind: model-provider
-version: 1.0.0
-description: Google Gemini (API key + Cloud Code OAuth)
+version: 1.1.0
+description: Google Gemini — AI Studio (API key) + Cloud Code (OAuth) + Vertex AI Express Mode (API key)
 author: Nous Research

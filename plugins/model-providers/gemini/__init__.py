@@ -2,12 +2,19 @@
 
 gemini:            Google AI Studio (API key) — uses GeminiNativeClient
 google-gemini-cli: Google Cloud Code Assist (OAuth) — uses GeminiCloudCodeClient
+gemini-vertex:     Google Cloud Vertex AI in express mode (API key) — uses GeminiNativeClient
 
-Both report api_mode="chat_completions" but use custom native clients
+All three report api_mode="chat_completions" but use custom native clients
 that bypass the standard OpenAI transport. The profile captures auth
 and endpoint metadata for auth.py / runtime_provider.py migration, and
 carries the thinking_config translation hook so the transport's profile
 path produces the same extra_body shape the legacy flag path did.
+
+Vertex express mode (added 2025) lets you authenticate with a plain API key
+(no service account, no token refresh) at https://aiplatform.googleapis.com/.
+Sign up at https://console.cloud.google.com/expressmode for 90 days free.
+The URL shape is `{base}/models/{model}:generateContent` which matches what
+GeminiNativeClient already builds, so no client changes are required.
 """
 
 from typing import Any
@@ -68,5 +75,19 @@ google_gemini_cli = GeminiProfile(
     auth_type="oauth_external",
 )
 
+gemini_vertex = GeminiProfile(
+    name="gemini-vertex",
+    aliases=("vertex", "vertex-ai", "google-vertex", "vertex-express"),
+    display_name="Google Vertex AI (Express Mode)",
+    description="Vertex AI Gemini via plain API key — 90-day free trial, GCP-grade SLA",
+    signup_url="https://console.cloud.google.com/expressmode",
+    api_mode="chat_completions",
+    env_vars=("VERTEX_API_KEY", "GOOGLE_VERTEX_API_KEY", "GOOGLE_CLOUD_API_KEY"),
+    base_url="https://aiplatform.googleapis.com/v1beta1/publishers/google",
+    auth_type="api_key",
+    default_aux_model="gemini-3-flash-preview",
+)
+
 register_provider(gemini)
 register_provider(google_gemini_cli)
+register_provider(gemini_vertex)

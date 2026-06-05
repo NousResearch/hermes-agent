@@ -488,6 +488,26 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     return None
 
 
+def _resolve_pack_dir(skill_md: Path, scan_dir: Path) -> Optional[Path]:
+    """Return the pack directory for *skill_md* within *scan_dir*, if any.
+
+    A pack is a subdirectory of *scan_dir* that contains a ``pack.yaml``.
+    For a skill at ``scan_dir/pack-name/skill-name/SKILL.md``, the pack
+    directory is ``scan_dir/pack-name/``.  Skills directly in category
+    directories without a parent pack are not associated with a pack.
+    """
+    candidate = skill_md.parent.parent
+    try:
+        candidate.relative_to(scan_dir)
+    except ValueError:
+        return None
+    if candidate == scan_dir:
+        return None
+    if (candidate / "pack.yaml").is_file():
+        return candidate
+    return None
+
+
 def _parse_tags(tags_value) -> List[str]:
     """
     Parse tags from frontmatter value.
@@ -576,7 +596,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import (
+        get_external_skills_dirs,
+        get_pack_default_prompt,
+        iter_skill_index_files,
+    )
 
     skills = []
     seen_names: set = set()
@@ -626,12 +650,20 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
                 category = _get_category_from_path(skill_md)
 
-                seen_names.add(name)
-                skills.append({
+                skill_entry = {
                     "name": name,
                     "description": description,
                     "category": category,
-                })
+                }
+
+                pack_dir = _resolve_pack_dir(skill_md, scan_dir)
+                if pack_dir is not None:
+                    default_prompt = get_pack_default_prompt(pack_dir)
+                    if default_prompt is not None:
+                        skill_entry["pack_default_prompt"] = default_prompt
+
+                seen_names.add(name)
+                skills.append(skill_entry)
 
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)

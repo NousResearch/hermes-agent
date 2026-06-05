@@ -62,6 +62,50 @@ def is_excluded_skill_path(path) -> bool:
     return any(part in EXCLUDED_SKILL_DIRS for part in parts)
 
 
+# ── Pack metadata (pack.yaml) ──────────────────────────────────────────────
+
+_PACK_METADATA_CACHE: Dict[Path, Dict[str, Any]] = {}
+
+
+def _pack_metadata_cache_clear() -> None:
+    _PACK_METADATA_CACHE.clear()
+
+
+def read_pack_metadata(pack_dir: Path) -> Dict[str, Any]:
+    pd = pack_dir.resolve()
+    if pd in _PACK_METADATA_CACHE:
+        return dict(_PACK_METADATA_CACHE[pd])
+
+    pack_yaml = pd / "pack.yaml"
+    if not pack_yaml.is_file():
+        _PACK_METADATA_CACHE[pd] = {}
+        return {}
+
+    try:
+        raw = pack_yaml.read_text(encoding="utf-8")
+        parsed = yaml_load(raw)
+    except Exception:
+        _PACK_METADATA_CACHE[pd] = {}
+        return {}
+
+    if not isinstance(parsed, dict):
+        _PACK_METADATA_CACHE[pd] = {}
+        return {}
+
+    _PACK_METADATA_CACHE[pd] = parsed
+    return dict(parsed)
+
+
+def get_pack_default_prompt(pack_dir: Path) -> Optional[str]:
+    meta = read_pack_metadata(pack_dir)
+    prompt = meta.get("default_prompt")
+    if not isinstance(prompt, str):
+        return None
+    if not prompt.strip():
+        return None
+    return prompt
+
+
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
 
 _yaml_load_fn = None

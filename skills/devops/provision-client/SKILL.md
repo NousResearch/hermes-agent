@@ -1,7 +1,7 @@
 ---
 name: provision-client
 description: "Provision a new client bot (a Hermes profile) in-container, no host access. Use when asked to add/create/onboard a new client, tenant, or bot."
-version: 1.0.0
+version: 1.1.0
 platforms: [linux]
 metadata:
   hermes:
@@ -41,6 +41,11 @@ the shared container** (soft isolation).
   cheap default model + the standard persona). Recommended so every new bot is
   consistent. Create it once with `hermes profile create cheap-template`, set
   its `config.yaml` model, then clone it for each client.
+  - **A template must NOT contain a `TELEGRAM_BOT_TOKEN`.** Each bot needs its
+    own token (Telegram allows only one poller per token). The provisioner
+    **refuses** to clone a token-bearing template unless you pass a unique
+    `--token` — otherwise the new bot would poll the template's token and hit a
+    409 "token already in use" (the petro-construction failure mode).
 
 ## Inputs
 
@@ -109,6 +114,9 @@ known-good template avoids this).
   already-created profile is left untouched.
 - The orchestrator refuses to *activate* a bot whose token is still empty, so a
   cheap model can't spin up a dead bot.
+- The orchestrator refuses to clone a **token-bearing template** without an
+  explicit `--token`, so it can't start a duplicate poller on a shared token
+  (Telegram 409 "token already in use"). Give each bot its own `--token`.
 - Secrets are 0600 and never leave the host volume; the registry never stores
   token values, only the env-var name.
 

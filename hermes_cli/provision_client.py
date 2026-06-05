@@ -12,7 +12,10 @@ it reliably:
 
   1. record the client in the registry (bookkeeping: which clients exist,
      their env + model);
-  2. guard: refuse to *activate* a bot with no token (no dead bots);
+  2. guard: refuse to *activate* a bot with no token (no dead bots), and
+     refuse to clone a token-bearing template without an explicit --token
+     (the new bot would poll the template's token → Telegram 409, the
+     petro-construction failure mode);
   3. create + launch the profile via ``hermes profile create`` (cloning a
      template so the bot inherits a known config -- e.g. a cheap default model);
   4. write the token into the *profile's own* ``.env`` as ``TELEGRAM_BOT_TOKEN``
@@ -102,6 +105,16 @@ def build_restart_command(name: str) -> list[str]:
     return ["hermes", "gateway", "restart", "--profile", name]
 
 
+def _clone_source_env_path(
+    clone_from: str, hermes_root: str | os.PathLike[str]
+) -> Path:
+    """``.env`` of a clone-source profile (``default`` is the volume root)."""
+    root = Path(hermes_root)
+    if clone_from == "default":
+        return root / ".env"
+    return root / "profiles" / clone_from / ".env"
+
+
 def provision_client(
     name: str,
     env: str = "prod",
@@ -118,6 +131,26 @@ def provision_client(
 ) -> bool:
     """Provision (or reconcile) a client bot. Returns True if the profile was
     newly created."""
+    # 0. Shared-token footgun guard (the petro-construction failure mode).
+    #    `hermes profile create --clone` copies the template's .env verbatim
+    #    AND launches the new gateway. If the template embeds a
+    #    TELEGRAM_BOT_TOKEN and we are not overriding it with an explicit
+    #    --token, the new bot starts polling the *template's* token — a second
+    #    poller on one token, which Telegram rejects with 409 "token already in
+    #    use" (silently hijacking the template's bot). Each bot needs its own
+    #    token, so refuse fast, before we touch the registry. (When --token is
+    #    given it overrides the clone, so that path is allowed.)
+    if clone_from and not token:
+        inherited = token_value(_clone_source_env_path(clone_from, hermes_root))
+        if inherited is not None:
+            raise ValueError(
+                f"refusing to clone '{clone_from}' into '{name}' without "
+                f"--token: the template's .env sets {TELEGRAM_TOKEN_VAR}, so "
+                f"the new bot would poll the template's token (Telegram 409 "
+                f"'token already in use'). Pass a unique --token for '{name}', "
+                f"or clone a template that carries no {TELEGRAM_TOKEN_VAR}."
+            )
+
     # 1. Registry bookkeeping. add_client's container-path "set <NAME>_TG_TOKEN"
     #    messaging doesn't apply to the profile flow, so swallow its output and
     #    print profile-correct guidance below.

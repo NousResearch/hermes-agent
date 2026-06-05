@@ -143,6 +143,74 @@ class TestProvision:
         assert client.model == "deepseek-v4-flash"
 
 
+class TestSharedTokenGuard:
+    """The petro-construction footgun: ``hermes profile create --clone`` copies
+    the template's .env verbatim and launches the gateway, so cloning a
+    token-bearing template without an explicit --token would start a duplicate
+    Telegram poller (409 'token already in use'). The guard refuses that."""
+
+    def _seed_template(self, tmp_path, name="tmpl", *, token="111:AAA"):
+        pdir = tmp_path / "data" / "profiles" / name
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "config.yaml").write_text("model: cheap\n", encoding="utf-8")
+        lines = ["FOO=bar"]
+        if token is not None:
+            lines.insert(0, f"{TELEGRAM_TOKEN_VAR}={token}")
+        (pdir / ".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return pdir
+
+    def _call(self, tmp_path, **kw):
+        calls = []
+        created = provision_client(
+            "acme", "prod",
+            registry_path=tmp_path / "clients.yaml",
+            hermes_root=tmp_path / "data",
+            runner=lambda argv: calls.append(list(argv)),
+            **kw,
+        )
+        return created, calls
+
+    def test_refuses_clone_of_token_bearing_template_without_token(self, tmp_path):
+        self._seed_template(tmp_path, token="111:AAA")
+        calls = []
+        with pytest.raises(ValueError, match="without --token"):
+            provision_client(
+                "acme", "prod",
+                registry_path=tmp_path / "clients.yaml",
+                hermes_root=tmp_path / "data",
+                clone_from="tmpl", require_token=False,
+                runner=lambda argv: calls.append(list(argv)),
+            )
+        # Fail-fast: nothing launched, and the registry was never written.
+        assert calls == []
+        assert not (tmp_path / "clients.yaml").exists()
+
+    def test_refuses_clone_from_default_root_token(self, tmp_path):
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "data" / ".env").write_text(
+            f"{TELEGRAM_TOKEN_VAR}=111:AAA\n", encoding="utf-8"
+        )
+        with pytest.raises(ValueError, match="without --token"):
+            self._call(tmp_path, clone_from="default", require_token=False)
+
+    def test_explicit_token_overrides_token_bearing_template(self, tmp_path):
+        # --token is allowed even when the template carries one, and wins.
+        self._seed_template(tmp_path, token="111:AAA")
+        _, calls = self._call(tmp_path, token="999:BBB", clone_from="tmpl")
+        env = tmp_path / "data" / "profiles" / "acme" / ".env"
+        assert token_value(env) == "999:BBB"
+        assert ["hermes", "gateway", "restart", "--profile", "acme"] in calls
+
+    def test_tokenless_template_clone_stages_cleanly(self, tmp_path):
+        # A template with no token is safe to clone-stage without --token.
+        self._seed_template(tmp_path, token=None)
+        _, calls = self._call(tmp_path, clone_from="tmpl", require_token=False)
+        assert [
+            "hermes", "profile", "create", "acme", "--clone", "--clone-from", "tmpl",
+        ] in calls
+        assert ["hermes", "gateway", "restart", "--profile", "acme"] not in calls
+
+
 class TestProfileIsCreated:
     def test_detects_config(self, tmp_path):
         assert profile_is_created(tmp_path) is False

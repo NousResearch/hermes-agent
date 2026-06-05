@@ -57,6 +57,7 @@ type SessionPreviewRegistry = Record<string, SessionPreviewRecord[]>
 
 export interface FilePreviewTab {
   id: `file:${string}`
+  sessionId: string
   target: PreviewTarget
 }
 
@@ -66,15 +67,21 @@ const MAX_RECORDS_PER_SESSION = 1
 const MAX_SESSIONS = 120
 
 export const $previewTarget = atom<PreviewTarget | null>(null)
+
 // Persisted so open file-preview tabs survive a relaunch; content is re-read
 // from each target's path/url on demand. Invalid rows are dropped on load and
 // inline image bytes (megabytes) are stripped on save, mirroring the registry.
-export const $filePreviewTabs = persistentAtom<FilePreviewTab[]>(TABS_STORAGE_KEY, [], {
-  decode: raw => {
-    const parsed = JSON.parse(raw) as unknown
+// Exported so the persisted-tab contract can be regression-tested directly:
+// legacy rows written before file tabs were session-scoped ({ id, target }, no
+// `sessionId`) must be dropped rather than surfaced as unscoped tabs.
+export function decodeFilePreviewTabs(raw: string): FilePreviewTab[] {
+  const parsed = JSON.parse(raw) as unknown
 
-    return Array.isArray(parsed) ? parsed.filter(isFilePreviewTab) : []
-  },
+  return Array.isArray(parsed) ? parsed.filter(isFilePreviewTab) : []
+}
+
+export const $filePreviewTabs = persistentAtom<FilePreviewTab[]>(TABS_STORAGE_KEY, [], {
+  decode: decodeFilePreviewTabs,
   encode: tabs => JSON.stringify(tabs, (key, value) => (key === 'dataUrl' ? undefined : value))
 })
 
@@ -144,11 +151,11 @@ export function filePreviewTabId(target: PreviewTarget): `file:${string}` {
   return `file:${target.url}`
 }
 
-function openFilePreviewTarget(target: PreviewTarget) {
+function openFilePreviewTarget(sessionId: string, target: PreviewTarget) {
   const id = filePreviewTabId(target)
   const current = $filePreviewTabs.get()
   const index = current.findIndex(tab => tab.id === id)
-  const tab: FilePreviewTab = { id, target }
+  const tab: FilePreviewTab = { id, sessionId, target }
 
   $filePreviewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
   setPaneOpen(PREVIEW_PANE_ID, true)
@@ -169,12 +176,12 @@ function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSour
   return { ...target, renderMode: isFilePreviewSource(source) ? 'source' : 'preview' }
 }
 
-function tryOpenFilePreview(target: PreviewTarget, source: PreviewRecordSource): boolean {
+function tryOpenFilePreview(sessionId: string, target: PreviewTarget, source: PreviewRecordSource): boolean {
   if (target.kind !== 'file' || !isFilePreviewSource(source)) {
     return false
   }
 
-  openFilePreviewTarget(previewTargetForSource(target, source))
+  openFilePreviewTarget(sessionId, previewTargetForSource(target, source))
 
   return true
 }
@@ -201,7 +208,17 @@ function isFilePreviewTab(value: unknown): value is FilePreviewTab {
 
   const r = value as Record<string, unknown>
 
-  return typeof r.id === 'string' && r.id.startsWith('file:') && isPreviewTarget(r.target)
+  // `sessionId` was added when file tabs became session-scoped. Legacy rows
+  // ({ id, target }) predate it, and a blank id carries no conversation
+  // identity either — neither can be scoped to a session, so reject both here
+  // instead of loading a tab that would leak into the wrong conversation.
+  return (
+    typeof r.id === 'string' &&
+    r.id.startsWith('file:') &&
+    typeof r.sessionId === 'string' &&
+    r.sessionId.length > 0 &&
+    isPreviewTarget(r.target)
+  )
 }
 
 function isPreviewRecord(value: unknown): value is SessionPreviewRecord {
@@ -341,7 +358,7 @@ export function setSessionPreviewTarget(
   source: PreviewRecordSource,
   rawTarget = target.source
 ): SessionPreviewRecord | null {
-  if (tryOpenFilePreview(target, source)) {
+  if (tryOpenFilePreview(sessionId?.trim() || '', target, source)) {
     return null
   }
 
@@ -501,6 +518,38 @@ export function closeRightRailTabsToRight(tabId: RightRailTabId) {
 
   for (const id of order.slice(index + 1)) {
     closeRightRailTab(id)
+  }
+}
+
+/**
+ * Scope the open file preview tabs to a conversation. File previews are opened
+ * against whichever session was current at the time, so switching to another
+ * conversation must drop tabs that belong elsewhere — the file is not part of
+ * the new conversation.
+ *
+ * Callers pass the session identity they are routing to. The session-routing
+ * effect derives that id as `selectedStoredSessionId || routedSessionId ||
+ * activeSessionIdRef.current`, which can lead the runtime `$activeSessionId`
+ * mid-switch; syncing against the caller's resolved id (rather than
+ * re-deriving `currentPreviewSessionId()` here) keeps the filter aligned with
+ * the session whose preview is being restored. Re-syncing with the same id the
+ * tabs are tagged with is a no-op, so the effect can call this on every render
+ * without clobbering same-session tabs.
+ */
+export function syncFilePreviewTabsForSession(sessionId: string) {
+  const current = $filePreviewTabs.get()
+  const next = current.filter(tab => tab.sessionId === sessionId)
+
+  if (next.length === current.length) {
+    return
+  }
+
+  $filePreviewTabs.set(next)
+
+  const activeTabId = $rightRailActiveTabId.get()
+
+  if (activeTabId.startsWith('file:') && !next.some(tab => tab.id === activeTabId)) {
+    selectRightRailTab(next[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
   }
 }
 

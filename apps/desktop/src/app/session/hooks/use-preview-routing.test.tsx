@@ -4,12 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
 import {
+  $filePreviewTabs,
   $previewTarget,
   clearSessionPreviewRegistry,
   type PreviewTarget,
-  registerSessionPreview
+  registerSessionPreview,
+  setCurrentSessionPreviewTarget
 } from '@/store/preview'
-import { $currentCwd, $messages } from '@/store/session'
+import { $activeSessionId, $currentCwd, $messages, $selectedStoredSessionId } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
 import { usePreviewRouting } from './use-preview-routing'
@@ -37,8 +39,15 @@ function previewTarget(source: string): PreviewTarget {
 
 let handleEvent: (event: RpcEvent) => void = () => undefined
 
-function PreviewRoutingHarness({ onEvent }: { onEvent: (handler: (event: RpcEvent) => void) => void }) {
-  const activeSessionIdRef = useRef<string | null>('session-1')
+function PreviewRoutingHarness({
+  onEvent,
+  routedSessionId = 'session-1'
+}: {
+  onEvent: (handler: (event: RpcEvent) => void) => void
+  routedSessionId?: string
+}) {
+  const activeSessionIdRef = useRef<string | null>(routedSessionId)
+  activeSessionIdRef.current = routedSessionId
 
   const routing = usePreviewRouting({
     activeSessionIdRef,
@@ -46,7 +55,7 @@ function PreviewRoutingHarness({ onEvent }: { onEvent: (handler: (event: RpcEven
     currentCwd: '/work',
     currentView: 'chat',
     requestGateway: vi.fn(),
-    routedSessionId: 'session-1',
+    routedSessionId,
     selectedStoredSessionId: null
   })
 
@@ -62,6 +71,8 @@ describe('usePreviewRouting', () => {
     $currentCwd.set('/work')
     $messages.set([])
     $previewTarget.set(null)
+    $activeSessionId.set('session-1')
+    $selectedStoredSessionId.set(null)
     clearSessionPreviewRegistry()
     handleEvent = () => undefined
     window.localStorage.clear()
@@ -78,6 +89,9 @@ describe('usePreviewRouting', () => {
     cleanup()
     $messages.set([])
     $previewTarget.set(null)
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
+    $filePreviewTabs.set([])
     vi.restoreAllMocks()
     clearSessionPreviewRegistry()
     window.localStorage.clear()
@@ -98,6 +112,79 @@ describe('usePreviewRouting', () => {
     await waitFor(() => {
       expect($previewTarget.get()).toEqual({ ...target, renderMode: 'preview' })
     })
+  })
+
+  it('dismisses a file preview tab when switching to another conversation', async () => {
+    const file = previewTarget('/work/attachment.png')
+
+    // Opened while session-1 is active → tagged with session-1.
+    setCurrentSessionPreviewTarget(file, 'manual')
+    expect($filePreviewTabs.get()).toHaveLength(1)
+
+    const { rerender } = render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+        routedSessionId="session-1"
+      />
+    )
+
+    // The file belongs to session-1, so it survives while that conversation is active.
+    expect($filePreviewTabs.get()).toHaveLength(1)
+
+    // Switching conversations moves both the active session and the route.
+    act(() => {
+      $activeSessionId.set('session-2')
+    })
+    rerender(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+        routedSessionId="session-2"
+      />
+    )
+
+    await waitFor(() => {
+      expect($filePreviewTabs.get()).toEqual([])
+    })
+  })
+
+  it('keeps a tab scoped to the routed session when the runtime session store diverges', async () => {
+    const file = previewTarget('/work/attachment.png')
+
+    // Opened while session-1 is active → tagged with session-1.
+    setCurrentSessionPreviewTarget(file, 'manual')
+    expect($filePreviewTabs.get()[0]?.sessionId).toBe('session-1')
+
+    // A distinct live preview for session-1 lets us observe that the effect
+    // routes to session-1 (not the diverged runtime session-2).
+    const livePreview = previewTarget('/work/live.html')
+    registerSessionPreview('session-1', livePreview, 'tool-result')
+
+    // The runtime `$activeSessionId` store advances to session-2, but the hook
+    // is still routing to session-1 (routedSessionId). Scoping the sync to a
+    // re-derived current id (which reads the session-2 store) would wrongly drop
+    // the session-1 tab we are still viewing; scoping to the routed id keeps it.
+    act(() => {
+      $activeSessionId.set('session-2')
+    })
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+        routedSessionId="session-1"
+      />
+    )
+
+    // The effect ran and routed to session-1's live preview...
+    await waitFor(() => {
+      expect($previewTarget.get()).toEqual({ ...livePreview, renderMode: 'preview' })
+    })
+    // ...and the session-1 file tab was kept, not dropped by the stale runtime id.
+    expect($filePreviewTabs.get()).toHaveLength(1)
   })
 
   it('does not infer previews from assistant prose', async () => {

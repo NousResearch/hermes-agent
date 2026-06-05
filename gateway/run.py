@@ -7821,6 +7821,74 @@ class GatewayRunner:
                 pass
         return source
 
+    async def _edit_progress_message_to_final_response(
+        self,
+        *,
+        adapter: BasePlatformAdapter,
+        source: SessionSource,
+        event,
+        message_id: str,
+        content: str,
+    ) -> bool:
+        """Replace an editable progress bubble with the final response.
+
+        Returns True when the first/final chunk was successfully edited.  Any
+        overflow chunks are sent as normal messages because Discord has a hard
+        message length limit.
+        """
+        if (
+            adapter is None
+            or type(adapter).edit_message is BasePlatformAdapter.edit_message
+            or not message_id
+            or not content
+        ):
+            return False
+
+        final_meta = self._thread_metadata_for_source(
+            source,
+            self._reply_anchor_for_event(event),
+        )
+        max_len = int(getattr(adapter, "MAX_MESSAGE_LENGTH", 4000) or 4000)
+        len_fn = adapter.message_len_fn if isinstance(adapter, BasePlatformAdapter) else len
+        chunks = adapter.truncate_message(content, max_len, len_fn=len_fn)
+        first_chunk = chunks[0] if chunks else content
+
+        edit_kwargs = {
+            "chat_id": source.chat_id,
+            "message_id": str(message_id),
+            "content": first_chunk,
+        }
+        try:
+            edit_params = inspect.signature(adapter.edit_message).parameters
+            if (
+                "metadata" in edit_params
+                or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in edit_params.values())
+            ):
+                edit_kwargs["metadata"] = final_meta
+        except (TypeError, ValueError):
+            pass
+
+        edit_result = await adapter.edit_message(**edit_kwargs)
+        if not getattr(edit_result, "success", False):
+            logger.warning(
+                "Final response progress edit failed; falling back to normal send: %s",
+                getattr(edit_result, "error", ""),
+            )
+            return False
+
+        for extra_chunk in chunks[1:]:
+            extra_result = await adapter.send(
+                source.chat_id,
+                extra_chunk,
+                metadata=final_meta,
+            )
+            if not getattr(extra_result, "success", False):
+                logger.warning(
+                    "Final response continuation send failed after progress edit: %s",
+                    getattr(extra_result, "error", ""),
+                )
+        return True
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -8555,6 +8623,28 @@ class GatewayRunner:
                 _footer_line = ""
             if _footer_line and response and not agent_result.get("already_sent"):
                 response = f"{response}\n\n{_footer_line}"
+
+            if (
+                response
+                and agent_result.get("final_response_edits_progress")
+                and agent_result.get("progress_message_id")
+                and not agent_result.get("failed")
+            ):
+                try:
+                    _edited_final = await self._edit_progress_message_to_final_response(
+                        adapter=self.adapters.get(source.platform),
+                        source=source,
+                        event=event,
+                        message_id=str(agent_result.get("progress_message_id")),
+                        content=response,
+                    )
+                    if _edited_final:
+                        agent_result["already_sent"] = True
+                except Exception as _edit_final_err:
+                    logger.warning(
+                        "Final response progress edit raised; falling back to normal send: %s",
+                        _edit_final_err,
+                    )
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -15492,6 +15582,18 @@ class GatewayRunner:
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
         tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        _final_response_edits_progress = bool(
+            resolve_display_setting(
+                user_config,
+                platform_key,
+                "final_response_edits_progress",
+                False,
+            )
+        )
+        # Discord should leave one clean final answer, not separate tool-log
+        # bubbles. Other platforms keep their existing progress behavior.
+        if source.platform != Platform.DISCORD:
+            _final_response_edits_progress = False
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -15526,10 +15628,50 @@ class GatewayRunner:
             _cleanup_progress = False
             _cleanup_adapter = None
         _cleanup_msg_ids: List[str] = []
+        _progress_state: Dict[str, Any] = {
+            "message_id": None,
+            "can_edit": True,
+            "content": "",
+        }
         # First-touch onboarding latch: fires at most once per run, even if
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
+
+        def _japanese_tool_progress(tool_name: str | None, preview: str | None = None) -> tuple[str, str | None]:
+            labels = {
+                "terminal": "端末確認",
+                "read_file": "ファイル確認",
+                "write_file": "ファイル更新",
+                "patch": "修正反映",
+                "search_files": "ファイル検索",
+                "skill_view": "スキル確認",
+                "skills_list": "スキル一覧確認",
+                "memory": "記憶更新",
+                "web_search": "Web検索",
+                "web_extract": "Web確認",
+                "browser_navigate": "ブラウザ確認",
+                "browser_click": "画面操作",
+                "browser_type": "入力操作",
+                "image_generate": "画像作成",
+                "execute_code": "コード確認",
+                "cronjob": "自動実行確認",
+                "todo": "タスク整理",
+            }
+            safe_previews = {
+                "terminal": "必要な確認を実行中",
+                "read_file": "必要なファイルを確認中",
+                "write_file": "必要なファイルを更新中",
+                "patch": "修正を反映中",
+                "search_files": "関連ファイルを検索中",
+                "skill_view": "必要なスキルを確認中",
+                "skills_list": "利用できるスキルを確認中",
+                "memory": "運用メモを更新中",
+                "execute_code": "検証用コードを実行中",
+            }
+            label = labels.get(tool_name or "", "作業中")
+            clean_preview = safe_previews.get(tool_name or "", preview)
+            return label, clean_preview
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
@@ -15606,11 +15748,14 @@ class GatewayRunner:
                     # detail.  Platform message-length limits handle the rest.
                     if _pl > 0 and len(args_str) > _pl:
                         args_str = args_str[:_pl - 3] + "..."
-                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                    label, clean_preview = _japanese_tool_progress(tool_name, preview)
+                    msg = f"{emoji} {label}: {clean_preview or '実行中'}"
                 elif preview:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
+                    label, clean_preview = _japanese_tool_progress(tool_name, preview)
+                    msg = f"{emoji} {label}: \"{clean_preview}\""
                 else:
-                    msg = f"{emoji} {tool_name}..."
+                    label, clean_preview = _japanese_tool_progress(tool_name, preview)
+                    msg = f"{emoji} {label}: {clean_preview or '実行中'}"
                 progress_queue.put(msg)
                 return
             
@@ -15621,11 +15766,13 @@ class GatewayRunner:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
+                label, clean_preview = _japanese_tool_progress(tool_name, preview)
+                if clean_preview and len(clean_preview) > _cap:
+                    clean_preview = clean_preview[:_cap - 3] + "..."
+                msg = f"{emoji} {label}: \"{clean_preview or '実行中'}\""
             else:
-                msg = f"{emoji} {tool_name}..."
+                label, clean_preview = _japanese_tool_progress(tool_name, preview)
+                msg = f"{emoji} {label}: {clean_preview or '実行中'}"
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
@@ -15689,7 +15836,7 @@ class GatewayRunner:
             progress_msg_id = None   # ID of the current progress message to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
-            _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+            _PROGRESS_EDIT_INTERVAL = 0.8 if _final_response_edits_progress else 1.5
 
             _progress_len_fn = (
                 adapter.message_len_fn
@@ -15733,8 +15880,34 @@ class GatewayRunner:
                     kwargs["metadata"] = _progress_metadata
                 return await adapter.edit_message(**kwargs)
 
+            def _remember_progress_message(message_id: str | None, content: str, *, can_edit_value: bool = True) -> None:
+                if not _final_response_edits_progress:
+                    return
+                if message_id:
+                    _progress_state["message_id"] = str(message_id)
+                _progress_state["can_edit"] = bool(can_edit_value)
+                _progress_state["content"] = str(content or "")
+
             def _progress_text(lines: list) -> str:
-                return "\n".join(str(line) for line in lines)
+                text = "\n".join(str(line) for line in lines)
+                if (
+                    _final_response_edits_progress
+                    and _progress_len_fn(text) > _PROGRESS_TEXT_LIMIT
+                ):
+                    kept: list[str] = []
+                    for line in reversed([str(item) for item in lines]):
+                        candidate_lines = [line] + kept
+                        candidate = "\n".join(candidate_lines)
+                        prefixed = "…\n" + candidate
+                        if _progress_len_fn(prefixed) > _PROGRESS_TEXT_LIMIT:
+                            if kept:
+                                break
+                            line_budget = max(1, _PROGRESS_TEXT_LIMIT - 2)
+                            kept = [line[-line_budget:]]
+                            break
+                        kept = candidate_lines
+                    text = "…\n" + "\n".join(kept)
+                return text
 
             def _split_progress_groups(lines: list) -> list[list]:
                 """Partition progress lines into platform-sized editable bubbles."""
@@ -15767,6 +15940,8 @@ class GatewayRunner:
                     metadata=_progress_metadata,
                 )
                 _track_progress_result(result)
+                if getattr(result, "success", False) and getattr(result, "message_id", None):
+                    _remember_progress_message(result.message_id, text)
                 return result
 
             async def _roll_progress_overflow_if_needed() -> bool:
@@ -15776,6 +15951,8 @@ class GatewayRunner:
                 caller should skip the normal send/edit path for this tick.
                 """
                 nonlocal progress_msg_id, progress_lines, can_edit
+                if _final_response_edits_progress:
+                    return False
                 if not progress_lines or not can_edit:
                     return False
                 groups = _split_progress_groups(progress_lines)
@@ -15787,17 +15964,21 @@ class GatewayRunner:
                     result = await _edit_progress_message(progress_msg_id, first_text)
                     if not result.success:
                         can_edit = False
+                        _remember_progress_message(progress_msg_id, first_text, can_edit_value=False)
                         # Fall back to the existing non-edit behavior below.
                         return False
+                    _remember_progress_message(progress_msg_id, first_text)
                 else:
                     result = await _send_progress_text(first_text)
                     if result.success and result.message_id:
                         progress_msg_id = result.message_id
+                        _remember_progress_message(progress_msg_id, first_text)
 
                 for group in groups[1:]:
                     result = await _send_progress_text(_progress_text(group))
                     if result.success and result.message_id:
                         progress_msg_id = result.message_id
+                        _remember_progress_message(progress_msg_id, _progress_text(group))
 
                 # The newest continuation is now the only mutable bubble.  Keep
                 # just its lines so subsequent edits update it instead of
@@ -15882,7 +16063,7 @@ class GatewayRunner:
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _progress_text(progress_lines)
                         result = await _edit_progress_message(progress_msg_id, full_text)
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
@@ -15907,6 +16088,7 @@ class GatewayRunner:
                                 _last_edit_ts = time.monotonic()
                             else:
                                 can_edit = False
+                                _remember_progress_message(progress_msg_id, full_text, can_edit_value=False)
                             _flood_result = await adapter.send(
                                 chat_id=source.chat_id,
                                 content=msg,
@@ -15919,10 +16101,12 @@ class GatewayRunner:
                                 and getattr(_flood_result, "message_id", None)
                             ):
                                 _cleanup_msg_ids.append(str(_flood_result.message_id))
+                        else:
+                            _remember_progress_message(progress_msg_id, full_text)
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
+                            full_text = _progress_text(progress_lines)
                             result = await adapter.send(
                                 chat_id=source.chat_id,
                                 content=full_text,
@@ -15941,6 +16125,7 @@ class GatewayRunner:
                             progress_msg_id = result.message_id
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(str(result.message_id))
+                            _remember_progress_message(progress_msg_id, full_text if can_edit else msg, can_edit_value=can_edit)
 
                     _last_edit_ts = time.monotonic()
 
@@ -15970,6 +16155,7 @@ class GatewayRunner:
                                     _pending_text = _progress_text(progress_lines)
                                     try:
                                         await _edit_progress_message(progress_msg_id, _pending_text)
+                                        _remember_progress_message(progress_msg_id, _pending_text)
                                     except Exception:
                                         pass
                                 progress_msg_id = None
@@ -15988,6 +16174,7 @@ class GatewayRunner:
                         full_text = _progress_text(progress_lines)
                         try:
                             await _edit_progress_message(progress_msg_id, full_text)
+                            _remember_progress_message(progress_msg_id, full_text)
                         except Exception:
                             pass
                     return
@@ -16061,6 +16248,9 @@ class GatewayRunner:
                     event_type,
                     _redact_gateway_user_facing_secrets(str(message or ""))[:160],
                 )
+                return
+            if _final_response_edits_progress and progress_queue is not None:
+                progress_queue.put(prepared_message)
                 return
             _fut = safe_schedule_threadsafe(
                 _status_adapter.send(
@@ -16166,6 +16356,9 @@ class GatewayRunner:
             )
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
+            if _final_response_edits_progress:
+                _want_stream_deltas = False
+                _want_interim_messages = False
             _want_interim_consumer = _want_interim_messages
             if _want_stream_deltas or _want_interim_consumer:
                 try:
@@ -17075,18 +17268,23 @@ class GatewayRunner:
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
                         _a = _agent_ref.get_activity_summary()
-                        _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
+                        _parts = [f"{_a['api_call_count']}/{_a['max_iterations']}回目"]
                         if _a.get("current_tool"):
-                            _parts.append(f"running: {_a['current_tool']}")
+                            _tool_label, _ = _japanese_tool_progress(_a.get("current_tool"), None)
+                            _parts.append(f"{_tool_label}を実行中")
                         else:
-                            _parts.append(_a.get("last_activity_desc", ""))
-                        _status_detail = " — " + ", ".join(_parts)
+                            _parts.append("応答待ち")
+                        _status_detail = " / " + " / ".join(_parts)
                     except Exception:
                         pass
                 try:
+                    _notice = f"⏳ 作業を継続中です（{_elapsed_mins}分経過{_status_detail}）"
+                    if _final_response_edits_progress and progress_queue is not None:
+                        progress_queue.put(_notice)
+                        continue
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        _notice,
                         metadata=_status_thread_metadata,
                     )
                     if (
@@ -17565,6 +17763,15 @@ class GatewayRunner:
                         await task
                     except asyncio.CancelledError:
                         pass
+
+        if (
+            isinstance(response, dict)
+            and _final_response_edits_progress
+            and _progress_state.get("message_id")
+            and _progress_state.get("can_edit", True)
+        ):
+            response["final_response_edits_progress"] = True
+            response["progress_message_id"] = str(_progress_state["message_id"])
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).

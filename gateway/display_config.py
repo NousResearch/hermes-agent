@@ -35,6 +35,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    "final_response_edits_progress": False,
     # When true, delete tool-progress / "Still working..." / status bubbles
     # after the final response lands on platforms that support message
     # deletion (e.g. Telegram). Off by default — progress is still shown
@@ -82,7 +83,7 @@ _TIER_MINIMAL = {
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 1 — full edit support, personal/team use
     "telegram":    {**_TIER_HIGH, "tool_progress": "new"},
-    "discord":     _TIER_HIGH,
+    "discord":     {**_TIER_HIGH, "final_response_edits_progress": True},
 
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
@@ -190,7 +191,7 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
-    if setting in {"show_reasoning", "streaming"}:
+    if setting in {"show_reasoning", "streaming", "final_response_edits_progress"}:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)

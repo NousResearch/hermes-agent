@@ -302,10 +302,10 @@ def _maybe_unescape_new_string(new_string: str,
     if "\\r" in out and "\r" in matched_regions:
         out = out.replace("\\r", "\r")
     # LLMs can emit literal \\n (two-char backslash-n) when serialisation
-    # layers double-escape JSON.  Only unescape when the matched file
-    # region actually contains newline bytes — source-code regex/string
-    # constants with literal \\n on disk are left untouched.
-    if "\\n" in out and "\n" in matched_regions:
+    # layers double-escape JSON.  Only unescape when the matched file region
+    # contains real newlines AND does NOT contain any literal backslash-n —
+    # source-code regex/string constants with \\n on disk are left untouched.
+    if "\\n" in out and "\n" in matched_regions and "\\n" not in matched_regions:
         out = out.replace("\\n", "\n")
     return out
 

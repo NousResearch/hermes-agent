@@ -503,6 +503,21 @@ class TestEscapeNormalizedNewString:
         assert "alpha\\nbeta" not in new, repr(new)
         assert "alpha\nbeta" in new
 
+    def test_literal_backslash_n_preserved_when_in_matched_region(self):
+        """When the matched file region already contains literal ``\\n``
+        (e.g. inside a regex or string literal), ``\\n`` in new_string is
+        preserved — it is an intentional part of the source code, not a
+        serialisation artifact."""
+        content = 'pattern = r"\\n\\s*"\nprint("ok")\n'
+        old_string = 'pattern = r"\\n\\s*"\nprint("ok")'
+        new_string = 'pattern = r"\\n\\s+"\nprint("done")'
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        # The literal ``\\n`` in the regex must NOT be converted to a real newline.
+        assert "\\n" in new
+        assert 'pattern = r"\\n\\s+"\nprint("done")' in new
+
     def test_mixed_tab_and_newline_only_tab_unescaped(self):
         """When new_string contains both \\t and \\n and the file region
         has both real tabs and real newlines, both escape sequences are

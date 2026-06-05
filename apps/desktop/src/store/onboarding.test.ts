@@ -30,6 +30,7 @@ function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnbo
     providers: null,
     reason: null,
     requested: false,
+    firstRunSkipped: false,
     manual: false,
     ...overrides
   }

@@ -4016,23 +4016,31 @@ def resolve_provider_client(
             or _read_main_model(),
             provider,
         )
-        if provider == "copilot-acp":
+        if provider in ("copilot-acp", "gemini-acp"):
+            # Both Copilot and Gemini CLI share the same ACP subprocess
+            # transport — the only difference is the default command.
             api_key = str(creds.get("api_key", "")).strip()
             base_url = str(creds.get("base_url", "")).strip()
-            command = str(creds.get("command", "")).strip() or None
+            command = str(creds.get("command", "").strip()) or None
             args = list(creds.get("args") or [])
             if not final_model:
                 logger.warning(
-                    "resolve_provider_client: copilot-acp requested but no model "
-                    "was provided or configured"
+                    "resolve_provider_client: %s requested but no model "
+                    "was provided or configured", provider
                 )
                 return None, None
             if not api_key or not base_url:
                 logger.warning(
-                    "resolve_provider_client: copilot-acp requested but external "
-                    "process credentials are incomplete"
+                    "resolve_provider_client: %s requested but external "
+                    "process credentials are incomplete", provider
                 )
                 return None, None
+            # Gemini ACP defaults to `gemini` command when no explicit
+            # command is configured in credentials.
+            if provider == "gemini-acp" and not command:
+                command = "gemini"
+                if not args:
+                    args = ["--acp", "--skip-trust"]
             from agent.copilot_acp_client import CopilotACPClient
 
             client = CopilotACPClient(

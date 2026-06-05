@@ -141,6 +141,11 @@ $activeGatewayProfile.subscribe(value => {
   _lastRoutedProfile = key
 })
 
+// Target profile while a gateway swap is mid-flight (spawning/reconnecting that
+// profile's backend), else null. Drives the chat's "waking up <profile>" loader
+// so a lazy spawn doesn't read as a hang. Single-profile users never swap.
+export const $gatewaySwapTarget = atom<string | null>(null)
+
 let gatewaySwitch: Promise<void> | null = null
 
 // Reconnect the single live gateway to `profile`'s backend if it isn't already
@@ -176,6 +181,7 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     }
   }
 
+  $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
     const desktop = window.hermesDesktop
     const gateway = $gateway.get()
@@ -205,6 +211,7 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     await gatewaySwitch
   } finally {
     gatewaySwitch = null
+    $gatewaySwapTarget.set(null)
   }
 }
 

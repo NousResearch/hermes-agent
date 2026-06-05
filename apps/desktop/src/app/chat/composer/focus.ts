@@ -10,6 +10,8 @@
  * steal focus from the composer effect.
  */
 
+import type { InlineRefInput } from './inline-refs'
+
 export type ComposerTarget = 'edit' | 'main'
 export type ComposerInsertMode = 'block' | 'inline'
 
@@ -23,8 +25,14 @@ interface InsertDetail {
   text: string
 }
 
+interface InsertRefsDetail {
+  refs: InlineRefInput[]
+  target: ComposerTarget
+}
+
 const FOCUS_EVENT = 'hermes:composer-focus'
 const INSERT_EVENT = 'hermes:composer-insert'
+const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 
 let activeTarget: ComposerTarget = 'main'
 
@@ -81,6 +89,20 @@ export const onComposerFocusRequest = (handler: (target: ComposerTarget) => void
 
 export const onComposerInsertRequest = (handler: (detail: InsertDetail) => void) =>
   subscribe<InsertDetail>(INSERT_EVENT, handler)
+
+/** Insert typed ref chips (carrying a display label) into a composer — the
+ * structured cousin of {@link requestComposerInsert}, used for session links. */
+export const requestComposerInsertRefs = (
+  refs: InlineRefInput[],
+  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+) => {
+  if (refs.length) {
+    dispatch<InsertRefsDetail>(INSERT_REFS_EVENT, { refs, target: resolve(target) })
+  }
+}
+
+export const onComposerInsertRefsRequest = (handler: (detail: InsertRefsDetail) => void) =>
+  subscribe<InsertRefsDetail>(INSERT_REFS_EVENT, handler)
 
 /**
  * Focus a composer input across React commit + browser focus restore.

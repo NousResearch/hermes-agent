@@ -205,11 +205,19 @@ def _supports_vision_override(
     # get rewritten to provider="custom" at runtime
     # (hermes_cli/runtime_provider.py:_resolve_named_custom_runtime), so the
     # config still holds the user-declared name under model.provider. Try
-    # both as candidate provider keys.
+    # all of: the runtime provider ("custom"), the raw config value
+    # ("custom:my-proxy"), and the stripped name ("my-proxy") — the last one
+    # is where providers.<name>.models.<model>.supports_vision is actually
+    # defined.  Ref: issue #39963.
     config_provider = str(model_cfg.get("provider") or "").strip()
+    _stripped = (
+        config_provider.split(":", 1)[1]
+        if config_provider.startswith("custom:") and ":" in config_provider
+        else ""
+    )
     providers_raw = cfg.get("providers")
     providers_cfg: Dict[str, Any] = providers_raw if isinstance(providers_raw, dict) else {}
-    for p in dict.fromkeys(filter(None, (provider, config_provider))):
+    for p in dict.fromkeys(filter(None, (provider, config_provider, _stripped))):
         entry_raw = providers_cfg.get(p)
         entry: Dict[str, Any] = entry_raw if isinstance(entry_raw, dict) else {}
         models_raw = entry.get("models")

@@ -255,6 +255,139 @@ def test_gateway_model_override_defaults_off_keep_global_route():
     assert route["gateway_local_failover"] == {"enabled": False}
 
 
+def test_gateway_semantic_escalation_routes_image_turn_to_pro(monkeypatch):
+    runner = _make_runner()
+    runner._service_tier = None
+    runtime_kwargs = {
+        "api_key": "primary-key",
+        "base_url": "http://127.0.0.1:8000/v1",
+        "provider": "omlx",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    def _fake_resolve_runtime_provider(**kwargs):
+        assert kwargs["requested"] == "openrouter"
+        return {
+            "api_key": "override-key",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _fake_resolve_runtime_provider,
+    )
+
+    user_config = {
+        "gateway": {
+            "agent": {
+                "model_override": {
+                    "enabled": True,
+                    "provider": "openrouter",
+                    "model": "deepseek/deepseek-v4-flash",
+                    "fallback_providers": [
+                        {
+                            "provider": "openrouter",
+                            "model": "deepseek/deepseek-v4-pro",
+                        }
+                    ],
+                },
+                "semantic_escalation": {
+                    "enabled": True,
+                    "platforms": ["telegram"],
+                    "triggers": ["image"],
+                    "provider": "openrouter",
+                    "model": "deepseek/deepseek-v4-pro",
+                },
+            }
+        }
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "what is in this image?",
+        "qwen3-30b-a3b-instruct-2507-4bit",
+        runtime_kwargs,
+        user_config=user_config,
+        platform_key="telegram",
+        route_hints={"has_image": True},
+    )
+
+    assert route["model"] == "deepseek/deepseek-v4-pro"
+    assert route["runtime"]["provider"] == "openrouter"
+    assert route["fallback_model"] == [
+        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}
+    ]
+
+
+def test_gateway_semantic_escalation_leaves_plain_text_on_flash(monkeypatch):
+    runner = _make_runner()
+    runner._service_tier = None
+    runtime_kwargs = {
+        "api_key": "primary-key",
+        "base_url": "http://127.0.0.1:8000/v1",
+        "provider": "omlx",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    def _fake_resolve_runtime_provider(**kwargs):
+        assert kwargs["requested"] == "openrouter"
+        return {
+            "api_key": "override-key",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _fake_resolve_runtime_provider,
+    )
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "what time is it?",
+        "qwen3-30b-a3b-instruct-2507-4bit",
+        runtime_kwargs,
+        user_config={
+            "gateway": {
+                "agent": {
+                    "model_override": {
+                        "enabled": True,
+                        "provider": "openrouter",
+                        "model": "deepseek/deepseek-v4-flash",
+                    },
+                    "semantic_escalation": {
+                        "enabled": True,
+                        "platforms": ["telegram"],
+                        "triggers": ["image"],
+                        "provider": "openrouter",
+                        "model": "deepseek/deepseek-v4-pro",
+                    },
+                }
+            }
+        },
+        platform_key="telegram",
+        route_hints={},
+    )
+
+    assert route["model"] == "deepseek/deepseek-v4-flash"
+    assert route["runtime"]["provider"] == "openrouter"
+
+
 def test_session_info_reports_gateway_model_override(monkeypatch):
     runner = _make_runner()
 

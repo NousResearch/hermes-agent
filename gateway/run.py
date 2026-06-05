@@ -1333,15 +1333,25 @@ def _gateway_local_failover_config(user_config: Optional[dict]) -> dict:
     return failover_cfg if isinstance(failover_cfg, dict) else {}
 
 
+def _gateway_semantic_escalation_config(user_config: Optional[dict]) -> dict:
+    agent_cfg = _gateway_agent_config(user_config)
+    escalation_cfg = agent_cfg.get("semantic_escalation")
+    return escalation_cfg if isinstance(escalation_cfg, dict) else {}
+
+
+def _as_normalized_set(value: Any) -> set[str]:
+    if isinstance(value, str):
+        value = [part.strip() for part in value.split(",")]
+    if not isinstance(value, (list, tuple, set)):
+        return set()
+    return {str(item).strip().lower() for item in value if str(item).strip()}
+
+
 def _compression_auto_reset_on_abort_platforms(user_config: Optional[dict]) -> set[str]:
     cfg = user_config if isinstance(user_config, dict) else {}
     comp_cfg = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
     raw = comp_cfg.get("hygiene_auto_reset_on_abort_platforms") or []
-    if isinstance(raw, str):
-        raw = [part.strip() for part in raw.split(",")]
-    if not isinstance(raw, (list, tuple, set)):
-        return set()
-    return {str(item).strip().lower() for item in raw if str(item).strip()}
+    return _as_normalized_set(raw)
 
 
 def _compression_auto_reset_message_limit_config(
@@ -1365,12 +1375,9 @@ def _compression_auto_reset_message_limit_config(
     if limit <= 0:
         return 0, set()
 
-    raw = comp_cfg.get("hygiene_auto_reset_message_limit_platforms") or []
-    if isinstance(raw, str):
-        raw = [part.strip() for part in raw.split(",")]
-    if not isinstance(raw, (list, tuple, set)):
-        return 0, set()
-    platforms = {str(item).strip().lower() for item in raw if str(item).strip()}
+    platforms = _as_normalized_set(
+        comp_cfg.get("hygiene_auto_reset_message_limit_platforms") or []
+    )
     if not platforms:
         return 0, set()
     return limit, platforms
@@ -1422,6 +1429,49 @@ def _resolve_gateway_override_runtime(
         "credential_pool": runtime.get("credential_pool"),
     }
     return model, resolved_runtime
+
+
+def _resolve_gateway_semantic_escalation(
+    escalation_cfg: dict,
+    runtime_kwargs: dict,
+    *,
+    platform_key: str,
+    route_hints: Optional[dict] = None,
+) -> tuple[str | None, dict | None, str | None]:
+    """Resolve an opt-in gateway escalation route for obvious capability gaps."""
+    if not bool(escalation_cfg.get("enabled")):
+        return None, None, None
+
+    platforms = _as_normalized_set(escalation_cfg.get("platforms") or [])
+    if platforms and platform_key.lower() not in platforms:
+        return None, None, None
+
+    triggers = _as_normalized_set(escalation_cfg.get("triggers") or [])
+    hints = route_hints if isinstance(route_hints, dict) else {}
+    reason = None
+    if "image" in triggers and bool(hints.get("has_image")):
+        reason = "image"
+    if reason is None:
+        return None, None, None
+
+    provider = str(escalation_cfg.get("provider") or "").strip()
+    model = str(escalation_cfg.get("model") or "").strip()
+    if not provider or not model:
+        return None, None, None
+
+    override_cfg = {
+        "enabled": True,
+        "provider": provider,
+        "model": model,
+        "base_url": escalation_cfg.get("base_url"),
+        "api_key": escalation_cfg.get("api_key"),
+        "key_env": escalation_cfg.get("key_env") or escalation_cfg.get("api_key_env"),
+    }
+    override_model, override_runtime = _resolve_gateway_override_runtime(
+        override_cfg,
+        runtime_kwargs,
+    )
+    return override_model, override_runtime, reason
 
 
 def _build_media_placeholder(event) -> str:
@@ -2005,6 +2055,7 @@ class GatewayRunner:
         # preserve the queue.
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
+        self._pending_route_hints_by_session: Dict[str, Dict[str, Any]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
@@ -2786,6 +2837,9 @@ class GatewayRunner:
         model: str,
         runtime_kwargs: dict,
         user_config: Optional[dict] = None,
+        *,
+        platform_key: str = "",
+        route_hints: Optional[dict] = None,
     ) -> dict:
         """Build the effective model/runtime config for a single turn.
 
@@ -2830,6 +2884,33 @@ class GatewayRunner:
                     fallback_model = override_fallbacks
                 logger.info(
                     "Gateway model override active: provider=%s model=%s",
+                    runtime.get("provider"),
+                    model,
+                )
+
+        escalation_cfg = _gateway_semantic_escalation_config(user_config)
+        if bool(escalation_cfg.get("enabled")):
+            try:
+                escalated_model, escalated_runtime, escalation_reason = (
+                    _resolve_gateway_semantic_escalation(
+                        escalation_cfg,
+                        runtime,
+                        platform_key=platform_key or "",
+                        route_hints=route_hints,
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Gateway semantic escalation failed; using current route. error=%s",
+                    exc,
+                )
+                escalated_model, escalated_runtime, escalation_reason = None, None, None
+            if escalated_model and escalated_runtime:
+                model = escalated_model
+                runtime = escalated_runtime
+                logger.info(
+                    "Gateway semantic escalation active: reason=%s provider=%s model=%s",
+                    escalation_reason or "unknown",
                     runtime.get("provider"),
                     model,
                 )
@@ -8605,6 +8686,7 @@ class GatewayRunner:
         # Reset only this session's per-call buffer; other sessions may be
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
+        self._consume_pending_route_hints(session_key)
 
         _is_shared_multi_user = is_shared_multi_user_session(
             source,
@@ -8642,6 +8724,11 @@ class GatewayRunner:
                     audio_paths.append(path)
 
             if image_paths:
+                pending_hints = getattr(self, "_pending_route_hints_by_session", None)
+                if pending_hints is None:
+                    pending_hints = {}
+                    self._pending_route_hints_by_session = pending_hints
+                pending_hints[session_key] = {"has_image": True}
                 # Decide routing: native (attach pixels) vs text (vision_analyze
                 # pre-run + prepend description).  See agent/image_routing.py.
                 _img_mode = self._decide_image_input_mode()
@@ -8817,6 +8904,13 @@ class GatewayRunner:
         if not pending_native:
             return []
         return list(pending_native.pop(session_key, []) or [])
+
+    def _consume_pending_route_hints(self, session_key: str) -> Dict[str, Any]:
+        pending_hints = getattr(self, "_pending_route_hints_by_session", None)
+        if not pending_hints:
+            return {}
+        hints = pending_hints.pop(session_key, {}) or {}
+        return dict(hints) if isinstance(hints, dict) else {}
 
     def _cache_session_source(self, session_key: str, source) -> None:
         if not session_key or source is None:
@@ -12832,6 +12926,7 @@ class GatewayRunner:
                 model,
                 runtime_kwargs,
                 user_config=user_config,
+                platform_key=platform_key,
             )
 
             # Enrich the prompt with image descriptions so the background
@@ -17980,6 +18075,8 @@ class GatewayRunner:
                 model,
                 runtime_kwargs,
                 user_config=user_config,
+                platform_key=platform_key,
+                route_hints=self._consume_pending_route_hints(session_key),
             )
 
             # Check agent cache — reuse the AIAgent from the previous message

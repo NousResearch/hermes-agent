@@ -2015,6 +2015,13 @@ DEFAULT_CONFIG = {
                 "max_primary_retries": 0,
                 "failover_on_stream_errors": [],
             },
+            "semantic_escalation": {
+                "enabled": False,
+                "platforms": [],
+                "triggers": [],
+                "provider": "",
+                "model": "",
+            },
         },
         # When false (default), any file path the agent emits is delivered
         # as a native attachment as long as it isn't under the credential /

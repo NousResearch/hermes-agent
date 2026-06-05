@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { Tip } from '@/components/ui/tooltip'
 import {
   getMessagingPlatforms,
   type MessagingEnvVarInfo,
@@ -22,6 +21,8 @@ import { notify, notifyError } from '@/store/notifications'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PageSearchShell } from '../page-search-shell'
+import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
+import { ListRow } from '../settings/primitives'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { PlatformAvatar } from './platform-icon'
@@ -107,6 +108,47 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
   DISCORD_REPLY_TO_MODE: {
     label: 'Reply style',
     help: 'first, all, or off.',
+    advanced: true
+  },
+  DISCORD_ALLOW_ALL_USERS: {
+    label: 'Allow all Discord users',
+    help: 'Development only. When true, anyone can DM the bot without an allowlist.',
+    advanced: true
+  },
+  DISCORD_HOME_CHANNEL: {
+    label: 'Home channel ID',
+    help: 'Channel where the bot sends proactive messages (cron output, reminders).',
+    advanced: true
+  },
+  DISCORD_HOME_CHANNEL_NAME: {
+    label: 'Home channel name',
+    help: 'Display name for the home channel in logs and status output.',
+    advanced: true
+  },
+  BLUEBUBBLES_ALLOW_ALL_USERS: {
+    label: 'Allow all iMessage users',
+    help: 'When true, skip the BlueBubbles allowlist.',
+    advanced: true
+  },
+  MATTERMOST_ALLOW_ALL_USERS: {
+    label: 'Allow all Mattermost users',
+    advanced: true
+  },
+  MATTERMOST_HOME_CHANNEL: {
+    label: 'Home channel',
+    advanced: true
+  },
+  QQ_ALLOW_ALL_USERS: {
+    label: 'Allow all QQ users',
+    advanced: true
+  },
+  QQBOT_HOME_CHANNEL: {
+    label: 'QQ home channel',
+    help: 'Default channel or group for cron delivery.',
+    advanced: true
+  },
+  QQBOT_HOME_CHANNEL_NAME: {
+    label: 'QQ home channel name',
     advanced: true
   },
   SLACK_BOT_TOKEN: {
@@ -498,7 +540,7 @@ function PlatformDetail({
 
           <section>
             <SectionTitle>Required</SectionTitle>
-            <div className="mt-3 space-y-4">
+            <div className="mt-3 grid gap-1">
               {requiredFields.length > 0 ? (
                 requiredFields.map(field => (
                   <MessagingField
@@ -521,7 +563,7 @@ function PlatformDetail({
           {optionalFields.length > 0 && (
             <section>
               <SectionTitle>Recommended</SectionTitle>
-              <div className="mt-3 space-y-4">
+              <div className="mt-3 grid gap-1">
                 {optionalFields.map(field => (
                   <MessagingField
                     edits={edits}
@@ -547,7 +589,7 @@ function PlatformDetail({
                 <DisclosureCaret open={showAdvanced} size="0.875rem" />
               </button>
               {showAdvanced && (
-                <div className="mt-3 space-y-4">
+                <div className="mt-3 grid gap-1">
                   {advancedFields.map(field => (
                     <MessagingField
                       edits={edits}
@@ -641,48 +683,48 @@ function MessagingField({
   saving: string | null
 }) {
   const copy = fieldCopy(field)
+  const fieldId = `messaging-field-${field.key}`
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <label className="text-sm font-medium text-foreground" htmlFor={`messaging-field-${field.key}`}>
-          {copy.label}
-        </label>
-        {field.is_set && <span className="text-[0.66rem] font-medium text-primary">Saved</span>}
-      </div>
-      <div className="flex items-center gap-2">
-        <Input
-          className="font-mono"
-          id={`messaging-field-${field.key}`}
-          onChange={event => onEdit(field.key, event.target.value)}
-          placeholder={field.is_set ? field.redacted_value || 'Replace current value' : copy.placeholder}
-          type={field.is_password ? 'password' : 'text'}
-          value={edits[field.key] || ''}
-        />
-        {field.url && (
-          <Tip label="Open docs">
-            <Button asChild size="icon-sm" variant="ghost">
+    <ListRow
+      action={
+        <div className="flex items-center gap-2">
+          <Input
+            className={CREDENTIAL_CONTROL_CLASS}
+            id={fieldId}
+            onChange={event => onEdit(field.key, event.target.value)}
+            placeholder={field.is_set ? field.redacted_value || 'Replace current value' : copy.placeholder}
+            type={field.is_password ? 'password' : 'text'}
+            value={edits[field.key] || ''}
+          />
+          {field.url && (
+            <Button asChild className="size-8 shrink-0" title="Open docs" variant="ghost">
               <a href={field.url} rel="noreferrer" target="_blank">
                 <ExternalLink className="size-3.5" />
               </a>
             </Button>
-          </Tip>
-        )}
-        {field.is_set && (
-          <Tip label={`Clear ${field.key}`}>
+          )}
+          {field.is_set && (
             <Button
+              className="size-8 shrink-0"
               disabled={saving === `clear:${field.key}`}
               onClick={() => onClear(field.key)}
-              size="icon-sm"
+              title={`Clear ${field.key}`}
               variant="ghost"
             >
               <Trash2 className="size-3.5" />
             </Button>
-          </Tip>
-        )}
-      </div>
-      {copy.help && <p className="text-xs leading-5 text-muted-foreground">{copy.help}</p>}
-    </div>
+          )}
+        </div>
+      }
+      description={copy.help}
+      title={
+        <span className="flex flex-wrap items-center gap-2">
+          <label htmlFor={fieldId}>{copy.label}</label>
+          {field.is_set && <span className="text-[0.66rem] font-medium text-primary">Saved</span>}
+        </span>
+      }
+    />
   )
 }
 

@@ -88,6 +88,17 @@ def test_lazy_installable_extras_excluded_from_all():
         )
 
 
+def test_dev_extra_excluded_from_all():
+    """End-user installs should not pull test/lint/debug tooling."""
+    optional_dependencies = _load_optional_dependencies()
+
+    assert "dev" in optional_dependencies
+    assert not any(
+        spec == "hermes-agent[dev]"
+        for spec in optional_dependencies["all"]
+    )
+
+
 def test_messaging_extra_includes_qrcode_for_weixin_setup():
     optional_dependencies = _load_optional_dependencies()
 

@@ -37,6 +37,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { profileColor } from '@/lib/profile-color'
+import { sessionMatchesSearch } from '@/lib/session-search'
 import { cn } from '@/lib/utils'
 import {
   $panesFlipped,
@@ -363,11 +364,10 @@ export function ChatSidebar({
       return []
     }
 
-    const needle = trimmedQuery.toLowerCase()
     const out = new Map<string, SessionInfo>()
 
     for (const s of sortedSessions) {
-      if (`${s.title ?? ''} ${s.preview ?? ''} ${s.cwd ?? ''}`.toLowerCase().includes(needle)) {
+      if (sessionMatchesSearch(s, trimmedQuery)) {
         out.set(s.id, s)
       }
     }

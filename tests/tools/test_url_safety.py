@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from tools.url_safety import (
     is_safe_url,
+    async_is_safe_url,
     is_always_blocked_url,
     _is_blocked_ip,
     _global_allow_private_urls,
@@ -193,6 +194,24 @@ class TestIsSafeUrl:
     def test_qq_multimedia_hostname_dns_failure_still_blocked(self):
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
             assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is False
+
+
+class TestAsyncIsSafeUrl:
+    """async_is_safe_url must match is_safe_url (runs DNS in a thread pool)."""
+
+    @pytest.mark.asyncio
+    async def test_public_url_allowed(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert await async_is_safe_url("https://example.com/x") is True
+
+    @pytest.mark.asyncio
+    async def test_localhost_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("127.0.0.1", 0)),
+        ]):
+            assert await async_is_safe_url("http://localhost:8080/") is False
 
 
 class TestIsBlockedIp:

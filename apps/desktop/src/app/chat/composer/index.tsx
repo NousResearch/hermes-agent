@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { chatMessageText } from '@/lib/chat-messages'
+import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
@@ -1056,7 +1057,19 @@ export function ChatBar({
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
-      if (hasComposerPayload) {
+      // Slash commands should execute immediately even while the agent is
+      // busy — they're client-side operations (/yolo, /skin, /new, /help,
+      // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
+      // routes them to executeSlashCommand, which has its own per-command
+      // busy guard for commands that genuinely need an idle session (skill
+      // /send directives).  Queuing them would make every slash command wait
+      // for the current turn to finish, which is how the TUI never behaves.
+      if (!attachments.length && SLASH_COMMAND_RE.test(draft.trim())) {
+        const submitted = draft
+        triggerHaptic('submit')
+        clearDraft()
+        void onSubmit(submitted)
+      } else if (hasComposerPayload) {
         queueCurrentDraft()
       } else {
         // Stop button: an explicit interrupt must actually halt the running

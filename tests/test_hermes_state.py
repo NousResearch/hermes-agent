@@ -2716,6 +2716,44 @@ class TestListSessionsRich:
         ids = [s["id"] for s in sessions]
         assert "branch" in ids, "Branch session should be visible in default list"
 
+    def test_branch_session_visible_after_parent_reopen_and_reend(self, db):
+        """Branch sessions stay visible after the parent is reopened and re-ended.
+
+        Regression for issue #20856: /branch (aka /fork) sessions vanished from
+        /resume and /sessions once the parent was reopened (e.g. resumed) and
+        re-ended with a different end_reason — tui_shutdown overwriting
+        'branched' — which broke the legacy end_reason heuristic. The stable
+        _branched_from marker in model_config keeps them visible.
+        """
+        import json as _json
+
+        db.create_session("parent", "cli")
+        db.end_session("parent", "branched")
+        db.create_session(
+            "branch",
+            "cli",
+            model_config={"_branched_from": "parent"},
+            parent_session_id="parent",
+        )
+        db.append_message("branch", "user", "Exploring the alternative approach")
+
+        # Marker is persisted at creation time.
+        branch_row = db.get_session("branch")
+        cfg = _json.loads(branch_row["model_config"]) if branch_row["model_config"] else {}
+        assert cfg.get("_branched_from") == "parent"
+
+        # Visible immediately after branching.
+        assert "branch" in [s["id"] for s in db.list_sessions_rich()]
+
+        # Parent reopened + re-ended with a different reason (the bug trigger).
+        db.reopen_session("parent")
+        db.end_session("parent", "tui_shutdown")
+
+        # Branch must STILL be visible — the marker survives the parent's
+        # end_reason churn, unlike the legacy 'branched' heuristic.
+        ids = [s["id"] for s in db.list_sessions_rich()]
+        assert "branch" in ids, "Branch should stay visible after parent re-end"
+
     def test_subagent_session_still_hidden(self, db):
         """Sub-agent children (parent NOT ended with 'branched') remain hidden."""
         db.create_session("root", "cli")
@@ -3786,3 +3824,57 @@ class TestSessionArchive:
         both = {s["id"] for s in db.list_sessions_rich(include_archived=True)}
         assert both == {"live", "hidden"}
         assert db.session_count(include_archived=True) == 2
+
+
+
+class TestSessionIdSearch:
+    """Session id search backs Desktop's Search Sessions UX."""
+
+    def _seed(self, db, sid, *, content="ordinary message", archived=False):
+        db.create_session(session_id=sid, source="cli", model="test-model")
+        db.append_message(session_id=sid, role="user", content=content)
+        if archived:
+            db.set_session_archived(sid, True)
+
+    def test_search_sessions_by_id_matches_exact_prefix_and_substring(self, db):
+        self._seed(db, "20260603_090200_abcd12", content="content without id")
+        self._seed(db, "20260602_111111_other99", content="other content")
+
+        assert [s["id"] for s in db.search_sessions_by_id("20260603_090200_abcd12")] == [
+            "20260603_090200_abcd12"
+        ]
+        assert [s["id"] for s in db.search_sessions_by_id("20260603")] == ["20260603_090200_abcd12"]
+        assert [s["id"] for s in db.search_sessions_by_id("ABCD12")] == ["20260603_090200_abcd12"]
+
+    def test_search_sessions_by_id_respects_limit_and_prioritizes_exact_matches(self, db):
+        self._seed(db, "20260603_090200_abcd12")
+        self._seed(db, "20260603_090200_abcd12_child")
+        self._seed(db, "x_20260603_090200_abcd12")
+
+        ids = [s["id"] for s in db.search_sessions_by_id("20260603_090200_abcd12", limit=2)]
+
+        assert ids == ["20260603_090200_abcd12", "20260603_090200_abcd12_child"]
+
+    def test_search_sessions_by_id_can_include_or_exclude_archived(self, db):
+        self._seed(db, "20260603_090200_live")
+        self._seed(db, "20260603_090200_archived", archived=True)
+
+        included = {s["id"] for s in db.search_sessions_by_id("20260603_090200", include_archived=True)}
+        excluded = {s["id"] for s in db.search_sessions_by_id("20260603_090200", include_archived=False)}
+
+        assert included == {"20260603_090200_live", "20260603_090200_archived"}
+        assert excluded == {"20260603_090200_live"}
+
+    def test_search_sessions_by_id_matches_projected_lineage_root_id(self, db):
+        root = "20260602_235959_root99"
+        tip = "20260603_010000_tip01"
+        db.create_session(session_id=root, source="cli")
+        db.append_message(root, role="user", content="root conversation")
+        db.end_session(root, "compression")
+        db.create_session(session_id=tip, source="cli", parent_session_id=root)
+        db.append_message(tip, role="user", content="continued conversation")
+
+        matches = db.search_sessions_by_id("root99")
+
+        assert [s["id"] for s in matches] == [tip]
+        assert matches[0]["_lineage_root_id"] == root

@@ -5958,6 +5958,11 @@ def set_config_value(key: str, value: str):
         "terminal.docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
         "terminal.docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
         "terminal.docker_env": "TERMINAL_DOCKER_ENV",
+        # JSON-valued keys (terminal_tool parses these via json.loads). The user
+        # passes JSON on the CLI, so str(value) below already yields valid JSON —
+        # same as terminal.docker_env. cli.py and gateway/run.py bridge these too.
+        "terminal.docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+        "terminal.docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
         # terminal.cwd intentionally excluded — CLI resolves at runtime,
         # gateway bridges it in gateway/run.py. Persisting to .env causes
         # stale values to poison child processes.

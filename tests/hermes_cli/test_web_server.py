@@ -815,6 +815,24 @@ class TestWebServerEndpoints:
         for key, info in data.items():
             assert info["channel_managed"] is (key in channel_keys)
 
+    def test_platform_scoped_messaging_env_vars_are_channel_managed(self):
+        from hermes_cli.web_server import (
+            _MESSAGING_KEYS_PAGE_KEYS,
+            _build_catalog_entry,
+            _channel_managed_env_keys,
+        )
+
+        discord = _build_catalog_entry("discord")
+        assert "DISCORD_HOME_CHANNEL" in discord["env_vars"]
+        assert "DISCORD_ALLOW_ALL_USERS" in discord["env_vars"]
+
+        managed = _channel_managed_env_keys()
+        assert "DISCORD_HOME_CHANNEL" in managed
+        assert "BLUEBUBBLES_ALLOW_ALL_USERS" in managed
+        assert "MATTERMOST_ALLOW_ALL_USERS" in managed
+        assert "GATEWAY_PROXY_URL" not in managed
+        assert "GATEWAY_PROXY_URL" in _MESSAGING_KEYS_PAGE_KEYS
+
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
         from hermes_cli.config import save_env_value
@@ -973,6 +991,157 @@ class TestWebServerEndpoints:
         assert data["ok"] is False
         assert data["state"] == "not_configured"
         assert "DISCORD_BOT_TOKEN" in data["message"]
+
+    def test_telegram_onboarding_start_strips_poll_token(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+
+        calls = []
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            calls.append((method, path, body, bearer_token))
+            return {
+                "pairing_id": "pair123",
+                "poll_token": "poll-secret",
+                "suggested_username": "hermes_pair123_bot",
+                "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair123_bot",
+                "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair123_bot",
+                "expires_at": "2027-05-18T00:00:00.000Z",
+            }
+
+        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+
+        resp = self.client.post(
+            "/api/messaging/telegram/onboarding/start",
+            json={"bot_name": "Hosted Hermes"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["pairing_id"] == "pair123"
+        assert "poll_token" not in data
+        assert calls == [
+            (
+                "POST",
+                "/v1/telegram/pairings",
+                {"bot_name": "Hosted Hermes"},
+                None,
+            )
+        ]
+
+    def test_telegram_onboarding_ready_and_apply_never_returns_bot_token(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import load_config, load_env
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            if method == "POST":
+                return {
+                    "pairing_id": "pair-ready",
+                    "poll_token": "poll-secret",
+                    "suggested_username": "hermes_pair_ready_bot",
+                    "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair_ready_bot",
+                    "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair_ready_bot",
+                    "expires_at": "2027-05-18T00:00:00.000Z",
+                }
+            assert method == "GET"
+            assert path == "/v1/telegram/pairings/pair-ready"
+            assert bearer_token == "poll-secret"
+            return {
+                "status": "ready",
+                "bot_username": "hermes_pair_ready_bot",
+                "owner_user_id": 123456789,
+                "token": "123456:SECRET",
+            }
+
+        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+
+        start = self.client.post("/api/messaging/telegram/onboarding/start", json={})
+        assert start.status_code == 200
+
+        ready = self.client.get("/api/messaging/telegram/onboarding/pair-ready")
+        assert ready.status_code == 200
+        ready_data = ready.json()
+        assert ready_data["status"] == "ready"
+        assert ready_data["owner_user_id"] == "123456789"
+        assert "token" not in ready_data
+
+        applied = self.client.post(
+            "/api/messaging/telegram/onboarding/pair-ready/apply",
+            json={"allowed_user_ids": ["123456789", "123456789"]},
+        )
+        assert applied.status_code == 200
+        applied_data = applied.json()
+        assert applied_data == {
+            "ok": True,
+            "platform": "telegram",
+            "bot_username": "hermes_pair_ready_bot",
+            "needs_restart": True,
+        }
+        env = load_env()
+        assert env["TELEGRAM_BOT_TOKEN"] == "123456:SECRET"
+        assert env["TELEGRAM_ALLOWED_USERS"] == "123456789"
+        assert load_config()["platforms"]["telegram"]["enabled"] is True
+
+    def test_telegram_onboarding_apply_requires_ready_pairing(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            return {
+                "pairing_id": "pair-waiting",
+                "poll_token": "poll-secret",
+                "suggested_username": "hermes_pair_waiting_bot",
+                "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair_waiting_bot",
+                "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair_waiting_bot",
+                "expires_at": "2027-05-18T00:00:00.000Z",
+            }
+
+        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+
+        start = self.client.post("/api/messaging/telegram/onboarding/start", json={})
+        assert start.status_code == 200
+
+        resp = self.client.post(
+            "/api/messaging/telegram/onboarding/pair-waiting/apply",
+            json={"allowed_user_ids": ["123456789"]},
+        )
+
+        assert resp.status_code == 409
+        assert "not ready" in resp.json()["detail"]
+
+    def test_telegram_onboarding_cancel_clears_local_session(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            return {
+                "pairing_id": "pair-cancel",
+                "poll_token": "poll-secret",
+                "suggested_username": "hermes_pair_cancel_bot",
+                "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair_cancel_bot",
+                "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair_cancel_bot",
+                "expires_at": "2027-05-18T00:00:00.000Z",
+            }
+
+        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+
+        start = self.client.post("/api/messaging/telegram/onboarding/start", json={})
+        assert start.status_code == 200
+
+        cancel = self.client.delete("/api/messaging/telegram/onboarding/pair-cancel")
+        assert cancel.status_code == 200
+
+        status = self.client.get("/api/messaging/telegram/onboarding/pair-cancel")
+        assert status.status_code == 404
 
     def test_session_token_endpoint_removed(self):
         """GET /api/auth/session-token should no longer exist (token injected via HTML)."""
@@ -1967,7 +2136,7 @@ class TestNewEndpoints:
         assert resp.json() == [
             {
                 "name": "web",
-                "label": "🔍 Web Search & Scraping",
+                "label": "Web Search & Scraping",
                 "description": "web_search, web_extract",
                 "enabled": True,
                 "available": True,
@@ -1976,7 +2145,7 @@ class TestNewEndpoints:
             },
             {
                 "name": "skills",
-                "label": "📚 Skills",
+                "label": "Skills",
                 "description": "list, view, manage",
                 "enabled": True,
                 "available": True,
@@ -1985,7 +2154,7 @@ class TestNewEndpoints:
             },
             {
                 "name": "memory",
-                "label": "💾 Memory",
+                "label": "Memory",
                 "description": "persistent memory across sessions",
                 "enabled": False,
                 "available": False,
@@ -4015,4 +4184,3 @@ class TestValidateProviderCredential:
     def test_empty_value_rejected(self):
         data = self._post("OPENAI_API_KEY", "   ").json()
         assert data["ok"] is False
-

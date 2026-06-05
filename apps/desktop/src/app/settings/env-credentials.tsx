@@ -1,16 +1,10 @@
 import { useEffect, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
-import { Input } from '@/components/ui/input'
-import { Tip } from '@/components/ui/tooltip'
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
-import { Check, Eye, EyeOff, type IconComponent, Save, Trash2 } from '@/lib/icons'
-import { cn } from '@/lib/utils'
+import { type IconComponent } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import type { EnvVarInfo } from '@/types/hermes'
 
-import { CONTROL_TEXT } from './constants'
 import { asText, includesQuery, redactedValue, withoutKey } from './helpers'
 import { Pill } from './primitives'
 import type { EnvRowProps } from './types'
@@ -30,143 +24,6 @@ export function filterEnv(info: EnvVarInfo, key: string, q: string, cat: string,
     key.toLowerCase().includes(q) ||
     includesQuery(info.description, q) ||
     Boolean(extra && extra.toLowerCase().includes(q))
-  )
-}
-
-function EnvActions({
-  varKey,
-  info,
-  saving,
-  onEdit,
-  onClear,
-  onReveal,
-  isRevealed,
-  showReveal = true
-}: EnvActionsProps) {
-  return (
-    <div className="flex shrink-0 items-center gap-1.5">
-      {info.url && (
-        <Button asChild size="xs" variant="ghost">
-          <a href={info.url} rel="noreferrer" target="_blank">
-            Docs
-          </a>
-        </Button>
-      )}
-      {info.is_set && showReveal && (
-        <Tip label={isRevealed ? 'Hide value' : 'Reveal value'}>
-          <Button onClick={() => onReveal(varKey)} size="icon-xs" variant="ghost">
-            {isRevealed ? <EyeOff /> : <Eye />}
-          </Button>
-        </Tip>
-      )}
-      <Button onClick={onEdit} size="xs" variant="outline">
-        {info.is_set ? 'Replace' : 'Set'}
-      </Button>
-      {info.is_set && (
-        <Tip label="Clear value">
-          <Button disabled={saving === varKey} onClick={() => onClear(varKey)} size="icon-xs" variant="ghost">
-            <Trash2 />
-          </Button>
-        </Tip>
-      )}
-    </div>
-  )
-}
-
-export function EnvVarRow({
-  varKey,
-  info,
-  edits,
-  revealed,
-  saving,
-  setEdits,
-  onSave,
-  onClear,
-  onReveal,
-  compact = false
-}: EnvRowProps) {
-  const isEditing = edits[varKey] !== undefined
-  const isRevealed = revealed[varKey] !== undefined
-  const value = isRevealed ? revealed[varKey] : info.redacted_value
-  const startEdit = () => setEdits(c => ({ ...c, [varKey]: '' }))
-
-  if (compact && !isEditing) {
-    return (
-      <div className="flex items-center justify-between gap-3 py-1.5">
-        <div className="min-w-0">
-          <div className="truncate font-mono text-[0.72rem] text-muted-foreground">{varKey}</div>
-          <div className="truncate text-[0.68rem] text-muted-foreground/70">{info.description}</div>
-        </div>
-        <EnvActions
-          info={info}
-          isRevealed={isRevealed}
-          onClear={onClear}
-          onEdit={startEdit}
-          onReveal={onReveal}
-          saving={saving}
-          showReveal={false}
-          varKey={varKey}
-        />
-      </div>
-    )
-  }
-
-  return (
-    <div className="grid gap-2 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary)/20 p-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-xs font-medium">{varKey}</span>
-            <Pill tone={info.is_set ? 'primary' : 'muted'}>
-              {info.is_set && <Check className="size-3" />}
-              {info.is_set ? 'Set' : 'Not set'}
-            </Pill>
-          </div>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">{info.description}</p>
-        </div>
-        <EnvActions
-          info={info}
-          isRevealed={isRevealed}
-          onClear={onClear}
-          onEdit={startEdit}
-          onReveal={onReveal}
-          saving={saving}
-          varKey={varKey}
-        />
-      </div>
-
-      {!isEditing && info.is_set && (
-        <div
-          className={cn(
-            'rounded-md px-3 py-2 font-mono text-xs',
-            isRevealed ? 'bg-background text-foreground' : 'bg-muted/30 text-muted-foreground'
-          )}
-        >
-          {value || '---'}
-        </div>
-      )}
-
-      {isEditing && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Input
-            autoFocus
-            className={cn('min-w-56 flex-1 font-mono', CONTROL_TEXT)}
-            onChange={e => setEdits(c => ({ ...c, [varKey]: e.target.value }))}
-            placeholder={info.is_set ? 'Replace current value' : 'Enter value'}
-            type={info.is_password ? 'password' : 'text'}
-            value={edits[varKey]}
-          />
-          <Button disabled={saving === varKey || !edits[varKey]} onClick={() => onSave(varKey)} size="sm">
-            <Save />
-            {saving === varKey ? 'Saving' : 'Save'}
-          </Button>
-          <Button onClick={() => setEdits(c => withoutKey(c, varKey))} size="sm" variant="outline">
-            <Codicon name="close" />
-            Cancel
-          </Button>
-        </div>
-      )}
-    </div>
   )
 }
 
@@ -328,17 +185,6 @@ interface CategoryHeadingProps {
   count?: string
   icon: IconComponent
   title: string
-}
-
-interface EnvActionsProps {
-  varKey: string
-  info: EnvVarInfo
-  saving: string | null
-  onEdit: () => void
-  onClear: (key: string) => void
-  onReveal: (key: string) => void
-  isRevealed: boolean
-  showReveal?: boolean
 }
 
 interface UseEnvCredentials {

@@ -558,6 +558,7 @@ export function DesktopController() {
       busyRef,
       createBackendSessionForSend,
       handleSkinCommand,
+      refreshSessions,
       requestGateway,
       selectedStoredSessionIdRef,
       startFreshSessionDraft,

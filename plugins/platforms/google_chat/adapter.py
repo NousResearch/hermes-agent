@@ -1390,7 +1390,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if arg == "start":
             if not oauth_helper._client_secret_path().exists():
                 await _reply(
-                    "⚠️ No client credentials stored on the host. Send "
+                    "⚠️ No client credentials stored for this profile. Send "
                     "`/setup-files` (no args) for setup instructions."
                 )
                 return True

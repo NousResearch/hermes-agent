@@ -1113,4 +1113,68 @@ describe('createGatewayEventHandler', () => {
       vi.useRealTimers()
     }
   })
+
+  it('persists an abandoned (timed-out) clarify into the transcript when the clarify tool completes', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // Backend clarify timed out: the overlay is still live (Python returned an
+    // empty answer), and the clarify tool's own tool.complete then fires.
+    patchOverlayState({
+      clarify: { choices: ['Scope A', 'Scope B'], question: 'How do you want to scope?', requestId: 'req-1' }
+    })
+
+    onEvent({ payload: { duration_s: 300, name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
+
+    const record = appended.find(msg => msg.role === 'system' && msg.text.startsWith('ask How do you want to scope?'))
+    expect(record).toBeDefined()
+    expect(record?.text).toContain('1. Scope A')
+    expect(record?.text).toContain('2. Scope B')
+    expect(record?.text).toContain('timed out — no selection')
+    // The live overlay is cleared so it doesn't double-render with the record.
+    expect(getOverlayState().clarify).toBeNull()
+  })
+
+  it('only persists an abandoned clarify once even if tool.complete fires twice', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    patchOverlayState({
+      clarify: { choices: ['A'], question: 'Pick?', requestId: 'req-3' }
+    })
+
+    onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
+    // A duplicate clarify tool.complete must not re-persist the same prompt.
+    onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
+
+    const records = appended.filter(msg => msg.role === 'system' && msg.text.startsWith('ask Pick?'))
+    expect(records).toHaveLength(1)
+  })
+
+  it('does not flush the clarify overlay when a non-clarify tool completes', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // A clarify is live, but it's a *different* tool that just completed — the
+    // clarify itself is still pending, so we must not persist or clear it.
+    patchOverlayState({
+      clarify: { choices: ['A', 'B'], question: 'Pick?', requestId: 'req-4' }
+    })
+
+    onEvent({ payload: { name: 'search', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
+
+    expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
+    expect(getOverlayState().clarify).not.toBeNull()
+  })
+
+  it('does not persist when an answered clarify already cleared the overlay before tool.complete', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // Answered path (answerClarify) clears the overlay before the agent's
+    // tool.complete arrives, so there's nothing live to persist.
+    onEvent({ payload: { duration_s: 4.2, name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
+
+    expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
+  })
 })

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { getNested, providerGroup, setNested } from './helpers'
+import { getNested, providerGroup, setNested, stripToolsetLabel, toolsetDisplayLabel } from './helpers'
 
 describe('settings helpers', () => {
   it('reads and writes nested config paths', () => {
@@ -19,6 +19,26 @@ describe('settings helpers', () => {
     expect(() => setNested(config, '__proto__.polluted', true)).toThrow('Unsafe config path')
     expect(() => setNested(config, 'constructor.prototype.polluted', true)).toThrow('Unsafe config path')
     expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  })
+
+  describe('stripToolsetLabel', () => {
+    it('removes leading emoji prefixes from registry labels', () => {
+      expect(stripToolsetLabel('⏰ Cron Jobs')).toBe('Cron Jobs')
+      expect(stripToolsetLabel('⚡ Code Execution')).toBe('Code Execution')
+      expect(stripToolsetLabel('❓ Clarifying Questions')).toBe('Clarifying Questions')
+      expect(stripToolsetLabel('🌐 Browser Automation')).toBe('Browser Automation')
+      expect(stripToolsetLabel('🎨 Image Generation')).toBe('Image Generation')
+    })
+
+    it('leaves plain titles unchanged', () => {
+      expect(stripToolsetLabel('Terminal & Processes')).toBe('Terminal & Processes')
+    })
+  })
+
+  describe('toolsetDisplayLabel', () => {
+    it('strips emoji from toolset rows', () => {
+      expect(toolsetDisplayLabel({ name: 'cronjob', label: '⏰ Cron Jobs' })).toBe('Cron Jobs')
+    })
   })
 
   describe('providerGroup', () => {

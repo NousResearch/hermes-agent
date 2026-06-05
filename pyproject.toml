@@ -61,6 +61,16 @@ dependencies = [
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter==6.0.0",
+  # Markdown -> HTML conversion for rich message delivery (Matrix
+  # `formatted_body`, and the `send_message` tool's HTML path). Now on the
+  # DEFAULT delivery path, not matrix-specific: without it both
+  # gateway/platforms/matrix.py and tools/send_message_tool.py silently fall
+  # back to plain text, so cron/agent deliveries render raw `##`/`**`/tables
+  # in clients like Element (see #32486). Pure-Python py3-none-any wheel
+  # (~108KB, no compiled extensions, no platform constraints), so unlike the
+  # matrix extra's `mautrix`/`python-olm` it's safe to ship everywhere — keeps
+  # it out of the lazy-install path that exists only for the heavy matrix deps.
+  "Markdown==3.10.2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]==2.12.1",  # CVE-2026-32597
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
@@ -104,7 +114,7 @@ dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "pytest-time
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.3", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.3"]
-matrix = ["mautrix[encryption]==0.21.0", "Markdown==3.10.2", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0"]
+matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0"]
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
 # replacement for stdlib xml.etree.ElementTree) to block billion-laughs
@@ -230,7 +240,6 @@ all = [
   # where the user is expected to have a toolchain available.
   "hermes-agent[cron]",
   "hermes-agent[cli]",
-  "hermes-agent[dev]",
   "hermes-agent[pty]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",

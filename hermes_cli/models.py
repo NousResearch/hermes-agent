@@ -52,6 +52,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("deepseek/deepseek-v4-flash",             ""),
     # Qwen
     ("qwen/qwen3.7-max",                       ""),
+    ("qwen/qwen3.7-plus",                      ""),
     ("qwen/qwen3.6-35b-a3b",                   ""),
     # MoonshotAI
     ("moonshotai/kimi-k2.6",                   "recommended"),
@@ -169,6 +170,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-v4-flash",
         # Qwen
         "qwen/qwen3.7-max",
+        "qwen/qwen3.7-plus",
         "qwen/qwen3.6-35b-a3b",
         # MoonshotAI
         "moonshotai/kimi-k2.6",
@@ -588,7 +590,8 @@ def union_with_portal_free_recommendations(
     pair where:
 
     * Portal free recommendations missing from ``curated_ids`` are
-      appended at the front (so the picker shows them first).
+      appended after the curated list (so the in-repo curated models
+      show first and Portal-only picks follow).
     * ``pricing`` gets a synthetic ``{"prompt": "0", "completion": "0"}``
       entry for any free recommendation missing from the live pricing
       map, so :func:`partition_nous_models_by_tier` keeps it.
@@ -623,11 +626,11 @@ def union_with_portal_free_recommendations(
 
     augmented_ids = list(curated_ids)
     seen = set(augmented_ids)
-    # Prepend Portal free recommendations that aren't already curated, so
-    # they appear first in the picker.
+    # Append Portal free recommendations that aren't already curated, so the
+    # in-repo curated ("HA") models show first and Portal-only picks follow.
     new_ones = [mid for mid in portal_free_ids if mid not in seen]
     if new_ones:
-        augmented_ids = new_ones + augmented_ids
+        augmented_ids = augmented_ids + new_ones
 
     return (augmented_ids, augmented_pricing)
 
@@ -653,7 +656,8 @@ def union_with_portal_paid_recommendations(
     ``(model_ids, pricing)`` pair where:
 
     * Portal paid recommendations missing from ``curated_ids`` are
-      appended at the front (so the picker shows them first).
+      appended after the curated list (so the in-repo curated models
+      show first and Portal-only picks follow).
     * ``pricing`` is left untouched — we deliberately do NOT synthesize
       pricing entries for paid models. Live pricing is fetched separately
       via :func:`get_pricing_for_provider`; if the live endpoint hasn't
@@ -688,11 +692,11 @@ def union_with_portal_paid_recommendations(
 
     augmented_ids = list(curated_ids)
     seen = set(augmented_ids)
-    # Prepend Portal paid recommendations that aren't already curated, so
-    # the Portal-blessed picks surface first in the picker.
+    # Append Portal paid recommendations that aren't already curated, so the
+    # in-repo curated ("HA") models show first and Portal-only picks follow.
     new_ones = [mid for mid in portal_paid_ids if mid not in seen]
     if new_ones:
-        augmented_ids = new_ones + augmented_ids
+        augmented_ids = augmented_ids + new_ones
 
     return (augmented_ids, dict(pricing))
 

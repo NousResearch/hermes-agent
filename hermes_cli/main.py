@@ -8039,7 +8039,10 @@ def _update_via_zip(args):
     # may point to a Python without FTS5.  Rebuild it so the new managed
     # uv provides a fresh interpreter with FTS5 guaranteed.
     if fresh_bootstrap and uv_bin:
-        rebuild_venv(uv_bin, PROJECT_ROOT / "venv")
+        if not rebuild_venv(uv_bin, PROJECT_ROOT / "venv"):
+            raise RuntimeError(
+                "venv rebuild failed; aborting update before dependency install"
+            )
 
     pip_cmd = [sys.executable, "-m", "pip"]
     if not uv_bin:
@@ -10224,7 +10227,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 return
             print("✗ Not a git repository. Please reinstall:")
             print(
-                "  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+                "  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
             )
             sys.exit(1)
 
@@ -10582,7 +10585,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # may point to a Python without FTS5.  Rebuild it so the new managed
         # uv provides a fresh interpreter with FTS5 guaranteed.
         if fresh_bootstrap and uv_bin:
-            rebuild_venv(uv_bin, PROJECT_ROOT / "venv")
+            if not rebuild_venv(uv_bin, PROJECT_ROOT / "venv"):
+                raise RuntimeError(
+                    "venv rebuild failed; aborting update before dependency install"
+                )
 
         pip_cmd = [sys.executable, "-m", "pip"]
         if not uv_bin:

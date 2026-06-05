@@ -78,6 +78,31 @@ function sendWithTimeout(chatId, payload, timeoutMs = SEND_TIMEOUT_MS) {
   return Promise.race([sock.sendMessage(chatId, payload), timeoutPromise])
     .finally(() => clearTimeout(timer));
 }
+// Normalize a chatId for Baileys' sendMessage().
+// Baileys calls jidDecode() internally which requires a valid JID
+// (number@server). The gateway and `hermes send` may pass:
+//   - "whatsapp:+61XXXXXXXXX"   (URI scheme)
+//   - "+61XXXXXXXXX"            (E.164)
+//   - "61XXXXXXXXX"             (digits only)
+//   - "61XXXXXXXXX@s.whatsapp.net"  (already valid JID)
+//   - "123...@g.us"             (group, unchanged)
+//   - "123...@lid" / "@newsletter"  (unchanged)
+// Anything already containing '@' is left alone; otherwise we strip
+// the `whatsapp:` URI scheme, drop a leading `+`, and append the
+// standard WhatsApp user server.
+function normalizeChatId(raw) {
+  if (typeof raw !== 'string' || raw.length === 0) return raw;
+  if (raw.includes('@')) return raw;  // already a JID
+  let s = raw.trim();
+  if (s.toLowerCase().startsWith('whatsapp:')) {
+    s = s.substring('whatsapp:'.length);
+  }
+  s = s.replace(/^\+/, '');
+  // Strip any non-digit characters that might sneak in (spaces, dashes).
+  const digits = s.replace(/\D/g, '');
+  if (digits.length < 5) return raw;  // give up — let Baileys complain
+  return `${digits}@s.whatsapp.net`;
+}
 
 function formatOutgoingMessage(message) {
   // In bot mode, messages come from a different number so the prefix is
@@ -503,8 +528,9 @@ app.post('/send', async (req, res) => {
   try {
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
+    const targetJid = normalizeChatId(chatId);
     for (let i = 0; i < chunks.length; i += 1) {
-      const sent = await sendWithTimeout(chatId, { text: chunks[i] });
+      const sent = await sendWithTimeout(targetJid, { text: chunks[i] });
       trackSentMessageId(sent);
       if (sent?.key?.id) messageIds.push(sent.key.id);
       if (chunks.length > 1 && i < chunks.length - 1) {
@@ -534,14 +560,15 @@ app.post('/edit', async (req, res) => {
   }
 
   try {
-    const key = { id: messageId, fromMe: true, remoteJid: chatId };
+    const targetJid = normalizeChatId(chatId);
+    const key = { id: messageId, fromMe: true, remoteJid: targetJid };
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
 
-    await sendWithTimeout(chatId, { text: chunks[0], edit: key });
+    await sendWithTimeout(targetJid, { text: chunks[0], edit: key });
     if (chunks.length > 1) {
       for (let i = 1; i < chunks.length; i += 1) {
-        const sent = await sendWithTimeout(chatId, { text: chunks[i] });
+        const sent = await sendWithTimeout(targetJid, { text: chunks[i] });
         trackSentMessageId(sent);
         if (sent?.key?.id) messageIds.push(sent.key.id);
         if (i < chunks.length - 1) {
@@ -642,7 +669,7 @@ app.post('/send-media', async (req, res) => {
         break;
     }
 
-    const sent = await sendWithTimeout(chatId, msgPayload);
+    const sent = await sendWithTimeout(normalizeChatId(chatId), msgPayload);
 
     trackSentMessageId(sent);
 
@@ -662,7 +689,7 @@ app.post('/typing', async (req, res) => {
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
 
   try {
-    await sock.sendPresenceUpdate('composing', chatId);
+    await sock.sendPresenceUpdate('composing', normalizeChatId(chatId));
     res.json({ success: true });
   } catch (err) {
     res.json({ success: false });

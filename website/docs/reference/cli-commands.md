@@ -1361,6 +1361,23 @@ hermes dashboard
 hermes dashboard --port 8080 --no-open
 ```
 
+### `hermes dashboard register`
+
+Register this install as a self-hosted dashboard with your Nous Portal account, so the dashboard's OAuth (Nous) auth gate can be used. Resolves your existing Nous login (run `hermes setup` first if you're not logged in), creates an OAuth client, writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` into `~/.hermes/.env`, and prints how to engage the login gate. Not available in managed/hosted installs, where the client id is provisioned by the hosting platform. You can also register, name, and revoke dashboards from the Portal [`/local-dashboards`](https://portal.nousresearch.com/local-dashboards) page.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--name` | auto-generated | Human-readable label for the dashboard |
+| `--redirect-uri` | — | Public HTTPS OAuth redirect URI for an internet-facing host, e.g. `https://hermes.example.com/auth/callback`. Omit for localhost-only use. |
+| `--portal-url` | the portal you logged into | Override the Nous Portal base URL (the access token must be valid there). Also settable via `HERMES_DASHBOARD_PORTAL_URL`. Mainly for staging/preview. |
+
+```bash
+hermes dashboard register
+# ✓ Registered dashboard "swift_falcon"
+# …writes HERMES_DASHBOARD_OAUTH_CLIENT_ID to ~/.hermes/.env
+```
+
+
 ## `hermes profile`
 
 ```bash

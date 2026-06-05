@@ -1790,6 +1790,13 @@ def list_authenticated_providers(
                 else (f"env:{key_env}" if key_env else "")
             )
 
+            # Read discover_models from the entry (same semantics as
+            # section 3: true by default, set false to keep the explicit
+            # ``models:`` list instead of replacing it with live /models).
+            discover = entry.get("discover_models", True)
+            if isinstance(discover, str):
+                discover = discover.lower() not in {"false", "no", "0"}
+
             group_key = (api_url, credential_identity, api_mode)
             if group_key not in groups:
                 # Strip per-model suffix so "Ollama — GLM 5.1" becomes
@@ -1810,9 +1817,15 @@ def list_authenticated_providers(
                     "api_url": api_url,
                     "api_key": api_key,
                     "models": [],
+                    "discover_models": discover,
                 }
-            elif api_key and not groups[group_key].get("api_key"):
-                groups[group_key]["api_key"] = api_key
+            else:
+                if api_key and not groups[group_key].get("api_key"):
+                    groups[group_key]["api_key"] = api_key
+                # If any entry in this group opts out of discovery,
+                # honour that for the whole grouped row.
+                if not discover:
+                    groups[group_key]["discover_models"] = False
 
             # The singular ``model:`` field only holds the currently
             # active model. Hermes's own writer (main.py::_save_custom_provider)
@@ -1901,7 +1914,16 @@ def list_authenticated_providers(
             # - Without an api_key AND no explicit models, fall through to
             #   live discovery so bare-endpoint custom providers (local
             #   llama.cpp / Ollama servers) still appear populated.
-            should_probe = bool(api_url) and (bool(api_key) or not grp["models"])
+            # - When discover_models: false is set, skip live discovery and
+            #   keep the explicit ``models:`` list regardless of whether an
+            #   api_key is present. This supports endpoints that expose a
+            #   full aggregator catalog via /models but only serve a subset
+            #   (parity with section 3's user ``providers:`` behaviour).
+            should_probe = (
+                bool(api_url)
+                and (bool(api_key) or not grp["models"])
+                and grp.get("discover_models", True)
+            )
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models

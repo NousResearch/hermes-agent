@@ -29,6 +29,10 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.model_metadata import is_local_endpoint
+
+# Modes that use the Anthropic Message response format (content list, stop_reason, etc.)
+# claude_code_subprocess returns the same structure via SimpleNamespace, so it's included.
+_ANTHROPIC_RESPONSE_MODES = frozenset({"anthropic_messages", "claude_code_subprocess"})
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
@@ -615,7 +619,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
 
-    if agent.api_mode == "anthropic_messages":
+    if agent.api_mode in _ANTHROPIC_RESPONSE_MODES:
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
         ctx_len = getattr(agent, "context_compressor", None)

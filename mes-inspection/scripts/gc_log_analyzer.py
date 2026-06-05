@@ -41,6 +41,11 @@ _CMS_RE = re.compile(
 )
 
 
+def _escape_sed_pattern(s: str) -> str:
+    """转义 sed 模式中的特殊字符。"""
+    return s.replace("\\", "\\\\").replace("/", "\\/").replace("&", "\\&")
+
+
 def _to_mb(value: int, unit: str) -> int:
     return value if unit == "M" else value // 1024
 
@@ -118,11 +123,12 @@ class GcLogAnalyzer:
     def _build_fetch_cmd(
         self, log_path: str, start_time: str = None, end_time: str = None
     ) -> str:
-        # shlex.quote 防止命令注入（用户输入通过 sed 模式拼接到 shell）
+        # log_path 使用 shlex.quote（shell 顶层参数）；
+        # start_time/end_time 使用 _escape_sed_pattern（sed /pattern/ 内部）
         if start_time and end_time:
-            return f"sed -n '/{shlex.quote(start_time)}/,/{shlex.quote(end_time)}/p' {shlex.quote(log_path)}"
+            return f"sed -n '/{_escape_sed_pattern(start_time)}/,/{_escape_sed_pattern(end_time)}/p' {shlex.quote(log_path)}"
         if start_time:
-            return f"sed -n '/{shlex.quote(start_time)}/,$p' {shlex.quote(log_path)}"
+            return f"sed -n '/{_escape_sed_pattern(start_time)}/,$p' {shlex.quote(log_path)}"
         return f"tail -n {MAX_LINES} {shlex.quote(log_path)}"
 
     @staticmethod

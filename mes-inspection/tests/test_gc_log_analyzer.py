@@ -4,7 +4,7 @@ import subprocess
 from unittest.mock import patch, MagicMock
 import pytest
 
-from scripts.gc_log_analyzer import GcLogEntry, GcLogAnalyzer
+from scripts.gc_log_analyzer import GcLogEntry, GcLogAnalyzer, _escape_sed_pattern
 
 
 # ── GcLogEntry 解析测试 ──────────────────────────────────────────────
@@ -220,4 +220,30 @@ class TestGcLogAnalyzerFetch:
         analyzer = GcLogAnalyzer({"host": "10.0.0.1", "gc_log_path": "/tmp/gc.log"})
         analyzer.fetch_gc_log(start_time="'; rm -rf / #")
         cmd_arg = mock_executor.run.call_args[0][0]
-        assert "rm -rf" not in cmd_arg or "'" in cmd_arg or "\\'" in cmd_arg
+        assert "sed" in cmd_arg
+        # 注入载荷中的 / 被转义为 \/，不会闭合 sed 模式分隔符
+        assert "\\/" in cmd_arg
+
+
+class TestEscapeSedPattern:
+    """_escape_sed_pattern 转义测试。"""
+
+    def test_normal_timestamp_unchanged(self):
+        assert _escape_sed_pattern("2026-06-05T01:00:00") == "2026-06-05T01:00:00"
+
+    def test_slash_escaped(self):
+        assert _escape_sed_pattern("a/b") == "a\\/b"
+
+    def test_ampersand_escaped(self):
+        assert _escape_sed_pattern("a&b") == "a\\&b"
+
+    def test_backslash_escaped(self):
+        assert _escape_sed_pattern("a\\b") == "a\\\\b"
+
+    def test_injection_payload_fully_escaped(self):
+        payload = "'; rm -rf / #"
+        escaped = _escape_sed_pattern(payload)
+        # 所有 / 被转义
+        assert "/" not in escaped.replace("\\/", "")
+        # & 被转义
+        assert "&" not in escaped.replace("\\&", "")

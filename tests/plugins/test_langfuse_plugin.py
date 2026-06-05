@@ -5,6 +5,7 @@ import importlib
 import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -710,6 +711,62 @@ class TestRequestMessageCoercion:
             user_message="u",
         ) == [{"role": "user", "content": "h"}]
         assert mod._coerce_request_messages(user_message="u") == [{"role": "user", "content": "u"}]
+
+
+class TestAssistantMessageSerialization:
+    def test_serialize_assistant_message_prefers_reasoning(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        message = SimpleNamespace(
+            content="answer",
+            reasoning="primary reasoning",
+            reasoning_content="fallback reasoning",
+            reasoning_details=[{"type": "summary", "text": "structured reasoning"}],
+        )
+
+        assert mod._serialize_assistant_message(message)["reasoning"] == "primary reasoning"
+
+    def test_serialize_assistant_message_uses_reasoning_content_when_reasoning_absent(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        message = SimpleNamespace(
+            content="answer",
+            reasoning=None,
+            reasoning_content="provider scratchpad",
+            reasoning_details=[{"type": "summary", "text": "structured reasoning"}],
+        )
+
+        assert mod._serialize_assistant_message(message)["reasoning"] == "provider scratchpad"
+
+    def test_serialize_assistant_message_uses_structured_reasoning_details(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        reasoning_details = [
+            {"type": "summary", "text": "checked tools"},
+            {"type": "encrypted_content", "encrypted_content": b"opaque"},
+        ]
+        message = SimpleNamespace(
+            content="answer",
+            reasoning=None,
+            reasoning_content=None,
+            reasoning_details=reasoning_details,
+        )
+
+        assert mod._serialize_assistant_message(message)["reasoning"] == [
+            {"type": "summary", "text": "checked tools"},
+            {"type": "encrypted_content", "encrypted_content": {"type": "bytes", "len": 6}},
+        ]
+
+    def test_serialize_assistant_message_without_reasoning_fields_sets_none(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        message = SimpleNamespace(content="answer")
+
+        assert mod._serialize_assistant_message(message)["reasoning"] is None
 
 
 class TestToolCallOutputBackfill:

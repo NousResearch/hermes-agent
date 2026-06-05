@@ -530,10 +530,18 @@ def _serialize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
     return serialized
 
 
+def _extract_assistant_reasoning(message: Any) -> Any:
+    for field in ("reasoning", "reasoning_content", "reasoning_details"):
+        value = getattr(message, field, None)
+        if value is not None:
+            return _safe_value(value)
+    return None
+
+
 def _serialize_assistant_message(message: Any) -> dict[str, Any]:
     return {
         "content": _safe_value(getattr(message, "content", None)),
-        "reasoning": _safe_value(getattr(message, "reasoning", None)),
+        "reasoning": _extract_assistant_reasoning(message),
         "tool_calls": _serialize_tool_calls(getattr(message, "tool_calls", None)),
     }
 

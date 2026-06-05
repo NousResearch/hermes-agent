@@ -74,6 +74,9 @@ _DEFAULT_PROVIDER_MODELS = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "kiro-acp": [
+        "kiro-cli",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",

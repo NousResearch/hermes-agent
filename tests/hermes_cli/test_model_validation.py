@@ -159,6 +159,8 @@ class TestNormalizeProvider:
         assert normalize_provider("moonshot") == "kimi-coding"
         assert normalize_provider("step") == "stepfun"
         assert normalize_provider("github-copilot") == "copilot"
+        assert normalize_provider("kiro") == "kiro-acp"
+        assert normalize_provider("kiro-cli") == "kiro-acp"
 
     def test_case_insensitive(self):
         assert normalize_provider("OpenRouter") == "openrouter"
@@ -171,6 +173,7 @@ class TestProviderLabel:
         assert provider_label("stepfun") == "StepFun Step Plan"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
+        assert provider_label("kiro-acp") == "Kiro CLI (ACP)"
         assert provider_label("auto") == "Auto"
 
     def test_unknown_provider_preserves_original_name(self):
@@ -214,6 +217,9 @@ class TestProviderModelIds:
         with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
+
+    def test_kiro_acp_returns_kiro_cli_label(self):
+        assert provider_model_ids("kiro-acp") == ["kiro-cli"]
 
 
 # -- fetch_api_models --------------------------------------------------------

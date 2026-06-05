@@ -155,6 +155,9 @@ _PROVIDER_ALIASES = {
     "github-models": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "kiro": "kiro-acp",
+    "kiro-cli": "kiro-acp",
+    "kiro-cli-acp": "kiro-acp",
     "tencent": "tencent-tokenhub",
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
@@ -3820,7 +3823,7 @@ def resolve_provider_client(
             or _read_main_model(),
             provider,
         )
-        if provider == "copilot-acp":
+        if provider in {"copilot-acp", "kiro-acp"}:
             api_key = str(creds.get("api_key", "")).strip()
             base_url = str(creds.get("base_url", "")).strip()
             command = str(creds.get("command", "")).strip() or None

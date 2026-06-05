@@ -45,7 +45,7 @@ def _resolve_requests_verify() -> bool | str:
 # Only these are stripped — Ollama-style "model:tag" colons (e.g. "qwen3.5:27b")
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
-    "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
+    "openrouter", "nous", "openai-codex", "copilot", "copilot-acp", "kiro-acp",
     "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita",
     "qwen-oauth",
@@ -1695,7 +1695,7 @@ def get_model_context_length(
     # This catches account-specific models (e.g. claude-opus-4.6-1m) that
     # don't exist in models.dev. For models that ARE in models.dev, this
     # returns the provider-enforced limit which is what users can actually use.
-    if effective_provider in {"copilot", "copilot-acp", "github-copilot"}:
+    if effective_provider in {"copilot", "copilot-acp", "kiro-acp", "github-copilot"}:
         try:
             from hermes_cli.models import get_copilot_model_context
             ctx = get_copilot_model_context(model, api_key=api_key)

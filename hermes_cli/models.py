@@ -216,6 +216,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "kiro-acp": [
+        "kiro-cli",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -920,6 +923,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
+    ProviderEntry("kiro-acp",       "Kiro CLI (ACP)",           "Kiro CLI ACP (Spawns kiro-cli-chat acp --trust-all-tools)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
     ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (Code Assist OAuth flow)"),
@@ -1081,6 +1085,9 @@ _PROVIDER_ALIASES = {
     "github-model": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "kiro": "kiro-acp",
+    "kiro-cli": "kiro-acp",
+    "kiro-cli-acp": "kiro-acp",
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
@@ -2066,6 +2073,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         return get_codex_model_ids(access_token=access_token)
     if normalized == "xai-oauth":
         return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
+    if normalized == "kiro-acp":
+        return list(_PROVIDER_MODELS.get("kiro-acp", ["kiro-cli"]))
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())

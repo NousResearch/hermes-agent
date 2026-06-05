@@ -1494,8 +1494,8 @@ class TestCopilotACPStreamingDecision:
             if getattr(agent, "_disable_streaming", False):
                 _use_streaming = False
             elif (
-                agent.provider == "copilot-acp"
-                or str(agent.base_url or "").lower().startswith("acp://copilot")
+                agent.provider in {"copilot-acp", "kiro-acp"}
+                or str(agent.base_url or "").lower().startswith("acp://")
                 or str(agent.base_url or "").lower().startswith("acp+tcp://")
             ):
                 _use_streaming = False
@@ -1518,8 +1518,8 @@ class TestCopilotACPStreamingDecision:
 
         _use_streaming = True
         if (
-            agent.provider == "copilot-acp"
-            or str(agent.base_url or "").lower().startswith("acp://copilot")
+            agent.provider in {"copilot-acp", "kiro-acp"}
+            or str(agent.base_url or "").lower().startswith("acp://")
             or str(agent.base_url or "").lower().startswith("acp+tcp://")
         ):
             _use_streaming = False
@@ -1539,8 +1539,8 @@ class TestCopilotACPStreamingDecision:
 
         _use_streaming = True
         if (
-            agent.provider == "copilot-acp"
-            or str(agent.base_url or "").lower().startswith("acp://copilot")
+            agent.provider in {"copilot-acp", "kiro-acp"}
+            or str(agent.base_url or "").lower().startswith("acp://")
             or str(agent.base_url or "").lower().startswith("acp+tcp://")
         ):
             _use_streaming = False
@@ -1566,8 +1566,8 @@ class TestCopilotACPStreamingDecision:
         if getattr(agent, "_disable_streaming", False):
             _use_streaming = False
         elif (
-            agent.provider == "copilot-acp"
-            or str(agent.base_url or "").lower().startswith("acp://copilot")
+            agent.provider in {"copilot-acp", "kiro-acp"}
+            or str(agent.base_url or "").lower().startswith("acp://")
             or str(agent.base_url or "").lower().startswith("acp+tcp://")
         ):
             _use_streaming = False

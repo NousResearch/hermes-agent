@@ -30,6 +30,7 @@ class TestProviderRegistry:
 
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
+        ("kiro-acp", "Kiro CLI ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
@@ -113,6 +114,7 @@ class TestProviderRegistry:
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
+        assert PROVIDER_REGISTRY["kiro-acp"].inference_base_url == "acp://kiro"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
@@ -147,6 +149,8 @@ PROVIDER_ENV_VARS = (
     "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
     "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_ACP_BASE_URL",
+    "HERMES_KIRO_ACP_COMMAND", "KIRO_CLI_PATH", "HERMES_KIRO_ACP_ARGS",
+    "KIRO_ACP_BASE_URL",
 )
 
 
@@ -228,6 +232,11 @@ class TestResolveProvider:
     def test_alias_github_copilot_acp(self):
         assert resolve_provider("github-copilot-acp") == "copilot-acp"
         assert resolve_provider("copilot-acp-agent") == "copilot-acp"
+
+    def test_alias_kiro_acp(self):
+        assert resolve_provider("kiro") == "kiro-acp"
+        assert resolve_provider("kiro-cli") == "kiro-acp"
+        assert resolve_provider("kiro-cli-acp") == "kiro-acp"
 
     def test_explicit_huggingface(self):
         assert resolve_provider("huggingface") == "huggingface"
@@ -373,6 +382,40 @@ class TestApiKeyProviderStatus:
         assert status["args"] == ["--acp", "--stdio", "--debug"]
         assert status["base_url"] == "acp://copilot"
 
+    def test_kiro_acp_status_uses_kiro_defaults(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
+
+        status = get_external_process_provider_status("kiro-acp")
+
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["command"] == "kiro-cli-chat"
+        assert status["resolved_command"] == "/opt/bin/kiro-cli-chat"
+        assert status["args"] == ["acp", "--trust-all-tools"]
+        assert status["base_url"] == "acp://kiro"
+
+    def test_kiro_acp_status_respects_env_overrides(self, monkeypatch):
+        monkeypatch.setenv("HERMES_KIRO_ACP_COMMAND", "custom-kiro")
+        monkeypatch.setenv("HERMES_KIRO_ACP_ARGS", "acp --trust-all-tools --debug")
+        monkeypatch.setenv("KIRO_ACP_BASE_URL", "acp+tcp://127.0.0.1:5555")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
+
+        status = get_external_process_provider_status("kiro-acp")
+
+        assert status["command"] == "custom-kiro"
+        assert status["resolved_command"] == "/opt/bin/custom-kiro"
+        assert status["args"] == ["acp", "--trust-all-tools", "--debug"]
+        assert status["base_url"] == "acp+tcp://127.0.0.1:5555"
+
+    def test_kiro_acp_status_uses_alias_command_env(self, monkeypatch):
+        monkeypatch.setenv("KIRO_CLI_PATH", "kiro-from-alias")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
+
+        status = get_external_process_provider_status("kiro-acp")
+
+        assert status["command"] == "kiro-from-alias"
+        assert status["resolved_command"] == "/opt/bin/kiro-from-alias"
+
     def test_get_auth_status_dispatches_to_external_process(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
 
@@ -478,6 +521,27 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["command"] == "/usr/local/bin/copilot"
         assert creds["args"] == ["--acp", "--stdio"]
         assert creds["source"] == "process"
+
+    def test_resolve_kiro_acp_with_local_cli(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        creds = resolve_external_process_provider_credentials("kiro-acp")
+
+        assert creds["provider"] == "kiro-acp"
+        assert creds["api_key"] == "kiro-acp"
+        assert creds["base_url"] == "acp://kiro"
+        assert creds["command"] == "/usr/local/bin/kiro-cli-chat"
+        assert creds["args"] == ["acp", "--trust-all-tools"]
+        assert creds["source"] == "process"
+
+    def test_resolve_kiro_acp_missing_cli_raises_provider_specific_error(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: None)
+
+        with pytest.raises(AuthError) as excinfo:
+            resolve_external_process_provider_credentials("kiro-acp")
+
+        assert excinfo.value.code == "missing_kiro_cli"
+        assert "Kiro CLI" in str(excinfo.value)
 
     def test_resolve_kimi_with_key(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "kimi-secret-key")
@@ -683,6 +747,20 @@ class TestRuntimeProviderResolution:
         assert result["base_url"] == "acp://copilot"
         assert result["command"] == "/usr/local/bin/copilot"
         assert result["args"] == ["--acp", "--stdio", "--debug"]
+
+    def test_runtime_kiro_acp_uses_process_runtime(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="kiro-acp")
+
+        assert result["provider"] == "kiro-acp"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "kiro-acp"
+        assert result["base_url"] == "acp://kiro"
+        assert result["command"] == "/usr/local/bin/kiro-cli-chat"
+        assert result["args"] == ["acp", "--trust-all-tools"]
 
 
 # =============================================================================

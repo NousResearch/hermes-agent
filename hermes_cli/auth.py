@@ -90,6 +90,7 @@ MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_KIRO_ACP_BASE_URL = "acp://kiro"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
@@ -228,6 +229,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="external_process",
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
+    ),
+    "kiro-acp": ProviderConfig(
+        id="kiro-acp",
+        name="Kiro CLI ACP",
+        auth_type="external_process",
+        inference_base_url=DEFAULT_KIRO_ACP_BASE_URL,
+        base_url_env_var="KIRO_ACP_BASE_URL",
     ),
     "gemini": ProviderConfig(
         id="gemini",
@@ -1499,6 +1507,7 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        "kiro": "kiro-acp", "kiro-cli": "kiro-acp", "kiro-cli-acp": "kiro-acp",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
@@ -5709,19 +5718,61 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
+_EXTERNAL_PROCESS_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "copilot-acp": {
+        "command_env": "HERMES_COPILOT_ACP_COMMAND",
+        "command_alias_env": "COPILOT_CLI_PATH",
+        "default_command": "copilot",
+        "args_env": "HERMES_COPILOT_ACP_ARGS",
+        "default_args": ["--acp", "--stdio"],
+        "missing_code": "missing_copilot_cli",
+        "missing_message": (
+            "Could not find the Copilot CLI command '{command}'. "
+            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+        ),
+        "api_key_marker": "copilot-acp",
+    },
+    "kiro-acp": {
+        "command_env": "HERMES_KIRO_ACP_COMMAND",
+        "command_alias_env": "KIRO_CLI_PATH",
+        "default_command": "kiro-cli-chat",
+        "args_env": "HERMES_KIRO_ACP_ARGS",
+        "default_args": ["acp", "--trust-all-tools"],
+        "missing_code": "missing_kiro_cli",
+        "missing_message": (
+            "Could not find the Kiro CLI command '{command}'. "
+            "Install kiro-cli-chat or set HERMES_KIRO_ACP_COMMAND/KIRO_CLI_PATH."
+        ),
+        "api_key_marker": "kiro-acp",
+    },
+}
+
+
+def _resolve_external_process_command(provider_id: str) -> str:
+    defaults = _EXTERNAL_PROCESS_DEFAULTS.get(provider_id, {})
+    command_env = defaults.get("command_env", "")
+    alias_env = defaults.get("command_alias_env", "")
+    return (
+        os.getenv(command_env, "").strip()
+        or os.getenv(alias_env, "").strip()
+        or defaults.get("default_command", "")
+    )
+
+
+def _resolve_external_process_args(provider_id: str) -> List[str]:
+    defaults = _EXTERNAL_PROCESS_DEFAULTS.get(provider_id, {})
+    raw_args = os.getenv(defaults.get("args_env", ""), "").strip()
+    return shlex.split(raw_args) if raw_args else list(defaults.get("default_args", []))
+
+
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for providers that run a local subprocess."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    command = _resolve_external_process_command(provider_id)
+    args = _resolve_external_process_args(provider_id)
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:
         base_url = pconfig.inference_base_url
@@ -5758,12 +5809,12 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_gemini_oauth_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
-    if target == "copilot-acp":
-        return get_external_process_provider_status(target)
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
     # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
+    if pconfig and pconfig.auth_type == "external_process":
+        return get_external_process_provider_status(target)
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
     # AWS SDK providers (Bedrock) — check via boto3 credential chain
@@ -5912,25 +5963,25 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    command = _resolve_external_process_command(provider_id)
+    args = _resolve_external_process_args(provider_id)
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
+        defaults = _EXTERNAL_PROCESS_DEFAULTS.get(provider_id, {})
+        missing_message = defaults.get(
+            "missing_message",
+            "Could not find the external-process command '{command}'.",
+        )
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            missing_message.format(command=command),
             provider=provider_id,
-            code="missing_copilot_cli",
+            code=defaults.get("missing_code", "missing_external_process_cli"),
         )
 
+    defaults = _EXTERNAL_PROCESS_DEFAULTS.get(provider_id, {})
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": defaults.get("api_key_marker", provider_id),
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

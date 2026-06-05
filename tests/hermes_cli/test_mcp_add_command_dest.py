@@ -41,6 +41,7 @@ def _build_parser():
     mcp_add.add_argument("name")
     mcp_add.add_argument("--url")
     mcp_add.add_argument("--command", dest="mcp_command")
+    mcp_add.add_argument("--env", action="append", nargs="+", default=[])
 
     return parser
 
@@ -85,3 +86,21 @@ class TestMcpAddCommandDest:
         assert args.command == "mcp"
         assert args.mcp_command is None
         assert args.url is None
+
+    def test_env_flag_is_repeatable(self):
+        """Repeated --env flags must preserve every KEY=VALUE assignment."""
+        parser = _build_parser()
+        args = parser.parse_args([
+            "mcp",
+            "add",
+            "github",
+            "--command",
+            "npx",
+            "--env",
+            "A=1",
+            "--env",
+            "B=2",
+            "C=3",
+        ])
+
+        assert args.env == [["A=1"], ["B=2", "C=3"]]

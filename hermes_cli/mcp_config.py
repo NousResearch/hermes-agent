@@ -128,6 +128,10 @@ def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
     """Parse ``KEY=VALUE`` strings from CLI args into an env dict."""
     parsed: Dict[str, str] = {}
     for item in raw_env or []:
+        if isinstance(item, (list, tuple)):
+            nested = _parse_env_assignments(list(item))
+            parsed.update(nested)
+            continue
         text = str(item or "").strip()
         if not text:
             continue

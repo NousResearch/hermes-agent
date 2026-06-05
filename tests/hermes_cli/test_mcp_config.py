@@ -302,6 +302,42 @@ class TestMcpAdd:
             "DEBUG": "true",
         }
 
+    def test_add_stdio_server_with_repeated_env_flags(self, tmp_path, capsys, monkeypatch):
+        """Repeated parser --env groups are flattened and persisted."""
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            assert config["env"] == {
+                "ALPACA_API_KEY": "xxx",
+                "ALPACA_SECRET_KEY": "yyy",
+            }
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="alpaca",
+            mcp_command="uvx",
+            args=["alpaca-mcp-server"],
+            env=[["ALPACA_API_KEY=xxx"], ["ALPACA_SECRET_KEY=yyy"]],
+        ))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        srv = config["mcp_servers"]["alpaca"]
+        assert srv["env"] == {
+            "ALPACA_API_KEY": "xxx",
+            "ALPACA_SECRET_KEY": "yyy",
+        }
+
     def test_add_stdio_server_rejects_invalid_env_name(self, capsys):
         """Invalid environment variable names are rejected up front."""
         from hermes_cli.mcp_config import cmd_mcp_add

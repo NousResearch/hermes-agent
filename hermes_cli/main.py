@@ -14834,7 +14834,8 @@ Examples:
     mcp_add_p.add_argument("--preset", help="Known MCP preset name")
     mcp_add_p.add_argument(
         "--env",
-        nargs="*",
+        action="append",
+        nargs="+",
         default=[],
         help="Environment variables for stdio servers (KEY=VALUE)",
     )

@@ -10,6 +10,7 @@ import codecs
 import json
 import logging
 import os
+import re
 import select
 import shlex
 import subprocess
@@ -125,6 +126,16 @@ def remap_container_path_to_host(path: str) -> str:
         return path
     if os.getenv("TERMINAL_ENV", "local").strip().lower() != "docker":
         return path
+    # First try the profile-specific mounts (config.yaml docker_volumes such as
+    # /xhs-images, and the per-cache-dir mounts under /root/.hermes/cache). These
+    # bind to dedicated host directories that would otherwise be shadowed by the
+    # broad /workspace and /root mounts, so they are checked first — longest
+    # container prefix wins.
+    for container_prefix, host_root in _extra_docker_host_mounts():
+        if path.startswith(container_prefix):
+            host_path = Path(host_root) / path[len(container_prefix):]
+            if host_path.exists():
+                return str(host_path)
     for container_prefix, host_subdir in _CONTAINER_HOST_MOUNTS:
         if path.startswith(container_prefix):
             rel = path[len(container_prefix):]
@@ -133,6 +144,52 @@ def remap_container_path_to_host(path: str) -> str:
                 return str(host_path)
             break
     return path
+
+
+# host:container[:options] — the container destination is always absolute.
+_DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::[^:]+)?$")
+
+
+def _extra_docker_host_mounts() -> "list[tuple[str, str]]":
+    """Container→host bind mounts beyond the default /workspace and /root.
+
+    Sources:
+      * config.yaml ``docker_volumes`` (bridged to ``TERMINAL_DOCKER_VOLUMES`` as
+        a JSON list of ``host:container[:opts]`` specs) — e.g. ``/xhs-images``.
+      * the per-cache-dir mounts under ``/root/.hermes/cache`` (documents, images,
+        audio, screenshots), which bind to their own host cache directories.
+
+    Returned as ``(container_prefix_with_trailing_slash, host_root)`` pairs,
+    longest container prefix first so the most specific mount wins.
+    """
+    mounts: list[tuple[str, str]] = []
+
+    raw = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
+    if raw:
+        try:
+            specs = json.loads(raw)
+        except Exception:
+            specs = []
+        if isinstance(specs, list):
+            for spec in specs:
+                if not isinstance(spec, str):
+                    continue
+                match = _DOCKER_VOLUME_SPEC_RE.match(spec.strip())
+                if match:
+                    container = match.group("container").rstrip("/") + "/"
+                    mounts.append((container, match.group("host")))
+
+    # Cache dirs are bound separately; lazy import avoids a base↔credential cycle.
+    try:
+        from tools.credential_files import get_cache_directory_mounts
+        for mount in get_cache_directory_mounts():
+            container = mount["container_path"].rstrip("/") + "/"
+            mounts.append((container, mount["host_path"]))
+    except Exception:
+        pass
+
+    mounts.sort(key=lambda pair: len(pair[0]), reverse=True)
+    return mounts
 
 
 # ---------------------------------------------------------------------------

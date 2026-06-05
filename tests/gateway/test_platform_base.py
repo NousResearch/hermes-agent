@@ -436,6 +436,77 @@ class TestExtractMediaContainerPathRemap:
         assert "/workspace/outbound/chart.png" not in cleaned
 
 
+class TestRemapContainerExtraMounts:
+    """remap_container_path_to_host must also cover bind mounts beyond the
+    default /workspace and /root: profile-specific docker_volumes (e.g.
+    /xhs-images) and the per-cache-dir mounts under /root/.hermes/cache, which
+    bind to dedicated host directories that /workspace and /root do not."""
+
+    def test_remaps_custom_docker_volume(self, tmp_path, monkeypatch):
+        import json
+        from tools.environments.base import remap_container_path_to_host
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        host_dir = tmp_path / "xhs"
+        host_dir.mkdir()
+        (host_dir / "cover.png").write_bytes(b"img")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES", json.dumps([f"{host_dir}:/xhs-images"])
+        )
+
+        assert remap_container_path_to_host("/xhs-images/cover.png") == str(
+            host_dir / "cover.png"
+        )
+
+    def test_custom_volume_with_options_suffix(self, tmp_path, monkeypatch):
+        import json
+        from tools.environments.base import remap_container_path_to_host
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        host_dir = tmp_path / "assets"
+        host_dir.mkdir()
+        (host_dir / "logo.svg").write_bytes(b"svg")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES", json.dumps([f"{host_dir}:/assets:ro"])
+        )
+
+        assert remap_container_path_to_host("/assets/logo.svg") == str(
+            host_dir / "logo.svg"
+        )
+
+    def test_custom_volume_unchanged_when_host_file_absent(self, tmp_path, monkeypatch):
+        """Conservative: never invent a path when the mapped host file is absent."""
+        import json
+        from tools.environments.base import remap_container_path_to_host
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        host_dir = tmp_path / "xhs"
+        host_dir.mkdir()
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES", json.dumps([f"{host_dir}:/xhs-images"])
+        )
+
+        assert (
+            remap_container_path_to_host("/xhs-images/missing.png")
+            == "/xhs-images/missing.png"
+        )
+
+    def test_remaps_cache_dir_to_dedicated_host_dir(self, tmp_path, monkeypatch):
+        """/root/.hermes/cache/images is a separate mount to the profile image
+        cache — it must win over the broad /root mount."""
+        from tools.environments.base import remap_container_path_to_host
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        img = tmp_path / ".hermes" / "cache" / "images"
+        img.mkdir(parents=True)
+        (img / "pic.png").write_bytes(b"img")
+
+        assert remap_container_path_to_host(
+            "/root/.hermes/cache/images/pic.png"
+        ) == str(img / "pic.png")
+
+
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio
 # ---------------------------------------------------------------------------

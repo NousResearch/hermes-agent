@@ -8,7 +8,7 @@ Covers:
 from unittest.mock import patch, MagicMock
 
 
-from agent.model_metadata import query_ollama_num_ctx
+from agent.model_metadata import query_ollama_num_ctx, get_model_context_length
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -132,3 +132,76 @@ class TestQueryOllamaNumCtx:
                 result = query_ollama_num_ctx("model", "http://localhost:11434")
 
         assert result is None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Level 2: get_model_context_length — /api/show probe gating
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestGetModelContextLengthOllamaApiShowGate:
+    """Provider-aware context resolution should not probe Ollama everywhere."""
+
+    def test_openrouter_base_url_does_not_probe_ollama_api_show(self):
+        """OpenRouter is a known hosted provider, not an Ollama server."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=999999) as mock_show, \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=131072):
+            result = get_model_context_length(
+                "openai/gpt-4o",
+                base_url="https://openrouter.ai/api/v1",
+                provider="openrouter",
+            )
+
+        assert result == 131072
+        mock_show.assert_not_called()
+
+    def test_openrouter_base_url_without_provider_still_does_not_probe_ollama_api_show(self):
+        """Known provider hosts are inferred even when callers omit provider."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=999999) as mock_show, \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=131072):
+            result = get_model_context_length(
+                "openai/gpt-4o",
+                base_url="https://openrouter.ai/api/v1",
+            )
+
+        assert result == 131072
+        mock_show.assert_not_called()
+
+    def test_ollama_cloud_still_probes_ollama_api_show(self):
+        """Ollama Cloud uses the native /api/show endpoint for GGUF context."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=262144) as mock_show, \
+             patch("agent.model_metadata.save_context_length"):
+            result = get_model_context_length(
+                "qwen3-coder:480b-cloud",
+                base_url="https://ollama.com/v1",
+                provider="ollama-cloud",
+            )
+
+        assert result == 262144
+        mock_show.assert_called_once_with(
+            "qwen3-coder:480b-cloud",
+            "https://ollama.com/v1",
+            api_key="",
+        )
+
+    def test_unknown_custom_endpoint_still_probes_ollama_api_show(self):
+        """Unknown custom endpoints may be Ollama-compatible and keep probing."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=32768) as mock_show, \
+             patch("agent.model_metadata.save_context_length"):
+            result = get_model_context_length(
+                "llama3.1:8b",
+                base_url="https://custom-ollama.example/v1",
+                provider="custom",
+            )
+
+        assert result == 32768
+        mock_show.assert_called_once_with(
+            "llama3.1:8b",
+            "https://custom-ollama.example/v1",
+            api_key="",
+        )

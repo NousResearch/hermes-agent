@@ -417,6 +417,39 @@ def _is_known_provider_base_url(base_url: str) -> bool:
     return _infer_provider_from_url(base_url) is not None
 
 
+_OLLAMA_API_SHOW_PROVIDERS: frozenset[str] = frozenset({"ollama", "ollama-cloud", "local"})
+
+
+def _should_query_ollama_api_show(base_url: str, provider: str = "") -> bool:
+    """Return True when a context resolver should try Ollama's native /api/show.
+
+    /api/show is useful for Ollama-compatible servers, including local Ollama,
+    Ollama Cloud, and unknown custom endpoints that might be Ollama behind a
+    reverse proxy.  It should not be sprayed at known hosted non-Ollama
+    providers such as OpenRouter, OpenAI, or Anthropic; those endpoints return
+    404/405 and can show up as noisy authenticated requests in proxies.
+    """
+    if not base_url:
+        return False
+
+    provider_normalized = (provider or "").strip().lower()
+    inferred_provider = _infer_provider_from_url(base_url)
+
+    # A recognized hostname is stronger evidence than a possibly stale or
+    # mismatched explicit provider value.
+    if inferred_provider in _OLLAMA_API_SHOW_PROVIDERS:
+        return True
+    if inferred_provider:
+        return False
+
+    if provider_normalized in _OLLAMA_API_SHOW_PROVIDERS:
+        return True
+
+    # Unknown custom endpoints may still be Ollama-compatible.  Keep probing
+    # only when the caller did not name a known non-Ollama provider.
+    return provider_normalized in {"", "custom"}
+
+
 def is_local_endpoint(base_url: str) -> bool:
     """Return True if base_url points to a local machine.
 
@@ -1507,7 +1540,7 @@ def get_model_context_length(
           portal-derived values are persisted to disk.
        c. Codex OAuth /models probe
        d. GMI /models endpoint
-       e. Ollama native /api/show probe (any base_url, provider-agnostic)
+       e. Ollama native /api/show probe (Ollama/local/unknown custom only)
        f. models.dev registry lookup (with :cloud/-cloud suffix fallback)
     6. OpenRouter live API metadata (Kimi-family 32k guard)
     7. Hardcoded defaults (broad family patterns, longest-key-first)
@@ -1733,16 +1766,12 @@ def get_model_context_length(
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx
-    # 5e. Ollama native /api/show probe — runs for ANY provider with a
-    # base_url, not just ollama-cloud.  Ollama-compatible servers expose
-    # this endpoint regardless of hostname (local Ollama, Ollama Cloud,
-    # custom Ollama hosting).  The OpenAI-compat /v1/models endpoint
-    # correctly omits context_length per the OpenAI schema, but /api/show
-    # returns the authoritative GGUF model_info.context_length.
-    # For non-Ollama servers (OpenAI, Anthropic, etc.), the POST returns
-    # 404/405 quickly.  Results are cached, so the hit is per-model+URL,
-    # once per hour.
-    if base_url:
+    # 5e. Ollama native /api/show probe.  Only run this for Ollama-like
+    # providers or unknown custom endpoints that may be Ollama-compatible.
+    # Known hosted non-Ollama providers (OpenRouter, OpenAI, Anthropic, etc.)
+    # skip this path and use provider metadata/defaults below instead; sending
+    # an Ollama POST to them creates noisy authenticated 404/405s.
+    if _should_query_ollama_api_show(base_url, effective_provider):
         ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
         if ctx is not None:
             save_context_length(model, base_url, ctx)

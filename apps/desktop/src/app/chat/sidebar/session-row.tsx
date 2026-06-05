@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
+import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
@@ -74,6 +75,7 @@ export function SidebarSessionRow({
       onDelete={onDelete}
       onPin={onPin}
       pinned={isPinned}
+      profile={session.profile}
       sessionId={session.id}
       title={title}
     >
@@ -86,6 +88,22 @@ export function SidebarSessionRow({
           className
         )}
         data-working={isWorking ? 'true' : undefined}
+        draggable
+        onDragStart={event => {
+          // Reorder drags belong to dnd-kit (the grab handle) — cancel the
+          // native drag so the two DnD systems don't fight.
+          if ((event.target as HTMLElement).closest('[data-reorder-handle]')) {
+            event.preventDefault()
+
+            return
+          }
+
+          writeSessionDrag(event.dataTransfer, {
+            id: session.id,
+            profile: session.profile || 'default',
+            title
+          })
+        }}
         ref={ref}
         style={style}
         {...rest}
@@ -123,12 +141,15 @@ export function SidebarSessionRow({
               className={cn(
                 // Scope the dot↔grabber swap to a local group so the grabber
                 // only reveals when hovering/focusing the handle itself, not
-                // anywhere on the row.
-                'group/handle relative -my-0.5 grid w-4 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing',
+                // anywhere on the row. Width MUST match the non-reorderable dot
+                // column (w-3.5) so rows don't shift horizontally when reorder is
+                // toggled (e.g. scoped → ALL-profiles view).
+                'group/handle relative -my-0.5 grid w-3.5 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing',
                 // The quest-glow box-shadow extends past the dot; let it bleed
                 // out instead of being clipped by this handle's overflow-hidden.
                 needsInput && 'overflow-visible'
               )}
+              data-reorder-handle
               onClick={event => event.stopPropagation()}
             >
               <SidebarRowDot
@@ -152,10 +173,10 @@ export function SidebarSessionRow({
                 needsInput ? 'overflow-visible' : 'overflow-hidden'
               )}
             >
-              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-            </span>
+            <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+          </span>
           )}
-          <span className="truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </span>
         </button>
@@ -170,6 +191,7 @@ export function SidebarSessionRow({
             onDelete={onDelete}
             onPin={onPin}
             pinned={isPinned}
+            profile={session.profile}
             sessionId={session.id}
             title={title}
           >

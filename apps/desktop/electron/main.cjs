@@ -220,6 +220,16 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+// active-profile.json records which Hermes profile the desktop launches its
+// local backend as. When set, startHermes() passes `hermes --profile <name>
+// dashboard …`, which deterministically pins HERMES_HOME (see
+// _apply_profile_override in hermes_cli/main.py) and bypasses the sticky
+// ~/.hermes/active_profile file. Unset (null) preserves the legacy behavior:
+// no --profile flag, so the backend honors active_profile / default.
+const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
+// Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
+// value its profile resolver would reject and exit on.
+const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 // Branch we track for self-update. The GUI work has merged to main, so this
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
@@ -459,6 +469,24 @@ function registerMediaProtocol() {
 let mainWindow = null
 let hermesProcess = null
 let connectionPromise = null
+// Additional per-profile backends, keyed by profile name. The PRIMARY backend
+// (the desktop's launch profile) stays managed by hermesProcess +
+// connectionPromise + startHermes(); this pool only holds EXTRA profile
+// backends spawned lazily when a session belongs to a different profile. A user
+// with no named profiles never populates this map, so their experience is
+// byte-for-byte the single-backend behavior.
+const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt }
+// Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
+// idle ones. A user idles at exactly the primary backend; pool backends only
+// exist while a non-primary profile is actively being chatted through.
+const POOL_MAX_BACKENDS = Math.max(1, Number(process.env.HERMES_DESKTOP_POOL_MAX) || 3)
+const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || 10 * 60_000)
+// A backend touched within this window has a live renderer socket (the keepalive
+// pings every 60s for every open profile). LRU eviction must spare these — a
+// concurrent multi-profile session keeps several backends "fresh" at once, and
+// killing one to honor the soft cap would abort a running agent.
+const POOL_KEEPALIVE_FRESH_MS = 90_000
+let poolIdleReaper = null
 // Auto-reload budget for renderer crashes. A deterministic startup crash would
 // otherwise loop forever (reload → crash → reload), pinning CPU and spamming
 // logs. Allow a few reloads per rolling window, then stop and leave the dead
@@ -1452,8 +1480,20 @@ async function applyUpdatesPosixInApp() {
   // reap must spare it. Hand the live backend's PID to the update process;
   // _kill_stale_dashboard_processes reads HERMES_DESKTOP_CHILD_PID and excludes
   // it while still reaping any genuinely-orphaned dashboards. (#37532)
+  // Exclude every desktop-managed backend (primary + all pool profiles) from
+  // the update reaper. _kill_stale_dashboard_processes accepts a comma-separated
+  // list (a single int still parses for back-compat).
+  const desktopChildPids = []
   if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
-    env.HERMES_DESKTOP_CHILD_PID = String(hermesProcess.pid)
+    desktopChildPids.push(hermesProcess.pid)
+  }
+  for (const entry of backendPool.values()) {
+    if (entry.process && Number.isInteger(entry.process.pid)) {
+      desktopChildPids.push(entry.process.pid)
+    }
+  }
+  if (desktopChildPids.length) {
+    env.HERMES_DESKTOP_CHILD_PID = desktopChildPids.join(',')
   }
 
   // Branch-pin so a non-main checkout doesn't get switched to main (and self-heal
@@ -3363,8 +3403,14 @@ async function mintGatewayWsTicket(baseUrl) {
 // calls this immediately before every gateway.connect() so each WS upgrade
 // carries a freshly-minted ticket. For local/token connections this just
 // reuses the static token (no minting needed).
-async function freshGatewayWsUrl() {
-  const connection = await startHermes()
+async function freshGatewayWsUrl(profile) {
+  // Mint for the requested profile's backend, NOT always the primary. The
+  // renderer re-mints right before every gateway.connect(); when swapping to a
+  // pooled profile we must return THAT backend's ws URL, otherwise the connect
+  // silently lands back on the primary (default) backend and writes sessions to
+  // the wrong profile's DB. A null/empty profile resolves to the primary, so
+  // legacy callers and single-profile users are unchanged.
+  const connection = await ensureBackend(profile)
   if (connection.authMode === 'oauth') {
     const ticket = await mintGatewayWsTicket(connection.baseUrl)
     return buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
@@ -3446,6 +3492,38 @@ function writeDesktopConnectionConfig(config) {
   writeFileAtomic(DESKTOP_CONNECTION_CONFIG_PATH, JSON.stringify(config, null, 2))
   connectionConfigCache = config
   connectionConfigCacheMtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
+}
+
+// Returns the desktop's chosen profile name, or null when unset. "default" is
+// a valid stored value (pins the root HERMES_HOME explicitly); null means "no
+// preference" and preserves the legacy launch (no --profile flag).
+function readActiveDesktopProfile() {
+  try {
+    const raw = fs.readFileSync(DESKTOP_PROFILE_CONFIG_PATH, 'utf8')
+    const parsed = JSON.parse(raw)
+    const name = parsed && typeof parsed.profile === 'string' ? parsed.profile.trim() : ''
+
+    if (name && (name === 'default' || PROFILE_NAME_RE.test(name))) {
+      return name
+    }
+  } catch {
+    // Missing or malformed → no preference.
+  }
+
+  return null
+}
+
+function writeActiveDesktopProfile(name) {
+  const value = typeof name === 'string' ? name.trim() : ''
+
+  if (value && value !== 'default' && !PROFILE_NAME_RE.test(value)) {
+    throw new Error(`Invalid profile name: ${value}`)
+  }
+
+  fs.mkdirSync(path.dirname(DESKTOP_PROFILE_CONFIG_PATH), { recursive: true })
+  writeFileAtomic(DESKTOP_PROFILE_CONFIG_PATH, JSON.stringify({ profile: value || null }, null, 2))
+
+  return value || null
 }
 
 async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig()) {
@@ -3712,6 +3790,212 @@ function resetHermesConnection() {
   resetBootProgressForReconnect()
 }
 
+// Re-home the primary backend: reset connection state, then wait for the live
+// dashboard process to actually exit (SIGKILL after 5s) so the next
+// startHermes() spawns fresh instead of racing the dying one. Shared by the
+// connection-config and profile switch flows.
+async function teardownPrimaryBackendAndWait() {
+  // Capture the reference before resetHermesConnection() nulls hermesProcess.
+  const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
+  resetHermesConnection()
+
+  if (!dying) {
+    return
+  }
+
+  await new Promise(resolve => {
+    const timer = setTimeout(() => {
+      try {
+        dying.kill('SIGKILL')
+      } catch {
+        // Already gone.
+      }
+      resolve()
+    }, 5000)
+    dying.once('exit', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
+// The profile the primary (window) backend runs as. readActiveDesktopProfile()
+// returns the desktop's stored preference, or null when unset (legacy launch
+// that defers to active_profile / default).
+function primaryProfileKey() {
+  return readActiveDesktopProfile() || 'default'
+}
+
+// Resolve a backend connection for the given profile. Routes the primary
+// profile to startHermes() (the window backend: boot UI, bootstrap, remote
+// mode), and any OTHER profile to a lazily-spawned pool backend. An empty /
+// unknown profile resolves to the primary, so all legacy callers are unchanged.
+async function ensureBackend(profile) {
+  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+
+  if (key === primaryProfileKey()) {
+    return startHermes()
+  }
+
+  const existing = backendPool.get(key)
+  if (existing) {
+    existing.lastActiveAt = Date.now()
+    return existing.connectionPromise
+  }
+
+  evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
+
+  const entry = { process: null, port: null, token: null, connectionPromise: null, lastActiveAt: Date.now() }
+  entry.connectionPromise = spawnPoolBackend(key, entry).catch(error => {
+    backendPool.delete(key)
+    throw error
+  })
+  backendPool.set(key, entry)
+  startPoolIdleReaper()
+  return entry.connectionPromise
+}
+
+// Mark a pool profile as recently used so the idle reaper spares it. The
+// renderer calls this when it opens a profile's chat WS and periodically while
+// streaming, since the main process can't see the direct renderer↔backend WS.
+function touchPoolBackend(profile) {
+  const key = profile && String(profile).trim() ? String(profile).trim() : null
+  if (!key) return
+  const entry = backendPool.get(key)
+  if (entry) entry.lastActiveAt = Date.now()
+}
+
+// Evict least-recently-used pool backends until at most `keep` remain — but only
+// ever evict backends without a live renderer socket (stale beyond the keepalive
+// window). When every backend is actively kept alive we let the pool exceed the
+// soft cap rather than kill a running session.
+function evictLruPoolBackends(keep) {
+  if (backendPool.size <= keep) return
+  const now = Date.now()
+  const evictable = [...backendPool.entries()]
+    .filter(([, entry]) => now - (entry.lastActiveAt || 0) > POOL_KEEPALIVE_FRESH_MS)
+    .sort((a, b) => (a[1].lastActiveAt || 0) - (b[1].lastActiveAt || 0))
+  let removable = backendPool.size - Math.max(0, keep)
+  for (const [profile] of evictable) {
+    if (removable <= 0) break
+    rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${POOL_MAX_BACKENDS})`)
+    stopPoolBackend(profile)
+    removable -= 1
+  }
+}
+
+function startPoolIdleReaper() {
+  if (poolIdleReaper) return
+  poolIdleReaper = setInterval(() => {
+    const now = Date.now()
+    for (const [profile, entry] of [...backendPool.entries()]) {
+      if (now - (entry.lastActiveAt || 0) > POOL_IDLE_MS) {
+        rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(POOL_IDLE_MS / 1000)}s)`)
+        stopPoolBackend(profile)
+      }
+    }
+    if (backendPool.size === 0 && poolIdleReaper) {
+      clearInterval(poolIdleReaper)
+      poolIdleReaper = null
+    }
+  }, 60_000)
+  if (typeof poolIdleReaper.unref === 'function') poolIdleReaper.unref()
+}
+
+// Spawn an additional dashboard backend pinned to a named profile. Mirrors the
+// local-spawn portion of startHermes() but without the boot-progress UI,
+// bootstrap, or remote handling (those belong to the primary backend only).
+async function spawnPoolBackend(profile, entry) {
+  // Remote deployments are single-tenant; profiles only apply to local backends.
+  const remote = await resolveRemoteBackend()
+  if (remote) {
+    throw new Error('Profiles are unavailable when connected to a remote Hermes backend.')
+  }
+
+  const port = await pickPort()
+  const token = crypto.randomBytes(32).toString('base64url')
+  // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
+  // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
+  const dashboardArgs = ['--profile', profile, 'dashboard', '--no-open', '--host', '127.0.0.1', '--port', String(port)]
+  const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
+  const hermesCwd = resolveHermesCwd()
+  const webDist = resolveWebDist()
+
+  rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
+
+  const child = spawn(backend.command, backend.args, {
+    cwd: hermesCwd,
+    env: {
+      ...process.env,
+      HERMES_HOME,
+      ...backend.env,
+      HERMES_DASHBOARD_SESSION_TOKEN: token,
+      HERMES_WEB_DIST: webDist
+    },
+    shell: backend.shell,
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+  entry.process = child
+  entry.port = port
+  entry.token = token
+
+  child.stdout.on('data', rememberLog)
+  child.stderr.on('data', rememberLog)
+
+  let ready = false
+  let rejectStart = null
+  const startFailed = new Promise((_resolve, reject) => {
+    rejectStart = reject
+  })
+  child.once('error', error => {
+    rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
+    backendPool.delete(profile)
+    rejectStart?.(error)
+  })
+  child.once('exit', (code, signal) => {
+    rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
+    backendPool.delete(profile)
+    if (!ready) {
+      rejectStart?.(new Error(`Hermes backend for profile "${profile}" exited before it became ready (${signal || code}).`))
+    }
+  })
+
+  const baseUrl = `http://127.0.0.1:${port}`
+  await Promise.race([waitForHermes(baseUrl, token), startFailed])
+  ready = true
+
+  return {
+    baseUrl,
+    mode: 'local',
+    source: 'local',
+    authMode: 'token',
+    token,
+    profile,
+    wsUrl: `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(token)}`,
+    logs: hermesLog.slice(-80),
+    ...getWindowState()
+  }
+}
+
+function stopPoolBackend(profile) {
+  const entry = backendPool.get(profile)
+  if (!entry) return
+  backendPool.delete(profile)
+  if (entry.process && !entry.process.killed) {
+    try {
+      entry.process.kill('SIGTERM')
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
+function stopAllPoolBackends() {
+  for (const profile of [...backendPool.keys()]) {
+    stopPoolBackend(profile)
+  }
+}
+
 async function startHermes() {
   // Latched-failure short-circuit: once bootstrap has failed in this
   // process, every subsequent startHermes() call re-throws the same error
@@ -3753,6 +4037,15 @@ async function startHermes() {
     const port = await pickPort()
     const token = crypto.randomBytes(32).toString('base64url')
     const dashboardArgs = ['dashboard', '--no-open', '--host', '127.0.0.1', '--port', String(port)]
+    // Pin the desktop's chosen profile via the global --profile flag. This is
+    // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
+    // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
+    // unset preference keeps the legacy launch so existing installs are
+    // unaffected.
+    const activeProfile = readActiveDesktopProfile()
+    if (activeProfile) {
+      dashboardArgs.unshift('--profile', activeProfile)
+    }
     await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
     const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
     const hermesCwd = resolveHermesCwd()
@@ -3996,8 +4289,12 @@ function createWindow() {
   })
 }
 
-ipcMain.handle('hermes:connection', async () => startHermes())
-ipcMain.handle('hermes:gateway:ws-url', async () => freshGatewayWsUrl())
+ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
+ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
+  touchPoolBackend(profile)
+  return { ok: true }
+})
+ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => freshGatewayWsUrl(profile))
 ipcMain.handle('hermes:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
   // reset connection state so the next startHermes() call restarts the
@@ -4077,26 +4374,23 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
 
-  // Capture the reference before resetHermesConnection() nulls hermesProcess,
-  // so we can wait for actual exit rather than assuming a fixed delay is enough.
-  const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
-  resetHermesConnection()
-
-  if (dying) {
-    await new Promise(resolve => {
-      const timer = setTimeout(() => {
-        try { dying.kill('SIGKILL') } catch {}
-        resolve()
-      }, 5000)
-      dying.once('exit', () => {
-        clearTimeout(timer)
-        resolve()
-      })
-    })
-  }
+  await teardownPrimaryBackendAndWait()
 
   mainWindow?.reload()
   return sanitizeDesktopConnectionConfig(config)
+})
+
+ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
+ipcMain.handle('hermes:profile:set', async (_event, name) => {
+  const next = writeActiveDesktopProfile(name)
+
+  // Switching profiles is a backend re-home: relaunch the dashboard under the
+  // new HERMES_HOME. Pool backends keep their own homes, so only the primary
+  // is torn down.
+  await teardownPrimaryBackendAndWait()
+  mainWindow?.reload()
+
+  return { profile: next }
 })
 
 ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
@@ -4112,7 +4406,7 @@ ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
 })
 
 ipcMain.handle('hermes:api', async (_event, request) => {
-  const connection = await startHermes()
+  const connection = await ensureBackend(request?.profile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   const url = `${connection.baseUrl}${request.path}`
   // OAuth gateways authenticate REST via the HttpOnly session cookie held in
@@ -4653,6 +4947,7 @@ app.on('before-quit', () => {
   if (hermesProcess && !hermesProcess.killed) {
     hermesProcess.kill('SIGTERM')
   }
+  stopAllPoolBackends()
 })
 
 app.on('window-all-closed', () => {

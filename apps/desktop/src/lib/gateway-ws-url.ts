@@ -25,8 +25,10 @@ import type { HermesConnection } from '@/global'
  * transport failure.
  */
 export interface ResolveGatewayWsUrlDeps {
-  /** `window.hermesDesktop.getGatewayWsUrl`, if the preload exposes it. */
-  getGatewayWsUrl?: () => Promise<string>
+  /** `window.hermesDesktop.getGatewayWsUrl`, if the preload exposes it. The
+   *  optional profile selects which backend to mint for — critical when swapping
+   *  to a pooled profile, since the default mint resolves the primary backend. */
+  getGatewayWsUrl?: (profile?: null | string) => Promise<string>
 }
 
 export class GatewayReauthRequiredError extends Error {
@@ -47,9 +49,13 @@ export function isGatewayReauthRequired(error: unknown): error is GatewayReauthR
 
 export async function resolveGatewayWsUrl(
   desktop: ResolveGatewayWsUrlDeps,
-  conn: Pick<HermesConnection, 'authMode' | 'wsUrl'>
+  conn: Pick<HermesConnection, 'authMode' | 'profile' | 'wsUrl'>
 ): Promise<string> {
   const mint = desktop.getGatewayWsUrl
+  // Mint for THIS connection's profile, not the primary. Without it a pooled
+  // profile swap re-mints the default backend's URL and connects to the wrong
+  // backend.
+  const profile = conn.profile ?? null
 
   if (conn.authMode === 'oauth') {
     if (!mint) {
@@ -62,7 +68,7 @@ export async function resolveGatewayWsUrl(
     }
 
     try {
-      return await mint()
+      return await mint(profile)
     } catch (error) {
       throw new GatewayReauthRequiredError(
         'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
@@ -74,7 +80,7 @@ export async function resolveGatewayWsUrl(
   // token / local: the URL carries a long-lived token. Re-mint when available
   // (cheap, keeps parity), but the cached URL is a safe fallback.
   if (mint) {
-    const fresh = await mint().catch(() => null)
+    const fresh = await mint(profile).catch(() => null)
 
     if (fresh) {
       return fresh

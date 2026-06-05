@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 import subprocess
 from datetime import datetime
@@ -182,6 +183,7 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     runner, _adapter = make_restart_runner()
     popen_calls = []
 
+    monkeypatch.setattr(gateway_run.sys, "platform", "linux")
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None)
@@ -202,6 +204,38 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
+
+
+@pytest.mark.asyncio
+async def test_windows_detached_restart_strips_gateway_guard_from_child_env(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["C:/Hermes/hermes.exe"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[:3] == [gateway_run.sys.executable, "-c", cmd[2]]
+    watcher_source = cmd[2]
+    assert "env.pop(\"_HERMES_GATEWAY\", None)" in watcher_source
+    assert "env=env" in watcher_source
+    assert "stdin=subprocess.DEVNULL" in watcher_source
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL
+    # The parent gateway's environment still contains the guard in this test;
+    # the generated watcher must remove it before invoking `hermes gateway restart`.
+    assert os.environ["_HERMES_GATEWAY"] == "1"
 
 
 # ── Shutdown notification tests ──────────────────────────────────────

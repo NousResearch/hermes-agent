@@ -4040,10 +4040,21 @@ class GatewayRunner:
                 _CREATE_NEW_PROCESS_GROUP = 0x00000200
                 _DETACHED_PROCESS = 0x00000008
                 _CREATE_NO_WINDOW = 0x08000000
+                env = dict(os.environ)
+                # The helper is spawned by the gateway process, whose env
+                # contains _HERMES_GATEWAY=1.  `hermes gateway restart` has a
+                # self-targeting guard for that marker; if we inherit it here,
+                # the replacement command refuses to run and /restart silently
+                # leaves the gateway stopped.  Strip only the guard marker so
+                # HERMES_HOME/profile/PATH and credentials still flow through.
+                env.pop("_HERMES_GATEWAY", None)
                 subprocess.Popen(
                     cmd,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    env=env,
+                    close_fds=True,
                     creationflags=_CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW,
                 )
                 """

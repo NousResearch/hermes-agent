@@ -18,11 +18,24 @@
  *     this via the public `/api/status` field `auth_required: true`.
  */
 
-// Bare + prefixed variants of the access-token cookie the gateway may set,
+// Bare + prefixed variants of the session cookies the gateway may set,
 // depending on its deploy shape (HTTPS direct → __Host-, behind a path prefix
 // → __Secure-, loopback HTTP → bare). Mirrors
 // hermes_cli/dashboard_auth/cookies.py.
+//
+// Two cookies are in play (see that module):
+//   - hermes_session_at: the OAuth access token. Short-lived (~15 min); its
+//     Max-Age tracks the access-token TTL, so the cookie jar drops it the
+//     instant the AT expires.
+//   - hermes_session_rt: the OAuth refresh token. Long-lived (24h rotating,
+//     reuse-detected — Portal NAS #293 / hermes #37247). When the AT cookie
+//     has lapsed but the RT cookie is still present, the gateway middleware
+//     transparently rotates a fresh AT on the next authenticated request
+//     (POST /api/auth/ws-ticket), so the session is still LIVE even with no
+//     AT cookie. A liveness check that looked only at the AT cookie would
+//     force a needless full re-login every ~15 min — hence cookiesHaveLiveSession.
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
+const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
 
 function normalizeRemoteBaseUrl(rawUrl) {
   const value = String(rawUrl || '').trim()
@@ -150,21 +163,52 @@ function resolveAuthMode(inputAuthMode, existingAuthMode) {
 }
 
 /**
- * True if any cookie in `cookies` is a hermes session access-token cookie
+ * True if any cookie in `cookies` is a hermes session ACCESS-token cookie
  * with a non-empty value. `cookies` is an array of {name, value} (the shape
  * Electron's session.cookies.get returns).
+ *
+ * Note: this is AT-only. A session whose AT cookie has lapsed but whose RT
+ * cookie is still alive is STILL connectable (the gateway refreshes the AT on
+ * the next request) — use `cookiesHaveLiveSession` for a connectivity/display
+ * check. `cookiesHaveSession` remains exported for callers that specifically
+ * need to know whether an unexpired access token is present right now.
  */
 function cookiesHaveSession(cookies) {
   if (!Array.isArray(cookies)) return false
   return cookies.some(c => c && AT_COOKIE_VARIANTS.includes(c.name) && c.value)
 }
 
+/**
+ * True if the cookie jar holds a credential that can yield an authenticated
+ * request — EITHER a live access-token cookie OR a refresh-token cookie. The
+ * RT cookie outlives the AT cookie (24h vs ~15min), and the gateway middleware
+ * transparently rotates a fresh AT from the RT on the next authenticated
+ * request. Gating connectivity on the AT alone would force a full IDP
+ * re-login every ~15 min even though a valid 24h RT is sitting in the jar.
+ *
+ * This answers "should we even attempt to connect / show as signed in?", not
+ * "is the access token unexpired?". The authoritative liveness check is still
+ * the actual ws-ticket mint at connect time (which surfaces a true 401 when
+ * the RT is also dead/revoked).
+ */
+function cookiesHaveLiveSession(cookies) {
+  if (!Array.isArray(cookies)) return false
+  return cookies.some(
+    c =>
+      c &&
+      c.value &&
+      (AT_COOKIE_VARIANTS.includes(c.name) || RT_COOKIE_VARIANTS.includes(c.name))
+  )
+}
+
 module.exports = {
   AT_COOKIE_VARIANTS,
+  RT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   cookiesHaveSession,
+  cookiesHaveLiveSession,
   normalizeRemoteBaseUrl,
   resolveAuthMode,
   resolveTestWsUrl,

@@ -348,9 +348,10 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
 
 
     def verify_session(self, *, access_token: str) -> Optional[Session]:
-        # Contract: returns None on expiry/invalidity (middleware then
-        # triggers redirect-to-login since refresh_session can never succeed
-        # under V1); raises ProviderError if the IDP is unreachable.
+        # Contract: returns None on expiry/invalidity (the middleware then
+        # tries refresh_session with the RT cookie, falling back to
+        # redirect-to-login if that also fails); raises ProviderError if the
+        # IDP is unreachable.
         try:
             claims = self._verify_jwt(access_token)
         except InvalidCodeError:
@@ -359,8 +360,9 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
         except ProviderError:
             # JWKS unreachable, etc. Bubble up so middleware emits 503.
             raise
-        # verify_session has no access to the original refresh_token; pass
-        # "" because in contract V1 there is none anyway.
+        # verify_session validates the AT in isolation and has no access to the
+        # refresh token (it lives in a separate cookie the middleware reads);
+        # pass "" here — the RT-driven rotation path is middleware's job.
         return self._session_from_claims(access_token, "", claims)
 
     def revoke_session(self, *, refresh_token: str) -> None:

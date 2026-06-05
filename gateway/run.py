@@ -9226,6 +9226,7 @@ class GatewayRunner:
             _hyg_provider = None
             _hyg_base_url = None
             _hyg_api_key = None
+            _hyg_runtime = {}
             _hyg_data = {}
             _hyg_auto_reset_on_abort_platforms: set[str] = set()
             _hyg_auto_reset_message_limit = 0
@@ -9281,6 +9282,28 @@ class GatewayRunner:
                         session_key=session_key,
                         user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
                     )
+                    _hyg_provider = _hyg_runtime.get("provider") or _hyg_provider
+                    _hyg_base_url = _hyg_runtime.get("base_url") or _hyg_base_url
+                    _hyg_api_key = _hyg_runtime.get("api_key") or _hyg_api_key
+                except Exception:
+                    pass
+
+                try:
+                    _platform_key = _platform_config_key(source.platform)
+                    _route_hints = {}
+                    _pending_hints = getattr(self, "_pending_route_hints_by_session", None)
+                    if session_key and isinstance(_pending_hints, dict):
+                        _route_hints = dict(_pending_hints.get(session_key) or {})
+                    _turn_route = self._resolve_turn_agent_config(
+                        event.text or "",
+                        _hyg_model,
+                        _hyg_runtime,
+                        user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
+                        platform_key=_platform_key,
+                        route_hints=_route_hints,
+                    )
+                    _hyg_model = _turn_route.get("model") or _hyg_model
+                    _hyg_runtime = _turn_route.get("runtime") or _hyg_runtime
                     _hyg_provider = _hyg_runtime.get("provider") or _hyg_provider
                     _hyg_base_url = _hyg_runtime.get("base_url") or _hyg_base_url
                     _hyg_api_key = _hyg_runtime.get("api_key") or _hyg_api_key
@@ -9437,11 +9460,6 @@ class GatewayRunner:
                     try:
                         from run_agent import AIAgent
 
-                        _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
-                            source=source,
-                            session_key=session_key,
-                            user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
-                        )
                         if _hyg_runtime.get("api_key"):
                             _hyg_msgs = [
                                 {"role": m.get("role"), "content": m.get("content")}

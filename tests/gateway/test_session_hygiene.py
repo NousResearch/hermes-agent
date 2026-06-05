@@ -772,6 +772,129 @@ async def test_session_hygiene_auto_resets_telegram_at_configured_message_limit(
 
 
 @pytest.mark.asyncio
+async def test_session_hygiene_uses_gateway_turn_route_for_context_check(
+    monkeypatch, tmp_path
+):
+    """Gateway hygiene must use the effective per-turn route.
+
+    Telegram can override the global CLI/local model. If hygiene checks the
+    global model context before the turn route is applied, it can repeatedly
+    attempt compression against an unrelated 32K local model even though the
+    actual Telegram turn is routed to a large-context gateway model.
+    """
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class FakeCompressAgent:
+        last_instance = None
+
+        def __init__(self, **_kwargs):
+            type(self).last_instance = self
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:private:12345",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="private",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._pending_route_hints_by_session = {}
+    runner._session_db = None
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._resolve_session_agent_runtime = MagicMock(
+        return_value=(
+            "qwen3-30b-a3b-instruct-2507-4bit",
+            {"provider": "omlx", "base_url": "http://127.0.0.1:8000/v1", "api_key": "fake"},
+        )
+    )
+    runner._resolve_turn_agent_config = MagicMock(
+        return_value={
+            "model": "deepseek/deepseek-v4-flash",
+            "runtime": {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "fake",
+            },
+            "fallback_model": [
+                {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}
+            ],
+        }
+    )
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    context_calls = []
+
+    def fake_context_length(model, **kwargs):
+        context_calls.append((model, kwargs))
+        if model == "qwen3-30b-a3b-instruct-2507-4bit":
+            return 100
+        if model == "deepseek/deepseek-v4-flash":
+            return 1_000_000
+        return 64_000
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        fake_context_length,
+    )
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
+
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="private",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "ok"
+    runner._resolve_turn_agent_config.assert_called_once()
+    assert context_calls[0][0] == "deepseek/deepseek-v4-flash"
+    assert context_calls[0][1]["provider"] == "openrouter"
+    assert FakeCompressAgent.last_instance is None
+
+
+@pytest.mark.asyncio
 async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(monkeypatch, tmp_path):
     """When the user's configured ``auxiliary.compression.model`` errors out
     and we recover via the main model, compression succeeds but the user's

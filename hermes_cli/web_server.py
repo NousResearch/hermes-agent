@@ -9356,8 +9356,9 @@ async def clear_pending_pairing():
 # Webhook subscription endpoints — list / subscribe / remove.
 #
 # Wraps the same JSON store the CLI uses (hermes_cli.webhook); the webhook
-# adapter hot-reloads it without a gateway restart.  Per-route HMAC secrets
-# are redacted on read and surfaced once on create.
+# adapter hot-reloads it without a gateway restart.  Per-route secrets are
+# redacted on read and surfaced once on create.  The same secret can back HMAC
+# signatures or plain-token auth such as Authorization: Bearer <secret>.
 # ---------------------------------------------------------------------------
 
 

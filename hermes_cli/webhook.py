@@ -51,7 +51,7 @@ def _load_subscriptions() -> Dict[str, dict]:
 def _save_subscriptions(subs: Dict[str, dict]) -> None:
     path = _subscriptions_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    # webhook_subscriptions.json contains per-route HMAC secrets — write
+    # webhook_subscriptions.json contains per-route webhook secrets — write
     # via tempfile + chmod 0o600 before the atomic rename so a permissive
     # umask cannot leave the secrets readable to other local users in the
     # window between create and rename.
@@ -117,7 +117,7 @@ def _setup_hint() -> str:
          extra:
            host: "0.0.0.0"
            port: 8644
-           secret: "your-global-hmac-secret"
+           secret: "your-global-webhook-secret"
 
   3. Or set environment variables in {_dhh}/.env:
      WEBHOOK_ENABLED=true
@@ -213,7 +213,9 @@ def _cmd_subscribe(args):
         label = "Message" if route.get("deliver_only") else "Prompt"
         print(f"  {label}: {prompt_preview}")
     print(f"\n  Configure your service to POST to the URL above.")
-    print(f"  Use the secret for HMAC-SHA256 signature validation.")
+    print("  Use the secret for HMAC-SHA256 signature validation when supported.")
+    print("  If your service only supports fixed auth tokens, send:")
+    print("    Authorization: Bearer " + secret)
     print(f"  The gateway must be running to receive events (hermes gateway run).\n")
 
 

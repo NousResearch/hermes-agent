@@ -650,7 +650,7 @@ Manage dynamic webhook subscriptions for event-driven agent activation. Requires
 
 | Subcommand | Description |
 |------------|-------------|
-| `subscribe` / `add` | Create a webhook route. Returns the URL and HMAC secret to configure on your service. |
+| `subscribe` / `add` | Create a webhook route. Returns the URL and secret to configure on your service for HMAC signatures or plain-token auth. |
 | `list` / `ls` | Show all agent-created subscriptions. |
 | `remove` / `rm` | Delete a dynamic subscription. Static routes from config.yaml are not affected. |
 | `test` | Send a test POST to verify a subscription is working. |
@@ -669,7 +669,7 @@ hermes webhook subscribe <name> [options]
 | `--skills` | Comma-separated skill names to load for the agent run. |
 | `--deliver` | Delivery target: `log` (default), `telegram`, `discord`, `slack`, `github_comment`. |
 | `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery. |
-| `--secret` | Custom HMAC secret. Auto-generated if omitted. |
+| `--secret` | Custom webhook secret for signature validation or plain-token auth. Auto-generated if omitted. |
 | `--deliver-only` | Skip the agent — deliver the rendered `--prompt` as the literal message. Zero LLM cost, sub-second delivery. Requires `--deliver` to be a real target (not `log`). |
 
 Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-reloaded by the webhook adapter without a gateway restart.

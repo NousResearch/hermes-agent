@@ -42,7 +42,7 @@ There are two ways to enable the webhook adapter.
 hermes gateway setup
 ```
 
-Follow the prompts to enable webhooks, set the port, and set a global HMAC secret.
+Follow the prompts to enable webhooks, set the port, and set a global webhook secret. That secret can be used for HMAC signature validation or plain-token auth, depending on what the webhook provider supports.
 
 ### Via environment variables
 
@@ -270,7 +270,7 @@ Benefits:
 
 - **Zero LLM tokens** — the agent is never invoked
 - **Sub-second delivery** — a single adapter call, no reasoning loop
-- **Same security as agent mode** — HMAC auth, rate limits, idempotency, and body-size limits all still apply
+- **Same security as agent mode** — signature/plain-token auth, rate limits, idempotency, and body-size limits all still apply
 - **Synchronous response** — the POST returns `200 OK` once delivery succeeds, or `502` if the target rejects it, so your upstream service can retry intelligently
 
 ### Example: Telegram push from Supabase
@@ -342,7 +342,7 @@ hermes webhook subscribe github-issues \
   --description "Triage new GitHub issues"
 ```
 
-This returns the webhook URL and an auto-generated HMAC secret. Configure your service to POST to that URL.
+This returns the webhook URL and an auto-generated secret. Configure your service to POST to that URL with an auth method your provider supports, such as an HMAC signature or an `Authorization` bearer token.
 
 ### List subscriptions
 
@@ -388,7 +388,7 @@ The adapter validates incoming webhooks using the appropriate method for each so
 - **GitHub**: `X-Hub-Signature-256` header — HMAC-SHA256 hex digest prefixed with `sha256=`
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
 - **Generic HMAC**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest
-- **Bearer token**: `Authorization: Bearer <secret>` header — plain secret string match
+- **Bearer token**: `Authorization: Bearer <webhook-secret>` header — plain secret string match
 
 Use HMAC signatures when your webhook provider supports them. Bearer-token auth is useful for services that can send a fixed authorization token but cannot compute per-payload HMAC signatures.
 
@@ -458,7 +458,7 @@ This is the same trust model that applies to everything the agent reads: web pag
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
 - For generic HMAC integrations, check `X-Webhook-Signature`
-- For bearer-token integrations, check `Authorization: Bearer <secret>`
+- For bearer-token integrations, check `Authorization: Bearer <webhook-secret>`
 - Check gateway logs for `Invalid signature` warnings
 
 ### Event being ignored
@@ -493,4 +493,4 @@ This is the same trust model that applies to everything the agent reads: web pag
 |----------|-------------|---------|
 | `WEBHOOK_ENABLED` | Enable the webhook platform adapter | `false` |
 | `WEBHOOK_PORT` | HTTP server port for receiving webhooks | `8644` |
-| `WEBHOOK_SECRET` | Global HMAC secret (used as fallback when routes don't specify their own) | _(none)_ |
+| `WEBHOOK_SECRET` | Global webhook secret for signature validation or plain-token auth (used as fallback when routes don't specify their own) | _(none)_ |

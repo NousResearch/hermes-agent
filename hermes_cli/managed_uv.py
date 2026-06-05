@@ -51,15 +51,54 @@ def resolve_uv() -> Optional[str]:
     return None
 
 
-def ensure_uv() -> Optional[str]:
+class _UvResult(str):
+    """``ensure_uv()`` return value that survives an update boundary.
+
+    ``ensure_uv()``'s arity has flipped between a single path string and a
+    ``(path, fresh_bootstrap)`` tuple across releases. ``hermes update`` runs
+    the call site from the *old*, already-imported ``hermes_cli.main`` against
+    this *freshly pulled* module, so the two can disagree on how many values
+    ``ensure_uv()`` returns. An install parked on a 2-tuple release runs
+    ``uv_bin, fresh_bootstrap = ensure_uv()`` against the single-value module
+    and crashes the first update: the returned path is a plain ``str``, which is
+    itself iterable, so the 2-target unpack walks its characters and raises
+    ``ValueError: too many values to unpack (expected 2)`` (and on the failure
+    path the ``None`` return raises ``TypeError: cannot unpack non-iterable
+    NoneType``). This wrapper answers to both conventions:
+
+        uv_bin = ensure_uv()         # behaves as the path str ("" when absent)
+        uv_bin, fresh = ensure_uv()  # unpacks as (path|None, fresh_bootstrap)
+
+    Missing uv is the empty string (falsy) instead of ``None`` so legacy
+    2-target call sites can still unpack a failure without raising, while
+    ``if not uv_bin`` keeps working for single-value callers.
+    """
+
+    fresh_bootstrap: bool
+
+    def __new__(cls, path: Optional[str], fresh: bool = False) -> "_UvResult":
+        self = super().__new__(cls, path or "")
+        self.fresh_bootstrap = fresh
+        return self
+
+    def __iter__(self):
+        # Tuple-unpacking hook for legacy ``uv_bin, fresh = ensure_uv()`` sites.
+        # First element mirrors the historical contract: the path string, or
+        # ``None`` when uv is unavailable.
+        return iter(((str(self) or None), self.fresh_bootstrap))
+
+
+def ensure_uv() -> "_UvResult":
     """Return the managed uv path, installing it first if necessary.
 
-    On failure returns ``None`` (never raises) so callers can fall
-    back to pip gracefully.
+    Returns a :class:`_UvResult` (a ``str`` subclass) that is both usable
+    directly as the path and unpackable as ``(path, fresh_bootstrap)`` for
+    older call sites. On failure the result is falsy (``""``) — never raises —
+    so callers can fall back to pip gracefully.
     """
     existing = resolve_uv()
     if existing:
-        return existing
+        return _UvResult(existing)
 
     target = managed_uv_path()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +110,7 @@ def ensure_uv() -> Optional[str]:
     except Exception as exc:
         logger.warning("Managed uv install failed: %s", exc)
         print(f"  ✗ Failed to install managed uv: {exc}")
-        return None
+        return _UvResult(None)
 
     # Verify
     result = resolve_uv()
@@ -85,7 +124,7 @@ def ensure_uv() -> Optional[str]:
         print(f"  ✓ Managed uv installed ({version})")
     else:
         print("  ✗ Managed uv install appeared to succeed but binary not found")
-    return result
+    return _UvResult(result)
 
 
 def update_managed_uv() -> Optional[str]:

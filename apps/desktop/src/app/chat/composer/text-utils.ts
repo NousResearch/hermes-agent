@@ -80,6 +80,98 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   return blobs
 }
 
+/**
+ * Extract non-image files from a paste clipboard, resolving each File to
+ * its filesystem path via `window.hermesDesktop.getPathForFile`.
+ *
+ * Must be called synchronously from inside the paste handler — `DataTransfer`
+ * items are detached as soon as the handler returns, and `webUtils.getPathForFile`
+ * also requires the original (non-cloned) File reference.
+ */
+export function extractClipboardFiles(clipboard: DataTransfer): { file?: File; path: string }[] {
+  const result: { file?: File; path: string }[] = []
+  const seenPaths = new Set<string>()
+  const seenFiles = new Set<File>()
+  const getPath = window.hermesDesktop?.getPathForFile
+
+  if (clipboard.files?.length) {
+    for (let i = 0; i < clipboard.files.length; i += 1) {
+      const file = clipboard.files.item(i)
+
+      if (!file || seenFiles.has(file)) {
+        continue
+      }
+
+      // Skip images — those are handled separately by extractClipboardImageBlobs.
+      if (file.type.startsWith('image/')) {
+        continue
+      }
+
+      seenFiles.add(file)
+      let path = ''
+
+      if (getPath) {
+        try {
+          path = getPath(file) || ''
+        } catch {
+          path = ''
+        }
+      }
+
+      if (path && seenPaths.has(path)) {
+        continue
+      }
+
+      if (path) {
+        seenPaths.add(path)
+      }
+
+      result.push({ file, path })
+    }
+  }
+
+  if (clipboard.items?.length) {
+    for (const item of clipboard.items) {
+      if (item.kind !== 'file') {
+        continue
+      }
+
+      const file = item.getAsFile()
+
+      if (!file || seenFiles.has(file)) {
+        continue
+      }
+
+      if (file.type.startsWith('image/')) {
+        continue
+      }
+
+      seenFiles.add(file)
+      let path = ''
+
+      if (getPath) {
+        try {
+          path = getPath(file) || ''
+        } catch {
+          path = ''
+        }
+      }
+
+      if (path && seenPaths.has(path)) {
+        continue
+      }
+
+      if (path) {
+        seenPaths.add(path)
+      }
+
+      result.push({ file, path })
+    }
+  }
+
+  return result
+}
+
 /** Caret-anchored text before the cursor, or null if the selection isn't a collapsed caret inside `editor`. */
 export function textBeforeCaret(editor: HTMLDivElement): string | null {
   const sel = window.getSelection()

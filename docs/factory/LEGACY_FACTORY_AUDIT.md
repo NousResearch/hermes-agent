@@ -11,7 +11,7 @@ Do not revive the old OpenClaw factory as the operational source of truth. Reuse
 - semantic worker roster and role descriptions;
 - proof-bearing checkpoints;
 - mission/orchestrator loop concepts;
-- workflow UI templates where they can be renamed and aligned with factory lanes/gates.
+- workflow UI ideas only when they are rebuilt inside the official Hermes dashboard; do not revive the separate Workspace SU surface.
 
 The new source of truth is:
 
@@ -39,9 +39,9 @@ The new source of truth is:
 | Semantic roster | `swarm.yaml` | Reuse/migrate | Good role taxonomy. Map to factory agents: orchestrator, builders, reviewer, QA, ops, strategist. |
 | Workspace agent contract | `AGENTS.md` | Reuse/migrate | Useful operating rules: Builder implements, Reviewer gates, QA verifies, Orchestrator routes. |
 | Orchestrator loop | `src/routes/api/swarm-orchestrator-loop.ts` | Reuse concept only | Checkpoint parsing and stale-worker detection are useful, but state writes must move to factory DB/Kanban. |
-| Orchestration client/API | `src/server/orchestration-client.ts`, `src/routes/api/orchestration.ts` | Migrate if UI remains official | Should call factory APIs instead of legacy swarm assumptions. |
+| Orchestration client/API | `src/server/orchestration-client.ts`, `src/routes/api/orchestration.ts` | Do not port as separate surface | If needed later, reimplement against official Hermes dashboard APIs instead of Workspace SU. |
 | Workflow templates | `src/screens/gateway/lib/workflow-templates.ts` | Migrate/rename | Replace `clawsuite:workflow-templates` naming and add Zeus/BMAD factory templates. |
-| Swarm UI screens | `src/screens/swarm2/*`, `src/screens/workflows/*` | Optional v2 UI | Keep only if it becomes a factory dashboard; otherwise do not block CLI/DB foundation. |
+| Swarm UI screens | `src/screens/swarm2/*`, `src/screens/workflows/*` | Do not run separately | Keep ideas only as future official-dashboard functionality. |
 | Memory swarm mission logs | `memory/swarm/missions/*` | Archive | Useful examples, not source of truth for new factory. |
 
 ## Required cleanup before production use
@@ -75,4 +75,4 @@ Implement the foundation in Hermes Agent first:
 - agent tools for project/lane/task/gate/event recording;
 - Kanban integration in the next phase.
 
-Only after this foundation is stable should the workspace UI be migrated to consume factory state.
+Only after this foundation is stable should any UI be added inside the official Hermes dashboard.

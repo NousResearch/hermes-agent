@@ -14,15 +14,18 @@ def _make_hit(timestamp="2026-06-05T05:54:11.816Z",
               host_name="39QEMES-Tomcat-Crontab01",
               ip="10.52.2.26",
               log_path="/u01/app/mes-app/logs/catalina.2026060501.log",
-              tags=None):
+              tags=None,
+              index="39qjmes-2026.06.05",
+              doc_id="abc123"):
     """构造单条 ES hit。"""
     return {
+        "_index": index,
+        "_id": doc_id,
         "_source": {
             "@timestamp": timestamp,
             "message": message,
             "host": {
                 "name": host_name,
-                "hostname": host_name,
                 "ip": [ip],
             },
             "log": {
@@ -146,6 +149,10 @@ class TestEsLogSearcherParseResults:
         assert result[0]["timestamp"] == "2026-06-05T05:54:11.816Z"
         assert result[0]["host_name"] == "39QEMES-Tomcat-Crontab01"
         assert result[0]["host_ip"] == ["10.52.2.26"]
+        assert result[0]["log_file"] == "/u01/app/mes-app/logs/catalina.2026060501.log"
+        assert result[0]["index"] == "39qjmes-2026.06.05"
+        assert result[0]["doc_id"] == "abc123"
+        assert "host_hostname" not in result[0]
         assert result[1]["message"] == "test log 2"
 
     def test_parse_empty_hits(self):
@@ -297,51 +304,3 @@ class TestEsLogSearcherSearch:
         assert "39qjmes-2026.06.05" in req.full_url
 
 
-# ── 上下文搜索测试 ──────────────────────────────────────────────────────
-
-class TestEsLogSearcherContextSearch:
-    """search with context 测试。"""
-
-    def _make_searcher(self, **overrides):
-        config = {"elasticsearch_url": "http://localhost:9200", "index_prefix": "39qjmes"}
-        config.update(overrides)
-        return EsLogSearcher(config)
-
-    @patch("scripts.es_log_search.urllib.request.urlopen")
-    def test_search_with_context(self, mock_urlopen):
-        """include_context=True 时返回上下文行。"""
-        hits = [
-            _make_hit(
-                timestamp="2026-06-05T05:54:11.000Z",
-                message="line 1 before",
-            ),
-            _make_hit(
-                timestamp="2026-06-05T05:54:12.000Z",
-                message="ERROR something failed",
-            ),
-            _make_hit(
-                timestamp="2026-06-05T05:54:13.000Z",
-                message="line 3 after",
-            ),
-        ]
-        resp_data = _make_es_response(hits=hits)
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps(resp_data).encode()
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_resp
-
-        searcher = self._make_searcher()
-        result = searcher.search(
-            host_name="39QEMES-Tomcat-Crontab01",
-            start_time="2026-06-05T00:00:00Z",
-            end_time="2026-06-05T23:59:59Z",
-            keyword="ERROR",
-            include_context=True,
-            context_lines=2,
-        )
-        # 有 context 字段
-        assert len(result["logs"]) > 0
-        for log in result["logs"]:
-            assert "context_before" in log
-            assert "context_after" in log

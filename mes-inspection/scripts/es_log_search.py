@@ -20,7 +20,7 @@ class EsLogSearcher:
         url = f"{base_url}/{index}/_search"
         data = body.encode("utf-8")
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=self.config.get("timeout", 10)) as resp:
             return json.loads(resp.read())
 
     def _resolve_index_pattern(self, start_time: str, end_time: str) -> str:
@@ -62,7 +62,7 @@ class EsLogSearcher:
             "sort": [{"@timestamp": "asc"}],
             "size": size,
             "_source": [
-                "@timestamp", "message", "host.name", "host.hostname",
+                "@timestamp", "message", "host.name",
                 "host.ip", "log.file.path", "tags",
             ],
         }
@@ -77,19 +77,19 @@ class EsLogSearcher:
             log_info = source.get("log", {})
             file_info = log_info.get("file", {})
             logs.append({
+                "index": hit.get("_index", ""),
+                "doc_id": hit.get("_id", ""),
                 "timestamp": source.get("@timestamp", ""),
                 "message": source.get("message", ""),
                 "host_name": host.get("name", ""),
-                "host_hostname": host.get("hostname", ""),
                 "host_ip": host.get("ip", []),
-                "log_file_path": file_info.get("path", ""),
+                "log_file": file_info.get("path", ""),
                 "tags": source.get("tags", []),
             })
         return logs
 
     def search(self, host_name: str, start_time: str, end_time: str,
-               keyword: str = None, level: str = None, size: int = 100,
-               include_context: bool = False, context_lines: int = 5) -> Dict:
+               keyword: str = None, level: str = None, size: int = 100) -> Dict:
         """搜索 ES 日志。异常时返回 error 字典而非抛出异常。"""
         try:
             index = self._resolve_index_pattern(start_time, end_time)
@@ -100,11 +100,6 @@ class EsLogSearcher:
             total = total_info.get("value", 0) if isinstance(total_info, dict) else total_info
 
             logs = self._parse_hits(hits)
-
-            if include_context:
-                for log in logs:
-                    log["context_before"] = []
-                    log["context_after"] = []
 
             result = {
                 "logs": logs,

@@ -25,6 +25,14 @@ export interface SlashExecResponse {
   warning?: string
 }
 
+export interface SessionTitleResponse {
+  title?: string
+  // True when the session row isn't persisted yet and the title was queued
+  // to be applied on the first turn (see tui_gateway session.title handler).
+  pending?: boolean
+  session_key?: string
+}
+
 export interface ExecCommandDispatchResponse {
   type: 'exec' | 'plugin'
   output?: string
@@ -73,4 +81,7 @@ export interface ClientSessionState {
   sawAssistantPayload: boolean
   pendingBranchGroup: string | null
   interrupted: boolean
+  /** A blocking clarify prompt is waiting on the user for this session. Drives
+   *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
+  needsInput: boolean
 }

@@ -313,6 +313,25 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
         return []
 
 
+def _resolve_prefill_messages_file(config: Dict[str, Any]) -> str:
+    """Resolve the prefill file path from env/config.
+
+    ``prefill_messages_file`` at the top level is the canonical config key.
+    ``agent.prefill_messages_file`` remains a legacy fallback for older CLI and
+    godmode-generated configs.
+    """
+    env_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "").strip()
+    if env_path:
+        return env_path
+    top_level = str(config.get("prefill_messages_file", "") or "").strip()
+    if top_level:
+        return top_level
+    agent_cfg = config.get("agent", {})
+    if isinstance(agent_cfg, dict):
+        return str(agent_cfg.get("prefill_messages_file", "") or "").strip()
+    return ""
+
+
 def _parse_reasoning_config(effort: str) -> dict | None:
     """Parse a reasoning effort level into an OpenRouter reasoning config dict."""
     from hermes_constants import parse_reasoning_effort
@@ -955,7 +974,7 @@ def _run_cleanup():
     try:
         from tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
-    except Exception:
+    except BaseException:
         pass
     # Close cached auxiliary LLM clients (sync + async) so that
     # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
@@ -3175,6 +3194,18 @@ class HermesCLI:
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        # Read max_tokens from config (env var override: HERMES_MAX_TOKENS)
+        _env_mt = os.environ.get("HERMES_MAX_TOKENS")
+        if _env_mt:
+            try:
+                self.max_tokens = int(_env_mt)
+            except (ValueError, TypeError):
+                self.max_tokens = None
+        elif isinstance(_model_config, dict):
+            _mt = _model_config.get("max_tokens")
+            self.max_tokens = _mt if isinstance(_mt, int) else None
+        else:
+            self.max_tokens = None
         # Auto-detect model from local server if still on default
         if self.model == _DEFAULT_CONFIG_MODEL:
             _base_url = (_model_config.get("base_url") or "") if isinstance(_model_config, dict) else ""
@@ -3272,7 +3303,7 @@ class HermesCLI:
         
         # Ephemeral prefill messages (few-shot priming, never persisted)
         self.prefill_messages = _load_prefill_messages(
-            CLI_CONFIG["agent"].get("prefill_messages_file", "")
+            _resolve_prefill_messages_file(CLI_CONFIG)
         )
         
         # Reasoning config (OpenRouter reasoning effort level)
@@ -5108,6 +5139,7 @@ class HermesCLI:
                         f"[bold {_accent_hex()}]{_escape(title_part)}[/] "
                         f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)"
                     )
+                self._restore_session_cwd(session_meta, quiet=_quiet_mode)
             else:
                 if _quiet_mode:
                     print(
@@ -5148,6 +5180,7 @@ class HermesCLI:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
+                max_tokens=self.max_tokens,
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
@@ -5327,6 +5360,59 @@ class HermesCLI:
 
         self._console_print()
 
+    def _restore_session_cwd(self, session_meta: dict, *, quiet: bool = False) -> None:
+        """Relaunch a resumed session in the directory it was started from.
+
+        Idempotent and safe to call from every resume path. When the stored
+        ``cwd`` differs from the current process directory, we both
+        ``os.chdir()`` (so the process and any ``os.getcwd()`` fallback agree)
+        and retarget ``TERMINAL_CWD`` (so the terminal tool, code-exec tool,
+        and relative-path resolution all land in the same place — the local
+        terminal backend snapshots cwd on first use, which happens after this).
+
+        No-ops when: the session recorded no cwd (gateway/remote/older
+        sessions), the directory no longer exists, or we're already there.
+        A missing directory degrades to a single dim warning rather than a
+        crash — repos get moved and deleted.
+        """
+        recorded = (session_meta or {}).get("cwd")
+        if not recorded:
+            return
+        recorded = os.path.expanduser(str(recorded))
+        try:
+            current = os.getcwd()
+        except OSError:
+            current = None
+        if current and os.path.realpath(recorded) == os.path.realpath(current):
+            return  # Already where the session lived — nothing to announce.
+
+        if not os.path.isdir(recorded):
+            msg = f"⚠ Session's working directory is gone: {recorded} — staying in {current or '.'}"
+            if quiet:
+                print(msg, file=sys.stderr)
+            else:
+                self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+            return
+
+        try:
+            os.chdir(recorded)
+        except OSError as e:
+            msg = f"⚠ Could not enter session's working directory {recorded}: {e}"
+            if quiet:
+                print(msg, file=sys.stderr)
+            else:
+                self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+            return
+
+        # Retarget the terminal/code-exec tools to match the process cwd.
+        os.environ["TERMINAL_CWD"] = recorded
+
+        msg = f"↻ Working directory: {recorded}"
+        if quiet:
+            print(msg, file=sys.stderr)
+        else:
+            self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+
     def _preload_resumed_session(self) -> bool:
         """Load a resumed session's history from the DB early (before first chat).
 
@@ -5383,6 +5469,7 @@ class HermesCLI:
                 f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
                 f"{len(restored)} total messages)[/]"
             )
+            self._restore_session_cwd(session_meta)
         else:
             accent_color = _accent_hex()
             self._console_print(
@@ -7092,7 +7179,11 @@ class HermesCLI:
         except Exception:
             pass
 
-        # Create the new session with parent link
+        # Create the new session with parent link.
+        # Persist a stable ``_branched_from`` marker in model_config so
+        # list_sessions_rich() can keep the branch visible in /resume and
+        # /sessions even after the parent is reopened and re-ended with a
+        # different end_reason (e.g. tui_shutdown overwriting 'branched').
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
@@ -7101,6 +7192,7 @@ class HermesCLI:
                 model_config={
                     "max_iterations": self.max_turns,
                     "reasoning_config": self.reasoning_config,
+                    "_branched_from": parent_session_id,
                 },
                 parent_session_id=parent_session_id,
             )
@@ -9205,6 +9297,7 @@ class HermesCLI:
                     api_mode=turn_route["runtime"].get("api_mode"),
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
+                    max_tokens=turn_route["runtime"].get("max_tokens"),
                     max_iterations=self.max_turns,
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,
@@ -12653,8 +12746,53 @@ class HermesCLI:
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
     
+    def _clear_terminal_on_exit(self):
+        """Clear screen + scrollback so nothing is stranded above the exit summary.
+
+        Called from ``_print_exit_summary`` after ``app.run()`` has returned and
+        prompt_toolkit has torn down its renderer + restored terminal modes —
+        so a direct write to the real stdout fd is safe (the StdoutProxy /
+        patch_stdout layer is gone by now).
+
+        Sequence: ``ESC[3J`` (erase scrollback) + ``ESC[2J`` (erase visible
+        screen) + ``ESC[H`` (cursor home). Modern terminals on Linux, macOS and
+        Windows (Terminal / conhost with VT processing, which prompt_toolkit
+        already enables) all honor these. Best-effort: skip silently when
+        stdout isn't a real console, and fall back to the platform ``clear`` /
+        ``cls`` command if the escape write fails.
+        """
+        try:
+            stream = sys.stdout
+            if stream is None or not stream.isatty():
+                return
+        except Exception:
+            return
+        try:
+            stream.write("\033[3J\033[2J\033[H")
+            stream.flush()
+            return
+        except Exception:
+            pass
+        # Fallback: shell clear command (rarely needed — escapes work on every
+        # VT-capable terminal, but this covers exotic stdout wrappers).
+        try:
+            os.system("cls" if os.name == "nt" else "clear")
+        except Exception:
+            pass
+
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
+        # Clear the screen + scrollback before printing the summary so the
+        # live bottom chrome (status bar, input box, separator rules) and the
+        # rest of the session transcript don't get stranded above the exit
+        # summary (#38252). By this point app.run() has returned and
+        # prompt_toolkit has restored terminal modes, so writing raw escapes
+        # to stdout is safe. ESC[3J clears scrollback, ESC[2J clears the
+        # visible screen, ESC[H homes the cursor — so the summary prints at a
+        # clean top-left. Falls back to the platform clear command if stdout
+        # isn't a TTY-capable stream. Honors NO_COLOR/dumb terminals by
+        # skipping silently when there's no real console.
+        self._clear_terminal_on_exit()
         print()
         msg_count = len(self.conversation_history)
         if msg_count > 0:
@@ -12969,6 +13107,16 @@ class HermesCLI:
             _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
             _welcome_color = "#FFF8DC"
         self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
+
+        # Warm the /model picker's provider-models cache off-thread during this
+        # idle window (banner shown, user about to type). The no-args picker
+        # otherwise blocks ~1-2s on serial /v1/models fetches the first time
+        # it's opened in a session. Fire-and-forget, guarded once-per-process.
+        try:
+            from hermes_cli.model_switch import prewarm_picker_cache_async
+            prewarm_picker_cache_async()
+        except Exception:
+            pass
 
         # Redaction opt-out warning (#17691): ON by default, loud when off.
         # The redactor snapshots its state at import time so any toggle now
@@ -14800,6 +14948,17 @@ class HermesCLI:
             style=style,
             full_screen=False,
             mouse_support=False,
+            # Erase the live bottom chrome (status bar, input box, separator
+            # rules) on exit instead of freezing a final copy into scrollback.
+            # Without this, prompt_toolkit's render_as_done teardown repaints
+            # the chrome one last time and leaves it stranded above the exit
+            # summary — so a dead status bar + empty prompt sit between the
+            # conversation transcript and the "Resume this session" block, and
+            # stack with the next session's UI on resume (#38252). The actual
+            # conversation transcript is printed through patch_stdout into
+            # normal scrollback and is unaffected; only the managed chrome is
+            # erased. Applies to every exit path (/exit, /quit, EOF, Ctrl+C).
+            erase_when_done=True,
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         _disable_prompt_toolkit_cpr_warning(app)

@@ -171,12 +171,19 @@ async fn run_update(app: AppHandle) -> Result<()> {
     let child_env = update_child_env(&install_root);
     let mut update_args: Vec<String> =
         vec!["update".into(), "--yes".into(), "--gateway".into()];
+    // --force skips `hermes update`'s Windows running-exe guard (which would
+    // `sys.exit(2)` and dead-end the handoff). By contract the desktop has
+    // already exited and waited for the venv shim to unlock before launching
+    // us, and wait_for_venv_free below force-kills any straggler — so by the
+    // time `hermes update` runs there is no legitimate hermes.exe to protect,
+    // and the guard would only produce a false "Hermes is still running" stop.
+    update_args.push("--force".into());
     update_args.push("--branch".into());
     update_args.push(update_branch);
 
     emit_stage(&app, "update", StageState::Running, None, None);
     let started = Instant::now();
-    let update = run_streamed(
+    let mut update = run_streamed(
         &app,
         &hermes,
         &update_args,
@@ -185,6 +192,38 @@ async fn run_update(app: AppHandle) -> Result<()> {
         Some("update"),
     )
     .await?;
+
+    // Retry-once for the update-boundary crash. `hermes update` lazily imports
+    // the FRESHLY PULLED modules, but the dependency-install step still runs the
+    // already-in-memory pre-pull code for one invocation. A release that changed
+    // an updater-path contract across that boundary (e.g. #39780's `_UvResult`,
+    // whose `__iter__` injected a bool into the argv and crashed Windows
+    // `list2cmdline` with `TypeError: sequence item 1: expected str instance,
+    // bool found`, fixed in #39820) therefore kills the FIRST update on the
+    // parked population — even though the fix is already on disk by then. A
+    // second `hermes update` runs clean because the now-current module is loaded
+    // from the start. Rather than make the parked user click Update twice (and
+    // stare at a scary crash first), retry once automatically. Skip the retry
+    // for the concurrent-instance guard (exit 2) — that's a "close Hermes" state
+    // a retry can't fix.
+    if !matches!(update.exit_code, Some(0) | Some(UPDATE_EXIT_CONCURRENT)) {
+        emit_log(
+            &app,
+            Some("update"),
+            LogStream::Stdout,
+            "[update] first update attempt failed; retrying once (the fix it just \
+             pulled loads on the second run)…",
+        );
+        update = run_streamed(
+            &app,
+            &hermes,
+            &update_args,
+            &install_root,
+            &child_env,
+            Some("update"),
+        )
+        .await?;
+    }
     let update_ms = started.elapsed().as_millis() as u64;
 
     match update.exit_code {
@@ -366,15 +405,74 @@ async fn wait_for_venv_free(install_root: &Path, app: &AppHandle) {
             return;
         }
         if Instant::now() >= deadline {
+            // Last resort: a backend hermes.exe (or a grandchild it spawned)
+            // is still holding the shim. The desktop should have reaped its
+            // tree before handing off, but SIGTERM races / detached
+            // grandchildren / AV handles can leave a straggler. Rather than
+            // "proceed anyway" straight into uv's "Access is denied", force-kill
+            // every hermes.exe except ourselves, then give the OS a beat to
+            // unload the image.
             emit_log(
                 app,
                 Some("update"),
                 LogStream::Stdout,
-                "[update] timed out waiting for Hermes to exit; proceeding anyway",
+                "[update] Hermes still holding the venv shim; force-killing stragglers…",
             );
+            force_kill_other_hermes();
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            if !is_locked(&shim) {
+                emit_log(
+                    app,
+                    Some("update"),
+                    LogStream::Stdout,
+                    "[update] venv shim freed after force-kill",
+                );
+            } else {
+                emit_log(
+                    app,
+                    Some("update"),
+                    LogStream::Stdout,
+                    "[update] venv shim still locked; proceeding (--force + quarantine will handle it)",
+                );
+            }
             return;
         }
         tokio::time::sleep(DESKTOP_EXIT_POLL).await;
+    }
+}
+
+/// Force-kill any `hermes.exe` other than this process. Windows-only; a no-op
+/// elsewhere (POSIX has no mandatory-lock contention). We can't selectively
+/// target "the backend" by PID here — the desktop already exited and we never
+/// knew its children — so we kill the whole `hermes.exe` image tree via
+/// taskkill, excluding our own PID.
+///
+/// Safe w.r.t. our own update child: this runs inside `wait_for_venv_free`,
+/// which completes BEFORE we spawn `venv\Scripts\hermes.exe update`. At this
+/// point no update-driven hermes.exe exists yet, so the only hermes.exe images
+/// are stragglers from the old desktop — exactly what we want gone. (`/FI PID
+/// ne <self>` also spares this Tauri process, though it isn't named
+/// hermes.exe.)
+fn force_kill_other_hermes() {
+    if !cfg!(target_os = "windows") {
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let my_pid = std::process::id();
+        // /FI excludes our own PID; /T kills the tree; /F forces.
+        let _ = std::process::Command::new("taskkill")
+            .args([
+                "/F",
+                "/T",
+                "/IM",
+                "hermes.exe",
+                "/FI",
+                &format!("PID ne {my_pid}"),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
 }
 
@@ -629,27 +727,10 @@ async fn install_macos_app_update(
         ));
     }
 
-    let moved_old = if target_app.exists() {
-        match tokio::fs::rename(target_app, &old).await {
-            Ok(()) => true,
-            Err(_) => {
-                remove_dir_if_exists(target_app).await;
-                false
-            }
-        }
-    } else {
-        false
-    };
-    if let Err(err) = tokio::fs::rename(&tmp, target_app).await {
-        if moved_old {
-            let _ = tokio::fs::rename(&old, target_app).await;
-        }
-        return Err(anyhow!(
-            "installing updated app at {}: {err}",
-            target_app.display()
-        ));
-    }
-    remove_dir_if_exists(&old).await;
+    // Atomic-as-possible swap with rollback. Extracted so the invariant
+    // (target is never left deleted-with-no-replacement) can be unit-tested
+    // without ditto / a real .app bundle.
+    swap_in_new_bundle(&tmp, target_app, &old).await?;
 
     let _ = Command::new("/usr/bin/xattr")
         .arg("-dr")
@@ -660,6 +741,42 @@ async fn install_macos_app_update(
         .await;
 
     Ok(target_app.to_path_buf())
+}
+
+/// Move a freshly-staged bundle (`tmp`) into place at `target`, parking any
+/// existing bundle at `old` so the move can succeed (macOS `rename` won't
+/// overwrite a non-empty directory).
+///
+/// Invariant: on ANY failure path, `target` is left pointing at a working
+/// bundle — either the original (rolled back from `old`) or untouched — and we
+/// never delete the running app with no replacement in place. The staged `tmp`
+/// copy is cleaned up on failure.
+async fn swap_in_new_bundle(tmp: &Path, target: &Path, old: &Path) -> Result<()> {
+    let moved_old = if target.exists() {
+        if let Err(err) = tokio::fs::rename(target, old).await {
+            // Could not move the existing app aside. Leave it untouched and
+            // bail — a failed update must not brick the install.
+            remove_dir_if_exists(tmp).await;
+            return Err(anyhow!(
+                "could not move existing app aside at {} (leaving it in place): {err}",
+                target.display()
+            ));
+        }
+        true
+    } else {
+        false
+    };
+    if let Err(err) = tokio::fs::rename(tmp, target).await {
+        // Restore the original app from the backup so the user keeps a working
+        // install, and clean up the staged copy.
+        if moved_old {
+            let _ = tokio::fs::rename(old, target).await;
+        }
+        remove_dir_if_exists(tmp).await;
+        return Err(anyhow!("installing updated app at {}: {err}", target.display()));
+    }
+    remove_dir_if_exists(old).await;
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -794,5 +911,97 @@ mod tests {
             Some(PathBuf::from("/Applications/Hermes.app"))
         );
         assert_eq!(target_app_from_args(["--target-app", "/tmp/not-an-app"]), None);
+    }
+
+    // Helpers for the swap tests: make a throwaway dir tree we can rename.
+    fn unique_tmp_dir(tag: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "hermes-swap-test-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn write_marker(dir: &Path, contents: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("marker.txt"), contents).unwrap();
+    }
+
+    #[tokio::test]
+    async fn swap_installs_new_bundle_and_cleans_up() {
+        let base = unique_tmp_dir("ok");
+        let target = base.join("Hermes.app");
+        let tmp = base.join("Hermes.app.hermes-update-new");
+        let old = base.join("Hermes.app.hermes-update-old");
+        write_marker(&target, "OLD");
+        write_marker(&tmp, "NEW");
+
+        swap_in_new_bundle(&tmp, &target, &old).await.unwrap();
+
+        // New bundle is now at target; staging + backup dirs are gone.
+        assert_eq!(
+            std::fs::read_to_string(target.join("marker.txt")).unwrap(),
+            "NEW"
+        );
+        assert!(!tmp.exists(), "staged copy should be cleaned up");
+        assert!(!old.exists(), "backup should be cleaned up on success");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn swap_failure_never_leaves_target_missing() {
+        // Regression guard for the catastrophic path: the move-aside of the
+        // existing app fails AND the staged bundle can't be installed. The
+        // buggy version deleted `target` when move-aside failed and then
+        // skipped rollback, bricking the install. The fixed version must leave
+        // the original app intact on disk.
+        //
+        // Trigger both failures deterministically:
+        //  - `old` is a NON-EMPTY dir  -> rename(target, old) fails
+        //  - `tmp` does not exist       -> rename(tmp, target) fails
+        let base = unique_tmp_dir("fail");
+        let target = base.join("Hermes.app");
+        let tmp = base.join("Hermes.app.hermes-update-new"); // intentionally absent
+        let old = base.join("Hermes.app.hermes-update-old");
+        write_marker(&target, "OLD");
+        write_marker(&old, "OCCUPIED"); // non-empty => rename(target,old) fails
+
+        let result = swap_in_new_bundle(&tmp, &target, &old).await;
+
+        assert!(result.is_err(), "swap should fail when neither move can complete");
+        assert!(target.exists(), "original app must NOT be deleted on failure");
+        assert_eq!(
+            std::fs::read_to_string(target.join("marker.txt")).unwrap(),
+            "OLD",
+            "original app contents must be intact after a failed swap"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn swap_rolls_back_when_install_step_fails() {
+        // Move-aside succeeds but installing the staged bundle fails (tmp
+        // absent). The original must be rolled back from `old` to `target`.
+        let base = unique_tmp_dir("rollback");
+        let target = base.join("Hermes.app");
+        let tmp = base.join("Hermes.app.hermes-update-new"); // absent
+        let old = base.join("Hermes.app.hermes-update-old");
+        write_marker(&target, "OLD");
+
+        let result = swap_in_new_bundle(&tmp, &target, &old).await;
+
+        assert!(result.is_err());
+        assert!(target.exists(), "original must be restored after failed install");
+        assert_eq!(
+            std::fs::read_to_string(target.join("marker.txt")).unwrap(),
+            "OLD"
+        );
+        assert!(!old.exists(), "backup should be rolled back, not left behind");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

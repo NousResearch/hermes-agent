@@ -348,9 +348,10 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
 
 
     def verify_session(self, *, access_token: str) -> Optional[Session]:
-        # Contract: returns None on expiry/invalidity (middleware then
-        # triggers redirect-to-login since refresh_session can never succeed
-        # under V1); raises ProviderError if the IDP is unreachable.
+        # Contract: returns None on expiry/invalidity (the middleware then
+        # tries refresh_session with the RT cookie, falling back to
+        # redirect-to-login if that also fails); raises ProviderError if the
+        # IDP is unreachable.
         try:
             claims = self._verify_jwt(access_token)
         except InvalidCodeError:
@@ -359,8 +360,9 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
         except ProviderError:
             # JWKS unreachable, etc. Bubble up so middleware emits 503.
             raise
-        # verify_session has no access to the original refresh_token; pass
-        # "" because in contract V1 there is none anyway.
+        # verify_session validates the AT in isolation and has no access to the
+        # refresh token (it lives in a separate cookie the middleware reads);
+        # pass "" here — the RT-driven rotation path is middleware's job.
         return self._session_from_claims(access_token, "", claims)
 
     def revoke_session(self, *, refresh_token: str) -> None:
@@ -383,20 +385,16 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
         """Surface obviously-broken redirect_uris before bouncing to Portal.
 
         The Portal-side check (``agent-redirect-uri.ts``) is authoritative;
-        this is a fast-fail for the common operator-error case.
+        this is a fast-fail for the common operator-error case. We allow any
+        ``http://`` host (not just localhost) so self-hosted dashboards reached
+        over plain HTTP — LAN IPs, internal hostnames, reverse proxies that
+        terminate TLS upstream — are not rejected here; Portal makes the final
+        call on which redirect_uris are permitted.
         """
         parsed = urllib.parse.urlparse(redirect_uri)
         if parsed.scheme not in ("https", "http"):
             raise ProviderError(
                 f"redirect_uri must be http(s), got {redirect_uri!r}"
-            )
-        if parsed.scheme == "http" and parsed.hostname not in (
-            "localhost",
-            "127.0.0.1",
-        ):
-            raise ProviderError(
-                "redirect_uri may only use http:// for localhost/127.0.0.1, "
-                f"got {redirect_uri!r}"
             )
         if not parsed.path or not parsed.path.endswith("/auth/callback"):
             raise ProviderError(

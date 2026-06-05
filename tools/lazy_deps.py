@@ -135,7 +135,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",
-        "Markdown==3.10.2",
         "aiosqlite==0.22.1",
         "asyncpg==0.31.0",
         "aiohttp-socks==0.11.0",
@@ -175,6 +174,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "uvicorn[standard]==0.41.0",
         "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
     ),
+    # Vision image-resize recovery (Pillow). Soft dependency: vision_tools and
+    # conversation_compression degrade gracefully without it, but the byte AND
+    # pixel-dimension shrink paths no-op when it's absent, so an oversized
+    # image can brick a session on Anthropic's non-retryable 400. Keep in sync
+    # with pyproject [vision].
+    "tool.vision": ("Pillow==12.2.0",),
 }
 
 

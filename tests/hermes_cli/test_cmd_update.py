@@ -39,6 +39,37 @@ def mock_args():
     return SimpleNamespace()
 
 
+# ---------------------------------------------------------------------------
+# Managed-uv compatibility for tests that patch shutil.which
+# ---------------------------------------------------------------------------
+# The production code now uses ``ensure_uv()`` / ``update_managed_uv()``
+# instead of ``shutil.which("uv")``.  Many tests in this file patch
+# ``shutil.which`` to control whether uv is "available" — these autouse
+# fixtures make the managed_uv functions delegate to the patched
+# ``shutil.which`` so the existing test setup keeps working without
+# per-test changes.
+@pytest.fixture(autouse=True)
+def _patch_managed_uv(request):
+    """Make managed_uv helpers follow shutil.which mocking in tests."""
+    import shutil
+
+    # resolve_uv delegates to shutil.which("uv") so that test patches
+    # on shutil.which flow through naturally.
+    def _fake_resolve_uv():
+        return shutil.which("uv")
+
+    def _fake_ensure_uv():
+        return shutil.which("uv")
+
+    def _fake_update_managed_uv():
+        return None  # never actually self-update in tests
+
+    with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
+         patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
+        yield
+
+
 class TestCmdUpdatePip:
     """Regression tests for pip-install update flows."""
 
@@ -198,36 +229,50 @@ class TestCmdUpdateBranchFallback:
             if call.args and call.args[0][0] == "/usr/bin/npm"
         ]
 
-        # cmd_update runs npm commands in four locations:
-        #   1. repo root  — slash-command / TUI bridge deps  (subprocess.run)
-        #   2. ui-tui/    — Ink TUI deps                     (subprocess.run)
-        #   3. web/       — npm install                      (subprocess.run)
-        #   4. web/       — npm run build                    (_run_with_idle_timeout)
+        # cmd_update runs npm commands in these locations:
+        #   1. repo root  — root-only install (--workspaces=false)
+        #   2. repo root  — workspace install (--workspace ui-tui --workspace web)
+        #   3. web/       — npm ci --silent (if lockfile not at root)
+        #                  via _build_web_ui (subprocess.run)
+        #   4. web/       — npm run build (_run_with_idle_timeout)
         #
-        # Repo-root and ui-tui installs intentionally omit `--silent` and run
-        # without `capture_output` so optional postinstall scripts (e.g.
+        # With a single workspace lockfile at the repo root, the root
+        # install covers all workspaces.  The web/ ci call runs from the
+        # workspace root too (parent of web_dir) when the root lockfile
+        # exists.
+        #
+        # The root install omits `--silent` and runs without
+        # `capture_output` so optional postinstall scripts (e.g.
         # `@askjo/camofox-browser`'s browser-binary fetch) print progress —
-        # otherwise long downloads look like a hang (#18840).  The web/ install
-        # keeps `--silent` because its build step is short and noisy.
-        update_flags = [
+        # otherwise long downloads look like a hang (#18840).
+        root_flags = [
             "/usr/bin/npm",
             "ci",
             "--no-fund",
             "--no-audit",
             "--progress=false",
+            "--workspaces=false",
         ]
-        # Repo root additionally passes --workspaces=false so npm does not
-        # recursively install every apps/* workspace (desktop, shared).
-        repo_flags = [*update_flags, "--workspaces=false"]
+        ws_flags = [
+            "/usr/bin/npm",
+            "ci",
+            "--no-fund",
+            "--no-audit",
+            "--progress=false",
+            "--workspace",
+            "ui-tui",
+            "--workspace",
+            "web",
+        ]
         assert npm_calls[:2] == [
-            (repo_flags, PROJECT_ROOT),
-            (update_flags, PROJECT_ROOT / "ui-tui"),
+            (root_flags, PROJECT_ROOT),
+            (ws_flags, PROJECT_ROOT),
         ]
         if len(npm_calls) > 2:
-            # Only the web/ install is left in subprocess.run; the build moved
-            # to _run_with_idle_timeout to make Vite progress visible (#33788).
+            # The web/ install runs from the workspace root when the root
+            # lockfile exists (npm workspaces hoist node_modules upward).
             assert npm_calls[2:] == [
-                (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT / "web"),
+                (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT),
             ]
 
         # The web UI build itself went through the streaming helper.
@@ -236,21 +281,23 @@ class TestCmdUpdateBranchFallback:
         assert idle_args[0] == ["/usr/bin/npm", "run", "build"]
         assert idle_kwargs["cwd"] == PROJECT_ROOT / "web"
 
-        # Regression for #18840: repo root + ui-tui installs must stream
-        # output (capture_output=False) so postinstall progress is visible
-        # to the user.
-        repo_and_tui_calls = [
+        # Regression for #18840: root npm installs must stream output
+        # (capture_output=False) so postinstall progress is visible
+        # to the user.  The _build_web_ui install uses --silent and
+        # capture_output=True, so exclude it.
+        root_install_calls = [
             call
             for call in mock_run.call_args_list
             if call.args
             and call.args[0][0] == "/usr/bin/npm"
             and call.args[0][1] == "ci"
-            and call.kwargs.get("cwd") in {PROJECT_ROOT, PROJECT_ROOT / "ui-tui"}
+            and call.kwargs.get("cwd") == PROJECT_ROOT
+            and "--silent" not in call.args[0]
         ]
-        assert len(repo_and_tui_calls) == 2
-        for call in repo_and_tui_calls:
+        assert len(root_install_calls) == 2  # root-only + workspace install
+        for call in root_install_calls:
             assert call.kwargs.get("capture_output") is False, (
-                "repo-root / ui-tui npm install must stream output "
+                "repo-root npm install must stream output "
                 "(no capture_output) so postinstall progress is visible"
             )
 

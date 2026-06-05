@@ -1,7 +1,7 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { type MutableRefObject, useCallback } from 'react'
 
-import { transcribeAudio } from '@/hermes'
+import { getProfiles, transcribeAudio } from '@/hermes'
 import { appendTextPart, branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
   attachmentDisplayText,
@@ -18,7 +18,9 @@ import {
   isDesktopSlashCommand
 } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
+import { setMutableRef } from '@/lib/mutable-ref'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { setSessionYolo } from '@/lib/yolo-session'
 import {
   $composerAttachments,
   addComposerAttachment,
@@ -28,9 +30,19 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { $busy, $messages, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import {
+  $busy,
+  $messages,
+  $yoloActive,
+  setAwaitingResponse,
+  setBusy,
+  setMessages,
+  setSessions,
+  setYoloActive
+} from '@/store/session'
 
-import type { ClientSessionState, ImageAttachResponse, SlashExecResponse } from '../../types'
+import type { ClientSessionState, ImageAttachResponse, SessionTitleResponse, SlashExecResponse } from '../../types'
 
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -65,8 +77,9 @@ interface PromptActionsOptions {
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
   branchCurrentSession: () => Promise<boolean>
-  createBackendSessionForSend: () => Promise<string | null>
+  createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
+  refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
@@ -131,6 +144,7 @@ export function usePromptActions({
   branchCurrentSession,
   createBackendSessionForSend,
   handleSkinCommand,
+  refreshSessions,
   requestGateway,
   selectedStoredSessionIdRef,
   startFreshSessionDraft,
@@ -237,7 +251,7 @@ export function usePromptActions({
       }
 
       const releaseBusy = () => {
-        busyRef.current = false
+        setMutableRef(busyRef, false)
         setBusy(false)
         setAwaitingResponse(false)
       }
@@ -281,7 +295,7 @@ export function usePromptActions({
         )
       }
 
-      busyRef.current = true
+      setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
       clearNotifications()
@@ -296,7 +310,7 @@ export function usePromptActions({
 
       if (!sessionId) {
         try {
-          sessionId = await createBackendSessionForSend()
+          sessionId = await createBackendSessionForSend(visibleText)
         } catch (err) {
           dropOptimistic(null)
           releaseBusy()
@@ -400,8 +414,77 @@ export function usePromptActions({
           return
         }
 
+        // /yolo maps to the status-bar YOLO control — a per-session approval
+        // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
+        // it locally; the session-create path applies it on the first message.
+        if (normalizedName === 'yolo') {
+          const sid = sessionHint || activeSessionIdRef.current
+          const next = !$yoloActive.get()
+
+          if (!sid) {
+            setYoloActive(next)
+            notify({ kind: 'success', message: next ? 'YOLO armed for this chat' : 'YOLO off' })
+
+            return
+          }
+
+          try {
+            const active = await setSessionYolo(requestGateway, sid, next)
+            appendSessionTextMessage(sid, 'system', `YOLO ${active ? 'on' : 'off'} for this session`)
+          } catch {
+            notify({ kind: 'error', title: 'YOLO', message: 'Could not toggle YOLO' })
+          }
+
+          return
+        }
+
         if (normalizedName === 'skin' && !sessionHint && !activeSessionIdRef.current) {
           notify({ kind: 'success', message: handleSkinCommand(arg) })
+
+          return
+        }
+
+        // /profile selects which profile new chats open in — no app relaunch.
+        // A profile is per-session now, so an existing thread can't change its
+        // profile mid-stream; `/profile <name>` instead points the next new chat
+        // (and the current empty draft) at that profile's backend.
+        if (normalizedName === 'profile') {
+          const target = arg.trim()
+          const current = normalizeProfileKey($activeGatewayProfile.get())
+
+          if (!target) {
+            notify({
+              kind: 'success',
+              message: `Profile: ${current}. Use /profile <name> or the "New session" picker to start a chat in another profile.`
+            })
+
+            return
+          }
+
+          try {
+            const { profiles } = await getProfiles()
+            const match = profiles.find(profile => profile.name === target)
+
+            if (!match) {
+              notify({
+                kind: 'error',
+                title: 'Unknown profile',
+                message: `No profile named "${target}". Available: ${profiles.map(profile => profile.name).join(', ')}`
+              })
+
+              return
+            }
+
+            const key = normalizeProfileKey(match.name)
+
+            $newChatProfile.set(key)
+            // Swap the live gateway now so an empty draft sends into this
+            // profile immediately; an existing thread keeps its own profile.
+            await ensureGatewayProfile(key)
+            notify({ kind: 'success', message: `New chats will use profile ${match.name}.` })
+          } catch (err) {
+            notifyError(err, 'Failed to set profile')
+          }
 
           return
         }
@@ -420,6 +503,50 @@ export function usePromptActions({
 
         const renderSlashOutput = (text: string) =>
           appendSessionTextMessage(sessionId, 'system', recordInput ? slashStatusText(command, text) : text)
+
+        // /title <name> renames the session. Route through the gateway's
+        // `session.title` RPC — the same path the TUI uses — NOT the REST
+        // renameSession endpoint and NOT the slash worker.
+        //
+        // Why not the slash worker: it's a separate HermesCLI subprocess whose
+        // SQLite write to the shared state.db can silently fail (notably on
+        // Windows), and it never refreshes the sidebar.
+        //
+        // Why not REST renameSession: `sessionId` here is the *runtime* session
+        // id returned by session.create — it is NOT the stored DB `sessions.id`,
+        // and session.create deliberately does not persist a DB row until the
+        // first turn. The REST PATCH endpoint resolves against the sessions
+        // table, so a runtime id (or a brand-new, not-yet-persisted session)
+        // 404s with "Session not found" on every platform. See #38508 / #38576.
+        //
+        // session.title maps the runtime id to the in-memory session, writes
+        // through the gateway's own DB connection, and QUEUES the title
+        // (`pending: true`) when the row isn't persisted yet — so it works for a
+        // fresh chat too. refreshSessions() then pulls the authoritative title
+        // back into the sidebar. A bare `/title` (no arg) still falls through to
+        // the worker to display the current title.
+        if (normalizedName === 'title' && arg) {
+          try {
+            const result = await requestGateway<SessionTitleResponse>('session.title', {
+              session_id: sessionId,
+              title: arg
+            })
+            const finalTitle = (result?.title || arg).trim()
+            const queued = result?.pending === true
+
+            setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
+            await refreshSessions().catch(() => undefined)
+            renderSlashOutput(
+              finalTitle
+                ? `Session title set: ${finalTitle}${queued ? ' (queued while session initializes)' : ''}`
+                : 'Session title cleared.'
+            )
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+
+          return
+        }
 
         if (normalizedName === 'skin') {
           renderSlashOutput(handleSkinCommand(arg))
@@ -521,6 +648,7 @@ export function usePromptActions({
       busyRef,
       createBackendSessionForSend,
       handleSkinCommand,
+      refreshSessions,
       requestGateway,
       startFreshSessionDraft,
       submitPromptText
@@ -561,7 +689,7 @@ export function usePromptActions({
   const cancelRun = useCallback(async () => {
     const sessionId = activeSessionId || activeSessionIdRef.current
 
-    busyRef.current = false
+    setMutableRef(busyRef, false)
     setBusy(false)
     setAwaitingResponse(false)
 
@@ -720,7 +848,7 @@ export function usePromptActions({
       const editedMessage: ChatMessage = { ...source, parts: [textPart(text)] }
 
       clearNotifications()
-      busyRef.current = true
+      setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
       updateSessionState(sessionId, state => ({
@@ -758,7 +886,7 @@ export function usePromptActions({
           }
         }
 
-        busyRef.current = false
+        setMutableRef(busyRef, false)
         setBusy(false)
         setAwaitingResponse(false)
         updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false }))

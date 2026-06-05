@@ -22,7 +22,7 @@
  *   { type: 'manifest',  stages: [{name, title, category, needs_user_input}, ...] }
  *   { type: 'stage',     name, state: 'running'|'succeeded'|'skipped'|'failed',
  *                        json?, durationMs?, error? }
- *   { type: 'log',       stage?, line }      // raw line from install.ps1
+ *   { type: 'log',       stage?, line, stream: 'stdout'|'stderr' } // raw line from install.ps1
  *   { type: 'complete',  marker: <written marker payload> }
  *   { type: 'failed',    stage?, error }     // bootstrap aborted
  *
@@ -101,7 +101,9 @@ function downloadInstallScript(commit, destPath) {
             .get(res.headers.location, res2 => {
               if (res2.statusCode !== 200) {
                 reject(
-                  new Error(`Failed to download ${scriptName}: HTTP ${res2.statusCode} from redirect ${res.headers.location}`)
+                  new Error(
+                    `Failed to download ${scriptName}: HTTP ${res2.statusCode} from redirect ${res.headers.location}`
+                  )
                 )
                 return
               }
@@ -121,7 +123,9 @@ function downloadInstallScript(commit, destPath) {
           out.close()
           try {
             fs.unlinkSync(tmpPath)
-          } catch {}
+          } catch {
+            void 0
+          }
           reject(new Error(`Failed to download ${scriptName}: HTTP ${res.statusCode} from ${url}`))
           return
         }
@@ -134,14 +138,18 @@ function downloadInstallScript(commit, destPath) {
         out.on('error', err => {
           try {
             fs.unlinkSync(tmpPath)
-          } catch {}
+          } catch {
+            void 0
+          }
           reject(err)
         })
       })
       .on('error', err => {
         try {
           fs.unlinkSync(tmpPath)
-        } catch {}
+        } catch {
+          void 0
+        }
         reject(err)
       })
   })
@@ -168,13 +176,19 @@ async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, 
   const cached = cachedScriptPath(hermesHome, installStamp.commit)
   try {
     await fsp.access(cached, fs.constants.R_OK)
-    emit({ type: 'log', line: `[bootstrap] using cached ${installScriptName()} for ${installStamp.commit.slice(0, 12)}` })
+    emit({
+      type: 'log',
+      line: `[bootstrap] using cached ${installScriptName()} for ${installStamp.commit.slice(0, 12)}`
+    })
     return { path: cached, source: 'cache', commit: installStamp.commit, kind: installScriptKind() }
   } catch {
     // not cached; download
   }
 
-  emit({ type: 'log', line: `[bootstrap] fetching ${installScriptName()} for ${installStamp.commit.slice(0, 12)} from GitHub` })
+  emit({
+    type: 'log',
+    line: `[bootstrap] fetching ${installScriptName()} for ${installStamp.commit.slice(0, 12)} from GitHub`
+  })
   await downloadInstallScript(installStamp.commit, cached)
   emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
   return { path: cached, source: 'download', commit: installStamp.commit, kind: installScriptKind() }
@@ -207,7 +221,9 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       killed = true
       try {
         child.kill('SIGTERM')
-      } catch {}
+      } catch {
+        void 0
+      }
     }
     if (abortSignal) {
       if (abortSignal.aborted) {
@@ -229,7 +245,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
         const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
         stdoutBuf = stdoutBuf.slice(nl + 1)
-        if (line) emit && emit({ type: 'log', stage: stageName, line })
+        if (line) emit && emit({ type: 'log', stage: stageName, line, stream: 'stdout' })
       }
     })
 
@@ -241,7 +257,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       while ((nl = stderrBuf.indexOf('\n')) !== -1) {
         const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
         stderrBuf = stderrBuf.slice(nl + 1)
-        if (line) emit && emit({ type: 'log', stage: stageName, line: `stderr: ${line}` })
+        if (line) emit && emit({ type: 'log', stage: stageName, line, stream: 'stderr' })
       }
     })
 
@@ -253,8 +269,8 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
     child.on('close', (code, signal) => {
       if (abortSignal) abortSignal.removeEventListener('abort', onAbort)
       // Flush any trailing bytes
-      if (stdoutBuf) emit && emit({ type: 'log', stage: stageName, line: stdoutBuf })
-      if (stderrBuf) emit && emit({ type: 'log', stage: stageName, line: `stderr: ${stderrBuf}` })
+      if (stdoutBuf) emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' })
+      if (stderrBuf) emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' })
       resolve({ stdout, stderr, code, signal, killed })
     })
   })
@@ -278,7 +294,9 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
       killed = true
       try {
         child.kill('SIGTERM')
-      } catch {}
+      } catch {
+        void 0
+      }
     }
     if (abortSignal) {
       if (abortSignal.aborted) {
@@ -299,7 +317,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
       while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
         const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
         stdoutBuf = stdoutBuf.slice(nl + 1)
-        if (line) emit && emit({ type: 'log', stage: stageName, line })
+        if (line) emit && emit({ type: 'log', stage: stageName, line, stream: 'stdout' })
       }
     })
 
@@ -311,7 +329,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
       while ((nl = stderrBuf.indexOf('\n')) !== -1) {
         const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
         stderrBuf = stderrBuf.slice(nl + 1)
-        if (line) emit && emit({ type: 'log', stage: stageName, line: `stderr: ${line}` })
+        if (line) emit && emit({ type: 'log', stage: stageName, line, stream: 'stderr' })
       }
     })
 
@@ -322,8 +340,8 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
 
     child.on('close', (code, signal) => {
       if (abortSignal) abortSignal.removeEventListener('abort', onAbort)
-      if (stdoutBuf) emit && emit({ type: 'log', stage: stageName, line: stdoutBuf })
-      if (stderrBuf) emit && emit({ type: 'log', stage: stageName, line: `stderr: ${stderrBuf}` })
+      if (stdoutBuf) emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' })
+      if (stderrBuf) emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' })
       resolve({ stdout, stderr, code, signal, killed })
     })
   })
@@ -369,7 +387,9 @@ async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, acti
     hermesHome
   })
   if (result.code !== 0) {
-    throw new Error(`${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${result.stderr || result.stdout}`)
+    throw new Error(
+      `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${result.stderr || result.stdout}`
+    )
   }
   // The manifest is the LAST JSON line on stdout (install.ps1 may print
   // banner / info lines first depending on Console.OutputEncoding effects).
@@ -381,9 +401,13 @@ async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, acti
       if (parsed && Array.isArray(parsed.stages)) {
         return parsed
       }
-    } catch {}
+    } catch {
+      void 0
+    }
   }
-  throw new Error(`${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} produced no parseable JSON payload\n${result.stdout}`)
+  throw new Error(
+    `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} produced no parseable JSON payload\n${result.stdout}`
+  )
 }
 
 // Parse the JSON result frame from a stage run. The protocol guarantees
@@ -397,7 +421,9 @@ function parseStageResult(stdout) {
       if (parsed && typeof parsed.ok === 'boolean' && typeof parsed.stage === 'string') {
         return parsed
       }
-    } catch {}
+    } catch {
+      void 0
+    }
   }
   return null
 }
@@ -408,13 +434,20 @@ async function runStage({ scriptPath, installerKind, stage, emit, hermesHome, ac
 
   const isPosix = installerKind === 'posix'
   const args = isPosix
-    ? ['--stage', stage.name, '--non-interactive', '--json', ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome })]
+    ? [
+        '--stage',
+        stage.name,
+        '--non-interactive',
+        '--json',
+        ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome })
+      ]
     : ['-Stage', stage.name, '-NonInteractive', '-Json', ...buildPinArgs(installStamp)]
-  const result = await (isPosix ? spawnBash : spawnPowerShell)(
-    scriptPath,
-    args,
-    { emit, stageName: stage.name, abortSignal, hermesHome }
-  )
+  const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
+    emit,
+    stageName: stage.name,
+    abortSignal,
+    hermesHome
+  })
 
   const durationMs = Date.now() - startedAt
 
@@ -449,7 +482,14 @@ async function runStage({ scriptPath, installerKind, stage, emit, hermesHome, ac
     emit(ev)
     return ev
   }
-  const ev = { type: 'stage', name: stage.name, state: 'failed', durationMs, json, error: json.reason || `exit code ${result.code}` }
+  const ev = {
+    type: 'stage',
+    name: stage.name,
+    state: 'failed',
+    durationMs,
+    json,
+    error: json.reason || `exit code ${result.code}`
+  }
   emit(ev)
   return ev
 }
@@ -489,7 +529,9 @@ async function runBootstrap(opts) {
     if (typeof onEvent === 'function') {
       try {
         onEvent({ type: 'failed', error: 'bootstrap cancelled by user' })
-      } catch {}
+      } catch {
+        void 0
+      }
     }
     return { ok: false, cancelled: true }
   }
@@ -501,7 +543,9 @@ async function runBootstrap(opts) {
   const emit = ev => {
     try {
       runLog.stream.write(JSON.stringify(ev) + '\n')
-    } catch {}
+    } catch {
+      void 0
+    }
     try {
       if (typeof onEvent === 'function') onEvent(ev)
     } catch (err) {
@@ -578,7 +622,9 @@ async function runBootstrap(opts) {
   } finally {
     try {
       runLog.stream.end()
-    } catch {}
+    } catch {
+      void 0
+    }
   }
 }
 

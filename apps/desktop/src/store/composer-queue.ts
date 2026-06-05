@@ -188,3 +188,39 @@ export const clearQueuedPrompts = (key: string | null | undefined) => {
 
   writeSession(sid, [])
 }
+
+/** Inputs to {@link shouldAutoDrainOnSettle}, captured at a `busy` transition. */
+export interface AutoDrainSettleInput {
+  wasBusy: boolean
+  isBusy: boolean
+  queueLength: number
+  userInterrupted: boolean
+}
+
+/**
+ * Decide whether the composer should auto-drain the next queued prompt when a
+ * turn settles (busy transitions true → false).
+ *
+ * The queue auto-advances when a turn *completes naturally*, but must NOT
+ * advance when the user *explicitly interrupted* the turn via the Stop button.
+ * Conflating the two made the Stop button appear to "never work": cancelling a
+ * turn flipped busy → false, the queue immediately re-fired its head, and the
+ * agent kept running. An explicit interrupt means stop — the queued turns are
+ * preserved and the user resumes them deliberately (Cmd/Ctrl+K, Enter, or the
+ * per-row "send now" arrow).
+ */
+export const shouldAutoDrainOnSettle = (params: AutoDrainSettleInput): boolean => {
+  const { isBusy, queueLength, userInterrupted, wasBusy } = params
+
+  // Only react to a true → false transition; ignore steady state and entry.
+  if (isBusy || !wasBusy) {
+    return false
+  }
+
+  // An explicit Stop suppresses exactly one auto-drain.
+  if (userInterrupted) {
+    return false
+  }
+
+  return queueLength > 0
+}

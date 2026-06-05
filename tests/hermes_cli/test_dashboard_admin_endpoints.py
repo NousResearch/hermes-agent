@@ -412,8 +412,182 @@ class TestAdminEndpointsAuthGate:
             "/api/curator",
             "/api/portal",
             "/api/system/stats",
+            "/api/hermes/update/check",
         ],
     )
     def test_gated(self, path):
         resp = self.client.get(path)
         assert resp.status_code in (401, 403)
+
+
+class TestUpdateCheckEndpoint:
+    """``GET /api/hermes/update/check`` reports availability without applying.
+
+    Powers the dashboard's check-before-you-update flow: the System page
+    shows the commit-behind count and asks the user to confirm before
+    ``POST /api/hermes/update`` runs ``hermes update``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_git_install_reports_behind_count(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
+        # Stub the shared checker so the contract is deterministic (no network).
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(banner, "check_for_updates", lambda: 5)
+
+        r = self.client.get("/api/hermes/update/check")
+        assert r.status_code == 200
+        body = r.json()
+        assert {
+            "install_method",
+            "current_version",
+            "behind",
+            "update_available",
+            "can_apply",
+            "update_command",
+            "message",
+        } <= set(body)
+        assert body["install_method"] == "git"
+        assert body["behind"] == 5
+        assert body["update_available"] is True
+        # git/pip installs can apply the update in place from the dashboard.
+        assert body["can_apply"] is True
+
+    def test_up_to_date(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr(banner, "check_for_updates", lambda: 0)
+
+        body = self.client.get("/api/hermes/update/check").json()
+        assert body["behind"] == 0
+        assert body["update_available"] is False
+
+    def test_docker_is_not_applyable(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "docker")
+        body = self.client.get("/api/hermes/update/check").json()
+        # Docker images are immutable — the dashboard can't apply an update.
+        assert body["can_apply"] is False
+        assert body["message"]
+        assert body["behind"] is None
+
+    def test_check_failure_is_soft(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
+
+        def _boom():
+            raise RuntimeError("offline")
+
+        monkeypatch.setattr(banner, "check_for_updates", _boom)
+        # A failed check must not 500 — it returns behind=null with guidance.
+        r = self.client.get("/api/hermes/update/check")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["behind"] is None
+        assert body["update_available"] is False
+        assert body["message"]
+
+
+class TestDebugShareEndpoint:
+    """POST /api/ops/debug-share returns the paste URLs synchronously so the
+    dashboard can render them as copyable links (not a backgrounded log tail)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, self.header = _client()
+        from hermes_constants import get_hermes_home
+
+        logs = get_hermes_home() / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "agent.log").write_text("agent line\n")
+        (logs / "errors.log").write_text("err line\n")
+        (logs / "gateway.log").write_text("gw line\n")
+
+    def test_returns_structured_urls(self, monkeypatch):
+        import hermes_cli.debug as dbg
+
+        count = [0]
+
+        def _upload(content, expiry_days=7):
+            count[0] += 1
+            return f"https://paste.rs/p{count[0]}"
+
+        monkeypatch.setattr(dbg, "upload_to_pastebin", _upload)
+        monkeypatch.setattr(dbg, "_schedule_auto_delete", lambda *a, **k: None)
+        monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
+        monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
+
+        r = self.client.post("/api/ops/debug-share", json={"redact": True})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert "Report" in body["urls"]
+        assert body["redacted"] is True
+        assert body["auto_delete_seconds"] == 21600
+        assert isinstance(body["failures"], list)
+
+    def test_redact_false_is_honored(self, monkeypatch):
+        import hermes_cli.debug as dbg
+
+        monkeypatch.setattr(
+            dbg, "upload_to_pastebin", lambda c, expiry_days=7: "https://paste.rs/x"
+        )
+        monkeypatch.setattr(dbg, "_schedule_auto_delete", lambda *a, **k: None)
+        monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
+        monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
+
+        r = self.client.post("/api/ops/debug-share", json={"redact": False})
+        assert r.status_code == 200
+        assert r.json()["redacted"] is False
+
+    def test_default_body_redacts(self, monkeypatch):
+        import hermes_cli.debug as dbg
+
+        monkeypatch.setattr(
+            dbg, "upload_to_pastebin", lambda c, expiry_days=7: "https://paste.rs/x"
+        )
+        monkeypatch.setattr(dbg, "_schedule_auto_delete", lambda *a, **k: None)
+        monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
+        monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
+
+        # No JSON body at all — should default redact=True.
+        r = self.client.post("/api/ops/debug-share")
+        assert r.status_code == 200
+        assert r.json()["redacted"] is True
+
+    def test_upload_failure_returns_502(self, monkeypatch):
+        import hermes_cli.debug as dbg
+
+        monkeypatch.setattr(
+            dbg,
+            "upload_to_pastebin",
+            lambda c, expiry_days=7: (_ for _ in ()).throw(RuntimeError("down")),
+        )
+        monkeypatch.setattr(dbg, "_schedule_auto_delete", lambda *a, **k: None)
+        monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
+        monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
+
+        r = self.client.post("/api/ops/debug-share", json={"redact": True})
+        assert r.status_code == 502
+
+    def test_requires_session_token(self):
+        # Drop the token header and confirm the global auth gate rejects it.
+        bare = self.client
+        r = bare.post(
+            "/api/ops/debug-share",
+            json={"redact": True},
+            headers={self.header: "wrong-token"},
+        )
+        assert r.status_code == 401
+

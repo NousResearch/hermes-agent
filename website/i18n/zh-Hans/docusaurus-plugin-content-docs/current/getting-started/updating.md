@@ -183,7 +183,6 @@ git log --oneline -10
 
 # Roll back to a specific commit
 git checkout <commit-hash>
-git submodule update --init --recursive
 uv pip install -e ".[all]"
 
 # Restart the gateway if running
@@ -194,7 +193,6 @@ hermes gateway restart
 
 ```bash
 git checkout v0.6.0
-git submodule update --init --recursive
 uv pip install -e ".[all]"
 ```
 

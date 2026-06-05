@@ -606,3 +606,51 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
         "gateway-model-c",
     ], "Live models must replace the static subset"
     assert gateway_prov["total_models"] == 3
+
+
+def test_custom_providers_carry_live_router_metadata(monkeypatch):
+    """AI-router custom endpoints should expose host metadata to GUI pickers."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    def fake_probe_api_models(api_key, base_url, timeout=5.0, api_mode=None):
+        return {
+            "models": ["qwen3.6-35b", "qwen3.6-27b"],
+            "model_metadata": {
+                "qwen3.6-35b": {
+                    "router_backend": "llama-swap",
+                    "router_host": "ko-mac",
+                    "router_hosts": ["ko-mac", "ko-taro"],
+                },
+                "qwen3.6-27b": {
+                    "router_backend": "llama-swap",
+                    "router_host": "ko-taro",
+                    "router_hosts": ["ko-taro"],
+                },
+            },
+            "probed_url": "https://ai-router.example.com/v1/models",
+            "resolved_base_url": "https://ai-router.example.com/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+
+    monkeypatch.setattr("hermes_cli.models.probe_api_models", fake_probe_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="custom:ai-router",
+        current_base_url="https://ai-router.example.com/v1",
+        custom_providers=[
+            {
+                "name": "AI-Router",
+                "api_key": "local-key",
+                "base_url": "https://ai-router.example.com/v1",
+                "model": "qwen3.6-35b",
+            }
+        ],
+        max_models=50,
+    )
+
+    row = next(provider for provider in providers if provider["api_url"] == "https://ai-router.example.com/v1")
+    assert row["models"] == ["qwen3.6-35b", "qwen3.6-27b"]
+    assert row["model_metadata"]["qwen3.6-35b"]["router_host"] == "ko-mac"
+    assert row["model_metadata"]["qwen3.6-35b"]["router_hosts"] == ["ko-mac", "ko-taro"]

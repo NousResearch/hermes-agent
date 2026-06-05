@@ -54,7 +54,14 @@ import {
   SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '@/store/layout'
-import { $newChatProfile, $profiles, $profileScope, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
+import {
+  $newChatProfile,
+  $profiles,
+  $profileScope,
+  ALL_PROFILES,
+  newSessionInProfile,
+  normalizeProfileKey
+} from '@/store/profile'
 import {
   $selectedStoredSessionId,
   $sessionProfileTotals,
@@ -1044,12 +1051,15 @@ function SidebarWorkspaceGroup({
             open={open}
           />
         </button>
-        {onNewSession && (
+        {(onNewSession || isProfileGroup) && (
           <Tip label={`New session in ${group.label}`}>
             <button
               aria-label={`New session in ${group.label}`}
               className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
-              onClick={() => onNewSession(group.path)}
+              // Profile groups start a fresh session in that profile but keep the
+              // all-profiles browse view (newSessionInProfile leaves the scope
+              // alone); workspace groups seed the new session's cwd from the path.
+              onClick={() => (isProfileGroup ? newSessionInProfile(group.id) : onNewSession?.(group.path))}
               type="button"
             >
               <Codicon name="add" size="0.75rem" />

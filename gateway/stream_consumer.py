@@ -1000,27 +1000,23 @@ class GatewayStreamConsumer:
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
                     # full response again.
-                    if self._accumulated:
-                        if self._use_native_streaming:
-                            # Native streaming routes the finalize frame via
-                            # the same _send_or_edit call above (line 604) when
-                            # got_done — that call already passed finalize=True
-                            # and the native branch sent finish=true. If the
-                            # mid-stream visible update already landed, mark
-                            # delivered without re-sending. Otherwise emit one
-                            # explicit finalize=True frame to close the stream
-                            # (e.g. very short responses where the finalize
-                            # check above was skipped by `should_edit`).
-                            if current_update_visible:
-                                self._final_response_sent = True
+                    if self._use_native_streaming:
+                        # Native streaming MUST always close the stream with
+                        # finish=true — even when _accumulated is empty (e.g.
+                        # tool-only turns with no text output). Mirror OpenClaw's
+                        # finishThinkingStream: use a placeholder if needed.
+                        if not current_update_visible:
+                            close_text = self._accumulated or "✅"
+                            self._final_response_sent = await self._send_or_edit(
+                                close_text, finalize=True,
+                            )
+                            if self._final_response_sent:
                                 self._final_content_delivered = True
-                            else:
-                                self._final_response_sent = await self._send_or_edit(
-                                    self._accumulated, finalize=True,
-                                )
-                                if self._final_response_sent:
-                                    self._final_content_delivered = True
-                        elif self._fallback_final_send:
+                        else:
+                            self._final_response_sent = True
+                            self._final_content_delivered = True
+                    elif self._accumulated:
+                        if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
                         elif self._final_response_sent:
                             # A finalize=True tick above already delivered the

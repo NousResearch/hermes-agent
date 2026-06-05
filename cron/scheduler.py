@@ -29,7 +29,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -1563,21 +1563,43 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # no explicit provider is requested. Passing the env var here short-
             # circuits that precedence and can resurrect old providers (for
             # example DeepSeek) for cron jobs that do not pin provider/model.
+            _resolved_model = job.get("model") or _cfg.get("model", {}).get("default") if isinstance(_cfg, dict) and isinstance(_cfg.get("model"), dict) else job.get("model")
+            _resolved_provider = job.get("provider") or _cfg.get("model", {}).get("provider") if isinstance(_cfg, dict) and isinstance(_cfg.get("model"), dict) else job.get("provider")
+
+            def _effective_fallback_chain(_job: dict, _cfg: dict) -> list[dict[str, Any]]:
+                """Return the effective fallback chain for this job.
+
+                Per-job ``fallback_providers`` overrides the profile config.
+                An explicit empty list means no fallback — the job fails fast.
+                """
+                if "fallback_providers" in _job:
+                    raw = _job["fallback_providers"]
+                    if isinstance(raw, list):
+                        return [e for e in raw if isinstance(e, dict)]
+                    if isinstance(raw, dict):
+                        return [raw]
+                    return []
+                raw = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+                if isinstance(raw, list):
+                    return [e for e in raw if isinstance(e, dict)]
+                if isinstance(raw, dict):
+                    return [raw]
+                return []
+
             runtime_kwargs = {
-                "requested": job.get("provider"),
+                "requested": _resolved_provider,
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
+            # Uses the *effective* fallback chain resolved below so per-job
+            # overrides (including explicit []) are honoured at every site.
             logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
-            fb = _cfg.get("fallback_providers") or _cfg.get("fallback_model")
-            fb_list = (fb if isinstance(fb, list) else [fb]) if fb else []
+            _fb_chain = _effective_fallback_chain(job, _cfg)
             runtime = None
-            for entry in fb_list:
-                if not isinstance(entry, dict):
-                    continue
+            for entry in _fb_chain:
                 try:
                     fb_kwargs = {"requested": entry.get("provider")}
                     if entry.get("base_url"):
@@ -1595,13 +1617,11 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
-        # Per-job fallback_providers overrides profile config.  An explicit
-        # empty list means "no fallback" — the job must succeed on its
-        # primary provider or fail outright, never cascading to paid models.
-        if "fallback_providers" in job:
-            fallback_model = job["fallback_providers"]
-        else:
-            fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+        # Use the same effective fallback chain for both auth fallback
+        # (above) and AIAgent construction.  Per-job overrides (including
+        # explicit []) are honoured at every site.
+        fallback_chain = _effective_fallback_chain(job, _cfg)
+        fallback_model = fallback_chain if fallback_chain else None
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
         if runtime_provider:

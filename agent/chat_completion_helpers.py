@@ -1059,6 +1059,27 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         )
         return agent._try_activate_fallback()
 
+    # ── min_effort guard: skip fallback entries that require a higher
+    # reasoning effort than the current task's active lane.  Prevents
+    # premium fallbacks (e.g. Claude Opus) from activating for routine
+    # high-effort tasks that should stay on cheaper fallbacks.
+    min_effort = (fb.get("min_effort") or "").strip().lower()
+    if min_effort:
+        _EFFORT_ORDER = {
+            "none": 0, "minimal": 1, "low": 2, "medium": 3,
+            "default": 3, "high": 4, "max": 5, "xhigh": 5,
+        }
+        from agent.routing_contract import active_reasoning_effort as _active_effort
+        current_effort = _active_effort(agent)
+        current_rank = _EFFORT_ORDER.get(current_effort, 3)
+        min_rank = _EFFORT_ORDER.get(min_effort, 5)
+        if current_rank < min_rank:
+            logger.info(
+                "Fallback skip: %s/%s requires min_effort=%s, current=%s",
+                fb_provider, fb_model, min_effort, current_effort,
+            )
+            return agent._try_activate_fallback()
+
     # Use centralized router for client construction.
     # raw_codex=True because the main agent needs direct responses.stream()
     # access for Codex providers.

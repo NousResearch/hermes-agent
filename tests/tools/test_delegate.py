@@ -2827,5 +2827,461 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestPreDelegateBuildHook(unittest.TestCase):
+    """Tests for the pre_delegate_build plugin hook in _build_child_agent."""
+
+    def _invoke_with_hook(self, hook_return, *, model=None, parent=None):
+        """Build a child agent with a mock hook that returns hook_return."""
+        if parent is None:
+            parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[hook_return]) as mock_hook:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test hook",
+                context=None,
+                toolsets=None,
+                model=model,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+        return MockAgent, mock_hook
+
+    def test_hook_fires_with_correct_kwargs(self):
+        """Hook receives all expected kwargs (no raw parent_agent)."""
+        parent = _make_mock_parent()
+        captured = {}
+        def capture_hook(**kwargs):
+            captured.update(kwargs)
+            return None
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", side_effect=lambda name, **kw: [capture_hook(**kw)]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=3,
+                goal="my goal",
+                context="some context",
+                toolsets=None,
+                model="gpt-4",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=5,
+            )
+
+        self.assertEqual(captured["goal"], "my goal")
+        self.assertEqual(captured["context"], "some context")
+        self.assertEqual(captured["model"], "gpt-4")
+        self.assertEqual(captured["task_index"], 3)
+        self.assertEqual(captured["task_count"], 5)
+        self.assertIn("delegation_config", captured)
+        # parent is sanitized metadata, not raw agent
+        self.assertIn("parent", captured)
+        self.assertIsInstance(captured["parent"], dict)
+        self.assertNotIn("parent_agent", captured)
+        # api_key is NOT in hook kwargs at all
+        self.assertNotIn("api_key", captured)
+
+    def test_hook_kwargs_parent_is_sanitized(self):
+        """Parent metadata in hook kwargs contains no credentials."""
+        parent = _make_mock_parent()
+        parent.api_key = "secret-key-123"
+        parent.model = "test-model"
+        captured = {}
+        def capture_hook(**kwargs):
+            captured.update(kwargs)
+            return None
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", side_effect=lambda name, **kw: [capture_hook(**kw)]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0, goal="test", context=None, toolsets=None,
+                model=None, max_iterations=10, parent_agent=parent, task_count=1,
+            )
+
+        parent_meta = captured["parent"]
+        self.assertEqual(parent_meta["model"], "test-model")
+        # api_key must NOT be in parent metadata
+        self.assertNotIn("api_key", parent_meta)
+
+    def test_hook_can_override_model(self):
+        """Plugin returning {'model': '...'} overrides the child's model."""
+        MockAgent, _ = self._invoke_with_hook(
+            {"model": "anthropic/claude-haiku-4.5"},
+            model="gpt-4",
+        )
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "anthropic/claude-haiku-4.5")
+
+    def test_hook_can_override_provider(self):
+        """Plugin returning {'provider': '...'} overrides the child's provider."""
+        MockAgent, _ = self._invoke_with_hook({"provider": "minimax"})
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["provider"], "minimax")
+
+    def test_hook_can_override_reasoning_effort(self):
+        """Plugin returning {'reasoning_effort': '...'} reaches reasoning config."""
+        parent = _make_mock_parent()
+        parent.reasoning_config = None
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[{"reasoning_effort": "high"}]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test reasoning",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIsNotNone(kwargs["reasoning_config"])
+
+    def test_hook_exception_does_not_break_delegation(self):
+        """If the hook raises, delegation continues with original values."""
+        def bad_hook(**kwargs):
+            raise RuntimeError("boom")
+
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", side_effect=lambda name, **kw: [bad_hook(**kw)]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test crash",
+                context=None,
+                toolsets=None,
+                model="gpt-4",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "gpt-4")
+
+    def test_hook_returning_none_does_not_override(self):
+        """Hook returning None keeps original values."""
+        MockAgent, _ = self._invoke_with_hook(None, model="gpt-4")
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "gpt-4")
+
+    def test_hook_returning_string_is_ignored(self):
+        """Hook returning a non-dict value is ignored."""
+        MockAgent, _ = self._invoke_with_hook("garbage", model="gpt-4")
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "gpt-4")
+
+    def test_empty_dict_does_not_block_later_hook(self):
+        """An empty dict from one hook does not block a later valid override."""
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[
+                 {},
+                 {"model": "second-model"},
+             ]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test empty then valid",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "second-model")
+
+    def test_dict_with_only_falsy_keys_does_not_block(self):
+        """A dict with only empty-string/falsy values is skipped."""
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[
+                 {"model": ""},
+                 {"model": "real-model"},
+             ]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test falsy then valid",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "real-model")
+
+    def test_first_non_empty_dict_wins(self):
+        """When multiple hooks return dicts, the first non-empty one wins."""
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[
+                 {"model": "first-model"},
+                 {"model": "second-model"},
+             ]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test first wins",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "first-model")
+
+    def test_hook_partial_override_preserves_other_fields(self):
+        """Overriding only model preserves the resolved provider."""
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[{"model": "new-model"}]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test partial",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "new-model")
+        self.assertEqual(kwargs["provider"], "openrouter")
+
+    def test_hook_provider_override_resets_api_mode(self):
+        """When hook changes provider, api_mode is reset unless explicitly set."""
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        parent.api_mode = "chat_completions"
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[{"provider": "minimax"}]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test provider change",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["provider"], "minimax")
+        # api_mode should be reset to None (force re-derivation)
+        self.assertIsNone(kwargs["api_mode"])
+
+    def test_hook_provider_override_preserves_explicit_api_mode(self):
+        """When hook sets both provider and api_mode, api_mode is kept."""
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[
+                 {"provider": "minimax", "api_mode": "anthropic_messages"}
+             ]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test provider+mode",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["provider"], "minimax")
+        self.assertEqual(kwargs["api_mode"], "anthropic_messages")
+
+    def test_hook_api_key_return_is_ignored(self):
+        """Hook returning api_key has no effect — plugins cannot inject creds."""
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[
+                 {"api_key": "injected-key", "model": "new-model"}
+             ]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0, goal="test", context=None, toolsets=None,
+                model="old", max_iterations=10, parent_agent=parent, task_count=1,
+            )
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "new-model")
+        # api_key should be the parent's, not the injected one
+        self.assertEqual(kwargs["api_key"], parent.api_key)
+
+    def test_hook_base_url_return_is_ignored(self):
+        """Hook returning base_url has no effect — not in accepted keys."""
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[
+                 {"base_url": "http://evil.com", "model": "new-model"}
+             ]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0, goal="test", context=None, toolsets=None,
+                model="old", max_iterations=10, parent_agent=parent, task_count=1,
+            )
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "new-model")
+        self.assertEqual(kwargs["base_url"], parent.base_url)
+
+    def test_hook_non_string_override_is_ignored(self):
+        """Hook returning non-string values for model is ignored."""
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[
+                 {"model": 123, "provider": "valid-provider"}
+             ]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0, goal="test", context=None, toolsets=None,
+                model="old", max_iterations=10, parent_agent=parent, task_count=1,
+            )
+        _, kwargs = MockAgent.call_args
+        # model 123 is non-string, should be ignored
+        self.assertEqual(kwargs["model"], "old")
+        # provider is a valid string, should apply
+        self.assertEqual(kwargs["provider"], "valid-provider")
+
+    def test_hook_provider_override_clears_base_url(self):
+        """When hook changes provider, inherited base_url is cleared."""
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        parent.base_url = "https://openrouter.ai/api/v1"
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[{"provider": "minimax"}]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0, goal="test", context=None, toolsets=None,
+                model=None, max_iterations=10, parent_agent=parent, task_count=1,
+            )
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["provider"], "minimax")
+        # base_url should be cleared so provider resolver picks correct endpoint
+        self.assertIsNone(kwargs["base_url"])
+
+    def test_hook_provider_override_clears_api_key(self):
+        """When hook changes provider, inherited api_key is cleared."""
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        parent.api_key = "openrouter-key"
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[{"provider": "minimax"}]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0, goal="test", context=None, toolsets=None,
+                model=None, max_iterations=10, parent_agent=parent, task_count=1,
+            )
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["provider"], "minimax")
+        # api_key should be cleared so provider resolver picks the right key
+        self.assertIsNone(kwargs["api_key"])
+
+    def test_later_hook_api_mode_does_not_affect_earlier_winner(self):
+        """Only the winning dict's api_mode is tracked, not later ignored dicts."""
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        parent.api_mode = "chat_completions"
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[
+                 {"provider": "minimax"},           # winner — no api_mode
+                 {"api_mode": "anthropic_messages"}, # ignored
+             ]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0, goal="test", context=None, toolsets=None,
+                model=None, max_iterations=10, parent_agent=parent, task_count=1,
+            )
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["provider"], "minimax")
+        # api_mode should be reset (winner didn't set it), not preserved by ignored dict
+        self.assertIsNone(kwargs["api_mode"])
+
+    def test_delegation_config_in_hook_is_sanitized(self):
+        """delegation_config passed to hook has credential-shaped keys removed."""
+        parent = _make_mock_parent()
+        captured = {}
+        def capture_hook(**kwargs):
+            captured.update(kwargs)
+            return None
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", side_effect=lambda name, **kw: [capture_hook(**kw)]), \
+             patch("tools.delegate_tool._load_config", return_value={
+                 "provider": "openrouter",
+                 "model": "gpt-4",
+                 "api_key": "secret-key",
+                 "base_url": "https://example.com",
+             }):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0, goal="test", context=None, toolsets=None,
+                model=None, max_iterations=10, parent_agent=parent, task_count=1,
+            )
+
+        cfg = captured["delegation_config"]
+        self.assertIn("provider", cfg)
+        self.assertIn("model", cfg)
+        self.assertNotIn("api_key", cfg)
+        # base_url is not a credential — it's infrastructure config
+        self.assertIn("base_url", cfg)
+
+    def test_no_plugin_behavior_unchanged(self):
+        """With no hook results, delegation behaves identically to upstream."""
+        parent = _make_mock_parent()
+        parent.reasoning_config = None
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test no hook",
+                context=None,
+                toolsets=None,
+                model="gpt-4",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "gpt-4")
+        self.assertEqual(kwargs["provider"], parent.provider)
+        self.assertIsNone(kwargs["reasoning_config"])
+
+
 if __name__ == "__main__":
     unittest.main()

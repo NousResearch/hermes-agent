@@ -192,6 +192,21 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Delegation model-routing hook.  Fired inside _build_child_agent()
+    # AFTER credentials are resolved but BEFORE the child AIAgent is
+    # constructed.  Plugins can return a dict to override routing:
+    #   {"model": "...", "provider": "...", "api_mode": "...",
+    #    "reasoning_effort": "..."}
+    # First non-empty dict with at least one valid override wins.
+    # Only non-empty stripped strings are accepted.  api_key and
+    # base_url are NOT accepted — plugins cannot inject credentials.
+    # Kwargs: goal, context, model, provider, api_mode,
+    #         task_index, task_count,
+    #         role, delegation_config (sanitized), parent (metadata).
+    # Note: reasoning_effort is NOT passed as a kwarg (the hook fires before
+    # reasoning config is resolved).  Plugins can RETURN reasoning_effort
+    # in the override dict — see the accepted return keys above.
+    "pre_delegate_build",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

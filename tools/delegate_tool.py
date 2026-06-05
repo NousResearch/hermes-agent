@@ -53,6 +53,60 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
     ]
 )
 
+_PRE_DELEGATE_BUILD_OVERRIDE_KEYS = frozenset(
+    ("model", "provider", "api_mode", "reasoning_effort")
+)
+_SENSITIVE_DELEGATE_HOOK_KEYS = frozenset(
+    (
+        "api_key",
+        "authorization",
+        "proxy_authorization",
+        "cookie",
+        "set_cookie",
+        "access_token",
+        "refresh_token",
+        "token",
+        "secret",
+        "password",
+    )
+)
+
+
+def _clean_pre_delegate_override(value: Any) -> Optional[str]:
+    """Return a non-empty string hook override, or None if invalid."""
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _is_sensitive_delegate_hook_key(key: Any) -> bool:
+    """Whether a metadata key must be withheld from delegation hooks."""
+    if not isinstance(key, str):
+        return False
+    lowered = key.lower().replace("-", "_")
+    return (
+        lowered in _SENSITIVE_DELEGATE_HOOK_KEYS
+        or "api_key" in lowered
+        or lowered.endswith(("_token", "_secret", "_password"))
+    )
+
+
+def _sanitize_delegate_hook_metadata(value: Any) -> Any:
+    """Recursively omit credential-shaped keys before plugin hook dispatch."""
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            if _is_sensitive_delegate_hook_key(key):
+                continue
+            sanitized[str(key)] = _sanitize_delegate_hook_metadata(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_delegate_hook_metadata(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_delegate_hook_metadata(item) for item in value)
+    return value
+
 
 # ---------------------------------------------------------------------------
 # Subagent approval callbacks
@@ -1180,14 +1234,93 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # ── Plugin hook: pre_delegate_build ────────────────────────────────
+    # Fires AFTER credentials are resolved but BEFORE reasoning config
+    # and child AIAgent construction.  Plugins may return a dict to
+    # override model/provider/api_mode/reasoning_effort.
+    # Accepted override keys: model, provider, api_mode, reasoning_effort.
+    # api_key and base_url are NOT accepted — plugins cannot inject
+    # credentials.  First non-empty dict with at least one valid override
+    # wins.  Only non-empty stripped strings are accepted.
+    _hook_reasoning_effort = None
+    _pre_hook_provider = effective_provider
+    _hook_set_api_mode = False
+    _hook_results = []
+    try:
+        import hermes_cli.plugins as _plugins
+
+        _parent_meta = {
+            "model": getattr(parent_agent, "model", None),
+            "provider": getattr(parent_agent, "provider", None),
+            "platform": getattr(parent_agent, "platform", None),
+        }
+        _hook_results = _plugins.invoke_hook(
+            "pre_delegate_build",
+            goal=goal,
+            context=context,
+            model=effective_model,
+            provider=effective_provider,
+            api_mode=effective_api_mode,
+            task_index=task_index,
+            task_count=task_count,
+            role=effective_role,
+            delegation_config=_sanitize_delegate_hook_metadata(delegation_cfg),
+            parent=_parent_meta,
+        )
+        for _hr in _hook_results:
+            if not isinstance(_hr, dict):
+                continue
+            # Build validated overrides — only accept non-empty stripped strings
+            _valid = {}
+            for k in _PRE_DELEGATE_BUILD_OVERRIDE_KEYS:
+                v = _hr.get(k)
+                cleaned = _clean_pre_delegate_override(v)
+                if cleaned is not None:
+                    _valid[k] = cleaned
+            if not _valid:
+                continue
+            # Apply overrides
+            if "model" in _valid:
+                effective_model = _valid["model"]
+            if "provider" in _valid:
+                effective_provider = _valid["provider"]
+            if "api_mode" in _valid:
+                effective_api_mode = _valid["api_mode"]
+                _hook_set_api_mode = True
+            if "reasoning_effort" in _valid:
+                _hook_reasoning_effort = _valid["reasoning_effort"]
+            break  # first non-empty dict wins
+    except Exception as exc:
+        logger.debug("pre_delegate_build hook failed: %s", exc)
+
+    # ── Post-hook provider change side effects ────────────────────────
+    # When the hook changes provider, mirror the cleanup that config-
+    # level provider overrides already perform.  Without this, a child
+    # can inherit the parent's base_url/api_key/api_mode/ACP/OR-filters
+    # for a completely different provider — same class of bug as #20558.
+    _hook_changed_provider = effective_provider != _pre_hook_provider
+    if _hook_changed_provider:
+        if not _hook_set_api_mode:
+            effective_api_mode = None  # force re-derivation from provider
+        # Clear inherited credentials so AIAgent resolves through the
+        # normal provider resolver for the new provider.
+        if not override_base_url:
+            effective_base_url = None
+        if not override_api_key:
+            effective_api_key = None  # let provider resolver pick the right key
+        # Clear ACP transport unless hook explicitly routed to ACP
+        if not override_acp_command:
+            effective_acp_command = None
+            effective_acp_args = []
+
+    # Resolve reasoning config: hook override > delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
+        from hermes_constants import parse_reasoning_effort
+
         delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
         if delegation_effort:
-            from hermes_constants import parse_reasoning_effort
-
             parsed = parse_reasoning_effort(delegation_effort)
             if parsed is not None:
                 child_reasoning = parsed
@@ -1196,8 +1329,39 @@ def _build_child_agent(
                     "Unknown delegation.reasoning_effort '%s', inheriting parent level",
                     delegation_effort,
                 )
+
+        # Hook override — only applied if the hook explicitly returned it
+        if _hook_reasoning_effort:
+            hook_effort = str(_hook_reasoning_effort or "").strip()
+            if hook_effort:
+                parsed_hook = parse_reasoning_effort(hook_effort)
+                if parsed_hook is not None:
+                    child_reasoning = parsed_hook
+                else:
+                    logger.warning(
+                        "Unknown hook reasoning_effort '%s', keeping current level",
+                        hook_effort,
+                    )
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
+
+    # ── Update progress callback model after hook ─────────────────────
+    # The progress callback was built with the pre-hook model.  If the
+    # hook changed effective_model, rebuild so TUI events carry the
+    # correct model metadata.
+    _post_hook_model = effective_model
+    if _post_hook_model != effective_model_for_cb:
+        child_progress_cb = _build_child_progress_callback(
+            task_index,
+            goal,
+            parent_agent,
+            task_count,
+            subagent_id=subagent_id,
+            parent_id=parent_subagent_id,
+            depth=tui_depth,
+            model=_post_hook_model,
+            toolsets=child_toolsets,
+        )
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
@@ -1217,7 +1381,7 @@ def _build_child_agent(
     child_providers_order = getattr(parent_agent, "providers_order", None)
     child_provider_sort = getattr(parent_agent, "provider_sort", None)
     child_openrouter_min_coding_score = getattr(parent_agent, "openrouter_min_coding_score", None)
-    if override_provider:
+    if override_provider or _hook_changed_provider:
         child_providers_allowed = None
         child_providers_ignored = None
         child_providers_order = None

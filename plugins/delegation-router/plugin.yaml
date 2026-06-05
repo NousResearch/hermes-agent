@@ -1,0 +1,7 @@
+name: delegation-router
+version: 0.1.0
+description: "Per-task model/provider routing for delegate_task via the pre_delegate_build hook. Config-driven rules map task goals to specific models and providers."
+author: NousResearch
+kind: standalone
+provides_hooks:
+  - pre_delegate_build

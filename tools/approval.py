@@ -379,7 +379,7 @@ def _sudo_stdin_block_result(description: str) -> dict:
 # =========================================================================
 
 DANGEROUS_PATTERNS = [
-    (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
+    (r'\brm\s+(-[^\s]*\s+)*/(?:\*(?=$|[\s;&|`)<>])|(?=$|[\s;&|`)<>]))', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),

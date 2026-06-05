@@ -184,6 +184,26 @@ def test_run_slash_show_includes_comments(kanban_home):
     assert "performance section" in show
 
 
+def test_run_slash_show_brief_bounds_agent_output(kanban_home):
+    out = kc.run_slash("create 'brief-task' --body '" + ("b" * 1500) + "'")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    for i in range(6):
+        kc.run_slash(f"comment {tid} 'comment-{i}-" + ("c" * 200) + "'")
+
+    brief = kc.run_slash(f"show {tid} --brief")
+    assert "counts:   comments=6" in brief
+    assert "full:     hermes kanban show" in brief
+    assert "comment-0" not in brief
+
+    payload = json.loads(kc.run_slash(f"show {tid} --brief --json"))
+    assert payload["compact"] is True
+    assert payload["comments_count"] == 6
+    assert len(payload["comments"]) == 3
+    assert payload["task"]["body_truncated"] is True
+    assert payload["full_hint"]
+
+
 def test_run_slash_comment_max_len_trims_long_body(kanban_home):
     out = kc.run_slash("create 'x'")
     import re
@@ -192,6 +212,21 @@ def test_run_slash_comment_max_len_trims_long_body(kanban_home):
     show = kc.run_slash(f"show {tid}")
     assert "trimmed to 20 chars by --max-len" in show
     assert "x" * 30 not in show
+
+
+def test_run_slash_comment_to_blocked_action_warns(kanban_home):
+    out = kc.run_slash("create 'blocked contact' --assignee alice")
+    import re
+    m = re.search(r"(t_[a-f0-9]+)", out)
+    assert m
+    tid = m.group(1)
+    kc.run_slash(f"claim {tid}")
+    kc.run_slash(f"block {tid} 'need approval'")
+
+    out = kc.run_slash(f"comment {tid} 'please contact Yunuen directly'")
+    assert "Comment added" in out
+    assert "WARNING:" in out
+    assert "no worker will be spawned or woken" in out
 
 
 def test_run_slash_block_unblock_cycle(kanban_home):

@@ -126,6 +126,156 @@ def _conn(board: Optional[str] = None):
     return kanban_db.connect(board=board)
 
 
+def _append_assignment_trigger_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    kind: str,
+    payload: Optional[dict[str, Any]] = None,
+) -> None:
+    """Append a dashboard assignment-trigger audit event.
+
+    Dashboard assignment is an operator action, so make both positive and
+    skipped trigger decisions visible in the drawer/tail before the dispatcher
+    either claims the task or intentionally ignores it.
+    """
+    with kanban_db.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                task_id,
+                kind,
+                json.dumps(payload) if payload is not None else None,
+                int(time.time()),
+            ),
+        )
+
+
+def _profile_is_spawnable(profile: Optional[str]) -> bool:
+    """True only for real Hermes profiles the dispatcher may spawn.
+
+    Fails closed so dashboard-created work does not accidentally try to start
+    PA/master/control-plane lane names that are pulled manually rather than via
+    ``hermes -p <profile>`` workers.
+    """
+    if not profile:
+        return False
+    try:
+        from hermes_cli.profiles import profile_exists
+    except Exception:
+        return False
+    try:
+        return bool(profile_exists(profile))
+    except Exception:
+        return False
+
+
+def _dispatch_kwargs_from_config() -> dict[str, Any]:
+    """Mirror the gateway embedded-dispatcher config for opportunistic ticks."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    kwargs: dict[str, Any] = {}
+    if kanban_cfg.get("max_spawn") is not None:
+        kwargs["max_spawn"] = kanban_cfg.get("max_spawn")
+    raw_max_in_progress = kanban_cfg.get("max_in_progress")
+    if raw_max_in_progress is not None:
+        try:
+            max_in_progress = int(raw_max_in_progress)
+        except (TypeError, ValueError):
+            max_in_progress = None
+        if max_in_progress and max_in_progress > 0:
+            kwargs["max_in_progress"] = max_in_progress
+    raw_failure_limit = kanban_cfg.get("failure_limit")
+    if raw_failure_limit is not None:
+        try:
+            failure_limit = int(raw_failure_limit)
+        except (TypeError, ValueError):
+            failure_limit = None
+        if failure_limit and failure_limit > 0:
+            kwargs["failure_limit"] = failure_limit
+    raw_stale_timeout = kanban_cfg.get("dispatch_stale_timeout_seconds")
+    if raw_stale_timeout is not None:
+        try:
+            kwargs["stale_timeout_seconds"] = int(raw_stale_timeout or 0)
+        except (TypeError, ValueError):
+            pass
+    return kwargs
+
+
+def _trigger_assignment_dispatch(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    board: Optional[str],
+    source: str,
+) -> Optional[dict[str, Any]]:
+    """Run a same-process dispatcher tick for a newly assigned task.
+
+    The gateway embedded dispatcher still performs periodic fleet ticks, but
+    dashboard create/reassign should not rely on a future 60-second poll to
+    wake a project profile. This helper validates that the task is a ready or
+    review task assigned to a real Hermes profile, records a visible trigger
+    event, and then invokes the same ``kanban_db.dispatch_once`` code path the
+    gateway uses. The dispatcher's own profile-existence guard remains the
+    final safety net.
+    """
+    task = kanban_db.get_task(conn, task_id)
+    if task is None:
+        return None
+    payload_base = {"source": source, "assignee": task.assignee, "status": task.status}
+    if task.status not in {"ready", "review"}:
+        return None
+    if not task.assignee:
+        return None
+    if not _profile_is_spawnable(task.assignee):
+        _append_assignment_trigger_event(
+            conn,
+            task_id,
+            "assignment_dispatch_skipped",
+            {**payload_base, "reason": "nonspawnable_assignee"},
+        )
+        return {"ok": False, "reason": "nonspawnable_assignee"}
+
+    _append_assignment_trigger_event(
+        conn,
+        task_id,
+        "assignment_dispatch_requested",
+        payload_base,
+    )
+    try:
+        result = kanban_db.dispatch_once(
+            conn,
+            board=board,
+            **_dispatch_kwargs_from_config(),
+        )
+    except Exception as exc:
+        log.warning("dashboard assignment dispatch failed for %s: %s", task_id, exc)
+        _append_assignment_trigger_event(
+            conn,
+            task_id,
+            "assignment_dispatch_failed",
+            {**payload_base, "error": str(exc)},
+        )
+        return {"ok": False, "reason": "dispatch_failed", "error": str(exc)}
+
+    spawned = [
+        {"task_id": tid, "assignee": who, "workspace": workspace}
+        for tid, who, workspace in getattr(result, "spawned", [])
+    ]
+    return {
+        "ok": True,
+        "spawned": spawned,
+        "spawned_task_ids": [row["task_id"] for row in spawned],
+        "promoted": getattr(result, "promoted", 0),
+        "skipped_nonspawnable": list(getattr(result, "skipped_nonspawnable", [])),
+        "skipped_unassigned": list(getattr(result, "skipped_unassigned", [])),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------
@@ -636,8 +786,16 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
         )
+        assignment_trigger = _trigger_assignment_dispatch(
+            conn,
+            task_id,
+            board=board,
+            source="dashboard_create",
+        )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
+        if assignment_trigger is not None:
+            body["assignment_trigger"] = assignment_trigger
         # Surface a dispatcher-presence warning so the UI can show a
         # banner when a `ready` task would otherwise sit idle because no
         # gateway is running (or dispatch_in_gateway=false). Only emit
@@ -846,6 +1004,8 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
+        assignment_trigger: Optional[dict[str, Any]] = None
+
         # --- assignee ----------------------------------------------------
         if payload.assignee is not None:
             try:
@@ -950,8 +1110,21 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     (task_id, int(time.time())),
                 )
 
+        assignment_changed = payload.assignee is not None
+        ready_requested = payload.status in {"ready", "review"}
+        if assignment_changed or ready_requested:
+            assignment_trigger = _trigger_assignment_dispatch(
+                conn,
+                task_id,
+                board=board,
+                source="dashboard_update",
+            )
+
         updated = kanban_db.get_task(conn, task_id)
-        return {"task": _task_dict(updated) if updated else None}
+        body: dict[str, Any] = {"task": _task_dict(updated) if updated else None}
+        if assignment_trigger is not None:
+            body["assignment_trigger"] = assignment_trigger
+        return body
     finally:
         conn.close()
 
@@ -1700,7 +1873,16 @@ def reassign_task_endpoint(
                     "running (pass reclaim_first=true to release the claim first)"
                 ),
             )
-        return {"ok": True, "task_id": task_id, "assignee": payload.profile or None}
+        assignment_trigger = _trigger_assignment_dispatch(
+            conn,
+            task_id,
+            board=board,
+            source="dashboard_reassign",
+        )
+        body: dict[str, Any] = {"ok": True, "task_id": task_id, "assignee": payload.profile or None}
+        if assignment_trigger is not None:
+            body["assignment_trigger"] = assignment_trigger
+        return body
     finally:
         conn.close()
 

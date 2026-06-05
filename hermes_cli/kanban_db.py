@@ -3191,17 +3191,20 @@ def add_comment(
         raise ValueError("comment author is required")
     now = int(time.time())
     with write_txn(conn):
-        if not conn.execute(
-            "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
-        ).fetchone():
+        task_row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not task_row:
             raise ValueError(f"unknown task {task_id}")
+        warning = None
+        if task_row["status"] == "blocked" and _BLOCKED_COMMENT_ACTION_RE.search(body):
+            warning = BLOCKED_COMMENT_ACTION_WARNING
         cur = conn.execute(
             "INSERT INTO task_comments (task_id, author, body, created_at) "
             "VALUES (?, ?, ?, ?)",
             (task_id, author.strip(), body.strip(), now),
         )
         _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
-        warning = blocked_comment_action_warning(conn, task_id, body)
         if warning:
             _append_event(
                 conn,

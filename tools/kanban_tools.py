@@ -45,6 +45,14 @@ logger = logging.getLogger(__name__)
 KANBAN_LIST_DEFAULT_LIMIT = 20
 KANBAN_LIST_MAX_LIMIT = 100
 
+KANBAN_SHOW_DEFAULT_COMMENT_LIMIT = 3
+KANBAN_SHOW_DEFAULT_EVENT_LIMIT = 10
+KANBAN_SHOW_DEFAULT_RUN_LIMIT = 5
+KANBAN_SHOW_BODY_PREVIEW_CHARS = 4000
+KANBAN_SHOW_TEXT_PREVIEW_CHARS = 2000
+KANBAN_SHOW_WORKER_CONTEXT_CHARS = 6000
+
+
 
 def _profile_has_kanban_toolset() -> bool:
     # Uses load_config() which has mtime-based caching, so this adds
@@ -382,6 +390,46 @@ def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 
 
+def _truncate_text(value: Any, max_chars: int) -> tuple[Any, bool]:
+    """Return a compact text preview plus whether truncation happened."""
+    if value is None:
+        return None, False
+    text = str(value)
+    if max_chars < 0 or len(text) <= max_chars:
+        return text, False
+    if max_chars <= 1:
+        return text[:max_chars], True
+    return text[:max_chars].rstrip() + "…", True
+
+
+def _parse_int_arg(args: dict, name: str, *, default: int, minimum: int = 0, maximum: int = 100) -> tuple[int, Optional[str]]:
+    value = args.get(name)
+    if value is None:
+        return default, None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default, f"{name} must be an integer"
+    if parsed < minimum:
+        return default, f"{name} must be >= {minimum}"
+    if parsed > maximum:
+        return default, f"{name} must be <= {maximum}"
+    return parsed, None
+
+
+def _compact_payload(value: Any, *, max_chars: int = KANBAN_SHOW_TEXT_PREVIEW_CHARS) -> Any:
+    """Bound nested payload strings while preserving machine-readable shape."""
+    if isinstance(value, str):
+        return _truncate_text(value, max_chars)[0]
+    if isinstance(value, list):
+        return [_compact_payload(v, max_chars=max_chars) for v in value]
+    if isinstance(value, tuple):
+        return [_compact_payload(v, max_chars=max_chars) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _compact_payload(v, max_chars=max_chars) for k, v in value.items()}
+    return value
+
+
 def _normalize_profile(value: Any) -> Optional[str]:
     """Normalize CLI-compatible assignee sentinels for the tool surface."""
     if value is None:
@@ -459,13 +507,39 @@ def _task_summary_dict(kb, conn, task, *, detail: bool = False) -> dict[str, Any
 # ---------------------------------------------------------------------------
 
 def _handle_show(args: dict, **kw) -> str:
-    """Read a task's full state: task row, parents, children, comments,
-    runs (attempt history), and the last N events."""
+    """Read a task's state with compact agent-facing defaults.
+
+    Full task evidence stays in SQLite and remains available through
+    ``include_full=true`` (or the human CLI). The default response is a
+    bounded summary so repeated ``kanban_show`` calls do not dominate agent
+    context/LCM storage.
+    """
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
+    include_full, bool_error = _parse_bool_arg(args, "include_full")
+    if bool_error:
+        return tool_error(bool_error)
+    comments_limit, int_error = _parse_int_arg(
+        args, "comments_limit", default=KANBAN_SHOW_DEFAULT_COMMENT_LIMIT,
+        minimum=0, maximum=50,
+    )
+    if int_error:
+        return tool_error(int_error)
+    events_limit, int_error = _parse_int_arg(
+        args, "events_limit", default=KANBAN_SHOW_DEFAULT_EVENT_LIMIT,
+        minimum=0, maximum=100,
+    )
+    if int_error:
+        return tool_error(int_error)
+    runs_limit, int_error = _parse_int_arg(
+        args, "runs_limit", default=KANBAN_SHOW_DEFAULT_RUN_LIMIT,
+        minimum=0, maximum=100,
+    )
+    if int_error:
+        return tool_error(int_error)
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -478,10 +552,20 @@ def _handle_show(args: dict, **kw) -> str:
             runs = kb.list_runs(conn, tid)
             parents = kb.parent_ids(conn, tid)
             children = kb.child_ids(conn, tid)
+            latest_summary = kb.latest_summary(conn, tid)
 
-            def _task_dict(t):
+            def _task_dict(t, *, full: bool):
+                body, body_truncated = (
+                    (t.body, False) if full else
+                    _truncate_text(t.body, KANBAN_SHOW_BODY_PREVIEW_CHARS)
+                )
+                result, result_truncated = (
+                    (t.result, False) if full else
+                    _truncate_text(t.result, KANBAN_SHOW_TEXT_PREVIEW_CHARS)
+                )
                 return {
-                    "id": t.id, "title": t.title, "body": t.body,
+                    "id": t.id, "title": t.title, "body": body,
+                    "body_truncated": body_truncated,
                     "assignee": t.assignee, "status": t.status,
                     "tenant": t.tenant, "priority": t.priority,
                     "workspace_kind": t.workspace_kind,
@@ -489,40 +573,110 @@ def _handle_show(args: dict, **kw) -> str:
                     "created_by": t.created_by, "created_at": t.created_at,
                     "started_at": t.started_at,
                     "completed_at": t.completed_at,
-                    "result": t.result,
+                    "result": result,
+                    "result_truncated": result_truncated,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
                 }
 
-            def _run_dict(r):
+            def _run_dict(r, *, full: bool):
+                summary = r.summary
+                error = r.error
+                metadata = r.metadata
+                summary_truncated = error_truncated = False
+                if not full:
+                    summary, summary_truncated = _truncate_text(
+                        summary, KANBAN_SHOW_TEXT_PREVIEW_CHARS
+                    )
+                    error, error_truncated = _truncate_text(
+                        error, KANBAN_SHOW_TEXT_PREVIEW_CHARS
+                    )
+                    metadata = _compact_payload(metadata)
                 return {
                     "id": r.id, "profile": r.profile,
                     "status": r.status, "outcome": r.outcome,
-                    "summary": r.summary, "error": r.error,
-                    "metadata": r.metadata,
+                    "summary": summary,
+                    "summary_truncated": summary_truncated,
+                    "error": error,
+                    "error_truncated": error_truncated,
+                    "metadata": metadata,
                     "started_at": r.started_at, "ended_at": r.ended_at,
                 }
 
+            if include_full:
+                return json.dumps({
+                    "task": _task_dict(task, full=True),
+                    "latest_summary": latest_summary,
+                    "parents": parents,
+                    "children": children,
+                    "comments": [
+                        {"author": c.author, "body": c.body,
+                         "created_at": c.created_at}
+                        for c in comments
+                    ],
+                    "events": [
+                        {"kind": e.kind, "payload": e.payload,
+                         "created_at": e.created_at, "run_id": e.run_id}
+                        for e in events
+                    ],
+                    "runs": [_run_dict(r, full=True) for r in runs],
+                    "worker_context": kb.build_worker_context(conn, tid),
+                    "compact": False,
+                })
+
+            recent_comments = comments[-comments_limit:] if comments_limit else []
+            recent_events = events[-events_limit:] if events_limit else []
+            recent_runs = runs[-runs_limit:] if runs_limit else []
+            worker_context, worker_context_truncated = _truncate_text(
+                kb.build_worker_context(conn, tid), KANBAN_SHOW_WORKER_CONTEXT_CHARS
+            )
+            latest_summary_preview, latest_summary_truncated = _truncate_text(
+                latest_summary, KANBAN_SHOW_TEXT_PREVIEW_CHARS
+            )
+            latest_run = runs[-1] if runs else None
+            latest_metadata = _compact_payload(latest_run.metadata) if latest_run else None
+            blocker_reason = None
+            for e in reversed(events):
+                if e.kind == "blocked":
+                    payload = e.payload or {}
+                    blocker_reason = payload.get("reason") if isinstance(payload, dict) else None
+                    break
             return json.dumps({
-                "task": _task_dict(task),
+                "task": _task_dict(task, full=False),
+                "latest_summary": latest_summary_preview,
+                "latest_summary_truncated": latest_summary_truncated,
+                "latest_metadata": latest_metadata,
+                "blocker_reason": blocker_reason,
                 "parents": parents,
                 "children": children,
                 "comments": [
-                    {"author": c.author, "body": c.body,
+                    {"author": c.author,
+                     "body": _truncate_text(c.body, KANBAN_SHOW_TEXT_PREVIEW_CHARS)[0],
                      "created_at": c.created_at}
-                    for c in comments
+                    for c in recent_comments
                 ],
+                "comments_count": len(comments),
+                "comments_limit": comments_limit,
+                "comments_truncated": len(comments) > len(recent_comments),
                 "events": [
-                    {"kind": e.kind, "payload": e.payload,
+                    {"kind": e.kind, "payload": _compact_payload(e.payload),
                      "created_at": e.created_at, "run_id": e.run_id}
-                    for e in events[-50:]   # cap; full log via CLI
+                    for e in recent_events
                 ],
-                "runs": [_run_dict(r) for r in runs],
-                # Also surface the worker's own context block so the
-                # agent can include it directly if it wants. This is
-                # the same string build_worker_context returns to the
-                # dispatcher at spawn time.
-                "worker_context": kb.build_worker_context(conn, tid),
+                "events_count": len(events),
+                "events_limit": events_limit,
+                "events_truncated": len(events) > len(recent_events),
+                "runs": [_run_dict(r, full=False) for r in recent_runs],
+                "runs_count": len(runs),
+                "runs_limit": runs_limit,
+                "runs_truncated": len(runs) > len(recent_runs),
+                # Bounded worker context preserves the dispatcher orientation
+                # contract without dumping every historical comment/run.
+                "worker_context": worker_context,
+                "worker_context_truncated": worker_context_truncated,
+                "compact": True,
+                "full_available": True,
+                "full_hint": "Pass include_full=true to kanban_show for full comments/events/runs/body.",
             })
         finally:
             conn.close()
@@ -866,7 +1020,11 @@ def _handle_comment(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            cid = kb.add_comment(conn, tid, author=author, body=str(body))
+            text = str(body)
+            cid = kb.add_comment(conn, tid, author=author, body=text)
+            warning = kb.blocked_comment_action_warning(conn, tid, text)
+            if warning:
+                return _ok(task_id=tid, comment_id=cid, warning=warning)
             return _ok(task_id=tid, comment_id=cid)
         finally:
             conn.close()
@@ -1068,12 +1226,12 @@ def _board_schema_prop() -> dict[str, str]:
 KANBAN_SHOW_SCHEMA = {
     "name": "kanban_show",
     "description": (
-        "Read a task's full state — title, body, assignee, parent task "
-        "handoffs, your prior attempts on this task if any, comments, "
-        "and recent events. Use this to (re)orient yourself before "
-        "starting work, especially on retries. The response includes a "
-        "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning."
+        "Read a compact task state — title/body preview, assignee, status, "
+        "latest handoff metadata, parent/child ids, blocker reason, bounded "
+        "recent comments/events/runs, and a bounded worker_context. Use this "
+        "to (re)orient before starting work. Full durable evidence remains "
+        "available by passing include_full=true, but the compact default is "
+        "preferred to keep agent/LCM context small."
     ),
     "parameters": {
         "type": "object",
@@ -1081,6 +1239,26 @@ KANBAN_SHOW_SCHEMA = {
             "task_id": {
                 "type": "string",
                 "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "include_full": {
+                "type": "boolean",
+                "description": (
+                    "Return the legacy full task dump with complete body, "
+                    "comments, events, runs, and worker_context. Defaults "
+                    "to false for compact agent context."
+                ),
+            },
+            "comments_limit": {
+                "type": "integer",
+                "description": "Recent comments to include in compact mode (default 3, max 50).",
+            },
+            "events_limit": {
+                "type": "integer",
+                "description": "Recent events to include in compact mode (default 10, max 100).",
+            },
+            "runs_limit": {
+                "type": "integer",
+                "description": "Recent runs to include in compact mode (default 5, max 100).",
             },
             "board": _board_schema_prop(),
         },

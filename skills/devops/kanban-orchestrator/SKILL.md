@@ -31,6 +31,16 @@ Use one of these:
 
 Cache the result in your working memory for the rest of the conversation. Re-asking every turn wastes a tool call.
 
+## Tool-output hygiene
+
+Kanban evidence is durable in SQLite, comments, events, and run history; agent context is not the place to repeatedly dump all of it. Prefer compact views first:
+
+- `kanban_show` tool defaults to a bounded compact response. Use it for orientation and status checks. Pass `include_full=true` only when you truly need complete old comments/events/runs/body text.
+- Human CLI keeps full `hermes kanban show <id>` behavior by default. Use `hermes kanban show <id> --brief` for gateway/agent-facing status summaries or when pasting output into another agent.
+- Avoid repeated full task dumps in comments, Matrix messages, and handoffs. Record durable evidence once (PR URL, changed files, tests, artifact paths) and reference the task/PR afterward.
+- Expand only the slice you need: latest summary/metadata, blocker reason, parent/child IDs, or recent comments/events/runs.
+
+
 ## When to use the board (vs. just doing the work)
 
 Create Kanban tasks when any of these are true:

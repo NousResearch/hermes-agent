@@ -182,6 +182,55 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_compact_default_bounds_large_fields(worker_env):
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET body = ? WHERE id = ?",
+            ("BODY-" + ("x" * 6000), worker_env),
+        )
+        for i in range(8):
+            kb.add_comment(conn, worker_env, "tester", f"comment-{i}-" + ("y" * 800))
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    compact = json.loads(kt._handle_show({}))
+    assert compact["compact"] is True
+    assert compact["full_available"] is True
+    assert compact["task"]["body_truncated"] is True
+    assert len(compact["task"]["body"]) < 4100
+    assert compact["comments_count"] == 8
+    assert compact["comments_limit"] == 3
+    assert compact["comments_truncated"] is True
+    assert [c["body"].split("-")[1] for c in compact["comments"]] == ["5", "6", "7"]
+    assert compact["events_limit"] == 10
+    assert "full_hint" in compact
+
+
+def test_show_include_full_preserves_legacy_evidence(worker_env):
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET body = ? WHERE id = ?",
+            ("BODY-" + ("x" * 6000), worker_env),
+        )
+        for i in range(4):
+            kb.add_comment(conn, worker_env, "tester", f"comment-{i}")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    full = json.loads(kt._handle_show({"include_full": True}))
+    assert full["compact"] is False
+    assert full["task"]["body_truncated"] is False
+    assert len(full["task"]["body"]) > 6000
+    assert len(full["comments"]) == 4
+    assert "worker_context" in full
+
+
 def test_show_explicit_task_id(worker_env):
     """Peek at a different task than the one in env."""
     from hermes_cli import kanban_db as kb
@@ -893,6 +942,33 @@ def test_comment_rejects_empty_body(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_comment({"task_id": worker_env, "body": "   "})
     assert json.loads(out).get("error")
+
+
+def test_comment_on_blocked_task_with_action_verb_warns(worker_env):
+    """Action-looking comments on blocked tasks are context, not dispatch."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        assert kb.block_task(conn, worker_env, reason="waiting for human approval")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_comment({
+        "task_id": worker_env,
+        "body": "Please contact Yunuen directly from your room.",
+    })
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    assert "warning" in payload
+    assert "no worker will be spawned or woken" in payload["warning"]
+
+    conn = kb.connect()
+    try:
+        events = kb.list_events(conn, worker_env)
+        assert any(e.kind == "blocked_comment_action_warning" for e in events)
+    finally:
+        conn.close()
 
 
 def test_comment_ignores_caller_supplied_author(worker_env):

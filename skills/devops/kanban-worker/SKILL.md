@@ -19,6 +19,16 @@ Use canonical live statuses in user-facing prose: `working`, `waiting`, `blocked
 
 For Matrix/profile-facing project communication, use generic `Self status:` and `Lineage status:` lines. Do not introduce role-specific replacements such as `Coordinator status:`, and do not use legacy `Blocker status:` or `NOT BLOCKED` wording in new prompts. `Self status` describes this profile's own active action/wait/human blocker/dormant condition; `Lineage status` aggregates structural descendants and is separate from task dependency links. When deterministic output is needed, prefer the repo helper `python scripts/render_status_lines.py --self ... --lineage-count ...` over recomputing the wording from broad LLM context.
 
+## Tool-output hygiene
+
+Kanban evidence is durable in SQLite, comments, events, and run history; agent context is not the place to repeatedly dump all of it. Prefer compact views first:
+
+- `kanban_show` tool defaults to a bounded compact response. Use it for orientation and status checks. Pass `include_full=true` only when you truly need complete old comments/events/runs/body text.
+- Human CLI keeps full `hermes kanban show <id>` behavior by default. Use `hermes kanban show <id> --brief` for gateway/agent-facing status summaries or when pasting output into another agent.
+- Avoid repeated full task dumps in comments, Matrix messages, and handoffs. Record durable evidence once (PR URL, changed files, tests, artifact paths) and reference the task/PR afterward.
+- Expand only the slice you need: latest summary/metadata, blocker reason, parent/child IDs, or recent comments/events/runs.
+
+
 ## Workspace handling
 
 Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORKSPACE`:

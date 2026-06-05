@@ -19,6 +19,10 @@ The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
 
+:::tip Agent context hygiene
+Agent-facing Kanban reads are intentionally compact by default. The `kanban_show` tool returns bounded recent comments/events/runs, latest summary/metadata, blocker reason, parent/child ids, and a body preview so repeated status checks do not flood the model context or LCM store. Full evidence stays durable in SQLite and can be requested with `kanban_show(include_full=true)`. Human CLI behavior remains full by default; use `hermes kanban show <task-id> --brief` when you want a pasteable or gateway-friendly status summary.
+:::
+
 This is the shape that covers the workloads `delegate_task` can't:
 
 - **Research triage** — parallel researchers + analyst + writer, human-in-the-loop.

@@ -159,8 +159,156 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_dashboard_create_assigned_task_triggers_dispatch(client, monkeypatch):
+    """Dashboard-created ready work should wake a real project profile now.
+
+    Regression: dashboard assignment used to create only a ``created`` event;
+    the assignee waited for a future/manual dispatcher path with no visible
+    trigger evidence.
+    """
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name == "worker")
+
+    calls = []
+
+    def _fake_dispatch(conn, **kwargs):
+        calls.append(kwargs)
+        row = conn.execute(
+            "SELECT id, assignee FROM tasks WHERE status = 'ready'"
+        ).fetchone()
+        assert row is not None
+        return kb.DispatchResult(spawned=[(row["id"], row["assignee"], "/tmp/ws")])
+
+    monkeypatch.setattr(kb, "dispatch_once", _fake_dispatch)
+
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "dashboard work", "assignee": "worker"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    task_id = data["task"]["id"]
+    assert data["assignment_trigger"]["ok"] is True
+    assert data["assignment_trigger"]["spawned_task_ids"] == [task_id]
+    assert calls and calls[0]["board"] is None
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task_id}").json()
+    events = detail["events"]
+    trigger = [e for e in events if e["kind"] == "assignment_dispatch_requested"]
+    assert trigger
+    assert trigger[-1]["payload"] == {
+        "source": "dashboard_create",
+        "assignee": "worker",
+        "status": "ready",
+    }
+
+
+def test_dashboard_update_assignee_triggers_dispatch(client, monkeypatch):
+    """Generic dashboard PATCH assignment should return trigger metadata too."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name == "worker")
+
+    calls = []
+
+    def _fake_dispatch(conn, **kwargs):
+        calls.append(kwargs)
+        row = conn.execute(
+            "SELECT id, assignee FROM tasks WHERE status = 'ready'"
+        ).fetchone()
+        assert row is not None
+        return kb.DispatchResult(spawned=[(row["id"], row["assignee"], "/tmp/ws")])
+
+    monkeypatch.setattr(kb, "dispatch_once", _fake_dispatch)
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "patch assigned work"},
+    ).json()["task"]
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"assignee": "worker"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["assignment_trigger"]["ok"] is True
+    assert data["assignment_trigger"]["spawned_task_ids"] == [task["id"]]
+    assert calls
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()
+    trigger = [e for e in detail["events"] if e["kind"] == "assignment_dispatch_requested"]
+    assert trigger[-1]["payload"]["source"] == "dashboard_update"
+
+
+def test_dashboard_reassign_triggers_dispatch(client, monkeypatch):
+    """Drawer reassign to a real profile should immediately poke dispatch."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name == "worker")
+
+    spawned = []
+
+    def _fake_dispatch(conn, **kwargs):
+        row = conn.execute(
+            "SELECT id, assignee FROM tasks WHERE status = 'ready'"
+        ).fetchone()
+        assert row is not None
+        spawned.append(row["id"])
+        return kb.DispatchResult(spawned=[(row["id"], row["assignee"], "/tmp/ws")])
+
+    monkeypatch.setattr(kb, "dispatch_once", _fake_dispatch)
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "unassigned work"},
+    ).json()["task"]
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/reassign",
+        json={"profile": "worker"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["assignment_trigger"]["ok"] is True
+    assert data["assignment_trigger"]["spawned_task_ids"] == [task["id"]]
+    assert spawned == [task["id"]]
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()
+    kinds = [e["kind"] for e in detail["events"]]
+    assert "assigned" in kinds
+    assert "assignment_dispatch_requested" in kinds
+
+
+def test_dashboard_assignment_does_not_dispatch_nonspawnable_assignee(client, monkeypatch):
+    """Control-plane/non-project assignees are audited but not spawned."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+
+    def _fake_dispatch(conn, **kwargs):  # pragma: no cover - should not run
+        raise AssertionError("nonspawnable assignee must not dispatch")
+
+    monkeypatch.setattr(kb, "dispatch_once", _fake_dispatch)
+
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "manual lane work", "assignee": "pa-master"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["assignment_trigger"] == {"ok": False, "reason": "nonspawnable_assignee"}
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{data['task']['id']}").json()
+    skipped = [e for e in detail["events"] if e["kind"] == "assignment_dispatch_skipped"]
+    assert skipped
+    assert skipped[-1]["payload"]["reason"] == "nonspawnable_assignee"
+
+
 def test_scheduled_and_todo_tasks_share_waiting_column(client):
     """Waiting aliases must not split into separate primary dashboard lanes."""
+
 
     scheduled_task = client.post(
         "/api/plugins/kanban/tasks",

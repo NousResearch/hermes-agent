@@ -39,6 +39,46 @@ is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
 
+is_linux_i686() {
+    [ "$(uname -s 2>/dev/null || true)" = "Linux" ] || return 1
+    case "$(uname -m 2>/dev/null || true)" in
+        i386|i486|i586|i686) ;;
+        *) return 1 ;;
+    esac
+
+    local bits
+    bits="$(getconf LONG_BIT 2>/dev/null || true)"
+    [ -z "$bits" ] || [ "$bits" = "32" ]
+}
+
+configure_linux_i686_tempdir() {
+    if ! is_linux_i686 || [ -n "${TMPDIR:-}" ]; then
+        return 0
+    fi
+
+    export TMPDIR="$SCRIPT_DIR/.tmp"
+    mkdir -p "$TMPDIR"
+    echo -e "${CYAN}→${NC} Linux i686 detected — using $TMPDIR for setup temp files"
+}
+
+find_compatible_python() {
+    local candidate path
+    for candidate in "${HERMES_PYTHON:-}" python3.13 python3.12 python3.11 python3; do
+        [ -n "$candidate" ] || continue
+        if [ -x "$candidate" ]; then
+            path="$candidate"
+        else
+            path="$(command -v "$candidate" 2>/dev/null || true)"
+        fi
+        [ -n "$path" ] || continue
+        if "$path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+            printf '%s\n' "$path"
+            return 0
+        fi
+    done
+    return 1
+}
+
 get_command_link_dir() {
     if is_termux && [ -n "${PREFIX:-}" ]; then
         echo "$PREFIX/bin"
@@ -58,6 +98,7 @@ get_command_link_display_dir() {
 echo ""
 echo -e "${CYAN}⚕ Hermes Agent Setup${NC}"
 echo ""
+configure_linux_i686_tempdir
 
 # ============================================================================
 # Install / locate uv
@@ -148,6 +189,17 @@ if is_termux; then
         echo "    Run: pkg install python"
         exit 1
     fi
+elif is_linux_i686; then
+    echo -e "${CYAN}→${NC} Linux i686 detected — using system Python instead of uv-managed Python"
+    echo -e "${CYAN}→${NC} uv-managed CPython does not publish Linux i686 builds; need Python >=3.11,<3.14."
+    if PYTHON_PATH="$(find_compatible_python)"; then
+        PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+        echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION found ($PYTHON_PATH)"
+    else
+        echo -e "${RED}✗${NC} No compatible Python found for Linux i686"
+        echo "    Install Python 3.11, 3.12, or 3.13, or set HERMES_PYTHON=/path/to/python"
+        exit 1
+    fi
 else
     if $UV_CMD python find "$PYTHON_VERSION" &> /dev/null; then
         PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
@@ -176,6 +228,13 @@ fi
 if is_termux; then
     "$PYTHON_PATH" -m venv venv
     echo -e "${GREEN}✓${NC} venv created with stdlib venv"
+elif is_linux_i686; then
+    if ! "$PYTHON_PATH" -m venv venv; then
+        echo -e "${RED}✗${NC} Failed to create venv with $PYTHON_PATH"
+        echo "    Install the venv/ensurepip package for your Python 3.11-3.13 build, then rerun."
+        exit 1
+    fi
+    echo -e "${GREEN}✓${NC} venv created with Linux i686 system Python"
 else
     $UV_CMD venv venv --python "$PYTHON_VERSION"
     echo -e "${GREEN}✓${NC} venv created (Python $PYTHON_VERSION)"

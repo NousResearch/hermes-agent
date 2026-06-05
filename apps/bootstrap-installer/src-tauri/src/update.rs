@@ -171,6 +171,13 @@ async fn run_update(app: AppHandle) -> Result<()> {
     let child_env = update_child_env(&install_root);
     let mut update_args: Vec<String> =
         vec!["update".into(), "--yes".into(), "--gateway".into()];
+    // --force skips `hermes update`'s Windows running-exe guard (which would
+    // `sys.exit(2)` and dead-end the handoff). By contract the desktop has
+    // already exited and waited for the venv shim to unlock before launching
+    // us, and wait_for_venv_free below force-kills any straggler — so by the
+    // time `hermes update` runs there is no legitimate hermes.exe to protect,
+    // and the guard would only produce a false "Hermes is still running" stop.
+    update_args.push("--force".into());
     update_args.push("--branch".into());
     update_args.push(update_branch);
 
@@ -366,15 +373,74 @@ async fn wait_for_venv_free(install_root: &Path, app: &AppHandle) {
             return;
         }
         if Instant::now() >= deadline {
+            // Last resort: a backend hermes.exe (or a grandchild it spawned)
+            // is still holding the shim. The desktop should have reaped its
+            // tree before handing off, but SIGTERM races / detached
+            // grandchildren / AV handles can leave a straggler. Rather than
+            // "proceed anyway" straight into uv's "Access is denied", force-kill
+            // every hermes.exe except ourselves, then give the OS a beat to
+            // unload the image.
             emit_log(
                 app,
                 Some("update"),
                 LogStream::Stdout,
-                "[update] timed out waiting for Hermes to exit; proceeding anyway",
+                "[update] Hermes still holding the venv shim; force-killing stragglers…",
             );
+            force_kill_other_hermes();
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            if !is_locked(&shim) {
+                emit_log(
+                    app,
+                    Some("update"),
+                    LogStream::Stdout,
+                    "[update] venv shim freed after force-kill",
+                );
+            } else {
+                emit_log(
+                    app,
+                    Some("update"),
+                    LogStream::Stdout,
+                    "[update] venv shim still locked; proceeding (--force + quarantine will handle it)",
+                );
+            }
             return;
         }
         tokio::time::sleep(DESKTOP_EXIT_POLL).await;
+    }
+}
+
+/// Force-kill any `hermes.exe` other than this process. Windows-only; a no-op
+/// elsewhere (POSIX has no mandatory-lock contention). We can't selectively
+/// target "the backend" by PID here — the desktop already exited and we never
+/// knew its children — so we kill the whole `hermes.exe` image tree via
+/// taskkill, excluding our own PID.
+///
+/// Safe w.r.t. our own update child: this runs inside `wait_for_venv_free`,
+/// which completes BEFORE we spawn `venv\Scripts\hermes.exe update`. At this
+/// point no update-driven hermes.exe exists yet, so the only hermes.exe images
+/// are stragglers from the old desktop — exactly what we want gone. (`/FI PID
+/// ne <self>` also spares this Tauri process, though it isn't named
+/// hermes.exe.)
+fn force_kill_other_hermes() {
+    if !cfg!(target_os = "windows") {
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let my_pid = std::process::id();
+        // /FI excludes our own PID; /T kills the tree; /F forces.
+        let _ = std::process::Command::new("taskkill")
+            .args([
+                "/F",
+                "/T",
+                "/IM",
+                "hermes.exe",
+                "/FI",
+                &format!("PID ne {my_pid}"),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
 }
 

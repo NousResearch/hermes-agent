@@ -78,6 +78,63 @@ class TestNvidiaProfileWiring:
         )
         assert kwargs["messages"] == msgs
 
+    def test_nvidia_ultra_disables_thinking_when_reasoning_off(self, transport):
+        profile = get_provider_profile("nvidia")
+        kwargs = transport.build_kwargs(
+            model="nvidia/nemotron-3-ultra-550b-a55b",
+            messages=_msgs(),
+            tools=None,
+            provider_profile=profile,
+            max_tokens=None,
+            max_tokens_param_fn=lambda x: {"max_tokens": x} if x else {},
+            timeout=300,
+            reasoning_config={"enabled": False},
+            request_overrides=None,
+            session_id="test",
+            ollama_num_ctx=None,
+        )
+        assert kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+        assert "reasoning_budget" not in kwargs["extra_body"]
+
+    def test_nvidia_ultra_maps_medium_reasoning_effort(self, transport):
+        profile = get_provider_profile("nvidia")
+        kwargs = transport.build_kwargs(
+            model="nvidia/nemotron-3-ultra-550b-a55b",
+            messages=_msgs(),
+            tools=None,
+            provider_profile=profile,
+            max_tokens=None,
+            max_tokens_param_fn=lambda x: {"max_tokens": x} if x else {},
+            timeout=300,
+            reasoning_config={"enabled": True, "effort": "medium"},
+            request_overrides=None,
+            session_id="test",
+            ollama_num_ctx=None,
+        )
+        assert kwargs["extra_body"]["chat_template_kwargs"] == {
+            "enable_thinking": True,
+            "medium_effort": True,
+        }
+        assert "reasoning_budget" not in kwargs["extra_body"]
+
+    def test_nvidia_ultra_maps_high_reasoning_effort(self, transport):
+        profile = get_provider_profile("nvidia")
+        kwargs = transport.build_kwargs(
+            model="nvidia/nemotron-3-ultra-550b-a55b",
+            messages=_msgs(),
+            tools=None,
+            provider_profile=profile,
+            max_tokens=None,
+            max_tokens_param_fn=lambda x: {"max_tokens": x} if x else {},
+            timeout=300,
+            reasoning_config={"enabled": True, "effort": "high"},
+            request_overrides=None,
+            session_id="test",
+            ollama_num_ctx=None,
+        )
+        assert kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": True}
+        assert "reasoning_budget" not in kwargs["extra_body"]
+
 
 class TestDeepSeekProfileWiring:
     def test_deepseek_no_forced_max_tokens(self, transport):

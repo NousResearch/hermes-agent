@@ -228,7 +228,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 // spans every available model so anything is reachable past the cut.
 const PER_PROVIDER_SEARCH = 12
 
-function groupModels(
+export function groupModels(
   providers: ModelOptionProvider[],
   search: string,
   current: { model: string; provider: string },
@@ -284,9 +284,17 @@ function groupModels(
     }
   }
 
-  // Stable, logical group order: alphabetical by provider name. (The backend
-  // floats the current provider first, which would reshuffle on every switch.)
-  groups.sort((a, b) => a.provider.name.localeCompare(b.provider.name))
+  // Keep the active provider first so the status-bar menu opens on the model
+  // the user is actually running; non-active providers remain alphabetical.
+  groups.sort((a, b) => {
+    const aCurrent = a.provider.slug === current.provider
+    const bCurrent = b.provider.slug === current.provider
+    if (aCurrent !== bCurrent) {
+      return aCurrent ? -1 : 1
+    }
+
+    return a.provider.name.localeCompare(b.provider.name)
+  })
 
   return groups
 }

@@ -3478,7 +3478,6 @@ function fetchJsonViaOauthSession(url, options = {}) {
       redirect: 'follow'
     })
     request.setHeader('Content-Type', 'application/json')
-    if (body) request.setHeader('Content-Length', String(body.length))
 
     let timedOut = false
     const timer = setTimeout(() => {

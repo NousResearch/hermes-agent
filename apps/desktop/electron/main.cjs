@@ -1313,6 +1313,111 @@ function resolveUpdaterBinary() {
   return fileExists(candidate) ? candidate : null
 }
 
+// Path to the venv shim whose lock decides whether `hermes update` can write
+// fresh entry points. On Windows this is the file the running backend
+// `hermes.exe` holds open; on POSIX it's never mandatory-locked.
+function venvHermesShimPath(updateRoot) {
+  return IS_WINDOWS
+    ? path.join(updateRoot, 'venv', 'Scripts', 'hermes.exe')
+    : path.join(updateRoot, 'venv', 'bin', 'hermes')
+}
+
+// Best-effort lock probe mirroring the Rust updater's is_locked(): a running
+// .exe on Windows refuses an O_RDWR open with a sharing violation. On POSIX
+// this practically always succeeds (no mandatory locking), so it returns false
+// — correct, since the shim-contention brick is Windows-only.
+function isShimLocked(shimPath) {
+  if (!IS_WINDOWS) return false
+  let fd
+  try {
+    fd = fs.openSync(shimPath, 'r+')
+    return false
+  } catch (err) {
+    // ENOENT ⇒ not there ⇒ nothing locking it. Anything else (EBUSY/EPERM/
+    // EACCES) on Windows means a live handle holds it.
+    return err && err.code !== 'ENOENT'
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        void 0
+      }
+    }
+  }
+}
+
+// Force-kill the entire process TREE rooted at each PID. Node's child.kill()
+// only signals the direct child, so on Windows a backend `hermes.exe` that
+// spawned its own grandchildren (a `hermes` REPL, a pty terminal session, the
+// gateway) would survive and keep the venv shim locked. taskkill /T /F reaps
+// the whole tree synchronously. Windows-only: this is called solely from the
+// Windows shim-unlock path, and the backend is NOT spawned detached (so it's
+// not a process-group leader — a POSIX negative-pgid kill would be meaningless
+// here anyway). POSIX teardown stays with the existing before-quit SIGTERM.
+function forceKillProcessTree(pid) {
+  if (!IS_WINDOWS) return
+  if (!Number.isInteger(pid) || pid <= 0) return
+  try {
+    execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
+  } catch {
+    // Already gone, or no permission — best effort; the unlock wait below is
+    // the real gate.
+  }
+}
+
+// Before handing off the update on Windows, the desktop MUST stop every backend
+// it spawned and WAIT for the venv shim to actually unlock. The old code did
+// `hermesProcess.kill('SIGTERM')` + `app.quit()` fire-and-forget: SIGTERM on
+// Windows doesn't reap the backend's grandchildren, and quit didn't wait for
+// teardown, so the updater raced a still-locked `hermes.exe`, the quarantine
+// rename failed, uv's `pip install` hit "Access is denied", and the git path
+// bailed into a full ZIP re-download that ALSO couldn't write the locked shim —
+// a half-applied install (ryanc's update.log). Here we tree-kill the primary +
+// pool backends and poll the shim until it's writable (or a bounded timeout),
+// so by the time we spawn the updater the lock is genuinely gone.
+//
+// Windows-only: the venv-shim mandatory lock is a Windows phenomenon. On
+// macOS/Linux there's no REPLACE-on-running-exe block, the existing before-quit
+// SIGTERM + app.quit() teardown already works (the macOS path is flawless), and
+// aggressively SIGKILL-ing the backend here would be an untested behavior change
+// for no benefit. So we no-op off Windows and leave that path exactly as it was.
+async function releaseBackendLockForUpdate(updateRoot) {
+  if (!IS_WINDOWS) return { unlocked: true }
+
+  // Collect every backend PID the desktop owns: primary window backend + pool.
+  const pids = []
+  if (hermesProcess && Number.isInteger(hermesProcess.pid)) pids.push(hermesProcess.pid)
+  for (const entry of backendPool.values()) {
+    if (entry.process && Number.isInteger(entry.process.pid)) pids.push(entry.process.pid)
+  }
+
+  // Graceful first (lets Python flush), then tree-kill to catch grandchildren.
+  if (hermesProcess && !hermesProcess.killed) {
+    try {
+      hermesProcess.kill('SIGTERM')
+    } catch {
+      void 0
+    }
+  }
+  stopAllPoolBackends()
+  for (const pid of pids) forceKillProcessTree(pid)
+
+  const shim = venvHermesShimPath(updateRoot)
+  const deadlineMs = Date.now() + 15000
+  while (Date.now() < deadlineMs) {
+    if (!isShimLocked(shim)) {
+      rememberLog('[updates] venv shim unlocked; safe to hand off the update')
+      return { unlocked: true }
+    }
+    await new Promise(r => setTimeout(r, 300))
+  }
+  // Timed out: the updater's own wait_for_venv_free + force-kill is the second
+  // line of defense, and we pass --force so the guard won't dead-end. Log it.
+  rememberLog('[updates] venv shim still locked after 15s; handing off anyway (updater will force)')
+  return { unlocked: false }
+}
+
 // applyUpdates — hand off to the installer's --update flow, then exit.
 //
 // The desktop is a pure consumer: it does NOT git pull / pip install / rebuild
@@ -1378,6 +1483,12 @@ async function applyUpdates(opts = {}) {
       updaterArgs.push('--target-app', targetApp)
     }
     const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
+
+    // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
+    // spawn the updater. Without this the updater races a still-locked
+    // hermes.exe (held by the backend child / its grandchildren) and the update
+    // bricks. See releaseBackendLockForUpdate for the full failure analysis.
+    await releaseBackendLockForUpdate(updateRoot)
 
     // Detached so the updater outlives this process — it needs us GONE before
     // `hermes update` will run (the venv shim is locked while we live).

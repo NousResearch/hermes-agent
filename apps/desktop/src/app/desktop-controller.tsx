@@ -62,6 +62,7 @@ import {
   setSessionsTotal
 } from '../store/session'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
+import { isSecondaryWindow } from '../store/windows'
 
 import { ChatView } from './chat'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
@@ -708,19 +709,21 @@ export function DesktopController() {
 
   const overlays = (
     <>
-      <DesktopInstallOverlay />
+      {!isSecondaryWindow() && <DesktopInstallOverlay />}
       {/* One PTY-backed terminal mounted forever; <TerminalSlot /> placeholders
           decide where it shows. Toggling fullscreen never rebuilds the shell. */}
       <PersistentTerminal cwd={currentCwd} onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
-      <DesktopOnboardingOverlay
-        enabled={gatewayState === 'open'}
-        onCompleted={() => {
-          void refreshHermesConfig()
-          void refreshCurrentModel()
-          void queryClient.invalidateQueries({ queryKey: ['model-options'] })
-        }}
-        requestGateway={requestGateway}
-      />
+      {!isSecondaryWindow() && (
+        <DesktopOnboardingOverlay
+          enabled={gatewayState === 'open'}
+          onCompleted={() => {
+            void refreshHermesConfig()
+            void refreshCurrentModel()
+            void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+          }}
+          requestGateway={requestGateway}
+        />
+      )}
       <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModel} />
       <ModelVisibilityOverlay gateway={gatewayRef.current || undefined} onOpenProviders={openProviderSettings} />
       <UpdatesOverlay />
@@ -871,17 +874,19 @@ export function DesktopController() {
       statusbarItems={statusbarItems}
       titlebarTools={titlebarToolGroups.flat.right}
     >
-      <Pane
-        disabled={terminalTakeoverActive}
-        id="chat-sidebar"
-        maxWidth={SIDEBAR_MAX_WIDTH}
-        minWidth={SIDEBAR_DEFAULT_WIDTH}
-        resizable
-        side={sidebarSide}
-        width={`${SIDEBAR_DEFAULT_WIDTH}px`}
-      >
-        {sidebar}
-      </Pane>
+      {!isSecondaryWindow() && (
+        <Pane
+          disabled={terminalTakeoverActive}
+          id="chat-sidebar"
+          maxWidth={SIDEBAR_MAX_WIDTH}
+          minWidth={SIDEBAR_DEFAULT_WIDTH}
+          resizable
+          side={sidebarSide}
+          width={`${SIDEBAR_DEFAULT_WIDTH}px`}
+        >
+          {sidebar}
+        </Pane>
+      )}
       <PaneMain>
         <Routes>
           <Route element={terminalTakeoverActive ? takeoverTerminalView : chatView} index />

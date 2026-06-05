@@ -594,12 +594,22 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
 
 
 _DEFAULT_SAFE_DELETE_ROOTS = ("/tmp", "/private/tmp")
+_DEFAULT_SAFE_DELETE_DIR_NAMES = (
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pyre",
+    ".pytype",
+    ".tox",
+    ".nox",
+)
 _DELETE_TARGET_UNSAFE_MARKERS = ("$", "`", "*", "?", "[", "]", "{", "}")
 
 
 def _configured_safe_delete_roots() -> tuple[str, ...]:
     """Return absolute roots where scoped rm targets can skip approvals."""
-    roots = list(_DEFAULT_SAFE_DELETE_ROOTS)
+    roots: list[str] = list(_DEFAULT_SAFE_DELETE_ROOTS)
     configured = _get_approval_config().get("safe_delete_roots", [])
     if isinstance(configured, str):
         configured = [configured]
@@ -620,6 +630,31 @@ def _configured_safe_delete_roots() -> tuple[str, ...]:
             continue
         normalized.append(root)
         seen.add(root)
+    return tuple(normalized)
+
+
+def _configured_safe_delete_dir_names() -> tuple[str, ...]:
+    """Return literal directory basenames where recursive rm can skip approvals."""
+    names: list[str] = list(_DEFAULT_SAFE_DELETE_DIR_NAMES)
+    configured = _get_approval_config().get("safe_delete_dir_names", [])
+    if isinstance(configured, str):
+        configured = [configured]
+    elif not isinstance(configured, (list, tuple, set)):
+        configured = []
+
+    for name in configured:
+        names.append(str(name))
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        name = name.strip()
+        if not name or name in {".", ".."} or "/" in name or name in seen:
+            continue
+        if any(marker in name for marker in _DELETE_TARGET_UNSAFE_MARKERS):
+            continue
+        normalized.append(name)
+        seen.add(name)
     return tuple(normalized)
 
 
@@ -690,6 +725,19 @@ def _is_scoped_safe_delete_target(target: str) -> bool:
     return False
 
 
+def _is_safe_delete_dir_name_target(target: str) -> bool:
+    """True only for literal paths whose basename is an allowed cache dir."""
+    if any(marker in target for marker in _DELETE_TARGET_UNSAFE_MARKERS):
+        return False
+
+    normalized = posixpath.normpath(target)
+    if normalized != target.rstrip("/"):
+        return False
+
+    basename = posixpath.basename(normalized)
+    return basename in _configured_safe_delete_dir_names()
+
+
 def _is_allowed_root_delete(command: str) -> bool:
     """Allow non-recursive rm of literal children under safe delete roots."""
     targets = _rm_targets(command, require_recursive=False)
@@ -699,7 +747,10 @@ def _is_allowed_root_delete(command: str) -> bool:
 def _is_allowed_recursive_delete(command: str) -> bool:
     """Allow scoped recursive cleanup while keeping broad rm -r gated."""
     targets = _rm_targets(command, require_recursive=True)
-    return bool(targets) and all(_is_scoped_safe_delete_target(t) for t in targets)
+    return bool(targets) and all(
+        _is_scoped_safe_delete_target(t) or _is_safe_delete_dir_name_target(t)
+        for t in targets
+    )
 
 
 def detect_dangerous_command(command: str) -> tuple:

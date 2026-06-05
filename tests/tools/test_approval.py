@@ -54,7 +54,7 @@ class TestDetectDangerousRm:
         assert "delete" in desc.lower()
 
     def test_rm_recursive_long_flag(self):
-        is_dangerous, key, desc = detect_dangerous_command("rm --recursive /workspace/stuff")
+        is_dangerous, key, desc = detect_dangerous_command("rm --recursive /home/user/stuff")
         assert is_dangerous is True
         assert key is not None
         assert "delete" in desc.lower()
@@ -232,7 +232,7 @@ class TestRmRecursiveFlagVariants:
         assert "recursive" in desc.lower() or "delete" in desc.lower()
 
     def test_rm_rf(self):
-        dangerous, key, desc = detect_dangerous_command("rm -rf /workspace/test")
+        dangerous, key, desc = detect_dangerous_command("rm -rf /home/user/test")
         assert dangerous is True
         assert key is not None
 
@@ -335,6 +335,59 @@ class TestScopedSafeDeleteRoots:
 
     def test_compound_safe_then_dangerous_rm_stays_gated(self):
         dangerous, key, desc = detect_dangerous_command("rm -rf /tmp/hermes-run; rm -rf /workspace/run")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+
+class TestSafeDeleteDirNames:
+    """Known cache directories can be removed recursively without prompts."""
+
+    def test_default_pycache_basename_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf __pycache__")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_default_nested_pycache_basename_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf pkg/__pycache__")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_default_pytest_cache_basename_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf .pytest_cache")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_configured_cache_basename_is_safe(self):
+        with mock_patch("tools.approval._get_approval_config", return_value={"safe_delete_dir_names": [".custom_cache"]}):
+            dangerous, key, desc = detect_dangerous_command("rm -rf build/.custom_cache")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_dynamic_cache_target_stays_gated(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf $CACHE_DIR")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_traversal_to_safe_basename_stays_gated(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf pkg/../__pycache__")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_mixed_safe_dir_name_and_unsafe_target_stays_gated(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf __pycache__ /workspace/run")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_glob_inside_safe_dir_name_stays_gated(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf __pycache__/*")
         assert dangerous is True
         assert key is not None
         assert "delete" in desc.lower()

@@ -1773,7 +1773,10 @@ def _launch_tui(
 
     import tempfile
 
-    env = os.environ.copy()
+    # TUI needs provider credentials for model calls, but still must flow
+    # through the central helper so Tier-1 secrets (GitHub auth, gateway
+    # tokens, infra secrets) never propagate to the Node subprocess.
+    env = hermes_subprocess_env(inherit_credentials=True)
     active_session_fd, active_session_file = tempfile.mkstemp(
         prefix="hermes-tui-active-session-", suffix=".json"
     )
@@ -1865,7 +1868,7 @@ def _launch_tui(
         _tokens.append(f"--max-old-space-size={_resolve_tui_heap_mb()}")
     env["NODE_OPTIONS"] = " ".join(_tokens)
     # HERMES_TUI_RESUME is an internal hand-off from the Python wrapper to the
-    # Ink app.  Because we start from os.environ.copy(), an exported/stale value
+    # Ink app.  Because we start from the parent environment, an exported/stale value
     # in the user's shell would otherwise make a plain `hermes --tui` try to
     # resume a non-existent session and leave the UI at "error: session not
     # found" with no live session.  Only forward a resume id that argparse

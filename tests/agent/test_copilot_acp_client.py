@@ -205,3 +205,27 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+def test_copilot_subprocess_env_strips_tier1_but_keeps_provider_credentials(monkeypatch):
+    from agent.copilot_acp_client import _build_subprocess_env
+
+    monkeypatch.setenv("HOME", "/parent/home")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-provider-survives")
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "ant-provider-survives")
+    monkeypatch.setenv("GH_TOKEN", "gh-must-strip")
+    monkeypatch.setenv("GITHUB_TOKEN", "github-must-strip")
+    monkeypatch.setenv("DISCORD_HOME_CHANNEL", "discord-must-strip")
+    monkeypatch.setattr(
+        "agent.copilot_acp_client._resolve_home_dir",
+        lambda: "/copilot/home",
+    )
+
+    env = _build_subprocess_env()
+
+    assert env["HOME"] == "/copilot/home"
+    assert env["OPENAI_API_KEY"] == "sk-provider-survives"
+    assert env["ANTHROPIC_TOKEN"] == "ant-provider-survives"
+    assert "GH_TOKEN" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert "DISCORD_HOME_CHANNEL" not in env

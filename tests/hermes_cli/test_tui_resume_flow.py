@@ -860,6 +860,10 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
 
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-provider-survives")
+    monkeypatch.setenv("GH_TOKEN", "gh-must-strip")
+    monkeypatch.setenv("GITHUB_TOKEN", "github-must-strip")
+    monkeypatch.setenv("DISCORD_HOME_CHANNEL", "discord-must-strip")
     active_path_during_call = None
 
     monkeypatch.setattr(
@@ -894,6 +898,10 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert active_path_during_call == active_path
     assert not active_path.exists()
     assert env["NODE_ENV"] == "production"
+    assert env["OPENAI_API_KEY"] == "sk-provider-survives"
+    assert "GH_TOKEN" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert "DISCORD_HOME_CHANNEL" not in env
 
 
 def test_launch_tui_exit_code_42_relaunches_update(monkeypatch, main_mod):

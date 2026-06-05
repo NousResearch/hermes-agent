@@ -7309,3 +7309,28 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+    def test_prefetch_context_is_injected_into_current_user_message(self):
+        """Source-level check: prefetch context stays out of cached system prompt."""
+        import inspect
+        from agent.conversation_loop import run_conversation as _rc
+        src = inspect.getsource(_rc)
+
+        idx_prefetch = src.index(
+            "_ext_prefetch_cache = agent._memory_manager.prefetch_all"
+        )
+        idx_api_messages = src.index("api_messages = []")
+        idx_current_user_guard = src.index(
+            'if idx == current_turn_user_idx and msg.get("role") == "user":'
+        )
+        idx_fence = src.index("build_memory_context_block(_ext_prefetch_cache)")
+        idx_user_append = src.index(
+            'api_msg["content"] = _base + "\\n\\n" + "\\n\\n".join(_injections)'
+        )
+
+        assert idx_prefetch < idx_api_messages < idx_current_user_guard
+        assert idx_current_user_guard < idx_fence < idx_user_append
+
+        prefetch_to_user_append = src[idx_prefetch:idx_user_append]
+        assert "_cached_system_prompt" not in prefetch_to_user_append
+        assert "_build_system_prompt" not in prefetch_to_user_append

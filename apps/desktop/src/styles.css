@@ -1231,3 +1231,32 @@ canvas {
   background: color-mix(in srgb, var(--theme-primary) 9%, var(--ui-bg-elevated));
   box-shadow: none;
 }
+
+/* ── Conversation Minimap ── */
+
+.minimap-scroll-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ui-text-primary) 12%, transparent) transparent;
+}
+
+.minimap-scroll-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.minimap-scroll-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.minimap-scroll-list::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--ui-text-primary) 12%, transparent);
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.minimap-scroll-list::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--ui-text-primary) 22%, transparent);
+}

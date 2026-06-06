@@ -21664,15 +21664,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # avoiding race conditions with pending deltas.
                 _sc = stream_consumer_holder[0] if stream_consumer_holder else None
                 if _sc and getattr(_sc, "_use_native_streaming", False):
+                    _cancelled_flag = None
                     try:
-                        _boundary_future = _sc.close_for_approval_prompt()
+                        _boundary_result = _sc.close_for_approval_prompt()
+                        # close_for_approval_prompt returns (future, cancelled_flag) or just future
+                        if isinstance(_boundary_result, tuple):
+                            _boundary_future, _cancelled_flag = _boundary_result
+                        else:
+                            _boundary_future = _boundary_result
                         # Wait for consumer to process the boundary
                         if hasattr(_boundary_future, "result"):
                             _boundary_future.result(timeout=10)
-                    except Exception as _boundary_err:
+                    except (TimeoutError, Exception) as _boundary_err:
+                        # On timeout: mark boundary as cancelled so it won't send
+                        # visible finalize text after the approval prompt
+                        if _cancelled_flag is not None:
+                            _cancelled_flag["cancelled"] = True
                         logger.debug(
-                            "Approval boundary signal failed (non-critical): %s",
-                            _boundary_err,
+                            "Approval boundary timed out or failed: %s", _boundary_err,
                         )
 
                 cmd = approval_data.get("command", "")

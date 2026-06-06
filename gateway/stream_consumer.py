@@ -470,13 +470,17 @@ class GatewayStreamConsumer:
             f.set_result(True)
             return f
 
-        # Create a future that run() will resolve after processing
+        # Create a future that run() will resolve after processing.
+        # Also include a cancelled flag so if the caller times out,
+        # the handler won't send a visible finalize message after the prompt.
         if loop:
             boundary_future = loop.create_future()
         else:
             boundary_future = concurrent.futures.Future()
-        self._queue.put((_APPROVAL_BOUNDARY, boundary_future))
-        return boundary_future
+
+        cancelled_flag = {"cancelled": False}
+        self._queue.put((_APPROVAL_BOUNDARY, boundary_future, cancelled_flag))
+        return boundary_future, cancelled_flag
 
     def on_commentary(self, text: str) -> None:
         """Queue a completed interim assistant commentary message."""
@@ -568,28 +572,24 @@ class GatewayStreamConsumer:
             type(self)._draft_id_counter += 1
             self._draft_id = type(self)._draft_id_counter
 
-    async def _handle_approval_boundary(self, boundary_future) -> None:
+    async def _handle_approval_boundary(self, boundary_future, cancelled_flag=None) -> None:
         """Process an approval boundary: close current native stream, prepare for new one.
 
         This method is called serially from run() when _APPROVAL_BOUNDARY is dequeued.
         It ensures no race conditions with pending deltas or other queue items.
 
-        Steps:
-          1. Flush accumulated text (if any) as a mid-stream update
-          2. Finalize current stream with placeholder message
-          3. Reset native stream state
-          4. Generate new turn_id for post-approval output
-          5. Resolve the boundary future so caller knows it's safe to send approval prompt
-
-        After this, _use_native_streaming remains True so the next on_delta will
-        trigger a new seed frame with the fresh turn_id.
+        If cancelled_flag["cancelled"] is True (caller timed out and continued),
+        we still reset state but skip sending visible finalize text to avoid
+        the finalize message appearing after the approval prompt.
         """
         import uuid
+        is_cancelled = cancelled_flag and cancelled_flag.get("cancelled", False)
 
+        boundary_ok = False
         try:
             if self._native_stream_opened:
                 # Step 1: Flush accumulated content as mid-stream update
-                if self._accumulated:
+                if self._accumulated and not is_cancelled:
                     try:
                         await self.adapter.send_stream_frame(
                             self._accumulated,
@@ -600,23 +600,24 @@ class GatewayStreamConsumer:
                     except Exception as e:
                         logger.debug("Approval boundary: flush failed (non-critical): %s", e)
 
-                # Step 2: Finalize current stream with placeholder
+                # Step 2: Finalize current stream
+                # If cancelled (timeout), use empty finalize to just close the stream
+                # without showing visible "等待审批中..." after the prompt
+                finalize_text = "" if is_cancelled else (self._accumulated or "⏸ 等待审批中...")
                 try:
                     await self.adapter.send_stream_frame(
-                        self._accumulated or "⏸ 等待审批中...",
+                        finalize_text or "✅",
                         finalize=True,
                         chat_id=self.chat_id,
                         reply_to=self._initial_reply_to_id,
                         turn_id=self._turn_id,
                     )
                     logger.debug(
-                        "Approval boundary: finalized stream (chat=%s, turn=%s)",
-                        self.chat_id, self._turn_id,
+                        "Approval boundary: finalized stream (chat=%s, turn=%s, cancelled=%s)",
+                        self.chat_id, self._turn_id, is_cancelled,
                     )
                 except Exception as e:
-                    logger.warning(
-                        "Approval boundary: finalize failed: %s", e
-                    )
+                    logger.warning("Approval boundary: finalize failed: %s", e)
 
             # Step 3: Reset native stream state
             self._native_stream_opened = False
@@ -624,24 +625,34 @@ class GatewayStreamConsumer:
 
             # Step 4: Generate new turn_id for post-approval output
             self._turn_id = str(uuid.uuid4())
+
+            # Step 5: Clear initial_reply_to_id so post-approval stream uses
+            # the latest inbound req_id (_last_chat_req_ids[chat]) instead of
+            # the original user message's req_id which may be stale after /approve.
+            self._initial_reply_to_id = None
+
             logger.debug(
-                "Approval boundary: new turn_id=%s for post-approval stream",
+                "Approval boundary: new turn_id=%s, cleared reply_to for fresh req_id",
                 self._turn_id,
             )
 
-            # Step 5: Reset segment state (accumulated text, message_id, etc.)
+            # Step 6: Reset segment state (accumulated text, message_id, etc.)
             self._reset_segment_state()
+            boundary_ok = True
 
+        except Exception as e:
+            logger.warning("Approval boundary processing failed: %s", e)
+            boundary_ok = False
         finally:
-            # Resolve future so approval callback knows it's safe to proceed
+            # Resolve future so approval callback knows the result
             if boundary_future is not None:
                 try:
                     if isinstance(boundary_future, asyncio.Future):
                         if not boundary_future.done():
-                            boundary_future.set_result(True)
+                            boundary_future.set_result(boundary_ok)
                     elif isinstance(boundary_future, concurrent.futures.Future):
                         if not boundary_future.done():
-                            boundary_future.set_result(True)
+                            boundary_future.set_result(boundary_ok)
                 except Exception:
                     pass
 
@@ -896,6 +907,7 @@ class GatewayStreamConsumer:
                 flush_event = None
                 got_approval_boundary = False
                 approval_boundary_future = None
+                approval_boundary_cancelled = None
                 commentary_text = None
                 while True:
                     try:
@@ -906,9 +918,10 @@ class GatewayStreamConsumer:
                         if item is _NEW_SEGMENT:
                             got_segment_break = True
                             break
-                        if isinstance(item, tuple) and len(item) == 2 and item[0] is _APPROVAL_BOUNDARY:
+                        if isinstance(item, tuple) and len(item) == 3 and item[0] is _APPROVAL_BOUNDARY:
                             got_approval_boundary = True
                             approval_boundary_future = item[1]
+                            approval_boundary_cancelled = item[2]
                             break
                         if isinstance(item, tuple) and len(item) == 2 and item[0] is _COMMENTARY:
                             commentary_text = item[1]
@@ -929,7 +942,9 @@ class GatewayStreamConsumer:
                 # Must happen before got_done/segment_break processing since it
                 # produces its own finalize and resets state.
                 if got_approval_boundary:
-                    await self._handle_approval_boundary(approval_boundary_future)
+                    await self._handle_approval_boundary(
+                        approval_boundary_future, approval_boundary_cancelled
+                    )
                     continue
 
                 # Flush any held-back partial-tag buffer on stream end

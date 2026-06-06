@@ -61,7 +61,7 @@ def _make_native_streaming_adapter(
     adapter.supports_native_streaming = _supports
 
     async def _send_stream_frame(
-        text, *, finalize=False, chat_id=None, reply_to=None,
+        text, *, finalize=False, chat_id=None, reply_to=None, **kwargs
     ):
         adapter.frames.append({
             "text": text,

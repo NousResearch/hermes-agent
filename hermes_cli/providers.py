@@ -211,6 +211,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
+    # Claude Code CLI — subprocess-based, uses CC subscription (no API key).
+    "claude-cli": HermesOverlay(
+        transport="claude_cli",
+        auth_type="none",
+    ),
 }
 
 
@@ -279,6 +284,10 @@ ALIASES: Dict[str, str] = {
     # anthropic
     "claude": "anthropic",
     "claude-code": "anthropic",
+
+    # claude-cli (Claude Code CLI subprocess — subscription-based)
+    "cc": "claude-cli",
+    "claude-code-cli": "claude-cli",
 
     # github-copilot (models.dev ID)
     "copilot": "github-copilot",
@@ -375,6 +384,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
+    "claude-cli": "Claude Code CLI",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
@@ -387,6 +397,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
     "bedrock_converse": "bedrock_converse",
+    "claude_cli": "claude_cli",
 }
 
 

@@ -1,0 +1,4 @@
+name: claude-cli
+kind: model-provider
+version: 0.1.0
+description: Claude Code CLI transport — runs on Claude subscription, no API tokens needed

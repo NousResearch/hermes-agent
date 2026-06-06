@@ -1244,6 +1244,18 @@ def resolve_runtime_provider(
     """
     requested_provider = resolve_requested_provider(requested)
 
+    # Claude Code CLI short-circuit: subprocess-based, no API key or base URL.
+    # The agent uses ClaudeCliRunner to shell out to `claude -p`.
+    if requested_provider in {"claude-cli", "claude-code-cli", "cc"}:
+        return {
+            "provider": "claude-cli",
+            "api_mode": "claude_cli",
+            "base_url": "",
+            "api_key": "not-needed",
+            "source": "claude-cli",
+            "requested_provider": requested_provider,
+        }
+
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
     # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
     # return provider="custom" with chat_completions api_mode and no valid key).

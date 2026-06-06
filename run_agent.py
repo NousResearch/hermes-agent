@@ -5040,6 +5040,241 @@ class AIAgent:
         from agent.codex_runtime import run_codex_app_server_turn
         return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
 
+    def _run_claude_cli_turn(
+        self,
+        *,
+        user_message: str,
+        original_user_message: Any,
+        messages: List[Dict[str, Any]],
+        effective_task_id: str,
+        should_review_memory: bool = False,
+    ) -> Dict[str, Any]:
+        """Run a full turn via Claude Code CLI subprocess.
+
+        CC handles its own tool execution (Read, Edit, Bash, etc.) internally.
+        We send the prompt + Hermes context, collect stream events, normalize
+        the response, and return in the standard conversation result format.
+
+        Context injection strategy (mirrors Hermes standard loop):
+          - Stable tier: written to .hermes.md in working_dir (CC auto-discovers)
+          - Volatile tier: --append-system-prompt (built-in memory, user profile, timestamp)
+          - External memory: injected into user message (fenced, preserves prefix cache)
+        """
+        from agent.claude_cli_runner import ClaudeCliRunner
+        from agent.memory_manager import build_memory_context_block
+        from agent.transports import get_transport
+
+        transport = get_transport("claude_cli")
+        working_dir = getattr(self, "_claude_cli_working_dir", None)
+
+        # ── 1. Build stable Hermes context ───────────────────────
+        # CC doesn't auto-discover .hermes.md — only CLAUDE.md/AGENTS.md.
+        # We build the stable context (identity, skills, guidance) and
+        # inject it via --append-system-prompt alongside the volatile tier.
+        stable_context = self._build_hermes_cc_context(working_dir)
+
+        # ── 2. Build volatile system prompt ────────────────────────
+        # Built-in memory snapshot + user profile + timestamp.
+        # These change per-session but not per-turn.
+        volatile_parts = []
+        _memory_store = getattr(self, "_memory_store", None)
+        if _memory_store:
+            mem_snapshot = _memory_store.format_for_system_prompt("memory")
+            if mem_snapshot:
+                volatile_parts.append(mem_snapshot)
+            user_snapshot = _memory_store.format_for_system_prompt("user")
+            if user_snapshot:
+                volatile_parts.append(user_snapshot)
+
+        # External memory provider system prompt block
+        if self._memory_manager:
+            try:
+                provider_block = self._memory_manager.build_system_prompt()
+                if provider_block:
+                    volatile_parts.append(provider_block)
+            except Exception:
+                pass
+
+        # Timestamp + session info
+        from datetime import datetime
+        volatile_parts.append(f"Conversation started: {datetime.now().strftime('%A, %B %d, %Y')}")
+        if self.session_id:
+            volatile_parts.append(f"Session ID: {self.session_id}")
+        volatile_parts.append(f"Model: {self.model}")
+
+        volatile_prompt = "\n\n".join(volatile_parts) if volatile_parts else None
+
+        # ── Combine stable + volatile into single append prompt ───
+        append_system_prompt = "\n\n".join(
+            p for p in (stable_context, volatile_prompt) if p
+        ) or None
+
+        # ── 3. Prefetch external memory and inject into prompt ─────
+        # Following Hermes convention: external memory goes into the
+        # user message (fenced), not the system prompt.
+        prompt = user_message
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_turn_start(
+                    getattr(self, "_user_turn_count", 0),
+                    original_user_message if isinstance(original_user_message, str) else "",
+                )
+                query = original_user_message if isinstance(original_user_message, str) else ""
+                prefetched = self._memory_manager.prefetch_all(query) or ""
+                if prefetched:
+                    fenced = build_memory_context_block(prefetched)
+                    if fenced:
+                        prompt = f"{user_message}\n\n{fenced}"
+            except Exception:
+                pass
+
+        # ── 4. Build kwargs via transport and run CLI ──────────────
+        api_kwargs = transport.build_kwargs(
+            model=self.model,
+            messages=messages + [{"role": "user", "content": prompt}],
+            working_dir=working_dir,
+            session_id=getattr(self, "_claude_cli_session_id", None),
+            timeout=getattr(self, "timeout_seconds", 600),
+        )
+
+        runner = ClaudeCliRunner(
+            command=getattr(self, "_claude_cli_command", "claude"),
+            working_dir=api_kwargs.get("working_dir"),
+        )
+
+        events = asyncio.run(runner.run(
+            prompt=api_kwargs["prompt"],
+            model=api_kwargs["model"],
+            append_system_prompt=append_system_prompt,
+            session_id=api_kwargs.get("session_id"),
+            timeout=api_kwargs.get("timeout") or 600,
+        ))
+
+        # ── 5. Normalize response ─────────────────────────────────
+        normalized = transport.normalize_response(events)
+
+        # Store CC session_id for multi-turn resume
+        if normalized.provider_data and normalized.provider_data.get("session_id"):
+            self._claude_cli_session_id = normalized.provider_data["session_id"]
+
+        # ── 6. Stream content to callback ──────────────────────────
+        if normalized.content and self.stream_delta_callback:
+            try:
+                self.stream_delta_callback(normalized.content)
+                self.stream_delta_callback(None)
+            except Exception:
+                pass
+
+        # ── 7. Post-turn hooks ─────────────────────────────────────
+        # Log tool calls for Hermes tracking (CC already executed them)
+        if normalized.tool_calls:
+            for tc in normalized.tool_calls:
+                if self.verbose_logging:
+                    logging.debug("CC tool call (already executed): %s", tc.name)
+
+        # Sync turn to external memory provider
+        assistant_content = normalized.content or ""
+        if self._memory_manager:
+            try:
+                self._memory_manager.sync_all(
+                    user_message, assistant_content,
+                    session_id=self.session_id or "",
+                    messages=messages,
+                )
+                # Queue prefetch for next turn
+                self._memory_manager.queue_prefetch_all(
+                    user_message, session_id=self.session_id or "",
+                )
+            except Exception:
+                pass
+
+        # ── 8. Update messages and persist ─────────────────────────
+        assistant_msg = {"role": "assistant", "content": assistant_content}
+        messages.append({"role": "user", "content": user_message})
+        messages.append(assistant_msg)
+
+        self._persist_session(messages, getattr(self, "conversation_history", []))
+
+        return {
+            "final_response": normalized.content,
+            "messages": messages,
+            "api_calls": 1,
+            "completed": normalized.finish_reason != "error",
+            "error": normalized.provider_data.get("error") if normalized.provider_data else None,
+        }
+
+    def _build_hermes_cc_context(self, working_dir: str | None) -> str:
+        """Build Hermes stable context for CC injection via --append-system-prompt.
+
+        Returns the context string. Also writes to .hermes.md as a side
+        effect (future-proofing for CC versions that may discover it).
+
+        CC has its own tool guidance, environment detection, and task
+        completion instructions, so we only inject Hermes-specific content:
+        identity, skills, memory guidance, and profile hint.
+        """
+        parts = ["# Hermes Agent Context\n"]
+
+        # Agent identity (SOUL.md equivalent)
+        try:
+            soul_path = None
+            if working_dir:
+                _p = Path(working_dir) / "SOUL.md"
+                if _p.exists():
+                    soul_path = _p
+            if not soul_path:
+                hermes_home = get_hermes_home()
+                _p = hermes_home / "SOUL.md"
+                if _p.exists():
+                    soul_path = _p
+            if soul_path:
+                parts.append(f"## Agent Identity\n{soul_path.read_text(encoding='utf-8')}")
+        except Exception:
+            pass
+
+        # Skills index (if curator is active)
+        curator = getattr(self, "_curator", None)
+        if curator:
+            try:
+                skills_prompt = curator.build_skills_system_prompt()
+                if skills_prompt:
+                    parts.append(f"## Active Skills\n{skills_prompt}")
+            except Exception:
+                pass
+
+        # Memory system guidance
+        parts.append(
+            "## Hermes Memory System\n"
+            "This session runs through the Hermes Agent framework. Hermes "
+            "injects persistent memory (facts, user profile) into the system "
+            "context automatically each turn. This memory is trust-scored and "
+            "curated — treat it as authoritative reference data.\n\n"
+            "When you learn something new about the user or their projects "
+            "that should persist across sessions, mention it — Hermes will "
+            "capture it in the memory store."
+        )
+
+        # Active Hermes profile hint
+        try:
+            from agent.file_safety import _resolve_active_profile_name
+            active_profile = _resolve_active_profile_name()
+        except Exception:
+            active_profile = "default"
+        parts.append(f"## Hermes Profile\nActive profile: {active_profile}")
+
+        content = "\n\n".join(parts)
+
+        # Write to .hermes.md as side effect (future-proofing)
+        if working_dir:
+            try:
+                hermes_md = Path(working_dir) / ".hermes.md"
+                if not hermes_md.exists() or hermes_md.read_text(encoding="utf-8") != content:
+                    hermes_md.write_text(content, encoding="utf-8")
+            except Exception:
+                pass
+
+        return content
+
 def main(
     query: str = None,
     model: str = "",

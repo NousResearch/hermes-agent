@@ -654,6 +654,11 @@ def _has_any_provider_configured() -> bool:
     # often don't require an API key.
     from hermes_cli.auth import PROVIDER_REGISTRY
 
+    # Providers with auth_type="none" (e.g. claude-cli) are always available
+    for pconfig in PROVIDER_REGISTRY.values():
+        if pconfig.auth_type == "none":
+            return True
+
     # Collect all provider env vars
     provider_env_vars = {
         "OPENROUTER_API_KEY",

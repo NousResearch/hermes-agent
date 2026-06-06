@@ -1452,6 +1452,10 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
 
+    # Per-channel working directory override (e.g. Discord channel_cwds).
+    # When set, overrides the global CLI working directory for this event.
+    channel_cwd: Optional[str] = None
+
     # Channel context recovered by history backfill (e.g. messages between
     # bot turns that were missed due to require_mention).  Kept separate
     # from ``text`` so the sender-prefix logic in run.py can operate on the
@@ -1708,6 +1712,35 @@ def resolve_channel_prompt(
         prompt = str(prompt).strip()
         if prompt:
             return prompt
+    return None
+
+
+def resolve_channel_cwd(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> str | None:
+    """Resolve a per-channel working directory override from platform config.
+
+    Looks up ``channel_cwds`` in the adapter's ``config.extra`` dict.
+    Prefers an exact match on *channel_id*; falls back to *parent_id*
+    (useful for forum threads / child channels inheriting a parent cwd).
+
+    Returns the path string, or None if no match is found.
+    """
+    cwds = config_extra.get("channel_cwds") or {}
+    if not isinstance(cwds, dict):
+        return None
+
+    for key in (channel_id, parent_id):
+        if not key:
+            continue
+        cwd = cwds.get(key)
+        if cwd is None:
+            continue
+        cwd = str(cwd).strip()
+        if cwd:
+            return cwd
     return None
 
 

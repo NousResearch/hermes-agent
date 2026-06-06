@@ -23,7 +23,18 @@ vi.mock('@/store/notifications', () => ({
   dismissNotification: (...args: unknown[]) => dismissSpy(...args)
 }))
 
-const { maybeNotifyUpdateAvailable } = await import('./updates')
+const checkHermesUpdateSpy = vi.fn()
+const updateHermesSpy = vi.fn()
+const getActionStatusSpy = vi.fn()
+
+vi.mock('@/hermes', () => ({
+  checkHermesUpdate: (...args: unknown[]) => checkHermesUpdateSpy(...args),
+  updateHermes: (...args: unknown[]) => updateHermesSpy(...args),
+  getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
+}))
+
+const { maybeNotifyUpdateAvailable, checkUpdates, $updateStatus } = await import('./updates')
+const { setConnection } = await import('./session')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
   supported: true,
@@ -75,3 +86,77 @@ describe('maybeNotifyUpdateAvailable', () => {
     expect(notifySpy).not.toHaveBeenCalled()
   })
 })
+
+describe('checkUpdates in remote mode', () => {
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    checkHermesUpdateSpy.mockReset()
+    $updateStatus.set(null)
+    vi.useRealTimers()
+  })
+
+  const setRemote = (on: boolean) =>
+    setConnection({
+      baseUrl: 'http://box:9119',
+      isFullscreen: false,
+      mode: on ? 'remote' : 'local',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://box:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+  it('sources the overlay from the backend /update/check and maps commits', async () => {
+    setRemote(true)
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 2,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null,
+      commits: [{ sha: 'abc1234', summary: 'feat: x', author: 'a', at: 1 }]
+    })
+
+    const result = await checkUpdates()
+
+    expect(checkHermesUpdateSpy).toHaveBeenCalled()
+    expect(result?.behind).toBe(2)
+    expect(result?.commits?.[0]?.sha).toBe('abc1234')
+    expect(result?.supported).toBe(true)
+    expect($updateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
+  })
+
+  it('honours can_apply=false (docker/nix): not supported, carries message', async () => {
+    setRemote(true)
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'docker',
+      current_version: '0.16.0',
+      behind: null,
+      update_available: false,
+      can_apply: false,
+      update_command: 'docker pull ...',
+      message: 'Docker images are immutable.'
+    })
+
+    const result = await checkUpdates()
+
+    expect(result?.supported).toBe(false)
+    expect(result?.message).toBe('Docker images are immutable.')
+  })
+
+  it('does NOT call the backend check in local mode', async () => {
+    setRemote(false)
+    // No hermesDesktop bridge → local path early-returns without hitting the
+    // backend. Stub a bare window so the local branch can read the (absent)
+    // bridge without throwing in the node test env.
+    vi.stubGlobal('window', {})
+    await checkUpdates()
+    expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+})
+

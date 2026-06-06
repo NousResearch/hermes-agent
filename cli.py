@@ -3738,8 +3738,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
-        # show_timestamps: prefix user and assistant labels with [HH:MM]
+        # show_timestamps: prefix user and assistant labels with timestamps
         self.show_timestamps = CLI_CONFIG["display"].get("timestamps", False)
+        self.timestamp_format = CLI_CONFIG["display"].get("timestamp_format", "%H:%M")
         self.final_response_markdown = str(
             CLI_CONFIG["display"].get("final_response_markdown", "strip")
         ).strip().lower() or "strip"
@@ -5482,7 +5483,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _format_submitted_user_message_preview(self, user_input: str) -> str:
         """Format the submitted user-message scrollback preview."""
         ts_suffix = (
-            f" [dim]{datetime.now().strftime('%H:%M')}[/]"
+            f" [dim]{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}[/]"
             if getattr(self, "show_timestamps", False) else ""
         )
         lines = user_input.split("\n")
@@ -5783,7 +5784,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
             if self.show_timestamps:
-                label = f"{label} {datetime.now().strftime('%H:%M')}"
+                label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
             w = self._scrollback_box_width()
             fill = w - 2 - HermesCLI._status_bar_display_width(label)
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
@@ -6849,7 +6850,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return ""
             try:
                 from datetime import datetime
-                return f"  [{datetime.fromtimestamp(float(ts)).strftime('%H:%M')}]"
+                return f"  [{datetime.fromtimestamp(float(ts)).strftime(getattr(self, 'timestamp_format', '%H:%M'))}]"
             except (ValueError, OSError, TypeError):
                 return ""
 
@@ -12180,7 +12181,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         w = self._scrollback_box_width(getattr(self.console, "width", 80))
                         label = " ⚕ Hermes "
                         if self.show_timestamps:
-                            label = f"{label}{datetime.now().strftime('%H:%M')} "
+                            label = f"{label}{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))} "
                         fill = w - 2 - HermesCLI._status_bar_display_width(label)
                         _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")

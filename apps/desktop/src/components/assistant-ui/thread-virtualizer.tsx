@@ -12,6 +12,7 @@ import {
   useRef
 } from 'react'
 
+import { ConversationMinimap } from '@/components/assistant-ui/conversation-minimap'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { cn } from '@/lib/utils'
 import { setThreadScrolledUp } from '@/store/thread-scroll'
@@ -178,6 +179,7 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
                   <div
                     className="flex min-w-0 flex-col gap-(--conversation-turn-gap) pb-(--conversation-turn-gap)"
                     data-index={virtualItem.index}
+                    id={`msg-grp-${group.id}`}
                     key={virtualItem.key}
                     ref={virtualizer.measureElement}
                   >
@@ -209,6 +211,7 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
           </div>
         )}
       </div>
+      <ConversationMinimap groups={groups} virtualizer={virtualizer} />
     </div>
   )
 }

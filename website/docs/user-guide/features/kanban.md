@@ -236,6 +236,61 @@ the old standalone daemon alive for one release cycle, but running both
 a gateway-embedded dispatcher AND a standalone daemon against the same
 `kanban.db` causes claim races and is not supported.
 
+### Reactivating Kanban after a restart or update
+
+If the Kanban tab stops loading, reactivate the gateway and dashboard rather
+than the deprecated standalone kanban daemon. The gateway owns the dispatcher;
+the dashboard owns the `/kanban` page.
+
+```bash
+# 1. Make sure the gateway is running; this hosts the embedded dispatcher.
+hermes gateway status
+hermes gateway start        # or: hermes gateway restart
+
+# 2. Confirm the board is reachable and see whether work is waiting.
+hermes kanban stats
+hermes kanban dispatch --dry-run --max 3
+
+# 3. Check whether the dashboard is already running.
+hermes dashboard --status
+```
+
+For a local-only dashboard:
+
+```bash
+hermes dashboard --host 127.0.0.1 --port 9119 --no-open
+```
+
+For a private-network dashboard URL such as
+`http://100.84.162.95:9119/kanban`, bind to that interface explicitly. Only
+use `--insecure` on a trusted network such as your own Tailscale tailnet; it
+exposes the dashboard management UI to that network.
+
+```bash
+systemd-run --user \
+  --unit hermes-dashboard-kanban \
+  --property WorkingDirectory=/home/hermes/.hermes/hermes-agent \
+  /home/hermes/.hermes/hermes-agent/venv/bin/python \
+  -m hermes_cli.main \
+  --tui dashboard \
+  --host 100.84.162.95 \
+  --port 9119 \
+  --no-open \
+  --insecure \
+  --skip-build
+```
+
+Then verify the route and service state:
+
+```bash
+curl http://100.84.162.95:9119/kanban
+systemctl --user status hermes-dashboard-kanban.service --no-pager
+```
+
+Do not enable `hermes-kanban-dispatcher.service` unless you have deliberately
+disabled gateway-embedded dispatch with `kanban.dispatch_in_gateway: false`.
+Running both dispatchers against the same board is unsupported.
+
 ### Idempotent create (for automation / webhooks)
 
 ```bash

@@ -82,6 +82,40 @@ hermes doctor       # Diagnose any issues
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
+### Reactivating the Kanban dashboard
+
+Kanban dispatch runs inside the gateway by default, while the browser board lives
+in the dashboard. If `http://100.84.162.95:9119/kanban` or another dashboard
+Kanban URL stops responding after an update/restart, first verify the gateway
+and board, then restart the dashboard on the private-network address:
+
+```bash
+hermes gateway status
+hermes kanban stats
+hermes kanban dispatch --dry-run --max 3
+hermes dashboard --status
+
+systemd-run --user \
+  --unit hermes-dashboard-kanban \
+  --property WorkingDirectory=/home/hermes/.hermes/hermes-agent \
+  /home/hermes/.hermes/hermes-agent/venv/bin/python \
+  -m hermes_cli.main \
+  --tui dashboard \
+  --host 100.84.162.95 \
+  --port 9119 \
+  --no-open \
+  --insecure \
+  --skip-build
+
+curl http://100.84.162.95:9119/kanban
+systemctl --user status hermes-dashboard-kanban.service --no-pager
+```
+
+Only use `--insecure` on a trusted private network such as your own Tailscale
+tailnet; it exposes the dashboard management UI to that network. Do not start
+the deprecated `hermes-kanban-dispatcher.service` unless gateway-embedded
+dispatch has been deliberately disabled.
+
 ---
 
 ## Skip the API-key collection — Nous Portal

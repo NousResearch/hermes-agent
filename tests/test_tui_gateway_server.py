@@ -919,6 +919,43 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     assert captured["service_tier_override"] == "priority"
 
 
+def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
+    updates = {}
+
+    class FakeDB:
+        def get_session(self, session_id):
+            assert session_id == "stored-session"
+            return {"model_config": '{"_branched_from":"root"}'}
+
+        def update_session_model(self, session_id, model):
+            updates["model"] = (session_id, model)
+
+        def update_session_meta(self, session_id, model_config_json, model=None):
+            updates["meta"] = (session_id, json.loads(model_config_json), model)
+
+    agent = types.SimpleNamespace(
+        model="gpt-5.4",
+        provider="openai-codex",
+        reasoning_config={"enabled": True, "effort": "high"},
+        service_tier="priority",
+        _session_db=FakeDB(),
+    )
+
+    server._persist_live_session_runtime({"agent": agent, "session_key": "stored-session"})
+
+    assert updates["model"] == ("stored-session", "gpt-5.4")
+    assert updates["meta"] == (
+        "stored-session",
+        {
+            "_branched_from": "root",
+            "provider": "openai-codex",
+            "reasoning_config": {"enabled": True, "effort": "high"},
+            "service_tier": "priority",
+        },
+        None,
+    )
+
+
 def test_status_callback_emits_kind_and_text():
     with patch("tui_gateway.server._emit") as emit:
         cb = server._agent_cbs("sid")["status_callback"]

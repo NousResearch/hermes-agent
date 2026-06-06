@@ -12,6 +12,11 @@ export const LOCALE_OPTIONS = [
     id: 'zh',
     name: '简体中文',
     configValue: 'zh'
+  },
+  {
+    id: 'ru',
+    name: 'Русский',
+    configValue: 'ru'
   }
 ] as const satisfies readonly { configValue: string; id: Locale; name: string }[]
 
@@ -32,7 +37,10 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   'zh-hans': 'zh',
   zh_hans: 'zh',
   'zh-hans-cn': 'zh',
-  zh_hans_cn: 'zh'
+  zh_hans_cn: 'zh',
+  ru: 'ru',
+  'ru-ru': 'ru',
+  ru_ru: 'ru'
 }
 
 export function isLocale(value: unknown): value is Locale {

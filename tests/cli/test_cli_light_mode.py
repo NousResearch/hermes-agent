@@ -38,6 +38,11 @@ class TestLightModeDetection:
         monkeypatch.delenv("COLORFGBG", raising=False)
         assert cli_mod._detect_light_mode() is False
 
+    def test_theme_hint_light(self, cli_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.setenv("HERMES_TUI_THEME", "light")
+        assert cli_mod._detect_light_mode() is True
 
     def test_background_hex_hint_light(self, cli_mod, monkeypatch):
         monkeypatch.delenv("HERMES_LIGHT", raising=False)
@@ -46,6 +51,13 @@ class TestLightModeDetection:
         monkeypatch.setenv("HERMES_TUI_BACKGROUND", "#FFFFFF")
         assert cli_mod._detect_light_mode() is True
 
+    def test_background_hex_hint_dark(self, cli_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        monkeypatch.setenv("HERMES_TUI_BACKGROUND", "#1a1a2e")
+        monkeypatch.delenv("COLORFGBG", raising=False)
+        assert cli_mod._detect_light_mode() is False
 
     def test_colorfgbg_light_bg_slot(self, cli_mod, monkeypatch):
         monkeypatch.delenv("HERMES_LIGHT", raising=False)
@@ -63,9 +75,32 @@ class TestLightModeDetection:
         assert cli_mod._detect_light_mode() is True
 
 
+class TestOsc11Probe:
+    """The OSC 11 background probe must never run where its reply can leak
+    into prompt_toolkit's input (a late BEL-terminated reply reads as Ctrl+G
+    = open-editor, trapping the user in a stray editor). Guard the cases we
+    refuse to probe in.
+    """
+
+    @pytest.mark.parametrize("var", ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"))
+    def test_skips_over_ssh(self, cli_mod, monkeypatch, var):
+        monkeypatch.setattr(cli_mod.sys.stdin, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(cli_mod.sys.stdout, "isatty", lambda: True, raising=False)
+        for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"):
+            monkeypatch.delenv(v, raising=False)
+        monkeypatch.setenv(var, "1.2.3.4 5555 22")
+        assert cli_mod._query_osc11_background() is None
+
+    def test_skips_when_not_a_tty(self, cli_mod, monkeypatch):
+        monkeypatch.setattr(cli_mod.sys.stdin, "isatty", lambda: False, raising=False)
+        assert cli_mod._query_osc11_background() is None
 
 
 class TestLightModeRemap:
+    def test_remap_no_op_in_dark_mode(self, cli_mod, monkeypatch):
+        monkeypatch.setenv("HERMES_LIGHT", "0")
+        # Cache is None from the fixture; first call sticks at False.
+        assert cli_mod._maybe_remap_for_light_mode("#FFF8DC") == "#FFF8DC"
 
     def test_remap_known_dark_color(self, cli_mod, monkeypatch):
         monkeypatch.setenv("HERMES_LIGHT", "1")
@@ -74,8 +109,28 @@ class TestLightModeRemap:
         assert cli_mod._maybe_remap_for_light_mode("#FFF8DC") == "#1A1A1A"
         assert cli_mod._maybe_remap_for_light_mode("#FFD700") == "#9A6B00"
 
+    def test_remap_case_insensitive(self, cli_mod, monkeypatch):
+        cli_mod._LIGHT_MODE_CACHE = True
+        # Lowercase input should still remap.
+        assert cli_mod._maybe_remap_for_light_mode("#fff8dc") == "#1A1A1A"
 
+    def test_remap_unknown_color_passthrough(self, cli_mod, monkeypatch):
+        cli_mod._LIGHT_MODE_CACHE = True
+        # A color not in the remap table is returned unchanged.
+        assert cli_mod._maybe_remap_for_light_mode("#ABCDEF") == "#ABCDEF"
 
+    def test_remap_skips_statusbar_paired_colors(self, cli_mod, monkeypatch):
+        """Colors that live on a dark bg (status bar fg) MUST NOT be
+        remapped — otherwise they go dark-on-dark and disappear.
+
+        Regression guard for the patch-11 fix (intentional table omission).
+        """
+        cli_mod._LIGHT_MODE_CACHE = True
+        for fg in ("#C0C0C0", "#888888", "#555555", "#8B8682"):
+            assert cli_mod._maybe_remap_for_light_mode(fg) == fg, (
+                f"{fg} is a status-bar fg paired with dark bg; remapping it "
+                "would produce dark-on-dark"
+            )
 
 
 class TestSkinConfigHook:
@@ -89,6 +144,15 @@ class TestSkinConfigHook:
 
         assert getattr(SkinConfig, "_hermes_light_mode_hook_installed", False) is True
 
+    def test_hook_is_idempotent(self, cli_mod):
+        # Calling the installer twice must not double-wrap (the marker
+        # attribute is the guard).
+        from hermes_cli.skin_engine import SkinConfig
+
+        before = SkinConfig.get_color
+        cli_mod._install_skin_light_mode_hook()
+        after = SkinConfig.get_color
+        assert before is after
 
     def test_skin_color_remaps_through_wrapper_in_light_mode(
         self, cli_mod, monkeypatch
@@ -104,3 +168,68 @@ class TestSkinConfigHook:
         assert skin.get_color("banner_text") == "#1A1A1A"
         assert skin.get_color("response_border") == "#9A6B00"
 
+    def test_skin_color_passthrough_in_dark_mode(self, cli_mod, monkeypatch):
+        from hermes_cli.skin_engine import SkinConfig
+
+        cli_mod._LIGHT_MODE_CACHE = False
+        skin = SkinConfig(name="test", colors={"banner_text": "#FFF8DC"})
+        assert skin.get_color("banner_text") == "#FFF8DC"
+
+
+class TestOsc11DrainGuard:
+    """Regression: a late-arriving OSC 11 reply must not leak into
+    prompt_toolkit's input buffer (#40250).
+
+    The drain loop in the ``finally`` block of ``_query_osc11_background``
+    reads (and discards) any bytes that arrive after TCSAFLUSH completes.
+    """
+
+    def test_finally_drain_discards_late_bytes(self, cli_mod, monkeypatch):
+        """Simulate a terminal that sends the OSC 11 reply after the main
+        read loop's deadline — the drain window must eat it."""
+        import io, os, termios, tty as _tty
+
+        # Create a pipe pair to fake stdin
+        read_fd, write_fd = os.pipe()
+
+        # Set up fake termios on the read end
+        # We'll monkeypatch tcgetattr/tcsetattr to no-op
+        fake_attrs = [0, 0, 0, 0, 0, 0, [b'\x00'] * 32]
+        monkeypatch.setattr(termios, "tcgetattr", lambda fd: fake_attrs)
+        monkeypatch.setattr(termios, "tcsetattr", lambda fd, when, attrs: None)
+        monkeypatch.setattr(_tty, "setcbreak", lambda fd: None)
+
+        # Make stdin.isatty / stdout.isatty return True
+        monkeypatch.setattr(cli_mod.sys.stdin, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(cli_mod.sys.stdout, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(cli_mod.sys.stdin, "fileno", lambda: read_fd, raising=False)
+
+        # Clear SSH env vars
+        for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"):
+            monkeypatch.delenv(v, raising=False)
+
+        # Write a delayed OSC 11 reply — the main select() loop will time out
+        # (nothing in the pipe during the 100ms window), then the drain loop
+        # should read and discard it.
+        import threading
+
+        def delayed_write():
+            import time
+            time.sleep(0.15)  # after the 100ms main deadline
+            os.write(write_fd, b"\x1b]11;rgb:0c0c/0c0c/0c0c\x1b\\")
+
+        t = threading.Thread(target=delayed_write, daemon=True)
+        t.start()
+
+        # The function should return None (no valid response during main window)
+        # and the drain loop should eat the late bytes.
+        result = cli_mod._query_osc11_background()
+        assert result is None
+
+        # Verify the pipe is drained — a non-blocking read should return empty
+        import select
+        r, _, _ = select.select([read_fd], [], [], 0)
+        assert not r, "drain loop should have consumed late OSC 11 bytes"
+
+        os.close(read_fd)
+        os.close(write_fd)

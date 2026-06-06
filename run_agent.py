@@ -1466,6 +1466,11 @@ class AIAgent:
         Ensures conversations are never lost, even on errors or early returns.
         """
         self._drop_trailing_empty_response_scaffolding(messages)
+        # Clamp the flush index so an intermediate persist that set it to
+        # the old (higher) length doesn't overshoot after scaffolding drop.
+        # Without this, flush_from = max(start_idx, high_idx) >= len(messages)
+        # → empty slice → final assistant responses never written.
+        self._last_flushed_db_idx = min(self._last_flushed_db_idx, len(messages))
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)

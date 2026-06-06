@@ -2,7 +2,8 @@
 
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { useRef, useState } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+import { vi } from 'vitest'
 
 afterEach(cleanup)
 

@@ -41,7 +41,13 @@ import {
   setYoloActive
 } from '@/store/session'
 
-import type { ClientSessionState, ImageAttachResponse, SessionTitleResponse, SlashExecResponse } from '../../types'
+import type {
+  ClientSessionState,
+  ImageAttachResponse,
+  SessionSteerResponse,
+  SessionTitleResponse,
+  SlashExecResponse
+} from '../../types'
 
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -743,6 +749,40 @@ export function usePromptActions({
     }
   }, [activeSessionId, activeSessionIdRef, busyRef, requestGateway, updateSessionState])
 
+  // Steer = nudge the live turn without interrupting: the gateway appends the
+  // text to the next tool result so the model reads it on its next iteration
+  // (desktop parity with `/steer`). Returns false on reject (no live tool
+  // window) so the caller can fall back to queueing the words for the next turn.
+  const steerPrompt = useCallback(
+    async (rawText: string): Promise<boolean> => {
+      const text = rawText.trim()
+      const sessionId = activeSessionId || activeSessionIdRef.current
+
+      if (!text || !sessionId) {
+        return false
+      }
+
+      try {
+        const result = await requestGateway<SessionSteerResponse>('session.steer', { session_id: sessionId, text })
+
+        if (result?.status === 'queued') {
+          triggerHaptic('submit')
+          // Inline note (not a toast) so the nudge lives in the transcript next
+          // to the turn it steered. The `steer:` prefix is rendered as a codicon
+          // row by SystemMessage (see STEER_NOTE_RE), same style as slash output.
+          appendSessionTextMessage(sessionId, 'system', `steer:${text}`)
+
+          return true
+        }
+      } catch {
+        // Swallow — caller queues the text so nothing is lost.
+      }
+
+      return false
+    },
+    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway]
+  )
+
   const reloadFromMessage = useCallback(
     async (parentId: string | null) => {
       if (!activeSessionId || $busy.get()) {
@@ -926,5 +966,13 @@ export function usePromptActions({
     [activeSessionIdRef, updateSessionState]
   )
 
-  return { cancelRun, editMessage, handleThreadMessagesChange, reloadFromMessage, submitText, transcribeVoiceAudio }
+  return {
+    cancelRun,
+    editMessage,
+    handleThreadMessagesChange,
+    reloadFromMessage,
+    steerPrompt,
+    submitText,
+    transcribeVoiceAudio
+  }
 }

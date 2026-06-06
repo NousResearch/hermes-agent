@@ -1366,7 +1366,8 @@ DEFAULT_CONFIG = {
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
-        "timestamps": False,      # Show [HH:MM] on user and assistant labels
+        "timestamps": False,      # Show timestamp on user and assistant labels
+        "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
         "final_response_markdown": "strip",  # render | strip | raw
         # Preserve recent classic CLI output across Ctrl+L, /redraw, and
         # terminal resize full-screen clears. Disable if a terminal emulator

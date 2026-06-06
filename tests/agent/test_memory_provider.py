@@ -824,19 +824,30 @@ class TestMemoryContextFencing:
         assert "</memory-context>" not in result.lower()
         assert "datamore" in result
 
-    def test_compact_peer_card_can_be_included_without_raw_observations(self):
+    def test_compact_peer_preferences_can_be_included_without_raw_identity_or_observations(self):
         from agent.memory_manager import build_memory_context_block
         prefetch = (
-            "## User Peer Card\nName: Alice\nPrefers compact answers\n\n"
-            "## Explicit Observations\n2026-01-01 old raw observation"
+            "## User Peer Card\nName: Alice\nAliases: alice@example.com\nPrefers compact answers\n\n"
+            "## Explicit Observations\n2026-01-01 old raw observation\n"
+            "## AI Self-Representation\nagent dump\n"
+            "## Recalled assistant context\nassistant context dump\n"
+            "## AI Identity Card\nidentity dump"
         )
         block = build_memory_context_block(prefetch)
         assert "# Memory context pointers" in block
-        assert "## User Peer Card" in block
-        assert "Alice" in block
+        assert "## Compact peer preferences" in block
+        assert "## User Peer Card" not in block
+        assert "Alice" not in block
+        assert "alice@example.com" not in block
         assert "Prefers compact answers" in block
         assert "Explicit Observations" not in block
         assert "old raw observation" not in block
+        assert "AI Self-Representation" not in block
+        assert "agent dump" not in block
+        assert "Recalled assistant context" not in block
+        assert "assistant context dump" not in block
+        assert "AI Identity Card" not in block
+        assert "identity dump" not in block
 
 
 # ---------------------------------------------------------------------------

@@ -42,6 +42,8 @@ LEAKED_MEMORY_BLOCK = (
     "## User Representation\n## Explicit Observations\nold facts\n"
     "## User Peer Card\nName: Example\n"
     "## AI Self-Representation\n## Explicit Observations\nagent facts\n"
+    "## Recalled assistant context\nassistant context dump\n"
+    "## AI Identity Card\nidentity dump\n"
     "</memory-context>"
 )
 
@@ -60,8 +62,16 @@ FORBIDDEN = (
     "<memory-context>",
     "Treat as authoritative reference data",
     "## User Representation",
+    "## User Peer Card",
+    "Name: Example",
     "## Explicit Observations",
+    "old facts",
+    "agent facts",
     "## AI Self-Representation",
+    "## Recalled assistant context",
+    "assistant context dump",
+    "## AI Identity Card",
+    "identity dump",
     "Check the AIVS Hermes Kanban board",
     "autonomous dev loop",
     "Ship-mode routing guard",
@@ -135,5 +145,3 @@ def test_history_and_memory_prefetch_leaks_are_not_sent_to_provider(monkeypatch)
     assert "tiny runtime/debug control turn" in request_text
     assert "# Memory context pointers" in request_text
     assert "~/wiki/projects/*.md" in request_text
-    assert "## User Peer Card" in request_text
-    assert "Name: Example" in request_text

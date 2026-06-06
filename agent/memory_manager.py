@@ -67,7 +67,9 @@ _UNTERMINATED_CONTEXT_BLOCK_RE = re.compile(
     re.IGNORECASE,
 )
 _INTERNAL_NOTE_RE = re.compile(
-    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
+    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*'
+    r'(?:Treat as (?:informational background data|authoritative reference data[^\]]*)\.|'
+    r'Recalled memory is useful context, not authoritative;[^\]]*)\]\s*',
     re.IGNORECASE,
 )
 _SHIP_MODE_GUARD_RE = re.compile(
@@ -75,7 +77,8 @@ _SHIP_MODE_GUARD_RE = re.compile(
     re.IGNORECASE,
 )
 _RAW_MEMORY_HEADING_RE = re.compile(
-    r'^##\s*(?:User Representation|Explicit Observations|AI Self-Representation)\s*$',
+    r'^##\s*(?:Honcho Context|User Representation|Explicit Observations|User Peer Card|'
+    r'AI Self-Representation|Recalled assistant context|AI Identity Card)\s*$',
     re.IGNORECASE | re.MULTILINE,
 )
 _AIVS_AUTONOMOUS_LOOP_RE = re.compile(
@@ -348,7 +351,38 @@ class StreamingContextScrubber:
 
 
 _SECTION_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
-_SAFE_CONTEXT_SECTION_NAMES = {"session summary", "user peer card"}
+_SAFE_CONTEXT_SECTION_NAMES = {
+    "session summary",
+    "compact peer preferences",
+    "recalled user context (recent/relevant)",
+}
+_USER_PEER_CARD_SECTION_NAMES = {"user peer card", "user profile", "peer card"}
+_RAW_IDENTITY_LINE_RE = re.compile(
+    r"^(?:"
+    r"identity\s*:|"
+    r"aliases?\s*:|"
+    r"name\s*:|"
+    r"e-?mail\s*:|"
+    r"phone\s*:|"
+    r"address\s*:|"
+    r"website\s*:|"
+    r"location\s*:"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def compact_user_peer_card(body: str) -> str:
+    """Keep non-identity peer-card facts while dropping raw identity payload."""
+    lines: list[str] = []
+    for line in sanitize_context(body).splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _RAW_IDENTITY_LINE_RE.match(stripped):
+            continue
+        lines.append(stripped)
+    return _truncate_memory_context("\n".join(lines), 1200)
 
 
 def _truncate_memory_context(text: str, limit: int) -> str:
@@ -375,12 +409,19 @@ def _extract_safe_memory_sections(raw_context: str) -> list[str]:
     sections: list[str] = []
     for idx, match in enumerate(matches):
         name = match.group(1).strip()
-        if name.lower() not in _SAFE_CONTEXT_SECTION_NAMES:
+        section_name = name.lower()
+        if section_name not in _SAFE_CONTEXT_SECTION_NAMES and section_name not in _USER_PEER_CARD_SECTION_NAMES:
             continue
         start = match.end()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw_context)
         body = sanitize_context(raw_context[start:end]).strip()
         if not body:
+            continue
+        if section_name in _USER_PEER_CARD_SECTION_NAMES:
+            body = compact_user_peer_card(body)
+            if not body:
+                continue
+            sections.append(f"## Compact peer preferences\n{body}")
             continue
         sections.append(f"## {name}\n{_truncate_memory_context(body, 1200)}")
     return sections

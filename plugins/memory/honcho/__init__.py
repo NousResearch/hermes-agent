@@ -22,7 +22,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.memory_manager import sanitize_context
+from agent.memory_manager import compact_user_peer_card, sanitize_context
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
@@ -478,9 +478,9 @@ class HonchoMemoryProvider(MemoryProvider):
         # timestamped Explicit Observations; assistant self-representation is
         # especially noisy. Both remain recoverable through Honcho tools, but
         # they do not belong in every provider prompt.
-        card = ctx.get("card", "")
+        card = compact_user_peer_card(ctx.get("card", ""))
         if card:
-            parts.append(f"## User Peer Card\n{card}")
+            parts.append(f"## Compact peer preferences\n{card}")
 
         if not parts:
             return ""

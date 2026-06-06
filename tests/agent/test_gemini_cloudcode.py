@@ -731,6 +731,21 @@ class TestBuildGeminiRequest:
         assert gc["topP"] == 0.9
         assert gc["stopSequences"] == ["###", "END"]
 
+    def test_max_tokens_none_defaults_to_gemini_output_ceiling(self):
+        """max_tokens=None must send the published output ceiling, not omit it.
+
+        Code Assist proxies the same Gemini models as the native API, where an
+        absent maxOutputTokens triggers a low internal default that truncates
+        tool calls mid-stream. Hermes passes None for "unlimited", so the
+        adapter must translate that to the 65,535 ceiling — mirrors the native
+        adapter's invariant.
+        """
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+        from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+
+        req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=None)
+        assert req["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS == 65535
+
     def test_thinking_config_normalization(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
 

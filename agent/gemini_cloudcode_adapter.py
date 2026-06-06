@@ -38,6 +38,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from agent import google_oauth
+from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
 from agent.gemini_schema import sanitize_gemini_tool_parameters
 from agent.google_code_assist import (
     CODE_ASSIST_ENDPOINT,
@@ -282,6 +283,13 @@ def build_gemini_request(
         generation_config["temperature"] = float(temperature)
     if isinstance(max_tokens, int) and max_tokens > 0:
         generation_config["maxOutputTokens"] = max_tokens
+    else:
+        # Code Assist proxies the same Gemini models as the native API: an
+        # absent maxOutputTokens makes the model apply a low internal default
+        # and stop early with finishReason=MAX_TOKENS, truncating tool calls.
+        # Hermes passes None for "unlimited", so fall back to the published
+        # ceiling — mirrors gemini_native_adapter.build_gemini_request().
+        generation_config["maxOutputTokens"] = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
     if isinstance(top_p, (int, float)):
         generation_config["topP"] = float(top_p)
     if isinstance(stop, str) and stop:

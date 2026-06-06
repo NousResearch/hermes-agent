@@ -889,8 +889,6 @@ export const en: Translations = {
   cron: {
     close: 'Close cron',
     search: 'Search cron jobs...',
-    refresh: 'Refresh cron jobs',
-    refreshing: 'Refreshing cron jobs',
     loading: 'Loading cron jobs...',
     states: {
       enabled: 'enabled',
@@ -943,9 +941,7 @@ export const en: Translations = {
     monthlyOnDayAt: (dayOfMonth, time) => `Monthly on day ${dayOfMonth} at ${time}`,
     topOfHour: 'At the top of every hour',
     everyHourAt: minute => `Every hour at :${minute}`,
-    active: (enabled, total) => `${enabled}/${total} active`,
     newCron: 'New cron',
-    createFirst: 'Create first cron',
     emptyDescNew:
       'Schedule a prompt to run on a cron expression. Hermes will run it and deliver results to the destination you pick.',
     emptyDescSearch: 'Try a broader search query.',

@@ -1037,8 +1037,6 @@ export const zh: Translations = {
   cron: {
     close: '关闭定时任务',
     search: '搜索定时任务…',
-    refresh: '刷新定时任务',
-    refreshing: '正在刷新定时任务',
     loading: '正在加载定时任务…',
     states: {
       enabled: '已启用',
@@ -1091,9 +1089,7 @@ export const zh: Translations = {
     monthlyOnDayAt: (dayOfMonth, time) => `每月 ${dayOfMonth} 日 ${time}`,
     topOfHour: '每个整点',
     everyHourAt: minute => `每小时的 :${minute}`,
-    active: (enabled, total) => `${enabled}/${total} 个启用`,
     newCron: '新建定时任务',
-    createFirst: '创建第一个定时任务',
     emptyDescNew: '按 cron 表达式排程一个提示词。Hermes 会运行它，并把结果发送到你选择的目的地。',
     emptyDescSearch: '尝试更宽泛的搜索词。',
     emptyTitleNew: '暂无排程任务',

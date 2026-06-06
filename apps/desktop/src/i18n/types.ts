@@ -691,8 +691,6 @@ export interface Translations {
   cron: {
     close: string
     search: string
-    refresh: string
-    refreshing: string
     loading: string
     states: Record<string, string>
     deliveryLabels: Record<string, string>
@@ -706,9 +704,7 @@ export interface Translations {
     monthlyOnDayAt: (dayOfMonth: string, time: string) => string
     topOfHour: string
     everyHourAt: (minute: string) => string
-    active: (enabled: number, total: number) => string
     newCron: string
-    createFirst: string
     emptyDescNew: string
     emptyDescSearch: string
     emptyTitleNew: string

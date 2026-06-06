@@ -4551,15 +4551,6 @@ def run_conversation(
     # When the last message is a tool result (agent was mid-work), log
     # at WARNING — this is the "just stops" scenario users report.
     _last_msg_role = messages[-1].get("role") if messages else None
-    _last_tool_name = None
-    if _last_msg_role == "tool":
-        # Walk back to find the assistant message with the tool call
-        for _m in reversed(messages):
-            if _m.get("role") == "assistant" and _m.get("tool_calls"):
-                _tcs = _m["tool_calls"]
-                if _tcs and isinstance(_tcs[0], dict):
-                    _last_tool_name = _tcs[-1].get("function", {}).get("name")
-                break
 
     _turn_tool_count = sum(
         1 for m in messages
@@ -4581,6 +4572,14 @@ def run_conversation(
     )
 
     if _last_msg_role == "tool" and not interrupted:
+        # Walk back to find the assistant message with the tool call
+        _last_tool_name = None
+        for _m in reversed(messages):
+            if _m.get("role") == "assistant" and _m.get("tool_calls"):
+                _tcs = _m["tool_calls"]
+                if _tcs and isinstance(_tcs[0], dict):
+                    _last_tool_name = _tcs[-1].get("function", {}).get("name")
+                break
         # Agent was mid-work — this is the "just stops" case.
         logger.warning(
             "Turn ended with pending tool result (agent may appear stuck). "

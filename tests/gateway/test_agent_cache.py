@@ -100,6 +100,101 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt2, ["hermes-telegram"], "")
         assert sig1 != sig2
 
+
+class TestForegroundCodexAppServerClosePath:
+    def test_completed_foreground_codex_app_server_turn_closes_session(self):
+        """Foreground gateway turns must not leave codex app-server idle between turns."""
+        from gateway.run import GatewayRunner
+
+        codex_session = MagicMock()
+        agent = SimpleNamespace(
+            api_mode="codex_app_server",
+            _codex_session=codex_session,
+        )
+
+        GatewayRunner._close_foreground_codex_app_server_after_turn(
+            agent,
+            {"completed": True, "partial": False, "interrupted": False},
+        )
+
+        codex_session.close.assert_called_once_with()
+        assert agent._codex_session is None
+
+    def test_interrupted_foreground_codex_app_server_turn_closes_session(self):
+        """Cancelled/interrupted foreground turns also retire codex app-server."""
+        from gateway.run import GatewayRunner
+
+        codex_session = MagicMock()
+        agent = SimpleNamespace(
+            api_mode="codex_app_server",
+            _codex_session=codex_session,
+        )
+
+        GatewayRunner._close_foreground_codex_app_server_after_turn(
+            agent,
+            {"completed": False, "partial": True, "interrupted": True},
+        )
+
+        codex_session.close.assert_called_once_with()
+        assert agent._codex_session is None
+
+    def test_non_codex_agent_is_not_touched_after_foreground_turn(self):
+        """Close-after-turn is scoped to the codex app-server runtime only."""
+        from gateway.run import GatewayRunner
+
+        accidental_session = MagicMock()
+        agent = SimpleNamespace(
+            api_mode="chat_completions",
+            _codex_session=accidental_session,
+        )
+
+        GatewayRunner._close_foreground_codex_app_server_after_turn(
+            agent,
+            {"completed": True},
+        )
+
+        accidental_session.close.assert_not_called()
+        assert agent._codex_session is accidental_session
+
+    def test_cache_take_does_not_close_active_codex_session_before_turn(self):
+        """The close path must run post-turn, not when an agent is promoted."""
+        runner = _make_runner()
+        codex_session = MagicMock()
+        agent = SimpleNamespace(
+            session_id="session-1",
+            _memory_store=None,
+            _last_activity_ts=0,
+            _last_activity_desc="idle",
+            _api_call_count=3,
+            api_mode="codex_app_server",
+            _codex_session=codex_session,
+        )
+        session_key = "agent:main:discord:thread:abc123:abc123"
+        with runner._agent_cache_lock:
+            runner._agent_cache[session_key] = (agent, "sig")
+
+        reused = runner._take_cached_agent_for_turn(
+            session_key=session_key,
+            signature="sig",
+            session_id="session-1",
+            interrupt_depth=0,
+        )
+
+        assert reused is agent
+        codex_session.close.assert_not_called()
+        assert agent._codex_session is codex_session
+
+    def test_background_cleanup_still_uses_full_agent_close(self):
+        """Background task cleanup remains the existing full close path."""
+        runner = _make_runner()
+        agent = SimpleNamespace(
+            close=MagicMock(),
+        )
+
+        runner._cleanup_agent_resources(agent)
+
+        agent.close.assert_called_once_with()
+
     def test_credential_pool_token_change_busts_signature(self):
         """Pool token refreshes must rebuild the cached agent with fresh creds."""
         from gateway.run import GatewayRunner

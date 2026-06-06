@@ -4389,6 +4389,31 @@ class GatewayRunner:
         except Exception:
             pass
 
+    @staticmethod
+    def _close_foreground_codex_app_server_after_turn(agent: Any, _result: Any = None) -> None:
+        """Close foreground Codex app-server subprocesses after a turn.
+
+        Gateway foreground agents are cached between turns for prompt/tool
+        reuse. The Codex app-server subprocess is an LLM transport, not
+        durable user tool state, so it should not sit idle on that cached
+        agent after the turn has completed or unwound.
+        """
+        if agent is None:
+            return
+        if getattr(agent, "api_mode", None) != "codex_app_server":
+            return
+        codex_session = getattr(agent, "_codex_session", None)
+        if codex_session is None:
+            return
+        try:
+            codex_session.close()
+        except Exception:
+            pass
+        try:
+            agent._codex_session = None
+        except Exception:
+            pass
+
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
 
@@ -18113,6 +18138,7 @@ class GatewayRunner:
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            result = None
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -18167,6 +18193,7 @@ class GatewayRunner:
                 except Exception:
                     pass
                 reset_current_session_key(_approval_session_token)
+                self._close_foreground_codex_app_server_after_turn(agent, result)
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done

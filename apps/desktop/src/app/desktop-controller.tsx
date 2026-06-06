@@ -432,42 +432,6 @@ export function DesktopController() {
     updateSessionState
   })
 
-  // Single-key "new session" convenience (Shift+N) when no input is focused.
-  // The rebindable accelerator (⌘N by default) is owned by the keybind runtime.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-
-      const editing =
-        target?.isContentEditable ||
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement
-
-      if (
-        event.defaultPrevented ||
-        event.repeat ||
-        event.altKey ||
-        event.metaKey ||
-        event.ctrlKey ||
-        editing ||
-        !event.shiftKey ||
-        event.code !== 'KeyN'
-      ) {
-        return
-      }
-
-      event.preventDefault()
-      startFreshSessionDraft()
-      // Briefly light up the sidebar's ⌘N hint so the shortcut is discoverable.
-      window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [startFreshSessionDraft])
-
   // Single global listener for every rebindable hotkey (incl. profile switching)
   // plus the on-screen keybind editor's capture mode.
   useKeybinds({

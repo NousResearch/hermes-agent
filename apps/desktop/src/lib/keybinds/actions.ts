@@ -44,6 +44,10 @@ const PROFILE_SWITCH_ACTIONS: KeybindActionMeta[] = Array.from({ length: PROFILE
 }))
 
 export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
+  // ── Composer ─────────────────────────────────────────────────────────────
+  { id: 'composer.focus', category: 'composer', defaults: [] },
+  { id: 'composer.modelPicker', category: 'composer', defaults: [] },
+
   // ── Profiles ─────────────────────────────────────────────────────────────
   { id: 'profile.default', category: 'profiles', defaults: ['mod+`'] },
   ...PROFILE_SWITCH_ACTIONS,
@@ -53,7 +57,10 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'profile.create', category: 'profiles', defaults: [] },
 
   // ── Session ──────────────────────────────────────────────────────────────
-  { id: 'session.new', category: 'session', defaults: ['mod+n'] },
+  { id: 'session.new', category: 'session', defaults: ['mod+n', 'shift+n'] },
+  { id: 'session.next', category: 'session', defaults: [] },
+  { id: 'session.prev', category: 'session', defaults: [] },
+  { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },
 
   // ── Navigation ───────────────────────────────────────────────────────────
@@ -63,12 +70,15 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'nav.profiles', category: 'navigation', defaults: [] },
   { id: 'nav.skills', category: 'navigation', defaults: [] },
   { id: 'nav.messaging', category: 'navigation', defaults: [] },
+  { id: 'nav.artifacts', category: 'navigation', defaults: [] },
   { id: 'nav.cron', category: 'navigation', defaults: [] },
   { id: 'nav.agents', category: 'navigation', defaults: [] },
 
   // ── View (layout + appearance + the shortcuts panel itself) ───────────────
   { id: 'view.toggleSidebar', category: 'view', defaults: ['mod+b'] },
   { id: 'view.toggleRightSidebar', category: 'view', defaults: ['mod+j'] },
+  { id: 'view.showFiles', category: 'view', defaults: [] },
+  { id: 'view.showTerminal', category: 'view', defaults: [] },
   { id: 'view.flipPanes', category: 'view', defaults: [] },
   { id: 'appearance.toggleMode', category: 'view', defaults: ['shift+x'] },
   { id: 'keybinds.openPanel', category: 'view', defaults: ['mod+/'] }
@@ -101,10 +111,14 @@ export interface KeybindReadonly {
 export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.send', category: 'composer', keys: ['enter'] },
   { id: 'composer.newline', category: 'composer', keys: ['shift+enter'] },
+  { id: 'composer.steer', category: 'composer', keys: ['mod+enter'] },
   { id: 'composer.sendQueued', category: 'composer', keys: ['mod+shift+k'] },
   { id: 'composer.mention', category: 'composer', keys: ['@'] },
   { id: 'composer.slash', category: 'composer', keys: ['/'] },
   { id: 'composer.help', category: 'composer', keys: ['?'] },
   { id: 'composer.history', category: 'composer', keys: ['up', 'down'] },
-  { id: 'composer.cancel', category: 'composer', keys: ['escape'] }
+  { id: 'composer.cancel', category: 'composer', keys: ['escape'] },
+  // Fixed, context-local shortcuts surfaced for discoverability.
+  { id: 'view.terminalSelection', category: 'view', keys: ['mod+l'] },
+  { id: 'view.closePreviewTab', category: 'view', keys: ['mod+w'] }
 ]

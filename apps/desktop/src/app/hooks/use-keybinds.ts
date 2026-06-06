@@ -1,11 +1,18 @@
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { setRightSidebarTab } from '@/app/right-sidebar/store'
 import { PROFILE_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { toggleCommandPalette } from '@/store/command-palette'
 import { $capture, $comboIndex, endCapture, setBinding, toggleKeybindPanel } from '@/store/keybinds'
-import { toggleFileBrowserOpen, togglePanesFlipped, toggleSidebarOpen } from '@/store/layout'
+import {
+  requestSessionSearchFocus,
+  setFileBrowserOpen,
+  toggleFileBrowserOpen,
+  togglePanesFlipped,
+  toggleSidebarOpen
+} from '@/store/layout'
 import {
   cycleProfile,
   requestProfileCreate,
@@ -13,13 +20,17 @@ import {
   switchToDefaultProfile,
   toggleShowAllProfiles
 } from '@/store/profile'
+import { $activeSessionId, $sessions, setModelPickerOpen } from '@/store/session'
 import { useTheme } from '@/themes/context'
 
+import { requestComposerFocus } from '../chat/composer/focus'
 import {
   AGENTS_ROUTE,
+  ARTIFACTS_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
   PROFILES_ROUTE,
+  sessionRoute,
   SETTINGS_ROUTE,
   SKILLS_ROUTE
 } from '../routes'
@@ -51,8 +62,33 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     profileSwitchHandlers[`profile.switch.${slot}`] = () => switchProfileToSlot(slot)
   }
 
+  // Move to the adjacent session in recency order, wrapping at the ends.
+  const cycleSession = (direction: 1 | -1) => {
+    const sessions = $sessions.get()
+
+    if (sessions.length < 2) {
+      return
+    }
+
+    const current = sessions.findIndex(session => session.id === $activeSessionId.get())
+    const start = current === -1 ? (direction === 1 ? -1 : 0) : current
+    const next = sessions[(start + direction + sessions.length) % sessions.length]
+
+    if (next) {
+      navigate(sessionRoute(next.id))
+    }
+  }
+
+  const showRightSidebarTab = (tab: 'files' | 'terminal') => {
+    setFileBrowserOpen(true)
+    setRightSidebarTab(tab)
+  }
+
   handlersRef.current = {
     'keybinds.openPanel': toggleKeybindPanel,
+
+    'composer.focus': () => requestComposerFocus('main'),
+    'composer.modelPicker': () => setModelPickerOpen(true),
 
     'nav.commandPalette': toggleCommandPalette,
     'nav.commandCenter': deps.toggleCommandCenter,
@@ -60,6 +96,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.profiles': () => navigate(PROFILES_ROUTE),
     'nav.skills': () => navigate(SKILLS_ROUTE),
     'nav.messaging': () => navigate(MESSAGING_ROUTE),
+    'nav.artifacts': () => navigate(ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),
     'nav.agents': () => navigate(AGENTS_ROUTE),
 
@@ -67,10 +104,15 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       deps.startFreshSession()
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },
+    'session.next': () => cycleSession(1),
+    'session.prev': () => cycleSession(-1),
+    'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
 
     'view.toggleSidebar': toggleSidebarOpen,
     'view.toggleRightSidebar': toggleFileBrowserOpen,
+    'view.showFiles': () => showRightSidebarTab('files'),
+    'view.showTerminal': () => showRightSidebarTab('terminal'),
     'view.flipPanes': togglePanesFlipped,
 
     'appearance.toggleMode': () => setMode(resolvedMode === 'dark' ? 'light' : 'dark'),

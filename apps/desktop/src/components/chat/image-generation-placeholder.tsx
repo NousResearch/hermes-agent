@@ -1,6 +1,7 @@
 import { type FC, useCallback, useEffect, useRef } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useI18n } from '@/i18n'
 
 type Rgb = { r: number; g: number; b: number }
 
@@ -266,8 +267,10 @@ const DiffusionCanvas: FC = () => {
 }
 
 export const ImageGenerationPlaceholder: FC = () => {
+  const { t } = useI18n()
+
   return (
-    <div aria-label="Rendering image" aria-live="polite" className="w-full max-w-136 self-start" role="status">
+    <div aria-label={t.assistant.tool.renderingImage} aria-live="polite" className="w-full max-w-136 self-start" role="status">
       <div className="relative h-(--image-preview-height) overflow-hidden rounded-4xl border border-border/55 shadow-[inset_0_0.0625rem_0_color-mix(in_srgb,white_45%,transparent),inset_0_0_0_0.0625rem_color-mix(in_srgb,var(--dt-border)_34%,transparent),inset_0_-0.75rem_1.75rem_color-mix(in_srgb,var(--dt-primary)_5%,transparent)]">
         <DiffusionCanvas />
       </div>

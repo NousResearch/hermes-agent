@@ -17,6 +17,7 @@ import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { FadeText } from '@/components/ui/fade-text'
+import { useI18n } from '@/i18n'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -188,6 +189,8 @@ function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean 
 }
 
 function ToolEntry({ part }: ToolEntryProps) {
+  const { t } = useI18n()
+  const copy = t.assistant.tool
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
   const embedded = useContext(ToolEmbedContext)
@@ -319,7 +322,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           )}
           {view.imageUrl && (
             <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
-              <ZoomableImage alt="Tool output" className="h-auto w-full object-cover" src={view.imageUrl} />
+              <ZoomableImage alt={copy.outputAlt} className="h-auto w-full object-cover" src={view.imageUrl} />
             </div>
           )}
           {hasSearchHits && view.searchHits && (
@@ -390,7 +393,7 @@ function ToolEntry({ part }: ToolEntryProps) {
             ))}
           {showRawSearchDrilldown && (
             <details className="max-w-full">
-              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0')}>Raw response</summary>
+              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0')}>{copy.rawResponse}</summary>
               <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
                 {view.rawResult}
               </pre>
@@ -432,6 +435,8 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   endIndex,
   startIndex
 }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.tool
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
 
@@ -489,11 +494,11 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
       ? ''
       : displayStatus === 'warning'
         ? failedStepCount === 1
-          ? 'Recovered after 1 failed step'
-          : `Recovered after ${failedStepCount} failed steps`
+          ? copy.recoveredOne
+          : copy.recoveredMany(failedStepCount)
         : failedStepCount === 1
-          ? '1 step failed'
-          : `${failedStepCount} steps failed`
+          ? copy.failedOne
+          : copy.failedMany(failedStepCount)
 
   const groupCopyText = useMemo(() => buildGroupCopyText(visibleParts), [visibleParts])
   const previewTargets = useMemo(() => groupPreviewTargets(visibleParts), [visibleParts])
@@ -508,7 +513,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
             open={open}
             trailing={
               !isRunning && groupCopyText ? (
-                <CopyButton appearance="tool-row" label="Copy activity" stopPropagation text={groupCopyText} />
+                <CopyButton appearance="tool-row" label={copy.copyActivity} stopPropagation text={groupCopyText} />
               ) : undefined
             }
           >

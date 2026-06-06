@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { setRuntimeI18nLocale, translateNow } from './runtime'
+import { zh } from './zh'
 
 describe('desktop i18n runtime translator', () => {
   beforeEach(() => {
@@ -37,6 +38,13 @@ describe('desktop i18n runtime translator', () => {
     setRuntimeI18nLocale('zh-hant')
     expect(translateNow('settings.appearance.title')).toBe('外觀')
     expect(translateNow('settings.nav.providerApiKeys')).toBe('API 金鑰')
+  })
+
+  it('keeps translated settings field copy addressable by schema keys', () => {
+    const field = ['display', 'personality'].join('.')
+
+    expect(zh.settings.fieldLabels[field]).toBe('人格')
+    expect(zh.settings.fieldDescriptions[field]).toBe('新会话的默认助手风格。')
   })
 
   it('falls back to English for untranslated desktop-only keys in partial locales', () => {

@@ -14,6 +14,7 @@ import {
 import type { ThemeMode } from '@/themes/context'
 
 import type { DesktopConfigSection } from './types'
+import { defineFieldCopy } from './field-copy'
 
 // Provider group definitions used to fold raw env-var names like
 // ``XAI_API_KEY`` into a single "xAI" card with a friendly label, short
@@ -245,103 +246,175 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'updates.non_interactive_local_changes': ['stash', 'discard']
 }
 
-export const FIELD_LABELS: Record<string, string> = {
+export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   model: 'Default Model',
   model_context_length: 'Context Window',
   fallback_providers: 'Fallback Models',
   toolsets: 'Enabled Toolsets',
   timezone: 'Timezone',
-  'display.personality': 'Personality',
-  'display.show_reasoning': 'Reasoning Blocks',
-  'agent.max_turns': 'Max Agent Steps',
-  'agent.image_input_mode': 'Image Attachments',
-  'terminal.cwd': 'Working Directory',
-  'terminal.backend': 'Execution Backend',
-  'terminal.timeout': 'Command Timeout',
-  'terminal.persistent_shell': 'Persistent Shell',
-  'terminal.env_passthrough': 'Environment Passthrough',
+  display: {
+    personality: 'Personality',
+    show_reasoning: 'Reasoning Blocks'
+  },
+  agent: {
+    max_turns: 'Max Agent Steps',
+    image_input_mode: 'Image Attachments',
+    api_max_retries: 'API Retries',
+    service_tier: 'Service Tier',
+    tool_use_enforcement: 'Tool-Use Enforcement'
+  },
+  terminal: {
+    cwd: 'Working Directory',
+    backend: 'Execution Backend',
+    timeout: 'Command Timeout',
+    persistent_shell: 'Persistent Shell',
+    env_passthrough: 'Environment Passthrough'
+  },
   file_read_max_chars: 'File Read Limit',
-  'tool_output.max_bytes': 'Terminal Output Limit',
-  'tool_output.max_lines': 'File Page Limit',
-  'tool_output.max_line_length': 'Line Length Limit',
-  'code_execution.mode': 'Code Execution Mode',
-  'approvals.mode': 'Approval Mode',
-  'approvals.timeout': 'Approval Timeout',
-  'approvals.mcp_reload_confirm': 'Confirm MCP Reloads',
+  tool_output: {
+    max_bytes: 'Terminal Output Limit',
+    max_lines: 'File Page Limit',
+    max_line_length: 'Line Length Limit'
+  },
+  code_execution: {
+    mode: 'Code Execution Mode'
+  },
+  approvals: {
+    mode: 'Approval Mode',
+    timeout: 'Approval Timeout',
+    mcp_reload_confirm: 'Confirm MCP Reloads'
+  },
   command_allowlist: 'Command Allowlist',
-  'security.redact_secrets': 'Redact Secrets',
-  'security.allow_private_urls': 'Allow Private URLs',
-  'browser.allow_private_urls': 'Browser Private URLs',
-  'browser.auto_local_for_private_urls': 'Local Browser For Private URLs',
-  'checkpoints.enabled': 'File Checkpoints',
-  'checkpoints.max_snapshots': 'Checkpoint Limit',
-  'voice.record_key': 'Voice Shortcut',
-  'voice.max_recording_seconds': 'Max Recording Length',
-  'voice.auto_tts': 'Read Responses Aloud',
-  'stt.enabled': 'Speech To Text',
-  'stt.provider': 'Speech-To-Text Provider',
-  'stt.local.model': 'Local Transcription Model',
-  'stt.local.language': 'Transcription Language',
-  'stt.elevenlabs.model_id': 'ElevenLabs STT Model',
-  'stt.elevenlabs.language_code': 'ElevenLabs Language',
-  'stt.elevenlabs.tag_audio_events': 'Tag Audio Events',
-  'stt.elevenlabs.diarize': 'Speaker Diarization',
-  'tts.provider': 'Text-To-Speech Provider',
-  'tts.edge.voice': 'Edge Voice',
-  'tts.openai.model': 'OpenAI TTS Model',
-  'tts.openai.voice': 'OpenAI Voice',
-  'tts.elevenlabs.voice_id': 'ElevenLabs Voice',
-  'tts.elevenlabs.model_id': 'ElevenLabs Model',
-  'memory.memory_enabled': 'Persistent Memory',
-  'memory.user_profile_enabled': 'User Profile',
-  'memory.memory_char_limit': 'Memory Budget',
-  'memory.user_char_limit': 'Profile Budget',
-  'memory.provider': 'Memory Provider',
-  'context.engine': 'Context Engine',
-  'compression.enabled': 'Auto-Compression',
-  'compression.threshold': 'Compression Threshold',
-  'compression.target_ratio': 'Compression Target',
-  'compression.protect_last_n': 'Protected Recent Messages',
-  'agent.api_max_retries': 'API Retries',
-  'agent.service_tier': 'Service Tier',
-  'agent.tool_use_enforcement': 'Tool-Use Enforcement',
-  'delegation.model': 'Subagent Model',
-  'delegation.provider': 'Subagent Provider',
-  'delegation.max_iterations': 'Subagent Turn Limit',
-  'delegation.max_concurrent_children': 'Parallel Subagents',
-  'delegation.child_timeout_seconds': 'Subagent Timeout',
-  'delegation.reasoning_effort': 'Subagent Reasoning Effort',
-  'updates.non_interactive_local_changes': 'In-App Update Local Changes'
-}
+  security: {
+    redact_secrets: 'Redact Secrets',
+    allow_private_urls: 'Allow Private URLs'
+  },
+  browser: {
+    allow_private_urls: 'Browser Private URLs',
+    auto_local_for_private_urls: 'Local Browser For Private URLs'
+  },
+  checkpoints: {
+    enabled: 'File Checkpoints',
+    max_snapshots: 'Checkpoint Limit'
+  },
+  voice: {
+    record_key: 'Voice Shortcut',
+    max_recording_seconds: 'Max Recording Length',
+    auto_tts: 'Read Responses Aloud'
+  },
+  stt: {
+    enabled: 'Speech To Text',
+    provider: 'Speech-To-Text Provider',
+    local: {
+      model: 'Local Transcription Model',
+      language: 'Transcription Language'
+    },
+    elevenlabs: {
+      model_id: 'ElevenLabs STT Model',
+      language_code: 'ElevenLabs Language',
+      tag_audio_events: 'Tag Audio Events',
+      diarize: 'Speaker Diarization'
+    }
+  },
+  tts: {
+    provider: 'Text-To-Speech Provider',
+    edge: {
+      voice: 'Edge Voice'
+    },
+    openai: {
+      model: 'OpenAI TTS Model',
+      voice: 'OpenAI Voice'
+    },
+    elevenlabs: {
+      voice_id: 'ElevenLabs Voice',
+      model_id: 'ElevenLabs Model'
+    }
+  },
+  memory: {
+    memory_enabled: 'Persistent Memory',
+    user_profile_enabled: 'User Profile',
+    memory_char_limit: 'Memory Budget',
+    user_char_limit: 'Profile Budget',
+    provider: 'Memory Provider'
+  },
+  context: {
+    engine: 'Context Engine'
+  },
+  compression: {
+    enabled: 'Auto-Compression',
+    threshold: 'Compression Threshold',
+    target_ratio: 'Compression Target',
+    protect_last_n: 'Protected Recent Messages'
+  },
+  delegation: {
+    model: 'Subagent Model',
+    provider: 'Subagent Provider',
+    max_iterations: 'Subagent Turn Limit',
+    max_concurrent_children: 'Parallel Subagents',
+    child_timeout_seconds: 'Subagent Timeout',
+    reasoning_effort: 'Subagent Reasoning Effort'
+  },
+  updates: {
+    non_interactive_local_changes: 'In-App Update Local Changes'
+  }
+})
 
-export const FIELD_DESCRIPTIONS: Record<string, string> = {
+export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   model: 'Used for new chats unless you pick a different model in the composer.',
   model_context_length: "Leave at 0 to use the selected model's detected context window.",
   fallback_providers: 'Backup provider:model entries to try if the default model fails.',
-  'display.personality': 'Default assistant style for new sessions.',
+  display: {
+    personality: 'Default assistant style for new sessions.',
+    show_reasoning: 'Show reasoning sections when the backend provides them.'
+  },
   timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
-  'display.show_reasoning': 'Show reasoning sections when the backend provides them.',
-  'agent.image_input_mode': 'Controls how image attachments are sent to the model.',
-  'terminal.cwd': 'Default project folder for tool and terminal work.',
-  'code_execution.mode': 'How strictly code execution is scoped to the current project.',
-  'terminal.persistent_shell': 'Keep shell state between commands when the backend supports it.',
-  'terminal.env_passthrough': 'Environment variables to pass into tool execution.',
+  agent: {
+    image_input_mode: 'Controls how image attachments are sent to the model.',
+    max_turns: 'Upper bound for tool-calling turns before Hermes stops a run.'
+  },
+  terminal: {
+    cwd: 'Default project folder for tool and terminal work.',
+    persistent_shell: 'Keep shell state between commands when the backend supports it.',
+    env_passthrough: 'Environment variables to pass into tool execution.'
+  },
+  code_execution: {
+    mode: 'How strictly code execution is scoped to the current project.'
+  },
   file_read_max_chars: 'Maximum characters Hermes can read from one file request.',
-  'approvals.mode': 'How Hermes handles commands that need explicit approval.',
-  'approvals.timeout': 'How long approval prompts wait before timing out.',
-  'security.redact_secrets': 'Hide detected secrets from model-visible content when possible.',
-  'checkpoints.enabled': 'Create rollback snapshots before file edits.',
-  'memory.memory_enabled': 'Save durable memories that can help future sessions.',
-  'memory.user_profile_enabled': 'Maintain a compact profile of user preferences.',
-  'context.engine': 'Strategy for managing long conversations near the context limit.',
-  'compression.enabled': 'Summarize older context when conversations get large.',
-  'voice.auto_tts': 'Automatically speak assistant responses.',
-  'stt.enabled': 'Enable local or provider-backed speech transcription.',
-  'stt.elevenlabs.language_code': 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.',
-  'agent.max_turns': 'Upper bound for tool-calling turns before Hermes stops a run.',
-  'updates.non_interactive_local_changes':
-    'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.'
-}
+  approvals: {
+    mode: 'How Hermes handles commands that need explicit approval.',
+    timeout: 'How long approval prompts wait before timing out.'
+  },
+  security: {
+    redact_secrets: 'Hide detected secrets from model-visible content when possible.'
+  },
+  checkpoints: {
+    enabled: 'Create rollback snapshots before file edits.'
+  },
+  memory: {
+    memory_enabled: 'Save durable memories that can help future sessions.',
+    user_profile_enabled: 'Maintain a compact profile of user preferences.'
+  },
+  context: {
+    engine: 'Strategy for managing long conversations near the context limit.'
+  },
+  compression: {
+    enabled: 'Summarize older context when conversations get large.'
+  },
+  voice: {
+    auto_tts: 'Automatically speak assistant responses.'
+  },
+  stt: {
+    enabled: 'Enable local or provider-backed speech transcription.',
+    elevenlabs: {
+      language_code: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
+    }
+  },
+  updates: {
+    non_interactive_local_changes:
+      'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.'
+  }
+})
 
 // Curated desktop config surface: only fields a user might tune from the app.
 export const SECTIONS: DesktopConfigSection[] = [

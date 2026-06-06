@@ -1,5 +1,6 @@
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
+import { translateNow } from '@/i18n'
 
 export type ToolTone = 'agent' | 'browser' | 'default' | 'file' | 'image' | 'terminal' | 'web'
 export type ToolStatus = 'error' | 'running' | 'success' | 'warning'
@@ -1081,6 +1082,17 @@ function toolDetailText(
 }
 
 export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string; text: string } {
+  const copy = {
+    command: translateNow('assistant.tool.copyCommand'),
+    content: translateNow('assistant.tool.copyContent'),
+    file: translateNow('assistant.tool.copyFile'),
+    output: translateNow('assistant.tool.copyOutput'),
+    path: translateNow('assistant.tool.copyPath'),
+    query: translateNow('assistant.tool.copyQuery'),
+    results: translateNow('assistant.tool.copyResults'),
+    url: translateNow('assistant.tool.copyUrl'),
+    generic: translateNow('common.copy')
+  }
   const args = parseMaybeObject(part.args)
   const result = parseMaybeObject(part.result)
   const detail = view.detail.trim()
@@ -1088,25 +1100,25 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
 
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
     if (hasSubstantialOutput) {
-      return { label: 'Copy output', text: detail }
+      return { label: copy.output, text: detail }
     }
 
     const command = firstStringField(args, ['command', 'code']) || contextValue(args)
 
     if (command) {
-      return { label: 'Copy command', text: command }
+      return { label: copy.command, text: command }
     }
   }
 
   if (part.toolName === 'web_extract') {
     if (hasSubstantialOutput) {
-      return { label: 'Copy content', text: detail }
+      return { label: copy.content, text: detail }
     }
 
     const url = firstStringField(args, ['url', 'target']) || findFirstUrl(args, result)
 
     if (url) {
-      return { label: 'Copy URL', text: url }
+      return { label: copy.url, text: url }
     }
   }
 
@@ -1114,7 +1126,7 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     const url = firstStringField(args, ['url', 'target']) || findFirstUrl(args, result)
 
     if (url) {
-      return { label: 'Copy URL', text: url }
+      return { label: copy.url, text: url }
     }
   }
 
@@ -1122,25 +1134,25 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     if (view.searchHits?.length) {
       const text = view.searchHits.map(hit => [hit.title, hit.url, hit.snippet].filter(Boolean).join('\n')).join('\n\n')
 
-      return { label: 'Copy results', text }
+      return { label: copy.results, text }
     }
 
     const query = firstStringField(args, ['search_term', 'query']) || contextValue(args)
 
     if (query) {
-      return { label: 'Copy query', text: query }
+      return { label: copy.query, text: query }
     }
   }
 
   if (part.toolName === 'read_file') {
     if (hasSubstantialOutput) {
-      return { label: 'Copy file', text: detail }
+      return { label: copy.file, text: detail }
     }
 
     const path = firstStringField(args, ['path', 'file', 'filepath'])
 
     if (path) {
-      return { label: 'Copy path', text: path }
+      return { label: copy.path, text: path }
     }
   }
 
@@ -1148,15 +1160,15 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     const path = firstStringField(args, ['path', 'file', 'filepath'])
 
     if (path) {
-      return { label: 'Copy path', text: path }
+      return { label: copy.path, text: path }
     }
   }
 
   if (detail) {
-    return { label: 'Copy output', text: detail }
+    return { label: copy.output, text: detail }
   }
 
-  return { label: 'Copy', text: view.title }
+  return { label: copy.generic, text: view.title }
 }
 
 function dynamicTitle(

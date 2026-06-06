@@ -13,6 +13,7 @@ import {
   CodeCardTitle
 } from '@/components/chat/code-card'
 import { CopyButton } from '@/components/ui/copy-button'
+import { useI18n } from '@/i18n'
 import { codiconForLanguage, isLikelyProseCodeBlock, sanitizeLanguageTag } from '@/lib/markdown-code'
 
 /**
@@ -48,6 +49,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   code,
   defer = false
 }) => {
+  const { t } = useI18n()
   const trimmed = (code ?? '').replace(/^\n+/, '').trimEnd()
 
   // Streaming may hand us empty/incomplete fences — render nothing rather
@@ -68,14 +70,14 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
       <CodeCardHeader>
         <CodeCardTitle>
           <CodeCardIcon name={codiconForLanguage(label)} />
-          Code
+          {t.assistant.tool.code}
           {label && <CodeCardSubtitle> · {label}</CodeCardSubtitle>}
         </CodeCardTitle>
         <CopyButton
           appearance="inline"
           className="-my-1 -mr-1 h-5 px-1 opacity-55 hover:opacity-100"
           iconClassName="size-2.5"
-          label="Copy code"
+          label={t.assistant.tool.copyCode}
           showLabel={false}
           text={trimmed}
         />

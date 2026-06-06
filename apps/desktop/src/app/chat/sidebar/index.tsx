@@ -159,6 +159,33 @@ function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: string[
   return out
 }
 
+function reconcileOrderIds(currentIds: string[], orderIds: string[]): string[] {
+  if (!currentIds.length) {
+    return []
+  }
+
+  if (!orderIds.length) {
+    return currentIds
+  }
+
+  const current = new Set(currentIds)
+  const next = orderIds.filter(id => current.has(id))
+  const known = new Set(next)
+
+  for (const id of currentIds) {
+    if (!known.has(id)) {
+      next.push(id)
+      known.add(id)
+    }
+  }
+
+  return next
+}
+
+function sameIds(left: string[], right: string[]) {
+  return left.length === right.length && left.every((item, index) => item === right[index])
+}
+
 const baseName = (path: string) =>
   path
     .replace(/[/\\]+$/, '')
@@ -266,7 +293,11 @@ function useSortableBindings(id: string) {
     dragHandleProps: { ...attributes, ...listeners },
     ref: setNodeRef,
     reorderable: true as const,
-    style: { transform: CSS.Transform.toString(transform), transition }
+    style: {
+      transform: CSS.Transform.toString(transform),
+      transition: isDragging ? undefined : transition,
+      willChange: isDragging ? 'transform' : undefined
+    }
   }
 }
 
@@ -479,6 +510,17 @@ export function ChatSidebar({
     [sortedSessions, pinnedRealIdSet]
   )
 
+  useEffect(() => {
+    const next = reconcileOrderIds(
+      unpinnedAgentSessions.map(s => s.id),
+      agentOrderIds
+    )
+
+    if (!sameIds(next, agentOrderIds)) {
+      setSidebarSessionOrderIds(next)
+    }
+  }, [agentOrderIds, unpinnedAgentSessions])
+
   const agentSessions = useMemo(
     () => orderByIds(unpinnedAgentSessions, s => s.id, agentOrderIds),
     [unpinnedAgentSessions, agentOrderIds]
@@ -596,6 +638,21 @@ export function ChatSidebar({
     showAllProfiles,
     workspaceOrderIds
   ])
+
+  useEffect(() => {
+    if (!displayAgentGroups?.length || showAllProfiles) {
+      return
+    }
+
+    const next = reconcileOrderIds(
+      displayAgentGroups.map(g => g.id),
+      workspaceOrderIds
+    )
+
+    if (!sameIds(next, workspaceOrderIds)) {
+      setSidebarWorkspaceOrderIds(next)
+    }
+  }, [displayAgentGroups, showAllProfiles, workspaceOrderIds])
 
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
 
@@ -1069,12 +1126,25 @@ function SidebarSessionsSection({
       renderRows(items)
     )
 
+  const renderNestedSessionList = (items: SessionInfo[]) =>
+    dndActive ? (
+      <DndContext collisionDetection={closestCenter} onDragEnd={onReorder} sensors={dndSensors}>
+        <SortableContext items={items.map(s => s.id)} strategy={verticalListSortingStrategy}>
+          {renderRows(items)}
+        </SortableContext>
+      </DndContext>
+    ) : (
+      renderRows(items)
+    )
+
   const flatVirtualized = !showEmptyState && !groups?.length && sessions.length >= VIRTUALIZE_THRESHOLD
 
   let inner: React.ReactNode
+  let bodyOwnsDndContext = dndActive && !showEmptyState
 
   if (showEmptyState) {
     inner = emptyState
+    bodyOwnsDndContext = false
   } else if (groups?.length) {
     const groupNodes = groups.map(group =>
       dndActive ? (
@@ -1082,7 +1152,7 @@ function SidebarSessionsSection({
           group={group}
           key={group.id}
           onNewSession={onNewSessionInWorkspace}
-          renderRows={renderSessionList}
+          renderRows={renderNestedSessionList}
         />
       ) : (
         <SidebarWorkspaceGroup
@@ -1095,12 +1165,15 @@ function SidebarSessionsSection({
     )
 
     inner = dndActive ? (
-      <SortableContext items={groups.map(g => groupDndId(g.id))} strategy={verticalListSortingStrategy}>
-        {groupNodes}
-      </SortableContext>
+      <DndContext collisionDetection={closestCenter} onDragEnd={onReorder} sensors={dndSensors}>
+        <SortableContext items={groups.map(g => groupDndId(g.id))} strategy={verticalListSortingStrategy}>
+          {groupNodes}
+        </SortableContext>
+      </DndContext>
     ) : (
       groupNodes
     )
+    bodyOwnsDndContext = false
   } else if (flatVirtualized) {
     inner = (
       <VirtualSessionList
@@ -1119,14 +1192,13 @@ function SidebarSessionsSection({
     inner = renderSessionList(sessions)
   }
 
-  const body =
-    dndActive && !showEmptyState ? (
-      <DndContext collisionDetection={closestCenter} onDragEnd={onReorder} sensors={dndSensors}>
-        {inner}
-      </DndContext>
-    ) : (
-      inner
-    )
+  const body = bodyOwnsDndContext ? (
+    <DndContext collisionDetection={closestCenter} onDragEnd={onReorder} sensors={dndSensors}>
+      {inner}
+    </DndContext>
+  ) : (
+    inner
+  )
 
   // The virtualizer owns its own scroller, so suppress the wrapper's overflow
   // to avoid a double scroll container.
@@ -1195,7 +1267,16 @@ function SidebarWorkspaceGroup({
   }
 
   return (
-    <div className={cn('grid gap-px', dragging && 'z-10 opacity-60', className)} ref={ref} style={style} {...rest}>
+    <div
+      className={cn(
+        'grid gap-px data-[dragging=true]:z-10 data-[dragging=true]:opacity-70 data-[dragging=true]:will-change-transform',
+        className
+      )}
+      data-dragging={dragging ? 'true' : undefined}
+      ref={ref}
+      style={style}
+      {...rest}
+    >
       <div className="group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">
         <button
           className="flex min-w-0 items-center gap-1.5 bg-transparent text-left hover:text-(--ui-text-secondary)"

@@ -7,6 +7,7 @@ interface ExportSessionParams {
   sessionId: string
   title?: string | null
   session?: SessionInfo
+  profile?: string | null
 }
 
 function sanitizeFilenamePart(value: string) {
@@ -31,7 +32,12 @@ export async function exportSession(sessionId: string, params: Omit<ExportSessio
   }
 
   try {
-    const { messages } = await getSessionMessages(sessionId)
+    // Route the transcript read to the session's owning profile. A remote (or
+    // non-default local) profile's rows live only on that profile's backend, so
+    // reading without it falls through to the local primary -> 404/empty/wrong
+    // transcript. Matches the resume/list/rename read-routing from #39894.
+    const profile = params.profile ?? params.session?.profile ?? null
+    const { messages } = await getSessionMessages(sessionId, profile)
 
     const payload = {
       exported_at: new Date().toISOString(),

@@ -1952,6 +1952,38 @@ def list_authenticated_providers(
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
 
+    # --- 5. Inline custom endpoint from the top-level ``model:`` block ---
+    # ``model.provider=custom`` + ``model.base_url`` + ``model.default`` is a
+    # valid way to point Hermes at a single OpenAI-compatible endpoint without
+    # a named ``providers:`` / ``custom_providers:`` entry. The CLI drives
+    # calls straight from those fields, but sections 1-4 only emit rows for
+    # built-in providers and *configured* custom/user endpoints, so the GUI
+    # model dropdown (model.options → here) silently hides the inline model.
+    # Synthesize a single ``is_current`` row when the inline endpoint isn't
+    # already represented by a built-in or configured row. Fixes #40480.
+    _inline_url_norm = str(current_base_url or "").strip().rstrip("/").lower()
+    if (
+        str(current_provider or "").strip().lower() == "custom"
+        and _inline_url_norm
+        and current_model
+        and "custom" not in seen_slugs
+        and _inline_url_norm not in _builtin_endpoints
+        and not any(
+            str(r.get("api_url", "")).strip().rstrip("/").lower() == _inline_url_norm
+            for r in results
+        )
+    ):
+        results.append({
+            "slug": "custom",
+            "name": "Custom",
+            "is_current": True,
+            "is_user_defined": True,
+            "models": [current_model],
+            "total_models": 1,
+            "source": "user-config",
+            "api_url": current_base_url.strip().rstrip("/"),
+        })
+
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 

@@ -246,6 +246,83 @@ def test_list_authenticated_providers_dict_models_dedupe_with_default(monkeypatc
     assert user_prov["models"].count("model-a") == 1
 
 
+def test_inline_custom_provider_surfaces_in_picker(monkeypatch):
+    """#40480: an inline custom endpoint configured via the top-level
+    ``model:`` block — ``model.provider=custom`` + ``model.base_url`` +
+    ``model.default`` — with NO matching ``providers:``/``custom_providers:``
+    entry must still surface a selectable picker row.
+
+    Otherwise the Desktop dropdown (fed by model.options →
+    list_authenticated_providers) shows only built-in providers and hides
+    the configured custom model, even though the CLI uses it fine (the CLI
+    drives the call from model.{provider,base_url,default} directly,
+    bypassing picker enumeration).
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://token.sensenova.cn/v1",
+        current_model="deepseek-v4-flash",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+
+    all_models = [m for p in providers for m in p.get("models", [])]
+    assert "deepseek-v4-flash" in all_models, (
+        "inline custom model missing from picker rows: "
+        f"{[(p['slug'], p.get('models')) for p in providers]}"
+    )
+    current_row = next((p for p in providers if p.get("is_current")), None)
+    assert current_row is not None, "inline custom provider should be marked is_current"
+    assert "deepseek-v4-flash" in current_row.get("models", [])
+
+
+def test_inline_custom_no_base_url_emits_no_synthetic_row(monkeypatch):
+    """#40480 guard: provider=custom without a base_url cannot be routed, so
+    no synthetic ``custom`` row should be emitted (avoids a dead picker entry)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="",
+        current_model="deepseek-v4-flash",
+        user_providers={},
+        custom_providers=[],
+    )
+    assert not any(p["slug"] == "custom" for p in providers)
+
+
+def test_inline_custom_not_duplicated_when_configured(monkeypatch):
+    """#40480 guard: when the same endpoint IS configured under
+    ``custom_providers:``, the inline synthesis must not add a second row —
+    section 4 already emits it (and marks it current)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    url = "https://token.sensenova.cn/v1"
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url=url,
+        current_model="deepseek-v4-flash",
+        user_providers={},
+        custom_providers=[{"name": "SenseNova", "base_url": url, "model": "deepseek-v4-flash"}],
+    )
+
+    same_url = [
+        p for p in providers
+        if str(p.get("api_url", "")).rstrip("/").lower() == url.rstrip("/").lower()
+    ]
+    assert len(same_url) == 1, f"endpoint should produce exactly one row, got {same_url}"
+    # No bare synthetic "custom" row — the configured row (custom:sensenova) wins.
+    assert not any(p["slug"] == "custom" for p in providers)
+    assert sum(1 for p in providers if p.get("is_current")) == 1
+    assert "deepseek-v4-flash" in same_url[0]["models"]
+
+
 def test_openai_native_curated_catalog_is_non_empty():
     """Regression: built-in openai must have a static catalog for picker totals."""
     from hermes_cli.models import _PROVIDER_MODELS

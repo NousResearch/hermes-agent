@@ -2072,6 +2072,7 @@ class WeComAdapter(BasePlatformAdapter):
         finalize: bool = False,
         chat_id: Optional[str] = None,
         reply_to: Optional[str] = None,
+        turn_id: Optional[str] = None,
     ) -> bool:
         """Public entry-point for the gateway streaming consumer.
 
@@ -2079,6 +2080,14 @@ class WeComAdapter(BasePlatformAdapter):
           * **First call** for a turn: resolve req_id, create StreamTurn,
             and send an empty seed frame to trigger WeCom typing animation.
           * **Subsequent calls**: reuse the same StreamTurn's stream_id
+
+        Args:
+            turn_id: Optional unique identifier for this turn. When provided,
+                the StreamTurn is keyed by (chat_id, turn_id) instead of
+                (chat_id, req_id), preventing concurrent consumers (e.g.,
+                /background, parallel subagents) from interfering with each
+                other. Mirrors official wecom-openclaw-plugin's per-message
+                streamId model.
             and push cumulative text (not deltas) for in-place updates.
           * **finalize=True**: send closing frame and clean up turn state.
 
@@ -2106,13 +2115,13 @@ class WeComAdapter(BasePlatformAdapter):
             # (high priority) to prevent blocking by normal messages or other streams.
             return await self._enqueue_chat_send(
                 chat,
-                lambda: self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=True),
+                lambda: self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=True, turn_id=turn_id),
                 is_control=True,
             )
         else:
             # Intermediate frames: fire-and-forget, no queue, no rate limit.
             # WeCom does NOT count them toward the 30/min quota.
-            return await self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=False)
+            return await self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=False, turn_id=turn_id)
 
     async def _send_stream_frame_inner(
         self,
@@ -2121,11 +2130,18 @@ class WeComAdapter(BasePlatformAdapter):
         chat: str,
         reply_to: Optional[str] = None,
         finalize: bool = False,
+        turn_id: Optional[str] = None,
     ) -> bool:
         """Actual stream frame logic with per-turn state.
 
-        Each turn (identified by chat_id + req_id) maintains its own stream state.
-        This prevents concurrent messages from interfering with each other.
+        Each turn (identified by chat_id + turn_id OR chat_id + req_id)
+        maintains its own stream state. This prevents concurrent messages
+        from interfering with each other.
+
+        When turn_id is provided (from GatewayStreamConsumer), the turn is
+        keyed by (chat, turn_id) instead of (chat, req_id). This ensures
+        concurrent consumers (e.g., /background, parallel subagents) maintain
+        independent streams.
 
         IMPORTANT: Once a turn is created, it locks to its req_id. Even if
         _last_chat_req_ids[chat] changes (e.g., user sends /approve), the
@@ -2133,29 +2149,52 @@ class WeComAdapter(BasePlatformAdapter):
         stream from switching to a new req_id mid-turn.
         """
         try:
-            # Check if we already have an active turn for this chat
-            # If yes, reuse it (don't resolve req_id again)
-            existing_turn = self._find_active_turn_for_chat(chat)
-            if existing_turn and not existing_turn.finalized:
-                turn = existing_turn
-                logger.debug(
-                    "[%s] send_stream_frame: reusing existing turn %s for chat %s",
-                    self.name, turn.stream_id, chat,
-                )
-            else:
-                # No active turn, create a new one
-                req_id = self._resolve_stream_req_id(chat, reply_to)
-                if not req_id:
+            # If turn_id is provided, use it to find/create the turn.
+            # This is the true per-turn model that prevents concurrent
+            # consumers from interfering.
+            if turn_id:
+                turn_key = f"{chat}:{turn_id}"
+                turn = self._stream_turns.get(turn_key)
+                if not turn:
+                    # First frame for this turn: resolve req_id and create turn
+                    req_id = self._resolve_stream_req_id(chat, reply_to)
+                    if not req_id:
+                        logger.debug(
+                            "[%s] send_stream_frame: no req_id available for chat %s (turn_id=%s)",
+                            self.name, chat, turn_id,
+                        )
+                        return False
+                    turn = StreamTurn(chat, req_id)
+                    self._stream_turns[turn_key] = turn
                     logger.debug(
-                        "[%s] send_stream_frame: no req_id available for chat %s",
-                        self.name, chat,
+                        "[%s] send_stream_frame: created new turn %s (turn_id=%s, req_id=%s) for chat %s",
+                        self.name, turn.stream_id, turn_id, req_id, chat,
                     )
-                    return False
-                turn = self._get_or_create_stream_turn(chat, req_id)
-                logger.debug(
-                    "[%s] send_stream_frame: created new turn %s (req_id=%s) for chat %s",
-                    self.name, turn.stream_id, req_id, chat,
-                )
+            else:
+                # Fallback: no turn_id provided (backward compatibility or direct calls).
+                # Check if we already have an active turn for this chat.
+                # If yes, reuse it (don't resolve req_id again).
+                existing_turn = self._find_active_turn_for_chat(chat)
+                if existing_turn and not existing_turn.finalized:
+                    turn = existing_turn
+                    logger.debug(
+                        "[%s] send_stream_frame: reusing existing turn %s for chat %s",
+                        self.name, turn.stream_id, chat,
+                    )
+                else:
+                    # No active turn, create a new one
+                    req_id = self._resolve_stream_req_id(chat, reply_to)
+                    if not req_id:
+                        logger.debug(
+                            "[%s] send_stream_frame: no req_id available for chat %s",
+                            self.name, chat,
+                        )
+                        return False
+                    turn = self._get_or_create_stream_turn(chat, req_id)
+                    logger.debug(
+                        "[%s] send_stream_frame: created new turn %s (req_id=%s) for chat %s",
+                        self.name, turn.stream_id, req_id, chat,
+                    )
 
             # Check if this turn has expired
             if turn.expired:
@@ -2178,7 +2217,12 @@ class WeComAdapter(BasePlatformAdapter):
                 )
                 turn.finalized = True
                 # Clean up this turn's state
-                self._cleanup_stream_turn(chat, turn.req_id)
+                # If turn_id was provided, the key is chat:turn_id, otherwise chat:req_id
+                if turn_id:
+                    turn_key = f"{chat}:{turn_id}"
+                    self._stream_turns.pop(turn_key, None)
+                else:
+                    self._cleanup_stream_turn(chat, turn.req_id)
             else:
                 await self._send_stream_reply(
                     turn.req_id,
@@ -2206,9 +2250,13 @@ class WeComAdapter(BasePlatformAdapter):
                 "[%s] Stream frame failed (chat=%s): %s",
                 self.name, chat, exc,
             )
-            # Clean up this turn on error (use existing_turn if available)
+            # Clean up this turn on error
             if 'turn' in locals():
-                self._cleanup_stream_turn(chat, turn.req_id)
+                if turn_id:
+                    turn_key = f"{chat}:{turn_id}"
+                    self._stream_turns.pop(turn_key, None)
+                else:
+                    self._cleanup_stream_turn(chat, turn.req_id)
             return False
 
     def supports_native_streaming(

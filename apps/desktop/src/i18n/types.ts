@@ -5,7 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ko'
 
 interface ModeOptionCopy {
   label: string
@@ -157,20 +157,6 @@ export interface Translations {
     muteHaptics: string
     unmuteHaptics: string
     openSettings: string
-    openKeybinds: string
-  }
-
-  keybinds: {
-    title: string
-    subtitle: (open: string) => string
-    rebind: string
-    reset: string
-    resetAll: string
-    pressKey: string
-    set: string
-    conflictWith: (label: string) => string
-    categories: Record<string, string>
-    actions: Record<string, string>
   }
 
   language: {
@@ -222,6 +208,7 @@ export interface Translations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
+    envDescriptions?: Record<string, string>
     about: {
       heading: string
       version: (value: string) => string
@@ -481,6 +468,9 @@ export interface Translations {
     toolsetDisabled: string
     appliesToNewSessions: (name: string) => string
     failedToUpdate: (name: string) => string
+    toolsetDescriptions?: Record<string, string>
+    skillDescriptions?: Record<string, string>
+    skillCategoryNames?: Record<string, string>
   }
 
   agents: {

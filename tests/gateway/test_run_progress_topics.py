@@ -58,6 +58,15 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+_post_delivery_order_events = []
+
+
+class PostDeliveryOrderAdapter(ProgressCaptureAdapter):
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        _post_delivery_order_events.append(f"send:{content}")
+        return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+
 class SmallLimitProgressAdapter(ProgressCaptureAdapter):
     """Adapter with a tiny platform limit to exercise progress rollover."""
 
@@ -142,6 +151,33 @@ class FakeAgent:
             "messages": [],
             "api_calls": 1,
         }
+
+
+class PostDeliveryCompressionOrderAgent:
+    """Fake gateway agent that records when post-delivery compression starts."""
+
+    run_count = 0
+
+    def __init__(self, **kwargs):
+        self.tools = []
+        self.session_id = "sess-post-delivery-order"
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).run_count += 1
+        _post_delivery_order_events.append(f"run:{message}")
+        return {
+            "final_response": f"reply:{message}",
+            "messages": [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": f"reply:{message}"},
+            ],
+            "api_calls": 1,
+        }
+
+    def _maybe_compress_post_response(self, messages, system_message, *, task_id="default"):
+        _post_delivery_order_events.append("post_delivery_compression")
+        return messages, system_message, False
 
 
 class LongPreviewAgent:
@@ -1028,6 +1064,31 @@ async def test_run_agent_defers_background_review_notification_until_release(mon
 
     assert result["final_response"] == "done"
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_post_delivery_compression_runs_after_first_reply_before_queued_turn(monkeypatch, tmp_path):
+    """Gateway post-flight compression fires only after delivery, before queued follow-up replay."""
+    _post_delivery_order_events.clear()
+    PostDeliveryCompressionOrderAgent.run_count = 0
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        PostDeliveryCompressionOrderAgent,
+        session_id="sess-post-delivery-order",
+        pending_text="queued follow-up",
+        adapter_cls=PostDeliveryOrderAdapter,
+    )
+
+    assert result["final_response"] == "reply:queued follow-up"
+    assert adapter.sent[0]["content"] == "reply:hello"
+    assert _post_delivery_order_events[:4] == [
+        "run:hello",
+        "send:reply:hello",
+        "post_delivery_compression",
+        "run:queued follow-up",
+    ]
 
 
 @pytest.mark.asyncio

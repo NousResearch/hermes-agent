@@ -17905,13 +17905,33 @@ class GatewayRunner:
                 """Compress only after the platform adapter delivered the reply."""
                 _agent = agent_holder[0]
                 _result = result_holder[0]
+                logger.info(
+                    "post-response compression started after main delivery: session=%s generation=%s",
+                    session_key or "?",
+                    run_generation,
+                )
                 if not _agent or not _result or not _run_still_current():
+                    logger.info(
+                        "post-response compression skipped after main delivery: reason=stale-or-missing-run session=%s generation=%s",
+                        session_key or "?",
+                        run_generation,
+                    )
                     return
                 if _result.get("failed") or _result.get("interrupted"):
+                    logger.info(
+                        "post-response compression skipped after main delivery: reason=failed-or-interrupted session=%s generation=%s",
+                        session_key or "?",
+                        run_generation,
+                    )
                     return
                 messages_snapshot = _result.get("messages") or []
                 final_response = _result.get("final_response") or ""
                 if not messages_snapshot or not final_response:
+                    logger.info(
+                        "post-response compression skipped after main delivery: reason=no-final-response-or-messages session=%s generation=%s",
+                        session_key or "?",
+                        run_generation,
+                    )
                     return
                 try:
                     compressed_messages, _new_system_prompt, ran = _agent._maybe_compress_post_response(
@@ -17920,6 +17940,11 @@ class GatewayRunner:
                         task_id=session_id,
                     )
                     if not ran:
+                        logger.info(
+                            "post-response compression skipped after main delivery: reason=below-threshold-or-no-progress session=%s generation=%s",
+                            session_key or "?",
+                            run_generation,
+                        )
                         return
                     _result["messages"] = compressed_messages
                     _result["session_id"] = getattr(_agent, "session_id", session_id)
@@ -17949,6 +17974,11 @@ class GatewayRunner:
 
             agent.background_review_callback = _bg_review_send
             def _after_main_delivery() -> None:
+                logger.info(
+                    "main response delivered; scheduling post-response compression: session=%s generation=%s",
+                    session_key or "?",
+                    run_generation,
+                )
                 _run_post_delivery_compression()
                 _release_bg_review_messages()
 

@@ -5153,58 +5153,6 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5030, str(e))
 
 
-@method("file.attach")
-def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
-    if err:
-        return err
-    raw = str(params.get("path", "") or "").strip()
-    if not raw:
-        return _err(rid, 4015, "path required")
-    try:
-        from cli import (
-            _copy_to_sandbox,
-            _detect_mime,
-            _resolve_attachment_path,
-            _split_path_input,
-            _validate_upload,
-        )
-
-        path_token, remainder = _split_path_input(raw)
-        resolved = _resolve_attachment_path(path_token)
-        if resolved is None:
-            return _err(rid, 4016, f"file not found: {path_token}")
-
-        size = resolved.stat().st_size
-        mime = _detect_mime(resolved)
-
-        # Raises ValueError on rejection — caught below and returned as 4017.
-        try:
-            _validate_upload(resolved, mime, size)
-        except ValueError as ve:
-            return _err(rid, 4017, str(ve))
-
-        attached = _copy_to_sandbox(resolved, session_id=str(params.get("session_id", "")))
-        meta = _image_meta(resolved)
-        return _ok(
-            rid,
-            {
-                "attached": True,
-                "id": attached.id,
-                "name": resolved.name,
-                "stored_path": str(attached.stored_path),
-                "mime_type": attached.mime_type,
-                "size_bytes": attached.size_bytes,
-                "kind": attached.kind,
-                "preview_text": attached.preview_text,
-                "remainder": remainder,
-                **meta,
-            },
-        )
-    except Exception as e:
-        return _err(rid, 5028, str(e))
-
-
 @method("input.detect_drop")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)

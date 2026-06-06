@@ -9,6 +9,59 @@ class TestPerTurnStreamIsolation:
     """Verify that concurrent consumers with different turn_ids don't interfere."""
 
     @pytest.mark.asyncio
+    async def test_multiple_users_concurrent_streaming(self):
+        """Multiple users (different chats) streaming concurrently don't interfere."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        try:
+            # Setup 3 different users/chats
+            adapter._last_chat_req_ids["user-1"] = "req-1"
+            adapter._last_chat_req_ids["user-2"] = "req-2"
+            adapter._last_chat_req_ids["user-3"] = "req-3"
+            adapter._send_json = AsyncMock()
+            adapter._ws = AsyncMock(closed=False)
+            adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+
+            # User 1, 2, 3 all start streaming simultaneously
+            await adapter.send_stream_frame("user1 content", chat_id="user-1", turn_id="turn-1")
+            await adapter.send_stream_frame("user2 content", chat_id="user-2", turn_id="turn-2")
+            await adapter.send_stream_frame("user3 content", chat_id="user-3", turn_id="turn-3")
+
+            # All 3 turns active
+            assert "user-1:turn-1" in adapter._stream_turns
+            assert "user-2:turn-2" in adapter._stream_turns
+            assert "user-3:turn-3" in adapter._stream_turns
+
+            # User 2 finishes first
+            ok2 = await adapter.send_stream_frame(
+                "user2 final", chat_id="user-2", finalize=True, turn_id="turn-2"
+            )
+            assert ok2 is True
+            assert "user-2:turn-2" not in adapter._stream_turns
+            # User 1 and 3 still active
+            assert "user-1:turn-1" in adapter._stream_turns
+            assert "user-3:turn-3" in adapter._stream_turns
+
+            # User 1 finishes
+            ok1 = await adapter.send_stream_frame(
+                "user1 final", chat_id="user-1", finalize=True, turn_id="turn-1"
+            )
+            assert ok1 is True
+            assert "user-1:turn-1" not in adapter._stream_turns
+            # User 3 still active
+            assert "user-3:turn-3" in adapter._stream_turns
+
+            # User 3 finishes
+            ok3 = await adapter.send_stream_frame(
+                "user3 final", chat_id="user-3", finalize=True, turn_id="turn-3"
+            )
+            assert ok3 is True
+            assert "user-3:turn-3" not in adapter._stream_turns
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
     async def test_concurrent_turns_same_chat_isolated(self):
         """Two concurrent consumers in same chat maintain independent streams."""
         from gateway.platforms.wecom import WeComAdapter
@@ -47,6 +100,55 @@ class TestPerTurnStreamIsolation:
             )
             assert ok2 is True
             assert "chat-1:turn-2" not in adapter._stream_turns
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_one_user_expired_others_unaffected(self):
+        """User A hits stream expired; Users B and C continue normally."""
+        from gateway.platforms.wecom import STREAM_EXPIRED_ERRCODE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        try:
+            adapter._last_chat_req_ids["user-A"] = "req-A"
+            adapter._last_chat_req_ids["user-B"] = "req-B"
+            adapter._last_chat_req_ids["user-C"] = "req-C"
+            adapter._send_json = AsyncMock()
+            adapter._ws = AsyncMock(closed=False)
+
+            # All 3 users start streaming
+            await adapter.send_stream_frame("A content", chat_id="user-A", turn_id="turn-A")
+            await adapter.send_stream_frame("B content", chat_id="user-B", turn_id="turn-B")
+            await adapter.send_stream_frame("C content", chat_id="user-C", turn_id="turn-C")
+
+            # User A hits stream expired
+            adapter._send_reply_request = AsyncMock(
+                return_value={"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "expired"}
+            )
+            okA = await adapter.send_stream_frame(
+                "A final", chat_id="user-A", finalize=True, turn_id="turn-A"
+            )
+            assert okA is False
+            assert "user-A" in adapter._stream_expired_chats
+            assert "user-A:turn-A" not in adapter._stream_turns
+
+            # Users B and C should NOT be affected (different chats)
+            adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+            okB = await adapter.send_stream_frame(
+                "B final", chat_id="user-B", finalize=True, turn_id="turn-B"
+            )
+            okC = await adapter.send_stream_frame(
+                "C final", chat_id="user-C", finalize=True, turn_id="turn-C"
+            )
+            assert okB is True  # ✅ User B unaffected
+            assert okC is True  # ✅ User C unaffected
+            assert "user-B:turn-B" not in adapter._stream_turns
+            assert "user-C:turn-C" not in adapter._stream_turns
+
+            # Only user-A is in expired list
+            assert "user-A" in adapter._stream_expired_chats
+            assert "user-B" not in adapter._stream_expired_chats
+            assert "user-C" not in adapter._stream_expired_chats
         finally:
             await adapter.disconnect()
 

@@ -322,6 +322,21 @@ caption
         assert tags == [], f"generated image re-emitted after compression: {tags}"
 
 
+    def test_media_tags_support_gcode_documents(self, tmp_path):
+        """G-code files should be deliverable as document attachments."""
+        from gateway.platforms.base import BasePlatformAdapter, SUPPORTED_DOCUMENT_TYPES
+
+        gcode = tmp_path / "first-layer-test.gcode"
+        gcode.write_text("G28\nG1 X100 Y100 Z0.3\n", encoding="utf-8")
+
+        media_files, cleaned = BasePlatformAdapter.extract_media(f"Test file MEDIA:{gcode}")
+        filtered = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+
+        assert SUPPORTED_DOCUMENT_TYPES[".gcode"] == "text/plain"
+        assert media_files == [(str(gcode), False)]
+        assert filtered == [(str(gcode), False)]
+        assert cleaned.strip() == "Test file"
+
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""
         # Simulate conversation history with a TTS call from a previous turn

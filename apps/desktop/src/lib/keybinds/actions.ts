@@ -28,10 +28,9 @@ export interface KeybindActionMeta {
   defaults: readonly string[]
 }
 
-// Positional switch slots for *named* profiles. The default profile lives on ⌥⌘0
-// (see `profile.default`) — the "0 slot" of the ⌘⌥-digit range — freeing ⌘1…⌘9
-// for profiles 1-9 and ⌘⌥1…⌘⌥9 for 10-18. ⌘` is unusable (macOS reserves it for
-// window cycling) and ⌘0 is reset-zoom, so both are avoided.
+// Positional switch slots for *named* profiles: ⌘1…⌘9 for profiles 1-9, then
+// ⌘⌥1…⌘⌥9 for 10-18. The default profile gets the two-key mnemonic ⌘D (see
+// `profile.default`) — ⌘` is macOS-reserved (window cycling) and ⌘0 is reset-zoom.
 export const PROFILE_SLOT_COUNT = 18
 
 function comboForSlot(slot: number): string {
@@ -50,7 +49,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'composer.modelPicker', category: 'composer', defaults: [] },
 
   // ── Profiles ─────────────────────────────────────────────────────────────
-  { id: 'profile.default', category: 'profiles', defaults: ['mod+alt+0'] },
+  { id: 'profile.default', category: 'profiles', defaults: ['mod+d'] },
   ...PROFILE_SWITCH_ACTIONS,
   { id: 'profile.next', category: 'profiles', defaults: ['mod+shift+]'] },
   { id: 'profile.prev', category: 'profiles', defaults: ['mod+shift+['] },

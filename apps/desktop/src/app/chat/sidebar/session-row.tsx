@@ -2,12 +2,14 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
 import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
+import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
 
@@ -66,6 +68,9 @@ export function SidebarSessionRow({
   const r = t.sidebar.row
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
+  const sourceId = normalizeSessionSource(session.source)
+  const sourceLabel = sessionSourceLabel(sourceId)
+  const showSource = Boolean(sourceId && sourceLabel && !['desktop', 'local', 'tui'].includes(sourceId))
   const handleLabel = `Reorder ${title}`
   // Subscribe per-row (the leaf) instead of drilling a set through the list —
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
@@ -176,12 +181,25 @@ export function SidebarSessionRow({
                 needsInput ? 'overflow-visible' : 'overflow-hidden'
               )}
             >
-            <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-          </span>
+              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+            </span>
           )}
           <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </span>
+          {showSource && sourceId && sourceLabel && (
+            <span
+              className="hidden shrink-0 items-center gap-1 rounded-[4px] bg-(--ui-bg-tertiary) px-1.5 py-0.5 text-[0.625rem] leading-none text-(--ui-text-tertiary) sm:inline-flex"
+              title={`${sourceLabel} session`}
+            >
+              <PlatformAvatar
+                className="size-3.5 rounded-[3px] text-[0.5rem] [&_svg]:size-2.5"
+                platformId={sourceId}
+                platformName={sourceLabel}
+              />
+              <span className="max-w-16 truncate">{sourceLabel}</span>
+            </span>
+          )}
         </button>
         <div className="relative z-2 grid w-[1.375rem] place-items-center">
           {!isWorking && (

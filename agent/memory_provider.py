@@ -79,6 +79,13 @@ class MemoryProvider(ABC):
           - parent_session_id (str): For subagents, the parent's session_id.
           - user_id (str): Platform user identifier (gateway sessions).
           - user_id_alt (str): Optional alternate stable platform user identifier.
+          - provider_config (dict): Per-provider subconfig from config.yaml's
+            ``memory.<provider_name>.*`` block (e.g. ``memory.mem0.user_id``
+            / ``memory.mem0.agent_id``). Plugins should merge this over their
+            own env/JSON-file defaults so users can configure provider
+            scoping in the same file that holds the rest of their Hermes
+            config. Missing/empty values should be ignored so an unset YAML
+            key doesn't silently wipe out an env / JSON sidecar value.
         """
 
     def system_prompt_block(self) -> str:

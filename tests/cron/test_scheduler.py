@@ -912,6 +912,43 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
+    def test_run_job_titles_cron_session_from_job_not_important_hint(self, tmp_path):
+        # The cron session's first message is the injected "[IMPORTANT: …]"
+        # hint, which used to surface as the sidebar/history row label. run_job
+        # must title the session from the job (name → short prompt → id).
+        job = {
+            "id": "test-job",
+            "name": "Morning digest",
+            "prompt": "summarize my inbox",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            run_job(job)
+
+        fake_db.set_session_title.assert_called_once()
+        sid, title = fake_db.set_session_title.call_args[0]
+        assert sid.startswith("cron_test-job_")
+        assert "IMPORTANT" not in title
+        assert title.startswith("Morning digest")
+
     def test_run_job_closes_agent_on_failure_to_prevent_fd_leak(self, tmp_path):
         # Regression: if ``run_conversation`` raises, the ephemeral cron
         # agent was previously leaked — over days of ticks this accumulated

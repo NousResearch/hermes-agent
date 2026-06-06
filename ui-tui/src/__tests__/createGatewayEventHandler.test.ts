@@ -1526,4 +1526,58 @@ describe('createGatewayEventHandler', () => {
       expect(getUiState().notice).toBeNull()
     })
   })
+
+  describe('session.info', () => {
+    it('ignores session.info from a different session to prevent stale model on switch', () => {
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      // Session A is active with model X
+      patchUiState({ sid: 'session-a' })
+      onEvent({
+        payload: { model: 'anthropic/claude-sonnet-4', usage: {} },
+        session_id: 'session-a',
+        type: 'session.info'
+      } as any)
+      expect(getUiState().info?.model).toBe('anthropic/claude-sonnet-4')
+
+      // User switches to Session B — activateLiveSession sets new info
+      patchUiState({ info: { model: 'openai/gpt-5.5' } as any, sid: 'session-b' })
+
+      // A stale session.info event arrives from Session A after the switch
+      onEvent({
+        payload: { model: 'anthropic/claude-sonnet-4', usage: {} },
+        session_id: 'session-a',
+        type: 'session.info'
+      } as any)
+
+      // Session B's model must NOT be overwritten by Session A's stale event
+      expect(getUiState().info?.model).toBe('openai/gpt-5.5')
+    })
+
+    it('processes session.info from the current session', () => {
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      patchUiState({ sid: 'session-a' })
+      onEvent({
+        payload: { model: 'openai/gpt-5.5', usage: { total: 100 } },
+        session_id: 'session-a',
+        type: 'session.info'
+      } as any)
+
+      expect(getUiState().info?.model).toBe('openai/gpt-5.5')
+      expect(getUiState().usage.total).toBe(100)
+    })
+
+    it('processes session.info when session_id is missing (backward compat)', () => {
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      patchUiState({ sid: 'session-a' })
+      onEvent({
+        payload: { model: 'deepseek/v4-flash', usage: {} },
+        type: 'session.info'
+      } as any)
+
+      expect(getUiState().info?.model).toBe('deepseek/v4-flash')
+    })
+  })
 })

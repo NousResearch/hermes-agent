@@ -417,6 +417,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       case 'session.info': {
         const info = ev.payload
+        const currentSid = getUiState().sid
+
+        // Ignore session.info events from other sessions to prevent stale
+        // model info from overwriting the current session's info on switch.
+        if (ev.session_id && currentSid && ev.session_id !== currentSid) {
+          return
+        }
 
         patchUiState(state => ({
           ...state,

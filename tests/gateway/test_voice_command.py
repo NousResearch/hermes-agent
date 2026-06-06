@@ -2889,6 +2889,7 @@ class TestVoiceTTSPlayback:
         assert route["runtime"]["max_tokens"] == 512
         assert route["enabled_toolsets"] == []
         assert route["max_iterations"] == 3
+        assert route["reasoning_config"] == {"enabled": False}
 
 
 class TestUDPKeepalive:

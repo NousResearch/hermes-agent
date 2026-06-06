@@ -12456,12 +12456,17 @@ class GatewayRunner:
         except (TypeError, ValueError):
             max_iterations = 4
 
+        reasoning_config = fast_cfg.get("reasoning")
+        if not isinstance(reasoning_config, dict):
+            reasoning_config = {"enabled": False}
+
         return {
             "model": model,
             "runtime": runtime_kwargs,
             "enabled_toolsets": [str(x) for x in enabled_toolsets],
             "disabled_toolsets": ([str(x) for x in disabled_toolsets] if disabled_toolsets is not None else None),
             "max_iterations": max(1, max_iterations),
+            "reasoning_config": reasoning_config,
         }
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
@@ -18071,7 +18076,7 @@ class GatewayRunner:
                     max_iterations = voice_route["max_iterations"]
                     enabled_toolsets = voice_route["enabled_toolsets"]
                     disabled_toolsets = voice_route["disabled_toolsets"]
-                    reasoning_config = {}
+                    reasoning_config = voice_route.get("reasoning_config") or {"enabled": False}
                     self._reasoning_config = reasoning_config
                     self._service_tier = "fast"
                     logger.info(

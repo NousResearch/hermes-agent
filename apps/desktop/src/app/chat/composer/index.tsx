@@ -797,11 +797,15 @@ export function ChatBar({
       return
     }
 
-    // Cmd/Ctrl+Enter steers the draft into the live run (nudge, no interrupt);
-    // plain Enter still queues while busy.
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey && canSteer) {
+    // Cmd/Ctrl+Enter is reserved for steering the live run — never a send.
+    // Steer when there's a steerable draft, otherwise swallow it so it can't
+    // surprise-send. (Plain Enter still queues while busy / sends when idle.)
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
       event.preventDefault()
-      steerDraft()
+
+      if (canSteer) {
+        steerDraft()
+      }
 
       return
     }

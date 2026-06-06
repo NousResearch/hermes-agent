@@ -145,7 +145,74 @@ export const en: Translations = {
     showRightSidebar: 'Show right sidebar',
     muteHaptics: 'Mute haptics',
     unmuteHaptics: 'Unmute haptics',
-    openSettings: 'Open settings'
+    openSettings: 'Open settings',
+    openKeybinds: 'Keyboard shortcuts'
+  },
+
+  keybinds: {
+    title: 'Keyboard shortcuts',
+    subtitle: open => `Click a shortcut to rebind it · ${open} reopens this panel.`,
+    rebind: 'Rebind',
+    reset: 'Reset to default',
+    resetAll: 'Reset all',
+    pressKey: 'Press a key…',
+    set: 'set',
+    conflictWith: label => `Also bound to “${label}”`,
+    categories: {
+      composer: 'Composer',
+      profiles: 'Profiles',
+      session: 'Session',
+      navigation: 'Navigation',
+      view: 'View'
+    },
+    actions: {
+      'keybinds.openPanel': 'Open keyboard shortcuts',
+      'nav.commandPalette': 'Open command palette',
+      'nav.commandCenter': 'Open command center',
+      'nav.settings': 'Open settings',
+      'nav.profiles': 'Open profiles',
+      'nav.skills': 'Open skills',
+      'nav.messaging': 'Open messaging',
+      'nav.cron': 'Open scheduled jobs',
+      'nav.agents': 'Open agents',
+      'session.new': 'New session',
+      'session.togglePin': 'Pin / unpin current session',
+      'view.toggleSidebar': 'Toggle sessions sidebar',
+      'view.toggleRightSidebar': 'Toggle file browser',
+      'view.flipPanes': 'Swap sidebar sides',
+      'appearance.toggleMode': 'Toggle light / dark',
+      'profile.default': 'Switch to default profile',
+      'profile.switch.1': 'Switch to profile 1',
+      'profile.switch.2': 'Switch to profile 2',
+      'profile.switch.3': 'Switch to profile 3',
+      'profile.switch.4': 'Switch to profile 4',
+      'profile.switch.5': 'Switch to profile 5',
+      'profile.switch.6': 'Switch to profile 6',
+      'profile.switch.7': 'Switch to profile 7',
+      'profile.switch.8': 'Switch to profile 8',
+      'profile.switch.9': 'Switch to profile 9',
+      'profile.switch.10': 'Switch to profile 10',
+      'profile.switch.11': 'Switch to profile 11',
+      'profile.switch.12': 'Switch to profile 12',
+      'profile.switch.13': 'Switch to profile 13',
+      'profile.switch.14': 'Switch to profile 14',
+      'profile.switch.15': 'Switch to profile 15',
+      'profile.switch.16': 'Switch to profile 16',
+      'profile.switch.17': 'Switch to profile 17',
+      'profile.switch.18': 'Switch to profile 18',
+      'profile.next': 'Next profile',
+      'profile.prev': 'Previous profile',
+      'profile.toggleAll': 'Toggle all-profiles view',
+      'profile.create': 'Create profile',
+      'composer.send': 'Send message',
+      'composer.newline': 'Insert newline',
+      'composer.sendQueued': 'Send next queued turn',
+      'composer.mention': 'Reference files, folders, URLs',
+      'composer.slash': 'Slash command palette',
+      'composer.help': 'Quick help',
+      'composer.history': 'Cycle popover / history',
+      'composer.cancel': 'Close popover · cancel run'
+    }
   },
 
   language: {
@@ -244,8 +311,7 @@ export const en: Translations = {
       minAgo: count => `${count} min ago`,
       hoursAgo: count => `${count} hours ago`,
       daysAgo: count => `${count} days ago`
-    }
-    ,
+    },
     config: {
       none: 'None',
       noneParen: '(none)',
@@ -292,7 +358,8 @@ export const en: Translations = {
       appliesTo: 'Applies to',
       allProfiles: 'All profiles',
       defaultConnection: 'Default connection for every profile that has no override of its own.',
-      profileConnection: profile => `Connection used only when “${profile}” is the active profile. Set it to Local to inherit the default.`,
+      profileConnection: profile =>
+        `Connection used only when “${profile}” is the active profile. Set it to Local to inherit the default.`,
       envOverrideTitle: 'Environment variables are controlling this desktop session.',
       envOverrideDesc:
         'Unset HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN to use the saved setting below.',
@@ -316,8 +383,7 @@ export const en: Translations = {
       authNeedsPassword: 'This gateway uses a username and password. Sign in to authorize this desktop app.',
       authNeedsOauth: provider => `This gateway uses OAuth. Sign in with ${provider} to authorize this desktop app.`,
       tokenTitle: 'Session token',
-      tokenDesc:
-        'The dashboard session token used for REST and WebSocket access. Leave blank to keep the saved token.',
+      tokenDesc: 'The dashboard session token used for REST and WebSocket access. Leave blank to keep the saved token.',
       existingToken: value => `Existing token ${value}`,
       savedToken: 'saved',
       pasteSessionToken: 'Paste session token',
@@ -408,7 +474,8 @@ export const en: Translations = {
     providers: {
       connectAccount: 'Connect an account',
       haveApiKey: 'Have an API key instead?',
-      intro: 'Sign in with a subscription — no API key to copy. Hermes runs the browser sign-in for you, right here in the app.',
+      intro:
+        'Sign in with a subscription — no API key to copy. Hermes runs the browser sign-in for you, right here in the app.',
       connected: 'Connected',
       collapse: 'Collapse',
       connectAnother: 'Connect another provider',
@@ -464,7 +531,8 @@ export const en: Translations = {
       ready: 'Ready',
       nousIncluded: 'Included with a Nous subscription — sign in to Nous Portal to activate.',
       noApiKeyRequired: 'No API key required.',
-      postSetup: step => `This provider needs an extra setup step (${step}). Run it from the CLI with hermes tools for now.`
+      postSetup: step =>
+        `This provider needs an extra setup step (${step}). Run it from the CLI with hermes tools for now.`
     }
   },
 
@@ -665,7 +733,10 @@ export const en: Translations = {
         label: 'Bot token',
         help: 'Create an application in the Discord Developer Portal, add a bot, then paste its token.'
       },
-      DISCORD_ALLOWED_USERS: { label: 'Allowed Discord user IDs', help: 'Recommended. Comma-separated Discord user IDs.' },
+      DISCORD_ALLOWED_USERS: {
+        label: 'Allowed Discord user IDs',
+        help: 'Recommended. Comma-separated Discord user IDs.'
+      },
       DISCORD_REPLY_TO_MODE: { label: 'Reply style', help: 'first, all, or off.' },
       DISCORD_ALLOW_ALL_USERS: {
         label: 'Allow all Discord users',
@@ -679,7 +750,10 @@ export const en: Translations = {
         label: 'Home channel name',
         help: 'Display name for the home channel in logs and status output.'
       },
-      BLUEBUBBLES_ALLOW_ALL_USERS: { label: 'Allow all iMessage users', help: 'When true, skip the BlueBubbles allowlist.' },
+      BLUEBUBBLES_ALLOW_ALL_USERS: {
+        label: 'Allow all iMessage users',
+        help: 'When true, skip the BlueBubbles allowlist.'
+      },
       MATTERMOST_ALLOW_ALL_USERS: { label: 'Allow all Mattermost users' },
       MATTERMOST_HOME_CHANNEL: { label: 'Home channel' },
       QQ_ALLOW_ALL_USERS: { label: 'Allow all QQ users' },
@@ -698,7 +772,10 @@ export const en: Translations = {
       SLACK_ALLOWED_USERS: { label: 'Allowed Slack user IDs', help: 'Recommended. Comma-separated Slack user IDs.' },
       MATTERMOST_URL: { label: 'Server URL', placeholder: 'https://mattermost.example.com' },
       MATTERMOST_TOKEN: { label: 'Bot token' },
-      MATTERMOST_ALLOWED_USERS: { label: 'Allowed user IDs', help: 'Recommended. Comma-separated Mattermost user IDs.' },
+      MATTERMOST_ALLOWED_USERS: {
+        label: 'Allowed user IDs',
+        help: 'Recommended. Comma-separated Mattermost user IDs.'
+      },
       MATRIX_HOMESERVER: { label: 'Homeserver URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: 'Access token' },
       MATRIX_USER_ID: { label: 'Bot user ID', placeholder: '@hermes:example.org' },
@@ -961,7 +1038,7 @@ export const en: Translations = {
     groupTitleGrouped: 'Ungroup sessions',
     groupTitleUngrouped: 'Group by workspace',
     allPinned: 'Everything here is pinned. Unpin a chat to show it in recents.',
-    shiftClickHint: 'Shift-click a chat to pin · drag to reorder',
+    shiftClickHint: 'Shift-click a chat to pin',
     noWorkspace: 'No workspace',
     newSessionIn: label => `New session in ${label}`,
     reorderWorkspace: label => `Reorder workspace ${label}`,
@@ -1057,8 +1134,8 @@ export const en: Translations = {
       '/': 'slash command palette',
       '?': 'this quick help (delete to dismiss)',
       Enter: 'send · Shift+Enter for newline',
-      'Cmd/Ctrl+K': 'send next queued turn',
-      'Cmd/Ctrl+L': 'redraw',
+      'Cmd/Ctrl+Shift+K': 'send next queued turn',
+      'Cmd/Ctrl+/': 'all keyboard shortcuts',
       Esc: 'close popover · cancel run',
       '↑ / ↓': 'cycle popover / history'
     },
@@ -1212,7 +1289,10 @@ export const en: Translations = {
     featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
     openRouterPitch: 'One key, hundreds of models — a solid default',
     apiKeyOptions: {
-      openrouter: { short: 'one key, many models', description: 'Hosts hundreds of models behind a single key. Good default for new installs.' },
+      openrouter: {
+        short: 'one key, many models',
+        description: 'Hosts hundreds of models behind a single key. Good default for new installs.'
+      },
       openai: { short: 'GPT-class models', description: 'Direct access to OpenAI models.' },
       gemini: { short: 'Gemini models', description: 'Direct access to Google Gemini models.' },
       xai: { short: 'Grok models', description: 'Direct access to xAI Grok models.' },
@@ -1459,8 +1539,7 @@ export const en: Translations = {
       showConsole: 'Show preview console',
       hideDevTools: 'Hide preview DevTools',
       openDevTools: 'Open preview DevTools',
-      finishedRestarting: message =>
-        `Hermes finished restarting the preview server${message ? `: ${message}` : ''}`,
+      finishedRestarting: message => `Hermes finished restarting the preview server${message ? `: ${message}` : ''}`,
       failedRestarting: message => `Server restart failed: ${message}`,
       unknownError: 'unknown error',
       restartedTitle: 'Preview server restarted',

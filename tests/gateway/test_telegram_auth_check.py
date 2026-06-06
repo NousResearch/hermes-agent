@@ -1,0 +1,232 @@
+"""Tests for Telegram adapter early authorization check.
+
+Verifies that unauthorized users are blocked before any text batching,
+event building, or response generation occurs.
+"""
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageType
+
+
+def _make_adapter(allow_from=None, allowed_chats=None, group_allowed_chats=None):
+    from gateway.platforms.telegram import TelegramAdapter
+
+    extra = {}
+    if allow_from is not None:
+        extra["allow_from"] = allow_from
+    if allowed_chats is not None:
+        extra["allowed_chats"] = allowed_chats
+    if group_allowed_chats is not None:
+        extra["group_allowed_chats"] = group_allowed_chats
+
+    adapter = object.__new__(TelegramAdapter)
+    adapter.platform = Platform.TELEGRAM
+    adapter.config = PlatformConfig(enabled=True, token="fake-token", extra=extra)
+    adapter._bot = SimpleNamespace(id=999, username="test_bot")
+    adapter._message_handler = AsyncMock()
+    adapter._pending_text_batches = {}
+    adapter._pending_text_batch_tasks = {}
+    adapter._text_batch_delay_seconds = 0.01
+    adapter._text_batch_split_delay_seconds = 0.01
+    adapter._mention_patterns = adapter._compile_mention_patterns()
+    adapter._forum_lock = asyncio.Lock()
+    adapter._forum_command_registered = set()
+    adapter._active_sessions = {}
+    adapter._pending_messages = {}
+    adapter._is_callback_user_authorized = lambda user_id, **_kw: True
+    return adapter
+
+
+def _make_message(text="hello", *, from_user_id=111, chat_id=-100, chat_type="group"):
+    return SimpleNamespace(
+        message_id=42,
+        text=text,
+        caption=None,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=None,
+        is_topic_message=False,
+        chat=SimpleNamespace(id=chat_id, type=chat_type, title="Test", is_forum=False),
+        from_user=SimpleNamespace(id=from_user_id, full_name="Test User", first_name="Test"),
+        reply_to_message=None,
+        date=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_user_blocked_before_event_building():
+    """Unauthorized user's message should be blocked before _build_message_event."""
+    adapter = _make_adapter(allow_from=["222"])  # Only user 222 allowed
+
+    build_called = False
+    original_build = adapter._build_message_event
+
+    def track_build(*a, **kw):
+        nonlocal build_called
+        build_called = True
+        return original_build(*a, **kw)
+
+    adapter._build_message_event = track_build
+
+    update = SimpleNamespace(
+        update_id=1,
+        message=_make_message(from_user_id=111),  # User 111 NOT in allow_from
+        effective_message=None,
+    )
+
+    await adapter._handle_text_message(update, SimpleNamespace())
+
+    assert build_called is False, "build_message_event should not be called for unauthorized user"
+
+
+@pytest.mark.asyncio
+async def test_authorized_user_processed_normally():
+    """Authorized user's message should pass the auth check and build an event."""
+    adapter = _make_adapter(allow_from=["111"])
+
+    build_called = False
+    original_build = adapter._build_message_event
+
+    def track_build(*a, **kw):
+        nonlocal build_called
+        build_called = True
+        return original_build(*a, **kw)
+
+    adapter._build_message_event = track_build
+
+    update = SimpleNamespace(
+        update_id=1,
+        message=_make_message(from_user_id=111),
+        effective_message=None,
+    )
+
+    await adapter._handle_text_message(update, SimpleNamespace())
+
+    assert build_called is True, "build_message_event should be called for authorized user"
+
+
+@pytest.mark.asyncio
+async def test_channel_post_passes_auth():
+    """Messages with no from_user (channel posts) should pass user-level auth."""
+    adapter = _make_adapter(allow_from=["111"])
+
+    build_called = False
+    original_build = adapter._build_message_event
+
+    def track_build(*a, **kw):
+        nonlocal build_called
+        build_called = True
+        return original_build(*a, **kw)
+
+    adapter._build_message_event = track_build
+
+    msg = _make_message()
+    msg.from_user = None  # Channel post has no sender
+
+    update = SimpleNamespace(
+        update_id=1,
+        message=msg,
+        effective_message=None,
+    )
+
+    await adapter._handle_text_message(update, SimpleNamespace())
+
+    assert build_called is True, "Channel posts should pass user-level auth"
+
+
+@pytest.mark.asyncio
+async def test_command_from_unauthorized_user_blocked():
+    """Commands from unauthorized users should be blocked."""
+    adapter = _make_adapter(allow_from=["222"])
+    adapter.handle_message = AsyncMock()
+
+    update = SimpleNamespace(
+        update_id=1,
+        message=_make_message(text="/start", from_user_id=111),
+        effective_message=None,
+    )
+
+    await adapter._handle_command(update, SimpleNamespace())
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_command_from_authorized_user_processed():
+    """Commands from authorized users should be processed."""
+    adapter = _make_adapter(allow_from=["111"])
+    adapter.handle_message = AsyncMock()
+
+    update = SimpleNamespace(
+        update_id=1,
+        message=_make_message(text="/start", from_user_id=111),
+        effective_message=None,
+    )
+
+    await adapter._handle_command(update, SimpleNamespace())
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_location_from_unauthorized_user_blocked():
+    """Location messages from unauthorized users should be blocked."""
+    adapter = _make_adapter(allow_from=["222"])
+
+    msg = _make_message(from_user_id=111)
+    msg.text = None
+    msg.location = SimpleNamespace(latitude=53.3498, longitude=-6.2603)
+
+    update = SimpleNamespace(
+        update_id=1,
+        message=msg,
+        effective_message=None,
+    )
+
+    # Should not raise — just silently return
+    await adapter._handle_location_message(update, SimpleNamespace())
+
+
+def test_is_user_authorized_from_message_allow_from():
+    """_is_user_authorized_from_message should respect adapter-level allow_from."""
+    adapter = _make_adapter(allow_from=["111", "222"])
+
+    msg = _make_message(from_user_id=111)
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+    msg = _make_message(from_user_id=333)
+    assert adapter._is_user_authorized_from_message(msg) is False
+
+
+def test_is_user_authorized_from_message_wildcard():
+    """_is_user_authorized_from_message should accept wildcard '*'."""
+    adapter = _make_adapter(allow_from=["*"])
+
+    msg = _make_message(from_user_id=999)
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+
+def test_is_user_authorized_from_message_no_from_user():
+    """_is_user_authorized_from_message should return True for messages without from_user."""
+    adapter = _make_adapter(allow_from=["111"])
+
+    msg = _make_message()
+    msg.from_user = None
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+
+def test_is_user_authorized_from_message_callback():
+    """_is_user_authorized_from_message should use _is_callback_user_authorized."""
+    adapter = _make_adapter()
+    adapter._is_callback_user_authorized = lambda uid: uid == "555"
+
+    msg = _make_message(from_user_id=555)
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+    msg = _make_message(from_user_id=666)
+    assert adapter._is_user_authorized_from_message(msg) is False

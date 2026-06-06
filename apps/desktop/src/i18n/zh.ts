@@ -318,6 +318,9 @@ export const zh: Translations = {
         max_concurrent_children: '并行子智能体',
         child_timeout_seconds: '子智能体超时',
         reasoning_effort: '子智能体推理强度'
+      },
+      updates: {
+        non_interactive_local_changes: '应用内更新本地更改'
       }
     }),
     fieldDescriptions: defineFieldCopy({
@@ -370,6 +373,10 @@ export const zh: Translations = {
         elevenlabs: {
           language_code: '可选的 ISO-639-3 语言代码。留空让 ElevenLabs 自动检测。'
         }
+      },
+      updates: {
+        non_interactive_local_changes:
+          'Hermes 从应用内更新时（无终端提示），保留本地源码修改（暂存）或丢弃（放弃）。通过终端更新时始终会询问。'
       }
     }),
     about: {

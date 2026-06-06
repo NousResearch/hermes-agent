@@ -234,3 +234,144 @@ class TestRegistration:
         codex_plugin.register(_Ctx())
         assert len(registered) == 1
         assert registered[0].name == "openai-codex"
+
+# ── Edit / reference-image support ─────────────────────────────────────────
+
+class TestEdit:
+    def test_supports_edit(self, provider):
+        assert provider.supports_edit() is True
+
+    def test_data_url_reference_becomes_input_image(self):
+        data_url = f"data:image/png;base64,{_b64_png()}"
+        part = codex_plugin._image_to_input_image_part(data_url)
+        assert part == {"type": "input_image", "image_url": data_url}
+
+    def test_local_reference_must_be_under_image_cache(self, tmp_path):
+        outside = tmp_path / "outside.png"
+        outside.write_bytes(bytes.fromhex(_PNG_HEX))
+        with pytest.raises(ValueError, match="Hermes image cache"):
+            codex_plugin._image_to_input_image_part(str(outside))
+
+    def test_local_reference_cache_path_encoded_as_data_url(self, tmp_path):
+        cache = tmp_path / "cache" / "images"
+        cache.mkdir(parents=True)
+        source = cache / "source.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+        part = codex_plugin._image_to_input_image_part(str(source))
+        assert part["type"] == "input_image"
+        assert part["image_url"].startswith("data:image/png;base64,")
+
+    def test_edit_uses_reference_image_and_action(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, *, prompt, image, images, size, quality):
+            captured.update({"token": token, "prompt": prompt, "image": image, "images": images, "size": size, "quality": quality})
+            payload = codex_plugin._build_responses_payload(
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                content=[{"type": "input_text", "text": prompt}] + [
+                    {"type": "input_image", "image_url": ref} for ref in images
+                ],
+                instructions=codex_plugin._CODEX_EDIT_INSTRUCTIONS,
+                action="edit",
+            )
+            captured["payload"] = payload
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_edited_image_b64", _collect)
+        data_url = f"data:image/png;base64,{_b64_png()}"
+        result = provider.edit("make it blue", data_url, aspect_ratio="9:16", quality_tier="high")
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2-high"
+        assert result["quality"] == "high"
+        assert result["size"] == "1024x1824"
+        assert result["source_image"] == data_url
+        assert Path(result["image"]).exists()
+        assert Path(result["image"]).name.startswith("openai_codex_edit_")
+        assert captured["token"] == "codex-token"
+        assert captured["images"] == [data_url]
+        assert captured["payload"]["instructions"] == codex_plugin._CODEX_EDIT_INSTRUCTIONS
+        assert captured["payload"]["tools"][0]["action"] == "edit"
+        assert captured["payload"]["input"][0]["content"][1] == {"type": "input_image", "image_url": data_url}
+
+    def test_edit_passes_multiple_reference_images_in_order(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, *, prompt, image, images, size, quality):
+            captured["images"] = images
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_edited_image_b64", _collect)
+        a = f"data:image/png;base64,{_b64_png()}"
+        b = "https://example.test/ref-b.png"
+        c = "https://example.test/ref-c.png"
+        result = provider.edit("combine them", a, images=[a, b, c, a])
+
+        assert result["success"] is True
+        assert captured["images"] == [a, b, c, a]
+        assert result["source_images"] == [a, b, c, a]
+
+    def test_edit_includes_primary_with_extra_reference_images_in_order(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, *, prompt, image, images, size, quality):
+            captured["images"] = images
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_edited_image_b64", _collect)
+        primary = f"data:image/png;base64,{_b64_png()}"
+        extra_1 = "https://example.test/ref-extra-1.png"
+        extra_2 = "https://example.test/ref-extra-2.png"
+        result = provider.edit("combine them", primary, reference_images=[extra_1, extra_2])
+
+        assert result["success"] is True
+        assert captured["images"] == [primary, extra_1, extra_2]
+        assert result["source_images"] == [primary, extra_1, extra_2]
+
+    def test_collect_edit_reference_images_supports_references_alias(self):
+        primary = "https://example.test/primary.png"
+        references = [
+            "https://example.test/ref-1.png",
+            "https://example.test/ref-2.png",
+            "https://example.test/ref-1.png",
+        ]
+
+        assert codex_plugin._collect_edit_reference_images(primary, {"references": references}) == [primary, *references]
+
+    def test_edited_payload_contains_all_reference_images(self):
+        data_url = f"data:image/png;base64,{_b64_png()}"
+        payload = {}
+
+        def _collect(_token, built_payload):
+            payload.update(built_payload)
+            return _b64_png()
+
+        monkeypatch = pytest.MonkeyPatch()
+        try:
+            monkeypatch.setattr(codex_plugin, "_collect_image_b64_from_payload", _collect)
+            codex_plugin._collect_edited_image_b64(
+                "codex-token",
+                prompt="combine",
+                image=data_url,
+                images=[data_url, "https://example.test/ref-b.png"],
+                size="1024x1024",
+                quality="medium",
+            )
+        finally:
+            monkeypatch.undo()
+
+        content = payload["input"][0]["content"]
+        assert [part["type"] for part in content] == ["input_text", "input_image", "input_image"]
+        assert content[1]["image_url"] == data_url
+        assert content[2]["image_url"] == "https://example.test/ref-b.png"
+
+    def test_invalid_explicit_size_returns_invalid_argument(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        result = provider.edit("make it blue", f"data:image/png;base64,{_b64_png()}", size="123x456")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"

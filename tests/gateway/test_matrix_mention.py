@@ -25,6 +25,9 @@ def _make_adapter(tmp_path=None):
         extra={
             "homeserver": "https://matrix.example.org",
             "user_id": "@hermes:example.org",
+            # Keep tests independent from live gateway env vars.
+            "allowed_rooms": "",
+            "allowed_rooms_apply_to_dms": False,
         },
     )
     adapter = MatrixAdapter(config)

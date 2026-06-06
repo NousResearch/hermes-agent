@@ -18,7 +18,9 @@ Environment variables:
                             (eyes/checkmark/cross). Default: true
     MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
     MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement (alias of matrix.free_response_rooms)
-    MATRIX_ALLOWED_ROOMS    Comma-separated room IDs; if set, bot ONLY responds in these rooms (whitelist, DMs exempt; alias of matrix.allowed_rooms)
+    MATRIX_ALLOWED_ROOMS    Comma-separated room IDs; if set, bot ONLY responds in these rooms (whitelist; DMs exempt unless MATRIX_ALLOWED_ROOMS_APPLY_TO_DMS=true; alias of matrix.allowed_rooms)
+    MATRIX_ALLOWED_ROOMS_APPLY_TO_DMS
+                            Set "true" to enforce MATRIX_ALLOWED_ROOMS for Matrix DMs too (recommended for multi-profile deployments)
     MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
     MATRIX_DM_AUTO_THREAD       Auto-create threads for DM messages (default: false)
     MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
@@ -426,7 +428,12 @@ class MatrixAdapter(BasePlatformAdapter):
             self._free_rooms: Set[str] = {
                 r.strip() for r in str(free_rooms_raw).split(",") if r.strip()
             }
-        # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
+        # If non-empty, bot ONLY responds in these rooms (whitelist). Historically
+        # DMs were exempt, but multi-profile Hermes deployments often represent
+        # profile rooms as DMs with the same Matrix bot account. In that topology,
+        # exempting DMs lets every profile gateway process every profile DM and
+        # causes duplicate/triple replies. MATRIX_ALLOWED_ROOMS_APPLY_TO_DMS=true
+        # makes the whitelist strict for DMs as well.
         allowed_rooms_raw = config.extra.get("allowed_rooms")
         if allowed_rooms_raw is None:
             allowed_rooms_raw = os.getenv("MATRIX_ALLOWED_ROOMS", "")
@@ -438,6 +445,13 @@ class MatrixAdapter(BasePlatformAdapter):
             self._allowed_rooms: Set[str] = {
                 r.strip() for r in str(allowed_rooms_raw).split(",") if r.strip()
             }
+        allowed_rooms_apply_raw = config.extra.get("allowed_rooms_apply_to_dms")
+        if allowed_rooms_apply_raw is None:
+            allowed_rooms_apply_raw = os.getenv("MATRIX_ALLOWED_ROOMS_APPLY_TO_DMS", "false")
+        if isinstance(allowed_rooms_apply_raw, bool):
+            self._allowed_rooms_apply_to_dms = allowed_rooms_apply_raw
+        else:
+            self._allowed_rooms_apply_to_dms = str(allowed_rooms_apply_raw).lower() in {"true", "1", "yes", "on"}
         self._auto_thread: bool = os.getenv("MATRIX_AUTO_THREAD", "true").lower() in {
             "true",
             "1",
@@ -523,6 +537,20 @@ class MatrixAdapter(BasePlatformAdapter):
         return os.getenv(
             "MATRIX_THREAD_REQUIRE_MENTION", "false"
         ).lower() in {"true", "1", "yes", "on"}
+
+    def _strict_allowed_room_miss(self, room_id: str) -> bool:
+        """Return True when strict room whitelist should drop this event immediately.
+
+        This guard is intentionally independent of DM detection. In multi-profile
+        deployments, many profile rooms look like Matrix DMs while sharing the
+        same bot account; checking DM status before the whitelist is exactly what
+        allowed duplicate model calls.
+        """
+        return bool(
+            getattr(self, "_allowed_rooms", set())
+            and getattr(self, "_allowed_rooms_apply_to_dms", False)
+            and room_id not in getattr(self, "_allowed_rooms", set())
+        )
 
     # ------------------------------------------------------------------
     # E2EE helpers
@@ -1583,6 +1611,17 @@ class MatrixAdapter(BasePlatformAdapter):
             room_id,
         )
 
+        # Strict room whitelist: fail closed before DM detection, content/media
+        # handling, text batching, read receipts, or model dispatch. This is the
+        # hard guard for multi-profile Matrix deployments that share one bot user.
+        if self._strict_allowed_room_miss(room_id):
+            logger.debug(
+                "Matrix: ignoring event %s in %s — hard room whitelist miss",
+                getattr(event, "event_id", "?"),
+                room_id,
+            )
+            return
+
         # Ignore own messages (case-insensitive; also drops when our own
         # user_id hasn't been resolved yet — see _is_self_sender docstring
         # and issue #15763).
@@ -1731,19 +1770,24 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
 
+        # allowed_rooms check (whitelist — must pass before other gating).
+        # For backward compatibility, DMs remain exempt unless
+        # MATRIX_ALLOWED_ROOMS_APPLY_TO_DMS=true.
+        if (
+            self._allowed_rooms
+            and room_id not in self._allowed_rooms
+            and (not is_dm or self._allowed_rooms_apply_to_dms)
+        ):
+            logger.debug(
+                "Matrix: ignoring message %s in %s — room not in "
+                "MATRIX_ALLOWED_ROOMS whitelist",
+                event_id,
+                room_id,
+            )
+            return None
+
         # Require-mention gating.
         if not is_dm:
-            # allowed_rooms check (whitelist — must pass before other gating).
-            # When set, messages from rooms NOT in this whitelist are silently
-            # ignored, even if @mentioned.  DMs are already excluded above.
-            if self._allowed_rooms and room_id not in self._allowed_rooms:
-                logger.debug(
-                    "Matrix: ignoring message %s in %s — room not in "
-                    "MATRIX_ALLOWED_ROOMS whitelist",
-                    event_id,
-                    room_id,
-                )
-                return None
 
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
@@ -1880,6 +1924,13 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> None:
         """Process a media message event (image, audio, video, file)."""
         body = source_content.get("body", "") or ""
+        if self._strict_allowed_room_miss(room_id):
+            logger.debug(
+                "Matrix: ignoring media event %s in %s — hard room whitelist miss",
+                event_id,
+                room_id,
+            )
+            return
         url = source_content.get("url", "")
 
         # Convert mxc:// to HTTP URL for downstream processing.
@@ -1903,6 +1954,18 @@ class MatrixAdapter(BasePlatformAdapter):
         is_encrypted_media = bool(
             file_content and isinstance(file_content, dict) and file_content.get("url")
         )
+
+        ctx = await self._resolve_message_context(
+            room_id,
+            sender,
+            event_id,
+            body,
+            source_content,
+            relates_to,
+        )
+        if ctx is None:
+            return
+        body, is_dm, chat_type, thread_id, display_name, source = ctx
 
         media_type = "application/octet-stream"
         msg_type = MessageType.DOCUMENT
@@ -2011,18 +2074,6 @@ class MatrixAdapter(BasePlatformAdapter):
                             )
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
-
-        ctx = await self._resolve_message_context(
-            room_id,
-            sender,
-            event_id,
-            body,
-            source_content,
-            relates_to,
-        )
-        if ctx is None:
-            return
-        body, is_dm, chat_type, thread_id, display_name, source = ctx
 
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
@@ -2208,6 +2259,13 @@ class MatrixAdapter(BasePlatformAdapter):
             return
 
         room_id = str(getattr(event, "room_id", ""))
+        if self._strict_allowed_room_miss(room_id):
+            logger.debug(
+                "Matrix: ignoring reaction %s in %s — hard room whitelist miss",
+                event_id,
+                room_id,
+            )
+            return
         content = getattr(event, "content", None)
         if content:
             relates_to = (

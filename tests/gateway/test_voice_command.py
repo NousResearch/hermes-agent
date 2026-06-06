@@ -2786,6 +2786,52 @@ class TestVoiceTTSPlayback:
             runner, "all", MessageType.VOICE, agent_msgs=agent_msgs, already_sent=True,
         ) is False
 
+    def test_voice_reply_context_prompt_blocks_manual_tts_tools(self):
+        """Enabled Telegram voice turns instruct the agent to let adapter TTS speak."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        runner._voice_mode["telegram:ch1"] = "voice_only"
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="ch1"),
+            text="test",
+            message_type=MessageType.VOICE,
+        )
+
+        prompt = runner._voice_reply_context_prompt(event)
+
+        assert "Voice reply mode is active" in prompt
+        assert "Do not call text_to_speech" in prompt
+        assert "concise, natural text only" in prompt
+
+    def test_voice_reply_context_prompt_absent_for_text_input(self):
+        """voice_only must not constrain normal text turns."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        runner._voice_mode["telegram:ch1"] = "voice_only"
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="ch1"),
+            text="test",
+            message_type=MessageType.TEXT,
+        )
+
+        assert runner._voice_reply_context_prompt(event) == ""
+
+    def test_voice_reply_context_prompt_absent_when_voice_mode_off(self):
+        """Voice messages do not get the prompt unless this chat opted in."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        runner._voice_mode["telegram:ch1"] = "off"
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="ch1"),
+            text="test",
+            message_type=MessageType.VOICE,
+        )
+
+        assert runner._voice_reply_context_prompt(event) == ""
+
 
 class TestUDPKeepalive:
     """UDP keepalive prevents Discord from dropping the voice session."""

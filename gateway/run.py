@@ -9461,6 +9461,10 @@ class GatewayRunner:
                 if vc_context:
                     context_prompt += f"\n\n{vc_context}"
 
+        voice_reply_note = self._voice_reply_context_prompt(event)
+        if voice_reply_note:
+            context_prompt += f"\n\n{voice_reply_note}"
+
         # -----------------------------------------------------------------
         # Auto-analyze images sent by the user
         #
@@ -12364,6 +12368,29 @@ class GatewayRunner:
         the voice reply instead.
         """
         return event.message_type == MessageType.VOICE and not already_sent
+
+    def _voice_reply_context_prompt(self, event: MessageEvent) -> str:
+        """Guide enabled voice-note turns away from manual TTS/tool work."""
+        if event.message_type != MessageType.VOICE:
+            return ""
+
+        chat_id = event.source.chat_id
+        voice_mode = self._voice_mode.get(
+            self._voice_key(event.source.platform, chat_id),
+            "off",
+        )
+        if voice_mode not in {"voice_only", "all"}:
+            return ""
+
+        return (
+            "[Voice reply mode is active for this chat. The platform adapter "
+            "will synthesize and send your final answer as audio. Do not call "
+            "text_to_speech, terminal, or media-generation tools just to make "
+            "the spoken reply. Do not include MEDIA: tags or audio file paths "
+            "unless the user explicitly asks you to create a reusable audio "
+            "asset. Answer with concise, natural text only; prefer one or two "
+            "short spoken sentences.]"
+        )
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""

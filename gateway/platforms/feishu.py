@@ -234,8 +234,8 @@ _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withd
 # small footer emoji — a success badge on every message would add noise, so
 # we only mark start (Typing) and failure (CrossMark); the reply itself is
 # the success signal.
-_FEISHU_REACTION_IN_PROGRESS = "Typing"
-_FEISHU_REACTION_FAILURE = "CrossMark"
+_FEISHU_REACTION_IN_PROGRESS = os.getenv("FEISHU_REACTION_IN_PROGRESS", "Typing")
+_FEISHU_REACTION_FAILURE = os.getenv("FEISHU_REACTION_FAILURE", "CrossMark")
 # Bound on the (message_id → reaction_id) handle cache. Happy-path entries
 # drain on completion; the cap is a safeguard against unbounded growth from
 # delete-failures, not a capacity plan.

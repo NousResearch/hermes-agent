@@ -43,7 +43,7 @@ import {
   startProviderOAuth,
   submitOnboardingCode
 } from '@/store/onboarding'
-import type { OAuthProvider } from '@/types/hermes'
+import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -94,6 +94,74 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
     placeholder: 'http://127.0.0.1:8000/v1'
   }
 ]
+
+// Build the FULL API-key provider catalog from the backend model options so the
+// onboarding / Providers key form lists every `api_key` provider `hermes model`
+// knows about — not just the hand-curated five. Curated entries keep their
+// richer copy + placeholders and float to the top (recommended defaults); every
+// other api_key provider is appended with a generic "paste {KEY}" affordance.
+// OAuth / external providers are intentionally excluded here — they go through
+// the OAuth picker / sign-in flow, not a pasted key.
+function useApiKeyCatalog(): ApiKeyOption[] {
+  const [rows, setRows] = useState<ModelOptionProvider[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+
+    // Best-effort — on failure the curated defaults still render. Wrapped in
+    // Promise.resolve().then so a synchronous throw (e.g. no desktop bridge in
+    // tests) is funneled into the same .catch instead of escaping.
+    void Promise.resolve()
+      .then(() => getGlobalModelOptions())
+      .then(res => {
+        if (!cancelled) {
+          setRows(res.providers ?? [])
+        }
+      })
+      .catch(() => {
+        // Ignore — fall back to the curated API_KEY_OPTIONS only.
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  return useMemo(() => {
+    const curatedByEnv = new Map(API_KEY_OPTIONS.map(o => [o.envKey, o]))
+    const derived: ApiKeyOption[] = []
+    const seenEnv = new Set<string>(API_KEY_OPTIONS.map(o => o.envKey))
+
+    for (const row of rows) {
+      // Only api_key providers can be activated with a pasted key. Skip OAuth /
+      // external / managed flows and anything missing an env var to write to.
+      if (row.auth_type && row.auth_type !== 'api_key') {
+        continue
+      }
+
+      const envKey = row.key_env
+
+      if (!envKey || seenEnv.has(envKey)) {
+        continue
+      }
+
+      seenEnv.add(envKey)
+      derived.push({
+        id: row.slug,
+        name: row.name,
+        envKey,
+        description: `Direct API access to ${row.name}.`,
+        docsUrl: ''
+      })
+    }
+
+    // Curated first (recommended order), then the rest alphabetically so the
+    // long tail is scannable.
+    derived.sort((a, b) => a.name.localeCompare(b.name))
+
+    return [...API_KEY_OPTIONS.filter(o => curatedByEnv.has(o.envKey)), ...derived]
+  }, [rows])
+}
 
 const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
   nous: { order: 0, title: 'Nous Portal' },
@@ -193,7 +261,7 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
 
   return (
     <div className="fixed inset-0 z-1300 flex items-center justify-center bg-(--ui-chat-surface-background) p-6">
-      <div className="relative w-full max-w-[45rem] overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-sm">
+      <div className="relative w-full max-w-[45rem] overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background)">
         <Header />
         {onboarding.manual ? (
           <Button
@@ -235,9 +303,7 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
   return (
     <div className="grid gap-3" role="status">
       <p className="text-sm text-muted-foreground">
-        {installing
-          ? t.onboarding.preparingInstall
-          : t.onboarding.starting}
+        {installing ? t.onboarding.preparingInstall : t.onboarding.starting}
       </p>
       <div className="h-2 overflow-hidden rounded-full bg-muted">
         <div
@@ -304,6 +370,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const [showAll, setShowAll] = useState(readShowAll)
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
+  const apiKeyOptions = useApiKeyCatalog()
 
   if (mode === 'apikey' || !hasOauth) {
     return (
@@ -312,6 +379,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           canGoBack={hasOauth}
           onBack={() => setOnboardingMode('oauth')}
           onSave={(envKey, value, name) => saveOnboardingApiKey(envKey, value, name, ctx)}
+          options={apiKeyOptions}
         />
         {manual ? null : (
           <div className="flex justify-center border-t border-(--ui-stroke-tertiary) pt-3">
@@ -336,15 +404,17 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
 
   return (
     <div className="grid gap-2">
-      {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
-      {showRest ? (
-        <>
-          {rest.map(p => (
-            <ProviderRow key={p.id} onSelect={select} provider={p} />
-          ))}
-          <KeyProviderRow onClick={() => setOnboardingMode('apikey')} />
-        </>
-      ) : null}
+      <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1">
+        {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
+        {showRest ? (
+          <>
+            {rest.map(p => (
+              <ProviderRow key={p.id} onSelect={select} provider={p} />
+            ))}
+            <KeyProviderRow onClick={() => setOnboardingMode('apikey')} />
+          </>
+        ) : null}
+      </div>
       {collapsible ? (
         <button
           className="flex items-center justify-center gap-1.5 pt-1 text-xs font-medium text-muted-foreground transition hover:text-foreground"
@@ -481,9 +551,7 @@ export function ProviderRow({
           </span>
           {loggedIn ? <ConnectedTag /> : null}
         </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          {t.onboarding.flowSubtitles[provider.flow]}
-        </p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
       </div>
       <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
     </button>
@@ -521,12 +589,12 @@ export function ApiKeyForm({
   // Providers page wiring its search into this grid). Keep the selection valid
   // by snapping back to the first remaining option when the current one drops.
   useEffect(() => {
-    if (options.length > 0 && !options.some(o => o.id === option.id)) {
+    if (options.length > 0 && !options.some(o => o.envKey === option.envKey)) {
       setOption(options[0])
       setValue('')
       setError(null)
     }
-  }, [option.id, options])
+  }, [option.envKey, options])
   // The catalog grid can be tall, leaving the entry field far below the fold.
   // On selection we scroll the field into view and focus it so it's always
   // obvious where to paste next.
@@ -584,29 +652,23 @@ export function ApiKeyForm({
         </button>
       ) : null}
 
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1 sm:grid-cols-2">
         {options.map(o => (
           <button
             className={cn(
               'rounded-2xl border bg-background/60 p-3 text-left transition hover:bg-accent/50',
-              option.id === o.id ? 'border-primary ring-2 ring-primary/20' : 'border-border'
+              option.envKey === o.envKey ? 'border-primary ring-2 ring-primary/20' : 'border-transparent'
             )}
-            key={o.id}
+            key={o.envKey}
             onClick={() => pick(o)}
             type="button"
           >
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-medium">{o.name}</span>
-              {option.id === o.id ? (
-                <Check className="size-4 text-primary" />
-              ) : isSet?.(o.envKey) ? (
-                <Check className="size-3.5 text-muted-foreground" />
-              ) : null}
+              {isSet?.(o.envKey) ? <Check className="size-3.5 text-muted-foreground" /> : null}
             </div>
             {(t.onboarding.apiKeyOptions[o.id]?.short ?? o.short) ? (
-              <p className="mt-1 text-xs text-muted-foreground">
-                {t.onboarding.apiKeyOptions[o.id]?.short ?? o.short}
-              </p>
+              <p className="mt-1 text-xs text-muted-foreground">{t.onboarding.apiKeyOptions[o.id]?.short ?? o.short}</p>
             ) : null}
           </button>
         ))}
@@ -624,7 +686,8 @@ export function ApiKeyForm({
           onChange={e => setValue(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && void submit()}
           placeholder={
-            currentRedacted ?? (alreadySet ? t.onboarding.replaceCurrent : option.placeholder || t.onboarding.pasteApiKey)
+            currentRedacted ??
+            (alreadySet ? t.onboarding.replaceCurrent : option.placeholder || t.onboarding.pasteApiKey)
           }
           type={isLocal ? 'text' : 'password'}
           value={value}
@@ -717,9 +780,7 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
   if (flow.status === 'awaiting_browser') {
     return (
       <Step title={t.onboarding.signInWith(title)}>
-        <p className="text-sm text-muted-foreground">
-          {t.onboarding.autoBrowser(title)}
-        </p>
+        <p className="text-sm text-muted-foreground">{t.onboarding.autoBrowser(title)}</p>
         <FlowFooter left={<DocsLink href={flow.start.auth_url}>{t.onboarding.reopenSignInPage}</DocsLink>}>
           <span className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="size-3 animate-spin" />
@@ -734,12 +795,14 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
   if (flow.status === 'external_pending') {
     return (
       <Step title={t.onboarding.signInWith(title)}>
-        <p className="text-sm text-muted-foreground">
-          {t.onboarding.externalPending(title)}
-        </p>
+        <p className="text-sm text-muted-foreground">{t.onboarding.externalPending(title)}</p>
         <CodeBlock copied={flow.copied} onCopy={() => void copyExternalCommand()} text={flow.provider.cli_command} />
         <FlowFooter
-          left={flow.provider.docs_url ? <DocsLink href={flow.provider.docs_url}>{t.onboarding.docs(title)}</DocsLink> : null}
+          left={
+            flow.provider.docs_url ? (
+              <DocsLink href={flow.provider.docs_url}>{t.onboarding.docs(title)}</DocsLink>
+            ) : null
+          }
         >
           <CancelBtn />
           <Button onClick={() => void recheckExternalSignin(ctx)}>

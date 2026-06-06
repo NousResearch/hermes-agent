@@ -80,6 +80,15 @@ from gateway.runtime.provider_error_sanitizer import (
     looks_like_gateway_provider_error,
     sanitize_gateway_final_response,
 )
+from gateway.runtime.auto_resume_freshness import (
+    AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT as _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT,
+    STARTUP_AUTO_RESUME_MAX_DEFAULT as _STARTUP_AUTO_RESUME_MAX_DEFAULT,
+    auto_continue_freshness_window,
+    coerce_gateway_timestamp,
+    is_fresh_gateway_interruption,
+    last_transcript_timestamp,
+    startup_auto_resume_max,
+)
 
 _TELEGRAM_NOISY_STATUS_RE = _status_message_filter.TELEGRAM_NOISY_STATUS_RE
 prepare_gateway_status_message = _status_message_filter.prepare_gateway_status_message
@@ -112,6 +121,36 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Backward-compatible facade for status callback filtering."""
     return prepare_gateway_status_message(platform, event_type, message)
+
+
+def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
+    """Backward-compatible facade for auto-resume timestamp coercion."""
+    return coerce_gateway_timestamp(value)
+
+
+def _auto_continue_freshness_window() -> float:
+    """Backward-compatible facade for auto-resume freshness config."""
+    return auto_continue_freshness_window()
+
+
+def _startup_auto_resume_max() -> int:
+    """Backward-compatible facade for startup auto-resume cap config."""
+    return startup_auto_resume_max()
+
+
+def _is_fresh_gateway_interruption(
+    value: Any,
+    *,
+    now: Optional[float] = None,
+    window_secs: Optional[float] = None,
+) -> bool:
+    """Backward-compatible facade for auto-resume freshness checks."""
+    return is_fresh_gateway_interruption(value, now=now, window_secs=window_secs)
+
+
+def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
+    """Backward-compatible facade for last transcript freshness timestamp."""
+    return last_transcript_timestamp(history)
 
 
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
@@ -147,97 +186,6 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
     return _TELEGRAM_COMMAND_MENTION_RE.sub(_replace, text)
 
 
-# Only auto-continue interrupted gateway turns while the interruption is fresh.
-# Stale tool-tail/resume markers can otherwise revive an unrelated old task
-# after a gateway restart when the user's next message starts new work.
-#
-# The freshness signal is the timestamp of the last transcript row, which
-# ``hermes_state.get_messages`` carries on every persisted message.  This
-# handles the two auto-continue cases uniformly:
-#   * resume_pending (gateway restart/shutdown watchdog marked the session)
-#   * tool-tail     (last persisted message is a tool result the agent
-#                    never got to reply to)
-# In both cases "when did we last do anything on this transcript" is the
-# correct freshness question, so one signal replaces two divergent ones.
-#
-# Default window: 1 hour.  This comfortably covers ``agent.gateway_timeout``
-# (30 min default) plus runtime slack — a legitimate long-running turn that
-# gets interrupted near its timeout boundary and is resumed shortly after
-# is still classified fresh.  Override via
-# ``config.yaml`` ``agent.gateway_auto_continue_freshness``.
-_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
-_STARTUP_AUTO_RESUME_MAX_DEFAULT = 1
-
-
-def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
-    """Best-effort conversion of stored gateway timestamps to epoch seconds.
-
-    Missing/unparseable timestamps return None so legacy transcripts keep the
-    historical auto-continue behaviour instead of being silently dropped.
-    Accepts: datetime, epoch seconds (int/float), epoch milliseconds (when
-    the magnitude exceeds year-2286), ISO-8601 strings (with or without a
-    trailing ``Z``), and numeric strings.
-    """
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.timestamp()
-    if isinstance(value, bool):  # bool is a subclass of int — skip it
-        return None
-    if isinstance(value, (int, float)):
-        # Some platform events use milliseconds; Hermes state rows use seconds.
-        return float(value) / 1000.0 if float(value) > 10_000_000_000 else float(value)
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        try:
-            numeric = float(text)
-            return numeric / 1000.0 if numeric > 10_000_000_000 else numeric
-        except ValueError:
-            pass
-        try:
-            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            return None
-    return None
-
-
-def _auto_continue_freshness_window() -> float:
-    """Return the configured auto-continue freshness window in seconds.
-
-    Reads ``HERMES_AUTO_CONTINUE_FRESHNESS`` (bridged from
-    ``config.yaml`` ``agent.gateway_auto_continue_freshness`` at gateway
-    startup, same pattern as ``HERMES_AGENT_TIMEOUT``).  Falls back to the
-    module default when unset or malformed.  Non-positive values disable
-    the freshness gate (restores the pre-fix "always fresh" behaviour for
-    users who want to opt out).
-    """
-    raw = os.environ.get("HERMES_AUTO_CONTINUE_FRESHNESS")
-    if raw is None or raw == "":
-        return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
-
-
-def _startup_auto_resume_max() -> int:
-    """Return max synthetic resume turns scheduled at gateway startup.
-
-    Real user messages still resume any remaining ``resume_pending`` sessions.
-    The cap only prevents restart from immediately stampeding provider calls
-    across every interrupted chat at once.
-    """
-    raw = os.environ.get("HERMES_STARTUP_AUTO_RESUME_MAX")
-    if raw is None or raw == "":
-        return _STARTUP_AUTO_RESUME_MAX_DEFAULT
-    try:
-        return max(0, int(raw))
-    except (TypeError, ValueError):
-        return _STARTUP_AUTO_RESUME_MAX_DEFAULT
-
-
 def _float_env(name: str, default: float) -> float:
     """Read an env var as float, falling back to ``default`` on typos/empty.
 
@@ -252,34 +200,6 @@ def _float_env(name: str, default: float) -> float:
     except (TypeError, ValueError):
         return float(default)
 
-
-def _is_fresh_gateway_interruption(
-    value: Any,
-    *,
-    now: Optional[float] = None,
-    window_secs: Optional[float] = None,
-) -> bool:
-    """Return True when an interruption marker is fresh enough to auto-continue.
-
-    Unknown timestamps are treated as fresh for backward compatibility with
-    legacy transcripts (pre-dating timestamp persistence) and with in-memory
-    test scaffolding that constructs history entries without timestamps.
-
-    A non-positive ``window_secs`` disables the gate (always fresh), which
-    restores the pre-fix behaviour for users who opt out via config.
-    """
-    window = (
-        float(window_secs)
-        if window_secs is not None
-        else float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
-    )
-    if window <= 0:
-        return True
-    timestamp = _coerce_gateway_timestamp(value)
-    if timestamp is None:
-        return True
-    current = time.time() if now is None else now
-    return current - timestamp <= window
 
 
 # Assistant-message fields that must survive transcript replay so multi-turn
@@ -455,30 +375,6 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
 
     return message
 
-
-def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
-    """Return the ``timestamp`` of the last usable transcript row, if any.
-
-    Skips metadata-only rows (``session_meta``, system injections) that are
-    dropped before being handed to the agent.  Returns ``None`` when no
-    usable row carries a timestamp — callers should treat that as "fresh"
-    for backward compatibility.
-    """
-    if not history:
-        return None
-    for msg in reversed(history):
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role")
-        if not role or role in {"session_meta", "system"}:
-            continue
-        ts = msg.get("timestamp")
-        if ts is not None:
-            return ts
-        # First non-meta row without a timestamp — legacy transcript row.
-        # Returning None lets the caller fall through to the legacy-fresh path.
-        return None
-    return None
 
 
 # ---------------------------------------------------------------------------

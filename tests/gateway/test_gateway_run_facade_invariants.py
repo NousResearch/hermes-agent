@@ -3,6 +3,13 @@
 from gateway import run
 from gateway.config import Platform
 from gateway.runtime.delivery_redaction import redact_gateway_user_facing_secrets
+from gateway.runtime.auto_resume_freshness import (
+    auto_continue_freshness_window,
+    coerce_gateway_timestamp,
+    is_fresh_gateway_interruption,
+    last_transcript_timestamp,
+    startup_auto_resume_max,
+)
 import gateway.run as gateway_run
 
 
@@ -47,3 +54,17 @@ def test_status_message_filter_facade_preserves_existing_behavior():
 
     assert gateway_run._prepare_gateway_status_message(Platform.TELEGRAM, "warn", noisy) is None
     assert gateway_run._prepare_gateway_status_message(Platform.DISCORD, "warn", noisy) == noisy
+
+
+def test_auto_resume_freshness_facade_preserves_private_import_surface():
+    history = [{"role": "user", "timestamp": 100.0}]
+
+    assert gateway_run._coerce_gateway_timestamp("1700000000") == coerce_gateway_timestamp(
+        "1700000000"
+    )
+    assert gateway_run._is_fresh_gateway_interruption(
+        90.0, now=100.0, window_secs=10.0
+    ) == is_fresh_gateway_interruption(90.0, now=100.0, window_secs=10.0)
+    assert gateway_run._last_transcript_timestamp(history) == last_transcript_timestamp(history)
+    assert gateway_run._auto_continue_freshness_window() == auto_continue_freshness_window()
+    assert gateway_run._startup_auto_resume_max() == startup_auto_resume_max()

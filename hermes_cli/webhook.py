@@ -91,7 +91,14 @@ def _get_webhook_config() -> dict:
 
 
 def _is_webhook_enabled() -> bool:
-    return bool(_get_webhook_config().get("enabled"))
+    """Check if webhook platform is enabled via config OR env var.
+
+    The gateway merges WEBHOOK_ENABLED env var into the in-memory platform
+    config (gateway/config.py:1535), so the CLI must mirror that check.
+    """
+    if _get_webhook_config().get("enabled"):
+        return True
+    return os.getenv("WEBHOOK_ENABLED", "").lower() in {"true", "1", "yes"}
 
 
 def _get_webhook_base_url() -> str:

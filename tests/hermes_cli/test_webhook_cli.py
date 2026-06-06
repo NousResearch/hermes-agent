@@ -211,3 +211,46 @@ class TestWebhookEnabledGate:
         )
         import hermes_cli.webhook as wh_mod
         assert wh_mod._is_webhook_enabled() is True
+
+    def test_env_var_enables_webhook(self, tmp_path, monkeypatch):
+        """WEBHOOK_ENABLED env var should enable webhook even without config."""
+        import hermes_cli.webhook as wh_mod
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Restore real implementation (autouse fixture patches it to lambda: True)
+        monkeypatch.setattr(wh_mod, "_is_webhook_enabled", wh_mod._is_webhook_enabled.__wrapped__ if hasattr(wh_mod._is_webhook_enabled, '__wrapped__') else None)
+        # Actually, just re-import to get the real function
+        import importlib
+        importlib.reload(wh_mod)
+        monkeypatch.setattr(wh_mod, "_get_webhook_config", lambda: {})
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        # No config, no env var → disabled
+        assert wh_mod._is_webhook_enabled() is False
+        # Set env var → enabled
+        monkeypatch.setenv("WEBHOOK_ENABLED", "true")
+        assert wh_mod._is_webhook_enabled() is True
+        # Case-insensitive
+        monkeypatch.setenv("WEBHOOK_ENABLED", "YES")
+        assert wh_mod._is_webhook_enabled() is True
+        monkeypatch.setenv("WEBHOOK_ENABLED", "1")
+        assert wh_mod._is_webhook_enabled() is True
+        # False values
+        monkeypatch.setenv("WEBHOOK_ENABLED", "false")
+        assert wh_mod._is_webhook_enabled() is False
+        monkeypatch.setenv("WEBHOOK_ENABLED", "0")
+        assert wh_mod._is_webhook_enabled() is False
+        # Empty
+        monkeypatch.setenv("WEBHOOK_ENABLED", "")
+        assert wh_mod._is_webhook_enabled() is False
+
+    def test_config_enabled_takes_precedence(self, tmp_path, monkeypatch):
+        """Config enabled=true works regardless of env var."""
+        import hermes_cli.webhook as wh_mod
+        import importlib
+        importlib.reload(wh_mod)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        monkeypatch.setattr(wh_mod, "_get_webhook_config", lambda: {"enabled": True})
+        assert wh_mod._is_webhook_enabled() is True
+        # Even if env var says false
+        monkeypatch.setenv("WEBHOOK_ENABLED", "false")
+        assert wh_mod._is_webhook_enabled() is True

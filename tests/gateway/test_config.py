@@ -608,6 +608,18 @@ class TestLoadGatewayConfig:
 
         assert config.max_concurrent_sessions == 2
 
+    def test_scalar_gateway_section_does_not_crash_streaming_fallback(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("gateway: disabled\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.streaming.transport == "auto"
+
     def test_bridges_discord_thread_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.thread_require_mention in config.yaml should reach the runtime env var."""
         hermes_home = tmp_path / ".hermes"

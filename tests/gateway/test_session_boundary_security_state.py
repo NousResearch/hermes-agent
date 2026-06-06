@@ -192,7 +192,7 @@ async def test_branch_clears_session_scoped_approval_and_yolo_state():
 async def test_branch_preserves_persisted_assistant_metadata():
     runner, _session_key = _make_branch_runner()
     runner.session_store.load_transcript.return_value = [
-        {"role": "user", "content": "hello"},
+        {"role": "user", "content": "hello", "message_id": "platform-msg-123"},
         {
             "role": "assistant",
             "content": "world",
@@ -210,6 +210,9 @@ async def test_branch_preserves_persisted_assistant_metadata():
     assert "Branched to" in result
     append_calls = runner._session_db.append_message.call_args_list
     assert len(append_calls) == 2
+    user_kwargs = append_calls[0].kwargs
+    assert user_kwargs["role"] == "user"
+    assert user_kwargs["platform_message_id"] == "platform-msg-123"
     assistant_kwargs = append_calls[1].kwargs
     assert assistant_kwargs["role"] == "assistant"
     assert assistant_kwargs["finish_reason"] == "stop"

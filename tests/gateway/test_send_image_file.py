@@ -57,6 +57,14 @@ class TestExtractMediaImages:
         assert "/audio.ogg" in paths
         assert "/screenshot.png" in paths
 
+    def test_html_document_extracted(self):
+        content = "HTML report:\nMEDIA:/tmp/report.html"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/report.html"
+        assert "MEDIA:" not in cleaned
+        assert "HTML report" in cleaned
+
 
 # ---------------------------------------------------------------------------
 # Telegram send_image_file tests

@@ -679,17 +679,51 @@ class TestLaunchdServiceRecovery:
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
 
+    def test_launchd_domain_uses_user_domain(self):
+        # The user/<uid> domain (not gui/<uid>) is the one reachable from
+        # non-Aqua/background sessions on macOS 26+ (issue #23387).
+        assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
+
     def test_launchctl_domain_unsupported_recognizes_macos26_codes(self):
-        # macOS 26+ rejects gui/<uid> management with these codes (issue #23387).
+        # Codes that persist after a fresh bootstrap → launchd truly unavailable.
         assert gateway_cli._launchctl_domain_unsupported(5) is True
         assert gateway_cli._launchctl_domain_unsupported(125) is True
-        # Codes that mean "job not loaded" are NOT domain-unsupported.
         assert gateway_cli._launchctl_domain_unsupported(3) is False
         assert gateway_cli._launchctl_domain_unsupported(113) is False
         assert gateway_cli._launchctl_domain_unsupported(0) is False
 
-    def test_launchd_start_falls_back_to_detached_on_kickstart_125(self, tmp_path, monkeypatch, capsys):
-        """macOS 26 kickstart error 125 should spawn a detached gateway, not crash."""
+    def test_launchd_start_reloads_on_kickstart_exit_code_125(self, tmp_path, monkeypatch):
+        """Exit code 125 means the job is absent from the domain → bootstrap recovery."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+
+        calls = []
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", target] and calls.count(cmd) == 1:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    125, cmd, stderr="Domain does not support specified action"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        assert calls == [
+            ["launchctl", "kickstart", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+        ]
+
+    def test_launchd_start_falls_back_to_detached_when_rebootstrap_fails(self, tmp_path, monkeypatch, capsys):
+        """If even a fresh bootstrap can't manage the domain, spawn detached."""
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
         label = gateway_cli.get_launchd_label()
@@ -700,8 +734,14 @@ class TestLaunchdServiceRecovery:
 
         def fake_run(cmd, check=False, **kwargs):
             if cmd == ["launchctl", "kickstart", target]:
+                # First kickstart: job not loaded (125). After bootstrap also
+                # fails, this won't be reached again.
                 raise gateway_cli.subprocess.CalledProcessError(
                     125, cmd, stderr="Domain does not support specified action"
+                )
+            if cmd[:2] == ["launchctl", "bootstrap"]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    5, cmd, stderr="Input/output error"
                 )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -715,11 +755,10 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_start()
 
         assert spawned == [True]
-        out = capsys.readouterr().out.lower()
-        assert "background process" in out
+        assert "background process" in capsys.readouterr().out.lower()
 
     def test_launchd_install_falls_back_to_detached_on_bootstrap_5(self, tmp_path, monkeypatch, capsys):
-        """macOS 26 bootstrap error 5 should spawn a detached gateway, not crash."""
+        """macOS bootstrap error 5 should spawn a detached gateway, not crash."""
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
 
@@ -742,8 +781,8 @@ class TestLaunchdServiceRecovery:
         assert spawned == [True]
         assert "Service installed and loaded" not in capsys.readouterr().out
 
-    def test_launchd_restart_falls_back_to_detached_on_kickstart_125(self, monkeypatch, capsys):
-        """When kickstart -k returns 125, restart should relaunch detached."""
+    def test_launchd_restart_falls_back_to_detached_on_error_5(self, monkeypatch, capsys):
+        """kickstart -k error 5 (domain unmanageable) should relaunch detached."""
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
@@ -755,7 +794,7 @@ class TestLaunchdServiceRecovery:
         def fake_run(cmd, check=False, **kwargs):
             if cmd == ["launchctl", "kickstart", "-k", target]:
                 raise gateway_cli.subprocess.CalledProcessError(
-                    125, cmd, stderr="Domain does not support specified action"
+                    5, cmd, stderr="Input/output error"
                 )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -1745,6 +1784,14 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
+
+    def test_launchd_plist_supports_aqua_and_background_sessions(self):
+        # macOS 26+ only loads the agent in non-Aqua sessions when the plist
+        # opts into Background as well (issue #23387).
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>LimitLoadToSessionType</key>" in plist
+        assert "<string>Aqua</string>" in plist
+        assert "<string>Background</string>" in plist
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

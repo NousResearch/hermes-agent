@@ -110,15 +110,25 @@ _append_capability_cache: Dict[str, bool] = {}
 _append_capability_lock = threading.Lock()
 
 
+def _parse_semver(version: str) -> tuple[int, ...] | None:
+    """Parse a semver string into a comparable tuple. Returns None on failure."""
+    try:
+        return tuple(int(p) for p in version.strip().split("."))
+    except (ValueError, AttributeError):
+        return None
+
+
 def _meets_minimum_version(actual: str | None, required: str) -> bool:
     """Return True if *actual* ≥ *required* (semver). False on missing/invalid."""
     if not actual:
         return False
-    try:
-        from packaging.version import Version
-        return Version(actual) >= Version(required)
-    except Exception:
+    actual_v = _parse_semver(actual)
+    required_v = _parse_semver(required)
+    if actual_v is None or required_v is None:
         return False
+    # Pad shorter tuple with zeros so (0, 5) compares equal to (0, 5, 0)
+    max_len = max(len(actual_v), len(required_v))
+    return actual_v + (0,) * (max_len - len(actual_v)) >= required_v + (0,) * (max_len - len(required_v))
 
 
 def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
@@ -1082,9 +1092,9 @@ class HindsightMemoryProvider(MemoryProvider):
         # Check client version and auto-upgrade if needed
         try:
             from importlib.metadata import version as pkg_version
-            from packaging.version import Version
             installed = pkg_version("hindsight-client")
-            if Version(installed) < Version(_MIN_CLIENT_VERSION):
+            if _parse_semver(installed) is not None and _parse_semver(_MIN_CLIENT_VERSION) is not None \
+                    and _parse_semver(installed) < _parse_semver(_MIN_CLIENT_VERSION):
                 logger.warning("hindsight-client %s is outdated (need >=%s), attempting upgrade...",
                                installed, _MIN_CLIENT_VERSION)
                 import shutil

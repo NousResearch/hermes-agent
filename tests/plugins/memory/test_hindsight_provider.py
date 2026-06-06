@@ -1582,3 +1582,89 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+# ---------------------------------------------------------------------------
+# _parse_semver / _meets_minimum_version — no packaging dependency required
+# ---------------------------------------------------------------------------
+
+
+class TestParseSemver:
+    """Unit tests for the _parse_semver helper."""
+
+    def test_standard_semver(self):
+        from plugins.memory.hindsight import _parse_semver
+        assert _parse_semver("0.5.6") == (0, 5, 6)
+
+    def test_two_part_version(self):
+        from plugins.memory.hindsight import _parse_semver
+        assert _parse_semver("1.2") == (1, 2)
+
+    def test_single_number(self):
+        from plugins.memory.hindsight import _parse_semver
+        assert _parse_semver("3") == (3,)
+
+    def test_leading_trailing_whitespace(self):
+        from plugins.memory.hindsight import _parse_semver
+        assert _parse_semver("  1.2.3  ") == (1, 2, 3)
+
+    def test_non_numeric_returns_none(self):
+        from plugins.memory.hindsight import _parse_semver
+        assert _parse_semver("abc") is None
+
+    def test_empty_string_returns_none(self):
+        from plugins.memory.hindsight import _parse_semver
+        assert _parse_semver("") is None
+
+    def test_partial_non_numeric_returns_none(self):
+        from plugins.memory.hindsight import _parse_semver
+        assert _parse_semver("1.2.x") is None
+
+
+class TestMeetsMinimumVersion:
+    """Unit tests for _meets_minimum_version — verifies the packaging-free implementation."""
+
+    def test_actual_greater_than_required(self):
+        from plugins.memory.hindsight import _meets_minimum_version
+        assert _meets_minimum_version("0.7.2", "0.5.0") is True
+
+    def test_actual_equal_to_required(self):
+        from plugins.memory.hindsight import _meets_minimum_version
+        assert _meets_minimum_version("0.5.0", "0.5.0") is True
+
+    def test_actual_less_than_required(self):
+        from plugins.memory.hindsight import _meets_minimum_version
+        assert _meets_minimum_version("0.4.9", "0.5.0") is False
+
+    def test_none_actual_returns_false(self):
+        from plugins.memory.hindsight import _meets_minimum_version
+        assert _meets_minimum_version(None, "0.5.0") is False
+
+    def test_empty_actual_returns_false(self):
+        from plugins.memory.hindsight import _meets_minimum_version
+        assert _meets_minimum_version("", "0.5.0") is False
+
+    def test_different_lengths_pad_with_zeros(self):
+        """(0, 5) should equal (0, 5, 0)."""
+        from plugins.memory.hindsight import _meets_minimum_version
+        assert _meets_minimum_version("0.5", "0.5.0") is True
+        assert _meets_minimum_version("0.5.0", "0.5") is True
+
+    def test_invalid_actual_returns_false(self):
+        from plugins.memory.hindsight import _meets_minimum_version
+        assert _meets_minimum_version("not-a-version", "0.5.0") is False
+
+    def test_invalid_required_returns_false(self):
+        from plugins.memory.hindsight import _meets_minimum_version
+        assert _meets_minimum_version("0.5.0", "bad") is False
+
+    def test_major_version_difference(self):
+        from plugins.memory.hindsight import _meets_minimum_version
+        assert _meets_minimum_version("1.0.0", "0.9.9") is True
+        assert _meets_minimum_version("0.9.9", "1.0.0") is False
+
+    def test_real_hindsight_version_from_issue(self):
+        """Reproduces the exact scenario from issue #40503."""
+        from plugins.memory.hindsight import _meets_minimum_version
+        # Hindsight API reports 0.7.2, minimum is 0.5.0 → should be True
+        assert _meets_minimum_version("0.7.2", "0.5.0") is True

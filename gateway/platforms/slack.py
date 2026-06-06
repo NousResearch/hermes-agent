@@ -362,6 +362,7 @@ class SlackAdapter(BasePlatformAdapter):
         # (channel_id, user_id) to avoid cross-user collisions.
         # Each value: {"response_url": str, "ts": float}
         self._slash_command_contexts: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._board_action_locks: dict = {}
         # Socket Mode resilience: track runtime connection state so we can
         # self-heal when Slack silently drops the websocket.
         self._app_token: Optional[str] = None
@@ -942,6 +943,41 @@ class SlackAdapter(BasePlatformAdapter):
                 "hermes_confirm_cancel",
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
+
+            # Register /board command separately so it is not caught by the
+            # generic slash-command handler (Bolt routes by exact command string).
+            @self._app.command("/board")
+            async def handle_board_command(ack, command):
+                await ack(
+                    response_type="ephemeral",
+                    text="Opening Kanban board...",
+                )
+                logger.info("[Slack] Received /board command from %s in %s", command.get("user_id"), command.get("channel_id"))
+                asyncio.create_task(self._handle_board_slash_background(dict(command)))
+
+            # All Kanban board actions funnel through _handle_board_action,
+            # which dispatches on action_id. Without these registrations
+            # Bolt drops the button click payloads silently.
+            for _action_id in (
+                "hermes_board_task_add",
+                "hermes_board_task_show",
+                "hermes_board_task_move_open",
+                "hermes_board_task_delete_from_detail",
+                "hermes_board_task_approve_continue",
+                "hermes_board_task_request_changes",
+                "hermes_board_filter_status",
+                "hermes_board_filter_approval",
+                "hermes_board_page",
+                "hermes_board_page_current",
+                "hermes_board_refresh",
+                "hermes_board_task_move",
+            ):
+                self._app.action(_action_id)(self._handle_board_action)
+
+            self._app.view("hermes_board_task_create")(self._handle_board_create_view)
+            self._app.view("hermes_board_task_detail")(self._handle_board_detail_view)
+            self._app.view("hermes_board_task_request_changes")(self._handle_board_request_changes_view)
+            self._app.view("hermes_board_task_move")(self._handle_board_move_view)
 
             # Bring up the handler and watchdog atomically. ``_running`` only
             # flips to True after the handler is alive so the watchdog loop
@@ -3483,6 +3519,1904 @@ class SlackAdapter(BasePlatformAdapter):
             "yes",
             "on",
         }
+
+    def _slack_free_response_channels(self) -> set:
+        """Return channel IDs where no @mention is required."""
+        raw = self.config.extra.get("free_response_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_FREE_RESPONSE_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        # Coerce non-list scalars (str/int/float) to str before splitting.
+        # A bare numeric YAML value (`free_response_channels: 1234567890`) is
+        # loaded as int and was previously falling through the isinstance(str)
+        # branch to return an empty set.  str() here accepts whatever scalar
+        # the YAML loader hands us without changing existing string/CSV
+        # semantics.
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _slack_allowed_channels(self) -> set:
+        """Return the whitelist of channel IDs the bot will respond in.
+
+        When non-empty, messages from channels NOT in this set are silently
+        ignored — even if the bot is @mentioned.  DMs are never filtered.
+        Empty set means no restriction (fully backward compatible).
+        """
+        raw = self.config.extra.get("allowed_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_ALLOWED_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
+    async def _handle_board_slash_background(self, command: dict) -> None:
+        """Render `/board` after the slash command ACK has already returned."""
+        channel_id = command.get("channel_id", "")
+        user_id = command.get("user_id", "")
+        team_id = command.get("team_id", "")
+        if team_id and channel_id:
+            self._channel_team[channel_id] = team_id
+
+        text = f"/board {command.get('text', '').strip()}".strip()
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_type="dm" if str(channel_id).startswith("D") else "group",
+            user_id=user_id,
+        )
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=command,
+        )
+
+        try:
+            result = await self.send_kanban_board(event)
+            logger.info("[Slack] /board background render completed: %s", result)
+            if result.startswith("Failed") and channel_id and user_id:
+                await self._get_client(channel_id).chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=result,
+                    mrkdwn=True,
+                )
+        except Exception as e:
+            logger.error("[Slack] /board background render failed: %s", e, exc_info=True)
+            try:
+                if channel_id and user_id:
+                    await self._get_client(channel_id).chat_postEphemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text=f"Failed to open Kanban board: {e}",
+                        mrkdwn=True,
+                    )
+            except Exception:
+                pass
+
+    async def _handle_board_action(self, ack, body, action) -> None:
+        """Handle Slack Block Kit actions from `/board`."""
+        action_id = action.get("action_id", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        user_id = body.get("user", {}).get("id", "")
+        message = body.get("message", {}) or {}
+        msg_ts = message.get("ts", "")
+        logger.info(
+            "[Slack] Received Kanban board action=%s from %s in %s",
+            action_id,
+            user_id,
+            channel_id,
+        )
+        if action_id == "hermes_board_task_add":
+            await self._handle_board_add_action(ack, body, action, channel_id, user_id)
+            return
+        if action_id == "hermes_board_task_show":
+            await self._handle_board_detail_action(ack, body, action, channel_id, user_id)
+            return
+        if action_id == "hermes_board_task_move_open":
+            await self._handle_board_move_action(ack, body, action, channel_id, user_id)
+            return
+        if action_id == "hermes_board_task_delete_from_detail":
+            await self._handle_board_detail_delete_action(ack, body, action, user_id)
+            return
+        if action_id == "hermes_board_task_approve_continue":
+            await self._handle_board_approve_action(ack, body, action, user_id)
+            return
+        if action_id == "hermes_board_task_request_changes":
+            await self._handle_board_request_changes_action(ack, body, action, user_id)
+            return
+
+        try:
+            await ack()
+        except Exception as e:
+            logger.warning("[Slack] Failed to ack Kanban board action=%s: %s", action_id, e)
+
+        try:
+            from gateway.platforms.slack_kanban_board import (
+                apply_task_action,
+                build_board_blocks,
+                filters_from_value,
+                move_task_status,
+                parse_action_value,
+                parse_move_action_value,
+            )
+
+            lock_key = self._board_action_lock_key(channel_id, msg_ts)
+            if not self._try_acquire_board_action_lock(lock_key):
+                logger.info("[Slack] Ignoring duplicate Kanban action=%s for %s", action_id, lock_key)
+                return
+            await self._show_board_busy(channel_id, msg_ts)
+
+            if action_id == "hermes_board_filter_status":
+                selected = (action.get("selected_option") or {}).get("value", "")
+                try:
+                    payload = json.loads(selected)
+                except Exception:
+                    payload = {}
+                filters = filters_from_value(selected)
+                filters.status = payload.get("status") or payload.get("s") or None
+                filters.page = 0
+                notice = "Board filter updated."
+            elif action_id == "hermes_board_filter_approval":
+                filters = filters_from_value(action.get("value", ""))
+                notice = (
+                    "Showing approval-required tasks."
+                    if filters.approval_only
+                    else "Showing all tasks."
+                )
+            elif action_id == "hermes_board_page":
+                filters = filters_from_value(action.get("value", ""))
+                notice = f"Page {filters.page + 1}."
+            elif action_id == "hermes_board_page_current":
+                filters = filters_from_value(action.get("value", ""))
+                notice = ""
+            elif action_id == "hermes_board_refresh":
+                filters = filters_from_value(action.get("value", ""))
+                notice = "Board refreshed."
+            elif action_id == "hermes_board_task_move":
+                selected = (action.get("selected_option") or {}).get("value", "")
+                task_id, target_status, filters = parse_move_action_value(selected)
+                notice = move_task_status(task_id, target_status, filters)
+            else:
+                task_action, task_id, filters = parse_action_value(action.get("value", ""))
+                notice = apply_task_action(task_action, task_id, filters)
+
+            fallback, blocks = build_board_blocks(filters)
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=fallback,
+                blocks=blocks,
+            )
+            logger.info("[Slack] Updated Kanban board message %s after action=%s", msg_ts, action_id)
+            if user_id and notice:
+                await self._get_client(channel_id).chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=notice,
+                    mrkdwn=True,
+                )
+                logger.info("[Slack] Posted Kanban board notice to %s: %s", user_id, notice)
+        except Exception as e:
+            logger.error("[Slack] Kanban board action failed: %s", e, exc_info=True)
+            try:
+                channel_id = body.get("channel", {}).get("id", "")
+                user_id = body.get("user", {}).get("id", "")
+                if channel_id and user_id:
+                    await self._get_client(channel_id).chat_postEphemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text=f"Board action failed: {e}",
+                        mrkdwn=True,
+                    )
+            except Exception:
+                pass
+        finally:
+            if "lock_key" in locals() and lock_key:
+                self._release_board_action_lock(lock_key)
+
+    def _board_action_lock_key(self, channel_id: str, msg_ts: str) -> str:
+        return f"{channel_id}:{msg_ts}"
+
+    def _try_acquire_board_action_lock(self, key: str) -> bool:
+        if not key or key == ":":
+            return True
+        now = time.monotonic()
+        expired = [k for k, until in self._board_action_locks.items() if until <= now]
+        for k in expired:
+            self._board_action_locks.pop(k, None)
+        if key in self._board_action_locks:
+            return False
+        self._board_action_locks[key] = now + 8.0
+        return True
+
+    def _release_board_action_lock(self, key: str) -> None:
+        self._board_action_locks.pop(key, None)
+
+    async def _show_board_busy(self, channel_id: str, msg_ts: str) -> None:
+        if not channel_id or not msg_ts:
+            return
+        try:
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text="Updating Hermes Kanban board...",
+                blocks=[
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Hermes Kanban Board"},
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": ":hourglass_flowing_sand: Updating board...",
+                        },
+                    },
+                ],
+            )
+        except Exception as e:
+            logger.debug("[Slack] Failed to show Kanban busy state: %s", e)
+
+    async def _handle_board_add_action(self, ack, body, action, channel_id: str, user_id: str) -> None:
+        """Open the create-task modal using Slack's short-lived trigger_id."""
+        try:
+            await ack()
+            from gateway.platforms.slack_kanban_board import parse_add_action_value
+
+            message = body.get("message", {}) or {}
+            msg_ts = message.get("ts", "")
+            status, filters = parse_add_action_value(action.get("value", ""))
+            metadata = {
+                "status": status,
+                "filters": json.loads(action.get("value") or "{}").get("filters", {}),
+                "channel_id": channel_id,
+                "message_ts": msg_ts,
+            }
+            await self._get_client(channel_id).views_open(
+                trigger_id=body.get("trigger_id"),
+                view=self._build_board_create_view(status, filters, metadata),
+            )
+            logger.info("[Slack] Opened Kanban create modal for status=%s", status)
+        except Exception as e:
+            logger.warning("[Slack] Kanban create modal open failed: %s", e, exc_info=True)
+            try:
+                await ack()
+            except Exception:
+                pass
+            try:
+                if channel_id and user_id:
+                    await self._get_client(channel_id).chat_postEphemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text=(
+                            "Could not open the task form. "
+                            "Please click `Add` again from the latest board message."
+                        ),
+                        mrkdwn=True,
+                    )
+            except Exception:
+                pass
+
+    async def _handle_board_detail_action(self, ack, body, action, channel_id: str, user_id: str) -> None:
+        """Open task details in a Slack modal."""
+        try:
+            await ack()
+            from gateway.platforms.slack_kanban_board import parse_action_value, task_detail_blocks
+
+            _action, task_id, filters = parse_action_value(action.get("value", ""))
+            message = body.get("message", {}) or {}
+            metadata = {
+                "task_id": task_id,
+                "filters": json.loads(action.get("value") or "{}").get("filters", {}),
+                "channel_id": channel_id,
+                "message_ts": message.get("ts", ""),
+            }
+            detail_blocks = task_detail_blocks(task_id, filters)
+            await self._get_client(channel_id).views_open(
+                trigger_id=body.get("trigger_id"),
+                view=self._build_board_detail_view(task_id, detail_blocks, metadata),
+            )
+            logger.info("[Slack] Opened Kanban task detail modal for %s", task_id)
+        except Exception as e:
+            logger.warning("[Slack] Kanban detail modal open failed: %s", e, exc_info=True)
+            try:
+                await ack()
+            except Exception:
+                pass
+            try:
+                if channel_id and user_id:
+                    await self._get_client(channel_id).chat_postEphemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text=(
+                            "Could not open the task detail popup. "
+                            "Please click `Detail` again from the latest board message."
+                        ),
+                        mrkdwn=True,
+                    )
+            except Exception:
+                pass
+
+    async def _handle_board_move_action(self, ack, body, action, channel_id: str, user_id: str) -> None:
+        """Open task status picker in a Slack modal."""
+        try:
+            await ack()
+            from gateway.platforms.slack_kanban_board import parse_action_value
+
+            _action, task_id, filters = parse_action_value(action.get("value", ""))
+            message = body.get("message", {}) or {}
+            metadata = {
+                "task_id": task_id,
+                "filters": json.loads(action.get("value") or "{}").get("filters", {}),
+                "channel_id": channel_id,
+                "message_ts": message.get("ts", ""),
+            }
+            await self._get_client(channel_id).views_open(
+                trigger_id=body.get("trigger_id"),
+                view=self._build_board_move_view(task_id, filters, metadata),
+            )
+            logger.info("[Slack] Opened Kanban task move modal for %s", task_id)
+        except Exception as e:
+            logger.warning("[Slack] Kanban move modal open failed: %s", e, exc_info=True)
+            try:
+                await ack()
+            except Exception:
+                pass
+            try:
+                if channel_id and user_id:
+                    await self._get_client(channel_id).chat_postEphemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text=(
+                            "Could not open the status picker. "
+                            "Please click `Move` again from the latest board message."
+                        ),
+                        mrkdwn=True,
+                    )
+            except Exception:
+                pass
+
+    def _build_board_move_view(self, task_id: str, filters, metadata: dict) -> dict:
+        from gateway.platforms.slack_kanban_board import MANUAL_MOVE_STATUSES, STATUS_LABELS, move_action_value
+
+        return {
+            "type": "modal",
+            "callback_id": "hermes_board_task_move",
+            "title": {"type": "plain_text", "text": "Move Task"},
+            "submit": {"type": "plain_text", "text": "Move"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"Move `{task_id}` to another status. Use *Ready* to queue it for worker execution.",
+                    },
+                },
+                {
+                    "type": "input",
+                    "block_id": "status",
+                    "element": {
+                        "type": "static_select",
+                        "action_id": "value",
+                        "placeholder": {"type": "plain_text", "text": "Choose status"},
+                        "options": [
+                            {
+                                "text": {"type": "plain_text", "text": STATUS_LABELS[status]},
+                                "value": move_action_value(task_id, status, filters),
+                            }
+                            for status in MANUAL_MOVE_STATUSES
+                        ],
+                    },
+                    "label": {"type": "plain_text", "text": "Status"},
+                },
+            ],
+        }
+
+    async def _handle_board_detail_delete_action(self, ack, body, action, user_id: str) -> None:
+        """Archive a task from the detail modal and refresh the source board."""
+        await ack()
+
+        try:
+            from gateway.platforms.slack_kanban_board import (
+                apply_task_action,
+                build_board_blocks,
+                filters_from_value,
+                parse_action_value,
+            )
+
+            view = body.get("view", {}) or {}
+            try:
+                metadata = json.loads(view.get("private_metadata") or "{}")
+            except Exception:
+                metadata = {}
+
+            _action, task_id, filters = parse_action_value(action.get("value", ""))
+            if not task_id:
+                task_id = str(metadata.get("task_id") or "")
+            if not filters.board and metadata.get("filters"):
+                filters = filters_from_value(json.dumps(metadata.get("filters") or {}))
+
+            notice = apply_task_action("delete", task_id, filters)
+            channel_id = str(metadata.get("channel_id") or "")
+            msg_ts = str(metadata.get("message_ts") or "")
+            if channel_id and msg_ts:
+                await self._show_board_busy(channel_id, msg_ts)
+                fallback, blocks = build_board_blocks(filters)
+                await self._get_client(channel_id).chat_update(
+                    channel=channel_id,
+                    ts=msg_ts,
+                    text=fallback,
+                    blocks=blocks,
+                )
+            if view.get("id"):
+                await self._get_client(channel_id).views_update(
+                    view_id=view.get("id"),
+                    hash=view.get("hash"),
+                    view={
+                        "type": "modal",
+                        "callback_id": "hermes_board_task_detail",
+                        "title": {"type": "plain_text", "text": "Task Detail"},
+                        "close": {"type": "plain_text", "text": "Close"},
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": f"{notice}"},
+                            }
+                        ],
+                    },
+                )
+            if channel_id and user_id:
+                await self._get_client(channel_id).chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=notice,
+                    mrkdwn=True,
+                )
+            logger.info("[Slack] Deleted Kanban task from detail modal: %s", notice)
+        except Exception as e:
+            logger.error("[Slack] Kanban detail delete failed: %s", e, exc_info=True)
+
+    async def _handle_board_approve_action(self, ack, body, action, user_id: str) -> None:
+        """Approve a blocked approval task and move it back to Ready."""
+        await ack()
+
+        try:
+            from gateway.platforms.slack_kanban_board import (
+                approve_task_and_continue,
+                build_board_blocks,
+                filters_from_value,
+                parse_action_value,
+                task_detail_blocks,
+            )
+
+            view = body.get("view", {}) or {}
+            try:
+                metadata = json.loads(view.get("private_metadata") or "{}")
+            except Exception:
+                metadata = {}
+
+            _action, task_id, filters = parse_action_value(action.get("value", ""))
+            if not task_id:
+                task_id = str(metadata.get("task_id") or "")
+            if not filters.board and metadata.get("filters"):
+                filters = filters_from_value(json.dumps(metadata.get("filters") or {}))
+
+            notice, next_filters = approve_task_and_continue(
+                task_id,
+                filters,
+                approved_by=user_id,
+            )
+            channel_id = str(metadata.get("channel_id") or "")
+            msg_ts = str(metadata.get("message_ts") or "")
+            if channel_id and msg_ts:
+                await self._show_board_busy(channel_id, msg_ts)
+                fallback, blocks = build_board_blocks(next_filters)
+                await self._get_client(channel_id).chat_update(
+                    channel=channel_id,
+                    ts=msg_ts,
+                    text=fallback,
+                    blocks=blocks,
+                )
+            if channel_id and user_id:
+                await self._get_client(channel_id).chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=notice,
+                    mrkdwn=True,
+                )
+            if view.get("id"):
+                updated_filters = next_filters
+                updated_metadata = {
+                    **metadata,
+                    "filters": json.loads(json.dumps(updated_filters.__dict__, ensure_ascii=False)),
+                }
+                detail_blocks = task_detail_blocks(task_id, updated_filters)
+                await self._get_client(channel_id).views_update(
+                    view_id=view.get("id"),
+                    hash=view.get("hash"),
+                    view=self._build_board_detail_view(task_id, detail_blocks, updated_metadata),
+                )
+            logger.info("[Slack] Approved Kanban task from detail modal: %s", notice)
+        except Exception as e:
+            logger.error("[Slack] Kanban approval failed: %s", e, exc_info=True)
+
+    async def _handle_board_request_changes_action(self, ack, body, action, user_id: str) -> None:
+        """Open feedback modal for a blocked approval task."""
+        await ack()
+
+        try:
+            view = body.get("view", {}) or {}
+            try:
+                metadata = json.loads(view.get("private_metadata") or "{}")
+            except Exception:
+                metadata = {}
+            metadata["request_value"] = action.get("value", "")
+            await self._get_client(str(metadata.get("channel_id") or "")).views_push(
+                trigger_id=body.get("trigger_id"),
+                view=self._build_board_request_changes_view(metadata),
+            )
+            logger.info("[Slack] Opened Kanban request-changes modal")
+        except Exception as e:
+            logger.error("[Slack] Kanban request-changes modal failed: %s", e, exc_info=True)
+
+    def _build_board_request_changes_view(self, metadata: dict) -> dict:
+        return {
+            "type": "modal",
+            "callback_id": "hermes_board_task_request_changes",
+            "title": {"type": "plain_text", "text": "Request Changes"},
+            "submit": {"type": "plain_text", "text": "Submit"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "feedback",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "value",
+                        "multiline": True,
+                        "placeholder": {"type": "plain_text", "text": "What should be changed before approval?"},
+                    },
+                    "label": {"type": "plain_text", "text": "Feedback"},
+                }
+            ],
+        }
+
+    def _build_board_detail_view(self, task_id: str, detail_blocks: list[dict], metadata: dict | None = None) -> dict:
+        from gateway.platforms.slack_kanban_board import (
+            EDITABLE_DETAIL_STATUSES,
+            action_value,
+            filters_from_value,
+            task_approval_context,
+            task_edit_values,
+        )
+
+        metadata = metadata or {}
+        filters = filters_from_value(json.dumps(metadata.get("filters") or {}))
+        task = task_edit_values(task_id, filters)
+        editable = bool(task and task.get("status") in EDITABLE_DETAIL_STATUSES)
+        approval = task_approval_context(task_id, filters)
+        blocks = detail_blocks or [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"No details for `{task_id}`."},
+            }
+        ]
+        if editable and task:
+            project_options = self._board_project_options(filters)
+            selected_project = task.get("tenant") or "__none__"
+            if selected_project != "__none__" and not any(
+                option.get("value") == selected_project for option in project_options
+            ) and len(str(selected_project)) <= 150:
+                project_options.insert(
+                    1,
+                    {
+                        "text": {"type": "plain_text", "text": str(selected_project)[:75]},
+                        "value": str(selected_project),
+                    },
+                )
+            initial_project = next(
+                (option for option in project_options if option.get("value") == selected_project),
+                project_options[0] if project_options else None,
+            )
+            project_element = {
+                "type": "static_select",
+                "action_id": "value",
+                "placeholder": {"type": "plain_text", "text": "Choose project"},
+                "options": project_options,
+            }
+            if initial_project:
+                project_element["initial_option"] = initial_project
+
+            body_element = {
+                "type": "plain_text_input",
+                "action_id": "value",
+                "multiline": True,
+                "placeholder": {"type": "plain_text", "text": "Description"},
+            }
+            if task.get("body"):
+                body_element["initial_value"] = str(task.get("body"))[:3000]
+
+            edit_blocks = [
+                {
+                    "type": "input",
+                    "block_id": "edit_title",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "value",
+                        "initial_value": str(task.get("title") or "")[:3000],
+                        "placeholder": {"type": "plain_text", "text": "Task title"},
+                    },
+                    "label": {"type": "plain_text", "text": "Title"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "edit_body",
+                    "optional": True,
+                    "element": body_element,
+                    "label": {"type": "plain_text", "text": "Description"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "edit_assignee",
+                    "optional": True,
+                    "element": self._board_assignee_element(task.get("assignee") or None),
+                    "label": {"type": "plain_text", "text": "Assignee"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "edit_tenant",
+                    "optional": True,
+                    "element": project_element,
+                    "label": {"type": "plain_text", "text": "Project"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "edit_tenant_new",
+                    "optional": True,
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "value",
+                        "placeholder": {"type": "plain_text", "text": "New project overrides selected project"},
+                    },
+                    "label": {"type": "plain_text", "text": "New project"},
+                },
+                {"type": "divider"},
+            ]
+            blocks = [*edit_blocks, *blocks]
+        blocks = [*blocks, {"type": "divider"}]
+        action_elements = []
+        if approval:
+            action_elements.extend(
+                [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Approve & Continue"},
+                        "style": "primary",
+                        "action_id": "hermes_board_task_approve_continue",
+                        "value": action_value("approve", task_id, filters),
+                        "confirm": {
+                            "title": {"type": "plain_text", "text": "Approve task?"},
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"Approve `{task_id}` and move it to Ready so the worker can continue?",
+                            },
+                            "confirm": {"type": "plain_text", "text": "Approve"},
+                            "deny": {"type": "plain_text", "text": "Cancel"},
+                        },
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Request Changes"},
+                        "action_id": "hermes_board_task_request_changes",
+                        "value": action_value("request_changes", task_id, filters),
+                    },
+                ]
+            )
+        action_elements.append(
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Archive"},
+                "style": "danger",
+                "action_id": "hermes_board_task_delete_from_detail",
+                "value": action_value("archive", task_id, filters),
+                "confirm": {
+                    "title": {"type": "plain_text", "text": "Archive task?"},
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"Archive `{task_id}` from this board? It will be hidden from the default board.",
+                    },
+                    "confirm": {"type": "plain_text", "text": "Archive"},
+                    "deny": {"type": "plain_text", "text": "Cancel"},
+                },
+            }
+        )
+        blocks.append(
+            {
+                "type": "actions",
+                "elements": action_elements,
+            }
+        )
+        return {
+            "type": "modal",
+            "callback_id": "hermes_board_task_detail",
+            "title": {"type": "plain_text", "text": "Task Detail"},
+            **({"submit": {"type": "plain_text", "text": "Save"}} if editable else {}),
+            "close": {"type": "plain_text", "text": "Close"},
+            "private_metadata": json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
+            "blocks": blocks[:100],
+        }
+
+    def _board_dependency_options(self, filters) -> list[dict]:
+        try:
+            from gateway.platforms.slack_kanban_board import dependency_options
+
+            return dependency_options(filters)
+        except Exception as e:
+            logger.warning("[Slack] Failed to build Kanban dependency options: %s", e)
+            return []
+
+    def _board_project_options(self, filters) -> list[dict]:
+        try:
+            from gateway.platforms.slack_kanban_board import project_options
+
+            return project_options(filters)
+        except Exception as e:
+            logger.warning("[Slack] Failed to build Kanban project options: %s", e)
+            return [
+                {
+                    "text": {"type": "plain_text", "text": "No project"},
+                    "value": "__none__",
+                }
+            ]
+
+    def _board_priority_element(self, selected: int | None = None) -> dict:
+        from gateway.platforms.slack_kanban_board import PRIORITY_CHOICES
+
+        value = int(selected or 0)
+        options = [
+            {
+                "text": {"type": "plain_text", "text": label},
+                "value": str(priority),
+            }
+            for priority, label in PRIORITY_CHOICES
+        ]
+        element = {
+            "type": "static_select",
+            "action_id": "value",
+            "placeholder": {"type": "plain_text", "text": "Choose priority"},
+            "options": options,
+        }
+        for option in options:
+            if option.get("value") == str(value):
+                element["initial_option"] = option
+                break
+        return element
+
+    def _build_board_create_view(self, status: str, filters, metadata: dict) -> dict:
+        from gateway.platforms.slack_kanban_board import CREATE_TASK_STATUSES, STATUS_LABELS
+
+        defaults = metadata.get("defaults") or {}
+        if status not in CREATE_TASK_STATUSES:
+            status = "todo"
+        status_options = [
+            {
+                "text": {"type": "plain_text", "text": STATUS_LABELS[item]},
+                "value": item,
+            }
+            for item in CREATE_TASK_STATUSES
+        ]
+        initial_status = next(
+            (option for option in status_options if option.get("value") == status),
+            status_options[1],
+        )
+        dependency_options = self._board_dependency_options(filters)
+        project_options = self._board_project_options(filters)
+        selected_project = filters.tenant or "__none__"
+        initial_project = next(
+            (option for option in project_options if option.get("value") == selected_project),
+            project_options[0] if project_options else None,
+        )
+        blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "Create a Kanban task. New tasks default to *Todo*.",
+                    },
+                },
+                {
+                    "type": "input",
+                    "block_id": "status",
+                    "element": {
+                        "type": "static_select",
+                        "action_id": "value",
+                        "placeholder": {"type": "plain_text", "text": "Choose status"},
+                        "options": status_options,
+                        "initial_option": initial_status,
+                    },
+                    "label": {"type": "plain_text", "text": "Status"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "title",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "value",
+                        "placeholder": {"type": "plain_text", "text": "Task title"},
+                        **({"initial_value": str(defaults.get("title") or "")[:3000]} if defaults.get("title") else {}),
+                    },
+                    "label": {"type": "plain_text", "text": "Title"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "body",
+                    "optional": True,
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "value",
+                        "multiline": True,
+                        "placeholder": {"type": "plain_text", "text": "Notes, acceptance criteria, or context"},
+                        **({"initial_value": str(defaults.get("body") or "")[:3000]} if defaults.get("body") else {}),
+                    },
+                    "label": {"type": "plain_text", "text": "Body"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "assignee",
+                    "optional": True,
+                    "element": self._board_assignee_element(filters.assignee),
+                    "label": {"type": "plain_text", "text": "Assignee"},
+                },
+        ]
+        if dependency_options:
+            blocks.append(
+                {
+                    "type": "input",
+                    "block_id": "parents",
+                    "optional": True,
+                    "element": {
+                        "type": "multi_static_select",
+                        "action_id": "value",
+                        "placeholder": {"type": "plain_text", "text": "Choose parent tasks"},
+                        "options": dependency_options,
+                    },
+                    "label": {"type": "plain_text", "text": "Depends on"},
+                }
+            )
+        blocks.extend(
+            [
+                {
+                    "type": "input",
+                    "block_id": "tenant",
+                    "optional": True,
+                    "element": {
+                        "type": "static_select",
+                        "action_id": "value",
+                        "placeholder": {"type": "plain_text", "text": "Choose existing project"},
+                        "options": project_options,
+                        **({"initial_option": initial_project} if initial_project else {}),
+                    },
+                    "label": {"type": "plain_text", "text": "Project"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "tenant_new",
+                    "optional": True,
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "value",
+                        "placeholder": {"type": "plain_text", "text": "New project name"},
+                    },
+                    "label": {"type": "plain_text", "text": "New project"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "priority",
+                    "optional": True,
+                    "element": self._board_priority_element(0),
+                    "label": {"type": "plain_text", "text": "Priority"},
+                },
+            ]
+        )
+        return {
+            "type": "modal",
+            "callback_id": "hermes_board_task_create",
+            "title": {"type": "plain_text", "text": "New Kanban Task"},
+            "submit": {"type": "plain_text", "text": "Create"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
+            "blocks": blocks,
+        }
+
+    def _board_assignee_options(self, selected: str | None = None) -> list[dict]:
+        """Build Slack static_select options from local Hermes profiles."""
+        names: list[str] = []
+        try:
+            from hermes_cli.profiles import list_profiles
+
+            names = [p.name for p in list_profiles() if getattr(p, "name", "")]
+        except Exception as e:
+            logger.warning("[Slack] Failed to list Hermes profiles for assignee dropdown: %s", e)
+
+        if selected and selected not in names:
+            names.insert(0, selected)
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for name in names:
+            value = str(name).strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            cleaned.append(value)
+
+        options = [
+            {
+                "text": {"type": "plain_text", "text": "Unassigned"},
+                "value": "__none__",
+            }
+        ]
+        for name in cleaned[:99]:
+            label = name[:75]
+            options.append(
+                {
+                    "text": {"type": "plain_text", "text": label},
+                    "value": name[:75],
+                }
+            )
+        return options
+
+    def _board_assignee_element(self, selected: str | None = None) -> dict:
+        options = self._board_assignee_options(selected)
+        element = {
+            "type": "static_select",
+            "action_id": "value",
+            "placeholder": {"type": "plain_text", "text": "Choose a profile"},
+            "options": options,
+        }
+        if selected:
+            for option in options:
+                if option.get("value") == selected:
+                    element["initial_option"] = option
+                    break
+        return element
+
+    async def _handle_board_create_view(self, ack, body, view) -> None:
+        """Create a Kanban task from the `/board` modal."""
+        await ack()
+
+        try:
+            from gateway.platforms.slack_kanban_board import (
+                BoardFilters,
+                build_board_blocks,
+                create_task_for_status,
+                filters_from_value,
+            )
+
+            metadata = {}
+            try:
+                metadata = json.loads(view.get("private_metadata") or "{}")
+            except Exception:
+                metadata = {}
+
+            def _value(block_id: str) -> str:
+                state = view.get("state", {}).get("values", {})
+                block = state.get(block_id, {})
+                field = block.get("value", {})
+                selected = field.get("selected_option") or {}
+                if selected:
+                    selected_value = str(selected.get("value") or "").strip()
+                    return "" if selected_value == "__none__" else selected_value
+                return str(field.get("value") or "").strip()
+
+            def _selected_values(block_id: str) -> list[str]:
+                state = view.get("state", {}).get("values", {})
+                block = state.get(block_id, {})
+                field = block.get("value", {})
+                selected = field.get("selected_options") or []
+                values: list[str] = []
+                for option in selected:
+                    value = str(option.get("value") or "").strip()
+                    if value and value != "__none__":
+                        values.append(value)
+                return values
+
+            status = _value("status") or str(metadata.get("status") or "todo")
+            channel_id = str(metadata.get("channel_id") or "")
+            msg_ts = str(metadata.get("message_ts") or "")
+            filters = filters_from_value(json.dumps(metadata.get("filters") or {}))
+
+            title = _value("title")
+            body_text = _value("body")
+            assignee = _value("assignee") or None
+            selected_tenant = _value("tenant") or None
+            new_tenant = _value("tenant_new") or None
+            tenant = new_tenant or selected_tenant
+            priority_raw = _value("priority") or "0"
+            parents = _selected_values("parents")
+            try:
+                priority = int(priority_raw)
+            except ValueError:
+                priority = 0
+
+            task_id, next_filters = create_task_for_status(
+                status=status,
+                title=title,
+                body=body_text or None,
+                assignee=assignee,
+                tenant=tenant,
+                priority=priority,
+                parents=parents,
+                filters=filters,
+                created_by=body.get("user", {}).get("id") or "slack",
+            )
+
+            if channel_id and msg_ts:
+                fallback, blocks = build_board_blocks(next_filters)
+                await self._get_client(channel_id).chat_update(
+                    channel=channel_id,
+                    ts=msg_ts,
+                    text=fallback,
+                    blocks=blocks,
+                )
+            user_id = body.get("user", {}).get("id", "")
+            if channel_id and user_id:
+                await self._get_client(channel_id).chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=(
+                        f"Created `{task_id}` in `{status}`."
+                        + (f" Depends on `{', '.join(parents)}`." if parents else "")
+                    ),
+                    mrkdwn=True,
+                )
+            logger.info("[Slack] Created Kanban task %s in status=%s from board modal", task_id, status)
+        except Exception as e:
+            logger.error("[Slack] Kanban create modal failed: %s", e, exc_info=True)
+            try:
+                metadata = json.loads(view.get("private_metadata") or "{}")
+                channel_id = str(metadata.get("channel_id") or "")
+                user_id = body.get("user", {}).get("id", "")
+                if channel_id and user_id:
+                    await self._get_client(channel_id).chat_postEphemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text=f"Task creation failed: {e}",
+                        mrkdwn=True,
+                    )
+            except Exception:
+                pass
+
+    async def _handle_board_detail_view(self, ack, body, view) -> None:
+        """Save editable fields from the task detail modal."""
+        try:
+            metadata = json.loads(view.get("private_metadata") or "{}")
+        except Exception:
+            metadata = {}
+
+        def _value(block_id: str) -> str:
+            state = view.get("state", {}).get("values", {})
+            block = state.get(block_id, {})
+            field = block.get("value", {})
+            selected = field.get("selected_option") or {}
+            if selected:
+                selected_value = str(selected.get("value") or "").strip()
+                return "" if selected_value == "__none__" else selected_value
+            return str(field.get("value") or "").strip()
+
+        title = _value("edit_title")
+        if not title:
+            await ack(response_action="errors", errors={"edit_title": "Title is required."})
+            return
+
+        await ack()
+
+        try:
+            from gateway.platforms.slack_kanban_board import (
+                build_board_blocks,
+                filters_from_value,
+                update_task_fields,
+            )
+
+            task_id = str(metadata.get("task_id") or "")
+            filters = filters_from_value(json.dumps(metadata.get("filters") or {}))
+            selected_tenant = _value("edit_tenant") or None
+            new_tenant = _value("edit_tenant_new") or None
+            notice, next_filters = update_task_fields(
+                task_id,
+                title=title,
+                body=_value("edit_body") or None,
+                assignee=_value("edit_assignee") or None,
+                tenant=new_tenant or selected_tenant,
+                filters=filters,
+            )
+
+            channel_id = str(metadata.get("channel_id") or "")
+            msg_ts = str(metadata.get("message_ts") or "")
+            if channel_id and msg_ts:
+                fallback, blocks = build_board_blocks(next_filters)
+                await self._get_client(channel_id).chat_update(
+                    channel=channel_id,
+                    ts=msg_ts,
+                    text=fallback,
+                    blocks=blocks,
+                )
+            user_id = body.get("user", {}).get("id", "")
+            if channel_id and user_id:
+                await self._get_client(channel_id).chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=notice,
+                    mrkdwn=True,
+                )
+            logger.info("[Slack] Updated Kanban task from detail modal: %s", notice)
+        except Exception as e:
+            logger.error("[Slack] Kanban detail save failed: %s", e, exc_info=True)
+            try:
+                channel_id = str(metadata.get("channel_id") or "")
+                user_id = body.get("user", {}).get("id", "")
+                if channel_id and user_id:
+                    await self._get_client(channel_id).chat_postEphemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text=f"Task update failed: {e}",
+                        mrkdwn=True,
+                    )
+            except Exception:
+                pass
+
+    async def _handle_board_request_changes_view(self, ack, body, view) -> None:
+        """Record feedback from the request-changes modal."""
+        try:
+            metadata = json.loads(view.get("private_metadata") or "{}")
+        except Exception:
+            metadata = {}
+
+        state = view.get("state", {}).get("values", {})
+        block = state.get("feedback", {})
+        field = block.get("value", {})
+        feedback = str(field.get("value") or "").strip()
+        if not feedback:
+            await ack(response_action="errors", errors={"feedback": "Feedback is required."})
+            return
+
+        await ack()
+
+        try:
+            from gateway.platforms.slack_kanban_board import (
+                build_board_blocks,
+                filters_from_value,
+                parse_action_value,
+                request_task_changes,
+            )
+
+            _action, task_id, filters = parse_action_value(str(metadata.get("request_value") or ""))
+            if not task_id:
+                task_id = str(metadata.get("task_id") or "")
+            if not filters.board and metadata.get("filters"):
+                filters = filters_from_value(json.dumps(metadata.get("filters") or {}))
+
+            user_id = body.get("user", {}).get("id", "")
+            notice, next_filters = request_task_changes(
+                task_id,
+                filters,
+                requested_by=user_id,
+                feedback=feedback,
+            )
+
+            channel_id = str(metadata.get("channel_id") or "")
+            msg_ts = str(metadata.get("message_ts") or "")
+            if channel_id and msg_ts:
+                fallback, blocks = build_board_blocks(next_filters)
+                await self._get_client(channel_id).chat_update(
+                    channel=channel_id,
+                    ts=msg_ts,
+                    text=fallback,
+                    blocks=blocks,
+                )
+            if channel_id and user_id:
+                await self._get_client(channel_id).chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=notice,
+                    mrkdwn=True,
+                )
+            logger.info("[Slack] Requested Kanban task changes from modal: %s", notice)
+        except Exception as e:
+            logger.error("[Slack] Kanban request changes submit failed: %s", e, exc_info=True)
+            try:
+                channel_id = str(metadata.get("channel_id") or "")
+                user_id = body.get("user", {}).get("id", "")
+                if channel_id and user_id:
+                    await self._get_client(channel_id).chat_postEphemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text=f"Request changes failed: {e}",
+                        mrkdwn=True,
+                    )
+            except Exception:
+                pass
+
+    async def _handle_board_move_view(self, ack, body, view) -> None:
+        """Move a Kanban task from the status picker modal."""
+        await ack()
+
+        try:
+            from gateway.platforms.slack_kanban_board import (
+                build_board_blocks,
+                filters_from_value,
+                move_task_status,
+                parse_move_action_value,
+            )
+
+            try:
+                metadata = json.loads(view.get("private_metadata") or "{}")
+            except Exception:
+                metadata = {}
+
+            state = view.get("state", {}).get("values", {})
+            selected_value = ""
+            block = state.get("status", {})
+            field = block.get("value", {})
+            selected = field.get("selected_option") or {}
+            selected_value = str(selected.get("value") or "")
+
+            task_id, target_status, filters = parse_move_action_value(selected_value)
+            if not filters.board and metadata.get("filters"):
+                filters = filters_from_value(json.dumps(metadata.get("filters") or {}))
+            notice = move_task_status(task_id, target_status, filters)
+
+            channel_id = str(metadata.get("channel_id") or "")
+            msg_ts = str(metadata.get("message_ts") or "")
+            if channel_id and msg_ts:
+                await self._show_board_busy(channel_id, msg_ts)
+                fallback, blocks = build_board_blocks(filters)
+                await self._get_client(channel_id).chat_update(
+                    channel=channel_id,
+                    ts=msg_ts,
+                    text=fallback,
+                    blocks=blocks,
+                )
+            user_id = body.get("user", {}).get("id", "")
+            if channel_id and user_id:
+                await self._get_client(channel_id).chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=notice,
+                    mrkdwn=True,
+                )
+            logger.info("[Slack] Moved Kanban task from move modal: %s", notice)
+        except Exception as e:
+            logger.error("[Slack] Kanban move modal failed: %s", e, exc_info=True)
+            try:
+                metadata = json.loads(view.get("private_metadata") or "{}")
+                channel_id = str(metadata.get("channel_id") or "")
+                user_id = body.get("user", {}).get("id", "")
+                if channel_id and user_id:
+                    await self._get_client(channel_id).chat_postEphemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text=f"Task move failed: {e}",
+                        mrkdwn=True,
+                    )
+            except Exception:
+                pass
+
+    async def _handle_slash_confirm_action(self, ack, body, action) -> None:
+        """Handle a slash-confirm button click from Block Kit."""
+        await ack()
+
+        action_id = action.get("action_id", "")
+        value = action.get("value", "")
+        message = body.get("message", {})
+        msg_ts = message.get("ts", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        user_name = body.get("user", {}).get("name", "unknown")
+        user_id = body.get("user", {}).get("id", "")
+
+        # Authorization — reuse the exec-approval allowlist.
+        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if allowed_csv:
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            if "*" not in allowed_ids and user_id not in allowed_ids:
+                logger.warning(
+                    "[Slack] Unauthorized slash-confirm click by %s (%s) — ignoring",
+                    user_name, user_id,
+                )
+                return
+
+        # Parse session_key|confirm_id back out
+        if "|" not in value:
+            logger.warning("[Slack] Malformed slash-confirm value: %s", value)
+            return
+        session_key, confirm_id = value.split("|", 1)
+
+        choice_map = {
+            "hermes_confirm_once": "once",
+            "hermes_confirm_always": "always",
+            "hermes_confirm_cancel": "cancel",
+        }
+        choice = choice_map.get(action_id, "cancel")
+
+        label_map = {
+            "once": f"✅ Approved once by {user_name}",
+            "always": f"🔒 Always approved by {user_name}",
+            "cancel": f"❌ Cancelled by {user_name}",
+        }
+        decision_text = label_map.get(choice, f"Resolved by {user_name}")
+
+        # Pull original prompt body out of the section block so we can show
+        # the decision inline without losing context.
+        original_text = ""
+        for block in message.get("blocks", []):
+            if block.get("type") == "section":
+                original_text = block.get("text", {}).get("text", "")
+                break
+
+        updated_blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": original_text or "Confirmation prompt",
+                },
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": decision_text},
+                ],
+            },
+        ]
+
+        try:
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=decision_text,
+                blocks=updated_blocks,
+            )
+        except Exception as e:
+            logger.warning("[Slack] Failed to update slash-confirm message: %s", e)
+
+        # Resolve via the module-level primitive and post any follow-up.
+        try:
+            from tools import slash_confirm as _slash_confirm_mod
+            result_text = await _slash_confirm_mod.resolve(session_key, confirm_id, choice)
+            if result_text:
+                post_kwargs: Dict[str, Any] = {
+                    "channel": channel_id,
+                    "text": result_text,
+                }
+                # Inherit the thread so the reply stays in the same place.
+                thread_ts = message.get("thread_ts") or msg_ts
+                if thread_ts:
+                    post_kwargs["thread_ts"] = thread_ts
+                await self._get_client(channel_id).chat_postMessage(**post_kwargs)
+            logger.info(
+                "Slack button resolved slash-confirm for session %s (choice=%s, user=%s)",
+                session_key, choice, user_name,
+            )
+        except Exception as exc:
+            logger.error("Failed to resolve slash-confirm from Slack button: %s", exc, exc_info=True)
+
+    async def _handle_approval_action(self, ack, body, action) -> None:
+        """Handle an approval button click from Block Kit."""
+        await ack()
+
+        action_id = action.get("action_id", "")
+        session_key = action.get("value", "")
+        message = body.get("message", {})
+        msg_ts = message.get("ts", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        user_name = body.get("user", {}).get("name", "unknown")
+        user_id = body.get("user", {}).get("id", "")
+
+        # Only authorized users may click approval buttons.  Button clicks
+        # bypass the normal message auth flow in gateway/run.py, so we must
+        # check here as well.
+        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if allowed_csv:
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            if "*" not in allowed_ids and user_id not in allowed_ids:
+                logger.warning(
+                    "[Slack] Unauthorized approval click by %s (%s) — ignoring",
+                    user_name, user_id,
+                )
+                return
+
+        # Map action_id to approval choice
+        choice_map = {
+            "hermes_approve_once": "once",
+            "hermes_approve_session": "session",
+            "hermes_approve_always": "always",
+            "hermes_deny": "deny",
+        }
+        choice = choice_map.get(action_id, "deny")
+
+        # Prevent double-clicks — atomic pop; first caller gets False, others get True (default)
+        if self._approval_resolved.pop(msg_ts, True):
+            return
+
+        # Update the message to show the decision and remove buttons
+        label_map = {
+            "once": f"✅ Approved once by {user_name}",
+            "session": f"✅ Approved for session by {user_name}",
+            "always": f"✅ Approved permanently by {user_name}",
+            "deny": f"❌ Denied by {user_name}",
+        }
+        decision_text = label_map.get(choice, f"Resolved by {user_name}")
+
+        # Get original text from the section block
+        original_text = ""
+        for block in message.get("blocks", []):
+            if block.get("type") == "section":
+                original_text = block.get("text", {}).get("text", "")
+                break
+
+        updated_blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": original_text or "Command approval request",
+                },
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": decision_text},
+                ],
+            },
+        ]
+
+        try:
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=decision_text,
+                blocks=updated_blocks,
+            )
+        except Exception as e:
+            logger.warning("[Slack] Failed to update approval message: %s", e)
+
+        # Resolve the approval — this unblocks the agent thread
+        try:
+            from tools.approval import resolve_gateway_approval
+            count = resolve_gateway_approval(session_key, choice)
+            logger.info(
+                "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                count, session_key, choice, user_name,
+            )
+        except Exception as exc:
+            logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
+
+        # (approval state already consumed by atomic pop above)
+
+    # ----- Thread context fetching -----
+
+    async def _fetch_thread_context(
+        self, channel_id: str, thread_ts: str, current_ts: str,
+        team_id: str = "", limit: int = 30,
+    ) -> str:
+        """Fetch recent thread messages to provide context when the bot is
+        mentioned mid-thread for the first time.
+
+        This method is only called when there is NO active session for the
+        thread (guarded at the call site by _has_active_session_for_thread).
+        That guard ensures thread messages are prepended only on the very
+        first turn — after that the session history already holds them, so
+        there is no duplication across subsequent turns.
+
+        Results are cached for _THREAD_CACHE_TTL seconds per thread to avoid
+        hammering conversations.replies (Tier 3, ~50 req/min).
+
+        Returns a formatted string with prior thread history, or empty string
+        on failure or if the thread has no prior messages.
+        """
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
+        now = time.monotonic()
+        cached = self._thread_context_cache.get(cache_key)
+        if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
+            return cached.content
+
+        try:
+            client = self._get_client(channel_id)
+
+            # Retry with exponential backoff for Tier-3 rate limits (429).
+            result = None
+            for attempt in range(3):
+                try:
+                    result = await client.conversations_replies(
+                        channel=channel_id,
+                        ts=thread_ts,
+                        limit=limit + 1,  # +1 because it includes the current message
+                        inclusive=True,
+                    )
+                    break
+                except Exception as exc:
+                    # Check for rate-limit error from slack_sdk
+                    err_str = str(exc).lower()
+                    is_rate_limit = (
+                        "ratelimited" in err_str
+                        or "429" in err_str
+                        or "rate_limited" in err_str
+                    )
+                    if is_rate_limit and attempt < 2:
+                        retry_after = 1.0 * (2 ** attempt)  # 1s, 2s
+                        logger.warning(
+                            "[Slack] conversations.replies rate limited; retrying in %.1fs (attempt %d/3)",
+                            retry_after, attempt + 1,
+                        )
+                        await asyncio.sleep(retry_after)
+                        continue
+                    raise
+
+            if result is None:
+                return ""
+
+            messages = result.get("messages", [])
+            if not messages:
+                return ""
+
+            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+            context_parts = []
+            parent_text = ""
+            for msg in messages:
+                msg_ts = msg.get("ts", "")
+                # Exclude the current triggering message — it will be delivered
+                # as the user message itself, so including it here would duplicate it.
+                if msg_ts == current_ts:
+                    continue
+
+                is_parent = msg_ts == thread_ts
+                is_bot = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
+                msg_user = msg.get("user", "")
+
+                # Identify "our own" bot for this workspace (multi-workspace safe).
+                msg_team = msg.get("team") or team_id
+                self_bot_uid = (
+                    self._team_bot_user_ids.get(msg_team)
+                    if msg_team
+                    else None
+                ) or self._bot_user_id
+
+                # Exclude only our own prior bot replies (circular context).
+                # Keep:
+                #   - the thread parent even if it was posted by a bot
+                #     (e.g. a cron job summary we are now replying to);
+                #   - other bots' child messages (useful third-party context).
+                if (
+                    is_bot
+                    and not is_parent
+                    and self_bot_uid
+                    and msg_user == self_bot_uid
+                ):
+                    continue
+
+                msg_text = msg.get("text", "").strip()
+                if not msg_text:
+                    continue
+
+                # Strip bot mentions from context messages
+                if bot_uid:
+                    msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+
+                prefix = "[thread parent] " if is_parent else ""
+                display_user = msg_user or "unknown"
+                # Prefer the bot's own name when the message is a bot post.
+                if is_bot and not display_user:
+                    display_user = msg.get("username") or "bot"
+                name = await self._resolve_user_name(display_user, chat_id=channel_id)
+                context_parts.append(f"{prefix}{name}: {msg_text}")
+                if is_parent:
+                    parent_text = msg_text
+
+            content = ""
+            if context_parts:
+                content = (
+                    "[Thread context — prior messages in this thread (not yet in conversation history):]\n"
+                    + "\n".join(context_parts)
+                    + "\n[End of thread context]\n\n"
+                )
+
+            self._thread_context_cache[cache_key] = _ThreadContextCache(
+                content=content,
+                fetched_at=now,
+                message_count=len(context_parts),
+                parent_text=parent_text,
+            )
+            return content
+
+        except Exception as e:
+            logger.warning("[Slack] Failed to fetch thread context: %s", e)
+            return ""
+
+    async def _fetch_thread_parent_text(
+        self, channel_id: str, thread_ts: str, team_id: str = "",
+    ) -> str:
+        """Return the raw text of the thread parent message (for reply_to_text).
+
+        Uses the same per-thread cache as :meth:`_fetch_thread_context` to avoid
+        hitting ``conversations.replies`` twice. Falls back to a cheap single-
+        message fetch (``limit=1, inclusive=True``) when the cache is cold.
+
+        Returns empty string on any failure — callers should treat an empty
+        return as "no parent context to inject".
+        """
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
+        now = time.monotonic()
+        cached = self._thread_context_cache.get(cache_key)
+        if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
+            return cached.parent_text
+
+        try:
+            client = self._get_client(channel_id)
+            result = await client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                limit=1,
+                inclusive=True,
+            )
+            messages = result.get("messages", []) if result else []
+            if not messages:
+                return ""
+            parent = messages[0]
+            if parent.get("ts", "") != thread_ts:
+                return ""
+            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+            text = (parent.get("text") or "").strip()
+            if bot_uid:
+                text = text.replace(f"<@{bot_uid}>", "").strip()
+            return text
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
+            return ""
+
+    async def _handle_slash_command(self, command: dict) -> None:
+        """Handle Slack slash commands.
+
+        Every gateway command in COMMAND_REGISTRY is registered as a native
+        Slack slash (``/btw``, ``/stop``, ``/model``, etc.), matching the
+        Discord and Telegram model. The slash name itself is the command;
+        any text after it is the argument list.
+
+        The legacy ``/hermes <subcommand> [args]`` form is preserved for
+        backward compatibility with older workspace manifests and for users
+        who want a single entry point for free-form questions (``/hermes
+        what's the weather`` — non-slash text is treated as a regular
+        message).
+        """
+        slash_name = (command.get("command") or "").lstrip("/").strip()
+        text = command.get("text", "").strip()
+        user_id = command.get("user_id", "")
+        channel_id = command.get("channel_id", "")
+        team_id = command.get("team_id", "")
+
+        # Track which workspace owns this channel
+        if team_id and channel_id:
+            self._channel_team[channel_id] = team_id
+
+        if slash_name in {"hermes", ""}:
+            # Legacy /hermes <subcommand> [args] routing + free-form questions.
+            # Empty slash_name falls into this branch for backward compat
+            # with any caller that didn't populate command["command"].
+            from hermes_cli.commands import slack_subcommand_map
+            subcommand_map = slack_subcommand_map()
+            subcommand_map["compact"] = "/compress"
+            # Guard against whitespace-only text where ``text`` is truthy but
+            # ``text.split()`` returns ``[]`` (e.g. user sends ``/hermes   ``).
+            parts = text.split() if text else []
+            first_word = parts[0] if parts else ""
+            if first_word in subcommand_map:
+                rest = text[len(first_word):].strip()
+                text = f"{subcommand_map[first_word]} {rest}".strip() if rest else subcommand_map[first_word]
+            elif text:
+                pass  # Treat as a regular question
+            else:
+                text = "/help"
+        else:
+            # Native slash — /<slash_name> [args].  Route directly through the
+            # gateway command dispatcher by prepending the slash.
+            text = f"/{slash_name} {text}".strip()
+
+        # Slack slash commands can originate from DMs or shared channels.
+        # Preserve DM semantics only for DM channel IDs; shared channels must
+        # keep group semantics so different users do not collide into one
+        # session key.
+        is_dm = str(channel_id).startswith("D")
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_type="dm" if is_dm else "group",
+            user_id=user_id,
+        )
+
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.COMMAND if text.startswith("/") else MessageType.TEXT,
+            source=source,
+            raw_message=command,
+        )
+
+        # Stash the Slack response_url so the first reply for this
+        # channel+user can be routed ephemerally (replaces the initial
+        # "Running /cmd…" ack shown by handle_hermes_command).
+        # Only stash for COMMAND events (text starts with "/") — free-form
+        # questions via "/hermes <question>" must produce public replies so
+        # the whole channel can see the agent's answer.
+        response_url = command.get("response_url", "")
+        if response_url and user_id and channel_id and text.startswith("/"):
+            self._slash_command_contexts[(channel_id, user_id)] = {
+                "response_url": response_url,
+                "ts": time.monotonic(),
+            }
+
+        # Set the ContextVar so send() can match the correct stashed
+        # response_url even when multiple users slash concurrently.
+        _slash_user_id_token = _slash_user_id.set(user_id or None)
+        try:
+            await self.handle_message(event)
+        finally:
+            _slash_user_id.reset(_slash_user_id_token)
+
+    def _has_active_session_for_thread(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        user_id: str,
+    ) -> bool:
+        """Check if there's an active session for a thread.
+
+        Used to determine if thread replies without @mentions should be
+        processed (they should if there's an active session).
+
+        Uses ``build_session_key()`` as the single source of truth for key
+        construction — avoids the bug where manual key building didn't
+        respect ``thread_sessions_per_user`` and ``group_sessions_per_user``
+        settings correctly.
+        """
+        session_store = getattr(self, "_session_store", None)
+        if not session_store:
+            return False
+
+        try:
+            from gateway.session import SessionSource, build_session_key
+
+            source = SessionSource(
+                platform=Platform.SLACK,
+                chat_id=channel_id,
+                chat_type="group",
+                user_id=user_id,
+                thread_id=thread_ts,
+            )
+
+            # Read session isolation settings from the store's config
+            store_cfg = getattr(session_store, "config", None)
+            gspu = getattr(store_cfg, "group_sessions_per_user", True) if store_cfg else True
+            tspu = getattr(store_cfg, "thread_sessions_per_user", False) if store_cfg else False
+
+            session_key = build_session_key(
+                source,
+                group_sessions_per_user=gspu,
+                thread_sessions_per_user=tspu,
+            )
+
+            session_store._ensure_loaded()
+            return session_key in session_store._entries
+        except Exception:
+            return False
+
+    async def _download_slack_file(self, url: str, ext: str, audio: bool = False, team_id: str = "") -> str:
+        """Download a Slack file using the bot token for auth, with retry."""
+        import httpx
+
+        bot_token = self._team_clients[team_id].token if team_id and team_id in self._team_clients else self.config.token
+
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            for attempt in range(3):
+                try:
+                    response = await client.get(
+                        url,
+                        headers={"Authorization": f"Bearer {bot_token}"},
+                    )
+                    response.raise_for_status()
+
+                    # Slack may return an HTML sign-in/redirect page
+                    # instead of actual media bytes (e.g. expired token,
+                    # restricted file access).  Detect this early so we
+                    # don't cache bogus data and confuse downstream tools.
+                    ct = response.headers.get("content-type", "")
+                    if "text/html" in ct:
+                        raise ValueError(
+                            "Slack returned HTML instead of media "
+                            f"(content-type: {ct}); "
+                            "check bot token scopes and file permissions"
+                        )
+
+                    if audio:
+                        from gateway.platforms.base import cache_audio_from_bytes
+                        return cache_audio_from_bytes(response.content, ext)
+                    else:
+                        from gateway.platforms.base import cache_image_from_bytes
+                        return cache_image_from_bytes(response.content, ext)
+                except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
+                        raise
+                    if attempt < 2:
+                        logger.debug("Slack file download retry %d/2 for %s: %s",
+                                     attempt + 1, url[:80], exc)
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                    raise
+
+    async def _download_slack_file_bytes(self, url: str, team_id: str = "") -> bytes:
+        """Download a Slack file and return raw bytes, with retry."""
+        import httpx
+
+        bot_token = self._team_clients[team_id].token if team_id and team_id in self._team_clients else self.config.token
+
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            for attempt in range(3):
+                try:
+                    response = await client.get(
+                        url,
+                        headers={"Authorization": f"Bearer {bot_token}"},
+                    )
+                    response.raise_for_status()
+                    ct = response.headers.get("content-type", "")
+                    if "text/html" in ct:
+                        raise ValueError(
+                            "Slack returned HTML instead of file bytes "
+                            f"(content-type: {ct}); "
+                            "check bot token scopes and file permissions"
+                        )
+                    return response.content
+                except (httpx.TimeoutException, httpx.HTTPStatusError, ValueError) as exc:
+                    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
+                        raise
+                    if isinstance(exc, ValueError):
+                        raise
+                    if attempt < 2:
+                        logger.debug("Slack file download retry %d/2 for %s: %s",
+                                     attempt + 1, url[:80], exc)
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                    raise
+
+    # ── Channel mention gating ─────────────────────────────────────────────
+
+    def _slack_require_mention(self) -> bool:
+        """Return whether channel messages require an explicit bot mention.
+
+        Uses explicit-false parsing (like Discord/Matrix) rather than
+        truthy parsing, since the safe default is True (gating on).
+        Unrecognised or empty values keep gating enabled.
+        """
+        configured = self.config.extra.get("require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
+
+    def _slack_strict_mention(self) -> bool:
+        """When true, channel threads require an explicit @-mention on every
+        message. Disables all auto-triggers (mentioned-thread memory,
+        bot-message follow-up, session-presence). Defaults to False.
+        """
+        configured = self.config.extra.get("strict_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("SLACK_STRICT_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""

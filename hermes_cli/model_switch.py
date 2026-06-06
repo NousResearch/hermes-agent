@@ -193,6 +193,16 @@ _BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {}
 # Merged dict (builtins + user config); populated by _load_direct_aliases()
 DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
+_LOCAL_PROVIDER_ALIASES: frozenset[str] = frozenset({
+    "custom",
+    "ollama",
+    "local",
+    "vllm",
+    "llamacpp",
+    "llama.cpp",
+    "llama-cpp",
+})
+
 
 def _load_direct_aliases() -> dict[str, DirectAlias]:
     """Load direct aliases from config.yaml ``model_aliases:`` section.
@@ -271,6 +281,77 @@ def _ensure_direct_aliases() -> None:
     """
     if not DIRECT_ALIASES:
         DIRECT_ALIASES.update(_load_direct_aliases())
+
+
+def _configured_default_model_for_explicit_provider(
+    explicit_provider: str,
+    target_provider: str,
+    provider_def,
+    user_providers: Optional[dict] = None,
+    custom_providers: Optional[list] = None,
+) -> str:
+    """Return a configured default model for an explicit provider switch."""
+    explicit_norm = (explicit_provider or "").strip().lower()
+    target_norm = (target_provider or "").strip().lower()
+
+    if isinstance(user_providers, dict):
+        for key, entry in user_providers.items():
+            if not isinstance(entry, dict):
+                continue
+            candidate_names = {str(key).strip().lower()}
+            display_name = str(entry.get("name") or "").strip().lower()
+            if display_name:
+                candidate_names.add(display_name)
+            if explicit_norm not in candidate_names and target_norm not in candidate_names:
+                continue
+            model_name = str(entry.get("default_model") or entry.get("model") or "").strip()
+            if model_name:
+                return model_name
+
+    if isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            display_name = str(entry.get("name") or "").strip()
+            if not display_name:
+                continue
+            candidate_names = {
+                display_name.lower(),
+                custom_provider_slug(display_name),
+            }
+            provider_key = str(entry.get("provider_key") or "").strip().lower()
+            if provider_key:
+                candidate_names.add(provider_key)
+                candidate_names.add(f"custom:{provider_key}")
+            if explicit_norm not in candidate_names and target_norm not in candidate_names:
+                continue
+            model_name = str(entry.get("model") or entry.get("default_model") or "").strip()
+            if model_name:
+                return model_name
+
+    if target_norm == "custom" and provider_def is not None:
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            model_cfg = cfg.get("model")
+            if isinstance(model_cfg, dict):
+                cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+                cfg_default = str(model_cfg.get("default") or "").strip()
+                cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+                provider_base_url = str(getattr(provider_def, "base_url", "") or "").strip().rstrip("/")
+                if (
+                    cfg_default
+                    and cfg_base_url
+                    and provider_base_url
+                    and cfg_base_url == provider_base_url
+                    and cfg_provider in _LOCAL_PROVIDER_ALIASES
+                ):
+                    return cfg_default
+        except Exception:
+            pass
+
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -725,6 +806,7 @@ def switch_model(
     resolved_alias = ""
     new_model = raw_input.strip()
     target_provider = current_provider
+    resolved_provider_def = None
 
     # =================================================================
     # PATH A: Explicit --provider given
@@ -738,6 +820,7 @@ def switch_model(
         )
         if pdef is None and explicit_provider.strip().lower() == "custom":
             pdef = _bare_custom_provider_def(current_base_url)
+        resolved_provider_def = pdef
         if pdef is None:
             _switch_err = (
                 f"Unknown provider '{explicit_provider}'. "
@@ -806,7 +889,16 @@ def switch_model(
 
         # If no model specified, try auto-detect from endpoint
         if not new_model:
-            if pdef.base_url:
+            configured_default = _configured_default_model_for_explicit_provider(
+                explicit_provider,
+                target_provider,
+                pdef,
+                user_providers,
+                custom_providers,
+            )
+            if configured_default:
+                new_model = configured_default
+            elif pdef.base_url:
                 from hermes_cli.runtime_provider import _auto_detect_local_model
                 detected = _auto_detect_local_model(pdef.base_url)
                 if detected:
@@ -943,7 +1035,9 @@ def switch_model(
 
     provider_changed = target_provider != current_provider
     provider_label = get_label(target_provider)
-    if target_provider == "custom" and current_base_url:
+    if resolved_provider_def is not None and getattr(resolved_provider_def, "name", ""):
+        provider_label = resolved_provider_def.name
+    elif target_provider == "custom" and current_base_url:
         provider_label = "Custom endpoint"
     if target_provider.startswith("custom:"):
         custom_pdef = resolve_provider_full(
@@ -967,7 +1061,9 @@ def switch_model(
         # block named "openai"), so it would re-resolve from scratch and fail
         # or hop to an aggregator. Use the pdef's endpoint directly instead.
         _user_pdef = None
-        if explicit_provider and user_providers:
+        if explicit_provider and explicit_provider.strip().lower() != "custom":
+            _user_pdef = resolved_provider_def
+        if _user_pdef is None and explicit_provider and user_providers:
             from hermes_cli.providers import resolve_user_provider as _ruser
             _user_pdef = _ruser(explicit_provider.strip().lower(), user_providers)
             if _user_pdef is None:
@@ -1266,7 +1362,9 @@ def list_authenticated_providers(
       - total_models: int — total curated count
       - source: str — "built-in", "models.dev", "user-config"
 
-    Only includes providers that have API keys set or are user-defined endpoints.
+    Only includes providers that have API keys set, are user-defined
+    endpoints, or are the currently active local/custom endpoint.
+
     ``force_fresh_nous_tier`` bypasses the short Nous tier cache for explicit
     account-sensitive flows. UI picker opens should leave it false so they do
     not block on fresh Portal/account checks every time.
@@ -2088,6 +2186,79 @@ def list_authenticated_providers(
             })
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
+
+    # --- 5. Current local/custom endpoint from top-level model config ---
+    # The picker historically only surfaced local endpoints when they were also
+    # saved under ``providers:`` or ``custom_providers:``. A bare top-level
+    # config like:
+    #
+    #   model:
+    #     provider: ollama
+    #     base_url: http://host:11434/v1
+    #
+    # was enough for runtime resolution but not enough for the Telegram /model
+    # picker, so users only saw credentialed built-ins like Ollama Cloud.
+    # Synthesize a row for the active local/custom endpoint when no earlier
+    # section already emitted the same API URL.
+    current_provider_key = str(current_provider or "").strip().lower()
+    current_api_url = str(current_base_url or "").strip().rstrip("/")
+    current_api_url_norm = _norm_url(current_api_url)
+    if current_provider_key in _LOCAL_PROVIDER_ALIASES and current_api_url_norm:
+        already_listed = any(
+            _norm_url(str(row.get("api_url") or "")) == current_api_url_norm
+            for row in results
+            if row.get("api_url")
+        )
+        if not already_listed:
+            display_name = ""
+            try:
+                resolved_current = resolve_provider_full(
+                    current_provider,
+                    user_providers=user_providers,
+                    custom_providers=custom_providers,
+                )
+            except Exception:
+                resolved_current = None
+            if resolved_current is not None:
+                resolved_url = _norm_url(getattr(resolved_current, "base_url", ""))
+                if resolved_url == current_api_url_norm:
+                    display_name = str(getattr(resolved_current, "name", "") or "").strip()
+
+            if not display_name:
+                if current_provider_key == "ollama" or ":11434" in current_api_url_norm:
+                    display_name = "Ollama"
+                else:
+                    display_name = "Local endpoint"
+
+            current_models: list[str] = []
+            try:
+                from hermes_cli.models import fetch_api_models
+                live_models = fetch_api_models(
+                    os.getenv("CUSTOM_API_KEY", "")
+                    or os.getenv("OPENAI_API_KEY", "")
+                    or os.getenv("OPENROUTER_API_KEY", ""),
+                    current_api_url,
+                )
+                if live_models:
+                    current_models = live_models
+            except Exception:
+                pass
+
+            if not current_models and current_model:
+                current_models = [current_model]
+
+            current_slug = str(current_provider or "").strip() or "custom"
+            results.append({
+                "slug": current_slug,
+                "name": display_name,
+                "is_current": True,
+                "is_user_defined": True,
+                "models": current_models,
+                "total_models": len(current_models),
+                "source": "current-runtime",
+                "api_url": current_api_url,
+            })
+            seen_slugs.add(current_slug.lower())
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))

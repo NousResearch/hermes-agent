@@ -73,6 +73,8 @@ INCLUDED_PATTERNS = [
     "**/*.tsx",
     "**/*.json",
     "**/*.JSON",
+    "**/*.eml",
+    "**/*.EML",
 ]
 
 EXCLUDED_PATTERNS = [

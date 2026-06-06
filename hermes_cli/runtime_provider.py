@@ -58,6 +58,20 @@ def _loopback_hostname(host: str) -> bool:
     return h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 
 
+_TRUSTED_LOCAL_CONFIG_PROVIDERS = frozenset({
+    "custom",
+    "ollama",
+    "local",
+    "vllm",
+    "llamacpp",
+    "llama.cpp",
+    "llama-cpp",
+    "lmstudio",
+    "lm-studio",
+    "lm_studio",
+})
+
+
 def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider: str) -> bool:
     """Decide whether ``model.base_url`` may back bare ``custom`` runtime resolution.
 
@@ -70,7 +84,13 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     bu = (cfg_base_url or "").strip()
     if not bu:
         return False
-    if cfg_provider_norm == "custom":
+    if cfg_provider_norm == "custom" or cfg_provider_norm.startswith("custom:"):
+        return True
+    # ``provider: ollama`` / ``provider: local`` is an explicit user choice for
+    # a local endpoint that may live on a LAN host (for example 192.168.x.x),
+    # not only on loopback. Trust those saved base URLs for bare ``custom``
+    # resolution so gateway/provider switches can return to the local server.
+    if cfg_provider_norm in _TRUSTED_LOCAL_CONFIG_PROVIDERS:
         return True
     # GitHub #27132: provider aliases that resolve to "custom" at runtime
     # (ollama, vllm, llamacpp, …) should be trusted the same way "custom"

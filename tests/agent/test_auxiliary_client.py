@@ -211,6 +211,11 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
+    def test_maps_local_endpoint_aliases(self):
+        assert _normalize_aux_provider("ollama") == "custom"
+        assert _normalize_aux_provider("local") == "custom"
+        assert _normalize_aux_provider("vllm") == "custom"
+
 
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):

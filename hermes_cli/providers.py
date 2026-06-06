@@ -380,6 +380,17 @@ _LABEL_OVERRIDES: Dict[str, str] = {
 }
 
 
+_CONFIG_LOCAL_PROVIDER_ALIASES: frozenset[str] = frozenset({
+    "custom",
+    "ollama",
+    "local",
+    "vllm",
+    "llamacpp",
+    "llama.cpp",
+    "llama-cpp",
+})
+
+
 # -- Transport → API mode mapping ---------------------------------------------
 
 TRANSPORT_TO_API_MODE: Dict[str, str] = {
@@ -592,6 +603,42 @@ def custom_provider_slug(display_name: str) -> str:
     return "custom:" + display_name.strip().lower().replace(" ", "-")
 
 
+def _resolve_config_local_alias(name: str) -> Optional[ProviderDef]:
+    """Resolve bare local aliases from the active top-level model config."""
+    requested = (name or "").strip().lower()
+    canonical = normalize_provider(requested)
+    if canonical != "custom":
+        return None
+
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return None
+
+    model_cfg = cfg.get("model")
+    if not isinstance(model_cfg, dict):
+        return None
+
+    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+    base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+    if cfg_provider not in _CONFIG_LOCAL_PROVIDER_ALIASES or not base_url:
+        return None
+
+    label = "Ollama" if (requested == "ollama" or cfg_provider == "ollama") else "Local endpoint"
+    return ProviderDef(
+        id="custom",
+        name=label,
+        transport="openai_chat",
+        api_key_env_vars=(),
+        base_url=base_url,
+        is_aggregator=False,
+        auth_type="api_key",
+        source="config",
+    )
+
+
 def resolve_custom_provider(
     name: str,
     custom_providers: Optional[List[Dict[str, Any]]],
@@ -698,6 +745,12 @@ def resolve_provider_full(
     pdef = get_provider(canonical)
     if pdef is not None:
         return pdef
+
+    # 1b. Bare local aliases backed only by top-level model config.
+    if canonical == "custom":
+        config_local = _resolve_config_local_alias(name)
+        if config_local is not None:
+            return config_local
 
     # 2. User-defined providers from config
     if user_providers:

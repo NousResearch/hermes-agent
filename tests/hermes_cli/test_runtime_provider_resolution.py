@@ -635,6 +635,30 @@ def test_bare_custom_uses_loopback_model_base_url_when_provider_not_custom(monke
     assert resolved["api_key"] == "no-key-required"
 
 
+def test_bare_custom_uses_private_ollama_base_url_when_provider_is_ollama(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "ollama",
+            "base_url": "http://192.168.178.170:11434/v1",
+            "default": "gemma4:e4b",
+        },
+    )
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://192.168.178.170:11434/v1"
+    assert resolved["api_key"] == "no-key-required"
+
+
 def test_bare_custom_custom_base_url_env_overrides_remote_yaml(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(

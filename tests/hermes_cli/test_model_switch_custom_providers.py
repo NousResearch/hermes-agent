@@ -129,6 +129,27 @@ def test_is_aggregator_leaves_unknown_provider_non_aggregator():
     assert providers_mod.is_aggregator("not-a-provider") is False
 
 
+def test_resolve_provider_full_uses_configured_ollama_alias(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "model": {
+                "provider": "ollama",
+                "base_url": "http://192.168.178.170:11434/v1",
+                "default": "gemma4:e4b",
+            }
+        },
+    )
+
+    resolved = resolve_provider_full("ollama", user_providers={}, custom_providers=[])
+
+    assert resolved is not None
+    assert resolved.id == "custom"
+    assert resolved.name == "Ollama"
+    assert resolved.base_url == "http://192.168.178.170:11434/v1"
+    assert resolved.source == "config"
+
+
 def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     """Shared /model switch pipeline should accept --provider for custom_providers."""
     monkeypatch.setattr(
@@ -165,6 +186,48 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.provider_label == "Local (127.0.0.1:4141)"
     assert result.new_model == "rotator-openrouter-coding"
     assert result.base_url == "http://127.0.0.1:4141/v1"
+    assert result.api_key == "no-key-required"
+
+
+def test_switch_model_accepts_explicit_bare_ollama_provider(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "model": {
+                "provider": "ollama",
+                "base_url": "http://192.168.178.170:11434/v1",
+                "default": "gemma4:e4b",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "no-key-required",
+            "base_url": "http://192.168.178.170:11434/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="",
+        current_provider="ollama-cloud",
+        current_model="gemma3:4b",
+        current_base_url="https://ollama.com/v1",
+        current_api_key="ollama-cloud-key",
+        explicit_provider="ollama",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "custom"
+    assert result.provider_label == "Ollama"
+    assert result.new_model == "gemma4:e4b"
+    assert result.base_url == "http://192.168.178.170:11434/v1"
     assert result.api_key == "no-key-required"
 
 
@@ -329,6 +392,7 @@ def test_list_authenticated_providers_groups_same_endpoint(monkeypatch):
     returned as a single picker row with all their models merged."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **kw: [])
 
     providers = list_authenticated_providers(
         current_provider="custom",
@@ -410,11 +474,45 @@ def test_list_authenticated_providers_bare_custom_slug_recovers(monkeypatch):
     assert group["is_current"] is True
 
 
+def test_list_authenticated_providers_includes_current_ollama_without_saved_provider(monkeypatch):
+    """A bare top-level `model.provider: ollama` config should still surface
+    the active local endpoint in the picker, even when `providers:` and
+    `custom_providers:` are empty."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models",
+        lambda api_key, base_url, timeout=5.0, api_mode="chat_completions": [
+            "gemma4:e4b",
+            "qwen3:14b",
+        ] if base_url == "http://192.168.178.170:11434/v1" else [],
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="ollama",
+        current_base_url="http://192.168.178.170:11434/v1",
+        current_model="gemma4:e4b",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+
+    matches = [p for p in providers if p["slug"] == "ollama"]
+    assert len(matches) == 1
+    row = matches[0]
+    assert row["name"] == "Ollama"
+    assert row["is_current"] is True
+    assert row["models"] == ["gemma4:e4b", "qwen3:14b"]
+    assert row["total_models"] == 2
+    assert row["api_url"] == "http://192.168.178.170:11434/v1"
+
+
 def test_list_authenticated_providers_distinct_endpoints_stay_separate(monkeypatch):
     """Entries with different base_urls must produce separate picker rows
     even if some display names happen to be similar."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **kw: [])
 
     providers = list_authenticated_providers(
         user_providers={},
@@ -510,6 +608,7 @@ def test_list_authenticated_providers_total_models_reflects_grouped_count(monkey
     the full count, and every grouped model appears in the list."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **kw: [])
 
     entries = [
         {"name": f"Ollama \u2014 Model {i}", "base_url": "http://localhost:11434/v1",

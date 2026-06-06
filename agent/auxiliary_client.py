@@ -193,6 +193,13 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    # Local OpenAI-compatible servers route through the custom endpoint path.
+    "ollama": "custom",
+    "local": "custom",
+    "vllm": "custom",
+    "llamacpp": "custom",
+    "llama.cpp": "custom",
+    "llama-cpp": "custom",
 }
 
 

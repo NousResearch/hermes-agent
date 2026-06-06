@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _TIMEOUT = 30.0
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 # Maps the viking_remember `category` enum to a viking:// subdirectory.
 # Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
@@ -541,6 +542,22 @@ class OpenVikingMemoryProvider(MemoryProvider):
             except Exception:
                 pass
 
+    def _auto_start_port(self) -> Optional[int]:
+        """Return the port for loopback endpoints, or None for non-loopback/HTTPS.
+
+        Only http:// endpoints pointing to a loopback address (127.0.0.1,
+        localhost, ::1) are eligible for auto-start.  Remote endpoints and
+        HTTPS are never auto-started to avoid spawning a local server for
+        an endpoint that points elsewhere.
+        """
+        parsed = urlparse(self._endpoint)
+        if parsed.scheme != "http":
+            return None
+        host = (parsed.hostname or "").strip().lower()
+        if host not in _LOOPBACK_HOSTS:
+            return None
+        return parsed.port or 80
+
     def _find_server_binary(self) -> Optional[str]:
         """Locate openviking-server: shutil.which() → venv bin fallback."""
         # Tier 1: PATH
@@ -557,7 +574,21 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return None
 
     def _start_server_thread(self) -> None:
-        """Spawn a background thread to start openviking-server and poll /health."""
+        """Spawn a background thread to start openviking-server and poll /health.
+
+        Only starts a server for loopback endpoints (127.0.0.1, localhost, ::1).
+        Remote endpoints are never auto-started — the user must manage those
+        servers themselves.
+        """
+        # Whitelist gate: only auto-start for loopback endpoints.
+        if self._auto_start_port() is None:
+            logger.warning(
+                "OpenViking endpoint %s is not a loopback address — "
+                "auto-start is disabled for remote endpoints",
+                self._endpoint,
+            )
+            return
+
         with self._server_start_lock:
             # Sentinel: True = start in progress, Popen = running, None = idle.
             # If the tracked process has already exited, clear so we can restart.
@@ -590,10 +621,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
             # Build command — config validation is left to the server.
             config_path = os.environ.get("OPENVIKING_CONFIG", os.path.expanduser("~/.openviking/ov.conf"))
-            from urllib.parse import urlparse as _urlparse
-            parsed = _urlparse(self._endpoint)
+            parsed = urlparse(self._endpoint)
             host = parsed.hostname or "127.0.0.1"
-            port = parsed.port or 1933
+            port = self._auto_start_port() or 1933
 
             cmd = [server_bin, "--config", config_path, "--host", host, "--port", str(port)]
             logger.info("Starting OpenViking server: %s", " ".join(cmd))

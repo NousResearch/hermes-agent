@@ -285,6 +285,8 @@ class TestOpenVikingMemoryUriBuilder:
             assert f"/memories/{subdir}/mem_" in uri, (
                 f"subdir '{subdir}' not placed correctly in URI: {uri}"
             )
+
+
 class TestOpenVikingAutoStart:
     """Tests for the auto-start server logic in initialize()."""
 
@@ -812,3 +814,66 @@ class TestServerLogRedirection:
         assert popen_kwargs["stderr"] is subprocess.DEVNULL
 
         OpenVikingMemoryProvider._server_log_fh = None
+
+
+class TestAutoStartWhitelist:
+    """Loopback whitelist: only local endpoints trigger auto-start."""
+
+    def test_auto_start_port_for_loopback(self):
+        provider = OpenVikingMemoryProvider()
+        for endpoint, expected in [
+            ("http://127.0.0.1:1933", 1933),
+            ("http://localhost:1933", 1933),
+            ("http://[::1]:1933", 1933),
+        ]:
+            provider._endpoint = endpoint
+            assert provider._auto_start_port() == expected
+
+        # Non-loopback / HTTPS → None
+        provider._endpoint = "http://openviking.example.com:1933"
+        assert provider._auto_start_port() is None
+        provider._endpoint = "https://127.0.0.1:1933"
+        assert provider._auto_start_port() is None
+
+    @patch("plugins.memory.openviking._VikingClient")
+    def test_no_auto_start_for_remote_endpoint(self, MockClient):
+        """Remote endpoint → no Popen, client stays None."""
+        mock_client_instance = MagicMock()
+        mock_client_instance.health.return_value = False
+        MockClient.return_value = mock_client_instance
+
+        with patch.dict(os.environ, {"OPENVIKING_ENDPOINT": "http://openviking.example.com:1933"}), \
+             patch("plugins.memory.openviking.subprocess.Popen") as MockPopen:
+            provider = OpenVikingMemoryProvider()
+            provider.initialize("test-session")
+            MockPopen.assert_not_called()
+
+        assert provider._client is None
+        assert provider._server_process is None
+
+    @patch.object(OpenVikingMemoryProvider, "_find_server_binary", return_value="/usr/local/bin/openviking-server")
+    @patch("plugins.memory.openviking.subprocess.Popen")
+    @patch("plugins.memory.openviking._VikingClient")
+    def test_auto_start_proceeds_for_loopback_endpoint(self, MockClient, MockPopen, mock_find):
+        """Loopback endpoint → Popen called normally."""
+        mock_poll_client = MagicMock()
+        health_count = {"n": 0}
+        mock_poll_client.health.side_effect = lambda: (health_count.update(n=health_count["n"] + 1) or health_count["n"]) >= 2
+        MockClient.return_value = mock_poll_client
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 12345
+        MockPopen.return_value = mock_proc
+
+        with patch("plugins.memory.openviking.time.monotonic",
+                    side_effect=TestOpenVikingAutoStart._make_fake_monotonic()), \
+             patch("plugins.memory.openviking.time.sleep"):
+            provider = OpenVikingMemoryProvider()
+            provider.initialize("test-session")
+
+            for t in threading.enumerate():
+                if t.name == "openviking-server-start":
+                    t.join(timeout=5.0)
+
+        MockPopen.assert_called_once()

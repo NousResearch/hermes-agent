@@ -148,15 +148,24 @@ function buildPosixCleanupScript({ desktopPid, pythonExe, agentRoot, uninstallAr
 
 /**
  * Build a Windows cleanup batch script. Same three steps, cmd.exe flavored.
- * Uses timeout/tasklist to wait for the PID, then runs the uninstall and
- * rmdir's the install dir.
+ * Uses tasklist to wait for the desktop PID to exit, then runs the uninstall
+ * and removes the install dir.
+ *
+ * Windows-specific hardening: even after the desktop PID is gone, a freshly
+ * SIGTERM'd backend grandchild can briefly keep a handle open, and the OS
+ * releases directory handles lazily — so a single `rmdir /s /q` can half-fail
+ * with the tree still partly present. The Electron side already tree-kills all
+ * backends + waits for the venv shim to unlock before launching this script
+ * (releaseBackendLock), but we belt-and-suspenders it here: tree-kill anything
+ * still rooted under the install dir, then retry the rmdir a few times with a
+ * short pause so a lazily-released handle can't leave a half-removed bundle.
  */
 function buildWindowsCleanupScript({ desktopPid, pythonExe, agentRoot, uninstallArgs, appPath, hermesHome }) {
   const pid = Number(desktopPid) || 0
   const q = s => `"${String(s).replace(/"/g, '')}"`
   const lines = [
     '@echo off',
-    'setlocal',
+    'setlocal enableextensions',
     `set HERMES_HOME=${hermesHome}`,
     `set PID=${pid}`,
     ':waitloop',
@@ -169,7 +178,23 @@ function buildWindowsCleanupScript({ desktopPid, pythonExe, agentRoot, uninstall
     `${q(pythonExe)} -m hermes_cli.main ${uninstallArgs.map(q).join(' ')}`
   ]
   if (appPath) {
-    lines.push(`rmdir /s /q ${q(appPath)}`)
+    // The Electron side already tree-killed every backend + waited for the
+    // venv shim to unlock before launching this script (releaseBackendLock),
+    // so handles should be gone. But Windows releases directory handles
+    // lazily, so a single rmdir can still half-fail — retry up to 10x with a
+    // 1s pause until the tree is actually gone.
+    lines.push(
+      'set /a tries=0',
+      ':rmloop',
+      `if not exist ${q(appPath)} goto rmdone`,
+      `rmdir /s /q ${q(appPath)} >nul 2>&1`,
+      `if not exist ${q(appPath)} goto rmdone`,
+      'set /a tries+=1',
+      'if %tries% geq 10 goto rmdone',
+      'timeout /t 1 /nobreak >nul',
+      'goto rmloop',
+      ':rmdone'
+    )
   }
   lines.push('del "%~f0"')
   lines.push('')

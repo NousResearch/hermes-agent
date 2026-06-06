@@ -180,7 +180,11 @@ test('buildWindowsCleanupScript waits for the PID, runs uninstall, rmdir bundle'
   assert.match(script, /set PID=9988/)
   assert.match(script, /tasklist \/FI "PID eq %PID%"/)
   assert.match(script, /-m hermes_cli\.main "uninstall" "--full" "--yes"/)
-  assert.match(script, /rmdir \/s \/q "C:\\Users\\x\\AppData\\Local\\Programs\\Hermes"/)
+  // Removal is a retry loop (Windows releases dir handles lazily), not a single
+  // rmdir — assert the loop structure + the bounded retry guard.
+  assert.match(script, /:rmloop/)
+  assert.match(script, /rmdir \/s \/q "C:\\Users\\x\\AppData\\Local\\Programs\\Hermes" >nul 2>&1/)
+  assert.match(script, /if %tries% geq 10 goto rmdone/)
   assert.match(script, /del "%~f0"/)
 })
 

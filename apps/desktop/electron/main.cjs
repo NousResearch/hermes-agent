@@ -1423,6 +1423,20 @@ function forceKillProcessTree(pid) {
 // aggressively SIGKILL-ing the backend here would be an untested behavior change
 // for no benefit. So we no-op off Windows and leave that path exactly as it was.
 async function releaseBackendLockForUpdate(updateRoot) {
+  return releaseBackendLock(updateRoot, 'updates')
+}
+
+// Shared backend teardown + venv-shim unlock wait. Used by BOTH the self-update
+// hand-off and the desktop uninstaller — they have the identical Windows
+// problem: the desktop's backend (and the grandchildren IT spawned — a hermes
+// REPL, a pty terminal, the gateway) keep `hermes.exe` and other files in the
+// venv mandatory-locked, so any in-place replace/delete of the install tree
+// races a live handle and half-fails (#37532). We tree-kill every backend PID
+// the desktop owns, then poll the shim until it's genuinely writable.
+//
+// `tag` only flavors the log lines. No-op off Windows (POSIX has no mandatory
+// locks — the before-quit SIGTERM + the cleanup script's own PID-wait suffice).
+async function releaseBackendLock(updateRoot, tag) {
   if (!IS_WINDOWS) return { unlocked: true }
 
   // Collect every backend PID the desktop owns: primary window backend + pool.
@@ -1447,14 +1461,12 @@ async function releaseBackendLockForUpdate(updateRoot) {
   const deadlineMs = Date.now() + 15000
   while (Date.now() < deadlineMs) {
     if (!isShimLocked(shim)) {
-      rememberLog('[updates] venv shim unlocked; safe to hand off the update')
+      rememberLog(`[${tag}] venv shim unlocked; safe to proceed`)
       return { unlocked: true }
     }
     await new Promise(r => setTimeout(r, 300))
   }
-  // Timed out: the updater's own wait_for_venv_free + force-kill is the second
-  // line of defense, and we pass --force so the guard won't dead-end. Log it.
-  rememberLog('[updates] venv shim still locked after 15s; handing off anyway (updater will force)')
+  rememberLog(`[${tag}] venv shim still locked after 15s; proceeding anyway (force)`)
   return { unlocked: false }
 }
 
@@ -5506,6 +5518,18 @@ async function runDesktopUninstall(mode) {
 
   const appPath = resolveRemovableAppPath(process.execPath, process.platform, process.env)
   const removeBundle = shouldRemoveAppBundle(IS_PACKAGED, appPath) ? appPath : null
+
+  // CRITICAL (Windows): tear down every backend the desktop owns and wait for
+  // the venv shim to unlock BEFORE the cleanup script runs. lite/full delete
+  // the venv, and even gui-only removes the install tree's GUI artifacts — a
+  // live backend grandchild (gateway / pty / REPL) holding a mandatory file
+  // lock would make the script's rmdir half-fail (#37532 for the update path).
+  // Reuses the incident-hardened update teardown; no-op on macOS/Linux.
+  try {
+    await releaseBackendLock(ACTIVE_HERMES_ROOT, 'uninstall')
+  } catch (error) {
+    rememberLog(`[uninstall] backend teardown errored (continuing): ${error.message}`)
+  }
 
   const scriptArgs = {
     desktopPid: process.pid,

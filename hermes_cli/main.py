@@ -5032,6 +5032,37 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     return stopped
 
 
+def _desktop_local_build_signing_env(env: dict) -> dict:
+    """Env overrides that keep a *local* macOS packaged build ad-hoc signed.
+
+    electron-builder defaults ``CSC_IDENTITY_AUTO_DISCOVERY`` to true, which
+    makes it sign with *any* code-signing identity it can find in the login
+    keychain. On a developer's machine that is frequently a self-made CA or
+    other certificate that ``codesign`` then rejects with "this identity cannot
+    be used for signing code", aborting ``hermes update`` / ``hermes gui`` at
+    the packaging step (#40187).
+
+    A locally built app is meant to be ad-hoc signed (see
+    ``_desktop_macos_relaunchable_fixup``), so when no real identity is
+    configured we disable auto-discovery and let electron-builder fall back to
+    ad-hoc signing. A real-identity build (CI sets ``CSC_LINK`` /
+    ``APPLE_SIGNING_IDENTITY`` / ``CSC_NAME``) or an explicit
+    ``CSC_IDENTITY_AUTO_DISCOVERY`` from the user is left untouched.
+    """
+    if sys.platform != "darwin":
+        return {}
+    # Respect an explicit user choice rather than overriding it.
+    if env.get("CSC_IDENTITY_AUTO_DISCOVERY") is not None:
+        return {}
+    # Any of these means a real identity is intended — don't disable discovery.
+    if any(
+        env.get(key)
+        for key in ("CSC_LINK", "CSC_NAME", "APPLE_SIGNING_IDENTITY")
+    ):
+        return {}
+    return {"CSC_IDENTITY_AUTO_DISCOVERY": "false"}
+
+
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
 
@@ -5197,6 +5228,10 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
+                # Keep the local macOS packaging step from picking a bogus
+                # keychain identity (e.g. a self-made CA) and failing codesign;
+                # fall back to ad-hoc signing unless a real identity is set.
+                env.update(_desktop_local_build_signing_env(env))
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0 and not source_mode:
                 # A corrupt cached Electron zip makes `pack` fail with an ENOENT

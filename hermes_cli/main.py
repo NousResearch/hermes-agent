@@ -482,6 +482,27 @@ def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
     )
 
 
+def _is_proot_env(env: dict[str, str] | None = None) -> bool:
+    """Detect PRoot / fakeroot overlay environments.
+
+    PRoot bind-mounts overlay filesystems so ``uv pip install`` hardlinks
+    (the default on Linux) fail across mount points with
+    ``Failed to clone hardlink … is on file system … but the destination is
+    on file system …``.  Setting ``UV_LINK_MODE=copy`` works around this.
+    """
+    check = env or os.environ
+    if check.get("PROOT"):
+        return True
+    # /proc/self/exe symlink target sometimes contains "proot" on PRoot
+    try:
+        target = os.readlink("/proc/self/exe")
+        if "proot" in target:
+            return True
+    except OSError:
+        pass
+    return False
+
+
 def _read_packed_ref(common_dir: Path, ref: str) -> str | None:
     """Look up a ref in .git/packed-refs without spawning git.
 
@@ -8133,6 +8154,11 @@ def _update_via_zip(args):
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
+        # PRoot/fakeroot overlay filesystems break uv's default hardlink
+        # mode with "Failed to clone hardlink … cross-device" errors.
+        # Fall back to copy mode so pip install works across mount points.
+        if (_is_termux_env(uv_env) or _is_proot_env(uv_env)) and "UV_LINK_MODE" not in uv_env:
+            uv_env["UV_LINK_MODE"] = "copy"
         _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
     else:
         # Use sys.executable to explicitly call the venv's pip module,
@@ -10631,6 +10657,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 uv_env.pop("PYTHONHOME", None)
                 install_group = "termux-all"
                 print("  → Termux detected: using uv + curated termux-all optional profile...")
+            # PRoot/fakeroot overlay filesystems break uv's default hardlink
+            # mode with "Failed to clone hardlink … cross-device" errors.
+            if (_is_termux_env(uv_env) or _is_proot_env(uv_env)) and "UV_LINK_MODE" not in uv_env:
+                uv_env["UV_LINK_MODE"] = "copy"
             if _is_termux_env(uv_env) and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)

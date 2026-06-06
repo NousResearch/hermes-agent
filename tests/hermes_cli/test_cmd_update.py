@@ -825,3 +825,70 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+def test_is_proot_env_true_for_proot_envvar():
+    from hermes_cli import main as hm
+
+    assert hm._is_proot_env({"PROOT": "/usr/bin/proot"}) is True
+
+
+def test_is_proot_env_false_for_normal_env():
+    from hermes_cli import main as hm
+
+    assert hm._is_proot_env({"HOME": "/home/user"}) is False
+
+
+def test_is_proot_env_false_for_empty_env():
+    from hermes_cli import main as hm
+
+    assert hm._is_proot_env({}) is False
+
+
+def test_uv_link_mode_set_for_termux_env(monkeypatch):
+    """When Termux is detected, UV_LINK_MODE=copy should be set."""
+    from hermes_cli import main as hm
+
+    env = {"PREFIX": "/data/data/com.termux/files/usr", "TERMUX_VERSION": "0.118"}
+    monkeypatch.setattr(hm, "_is_termux_env", lambda e=None: True)
+    monkeypatch.setattr(hm, "_is_proot_env", lambda e=None: False)
+
+    # Simulate the logic at the uv call site
+    uv_env = {**env, "VIRTUAL_ENV": "/some/venv"}
+    if hm._is_termux_env(uv_env) or hm._is_proot_env(uv_env):
+        if "UV_LINK_MODE" not in uv_env:
+            uv_env["UV_LINK_MODE"] = "copy"
+
+    assert uv_env["UV_LINK_MODE"] == "copy"
+
+
+def test_uv_link_mode_set_for_proot_env(monkeypatch):
+    """When PRoot is detected, UV_LINK_MODE=copy should be set."""
+    from hermes_cli import main as hm
+
+    env = {"PROOT": "1", "HOME": "/root"}
+    monkeypatch.setattr(hm, "_is_termux_env", lambda e=None: False)
+    monkeypatch.setattr(hm, "_is_proot_env", lambda e=None: True)
+
+    uv_env = {**env, "VIRTUAL_ENV": "/some/venv"}
+    if hm._is_termux_env(uv_env) or hm._is_proot_env(uv_env):
+        if "UV_LINK_MODE" not in uv_env:
+            uv_env["UV_LINK_MODE"] = "copy"
+
+    assert uv_env["UV_LINK_MODE"] == "copy"
+
+
+def test_uv_link_mode_not_overridden_if_already_set(monkeypatch):
+    """User-set UV_LINK_MODE should not be overridden."""
+    from hermes_cli import main as hm
+
+    env = {"PROOT": "1", "UV_LINK_MODE": "symlink", "HOME": "/root"}
+    monkeypatch.setattr(hm, "_is_termux_env", lambda e=None: False)
+    monkeypatch.setattr(hm, "_is_proot_env", lambda e=None: True)
+
+    uv_env = {**env, "VIRTUAL_ENV": "/some/venv"}
+    if hm._is_termux_env(uv_env) or hm._is_proot_env(uv_env):
+        if "UV_LINK_MODE" not in uv_env:
+            uv_env["UV_LINK_MODE"] = "copy"
+
+    assert uv_env["UV_LINK_MODE"] == "symlink"

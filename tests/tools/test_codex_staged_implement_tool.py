@@ -193,7 +193,114 @@ def test_dirty_worktree_rejects_without_runner_call(tmp_path, monkeypatch):
     assert result["dirty_check"]["dirty_paths"] == ["dirty.txt"]
     assert result["dirty_baseline_policy"] == "require-clean"
     assert result["runner_exit_code"] is None
+    assert result["dirty_state_id"] == result["dirty_check"]["dirty_state_id"]
+    assert result["auto_resolvable_classes"] == []
+    assert result["requires_user_decision"] is True
+    assert result["resume_strategy"] == "isolated_worktree_recommended"
     assert calls == []
+
+
+def test_dirty_state_id_is_stable_and_changes_with_bounded_dirty_evidence(tmp_path):
+    repo = _clean_repo(tmp_path)
+    (repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+
+    first = tool._dirty_check(repo)
+    repeat = tool._dirty_check(repo)
+    (repo / "second.txt").write_text("dirty\n", encoding="utf-8")
+    changed = tool._dirty_check(repo)
+
+    assert first["dirty_state_id"] == repeat["dirty_state_id"]
+    assert first["dirty_state_id"] != changed["dirty_state_id"]
+    assert len(first["dirty_state_id"]) == 24
+
+
+def test_cache_only_dirty_metadata_is_auto_resolvable_without_mutation_or_runner(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    cache_path = repo / ".pytest_cache" / "v" / "cache" / "nodeids"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("cached\n", encoding="utf-8")
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("runner should not be invoked")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(workdir=str(repo), allowed_files=["README.md"])
+
+    assert result["status"] == "dirty_worktree"
+    assert result["dirty_path_classes"] == {
+        "source": [],
+        "test": [],
+        "docs": [],
+        "cache": [".pytest_cache/v/cache/nodeids"],
+        "unknown": [],
+    }
+    assert result["auto_resolvable_classes"] == ["cache"]
+    assert result["requires_user_decision"] is False
+    assert result["unsafe_reasons"] == []
+    assert result["resume_strategy"] == "clean_worktree_required"
+    assert result["runner_exit_code"] is None
+    assert cache_path.exists()
+    assert calls == []
+
+
+def test_source_and_unknown_dirty_metadata_requires_decision_or_isolation(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    (repo / "tools").mkdir()
+    (repo / "tools" / "dirty_tool.py").write_text("dirty\n", encoding="utf-8")
+    (repo / "scratch.tmp").write_text("dirty\n", encoding="utf-8")
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("runner should not be invoked")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(workdir=str(repo), allowed_files=["README.md"])
+
+    assert result["status"] == "dirty_worktree"
+    assert result["auto_resolvable_classes"] == []
+    assert result["requires_user_decision"] is True
+    assert result["resume_strategy"] == "isolated_worktree_recommended"
+    assert "source_dirty" in result["unsafe_reasons"]
+    assert "unknown_dirty" in result["unsafe_reasons"]
+    assert result["runner_exit_code"] is None
+    assert calls == []
+
+
+def test_dirty_unsafe_reasons_include_conservative_porcelain_and_path_signals(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    large_path = repo / "artifacts" / "large.bin"
+    large_path.parent.mkdir(parents=True)
+    large_path.write_bytes(b"\0" * (tool._LARGE_DIRTY_FILE_BYTES + 1))
+    lines = [
+        "UU conflicted.tmp",
+        "R  old.txt -> renamed.txt",
+        " D deleted.txt",
+        "T  mode-ish.sh",
+        " M .gitmodules",
+        "?? secrets/API_TOKEN.txt",
+        "?? data/customer.csv",
+        "?? image.png",
+        "?? artifacts/large.bin",
+    ]
+    classes = tool._dirty_path_classes(lines)
+
+    reasons = tool._dirty_unsafe_reasons(repo, lines, classes)
+
+    assert "conflict_status" in reasons
+    assert "rename_status" in reasons
+    assert "delete_status" in reasons
+    assert "typechange_or_chmod_status" in reasons
+    assert "submodule_status_or_metadata" in reasons
+    assert "secret_path_evidence" in reasons
+    assert "real_data_path_evidence" in reasons
+    assert "binary_path_evidence" in reasons
+    assert "large_file_evidence" in reasons
 
 
 def test_dirty_worktree_returns_actionable_fail_closed_resolver(tmp_path, monkeypatch):

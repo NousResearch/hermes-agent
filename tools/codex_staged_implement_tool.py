@@ -49,6 +49,62 @@ _DIRTY_PATHS_LIMIT = 100
 _DIFF_STAT_LINES_LIMIT = 40
 _DIFF_STAT_LINE_CHARS_LIMIT = 180
 _DIFF_STAT_TOTAL_CHARS_LIMIT = 4000
+_LARGE_DIRTY_FILE_BYTES = 5 * 1024 * 1024
+_BINARY_PATH_SUFFIXES = {
+    ".7z",
+    ".bin",
+    ".bmp",
+    ".bz2",
+    ".class",
+    ".dll",
+    ".dylib",
+    ".exe",
+    ".gif",
+    ".gz",
+    ".ico",
+    ".jar",
+    ".jpeg",
+    ".jpg",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".o",
+    ".pdf",
+    ".png",
+    ".pyc",
+    ".so",
+    ".tar",
+    ".tgz",
+    ".webp",
+    ".whl",
+    ".zip",
+}
+_SECRET_PATH_WORDS = {
+    ".env",
+    ".npmrc",
+    ".pypirc",
+    "apikey",
+    "api_key",
+    "credential",
+    "credentials",
+    "id_rsa",
+    "password",
+    "private_key",
+    "secret",
+    "secrets",
+    "token",
+}
+_REAL_DATA_PATH_PARTS = {
+    "backup",
+    "backups",
+    "data",
+    "dataset",
+    "datasets",
+    "fixtures_real",
+    "prod",
+    "production",
+}
+_REAL_DATA_SUFFIXES = {".csv", ".db", ".dump", ".jsonl", ".parquet", ".sqlite", ".sqlite3"}
 _INFERRED_SCOPE_NEXT_ACTION = "confirm_inferred_scope_or_execute_with_explicit_scope"
 _INFERRED_SCOPE_TEMPLATES = (
     (
@@ -399,6 +455,120 @@ def _dirty_path_classes(lines: list[str]) -> dict[str, list[str]]:
     return classes
 
 
+def _dirty_state_id(*, lines: list[str], classes: dict[str, list[str]], diff_stat: dict[str, Any]) -> str:
+    evidence = {
+        "porcelain": lines[:_DIRTY_PATHS_LIMIT],
+        "porcelain_truncated": len(lines) > _DIRTY_PATHS_LIMIT,
+        "classes": classes,
+        "diff_stat": {
+            "unstaged": diff_stat.get("unstaged", []),
+            "staged": diff_stat.get("staged", []),
+            "truncated": bool(diff_stat.get("truncated")),
+            "error": diff_stat.get("error"),
+        },
+    }
+    return hashlib.sha256(json.dumps(evidence, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:24]
+
+
+def _dirty_status_pair(line: str) -> str:
+    return (line[:2] if len(line) >= 2 else line).ljust(2)
+
+
+def _path_has_secret_evidence(path: str) -> bool:
+    lowered = path.lower()
+    name = Path(path).name.lower()
+    stem = Path(path).stem.lower()
+    return (
+        name in _SECRET_PATH_WORDS
+        or stem in _SECRET_PATH_WORDS
+        or any(word in lowered for word in _SECRET_PATH_WORDS if word not in {".env", ".npmrc", ".pypirc"})
+    )
+
+
+def _path_has_real_data_evidence(path: str) -> bool:
+    lowered_parts = {part.lower() for part in Path(path).parts}
+    suffix = Path(path).suffix.lower()
+    return bool(lowered_parts & _REAL_DATA_PATH_PARTS) or suffix in _REAL_DATA_SUFFIXES
+
+
+def _path_has_binary_evidence(path: str) -> bool:
+    return Path(path).suffix.lower() in _BINARY_PATH_SUFFIXES
+
+
+def _path_has_large_file_evidence(repo: Path, path: str) -> bool:
+    target = repo / path
+    try:
+        return target.is_file() and target.stat().st_size > _LARGE_DIRTY_FILE_BYTES
+    except OSError:
+        return False
+
+
+def _dirty_unsafe_reasons(repo: Path, lines: list[str], classes: dict[str, list[str]]) -> list[str]:
+    reasons: list[str] = []
+
+    def add(reason: str) -> None:
+        if reason not in reasons:
+            reasons.append(reason)
+
+    if classes.get("source"):
+        add("source_dirty")
+    if classes.get("test"):
+        add("test_dirty")
+    if classes.get("docs"):
+        add("docs_dirty")
+    if classes.get("unknown"):
+        add("unknown_dirty")
+
+    for line in lines:
+        status = _dirty_status_pair(line)
+        path = _dirty_path_from_porcelain(line)
+        bucket = _dirty_path_class(path)
+        if "U" in status or status in {"AA", "DD"}:
+            add("conflict_status")
+        if "R" in status:
+            add("rename_status")
+        if "D" in status:
+            add("delete_status")
+        if "T" in status:
+            add("typechange_or_chmod_status")
+        if "S" in status or path == ".gitmodules" or path.startswith(".gitmodules/"):
+            add("submodule_status_or_metadata")
+        if bucket == "cache":
+            continue
+        if _path_has_secret_evidence(path):
+            add("secret_path_evidence")
+        if _path_has_real_data_evidence(path):
+            add("real_data_path_evidence")
+        if _path_has_binary_evidence(path):
+            add("binary_path_evidence")
+        if _path_has_large_file_evidence(repo, path):
+            add("large_file_evidence")
+    return reasons
+
+
+def _dirty_decision_metadata(dirty: dict[str, Any]) -> dict[str, Any]:
+    classes = dirty.get("dirty_path_classes", {})
+    unsafe_reasons = list(dirty.get("unsafe_reasons", []))
+    dirty_buckets = {name for name, paths in classes.items() if paths}
+    cache_only = dirty_buckets == {"cache"} and not unsafe_reasons and not dirty.get("dirty_paths_truncated")
+    requires_user_decision = not cache_only
+    if cache_only:
+        resume_strategy = "clean_worktree_required"
+        auto_resolvable_classes = ["cache"]
+    elif dirty_buckets & {"source", "unknown"} or unsafe_reasons:
+        resume_strategy = "isolated_worktree_recommended"
+        auto_resolvable_classes = []
+    else:
+        resume_strategy = "ask_user"
+        auto_resolvable_classes = []
+    return {
+        "auto_resolvable_classes": auto_resolvable_classes,
+        "requires_user_decision": requires_user_decision,
+        "unsafe_reasons": unsafe_reasons,
+        "resume_strategy": resume_strategy,
+    }
+
+
 def _bounded_diff_stat_lines(repo: Path, *args: str) -> tuple[list[str], bool, bool]:
     proc = _git(repo, "diff", "--stat", "--no-ext-diff", *args)
     if proc.returncode != 0:
@@ -467,8 +637,10 @@ def _dirty_resolution_metadata(dirty: dict[str, Any]) -> dict[str, Any]:
                 "authorization_required": True,
             },
         ],
+        "dirty_state_id": dirty.get("dirty_state_id"),
         "dirty_path_classes": dirty.get("dirty_path_classes", {}),
         "diff_stat": dirty.get("diff_stat", {"unstaged": [], "staged": [], "truncated": False}),
+        **_dirty_decision_metadata(dirty),
     }
 
 
@@ -476,14 +648,19 @@ def _dirty_check(repo: Path) -> dict[str, Any]:
     proc = _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
     lines = [line for line in proc.stdout.splitlines() if line]
     paths = [_dirty_path_from_porcelain(line) for line in lines]
+    classes = _dirty_path_classes(lines)
+    diff_stat = _dirty_diff_stat(repo)
+    unsafe_reasons = _dirty_unsafe_reasons(repo, lines, classes)
     return {
         "is_clean": proc.returncode == 0 and not lines,
         "porcelain_count": len(lines),
         "dirty_count": len(paths),
         "dirty_paths": paths[:_DIRTY_PATHS_LIMIT],
         "dirty_paths_truncated": len(paths) > _DIRTY_PATHS_LIMIT,
-        "dirty_path_classes": _dirty_path_classes(lines),
-        "diff_stat": _dirty_diff_stat(repo),
+        "dirty_path_classes": classes,
+        "diff_stat": diff_stat,
+        "unsafe_reasons": unsafe_reasons,
+        "dirty_state_id": _dirty_state_id(lines=lines, classes=classes, diff_stat=diff_stat),
     }
 
 

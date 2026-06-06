@@ -451,6 +451,72 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    def test_extract_launchd_runtime_overrides_reads_structured_plist(self, tmp_path, monkeypatch):
+        user_venv = tmp_path / "user-venv"
+        (user_venv / "bin").mkdir(parents=True)
+        python_path = str(user_venv / "bin" / "python")
+        (user_venv / "bin" / "python").write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: python_path)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: user_venv)
+        plist_text = gateway_cli.generate_launchd_plist()
+
+        assert gateway_cli._extract_launchd_runtime_overrides(plist_text) == (
+            python_path,
+            str(user_venv),
+        )
+
+    def test_extract_launchd_runtime_overrides_ignores_malformed_plist(self):
+        malformed = (
+            '<?xml version="1.0"?><plist><dict><key>ProgramArguments</key>'
+            '<array><string>/tmp/python</string>'
+        )
+
+        assert gateway_cli._extract_launchd_runtime_overrides(malformed) == (None, None)
+
+    def test_launchd_install_does_not_overwrite_existing_runtime_without_force(
+        self, tmp_path, monkeypatch
+    ):
+        """Auto-repair must not steal runtime ownership from an existing plist.
+
+        Issue #40278: Hermes Studio.app can run the same gateway service
+        management code under its bundled Python, notice that the installed
+        plist differs, and rewrite ProgramArguments[0]/VIRTUAL_ENV to point at
+        the app bundle. A user-installed gateway plist should keep its existing
+        runtime unless the operator explicitly forces a reinstall.
+        """
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        user_venv = tmp_path / "user-venv"
+        studio_runtime = tmp_path / "Hermes Studio.app" / "Contents" / "Resources" / "python"
+        (user_venv / "bin").mkdir(parents=True)
+        (studio_runtime / "bin").mkdir(parents=True)
+        (user_venv / "bin" / "python").write_text("", encoding="utf-8")
+        (studio_runtime / "bin" / "python").write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(user_venv / "bin" / "python"))
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli, "get_python_path", lambda: str(studio_runtime / "bin" / "python")
+        )
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_install(force=False)
+
+        installed = plist_path.read_text(encoding="utf-8")
+        assert str(user_venv / "bin" / "python") in installed
+        assert str(studio_runtime / "bin" / "python") not in installed
+        assert str(user_venv) in installed
+        assert str(studio_runtime) not in installed
+        assert calls == []
+
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
         monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})

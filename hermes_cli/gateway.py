@@ -7,6 +7,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import logging
 import os
+import plistlib
 import shutil
 import signal
 import subprocess
@@ -2450,6 +2451,42 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
     )
 
 
+def _extract_launchd_runtime_overrides(text: str) -> tuple[str | None, str | None]:
+    """Return the installed launchd runtime (python path, VIRTUAL_ENV) if present.
+
+    launchd service ownership is runtime-sensitive: a user-installed gateway
+    plist should keep pointing at the Python/venv it was explicitly installed
+    with unless the operator forces a reinstall. This avoids one Hermes runtime
+    (for example a bundled desktop app) silently stealing another runtime's
+    service definition during auto-repair.
+    """
+    try:
+        plist = plistlib.loads(text.encode("utf-8"))
+    except Exception:
+        return None, None
+
+    if not isinstance(plist, dict):
+        return None, None
+
+    program_arguments = plist.get("ProgramArguments")
+    if isinstance(program_arguments, list) and program_arguments:
+        python_candidate = program_arguments[0]
+        python_path = python_candidate if isinstance(python_candidate, str) else None
+    else:
+        python_path = None
+
+    # Only trust the structured launchd env payload; malformed or unexpected
+    # shapes should fall back to the current runtime rather than guessing.
+    environment = plist.get("EnvironmentVariables")
+    if isinstance(environment, dict):
+        venv_candidate = environment.get("VIRTUAL_ENV")
+        venv_dir = venv_candidate if isinstance(venv_candidate, str) else None
+    else:
+        venv_dir = None
+
+    return python_path, venv_dir
+
+
 def systemd_unit_is_current(system: bool = False) -> bool:
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
@@ -3003,8 +3040,12 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
-def generate_launchd_plist() -> str:
-    python_path = get_python_path()
+def generate_launchd_plist(
+    *,
+    python_path_override: str | None = None,
+    venv_dir_override: str | None = None,
+) -> str:
+    python_path = python_path_override or get_python_path()
     # Stable cwd anchor — never the volatile source checkout. See
     # _stable_service_working_dir() for the rationale (same rot risk applies
     # to launchd's WorkingDirectory as to systemd's).
@@ -3020,7 +3061,8 @@ def generate_launchd_plist() -> str:
     # the systemd unit), then capture the user's full shell PATH so every
     # user-installed tool (node, ffmpeg, …) is reachable.
     detected_venv = _detect_venv_dir()
-    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    detected_venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    venv_dir = venv_dir_override or detected_venv_dir
     # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
     # so it's explicitly in PATH even if the user's shell PATH changes later.
     priority_dirs = _build_service_path_dirs()
@@ -3101,7 +3143,11 @@ def launchd_plist_is_current() -> bool:
         return False
 
     installed = plist_path.read_text(encoding="utf-8")
-    expected = generate_launchd_plist()
+    installed_python, installed_venv = _extract_launchd_runtime_overrides(installed)
+    expected = generate_launchd_plist(
+        python_path_override=installed_python,
+        venv_dir_override=installed_venv,
+    )
     return _normalize_launchd_plist_for_comparison(
         installed
     ) == _normalize_launchd_plist_for_comparison(expected)
@@ -3118,7 +3164,15 @@ def refresh_launchd_plist_if_needed() -> bool:
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
-    plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
+    installed = plist_path.read_text(encoding="utf-8")
+    installed_python, installed_venv = _extract_launchd_runtime_overrides(installed)
+    plist_path.write_text(
+        generate_launchd_plist(
+            python_path_override=installed_python,
+            venv_dir_override=installed_venv,
+        ),
+        encoding="utf-8",
+    )
     label = get_launchd_label()
     # Bootout/bootstrap so launchd picks up the new definition
     subprocess.run(

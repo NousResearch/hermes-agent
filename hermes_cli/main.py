@@ -8334,6 +8334,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)
+                uv_env["UV_LINK_MODE"] = "copy"
+                uv_env["UV_NO_BUILD_ISOLATION"] = "1"
                 install_group = "termux-all"
                 print("  → Termux detected: using uv + curated termux-all optional profile...")
             if _is_termux_env(uv_env) and _is_android_python():

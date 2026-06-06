@@ -72,6 +72,20 @@ model:
   #
 # max_tokens: 8192
 
+  # ── Custom request headers (optional) ─────────────────────────────────────
+  #
+  # default_headers: extra HTTP headers sent on every request to an
+  #   OpenAI-compatible endpoint. User values take precedence over the
+  #   provider/SDK defaults, so this is the supported way to override the
+  #   OpenAI Python SDK's identifying headers (User-Agent: OpenAI/Python ...,
+  #   X-Stainless-*) when a custom provider sits behind a gateway/WAF that
+  #   rejects them — e.g. an upstream that returns "502 Upstream access
+  #   forbidden" for the SDK default User-Agent but accepts a plain one.
+  #   Applies on the OpenAI wire only (not native Anthropic / Bedrock).
+  #
+  # default_headers:
+  #   User-Agent: "curl/8.7.1"
+
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
 # and per-model exceptions.

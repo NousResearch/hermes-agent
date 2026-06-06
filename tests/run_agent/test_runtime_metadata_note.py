@@ -96,3 +96,41 @@ def test_runtime_metadata_note_is_api_only_and_not_persisted():
     persisted_messages = persist_session.call_args.args[0]
     assert persisted_messages[0]["role"] == "user"
     assert persisted_messages[0]["content"] == user_message
+
+
+def test_runtime_metadata_note_is_injected_for_multimodal_user_turns():
+    agent = _make_agent()
+    user_message = [
+        {"type": "text", "text": "Describe this image"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+    ]
+    agent.client.chat.completions.create.return_value = _mock_response("Done")
+    captured = {}
+
+    def _fake_build_api_kwargs(api_messages):
+        captured["messages"] = api_messages
+        return {"model": agent.model, "messages": api_messages, "timeout": 1800.0}
+
+    with (
+        patch.object(agent, "_build_api_kwargs", side_effect=_fake_build_api_kwargs),
+        patch.object(agent, "_persist_session") as persist_session,
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation(user_message)
+
+    assert result["completed"] is True
+
+    api_messages = captured["messages"]
+    sent_user_message = next(m["content"] for m in api_messages if m["role"] == "user")
+    assert isinstance(sent_user_message, list)
+    assert sent_user_message[:2] == user_message
+    assert sent_user_message[2]["type"] == "text"
+    assert "Conversation started:" in sent_user_message[2]["text"]
+    assert "Session ID: session-1234" in sent_user_message[2]["text"]
+    assert "Model: test-model" in sent_user_message[2]["text"]
+    assert "Provider: openai" in sent_user_message[2]["text"]
+
+    persisted_messages = persist_session.call_args.args[0]
+    assert persisted_messages[0]["role"] == "user"
+    assert persisted_messages[0]["content"] == user_message

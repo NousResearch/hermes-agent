@@ -251,6 +251,8 @@ gateway:
 
   status:
     header:                "📊 **Hermes Gateway állapot**"
+    no_session:            "No active session yet."
+    start_chat_hint:       "Start chatting to create one."
     session_id:            "**Munkamenet-azonosító:** `{session_id}`"
     title:                 "**Cím:** {title}"
     created:               "**Létrehozva:** {timestamp}"

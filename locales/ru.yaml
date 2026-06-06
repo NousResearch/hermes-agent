@@ -251,6 +251,8 @@ gateway:
 
   status:
     header:                "📊 **Состояние Hermes Gateway**"
+    no_session:            "No active session yet."
+    start_chat_hint:       "Start chatting to create one."
     session_id:            "**ID сеанса:** `{session_id}`"
     title:                 "**Название:** {title}"
     created:               "**Создано:** {timestamp}"

@@ -183,6 +183,7 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
 
     runner.session_store = MagicMock()
+    runner.session_store.get_session.return_value = session_entry
     runner.session_store.get_or_create_session.return_value = session_entry
     runner.session_store.load_transcript.return_value = []
     runner.session_store.has_any_sessions.return_value = True

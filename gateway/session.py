@@ -853,6 +853,20 @@ class SessionStore:
             self._ensure_loaded_locked()
             return len(self._entries) > 1
 
+    def get_session(self, source: SessionSource) -> Optional[SessionEntry]:
+        """Return the existing session for *source* without creating one.
+
+        Read-only slash commands like ``/status`` and ``/usage`` should not
+        create a brand-new session row just because the user inspected the
+        gateway before sending any real message. This lookup mirrors the key
+        derivation of ``get_or_create_session()`` but deliberately avoids
+        mutating timestamps, ``sessions.json``, or SQLite.
+        """
+        session_key = self._generate_session_key(source)
+        with self._lock:
+            self._ensure_loaded_locked()
+            return self._entries.get(session_key)
+
     def get_or_create_session(
         self,
         source: SessionSource,

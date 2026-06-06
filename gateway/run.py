@@ -44,12 +44,6 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List, Union
 
-# account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
-# /usage; we still import it at module top in the gateway because test
-# patches (tests/gateway/test_usage_command.py) target
-# `gateway.run.fetch_account_usage` as a module-level attribute. The
-# gateway is a long-running daemon, so its boot cost matters less than
-# preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
@@ -10450,17 +10444,47 @@ class GatewayRunner:
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
+        session_entry = self.session_store.get_session(source)
+        session_key = (
+            session_entry.session_key
+            if session_entry is not None
+            else self._session_key_for_source(source)
+        )
 
         connected_platforms = [p.value for p in self.adapters.keys()]
 
         # Check if there's an active agent
-        session_key = session_entry.session_key
         is_running = session_key in self._running_agents
 
         # Count pending /queue follow-ups (slot + overflow).
         adapter = self.adapters.get(source.platform) if source else None
         queue_depth = self._queue_depth(session_key, adapter=adapter)
+
+        if session_entry is None:
+            lines = [
+                t("gateway.status.header"),
+                "",
+                t("gateway.status.no_session"),
+                t("gateway.status.start_chat_hint"),
+                t(
+                    "gateway.status.agent_running",
+                    state=t("gateway.status.state_yes")
+                    if is_running
+                    else t("gateway.status.state_no"),
+                ),
+            ]
+            if queue_depth:
+                lines.append(t("gateway.status.queued", count=queue_depth))
+            lines.extend(
+                [
+                    "",
+                    t(
+                        "gateway.status.platforms",
+                        platforms=", ".join(connected_platforms),
+                    ),
+                ]
+            )
+            return "\n".join(lines)
 
         title = None
         # Pull token totals from the SQLite session DB rather than the
@@ -14107,10 +14131,14 @@ class GatewayRunner:
         provider = getattr(agent, "provider", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
         base_url = getattr(agent, "base_url", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
         api_key = getattr(agent, "api_key", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        session_entry = self.session_store.get_session(source)
         if not provider and getattr(self, "_session_db", None) is not None:
             try:
-                _entry_for_billing = self.session_store.get_or_create_session(source)
-                persisted = self._session_db.get_session(_entry_for_billing.session_id) or {}
+                persisted = (
+                    self._session_db.get_session(session_entry.session_id) or {}
+                    if session_entry is not None
+                    else {}
+                )
             except Exception:
                 persisted = {}
             provider = provider or persisted.get("billing_provider")
@@ -14215,7 +14243,11 @@ class GatewayRunner:
             return "\n".join(lines)
 
         # No agent at all -- check session history for a rough count
-        session_entry = self.session_store.get_or_create_session(source)
+        if session_entry is None:
+            if account_lines:
+                return "\n".join(account_lines)
+            return t("gateway.usage.no_data")
+
         history = self.session_store.load_transcript(session_entry.session_id)
         if history:
             from agent.model_metadata import estimate_messages_tokens_rough

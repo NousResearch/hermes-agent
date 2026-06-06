@@ -251,6 +251,8 @@ gateway:
 
   status:
     header:                "📊 **Hermes 게이트웨이 상태**"
+    no_session:            "No active session yet."
+    start_chat_hint:       "Start chatting to create one."
     session_id:            "**세션 ID:** `{session_id}`"
     title:                 "**제목:** {title}"
     created:               "**생성됨:** {timestamp}"

@@ -51,6 +51,7 @@ def _make_runner(session_key, agent=None, cached_agent=None):
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
     runner.session_store = MagicMock()
+    runner.session_store.get_session.return_value = None
 
     if agent is not None:
         runner._running_agents[session_key] = agent
@@ -133,7 +134,7 @@ class TestUsageCachedAgent:
 
         session_entry = MagicMock()
         session_entry.session_id = "sess123"
-        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.get_session.return_value = session_entry
         runner.session_store.load_transcript.return_value = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi there"},
@@ -218,7 +219,7 @@ class TestUsageAccountSection:
         }
         session_entry = MagicMock()
         session_entry.session_id = "sess-1"
-        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.get_session.return_value = session_entry
         runner.session_store.load_transcript.return_value = [
             {"role": "user", "content": "earlier"},
         ]

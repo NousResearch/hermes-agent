@@ -251,6 +251,8 @@ gateway:
 
   status:
     header:                "📊 **Hermes 网关状态**"
+    no_session:            "No active session yet."
+    start_chat_hint:       "Start chatting to create one."
     session_id:            "**会话 ID：** `{session_id}`"
     title:                 "**标题：** {title}"
     created:               "**创建时间：** {timestamp}"

@@ -251,6 +251,8 @@ gateway:
 
   status:
     header:                "📊 **Hermes Gateway Durumu**"
+    no_session:            "Henüz etkin bir oturum yok."
+    start_chat_hint:       "Bir tane oluşturmak için sohbete başlayın."
     session_id:            "**Oturum kimliği:** `{session_id}`"
     title:                 "**Başlık:** {title}"
     created:               "**Oluşturuldu:** {timestamp}"

@@ -1,6 +1,11 @@
-import { act, fireEvent, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { useRef, useState } from 'react'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+
+// No global setupFiles registers auto-cleanup, so unmount between tests —
+// otherwise a second render() leaks the first editor and getByTestId('editor')
+// matches multiple nodes.
+afterEach(cleanup)
 
 // Faithful mirror of index.tsx's composer text wiring for IME input, driven
 // through REAL DOM composition + input events on a contentEditable.

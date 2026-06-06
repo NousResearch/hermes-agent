@@ -3,6 +3,7 @@ import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
@@ -285,6 +286,8 @@ export function useSessionActions({
   syncSessionStateToView,
   updateSessionState
 }: SessionActionsOptions) {
+  const { t } = useI18n()
+  const copy = t.desktop
   const resumeRequestRef = useRef(0)
 
   const startFreshSessionDraft = useCallback(
@@ -602,7 +605,7 @@ export function useSessionActions({
         }
 
         setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
-        notifyError(err, 'Resume failed')
+        notifyError(err, copy.resumeFailed)
       } finally {
         if (isCurrentResume()) {
           busyRef.current = false
@@ -614,6 +617,7 @@ export function useSessionActions({
     [
       activeSessionIdRef,
       busyRef,
+      copy,
       requestGateway,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionIdRef,
@@ -630,8 +634,8 @@ export function useSessionActions({
       if (!sourceSessionId) {
         notify({
           kind: 'warning',
-          title: 'Nothing to branch',
-          message: 'Start or resume a chat before branching.'
+          title: copy.nothingToBranch,
+          message: copy.branchNeedsChat
         })
 
         return false
@@ -640,8 +644,8 @@ export function useSessionActions({
       if (busyRef.current) {
         notify({
           kind: 'warning',
-          title: 'Session busy',
-          message: 'Stop the current turn before branching this chat.'
+          title: copy.sessionBusy,
+          message: copy.branchStopCurrent
         })
 
         return false
@@ -671,8 +675,8 @@ export function useSessionActions({
         if (!branchMessages.length) {
           notify({
             kind: 'warning',
-            title: 'Nothing to branch',
-            message: 'This message has no text to branch from.'
+            title: copy.nothingToBranch,
+            message: copy.branchNoText
           })
 
           return false
@@ -686,14 +690,14 @@ export function useSessionActions({
           cols: 96,
           ...(cwd && { cwd }),
           messages: branchMessages.map(({ content, role }) => ({ content, role })),
-          title: 'Branch'
+          title: copy.branchTitle
         })
 
         const routedSessionId = branched.stored_session_id ?? branched.session_id
         const preview = branchMessages.map(({ content }) => content).find(Boolean) ?? null
 
         setFreshDraftReady(false)
-        upsertOptimisticSession(branched, routedSessionId, 'Branch', preview)
+        upsertOptimisticSession(branched, routedSessionId, copy.branchTitle, preview)
         ensureSessionState(branched.session_id, routedSessionId)
         setActiveSessionId(branched.session_id)
         activeSessionIdRef.current = branched.session_id
@@ -723,7 +727,7 @@ export function useSessionActions({
 
         return true
       } catch (err) {
-        notifyError(err, 'Branch failed')
+        notifyError(err, copy.branchFailed)
 
         return false
       } finally {
@@ -735,6 +739,7 @@ export function useSessionActions({
     [
       activeSessionIdRef,
       busyRef,
+      copy,
       creatingSessionRef,
       ensureSessionState,
       navigate,
@@ -812,12 +817,13 @@ export function useSessionActions({
           }
         }
 
-        notifyError(err, 'Delete failed')
+        notifyError(err, copy.deleteFailed)
       }
     },
     [
       activeSessionId,
       activeSessionIdRef,
+      copy,
       navigate,
       requestGateway,
       selectedStoredSessionId,
@@ -851,7 +857,7 @@ export function useSessionActions({
 
       try {
         await setSessionArchived(storedSessionId, true, archived?.profile)
-        notify({ durationMs: 2_000, kind: 'success', message: 'Archived' })
+        notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {
           setSessions(prev => [archived, ...prev.filter(s => s.id !== storedSessionId)])
@@ -859,10 +865,10 @@ export function useSessionActions({
         }
 
         $pinnedSessionIds.set(previousPinned)
-        notifyError(err, 'Archive failed')
+        notifyError(err, copy.archiveFailed)
       }
     },
-    [selectedStoredSessionId, startFreshSessionDraft]
+    [copy, selectedStoredSessionId, startFreshSessionDraft]
   )
 
   return {

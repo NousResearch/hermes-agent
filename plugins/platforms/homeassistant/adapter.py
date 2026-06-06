@@ -447,3 +447,131 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             "type": "channel",
             "url": self._hass_url,
         }
+
+
+# ---------------------------------------------------------------------------
+# Standalone (out-of-process) sender — used by cron deliver=homeassistant
+# ---------------------------------------------------------------------------
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[list] = None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    """Send a notification via the HA ``notify.notify`` service without a
+    live gateway adapter.
+
+    Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
+    runner is not in this process (typical for cron jobs running
+    out-of-process).  The HTTP path is the same one the legacy
+    ``_send_homeassistant`` helper used in ``tools/send_message_tool.py``
+    before this migration.
+
+    Reads ``HASS_TOKEN`` from ``pconfig.token`` (set by the gateway config
+    loader from env) and falls back to the ``HASS_TOKEN`` env var.  Server
+    URL comes from ``pconfig.extra["url"]`` (seeded by the env loader in
+    ``gateway/config.py``) or the ``HASS_URL`` env var.
+
+    ``thread_id``, ``media_files`` and ``force_document`` are accepted for
+    signature parity with other standalone senders.  HA notifications have
+    no native threading or attachment model — these arguments are ignored.
+    """
+    if not AIOHTTP_AVAILABLE:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    extra = getattr(pconfig, "extra", {}) or {}
+    hass_url = (extra.get("url") or os.getenv("HASS_URL", "")).rstrip("/")
+    token = (getattr(pconfig, "token", None) or os.getenv("HASS_TOKEN", "")).strip()
+    if not hass_url or not token:
+        return {
+            "error": (
+                "Home Assistant standalone send: HASS_URL and HASS_TOKEN "
+                "must both be set"
+            )
+        }
+
+    url = f"{hass_url}/api/services/notify/notify"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {"message": message, "target": chat_id}
+
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30)
+        ) as session:
+            async with session.post(url, headers=headers, json=payload) as resp:
+                if resp.status not in {200, 201}:
+                    body = await resp.text()
+                    return {
+                        "error": (
+                            f"Home Assistant API error ({resp.status}): {body}"
+                        )
+                    }
+        return {
+            "success": True,
+            "platform": "homeassistant",
+            "chat_id": chat_id,
+        }
+    except asyncio.TimeoutError:
+        return {"error": "Timeout sending notification to Home Assistant"}
+    except Exception as e:
+        return {"error": f"Home Assistant send failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# is_connected probe
+# ---------------------------------------------------------------------------
+
+
+def _is_connected(config) -> bool:
+    """Home Assistant is considered connected when ``HASS_TOKEN`` is set.
+
+    Looks up via ``hermes_cli.gateway.get_env_value`` at call time (not via
+    the plugin's own bound import) so tests that patch
+    ``gateway_mod.get_env_value`` can suppress ambient ``HASS_TOKEN`` env
+    vars.  Matches what the legacy connected-platforms check did before
+    this migration.
+    """
+    import hermes_cli.gateway as gateway_mod
+    return bool((gateway_mod.get_env_value("HASS_TOKEN") or "").strip())
+
+
+# ---------------------------------------------------------------------------
+# Plugin registration entry point
+# ---------------------------------------------------------------------------
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs HomeAssistantAdapter from a PlatformConfig."""
+    return HomeAssistantAdapter(config)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="homeassistant",
+        label="Home Assistant",
+        adapter_factory=_build_adapter,
+        check_fn=check_ha_requirements,
+        is_connected=_is_connected,
+        required_env=["HASS_TOKEN"],
+        install_hint="pip install aiohttp",
+        # Out-of-process cron delivery via the HA ``notify.notify`` service.
+        # Without this hook, ``deliver=homeassistant`` cron jobs would fail
+        # with "No live adapter" when cron runs separately from the gateway.
+        # Mirrors the Discord / Teams / Mattermost pattern.
+        standalone_sender_fn=_standalone_send,
+        # HA notification message cap — matches MAX_MESSAGE_LENGTH on the
+        # adapter class above.
+        max_message_length=HomeAssistantAdapter.MAX_MESSAGE_LENGTH,
+        # Display
+        emoji="🏠",
+        allow_update_command=True,
+    )

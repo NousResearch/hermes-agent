@@ -410,6 +410,10 @@ export function useMessageStream({
       phase: 'running' | 'complete',
       sourceEventType?: string
     ) => {
+      // Text deltas flush on a timer but tool events apply now; flush first so
+      // a tool part can't jump ahead of the text that preceded it.
+      flushQueuedDeltas(sessionId)
+
       if (!nativeSubagentSessionsRef.current.has(sessionId)) {
         for (const subagentPayload of delegateTaskPayloads(payload, phase, sourceEventType)) {
           upsertSubagent(
@@ -428,7 +432,7 @@ export function useMessageStream({
         { pending: m => phase !== 'complete' || (m.pending ?? false) }
       )
     },
-    [mutateStream]
+    [flushQueuedDeltas, mutateStream]
   )
 
   const completeAssistantMessage = useCallback(
@@ -437,11 +441,18 @@ export function useMessageStream({
 
       const completedState = updateSessionState(sessionId, state => {
         // Late completion from an already-cancelled turn: cancelRun has
-        // already finalized the bubble and added the [interrupted] marker;
-        // re-running the dedupe below would erase that marker and replace
-        // the partial with the (just-cancelled) full text.
+        // already finalized the bubble (kept the partial text, dropped it if
+        // empty). Re-running the dedupe below would replace the partial with
+        // the just-cancelled full text, so we settle and bail instead.
         if (state.interrupted) {
-          return state
+          return {
+            ...state,
+            awaitingResponse: false,
+            busy: false,
+            needsInput: false,
+            pendingBranchGroup: null,
+            streamId: null
+          }
         }
 
         const streamId = state.streamId

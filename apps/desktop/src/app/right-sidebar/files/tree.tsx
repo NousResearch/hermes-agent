@@ -4,6 +4,7 @@ import { type NodeApi, type NodeRendererProps, Tree, type TreeApi } from 'react-
 import { PageLoader } from '@/components/page-loader'
 import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import type { TreeNode } from './use-project-tree'
@@ -122,7 +123,9 @@ export function ProjectTree({
 }
 
 function TreeSizingState() {
-  return <PageLoader aria-label="Loading files" className="min-h-24 px-3" />
+  const { t } = useI18n()
+
+  return <PageLoader aria-label={t.rightSidebar.loadingFiles} className="min-h-24 px-3" />
 }
 
 function ProjectTreeRow({

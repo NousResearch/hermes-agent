@@ -213,6 +213,18 @@ export interface ModelOptionProvider {
   slug: string
   total_models?: number
   warning?: string
+  /** True when the provider has usable credentials. False for canonical
+   *  providers surfaced by `include_unconfigured` that the user hasn't set up
+   *  yet — render these with a setup affordance instead of hiding them. */
+  authenticated?: boolean
+  /** Auth flow for an unconfigured provider: "api_key" can be activated inline
+   *  by pasting `key_env`; anything else (oauth_*, external, aws_sdk, …) needs
+   *  the `hermes model` CLI / onboarding OAuth flow. */
+  auth_type?: string
+  /** Env var to paste an API key into, for unconfigured `api_key` providers. */
+  key_env?: string
+  /** True for providers defined via the user's `providers:` config block. */
+  is_user_defined?: boolean
   /** Per-model pricing keyed by model id (present when the picker requested
    *  pricing and the provider supports live pricing). */
   pricing?: Record<string, ModelPricing>
@@ -606,6 +618,14 @@ export interface ModelAssignmentRequest {
   task?: string
 }
 
+/** An auxiliary task still pinned to a provider that differs from the
+ *  newly-selected main provider after a main-model switch. */
+export interface StaleAuxAssignment {
+  task: string
+  provider: string
+  model: string
+}
+
 export interface ModelAssignmentResponse {
   /** Persisted endpoint URL for custom/local providers (echoed back). */
   base_url?: string
@@ -618,5 +638,9 @@ export interface ModelAssignmentResponse {
   provider?: string
   reset?: boolean
   scope?: string
+  /** Auxiliary slots still pinned to a different provider than the new main.
+   *  Switching main never clears aux pins; this lets the UI warn the user
+   *  their helper tasks aren't following the switch. Only set on scope:'main'. */
+  stale_aux?: StaleAuxAssignment[]
   tasks?: string[]
 }

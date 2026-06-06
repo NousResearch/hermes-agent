@@ -2627,3 +2627,75 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
+
+
+class TestCronDeliveryTargets:
+    """``cron_delivery_targets`` powers the dashboard delivery dropdown.
+
+    It must list every configured + cron-deliverable platform (no hardcoded
+    set), flag whether each has its home channel set, and never include
+    platforms whose gateway isn't configured.
+    """
+
+    def _patch_connected(self, monkeypatch, names):
+        import gateway.config as gateway_config
+
+        class _Platform:
+            def __init__(self, value):
+                self.value = value
+
+        class _GatewayConfig:
+            def get_connected_platforms(self_inner):
+                return [_Platform(n) for n in names]
+
+        monkeypatch.setattr(
+            gateway_config, "load_gateway_config", lambda: _GatewayConfig()
+        )
+
+    def test_lists_configured_platforms_flagging_missing_home_channel(self, monkeypatch):
+        from cron.scheduler import cron_delivery_targets
+
+        self._patch_connected(monkeypatch, ["matrix", "telegram"])
+        monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+
+        targets = {t["id"]: t for t in cron_delivery_targets()}
+
+        assert set(targets) == {"matrix", "telegram"}
+        # Configured but no home channel → surfaced, flagged for the UI.
+        assert targets["matrix"]["home_target_set"] is False
+        assert targets["matrix"]["home_env_var"] == "MATRIX_HOME_ROOM"
+        assert targets["telegram"]["home_target_set"] is False
+
+    def test_home_channel_set_marks_target_ready(self, monkeypatch):
+        from cron.scheduler import cron_delivery_targets
+
+        self._patch_connected(monkeypatch, ["matrix"])
+        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room:matrix.org")
+
+        targets = {t["id"]: t for t in cron_delivery_targets()}
+
+        assert targets["matrix"]["home_target_set"] is True
+
+    def test_unconfigured_platforms_excluded(self, monkeypatch):
+        from cron.scheduler import cron_delivery_targets
+
+        # Only telegram is connected; matrix env var set but gateway not configured.
+        self._patch_connected(monkeypatch, ["telegram"])
+        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room:matrix.org")
+
+        ids = {t["id"] for t in cron_delivery_targets()}
+
+        assert ids == {"telegram"}
+        assert "matrix" not in ids
+
+    def test_no_gateway_config_returns_empty(self, monkeypatch):
+        import gateway.config as gateway_config
+        from cron.scheduler import cron_delivery_targets
+
+        def _boom():
+            raise RuntimeError("no gateway config")
+
+        monkeypatch.setattr(gateway_config, "load_gateway_config", _boom)
+
+        assert cron_delivery_targets() == []

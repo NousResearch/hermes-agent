@@ -2,10 +2,10 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { getProfiles, transcribeAudio } from '@/hermes'
-import { appendTextPart, branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import { translateNow, type Translations, useI18n } from '@/i18n'
+import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
   attachmentDisplayText,
-  INTERRUPTED_MARKER,
   parseCommandDispatch,
   parseSlashCommand,
   pathLabel,
@@ -15,7 +15,8 @@ import {
   type CommandsCatalogLike,
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
-  isDesktopSlashCommand
+  isDesktopSlashCommand,
+  isModelPickerCommand
 } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
@@ -38,11 +39,18 @@ import {
   setAwaitingResponse,
   setBusy,
   setMessages,
+  setModelPickerOpen,
   setSessions,
   setYoloActive
 } from '@/store/session'
 
-import type { ClientSessionState, ImageAttachResponse, SessionTitleResponse, SlashExecResponse } from '../../types'
+import type {
+  ClientSessionState,
+  ImageAttachResponse,
+  SessionSteerResponse,
+  SessionTitleResponse,
+  SlashExecResponse
+} from '../../types'
 
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -52,10 +60,10 @@ function blobToDataUrl(blob: Blob): Promise<string> {
       if (typeof reader.result === 'string') {
         resolve(reader.result)
       } else {
-        reject(new Error('Could not read recorded audio'))
+        reject(new Error(translateNow('desktop.audioReadFailed')))
       }
     })
-    reader.addEventListener('error', () => reject(reader.error || new Error('Could not read recorded audio')))
+    reader.addEventListener('error', () => reject(reader.error || new Error(translateNow('desktop.audioReadFailed'))))
     reader.readAsDataURL(blob)
   })
 }
@@ -96,12 +104,12 @@ interface SubmitTextOptions {
   fromQueue?: boolean
 }
 
-function renderCommandsCatalog(catalog: CommandsCatalogLike): string {
+function renderCommandsCatalog(catalog: CommandsCatalogLike, copy: Translations['desktop']): string {
   const desktopCatalog = filterDesktopCommandsCatalog(catalog)
 
   const sections = desktopCatalog.categories?.length
     ? desktopCatalog.categories
-    : [{ name: 'Desktop commands', pairs: desktopCatalog.pairs ?? [] }]
+    : [{ name: copy.desktopCommands, pairs: desktopCatalog.pairs ?? [] }]
 
   const body = sections
     .filter(section => section.pairs.length > 0)
@@ -113,8 +121,8 @@ function renderCommandsCatalog(catalog: CommandsCatalogLike): string {
     .join('\n\n')
 
   const tail = [
-    desktopCatalog.skill_count ? `${desktopCatalog.skill_count} skill commands available.` : '',
-    desktopCatalog.warning ? `warning: ${desktopCatalog.warning}` : ''
+    desktopCatalog.skill_count ? copy.skillCommandsAvailable(desktopCatalog.skill_count) : '',
+    desktopCatalog.warning ? copy.warningLine(desktopCatalog.warning) : ''
   ]
     .filter(Boolean)
     .join('\n')
@@ -151,6 +159,9 @@ export function usePromptActions({
   sttEnabled,
   updateSessionState
 }: PromptActionsOptions) {
+  const { t } = useI18n()
+  const copy = t.desktop
+
   const appendSessionTextMessage = useCallback(
     (sessionId: string, role: ChatMessage['role'], text: string) => {
       const body = text.trim()
@@ -237,7 +248,11 @@ export function usePromptActions({
         [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
         (hasImage ? 'What do you see in this image?' : '')
 
-      if (!text || busyRef.current) {
+      // Queue drains fire on the busy→false settle edge, where busyRef (synced
+      // from $busy by a separate effect) may still read true — honoring it would
+      // bounce the drained send. The drain lock serializes them; the user path
+      // keeps the guard so a stray Enter mid-turn can't double-submit.
+      if (!text || (!options?.fromQueue && busyRef.current)) {
         return false
       }
 
@@ -270,7 +285,10 @@ export function usePromptActions({
             awaitingResponse: true,
             pendingBranchGroup: null,
             sawAssistantPayload: false,
-            interrupted: state.interrupted
+            // Fresh submit = new turn — clear any leftover interrupt flag, else
+            // mutateStream/completeAssistantMessage drop every delta of this turn
+            // (what made drained-after-interrupt sends go silent).
+            interrupted: false
           }),
           selectedStoredSessionIdRef.current
         )
@@ -314,7 +332,7 @@ export function usePromptActions({
         } catch (err) {
           dropOptimistic(null)
           releaseBusy()
-          notifyError(err, 'Session unavailable')
+          notifyError(err, copy.sessionUnavailable)
 
           return false
         }
@@ -322,7 +340,7 @@ export function usePromptActions({
         if (!sessionId) {
           dropOptimistic(null)
           releaseBusy()
-          notify({ kind: 'error', title: 'Session unavailable', message: 'Could not create a new session' })
+          notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
 
           return false
         }
@@ -342,7 +360,7 @@ export function usePromptActions({
 
         return true
       } catch (err) {
-        const message = inlineErrorMessage(err, 'Prompt failed')
+        const message = inlineErrorMessage(err, copy.promptFailed)
 
         releaseBusy()
         updateSessionState(sessionId, state => ({
@@ -353,7 +371,7 @@ export function usePromptActions({
               id: `assistant-error-${Date.now()}`,
               role: 'assistant',
               parts: [],
-              error: message || 'Prompt failed',
+              error: message || copy.promptFailed,
               branchGroupId: state.pendingBranchGroup ?? undefined
             }
           ],
@@ -364,12 +382,12 @@ export function usePromptActions({
         }))
 
         if (isProviderSetupError(err)) {
-          requestDesktopOnboarding('Add a provider credential before sending your first message.')
+          requestDesktopOnboarding(copy.providerCredentialRequired)
 
           return false
         }
 
-        notifyError(err, 'Prompt failed')
+        notifyError(err, copy.promptFailed)
 
         return false
       }
@@ -377,6 +395,7 @@ export function usePromptActions({
     [
       activeSessionId,
       busyRef,
+      copy,
       createBackendSessionForSend,
       requestGateway,
       selectedStoredSessionIdRef,
@@ -396,7 +415,7 @@ export function usePromptActions({
           const sessionId = sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
 
           if (sessionId) {
-            appendSessionTextMessage(sessionId, 'system', 'empty slash command')
+            appendSessionTextMessage(sessionId, 'system', copy.emptySlashCommand)
           }
 
           return
@@ -423,16 +442,59 @@ export function usePromptActions({
 
           if (!sid) {
             setYoloActive(next)
-            notify({ kind: 'success', message: next ? 'YOLO armed for this chat' : 'YOLO off' })
+            notify({ kind: 'success', message: next ? copy.yoloArmed : copy.yoloOff })
 
             return
           }
 
           try {
             const active = await setSessionYolo(requestGateway, sid, next)
-            appendSessionTextMessage(sid, 'system', `YOLO ${active ? 'on' : 'off'} for this session`)
+            appendSessionTextMessage(sid, 'system', copy.yoloSystem(active))
           } catch {
-            notify({ kind: 'error', title: 'YOLO', message: 'Could not toggle YOLO' })
+            notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloToggleFailed })
+          }
+
+          return
+        }
+
+        // /model opens the desktop model picker overlay — the same full
+        // provider+model picker reachable from the status-bar model button —
+        // instead of the headless prompt_toolkit modal the slash worker can't
+        // render. With explicit args (`/model <name> [--provider ...]`) run the
+        // switch directly through slash.exec so power users can still type it.
+        if (isModelPickerCommand(`/${normalizedName}`)) {
+          if (!arg.trim()) {
+            setModelPickerOpen(true)
+
+            return
+          }
+
+          const sid = sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
+
+          if (!sid) {
+            notify({ kind: 'error', title: 'Session unavailable', message: 'Could not create a new session' })
+
+            return
+          }
+
+          try {
+            const result = await requestGateway<SlashExecResponse>('slash.exec', {
+              session_id: sid,
+              command: command.replace(/^\/+/, '')
+            })
+
+            const body = result?.output || `/${name}: model switched`
+            appendSessionTextMessage(
+              sid,
+              'system',
+              recordInput ? slashStatusText(command, body) : body
+            )
+          } catch (err) {
+            appendSessionTextMessage(
+              sid,
+              'system',
+              `error: ${err instanceof Error ? err.message : String(err)}`
+            )
           }
 
           return
@@ -455,7 +517,7 @@ export function usePromptActions({
           if (!target) {
             notify({
               kind: 'success',
-              message: `Profile: ${current}. Use /profile <name> or the "New session" picker to start a chat in another profile.`
+              message: copy.profileStatus(current)
             })
 
             return
@@ -468,8 +530,8 @@ export function usePromptActions({
             if (!match) {
               notify({
                 kind: 'error',
-                title: 'Unknown profile',
-                message: `No profile named "${target}". Available: ${profiles.map(profile => profile.name).join(', ')}`
+                title: copy.unknownProfile,
+                message: copy.noProfileNamed(target, profiles.map(profile => profile.name).join(', '))
               })
 
               return
@@ -481,9 +543,9 @@ export function usePromptActions({
             // Swap the live gateway now so an empty draft sends into this
             // profile immediately; an existing thread keeps its own profile.
             await ensureGatewayProfile(key)
-            notify({ kind: 'success', message: `New chats will use profile ${match.name}.` })
+            notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
           } catch (err) {
-            notifyError(err, 'Failed to set profile')
+            notifyError(err, copy.setProfileFailed)
           }
 
           return
@@ -494,8 +556,8 @@ export function usePromptActions({
         if (!sessionId) {
           notify({
             kind: 'error',
-            title: 'Session unavailable',
-            message: 'Could not create a new session'
+            title: copy.sessionUnavailable,
+            message: copy.createSessionFailed
           })
 
           return
@@ -531,6 +593,7 @@ export function usePromptActions({
               session_id: sessionId,
               title: arg
             })
+
             const finalTitle = (result?.title || arg).trim()
             const queued = result?.pending === true
 
@@ -558,7 +621,7 @@ export function usePromptActions({
           try {
             const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sessionId })
 
-            renderSlashOutput(renderCommandsCatalog(catalog))
+            renderSlashOutput(renderCommandsCatalog(catalog, copy))
           } catch (err) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
@@ -646,6 +709,7 @@ export function usePromptActions({
       appendSessionTextMessage,
       branchCurrentSession,
       busyRef,
+      copy,
       createBackendSessionForSend,
       handleSkinCommand,
       refreshSessions,
@@ -675,7 +739,7 @@ export function usePromptActions({
   const transcribeVoiceAudio = useCallback(
     async (audio: Blob) => {
       if (!sttEnabled) {
-        throw new Error('Speech-to-text is disabled in settings.')
+        throw new Error(copy.sttDisabled)
       }
 
       const dataUrl = await blobToDataUrl(audio)
@@ -683,30 +747,30 @@ export function usePromptActions({
 
       return result.transcript
     },
-    [sttEnabled]
+    [copy.sttDisabled, sttEnabled]
   )
 
   const cancelRun = useCallback(async () => {
     const sessionId = activeSessionId || activeSessionIdRef.current
 
-    setMutableRef(busyRef, false)
-    setBusy(false)
     setAwaitingResponse(false)
 
-    const finalizeMessages = (messages: ChatMessage[]) =>
-      messages.map(message =>
-        message.pending
-          ? {
-              ...message,
-              parts: chatMessageText(message).trim()
-                ? appendTextPart(message.parts, INTERRUPTED_MARKER)
-                : [...message.parts, textPart(INTERRUPTED_MARKER.trim())],
-              pending: false
-            }
-          : message
-      )
+    // Interrupting keeps whatever was already generated and just
+    // stops — no "[interrupted]" marker. A pending/streaming message with no
+    // body text is dropped entirely so we never leave an empty bubble behind.
+    const finalizeMessages = (messages: ChatMessage[], streamId?: string | null) =>
+      messages
+        .filter(
+          message =>
+            !((message.pending || message.id === streamId) && !chatMessageText(message).trim())
+        )
+        .map(message =>
+          message.pending || message.id === streamId ? { ...message, pending: false } : message
+        )
 
     if (!sessionId) {
+      setMutableRef(busyRef, false)
+      setBusy(false)
       setMessages(finalizeMessages($messages.get()))
 
       return
@@ -715,24 +779,12 @@ export function usePromptActions({
     updateSessionState(sessionId, state => {
       const streamId = state.streamId
 
-      const messages = streamId
-        ? state.messages.map(message =>
-            message.id === streamId
-              ? {
-                  ...message,
-                  parts: chatMessageText(message).trim()
-                    ? appendTextPart(message.parts, INTERRUPTED_MARKER)
-                    : [...message.parts, textPart(INTERRUPTED_MARKER.trim())],
-                  pending: false
-                }
-              : message
-          )
-        : finalizeMessages(state.messages)
+      const messages = finalizeMessages(state.messages, streamId)
 
       return {
         ...state,
         messages,
-        busy: false,
+        busy: true,
         awaitingResponse: false,
         streamId: null,
         pendingBranchGroup: null,
@@ -743,9 +795,45 @@ export function usePromptActions({
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })
     } catch (err) {
-      notifyError(err, 'Stop failed')
+      setMutableRef(busyRef, false)
+      setBusy(false)
+      notifyError(err, copy.stopFailed)
     }
-  }, [activeSessionId, activeSessionIdRef, busyRef, requestGateway, updateSessionState])
+  }, [activeSessionId, activeSessionIdRef, busyRef, copy.stopFailed, requestGateway, updateSessionState])
+
+  // Steer = nudge the live turn without interrupting: the gateway appends the
+  // text to the next tool result so the model reads it on its next iteration
+  // (desktop parity with `/steer`). Returns false on reject (no live tool
+  // window) so the caller can fall back to queueing the words for the next turn.
+  const steerPrompt = useCallback(
+    async (rawText: string): Promise<boolean> => {
+      const text = rawText.trim()
+      const sessionId = activeSessionId || activeSessionIdRef.current
+
+      if (!text || !sessionId) {
+        return false
+      }
+
+      try {
+        const result = await requestGateway<SessionSteerResponse>('session.steer', { session_id: sessionId, text })
+
+        if (result?.status === 'queued') {
+          triggerHaptic('submit')
+          // Inline note (not a toast) so the nudge lives in the transcript next
+          // to the turn it steered. The `steer:` prefix is rendered as a codicon
+          // row by SystemMessage (see STEER_NOTE_RE), same style as slash output.
+          appendSessionTextMessage(sessionId, 'system', `steer:${text}`)
+
+          return true
+        }
+      } catch {
+        // Swallow — caller queues the text so nothing is lost.
+      }
+
+      return false
+    },
+    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway]
+  )
 
   const reloadFromMessage = useCallback(
     async (parentId: string | null) => {
@@ -817,10 +905,10 @@ export function usePromptActions({
           busy: false,
           awaitingResponse: false
         }))
-        notifyError(err, 'Regenerate failed')
+        notifyError(err, copy.regenerateFailed)
       }
     },
-    [activeSessionId, requestGateway, updateSessionState]
+    [activeSessionId, copy.regenerateFailed, requestGateway, updateSessionState]
   )
 
   const editMessage = useCallback(
@@ -890,10 +978,10 @@ export function usePromptActions({
         setBusy(false)
         setAwaitingResponse(false)
         updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false }))
-        notifyError(surfaced, 'Edit failed')
+        notifyError(surfaced, copy.editFailed)
       }
     },
-    [activeSessionId, activeSessionIdRef, busyRef, requestGateway, updateSessionState]
+    [activeSessionId, activeSessionIdRef, busyRef, copy.editFailed, requestGateway, updateSessionState]
   )
 
   const handleThreadMessagesChange = useCallback(
@@ -930,5 +1018,13 @@ export function usePromptActions({
     [activeSessionIdRef, updateSessionState]
   )
 
-  return { cancelRun, editMessage, handleThreadMessagesChange, reloadFromMessage, submitText, transcribeVoiceAudio }
+  return {
+    cancelRun,
+    editMessage,
+    handleThreadMessagesChange,
+    reloadFromMessage,
+    steerPrompt,
+    submitText,
+    transcribeVoiceAudio
+  }
 }

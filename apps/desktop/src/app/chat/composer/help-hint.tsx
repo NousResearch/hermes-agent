@@ -5,7 +5,7 @@ import { useI18n } from '@/i18n'
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
 const COMMON_COMMAND_KEYS = ['/help', '/clear', '/resume', '/details', '/copy', '/quit']
-const HOTKEY_KEYS = ['@', '/', '?', 'Enter', 'Cmd/Ctrl+K', 'Cmd/Ctrl+L', 'Esc', '↑ / ↓']
+const HOTKEY_KEYS = ['@', '/', '?', 'Enter', 'Cmd/Ctrl+Shift+K', 'Cmd/Ctrl+/', 'Esc', '↑ / ↓']
 
 export function HelpHint() {
   const { t } = useI18n()

@@ -4234,6 +4234,52 @@ class HermesCLI:
         self._tool_start_time = 0.0  # clear tool timer when switching to thinking
         self._invalidate()
 
+    def _on_notice(self, notice) -> None:
+        """Queue an out-of-band AgentNotice for rendering at the next clean boundary.
+
+        Notices fire from inside the agent turn (cold-start seed during _init_agent,
+        per-turn _capture_credits after the API call) — printing immediately races the
+        streaming response and the line gets buried behind the prompt (see _cprint's
+        bg-thread caveat). So we QUEUE here and flush in _flush_credit_notices(), called
+        right after run_conversation returns. Fail-soft: never break the turn.
+        """
+        try:
+            text = getattr(notice, "text", "") or ""
+            if not text:
+                return
+            level = getattr(notice, "level", "info") or "info"
+            if not hasattr(self, "_pending_credit_notices"):
+                self._pending_credit_notices = []
+            self._pending_credit_notices.append((level, text))
+        except Exception:
+            pass
+
+    def _flush_credit_notices(self) -> None:
+        """Print any queued credit notices as level-colored lines. Called at turn end
+        (after run_conversation) where _cprint paints cleanly above the prompt."""
+        try:
+            pending = getattr(self, "_pending_credit_notices", None)
+            if not pending:
+                return
+            self._pending_credit_notices = []
+            for level, text in pending:
+                color = {
+                    "error": "\033[31m",
+                    "warn": "\033[33m",
+                    "success": "\033[32m",
+                    "info": _DIM,
+                }.get(level, _DIM)
+                _cprint(f"  {color}{text}{_RST}")
+        except Exception:
+            pass
+
+    def _on_notice_clear(self, key: str) -> None:
+        """Notice cleared. The REPL prints lines (no persistent slot to wipe), so
+        this drops any still-queued notice with that key is not tracked by key here;
+        it's a no-op for rendering — kept so the agent's clear callback is bound
+        symmetrically with the show callback (and so future REPL UIs can hook it)."""
+        return
+
     # ── Streaming display ────────────────────────────────────────────────
 
     def _current_reasoning_callback(self):
@@ -5109,9 +5155,9 @@ class HermesCLI:
                 resolved_id = self.session_id
             if resolved_id and resolved_id != self.session_id:
                 ChatConsole().print(
-                    f"[{_DIM}]Session {_escape(self.session_id)} was compressed into "
+                    f"[dim]Session {_escape(self.session_id)} was compressed into "
                     f"{_escape(resolved_id)}; resuming the descendant with your "
-                    f"transcript.[/]"
+                    f"transcript.[/dim]"
                 )
                 self.session_id = resolved_id
                 resolved_meta = self._session_db.get_session(self.session_id)
@@ -5218,6 +5264,8 @@ class HermesCLI:
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
+                notice_callback=self._on_notice,
+                notice_clear_callback=self._on_notice_clear,
             )
             # Store reference for atexit memory provider shutdown
             global _active_agent_ref
@@ -5225,6 +5273,16 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Hydrate credits notices at session OPEN (parity with the TUI), so a
+            # depletion / usage-band warning shows before the first message. The
+            # notice_callback is bound above → _on_notice renders the line. Idempotent
+            # + fail-open inside the helper; harmless for non-Nous providers.
+            try:
+                from agent.credits_tracker import seed_credits_at_session_start
+
+                seed_credits_at_session_start(self.agent)
+            except Exception:
+                pass
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
@@ -5391,7 +5449,7 @@ class HermesCLI:
             if quiet:
                 print(msg, file=sys.stderr)
             else:
-                self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+                self._console_print(f"[dim]{_escape(msg)}[/dim]")
             return
 
         try:
@@ -5401,7 +5459,7 @@ class HermesCLI:
             if quiet:
                 print(msg, file=sys.stderr)
             else:
-                self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+                self._console_print(f"[dim]{_escape(msg)}[/dim]")
             return
 
         # Retarget the terminal/code-exec tools to match the process cwd.
@@ -5411,7 +5469,7 @@ class HermesCLI:
         if quiet:
             print(msg, file=sys.stderr)
         else:
-            self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+            self._console_print(f"[dim]{_escape(msg)}[/dim]")
 
     def _preload_resumed_session(self) -> bool:
         """Load a resumed session's history from the DB early (before first chat).
@@ -9015,6 +9073,10 @@ class HermesCLI:
         elif canonical == "update":
             if self._handle_update_command():
                 return False
+        elif canonical == "version":
+            from hermes_cli.main import _print_version_info
+
+            _print_version_info(check_updates=True)
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
@@ -10531,16 +10593,24 @@ class HermesCLI:
         return True
 
     def _show_usage(self):
-        """Show rate limits (if available) and session token usage."""
+        """Rate limits + session token usage (when a live agent exists) + Nous credits.
+
+        The Nous credits block is agent-independent (a portal fetch), so it runs even
+        with no live agent — important for the TUI, where /usage runs in a slash-worker
+        subprocess that resumes the session WITHOUT building an agent (self.agent is None),
+        which would otherwise early-return before any credits showed.
+        """
         if not self.agent:
-            print("(._.) No active agent -- send a message first.")
+            if not self._print_nous_credits_block():
+                print("(._.) No active agent -- send a message first.")
             return
 
         agent = self.agent
         calls = agent.session_api_calls
 
         if calls == 0:
-            print("(._.) No API calls made yet in this session.")
+            if not self._print_nous_credits_block():
+                print("(._.) No API calls made yet in this session.")
             return
 
         # ── Rate limits (shown first when available) ────────────────
@@ -10634,6 +10704,10 @@ class HermesCLI:
             for line in account_lines:
                 print(line)
 
+        # Nous credits magnitudes + monthly-grant gauge (agent-independent — also
+        # runs at the no-agent / no-calls early-returns above). See the helper.
+        self._print_nous_credits_block()
+
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
             for noisy in ('openai', 'openai._base_client', 'httpx', 'httpcore', 'asyncio', 'hpack', 'grpc', 'modal'):
@@ -10647,6 +10721,28 @@ class HermesCLI:
             # into stream-retry events, credential rotations, etc.
             # Console quietness is enforced by hermes_logging not
             # installing a console StreamHandler in non-verbose mode.
+
+    def _print_nous_credits_block(self) -> bool:
+        """Print the Nous credits magnitudes + monthly-grant gauge when a Nous account
+        is logged in. Returns True if it printed anything.
+
+        Delegates to the shared ``agent.account_usage.nous_credits_lines`` helper —
+        the single source for the /usage credits block across CLI, gateway, and TUI.
+        It's agent-independent (a portal fetch gated on "a Nous account is logged in",
+        NOT the inference-provider string), so /usage shows the block even in the TUI
+        slash-worker subprocess that resumes WITHOUT a live agent. Fail-open and
+        wall-clock-bounded inside the helper; also honors HERMES_DEV_CREDITS_FIXTURE
+        for offline testing — same behavior as every other surface.
+        """
+        from agent.account_usage import nous_credits_lines
+
+        lines = nous_credits_lines()
+        if not lines:
+            return False
+        print()
+        for line in lines:
+            print(f"  {line}")
+        return True
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history."""
@@ -12402,6 +12498,11 @@ class HermesCLI:
                         "error": _summary,
                     }
                 finally:
+                    # Surface any credit notices queued during the turn (cold-start
+                    # seed / per-turn capture) now that the response is done — printing
+                    # at this boundary paints cleanly above the prompt instead of being
+                    # buried behind the streaming output.
+                    self._flush_credit_notices()
                     # Clear thread-local callbacks so a reused thread doesn't
                     # hold stale references to a disposed CLI instance.
                     try:

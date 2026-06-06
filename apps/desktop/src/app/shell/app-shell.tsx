@@ -16,6 +16,7 @@ import {
 import { $paneWidthOverride } from '@/store/panes'
 import { $connection } from '@/store/session'
 
+import { KeybindPanel } from './keybind-panel'
 import { StatusbarControls, type StatusbarItem } from './statusbar-controls'
 import { TITLEBAR_HEIGHT, titlebarControlsPosition } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
@@ -154,6 +155,9 @@ export function AppShell({
       </main>
 
       {overlays}
+
+      {/* Keybind map dialog (titlebar ⌨ button / ⌘/). */}
+      <KeybindPanel />
 
       {/* Mounted at the shell root (after overlays) so success/error toasts
           surface above every route and overlay — not just the chat view. */}

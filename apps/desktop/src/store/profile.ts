@@ -288,6 +288,72 @@ export function setShowAllProfiles(value: boolean): void {
   $showAllProfiles.set(value)
 }
 
+export function toggleShowAllProfiles(): void {
+  $showAllProfiles.set(!$showAllProfiles.get())
+}
+
+// ── Hotkey-driven profile switching ────────────────────────────────────────
+// Positional + relative navigation for the rail, used by the keybind runtime.
+// The ordered list is [default, ...named-in-rail-order]; switching is a no-op
+// when the slot is empty so unused ⌘N keys stay harmless.
+
+function orderedProfileKeys(): string[] {
+  const profiles = $profiles.get()
+
+  const named = sortByProfileOrder(
+    profiles.filter(profile => !profile.is_default),
+    $profileOrder.get()
+  ).map(profile => normalizeProfileKey(profile.name))
+
+  const hasDefault = profiles.some(profile => profile.is_default)
+
+  return hasDefault ? ['default', ...named] : named
+}
+
+// Switch to the default (root ~/.hermes) profile — bound to ⌘1.
+export function switchToDefaultProfile(): void {
+  const def = $profiles.get().find(profile => profile.is_default)
+
+  selectProfile(def ? def.name : 'default')
+}
+
+// Switch to the Nth named (non-default) profile in rail order (1-based).
+export function switchProfileToSlot(slot: number): void {
+  const named = sortByProfileOrder(
+    $profiles.get().filter(profile => !profile.is_default),
+    $profileOrder.get()
+  )
+
+  const target = named[slot - 1]
+
+  if (target) {
+    selectProfile(target.name)
+  }
+}
+
+// Step to the next/previous profile in the rail, wrapping around.
+export function cycleProfile(direction: 1 | -1): void {
+  const keys = orderedProfileKeys()
+
+  if (keys.length < 2) {
+    return
+  }
+
+  const current = $showAllProfiles.get() ? -1 : keys.indexOf(normalizeProfileKey($activeGatewayProfile.get()))
+  const start = current < 0 ? (direction === 1 ? -1 : 0) : current
+  const next = (start + direction + keys.length) % keys.length
+
+  selectProfile(keys[next])
+}
+
+// Bumped to ask the rail to open its "create profile" dialog (the dialog state
+// is local to the rail component; this lets a global hotkey trigger it).
+export const $profileCreateRequest = atom(0)
+
+export function requestProfileCreate(): void {
+  $profileCreateRequest.set($profileCreateRequest.get() + 1)
+}
+
 // Keepalive ping for the active pool backend so the main-process idle reaper
 // (which can't see the direct renderer↔backend WS) spares it. No-op for the
 // primary/default backend, which is never pooled.

@@ -8443,7 +8443,10 @@ class HermesCLI:
         from tools.cronjob_tools import cronjob as cronjob_tool
 
         def _cron_api(**kwargs):
-            return json.loads(cronjob_tool(**kwargs))
+            try:
+                return json.loads(cronjob_tool(**kwargs))
+            except (json.JSONDecodeError, TypeError) as e:
+                return {"success": False, "error": f"Failed to parse cron tool response: {e}"}
 
         def _normalize_skills(values):
             normalized = []

@@ -44,6 +44,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
+import { computeSessionEligibility } from '@/lib/session-eligibility'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { cn } from '@/lib/utils'
@@ -501,6 +502,26 @@ export function ChatSidebar({
   const recentsMeta = countLabel(agentSessions.length, knownSessionTotal)
   const archiveAllDisabled = sessionsLoading || agentSessions.length === 0 || archiveAllSubmitting
 
+  // Compute eligibility summary for the archive-all dialog so it can show
+  // a precise breakdown of what will be archived vs what is protected.
+  const archiveAllSummary = useMemo(() => {
+    const preserveIds = new Set<string>([...pinnedSessionIds, ...workingSessionIds])
+    if (selectedSessionId) {
+      preserveIds.add(selectedSessionId)
+    }
+    if (activeSessionId) {
+      preserveIds.add(activeSessionId)
+    }
+    // Also preserve lineage roots of active sessions
+    for (const session of agentSessions) {
+      if (session.id === selectedSessionId || session.id === activeSessionId) {
+        const rootId = session._lineage_root_id ?? session.id
+        preserveIds.add(String(rootId))
+      }
+    }
+    return computeSessionEligibility(agentSessions, preserveIds)
+  }, [agentSessions, pinnedSessionIds, workingSessionIds, selectedSessionId, activeSessionId])
+
   const handlePinnedDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over || active.id === over.id) {
       return
@@ -790,7 +811,7 @@ export function ChatSidebar({
         )}
       </SidebarContent>
       <ArchiveAllSessionsDialog
-        count={knownSessionTotal}
+        summary={archiveAllSummary}
         onConfirm={handleArchiveAll}
         onOpenChange={setArchiveAllOpen}
         open={archiveAllOpen}
@@ -801,14 +822,14 @@ export function ChatSidebar({
 }
 
 interface ArchiveAllSessionsDialogProps {
-  count: number
   open: boolean
+  summary: ReturnType<typeof computeSessionEligibility>
   onConfirm: () => void | Promise<void>
   onOpenChange: (open: boolean) => void
   submitting: boolean
 }
 
-function ArchiveAllSessionsDialog({ count, open, onConfirm, onOpenChange, submitting }: ArchiveAllSessionsDialogProps) {
+function ArchiveAllSessionsDialog({ summary, open, onConfirm, onOpenChange, submitting }: ArchiveAllSessionsDialogProps) {
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-md">
@@ -820,7 +841,20 @@ function ArchiveAllSessionsDialog({ count, open, onConfirm, onOpenChange, submit
           </DialogDescription>
         </DialogHeader>
         <div className="rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-control-background) px-3 py-2 text-xs text-(--ui-text-secondary)">
-          {count > 0 ? `${count} visible session${count === 1 ? '' : 's'} will be checked.` : 'No sessions to archive.'}
+          {summary.total > 0 ? (
+            <div className="space-y-1">
+              <div>
+                <span className="font-medium">{summary.eligible}</span> session{summary.eligible === 1 ? '' : 's'} will be archived.
+              </div>
+              {summary.protected > 0 && (
+                <div className="text-(--ui-text-muted)">
+                  <span className="font-medium">{summary.protected}</span> session{summary.protected === 1 ? '' : 's'} protected (pinned, active, or recently modified).
+                </div>
+              )}
+            </div>
+          ) : (
+            'No sessions to archive.'
+          )}
         </div>
         <DialogFooter>
           <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">

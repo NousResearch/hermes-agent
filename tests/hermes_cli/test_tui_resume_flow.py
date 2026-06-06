@@ -617,6 +617,7 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
         "model": None,
         "provider": None,
         "toolsets": "web,terminal",
+        "session_id": None,
     }
 
 
@@ -660,6 +661,183 @@ def test_oneshot_prints_nonempty_final_response(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert captured.out == "done\n"
     assert captured.err == ""
+
+
+def test_main_top_level_oneshot_resume_passes_session_id(monkeypatch, main_mod):
+    """`hermes -z <prompt> --resume <id>` must resolve and forward the session
+    id to run_oneshot so the piped/oneshot turn resumes instead of starting a
+    fresh, amnesiac session each call (regression for the hermesd pipe bug)."""
+    captured = {}
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        sys, "argv", ["hermes", "-z", "hello", "--resume", "sess-abc"]
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda: None),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(
+            register_from_config=lambda _cfg, accept_hooks=False: None
+        ),
+    )
+    # Resolver maps the requested id to its live tip.
+    monkeypatch.setattr(
+        main_mod, "_resolve_session_by_name_or_id", lambda v: "sess-abc-tip"
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 0
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+
+    assert exc.value.code == 0
+    assert captured["session_id"] == "sess-abc-tip"
+
+
+def test_run_agent_resumes_session_with_history(monkeypatch):
+    """_run_agent(session_id=...) loads prior history, builds the AIAgent with
+    that id, and drives run_conversation so the transcript replays AND new
+    messages persist back under the same session."""
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    history = [
+        {"role": "user", "content": "earlier message"},
+        {"role": "assistant", "content": "earlier reply"},
+    ]
+
+    class FakeDB:
+        def __init__(self):
+            self.reopened = None
+
+        def resolve_resume_session_id(self, sid):
+            return sid + "-tip"
+
+        def get_messages_as_conversation(self, sid):
+            assert sid == "sess-1-tip"
+            return list(history)
+
+        def reopen_session(self, sid):
+            self.reopened = sid
+
+    fake_db = FakeDB()
+    seen = {}
+
+    class FakeAgent:
+        def __init__(self, *_args, **kwargs):
+            seen["session_id"] = kwargs.get("session_id")
+
+        def run_conversation(self, prompt, conversation_history=None):
+            seen["prompt"] = prompt
+            seen["history"] = conversation_history
+            return {"final_response": "resumed-answer"}
+
+        def chat(self, prompt):  # must NOT be used on the resume path
+            seen["chat_called"] = True
+            return "stateless"
+
+    monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: fake_db)
+    _install_run_agent_stubs(monkeypatch, FakeAgent)
+
+    out = oneshot_mod._run_agent("new message", session_id="sess-1")
+
+    assert out == "resumed-answer"
+    assert seen["session_id"] == "sess-1-tip"
+    assert seen["history"] == history
+    assert seen["prompt"] == "new message"
+    assert "chat_called" not in seen
+    assert fake_db.reopened == "sess-1-tip"
+
+
+def test_run_agent_stateless_without_session_id(monkeypatch):
+    """No session_id => unchanged stateless behaviour: chat(), no history."""
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    seen = {}
+
+    class FakeAgent:
+        def __init__(self, *_args, **kwargs):
+            seen["session_id"] = kwargs.get("session_id")
+
+        def chat(self, prompt):
+            seen["prompt"] = prompt
+            return "stateless-answer"
+
+        def run_conversation(self, *_a, **_k):  # must NOT be used
+            seen["run_conversation_called"] = True
+            return {"final_response": "nope"}
+
+    monkeypatch.setattr(
+        oneshot_mod, "_create_session_db_for_oneshot", lambda: object()
+    )
+    _install_run_agent_stubs(monkeypatch, FakeAgent)
+
+    out = oneshot_mod._run_agent("hi")
+
+    assert out == "stateless-answer"
+    assert seen["session_id"] is None
+    assert seen["prompt"] == "hi"
+    assert "run_conversation_called" not in seen
+
+
+def _install_run_agent_stubs(monkeypatch, agent_cls):
+    """Stub out the heavy imports _run_agent pulls in so the resume/stateless
+    branching can be exercised without a real model or config."""
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(load_config=lambda: {}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        types.SimpleNamespace(detect_provider_for_model=lambda *a, **k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        types.SimpleNamespace(resolve_runtime_provider=lambda **k: {}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        types.SimpleNamespace(_get_platform_tools=lambda *a, **k: set()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "run_agent",
+        types.SimpleNamespace(AIAgent=agent_cls),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.mcp_startup",
+        types.SimpleNamespace(_has_configured_mcp_servers=lambda: False),
+    )
+    import hermes_cli.oneshot as oneshot_mod
+
+    monkeypatch.setattr(oneshot_mod, "get_fallback_chain", lambda _cfg: None)
 
 
 def test_oneshot_fails_closed_on_agent_exception(monkeypatch, capsys):

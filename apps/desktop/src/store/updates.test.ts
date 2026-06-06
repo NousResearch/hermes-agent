@@ -33,7 +33,7 @@ vi.mock('@/hermes', () => ({
   getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
 }))
 
-const { maybeNotifyUpdateAvailable, checkUpdates, $updateStatus } = await import('./updates')
+const { maybeNotifyUpdateAvailable, checkBackendUpdates, $backendUpdateStatus } = await import('./updates')
 const { setConnection } = await import('./session')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
@@ -87,12 +87,12 @@ describe('maybeNotifyUpdateAvailable', () => {
   })
 })
 
-describe('checkUpdates in remote mode', () => {
+describe('checkBackendUpdates', () => {
   beforeEach(() => {
     storage.clear()
     notifySpy.mockClear()
     checkHermesUpdateSpy.mockReset()
-    $updateStatus.set(null)
+    $backendUpdateStatus.set(null)
     vi.useRealTimers()
   })
 
@@ -108,7 +108,7 @@ describe('checkUpdates in remote mode', () => {
       windowButtonPosition: null
     })
 
-  it('sources the overlay from the backend /update/check and maps commits', async () => {
+  it('maps the backend /update/check onto the backend status, including commits', async () => {
     setRemote(true)
     checkHermesUpdateSpy.mockResolvedValue({
       install_method: 'git',
@@ -121,13 +121,13 @@ describe('checkUpdates in remote mode', () => {
       commits: [{ sha: 'abc1234', summary: 'feat: x', author: 'a', at: 1 }]
     })
 
-    const result = await checkUpdates()
+    const result = await checkBackendUpdates()
 
     expect(checkHermesUpdateSpy).toHaveBeenCalled()
     expect(result?.behind).toBe(2)
     expect(result?.commits?.[0]?.sha).toBe('abc1234')
     expect(result?.supported).toBe(true)
-    expect($updateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
+    expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
   })
 
   it('honours can_apply=false (docker/nix): not supported, carries message', async () => {
@@ -142,21 +142,16 @@ describe('checkUpdates in remote mode', () => {
       message: 'Docker images are immutable.'
     })
 
-    const result = await checkUpdates()
+    const result = await checkBackendUpdates()
 
     expect(result?.supported).toBe(false)
     expect(result?.message).toBe('Docker images are immutable.')
   })
 
-  it('does NOT call the backend check in local mode', async () => {
+  it('is a no-op in local mode (backend check only runs when remote)', async () => {
     setRemote(false)
-    // No hermesDesktop bridge → local path early-returns without hitting the
-    // backend. Stub a bare window so the local branch can read the (absent)
-    // bridge without throwing in the node test env.
-    vi.stubGlobal('window', {})
-    await checkUpdates()
+    await checkBackendUpdates()
     expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
-    vi.unstubAllGlobals()
   })
 })
 

@@ -82,11 +82,25 @@ def _parse_package_from_args(
     if not args:
         return None, None
 
-    # Skip flags to find the package token
+    # Skip flags to find the package token.
+    # Handle --package=@scope/name (equals form) and --package @scope/name
+    # (space form) used by npx to specify an explicit install target that
+    # differs from the executed binary name.
     package_token = None
+    skip_next = False
     for arg in args:
         if not isinstance(arg, str):
             continue
+        if skip_next:
+            package_token = arg
+            skip_next = False
+            break
+        if arg == "--package" or arg == "-p":
+            skip_next = True
+            continue
+        if arg.startswith("--package="):
+            package_token = arg[len("--package="):]
+            break
         if arg.startswith("-"):
             continue
         package_token = arg

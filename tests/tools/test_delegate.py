@@ -28,6 +28,7 @@ from tools.delegate_tool import (
     _build_child_agent,
     _build_child_progress_callback,
     _build_child_system_prompt,
+    _extract_output_tail,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
@@ -553,6 +554,71 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertIn("args_bytes", entry["tool_trace"][0])
             self.assertIn("result_bytes", entry["tool_trace"][0])
             self.assertEqual(entry["tool_trace"][0]["status"], "ok")
+
+    def test_tool_trace_handles_list_content_blocks(self):
+        """Tool-result content blocks should not crash observability metadata."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "image_generate", "arguments": '{"prompt": "x"}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1", "content": [
+                        {"type": "text", "text": '{"success": true}'},
+                    ]},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test list content", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+            self.assertEqual(trace[0]["tool"], "image_generate")
+            self.assertEqual(trace[0]["status"], "ok")
+            self.assertGreater(trace[0]["result_bytes"], 0)
+
+    def test_output_tail_flattens_list_content_blocks(self):
+        """_extract_output_tail (live overlay) must flatten content-block lists
+        so error markers buried inside blocks are detected and previews are
+        real text, not a "[{'type': 'text'...}]" repr blob."""
+        result = {
+            "messages": [
+                {"role": "assistant", "tool_calls": [
+                    {"id": "t1", "function": {"name": "terminal", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "t1", "content": [
+                    {"type": "text", "text": "Error: command not found"},
+                ]},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "t2", "function": {"name": "vision", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "t2", "content": [
+                    {"type": "text", "text": "all good"},
+                    {"type": "image_url", "image_url": {"url": "data:x"}},
+                ]},
+            ]
+        }
+        tail = _extract_output_tail(result, max_entries=8, max_chars=600)
+        by_tool = {t["tool"]: t for t in tail}
+
+        # Block-wrapped error is correctly flagged (crude str() would miss it).
+        self.assertTrue(by_tool["terminal"]["is_error"])
+        self.assertEqual(by_tool["terminal"]["preview"], "Error: command not found")
+        # Non-error multimodal result is not flagged, and the text is readable.
+        self.assertFalse(by_tool["vision"]["is_error"])
+        self.assertIn("all good", by_tool["vision"]["preview"])
+        # No raw content-block repr leaked into any preview.
+        for entry in tail:
+            self.assertNotIn("'type'", entry["preview"])
 
     def test_tool_trace_detects_error(self):
         """Tool results containing 'error' should be marked as error status."""

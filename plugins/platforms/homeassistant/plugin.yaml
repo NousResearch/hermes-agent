@@ -1,0 +1,22 @@
+name: homeassistant-platform
+label: Home Assistant
+kind: platform
+version: 1.0.0
+description: >
+  Home Assistant gateway adapter for Hermes Agent.
+  Subscribes to HA's WebSocket event bus and forwards state-change events
+  (with per-entity cooldowns and domain/entity filtering) to the agent.
+  Outbound messages are delivered as HA persistent notifications via the
+  REST API. Out-of-process cron delivery via the ``notify.notify``
+  service is also supported.
+author: NousResearch
+requires_env:
+  - name: HASS_TOKEN
+    description: "Home Assistant Long-Lived Access Token"
+    prompt: "Home Assistant Long-Lived Access Token"
+    password: true
+optional_env:
+  - name: HASS_URL
+    description: "Home Assistant base URL (default: http://homeassistant.local:8123)"
+    prompt: "Home Assistant URL"
+    password: false

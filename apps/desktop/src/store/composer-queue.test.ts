@@ -7,6 +7,7 @@ import {
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  promoteQueuedPrompt,
   removeQueuedPrompt,
   shouldAutoDrainOnSettle,
   updateQueuedPrompt,
@@ -63,6 +64,20 @@ describe('composer queue store', () => {
     expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['draft two'])
   })
 
+  it('promotes a queued entry to the front', () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })
+    const second = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'second' })
+    const third = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'third' })
+
+    expect(first).not.toBeNull()
+    expect(second).not.toBeNull()
+    expect(third).not.toBeNull()
+
+    expect(promoteQueuedPrompt(SESSION_KEY, third!.id)).toBe(true)
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['third', 'first', 'second'])
+    expect(promoteQueuedPrompt(SESSION_KEY, third!.id)).toBe(false)
+  })
+
   it('updates queued text and attachment snapshot', () => {
     const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('f-1')], text: 'draft one' })
     const editedAttachments = [attachment('f-2'), attachment('f-3', 'image')]
@@ -103,24 +118,20 @@ describe('composer queue store', () => {
 })
 
 describe('shouldAutoDrainOnSettle', () => {
-  const base = { isBusy: false, queueLength: 1, userInterrupted: false, wasBusy: true }
+  const base = { isBusy: false, queueLength: 1, wasBusy: true }
 
-  it('drains the next queued prompt when a turn completes naturally', () => {
+  it('drains the next queued prompt when a turn settles', () => {
     expect(shouldAutoDrainOnSettle(base)).toBe(true)
   })
 
-  it('does NOT drain when the user explicitly interrupted (Stop button)', () => {
-    // Regression: previously the Stop button "never worked" because cancelling
-    // a turn flipped busy → false and the queue immediately re-fired its head.
-    expect(shouldAutoDrainOnSettle({ ...base, userInterrupted: true })).toBe(false)
+  it('drains after an interrupt — the settle edge is the same', () => {
+    // Interrupting to reach a queued message is the point of the queue; the
+    // gateway emits the same settle whether the turn finished or was stopped.
+    expect(shouldAutoDrainOnSettle(base)).toBe(true)
   })
 
   it('does not drain when the queue is empty', () => {
     expect(shouldAutoDrainOnSettle({ ...base, queueLength: 0 })).toBe(false)
-  })
-
-  it('does not drain when interrupted even if the queue is also empty', () => {
-    expect(shouldAutoDrainOnSettle({ ...base, queueLength: 0, userInterrupted: true })).toBe(false)
   })
 
   it('ignores steady busy state (no true → false transition)', () => {

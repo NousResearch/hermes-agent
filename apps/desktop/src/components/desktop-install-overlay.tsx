@@ -8,6 +8,7 @@ import type {
   DesktopBootstrapStageState,
   DesktopBootstrapState
 } from '@/global'
+import { useI18n } from '@/i18n'
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -47,14 +48,6 @@ interface StageRowProps {
   result: DesktopBootstrapStageResult | undefined
   isCurrent: boolean
   now: number
-}
-
-const STATE_LABEL: Record<DesktopBootstrapStageState, string> = {
-  pending: 'Pending',
-  running: 'Installing',
-  succeeded: 'Done',
-  skipped: 'Skipped',
-  failed: 'Failed'
 }
 
 function formatStageName(name: string): string {
@@ -104,6 +97,8 @@ function formatElapsed(ms: number): string {
 }
 
 function StageRow({ descriptor, result, isCurrent, now }: StageRowProps) {
+  const { t } = useI18n()
+  const copy = t.install
   const state: DesktopBootstrapStageState = result?.state || 'pending'
 
   const elapsed =
@@ -147,9 +142,13 @@ function StageRow({ descriptor, result, isCurrent, now }: StageRowProps) {
             {formatStageName(descriptor.name)}
           </span>
           <span className="flex-shrink-0 text-xs tabular-nums text-muted-foreground">
-            {state === 'running' ? (elapsed ? `${STATE_LABEL[state]} · ${elapsed}` : STATE_LABEL[state]) : null}
+            {state === 'running'
+              ? elapsed
+                ? `${copy.stageStates[state]} · ${elapsed}`
+                : copy.stageStates[state]
+              : null}
             {state === 'succeeded' || state === 'skipped' ? formatDuration(result?.durationMs) : null}
-            {state === 'failed' ? STATE_LABEL[state] : null}
+            {state === 'failed' ? copy.stageStates[state] : null}
           </span>
         </div>
         {reason && state !== 'pending' && <p className="mt-0.5 truncate text-xs text-muted-foreground">{reason}</p>}
@@ -242,6 +241,8 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
 }
 
 export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayProps) {
+  const { t } = useI18n()
+  const copy = t.install
   const [state, setState] = useState<DesktopBootstrapState>(EMPTY_STATE)
   const [logOpen, setLogOpen] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -350,14 +351,13 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
     return (
       <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-background/90 backdrop-blur-md">
         <div className="w-full max-w-xl rounded-xl border bg-card p-8 shadow-xl">
-          <h2 className="text-2xl font-semibold tracking-tight">Hermes needs a one-time install</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">{copy.oneTimeTitle}</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            Automated first-launch install isn{'\u2019'}t available on {platformLabel} yet. Open Terminal and run the
-            command below, then relaunch this app. Subsequent launches will skip this step.
+            {copy.unsupportedDesc(platformLabel)}
           </p>
 
           <div className="mt-4">
-            <div className="mb-1.5 text-xs font-medium text-muted-foreground">Install command</div>
+            <div className="mb-1.5 text-xs font-medium text-muted-foreground">{copy.installCommand}</div>
             <pre className="overflow-x-auto rounded-md border bg-muted/50 px-3 py-2.5 font-mono text-[12px]">
               <code>{ups.installCommand}</code>
             </pre>
@@ -369,7 +369,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                 size="sm"
                 variant="secondary"
               >
-                Copy command
+                {copy.copyCommand}
               </Button>
               <Button
                 onClick={() => {
@@ -378,17 +378,17 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                 size="sm"
                 variant="ghost"
               >
-                View install docs
+                {copy.viewDocs}
               </Button>
             </div>
           </div>
 
           <div className="mt-6 flex items-center justify-between border-t pt-4">
             <span className="text-xs text-muted-foreground">
-              Will install to <code className="rounded bg-muted/50 px-1 py-0.5 font-mono">{ups.activeRoot}</code>
+              {copy.installTo} <code className="rounded bg-muted/50 px-1 py-0.5 font-mono">{ups.activeRoot}</code>
             </span>
             <Button onClick={() => window.location.reload()} size="sm" variant="default">
-              I{'\u2019'}ve run it -- retry
+              {copy.retryAfterRun}
             </Button>
           </div>
         </div>
@@ -415,13 +415,10 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
         {/* Header -- always visible, never scrolls */}
         <div className="flex-shrink-0 p-8 pb-4">
           <h2 className="text-2xl font-semibold tracking-tight">
-            {failed ? 'Installation failed' : state.active ? 'Setting up Hermes Agent' : 'Finishing up'}
+            {failed ? copy.failedTitle : state.active ? copy.settingUpTitle : copy.finishingTitle}
           </h2>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            {failed
-              ? 'One of the install steps failed. On Windows, this can happen if another Hermes CLI or desktop instance is running. Stop any running Hermes instances, then retry. Check the details below or the desktop log for the full transcript.'
-              : 'This is a one-time setup. The Hermes installer is downloading dependencies and configuring your machine. ' +
-                'Subsequent launches will skip this step.'}
+            {failed ? copy.failedDesc : copy.activeDesc}
           </p>
         </div>
 
@@ -431,8 +428,8 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             <div className="mb-4">
               <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
                 <span>
-                  {completedCount} of {totalCount} steps complete
-                  {currentStage && ` -- now: ${formatStageName(currentStage)}`}
+                  {copy.progress(completedCount, totalCount)}
+                  {currentStage && copy.currentStage(formatStageName(currentStage))}
                   {currentElapsed && ` (${currentElapsed})`}
                 </span>
                 <span className="tabular-nums">{progressPct}%</span>
@@ -449,7 +446,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
           {totalCount === 0 && state.active && (
             <div className="mb-4 flex items-center gap-2 rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              <span>Fetching installer manifest...</span>
+              <span>{copy.fetchingManifest}</span>
             </div>
           )}
 
@@ -457,7 +454,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">
               <div className="mb-1 flex items-center gap-1.5 font-medium text-destructive">
                 <AlertTriangle className="h-4 w-4" />
-                <span>Error</span>
+                <span>{copy.error}</span>
               </div>
               <p className="whitespace-pre-wrap break-words text-foreground/90">{state.error}</p>
             </div>
@@ -484,9 +481,9 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               type="button"
             >
               {logOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-              <span>{logOpen ? 'Hide installer output' : 'Show installer output'}</span>
+              <span>{logOpen ? copy.hideOutput : copy.showOutput}</span>
               <span className="ml-1 tabular-nums">
-                ({state.log.length} line{state.log.length === 1 ? '' : 's'})
+                ({copy.lines(state.log.length)})
               </span>
             </button>
 
@@ -498,7 +495,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                 )}
               >
                 {state.log.length === 0 ? (
-                  <div className="text-muted-foreground">No output yet.</div>
+                  <div className="text-muted-foreground">{copy.noOutput}</div>
                 ) : (
                   <>
                     {state.log.map((entry, i) => (
@@ -540,7 +537,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                 variant="ghost"
               >
                 {cancelling ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                {cancelling ? 'Cancelling...' : 'Cancel install'}
+                {cancelling ? copy.cancelling : copy.cancelInstall}
               </Button>
             </div>
           </div>
@@ -551,7 +548,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
           <div className="flex-shrink-0 border-t bg-card p-4">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-muted-foreground">
-                Full transcript saved to{' '}
+                {copy.transcriptSaved}{' '}
                 <code className="rounded bg-muted/50 px-1 py-0.5 font-mono">%LOCALAPPDATA%\hermes\logs\</code>
               </span>
               <div className="flex gap-2">
@@ -574,7 +571,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                   size="sm"
                   variant="secondary"
                 >
-                  {copied ? 'Copied!' : 'Copy output'}
+                  {copied ? copy.copiedOutput : copy.copyOutput}
                 </Button>
                 <Button
                   onClick={async () => {
@@ -593,7 +590,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                   size="sm"
                   variant="default"
                 >
-                  Reload and retry
+                  {copy.reloadRetry}
                 </Button>
               </div>
             </div>

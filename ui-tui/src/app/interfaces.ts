@@ -30,6 +30,22 @@ export type StatusBarMode = 'bottom' | 'off' | 'top'
 
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 
+export type NoticeLevel = 'error' | 'info' | 'success' | 'warn'
+
+// Credits/usage notice surfaced in the status bar. Shape is snake_case to
+// match the gateway WS wire (`notification.show` payload) and the existing
+// `Usage` type — no camelCase mapping layer. The `text` already carries its
+// own leading glyph (⚠ • ✕ ✓) from the Python policy, so the renderer only
+// colours it by `level` and never adds another glyph.
+export interface Notice {
+  id?: string
+  key?: string
+  kind?: 'sticky' | 'ttl'
+  level?: NoticeLevel
+  text: string
+  ttl_ms?: null | number
+}
+
 // Single source of truth for indicator style names.  Union type is
 // derived from this tuple so adding/removing a style only touches one
 // line — `useConfigSync` (validation) and `session.ts` (slash arg
@@ -106,6 +122,7 @@ export interface UiState {
   liveSessionCount: number
   inlineDiffs: boolean
   mouseTracking: MouseTrackingMode
+  notice: Notice | null
   pasteCollapseLines: number
   pasteCollapseChars: number
 

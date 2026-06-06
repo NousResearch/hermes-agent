@@ -2709,9 +2709,10 @@ class SessionDB:
         """Sanitize user input for safe use in FTS5 MATCH queries.
 
         FTS5 has its own query syntax where characters like ``"``, ``(``, ``)``,
-        ``+``, ``*``, ``{``, ``}`` and bare boolean operators (``AND``, ``OR``,
-        ``NOT``) have special meaning.  Passing raw user input directly to
-        MATCH can cause ``sqlite3.OperationalError``.
+        ``+``, ``*``, ``{``, ``}``, the column-filter operator ``:`` and bare
+        boolean operators (``AND``, ``OR``, ``NOT``) have special meaning.
+        Passing raw user input directly to MATCH can cause
+        ``sqlite3.OperationalError``.
 
         Strategy:
         - Preserve properly paired quoted phrases (``"exact phrase"``)
@@ -2730,8 +2731,12 @@ class SessionDB:
 
         sanitized = re.sub(r'"[^"]*"', _preserve_quoted, query)
 
-        # Step 2: Strip remaining (unmatched) FTS5-special characters
-        sanitized = re.sub(r'[+{}()\"^]', " ", sanitized)
+        # Step 2: Strip remaining (unmatched) FTS5-special characters.  ``:`` is
+        # FTS5's column-filter operator (``col:term``); since the FTS table has a
+        # single ``content`` column, an unquoted colon query like ``TODO: fix``
+        # parses as ``column:term`` and raises "no such column" — swallowed at
+        # the execute site into zero results.  Strip it like the others.
+        sanitized = re.sub(r'[+{}():\"^]', " ", sanitized)
 
         # Step 3: Collapse repeated * (e.g. "***") into a single one,
         # and remove leading * (prefix-only needs at least one char before *)

@@ -94,6 +94,7 @@ export type {
   SessionSearchResponse,
   SessionSearchResult,
   SkillInfo,
+  StaleAuxAssignment,
   StatusResponse,
   ToolsetConfig,
   ToolsetInfo

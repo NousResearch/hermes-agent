@@ -9263,6 +9263,40 @@ def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
             pass
 
 
+def _run_quarantined_install(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    scripts_dir: Path | None = None,
+) -> None:
+    """Run an editable install, quarantining the running ``hermes.exe`` first.
+
+    Any ``pip install -e .`` (or ``--reinstall``) rewrites the entry-point
+    shims, and on Windows the live ``hermes.exe`` is the running process —
+    pip can neither delete nor overwrite it, so without quarantine the shim
+    is left missing and ``hermes`` drops off PATH. This wraps
+    :func:`_run_install_with_heartbeat` with the same rename-out-of-the-way /
+    restore-on-failure dance that the primary install path uses, so EVERY
+    install that touches the shims is protected — including the
+    verification-repair reinstalls in
+    :func:`_verify_core_dependencies_installed`, which previously called
+    ``_run_install_with_heartbeat`` directly and bypassed quarantine.
+
+    Off-Windows (``scripts_dir is None``) this is a thin pass-through.
+    """
+    moved: list[tuple[Path, Path]] = []
+    if scripts_dir is not None:
+        moved = _quarantine_running_hermes_exe(scripts_dir)
+    try:
+        _run_install_with_heartbeat(cmd, env=env)
+    except BaseException:
+        # Restore shims if pip/uv didn't write replacements (e.g. install
+        # failed before the entry-points step). Don't swallow the error.
+        if scripts_dir is not None:
+            _restore_quarantined_exes(moved)
+        raise
+
+
 def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
     """Sweep ``hermes.exe.old.*`` left by prior updates.
 
@@ -9373,17 +9407,9 @@ def _install_python_dependencies_with_optional_fallback(
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
 
     def _install(args: list[str]) -> None:
-        moved: list[tuple[Path, Path]] = []
-        if scripts_dir is not None:
-            moved = _quarantine_running_hermes_exe(scripts_dir)
-        try:
-            _run_install_with_heartbeat(install_cmd_prefix + args, env=env)
-        except BaseException:
-            # Restore shims if uv didn't write replacements (e.g. install
-            # failed before the entry-points step). Don't swallow the error.
-            if scripts_dir is not None:
-                _restore_quarantined_exes(moved)
-            raise
+        _run_quarantined_install(
+            install_cmd_prefix + args, env=env, scripts_dir=scripts_dir
+        )
 
     try:
         _install(["install", "-e", f".[{group}]"])
@@ -9550,9 +9576,16 @@ def _verify_core_dependencies_installed(
     # purpose — the missing dep is in *base* deps; rerunning the full all-
     # extras install can cost minutes and trips on whatever optional extra
     # was already broken upstream. Base is fast and is what's actually wrong.
+    #
+    # Quarantine the running ``hermes.exe`` first: ``--reinstall -e .``
+    # rewrites the entry-point shims, and on Windows pip can't overwrite the
+    # live launcher, which would leave ``hermes`` off PATH.
+    scripts_dir = _venv_scripts_dir() if _is_windows() else None
     repair_args = ["install", "--reinstall", "-e", "."]
     try:
-        _run_install_with_heartbeat(install_cmd_prefix + repair_args, env=env)
+        _run_quarantined_install(
+            install_cmd_prefix + repair_args, env=env, scripts_dir=scripts_dir
+        )
     except subprocess.CalledProcessError as e:
         logger.warning("dep verification: repair install failed: %s", e)
         print("  ⚠ Repair install failed; check `hermes update` output above.")
@@ -11893,7 +11926,8 @@ def cmd_profile(args):
                 )
                 print(f"Skills:         {p.skill_count} installed")
                 if p.alias_path:
-                    print(f"Alias:          {p.name} → hermes -p {p.name}")
+                    alias_display = p.alias_name or p.name
+                    print(f"Alias:          {alias_display} → hermes -p {p.name}")
                 break
         print()
         return
@@ -11925,7 +11959,7 @@ def cmd_profile(args):
             name = p.name
             model = (p.model or "—")[:26]
             gw = "running" if p.gateway_running else "stopped"
-            alias = p.name if p.alias_path else "—"
+            alias = (p.alias_name or p.name) if p.alias_path else "—"
             if p.is_default:
                 alias = "—"
             if p.distribution_name:
@@ -12175,6 +12209,8 @@ def cmd_profile(args):
             _check_gateway_running,
             _count_skills,
             _read_distribution_meta,
+            _get_wrapper_dir,
+            find_alias_for_profile,
         )
 
         if not profile_exists(name):
@@ -12185,7 +12221,7 @@ def cmd_profile(args):
         gw = _check_gateway_running(profile_dir)
         skills = _count_skills(profile_dir)
         dist_name, dist_version, dist_source = _read_distribution_meta(profile_dir)
-        wrapper = _get_wrapper_dir() / name
+        alias_name = find_alias_for_profile(name)
 
         print(f"\nProfile: {name}")
         print(f"Path:    {profile_dir}")
@@ -12204,8 +12240,10 @@ def cmd_profile(args):
             if dist_source:
                 print(f"Installed from: {dist_source}")
             print(f"  (run `hermes profile info {name}` for full manifest)")
-        if wrapper.exists():
-            print(f"Alias:   {wrapper}")
+        if alias_name:
+            is_windows = sys.platform == "win32"
+            wrapper = _get_wrapper_dir() / (f"{alias_name}.bat" if is_windows else alias_name)
+            print(f"Alias:   {alias_name} → hermes -p {name}  ({wrapper})")
         print()
 
     elif action == "alias":
@@ -14952,12 +14990,36 @@ Examples:
         help="Platform to apply to (default: cli)",
     )
 
+    # hermes tools post-setup <key>
+    tools_postsetup_p = tools_sub.add_parser(
+        "post-setup",
+        help="Run a provider's post-setup install hook (npm/pip/binary)",
+        description=(
+            "Run the install/bootstrap hook a tool backend declares — the\n"
+            "same step `hermes tools` runs after you pick a provider that\n"
+            "needs extra dependencies (browser Chromium, Camofox, cua-driver,\n"
+            "KittenTTS/Piper, ddgs, Spotify, Langfuse, xAI). Stable,\n"
+            "non-interactive target the dashboard spawns to drive backend\n"
+            "setup. Keys: agent_browser, camofox, cua_driver, kittentts,\n"
+            "piper, ddgs, spotify, langfuse, xai_grok."
+        ),
+    )
+    tools_postsetup_p.add_argument(
+        "post_setup_key",
+        metavar="KEY",
+        help="Post-setup hook key (e.g. agent_browser, camofox, kittentts)",
+    )
+
     def cmd_tools(args):
         action = getattr(args, "tools_action", None)
         if action in {"list", "disable", "enable"}:
             from hermes_cli.tools_config import tools_disable_enable_command
 
             tools_disable_enable_command(args)
+        elif action == "post-setup":
+            from hermes_cli.tools_config import run_post_setup_command
+
+            sys.exit(run_post_setup_command(args))
         else:
             _require_tty("tools")
             from hermes_cli.tools_config import tools_command
@@ -15943,6 +16005,21 @@ Examples:
         "--status",
         action="store_true",
         help="List running hermes dashboard processes and exit",
+    )
+    # Backward-compat shim: older Hermes desktop app shells (<= 0.15.x) spawn the
+    # backend as `hermes dashboard --no-open --tui --host ... --port ...`. The
+    # `--tui` flag was removed from this subcommand in cae6b5486 (embedded chat is
+    # always on now). When a user's CLI updates past that commit but their desktop
+    # app binary has not, argparse used to hard-error with "unrecognized arguments:
+    # --tui" and exit(2) — the backend died before becoming ready and the GUI just
+    # showed "Hermes couldn't start" with no actionable cause. Accept and silently
+    # ignore the flag so an old app + new CLI degrades gracefully instead of
+    # bricking. Hidden from --help; safe to delete once the floor app version is
+    # well past 0.16.0.
+    dashboard_parser.add_argument(
+        "--tui",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
 

@@ -589,12 +589,12 @@ export function ApiKeyForm({
   // Providers page wiring its search into this grid). Keep the selection valid
   // by snapping back to the first remaining option when the current one drops.
   useEffect(() => {
-    if (options.length > 0 && !options.some(o => o.id === option.id)) {
+    if (options.length > 0 && !options.some(o => o.envKey === option.envKey)) {
       setOption(options[0])
       setValue('')
       setError(null)
     }
-  }, [option.id, options])
+  }, [option.envKey, options])
   // The catalog grid can be tall, leaving the entry field far below the fold.
   // On selection we scroll the field into view and focus it so it's always
   // obvious where to paste next.
@@ -657,9 +657,9 @@ export function ApiKeyForm({
           <button
             className={cn(
               'rounded-2xl border bg-background/60 p-3 text-left transition hover:bg-accent/50',
-              option.id === o.id ? 'border-primary ring-2 ring-primary/20' : 'border-transparent'
+              option.envKey === o.envKey ? 'border-primary ring-2 ring-primary/20' : 'border-transparent'
             )}
-            key={o.id}
+            key={o.envKey}
             onClick={() => pick(o)}
             type="button"
           >

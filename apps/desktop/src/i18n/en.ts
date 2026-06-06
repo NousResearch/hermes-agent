@@ -961,7 +961,7 @@ export const en: Translations = {
     groupTitleGrouped: 'Ungroup sessions',
     groupTitleUngrouped: 'Group by workspace',
     allPinned: 'Everything here is pinned. Unpin a chat to show it in recents.',
-    shiftClickHint: 'Shift-click a chat to pin · drag to reorder',
+    shiftClickHint: 'Shift-click a chat to pin',
     noWorkspace: 'No workspace',
     newSessionIn: label => `New session in ${label}`,
     reorderWorkspace: label => `Reorder workspace ${label}`,

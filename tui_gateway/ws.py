@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 from typing import Any
 
 from tui_gateway import server
@@ -137,6 +138,24 @@ def _ws_peer_label(ws: Any) -> str:
     return f"{host}:{port}" if port is not None else host
 
 
+def _disable_nagle(ws: Any) -> None:
+    """Disable Nagle so streamed JSON-RPC frames go out individually.
+
+    Without it the kernel coalesces the small per-token frames, so a burst after
+    the model's think-pause lands on the client in one tick and no client-side
+    smoothing can recover the cadence. GUI/WS only; chat platforms don't hit
+    this path. Best-effort — skip silently if the socket isn't reachable.
+    """
+    try:
+        scope = getattr(ws, "scope", None) or {}
+        transport = (scope.get("extensions") or {}).get("transport") or getattr(ws, "transport", None)
+        sock = transport.get_extra_info("socket") if transport is not None else None
+        if sock is not None:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except Exception as exc:  # pragma: no cover - best-effort tuning
+        _log.debug("ws TCP_NODELAY skip: %s", exc)
+
+
 async def handle_ws(ws: Any) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     peer = _ws_peer_label(ws)
@@ -150,6 +169,9 @@ async def handle_ws(ws: Any) -> None:
     try:
         await ws.accept()
         disconnect_reason = "connected"
+        # Push small streamed frames out immediately instead of letting Nagle
+        # batch them — keeps the live token cadence intact for GUI clients.
+        _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)

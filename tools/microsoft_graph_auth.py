@@ -220,6 +220,72 @@ class MicrosoftGraphTokenProvider:
         )
 
 
+# ---------------------------------------------------------------------------
+# Sync variant — used by email/IMAP/SMTP adapters that cannot use async
+# ---------------------------------------------------------------------------
+
+def fetch_access_token_sync(
+    credentials: GraphCredentials,
+    timeout: float = 30.0,
+) -> tuple[str, float]:
+    """Synchronously acquire an access token via client_credentials flow.
+
+    Returns ``(access_token, expires_at)``.
+    Raises ``MicrosoftGraphTokenError`` on failure.
+    """
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": credentials.client_id,
+        "client_secret": credentials.client_secret,
+        "scope": credentials.scope,
+    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+    try:
+        response = httpx.post(
+            credentials.token_url,
+            data=data,
+            headers=headers,
+            timeout=httpx.Timeout(timeout),
+        )
+    except httpx.RequestError as exc:
+        raise MicrosoftGraphTokenError(
+            f"Microsoft Graph token request failed: {exc}"
+        ) from exc
+
+    if response.status_code >= 400:
+        detail = _extract_error_detail(response)
+        raise MicrosoftGraphTokenError(
+            "Microsoft Graph token request failed with HTTP "
+            f"{response.status_code}: {detail}"
+        )
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise MicrosoftGraphTokenError(
+            "Microsoft Graph token response was not valid JSON."
+        ) from exc
+
+    access_token = str(payload.get("access_token") or "").strip()
+    expires_in = payload.get("expires_in")
+
+    if not access_token:
+        raise MicrosoftGraphTokenError(
+            "Microsoft Graph token response did not include access_token."
+        )
+
+    try:
+        expires_in_seconds = int(expires_in)
+    except (TypeError, ValueError) as exc:
+        raise MicrosoftGraphTokenError(
+            "Microsoft Graph token response did not include a valid expires_in."
+        ) from exc
+
+    expires_at = time.time() + max(0, expires_in_seconds)
+    return access_token, expires_at
+
+
 def _extract_error_detail(response: httpx.Response) -> str:
     try:
         payload = response.json()

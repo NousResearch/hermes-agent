@@ -20,10 +20,12 @@ export const en: Translations = {
     continue: 'Continue',
     copied: 'Copied',
     copy: 'Copy',
+    copyFailed: 'Copy failed',
     delete: 'Delete',
     docs: 'Docs',
     done: 'Done',
     error: 'Error',
+    failed: 'Failed',
     free: 'Free',
     loading: 'Loading…',
     notSet: 'Not set',
@@ -110,6 +112,25 @@ export const en: Translations = {
       openaiRejectedApiKey: 'OpenAI rejected the API key.',
       openaiRejectedApiKeyWithStatus: status => `OpenAI rejected the API key (${status} invalid_api_key).`,
       openaiTtsNeedsKey: 'OpenAI TTS needs VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY.'
+    },
+    voice: {
+      configureSpeechToText: 'Configure speech-to-text to use voice mode.',
+      couldNotStartSession: 'Could not start voice session',
+      microphoneAccessDenied: 'Microphone access denied.',
+      microphoneConstraintsUnsupported: 'Microphone constraints are not supported by this device.',
+      microphoneFailed: 'Microphone failed',
+      microphoneInUse: 'Microphone is already in use by another app.',
+      microphonePermissionDenied: 'Microphone permission was denied.',
+      microphoneStartFailed: 'Could not start microphone recording.',
+      microphoneUnsupported: 'This runtime does not support microphone recording.',
+      noMicrophone: 'No microphone was found.',
+      noSpeechDetected: 'No speech detected',
+      playbackFailed: 'Voice playback failed',
+      recordingFailed: 'Voice recording failed',
+      transcriptionFailed: 'Voice transcription failed',
+      transcriptionUnavailable: 'Voice transcription is not available yet.',
+      tryRecordingAgain: 'Try recording again.',
+      unavailable: 'Voice unavailable'
     }
   },
 
@@ -1016,6 +1037,10 @@ export const en: Translations = {
     stopDictation: 'Stop dictation',
     transcribingDictation: 'Transcribing dictation',
     voiceDictation: 'Voice dictation',
+    lookupLoading: 'Looking up…',
+    lookupNoMatches: 'No matches.',
+    lookupTry: 'Try',
+    lookupOr: 'or',
     commonCommands: 'Common commands',
     hotkeys: 'Hotkeys',
     helpFooter: 'opens the full panel · backspace dismisses',
@@ -1524,7 +1549,11 @@ export const en: Translations = {
       recoveredOne: 'Recovered after 1 failed step',
       recoveredMany: count => `Recovered after ${count} failed steps`,
       failedOne: '1 step failed',
-      failedMany: count => `${count} steps failed`
+      failedMany: count => `${count} steps failed`,
+      statusRunning: 'Running',
+      statusError: 'Error',
+      statusRecovered: 'Recovered',
+      statusDone: 'Done'
     }
   },
 
@@ -1587,6 +1616,9 @@ export const en: Translations = {
     restartToUseSaveImage: 'Restart Hermes Desktop to use Save Image.',
     restartToSaveImages: 'Restart Hermes Desktop to save images',
     imageDownloadFailed: 'Image download failed',
+    openImage: 'Open image',
+    downloadImage: 'Download image',
+    savingImage: 'Saving image',
     imagePreviewFailed: 'Image preview failed',
     imageAttach: 'Image attach',
     imageWriteFailed: 'Failed to write image to disk.',

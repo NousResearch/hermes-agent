@@ -35,10 +35,12 @@ export interface Translations {
     continue: string
     copied: string
     copy: string
+    copyFailed: string
     delete: string
     docs: string
     done: string
     error: string
+    failed: string
     free: string
     loading: string
     notSet: string
@@ -121,6 +123,25 @@ export interface Translations {
       openaiRejectedApiKey: string
       openaiRejectedApiKeyWithStatus: (status: string) => string
       openaiTtsNeedsKey: string
+    }
+    voice: {
+      configureSpeechToText: string
+      couldNotStartSession: string
+      microphoneAccessDenied: string
+      microphoneConstraintsUnsupported: string
+      microphoneFailed: string
+      microphoneInUse: string
+      microphonePermissionDenied: string
+      microphoneStartFailed: string
+      microphoneUnsupported: string
+      noMicrophone: string
+      noSpeechDetected: string
+      playbackFailed: string
+      recordingFailed: string
+      transcriptionFailed: string
+      transcriptionUnavailable: string
+      tryRecordingAgain: string
+      unavailable: string
     }
   }
 
@@ -831,6 +852,10 @@ export interface Translations {
     stopDictation: string
     transcribingDictation: string
     voiceDictation: string
+    lookupLoading: string
+    lookupNoMatches: string
+    lookupTry: string
+    lookupOr: string
     commonCommands: string
     hotkeys: string
     helpFooter: string
@@ -1270,6 +1295,10 @@ export interface Translations {
       recoveredMany: (count: number) => string
       failedOne: string
       failedMany: (count: number) => string
+      statusRunning: string
+      statusError: string
+      statusRecovered: string
+      statusDone: string
     }
   }
 
@@ -1331,6 +1360,9 @@ export interface Translations {
     restartToUseSaveImage: string
     restartToSaveImages: string
     imageDownloadFailed: string
+    openImage: string
+    downloadImage: string
+    savingImage: string
     imagePreviewFailed: string
     imageAttach: string
     imageWriteFailed: string

@@ -9,6 +9,8 @@ from typing import Any, Dict, Literal, Optional
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
 from utils import base_url_host_matches
 
+logger = __import__("logging").getLogger(__name__)
+
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
 _ZERO = Decimal("0")
@@ -667,6 +669,61 @@ def _pricing_entry_from_metadata(
     )
 
 
+def _user_override_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+    """Check user-defined pricing overrides from config.yaml.
+
+    Looks up ``pricing_overrides`` in the Hermes config.  Each key is a
+    model identifier (bare name or ``provider/model``); each value is a
+    dict with optional ``input``, ``output``, ``cache_read``, ``cache_write``
+    keys whose values are **per-token** costs (same unit as OpenRouter's
+    models API).
+
+    Lookup order within the overrides dict:
+    1. Exact match on ``provider/model``
+    2. Exact match on bare model name (``route.model``)
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        overrides = cfg.get("pricing_overrides") or {}
+        if not overrides:
+            return None
+
+        # Build candidate keys: "bedrock/anthropic.claude-opus-4-6" then "anthropic.claude-opus-4-6"
+        candidates = []
+        if route.provider and route.model:
+            candidates.append(f"{route.provider}/{route.model}")
+        if route.model:
+            candidates.append(route.model)
+
+        for key in candidates:
+            if key in overrides and isinstance(overrides[key], dict):
+                raw = overrides[key]
+                # Values in config are per-token (same unit as OpenRouter).
+                # Convert to per-million for PricingEntry.
+                def _pm(field: str) -> Optional[Decimal]:
+                    val = _to_decimal(raw.get(field))
+                    return val * _ONE_MILLION if val is not None else None
+
+                input_cost = _pm("input")
+                output_cost = _pm("output")
+                if input_cost is None and output_cost is None:
+                    continue
+                return PricingEntry(
+                    input_cost_per_million=input_cost,
+                    output_cost_per_million=output_cost,
+                    cache_read_cost_per_million=_pm("cache_read"),
+                    cache_write_cost_per_million=_pm("cache_write"),
+                    request_cost=_to_decimal(raw.get("request")),
+                    source="user_override",
+                    source_url="~/.hermes/config.yaml pricing_overrides",
+                    pricing_version=f"user-override-{key}",
+                )
+    except Exception as exc:
+        logger.debug("pricing_overrides lookup failed: %s", exc)
+    return None
+
+
 def get_pricing_entry(
     model_name: str,
     provider: Optional[str] = None,
@@ -683,6 +740,10 @@ def get_pricing_entry(
             source="none",
             pricing_version="included-route",
         )
+    # User overrides take highest priority after subscription-included routes.
+    user_entry = _user_override_pricing_entry(route)
+    if user_entry:
+        return user_entry
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
     if route.base_url:

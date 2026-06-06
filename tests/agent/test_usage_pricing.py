@@ -224,3 +224,140 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
     assert float(result.amount_usd) == 3.48
+
+
+# ── pricing_overrides tests ────────────────────────────────────────────
+
+
+def test_pricing_overrides_take_priority_over_official_docs(monkeypatch):
+    """User overrides in config.yaml should take priority over the bundled
+    _OFFICIAL_DOCS_PRICING snapshot."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "pricing_overrides": {
+                "deepseek/deepseek-v4-pro": {
+                    "input": 0.000002,    # $2.00/M (vs official $1.74/M)
+                    "output": 0.000004,   # $4.00/M (vs official $3.48/M)
+                    "cache_read": 0.00000002,
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry("deepseek-v4-pro", provider="deepseek")
+
+    assert entry is not None
+    assert entry.source == "user_override"
+    assert float(entry.input_cost_per_million) == 2.0
+    assert float(entry.output_cost_per_million) == 4.0
+    assert float(entry.cache_read_cost_per_million) == 0.02
+
+
+def test_pricing_overrides_bare_model_name_fallback(monkeypatch):
+    """When provider/model doesn't match, fall back to bare model name."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "pricing_overrides": {
+                "moonshotai.kimi-k2.5": {
+                    "input": 0.000000618,
+                    "output": 0.00000309,
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry("moonshotai.kimi-k2.5", provider="bedrock")
+
+    assert entry is not None
+    assert entry.source == "user_override"
+    assert float(entry.input_cost_per_million) == 0.618
+    assert float(entry.output_cost_per_million) == 3.09
+
+
+def test_pricing_overrides_qualified_key_takes_priority_over_bare(monkeypatch):
+    """When both qualified and bare keys exist, qualified wins."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "pricing_overrides": {
+                "bedrock/moonshotai.kimi-k2.5": {
+                    "input": 0.000001,
+                    "output": 0.000005,
+                },
+                "moonshotai.kimi-k2.5": {
+                    "input": 0.0000005,
+                    "output": 0.000002,
+                },
+            }
+        },
+    )
+
+    entry = get_pricing_entry("moonshotai.kimi-k2.5", provider="bedrock")
+
+    assert entry is not None
+    # Qualified key should win
+    assert float(entry.input_cost_per_million) == 1.0
+    assert float(entry.output_cost_per_million) == 5.0
+
+
+def test_pricing_overrides_empty_config_does_not_interfere(monkeypatch):
+    """Empty or missing pricing_overrides should not affect normal lookup."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {},
+    )
+
+    # Should fall through to official docs pricing
+    entry = get_pricing_entry("deepseek-v4-pro", provider="deepseek")
+
+    assert entry is not None
+    assert entry.source == "official_docs_snapshot"
+    assert float(entry.input_cost_per_million) == 1.74
+
+
+def test_pricing_overrides_skip_entry_without_input_or_output(monkeypatch):
+    """An override entry missing both input and output should be skipped."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "pricing_overrides": {
+                "deepseek/deepseek-v4-pro": {
+                    "cache_read": 0.0000001,
+                }
+            }
+        },
+    )
+
+    # Should fall through to official docs (entry has no input/output)
+    entry = get_pricing_entry("deepseek-v4-pro", provider="deepseek")
+
+    assert entry is not None
+    assert entry.source == "official_docs_snapshot"
+
+
+def test_pricing_overrides_with_estimate_usage_cost(monkeypatch):
+    """End-to-end: pricing_overrides should flow through to cost estimation."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "pricing_overrides": {
+                "bedrock/moonshotai.kimi-k2.5": {
+                    "input": 0.000000618,
+                    "output": 0.00000309,
+                }
+            }
+        },
+    )
+
+    result = estimate_usage_cost(
+        "moonshotai.kimi-k2.5",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=500_000),
+        provider="bedrock",
+    )
+
+    assert result.status == "estimated"
+    assert result.source == "user_override"
+    # 1M × $0.618/M + 500K × $3.09/M = $0.618 + $1.545 = $2.163
+    assert abs(float(result.amount_usd) - 2.163) < 0.001

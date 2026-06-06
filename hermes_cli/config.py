@@ -805,6 +805,14 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    # User-defined per-model pricing overrides.  Each key is a model
+    # identifier (bare name like "moonshotai.kimi-k2.5" or qualified
+    # "provider/model" like "bedrock/anthropic.claude-opus-4-6"); each
+    # value is a dict with optional ``input``, ``output``, ``cache_read``,
+    # ``cache_write`` keys whose values are per-token USD costs (same
+    # unit as the OpenRouter models API).  Overrides take priority over
+    # provider API metadata and the bundled pricing snapshot.
+    "pricing_overrides": {},
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

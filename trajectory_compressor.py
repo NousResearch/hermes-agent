@@ -1094,8 +1094,14 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                             description=f"[dim]✅ {compressed_count} compressed | ⏭️ {skipped_count} skipped | ⏱️ {timeout_count} timeout | 🔄 {api_calls} API calls | ⚡ {in_flight} in-flight[/dim]"
                         )
                     
-                    # Skip this entry entirely (don't include in output)
-                    results[file_path][entry_idx] = None
+                    # Preserve the original (uncompressed) entry instead of
+                    # dropping it. A timeout almost always means the summarizer
+                    # was slow or rate-limited, not that the trajectory itself is
+                    # invalid — silently deleting it would permanently lose a
+                    # valid training example from the output set. This mirrors
+                    # the generic Exception path below, which also keeps the
+                    # original entry on failure.
+                    results[file_path][entry_idx] = (entry, TrajectoryMetrics())
                     
                 except Exception as e:
                     self.logger.error(f"Error processing entry from {file_path}:{entry_idx}: {e}")
@@ -1153,10 +1159,13 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             output_path = output_dir / file_path.name
             file_results = results[file_path]
             
-            # Sort by original entry index to preserve order, skip None (timed out) entries
+            # Sort by original entry index to preserve order. The `is not None`
+            # guard is now purely defensive: timed-out and errored entries are
+            # both preserved (kept uncompressed) rather than dropped, so no
+            # successfully-loaded trajectory is silently omitted from the output.
             sorted_entries = [
-                file_results[idx][0] 
-                for idx in sorted(file_results.keys()) 
+                file_results[idx][0]
+                for idx in sorted(file_results.keys())
                 if file_results[idx] is not None
             ]
             

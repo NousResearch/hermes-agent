@@ -51,6 +51,7 @@ AUTHOR_MAP = {
     "129007007+HeLLGURD@users.noreply.github.com": "HeLLGURD",
     "dirtyren@users.noreply.github.com": "dirtyren",
     "zhaolei.vc@bytedance.com": "zhaoleibd",
+    "jefferson@jeffersonnunn.com": "HeimdallStrategy",
     "jeffrobodie@gmail.com": "jeffrobodie-glitch",
     "kyssta-exe@users.noreply.github.com": "kyssta-exe",
     "ali.zakaee.1997@gmail.com": "ITheEqualizer",

@@ -142,6 +142,44 @@ class ImageGenProvider(abc.ABC):
         should ignore unknown keys.
         """
 
+    def supports_edit(self) -> bool:
+        """Return True when this backend supports prompt-guided image editing."""
+        return False
+
+    def edit(
+        self,
+        prompt: str,
+        images: List[str] | None = None,
+        *,
+        image: str | None = None,
+        mask: str | None = None,
+        aspect_ratio: str | None = DEFAULT_ASPECT_RATIO,
+        size: str | None = None,
+        model: str | None = None,
+        quality_tier: str | None = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Edit one or more existing images.
+
+        Providers that support image-to-image should override this and return
+        the same uniform response shape as :meth:`generate`. ``images`` is the
+        canonical ordered list of reference inputs; ``image`` is a legacy
+        single-reference alias kept for call-site compatibility. Providers that
+        support both should merge ``image`` ahead of/into ``images`` according to
+        their API's ordering semantics. The default is a structured unsupported
+        response so existing generate-only providers do not need to implement an
+        edit method and unknown future keyword arguments are safely ignored.
+        """
+        aspect = resolve_aspect_ratio(aspect_ratio)
+        return error_response(
+            error=f"Image provider '{self.name}' does not support image editing",
+            error_type="unsupported",
+            provider=self.name,
+            model=model or "",
+            prompt=str(prompt or ""),
+            aspect_ratio=aspect,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Helpers

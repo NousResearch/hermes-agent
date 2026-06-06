@@ -878,7 +878,10 @@ _MEDIA_DELIVERY_DENIED_PREFIXES = (
     "/proc",
     "/sys",
     "/dev",
-    "/root",
+    # "/root" — removed: private single-user VPS, /root is the working
+    # directory.  The HERMES_MEDIA_ALLOW_DIRS env var / config key is the
+    # intended override mechanism, but keeping /root here makes the override
+    # invisible (the denylist fires even when the allowlist would pass).
     "/boot",
     "/var/log",
     "/var/lib",

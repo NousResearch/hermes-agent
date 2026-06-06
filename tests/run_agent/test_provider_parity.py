@@ -927,6 +927,17 @@ class TestBuildAssistantMessage:
 class TestAuxiliaryClientProviderPriority:
     """Verify auxiliary client resolution doesn't break for any provider."""
 
+    @pytest.fixture(autouse=True)
+    def _clear_aux_unhealthy_cache(self):
+        """These tests assert provider priority, not cross-call 402 cooldown state."""
+        import agent.auxiliary_client as aux
+
+        aux._aux_unhealthy_until.clear()
+        aux._aux_unhealthy_logged_at.clear()
+        yield
+        aux._aux_unhealthy_until.clear()
+        aux._aux_unhealthy_logged_at.clear()
+
     def test_openrouter_always_wins(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         from agent.auxiliary_client import get_text_auxiliary_client

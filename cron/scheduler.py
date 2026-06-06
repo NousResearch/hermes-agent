@@ -883,6 +883,12 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     if raw.is_absolute():
         path = raw.resolve()
     else:
+        # Strip a leading "scripts/" prefix to prevent the common
+        # double-prefix footgun (e.g. "scripts/foo.py" → resolves
+        # under scripts/ as "scripts/scripts/foo.py").
+        parts = raw.parts
+        if parts and parts[0] == "scripts":
+            raw = Path(*parts[1:]) if len(parts) > 1 else Path(".")
         path = (scripts_dir / raw).resolve()
 
     # Guard against path traversal, absolute path injection, and symlink

@@ -14,6 +14,9 @@ fallback calls, contaminating primary state with fallback-provider errors.
 import sys
 from unittest.mock import MagicMock
 
+from agent.error_classifier import FailoverReason
+from agent.agent_runtime_helpers import recover_with_credential_pool, switch_model
+
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -210,6 +213,37 @@ class TestRecoveryProviderGuard:
         assert should_skip is True
         codex_pool.mark_exhausted_and_rotate.assert_not_called()
 
+    def test_recovery_reloads_mismatched_pool_then_rotates_on_usage_limit(self, monkeypatch):
+        """A mid-session provider switch must reload the active provider's pool
+        before handling a usage-limit shaped 429, then rotate that reloaded pool.
+        """
+        agent = _make_agent(provider="openai-codex")
+        # Stale pool from a previous provider/model lane.
+        stale_pool = _make_pool("opencode-go", n_entries=1)
+        agent._credential_pool = stale_pool
+        codex_pool = _make_pool("openai-codex", n_entries=2)
+        next_entry = codex_pool.current.return_value
+        codex_pool.mark_exhausted_and_rotate.return_value = next_entry
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool",
+            lambda provider: codex_pool if provider == "openai-codex" else None,
+        )
+
+        recovered, retried = recover_with_credential_pool(
+            agent,
+            status_code=429,
+            has_retried_429=False,
+            classified_reason=FailoverReason.rate_limit,
+            error_context={"reason": "usage_limit_reached"},
+        )
+
+        assert recovered is True
+        assert retried is False
+        assert agent._credential_pool is codex_pool
+        codex_pool.mark_exhausted_and_rotate.assert_called_once()
+        agent._swap_credential.assert_called_once_with(next_entry)
+        stale_pool.mark_exhausted_and_rotate.assert_not_called()
+
 
 # ── Test: base_url not overwritten after fallback ────────────────────
 
@@ -311,3 +345,71 @@ class TestReloadPoolForProvider:
         assert result is None, "Should return None on load error"
         # Agent pool should be unchanged
         assert agent._credential_pool is not None, "Original pool should be preserved"
+
+
+# ── Test: switch_model pool reload across providers/models ───────────
+
+class TestSwitchModelCredentialPoolReload:
+    """Pin live /model-style provider switches to the correct credential pool."""
+
+    def _prepare_switchable_agent(self, agent):
+        agent._anthropic_prompt_cache_policy.return_value = (False, False)
+        agent._ensure_lmstudio_runtime_loaded.return_value = None
+        agent._create_openai_client.return_value = MagicMock()
+        agent.context_compressor = None
+        agent._cached_system_prompt = "cached"
+        agent._fallback_chain = []
+        return agent
+
+    def test_switch_model_reloads_pool_when_provider_changes(self, monkeypatch):
+        agent = self._prepare_switchable_agent(
+            _make_agent(
+                provider="opencode-go",
+                model="mimo-v2.5",
+                base_url="https://opencode.ai/zen/go/v1",
+                api_mode="chat_completions",
+            )
+        )
+        agent._credential_pool = _make_pool("opencode-go", n_entries=1)
+        codex_pool = _make_pool("openai-codex", n_entries=2)
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool",
+            lambda provider: codex_pool if provider == "openai-codex" else None,
+        )
+
+        switch_model(
+            agent,
+            "gpt-5.5",
+            "openai-codex",
+            "codex-key",
+            "https://chatgpt.com/backend-api/codex",
+            "codex_responses",
+        )
+
+        assert agent.provider == "openai-codex"
+        assert agent.model == "gpt-5.5"
+        assert agent._credential_pool is codex_pool
+        assert agent._primary_runtime["provider"] == "openai-codex"
+
+    def test_switch_model_same_provider_different_model_keeps_pool_mid_session(self, monkeypatch):
+        agent = self._prepare_switchable_agent(_make_agent(provider="openai-codex", model="gpt-5.5"))
+        codex_pool = _make_pool("openai-codex", n_entries=2)
+        agent._credential_pool = codex_pool
+
+        def _fail_if_reloaded(provider):  # pragma: no cover - assertion path
+            raise AssertionError(f"should not reload matching pool for {provider}")
+
+        monkeypatch.setattr("agent.credential_pool.load_pool", _fail_if_reloaded)
+
+        switch_model(
+            agent,
+            "gpt-5.4",
+            "openai-codex",
+            "codex-key-2",
+            "https://chatgpt.com/backend-api/codex",
+            "codex_responses",
+        )
+
+        assert agent.provider == "openai-codex"
+        assert agent.model == "gpt-5.4"
+        assert agent._credential_pool is codex_pool

@@ -7901,13 +7901,13 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
-            # /kanban must bypass the guard. It writes to a profile-agnostic
-            # DB (kanban.db), not to the running agent's state. In fact
-            # /kanban unblock is often the only way to free a worker that
-            # has blocked waiting for a peer — letting that be dispatched
-            # mid-run is the whole point of the board.
-            if _cmd_def_inner and _cmd_def_inner.name == "kanban":
-                return await self._handle_kanban_command(event)
+            # /kanban and its task-capture wrappers must bypass the guard.
+            # They write to the profile-agnostic kanban DB, not to the running
+            # agent's conversation state.
+            if _cmd_def_inner and _cmd_def_inner.name in {"kanban", "task", "tasknow"}:
+                if _cmd_def_inner.name == "kanban":
+                    return await self._handle_kanban_command(event)
+                return await self._handle_task_command(event)
 
             # /goal is safe mid-run for status/pause/clear (inspection and
             # control-plane only — doesn't interrupt the running turn).
@@ -8254,6 +8254,9 @@ class GatewayRunner:
 
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
+
+        if canonical in {"task", "tasknow"}:
+            return await self._handle_task_command(event)
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -10348,6 +10351,74 @@ class GatewayRunner:
             f"Slash commands you can run: {runnable_str}"
         )
 
+
+    async def _handle_task_command(self, event: MessageEvent) -> str:
+        """Handle /task and /tasknow convenience wrappers for Kanban capture.
+
+        /task <brief> creates a triage card so the specifier can flesh it out.
+        /tasknow <brief> (or /task --now <brief>) creates a ready card assigned
+        to the default worker so the gateway dispatcher can pick it up.
+        """
+        import re
+        import shlex
+
+        command = (event.get_command() or "").strip().lower()
+        brief = (event.get_command_args() or "").strip()
+        immediate = command == "tasknow"
+
+        if command == "task" and brief.startswith("--now"):
+            immediate = True
+            brief = brief[len("--now"):].strip()
+
+        if not brief:
+            return (
+                "Usage:\n"
+                "- `/task <brief>` → create a triage Kanban task\n"
+                "- `/tasknow <brief>` or `/task --now <brief>` → create + dispatch now"
+            )
+
+        def _title_from_brief(value: str) -> str:
+            first_line = value.strip().splitlines()[0]
+            first_sentence = re.split(r"(?<=[.!?])\s+", first_line, maxsplit=1)[0]
+            title = re.sub(r"\s+", " ", first_sentence).strip(" #:-")
+            if not title:
+                title = "Telegram task"
+            if len(title) > 88:
+                title = title[:85].rstrip() + "…"
+            return title
+
+        title = _title_from_brief(brief)
+        mode_label = "/tasknow" if immediate else "/task"
+        body = (
+            "## Goal\n"
+            f"{brief}\n\n"
+            "## Context\n"
+            f"Created from Telegram via `{mode_label}`. Use the original brief as source of truth; "
+            "ask back in Telegram only if the missing detail changes execution.\n\n"
+            "## Output\n"
+            "Deliver the completed work or a concise operator report back through Kanban notifications.\n\n"
+            "## Acceptance Criteria\n"
+            "- The requested outcome is completed or the blocker is clearly identified.\n"
+            "- Final report includes what was done, verification performed, and any remaining approval needed.\n\n"
+            "## Approval Gates\n"
+            "- Do not publish/deploy/spend/delete/activate ads/send external emails/change credentials without explicit Telegram approval."
+        )
+
+        args = [
+            "create",
+            title,
+            "--assignee",
+            "default",
+            "--created-by",
+            "telegram-tasknow" if immediate else "telegram-task",
+            "--body",
+            body,
+        ]
+        if not immediate:
+            args.append("--triage")
+
+        event.text = "/kanban " + " ".join(shlex.quote(part) for part in args)
+        return await self._handle_kanban_command(event)
 
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.

@@ -147,6 +147,46 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_tasknow_slash_command_dispatches_task_handler(monkeypatch):
+    """Telegram /tasknow must be a real gateway command, not an unknown slash."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/tasknow leaked through to the agent")
+    )
+    runner._handle_task_command = AsyncMock(return_value="created task")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/tasknow prepare visa packet"))
+
+    assert result == "created task"
+    runner._handle_task_command.assert_awaited_once()
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_task_slash_command_bypasses_running_agent(monkeypatch):
+    """A mid-run /task capture should write Kanban, not interrupt the active agent."""
+    runner = _make_runner()
+    source = _make_source()
+    runner._running_agents[build_session_key(source)] = MagicMock()
+    runner._handle_task_command = AsyncMock(return_value="created triage task")
+
+    result = await runner._handle_message(MessageEvent(
+        text="/task capture this for triage",
+        source=source,
+        message_id="m1",
+    ))
+
+    assert result == "created triage task"
+    runner._handle_task_command.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch):
     """Telegram autocomplete sends /reload_mcp for the /reload-mcp built-in.
     That must NOT be flagged as unknown."""

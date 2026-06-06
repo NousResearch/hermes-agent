@@ -61,6 +61,31 @@ def test_every_on_disk_subpackage_is_covered_by_packages_find():
     )
 
 
+def test_packaging_declared_as_core_dependency():
+    """Regression for #40503.
+
+    ``packaging`` is imported directly on three production paths
+    (plugins/memory/hindsight/__init__.py, tools/lazy_deps.py,
+    hermes_cli/main.py) yet was undeclared, so it only reached users
+    transitively. The slim Docker image shipped without it, silently
+    disabling Hindsight append-mode and version-constraint checks. It must
+    be a declared core dependency so it installs everywhere and the
+    update-repair step (``_verify_core_dependencies_installed``) guards it.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    core = data["project"]["dependencies"]
+    names = {
+        # strip extras/markers/specifiers down to the distribution name
+        dep.split("==")[0].split(">=")[0].split("[")[0].split(";")[0].strip().lower()
+        for dep in core
+    }
+    assert "packaging" in names, (
+        "packaging is imported on production paths (hindsight version compare, "
+        "lazy_deps version constraints, requirement parsing) and must be a "
+        "declared core dependency, not a transitive — see #40503"
+    )
+
+
 def test_faster_whisper_is_not_a_base_dependency():
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     deps = data["project"]["dependencies"]

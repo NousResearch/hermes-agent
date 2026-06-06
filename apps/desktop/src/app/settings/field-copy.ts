@@ -2,8 +2,20 @@ export interface FieldCopyTree {
   [key: string]: string | FieldCopyTree
 }
 
+function schemaSegmentToFieldCopySegment(segment: string): string {
+  return segment.replace(/_([a-z0-9])/g, (_, char: string) => char.toUpperCase())
+}
+
 function isFieldCopyTree(value: unknown): value is FieldCopyTree {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function schemaKeyToFieldCopyKey(schemaKey: string): string {
+  return schemaKey.split('.').map(schemaSegmentToFieldCopySegment).join('.')
+}
+
+export function fieldCopyForSchemaKey(copy: Record<string, string>, schemaKey: string): string | undefined {
+  return copy[schemaKeyToFieldCopyKey(schemaKey)] ?? copy[schemaKey]
 }
 
 export function defineFieldCopy(copy: FieldCopyTree): Record<string, string> {

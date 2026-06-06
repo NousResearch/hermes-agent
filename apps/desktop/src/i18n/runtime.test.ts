@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { fieldCopyForSchemaKey } from '@/app/settings/field-copy'
+
+import { TRANSLATIONS } from './catalog'
 import { setRuntimeI18nLocale, translateNow } from './runtime'
 import { zh } from './zh'
 
@@ -43,17 +46,25 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('settings.nav.providerApiKeys')).toBe('API 金鑰')
   })
 
-  it('keeps translated settings field copy addressable by schema keys', () => {
-    const field = ['display', 'personality'].join('.')
+  it('keeps translated settings field copy addressable from schema keys', () => {
+    const field = ['display', 'show_reasoning'].join('.')
 
-    expect(zh.settings.fieldLabels[field]).toBe('人格')
-    expect(zh.settings.fieldDescriptions[field]).toBe('新会话的默认助手风格。')
+    expect(fieldCopyForSchemaKey(zh.settings.fieldLabels, field)).toBe('推理过程块')
+    expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBe('当后端提供推理内容时予以显示。')
   })
 
-  it('falls back to English for untranslated desktop-only keys in partial locales', () => {
-    setRuntimeI18nLocale('ja')
+  it('falls back to English when the active locale cannot resolve a key', () => {
+    const boot = TRANSLATIONS.ja.boot as { ready?: string }
+    const originalReady = boot.ready
 
-    expect(translateNow('boot.ready')).toBe('Hermes Desktop is ready')
+    try {
+      boot.ready = undefined
+      setRuntimeI18nLocale('ja')
+
+      expect(translateNow('boot.ready')).toBe('Hermes Desktop is ready')
+    } finally {
+      boot.ready = originalReady
+    }
   })
 
   it('returns the key when no locale can resolve a path', () => {

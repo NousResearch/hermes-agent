@@ -2282,6 +2282,76 @@ _IMAGE_EXTENSIONS = frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# File-upload whitelist + validation — added in v2 design.
+# ---------------------------------------------------------------------------
+
+# Allow-list of MIME types accepted by file.attach. Magic-byte detection is
+# used at validate time, so this is keyed on detected MIME, not extension.
+# Users can override at runtime via uploads.allowed_mime_types config.
+_FILE_WHITELIST = frozenset({
+    # Images (subset of _IMAGE_EXTENSIONS — actual whitelist narrows to
+    # *detected* MIME, not suffix).
+    "image/png", "image/jpeg", "image/gif", "image/webp",
+    "image/bmp", "image/tiff", "image/svg+xml", "image/x-icon",
+    # Documents
+    "application/pdf",
+    # Text / code (the long tail of text/* + a few structured ones)
+    "text/plain", "text/markdown", "text/csv", "text/html", "text/xml",
+    "text/yaml",
+    "application/json", "application/x-yaml", "application/toml",
+    # Data
+    "application/vnd.apache.parquet",
+})
+
+# Sentinel used in tests (and at config-load time) when the user opts in to
+# unrestricted uploads via `uploads.allowed_mime_types: ["*"]`.
+_FILE_WHITELIST_ACTIVE = _FILE_WHITELIST
+
+# 10 MB per file. Override at runtime via uploads.max_size_mb config.
+MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
+
+
+from dataclasses import dataclass
+from pathlib import Path as _Path
+
+
+@dataclass
+class UploadValidation:
+    """Result of _validate_upload — used by file.attach JSON-RPC handler."""
+
+    mime_type: str
+    size_bytes: int
+    allowed: bool
+    reason: str = ""
+
+
+def _validate_upload(path: _Path, mime: str, size_bytes: int) -> "UploadValidation":
+    """Validate a file for attachment against the MIME whitelist and size cap.
+
+    Raises ValueError on rejection; returns UploadValidation on success.
+    The MIME *must* be pre-detected by the caller via python-magic — we never
+    trust the extension or the user-supplied MIME.
+    """
+    # Whitelist check. The "*" wildcard is opt-in (overrides via config).
+    if _FILE_WHITELIST_ACTIVE != {"*"} and mime not in _FILE_WHITELIST_ACTIVE:
+        raise ValueError(
+            f"MIME type not allowed: {mime!r}. "
+            f"Set uploads.allowed_mime_types in config to extend the whitelist."
+        )
+
+    # Size cap. Config override applied via MAX_UPLOAD_SIZE_BYTES rebind in
+    # tui_gateway/server.py at handler entry.
+    if size_bytes > MAX_UPLOAD_SIZE_BYTES:
+        mb = MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)
+        raise ValueError(
+            f"File {path.name} is {size_bytes / (1024 * 1024):.1f} MB, "
+            f"exceeds size limit of {mb:.1f} MB."
+        )
+
+    return UploadValidation(mime_type=mime, size_bytes=size_bytes, allowed=True)
+
+
 from hermes_constants import is_termux as _is_termux_environment
 
 

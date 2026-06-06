@@ -237,15 +237,17 @@ def _run_execution_chain(
 
         callback = callbacks[index]
         next_called = False
+        next_succeeded = False
         next_result: Any = None
 
         def next_call(next_payload: Any = None) -> Any:
-            nonlocal next_called, next_result
+            nonlocal next_called, next_succeeded, next_result
             next_called = True
             try:
                 next_result = call_at(index + 1, payload if next_payload is None else next_payload)
+                next_succeeded = True
                 return next_result
-            except BaseException as exc:
+            except Exception as exc:
                 raise _DownstreamExecutionError(exc) from exc
 
         call_kwargs = middleware_payload(**kwargs)
@@ -262,8 +264,10 @@ def _run_execution_chain(
                 getattr(callback, "__name__", repr(callback)),
                 exc,
             )
-            if next_called:
+            if next_succeeded:
                 return next_result
+            if next_called:
+                raise
             return call_at(index + 1, payload)
 
     return call_at(0, kwargs[payload_key])

@@ -244,6 +244,15 @@ For NeMo Relay adaptive execution middleware, see
   patches.
 - Execution middleware should call `next_call(...)` exactly once unless it is
   intentionally short-circuiting execution.
+- If execution middleware raises before calling `next_call(...)`, Hermes treats
+  that as middleware failure and continues with the remaining middleware chain
+  and base execution.
+- If execution middleware calls `next_call(...)` successfully and then raises
+  during post-processing, Hermes preserves the downstream result and does not
+  run the provider or tool a second time.
+- If downstream provider or tool execution fails, middleware may let that error
+  propagate or translate it deliberately. Hermes does not convert downstream
+  failure into a successful `None` result.
 - Tool request middleware runs before approvals. If it mutates file paths,
   commands, URLs, or arguments, the mutated values are what guardrails and
   approvals evaluate.

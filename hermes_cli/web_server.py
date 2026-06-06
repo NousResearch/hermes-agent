@@ -6246,6 +6246,9 @@ async def get_crew_usage(days: int = 30):
     metadata, _warnings = _load_crew_metadata()
     metadata_profiles = metadata.get("profiles") or {}
 
+    # Kanban task counts for blocked/running per profile
+    task_counts = _crew_task_counts()
+
     # Get all profiles and their usage
     profiles_usage: List[Dict[str, Any]] = []
     total_aggregate = {
@@ -6267,10 +6270,11 @@ async def get_crew_usage(days: int = 30):
 
         # Determine role metadata
         profile_meta = _infer_profile_role(name, metadata)
-        profile_usage["display_name"] = profile_meta["display_name"]
-        profile_usage["department"] = profile_meta["department"]
-        profile_usage["level"] = profile_meta["level"]
-        profile_usage["manager"] = profile_meta["manager"]
+        profile_usage['display_name'] = profile_meta['display_name']
+        profile_usage['department'] = profile_meta['department']
+        profile_usage['level'] = profile_meta['level']
+        profile_usage['manager'] = profile_meta['manager']
+        profile_usage['tasks'] = task_counts.get(name, {'running': 0, 'blocked': 0})
 
         # Per-profile aggregate and per-worker breakdown
         profile_total: Dict[str, Any] = {
@@ -6408,6 +6412,39 @@ async def get_crew_usage(days: int = 30):
     }
 
     return _sanitize_profile_usage_payload(payload)
+
+
+def _crew_task_counts() -> Dict[str, Dict[str, int]]:
+    """Return {assignee: {"running": n, "blocked": n}} from kanban board DB.
+
+    Fails soft: returns {} if the DB is missing/unreadable. Reads ONLY
+    assignee + status columns; never task titles/bodies (no secret/PII).
+    """
+    import sqlite3
+    from hermes_cli import profiles as profiles_mod
+    counts: Dict[str, Dict[str, int]] = {}
+    try:
+        db_path = profiles_mod._get_default_hermes_home() / "kanban.db"
+    except Exception:
+        return counts
+    if not db_path.exists():
+        return counts
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT assignee, status, COUNT(*) FROM tasks "
+                "WHERE status IN ('running','blocked') GROUP BY assignee, status"
+            ).fetchall()
+        finally:
+            conn.close()
+        for assignee, status, n in rows:
+            bucket = counts.setdefault(str(assignee or ""), {"running": 0, "blocked": 0})
+            if status in bucket:
+                bucket[status] = int(n or 0)
+    except Exception as exc:
+        _log.warning("Failed to read kanban task counts: %s", exc)
+    return counts
 
 
 @app.get("/api/profiles")

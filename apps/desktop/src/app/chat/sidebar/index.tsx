@@ -1028,7 +1028,8 @@ function SidebarSessionsSection({
   onReorder,
   dndSensors
 }: SidebarSessionsSectionProps) {
-  const showEmptyState = forceEmptyState || sessions.length === 0
+  const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
+  const showEmptyState = forceEmptyState || (!hasGroupedSessions && sessions.length === 0)
   const dndActive = sortable && !!onReorder
 
   const renderRow = (session: SessionInfo) => {

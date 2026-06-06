@@ -1212,6 +1212,16 @@ export function ChatBar({
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submitDraft = () => {
+    // Flush the live DOM content into draftRef before reading it. Without
+    // this, a fast Enter after IME compositionend can read stale React state
+    // (the async `aui.composer().setText` from compositionend hasn't committed
+    // yet), dropping the final composed character (#40633).
+    if (editorRef.current) {
+      flushEditorToDraft(editorRef.current)
+    }
+
+    const currentDraft = draftRef.current
+
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
@@ -1222,12 +1232,12 @@ export function ChatBar({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(draft.trim())) {
-        const submitted = draft
+      if (!attachments.length && SLASH_COMMAND_RE.test(currentDraft.trim())) {
+        const submitted = currentDraft
         triggerHaptic('submit')
         clearDraft()
         void onSubmit(submitted)
-      } else if (hasComposerPayload) {
+      } else if (currentDraft.trim() || attachments.length > 0) {
         queueCurrentDraft()
       } else {
         // Stop button (the only way to reach here while busy with an empty
@@ -1235,10 +1245,10 @@ export function ChatBar({
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }
-    } else if (!hasComposerPayload && queuedPrompts.length > 0) {
+    } else if (!currentDraft.trim() && !attachments.length && queuedPrompts.length > 0) {
       void drainNextQueued()
-    } else if (draft.trim() || attachments.length > 0) {
-      const submitted = draft
+    } else if (currentDraft.trim() || attachments.length > 0) {
+      const submitted = currentDraft
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()

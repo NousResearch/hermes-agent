@@ -1,0 +1,7 @@
+name: minimax
+version: 1.0.0
+description: "MiniMax image-01 generation backend. Uses existing Token Plan quota at api.minimax.io — zero extra cost."
+author: arifOS
+kind: backend
+requires_env:
+  - MINIMAX_API_KEY

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -37,6 +41,54 @@ _SECRET_SOURCES: dict[str, str] = {}
 # in-process cache prevents redundant network calls, but the print, the
 # config re-parse, and the ASCII sanitization sweep still ran every time.
 _APPLIED_HOMES: set[str] = set()
+
+
+def _looks_sops_encrypted(path: Path) -> bool:
+    """Return True when a dotenv file appears to contain SOPS-encrypted values."""
+    try:
+        content = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return False
+    return "ENC[" in content
+
+
+@contextlib.contextmanager
+def _resolved_dotenv_path(path: Path):
+    """Yield a plaintext dotenv path, decrypting SOPS-backed files if needed."""
+    if not path.exists() or not _looks_sops_encrypted(path):
+        yield path
+        return
+
+    sops_bin = shutil.which("sops")
+    if not sops_bin:
+        yield path
+        return
+
+    try:
+        result = subprocess.run(
+            [sops_bin, "-d", str(path)],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=os.environ.copy(),
+            timeout=15,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        yield path
+        return
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".env",
+        delete=False,
+    ) as tmp:
+        tmp.write(result.stdout)
+        tmp_path = Path(tmp.name)
+
+    try:
+        yield tmp_path
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def get_secret_source(env_var: str) -> str | None:
@@ -136,7 +188,7 @@ def _sanitize_loaded_credentials() -> None:
             "  This usually means the key was copy-pasted from a PDF, "
             "rich-text editor, or web page that substituted lookalike\n"
             "  Unicode glyphs for ASCII letters. If authentication fails "
-            "(e.g. \"API key not valid\"), re-copy the key from the\n"
+            '(e.g. "API key not valid"), re-copy the key from the\n'
             "  provider's dashboard and run `hermes setup` (or edit the "
             ".env file in a plain-text editor).",
             file=sys.stderr,
@@ -190,6 +242,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         sanitized = _sanitize_env_lines(stripped)
         if sanitized != original:
             import tempfile
+
             fd, tmp = tempfile.mkstemp(
                 dir=str(path.parent), suffix=".tmp", prefix=".env_"
             )
@@ -235,11 +288,13 @@ def load_hermes_dotenv(
         _sanitize_env_file_if_needed(project_env_path)
 
     if user_env.exists():
-        _load_dotenv_with_fallback(user_env, override=True)
+        with _resolved_dotenv_path(user_env) as resolved_env:
+            _load_dotenv_with_fallback(resolved_env, override=True)
         loaded.append(user_env)
 
     if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not loaded)
+        with _resolved_dotenv_path(project_env_path) as resolved_project_env:
+            _load_dotenv_with_fallback(resolved_project_env, override=not loaded)
         loaded.append(project_env_path)
 
     _apply_external_secret_sources(home_path)

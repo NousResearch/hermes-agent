@@ -1114,6 +1114,43 @@ describe('createGatewayEventHandler', () => {
     }
   })
 
+  it('keepBusy interrupt holds busy until the gateway settles and suppresses the cancelled turn’s final_response', () => {
+    // Force-send: interrupt holds busy so the drain waits for the real settle
+    // instead of racing it (the race duplicated the bubble, leaked a "queued: …"
+    // note, and surfaced the cancelled turn's "Operation interrupted…" reply).
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.gateway.gw.request = vi.fn(async () => ({ status: 'interrupted' }))
+    const onEvent = createGatewayEventHandler(ctx)
+
+    patchUiState({ sid: 'sess-1' })
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: { text: 'thinking…' }, type: 'reasoning.delta' } as any)
+    expect(getUiState().busy).toBe(true)
+
+    turnController.interruptTurn(
+      { appendMessage: (msg: Msg) => appended.push(msg), gw: ctx.gateway.gw, sid: 'sess-1', sys: ctx.system.sys },
+      { keepBusy: true }
+    )
+
+    // Held busy: the drain effect keys off busy→false, so it must not fire yet.
+    expect(getUiState().busy).toBe(true)
+
+    // The cancelled turn settles with a backend interrupted final_response.
+    const before = appended.length
+    onEvent({
+      payload: { text: 'Operation interrupted: waiting for model response (4.1s elapsed).' },
+      type: 'message.complete'
+    } as any)
+
+    // Settle flips busy false (the single drain edge) and the backend
+    // "Operation interrupted…" line is suppressed (not appended).
+    expect(getUiState().busy).toBe(false)
+    expect(appended.slice(before).some(m => typeof m.text === 'string' && m.text.includes('Operation interrupted'))).toBe(
+      false
+    )
+  })
+
   it('persists an abandoned (timed-out) clarify into the transcript when the clarify tool completes', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

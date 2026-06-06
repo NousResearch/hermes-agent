@@ -182,7 +182,12 @@ class TurnController {
     resetFlowOverlays()
   }
 
-  interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps) {
+  // `keepBusy` holds the session busy after interrupting so a queued message
+  // drains on the gateway's real settle edge (message.complete, suppressed
+  // while `interrupted`) instead of racing the still-unwinding turn — the race
+  // duplicated the user bubble, leaked a "queued: …" note, and surfaced the
+  // cancelled turn's "[interrupted]" reply.
+  interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
     this.interrupted = true
     gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
 
@@ -218,8 +223,16 @@ class TurnController {
       sys('interrupted')
     }
 
-    patchUiState({ status: 'interrupted' })
     this.clearStatusTimer()
+
+    if (opts.keepBusy) {
+      // `idle()` already cleared busy; re-assert it so the drain waits for settle.
+      patchUiState({ busy: true, status: 'interrupting…' })
+
+      return
+    }
+
+    patchUiState({ status: 'interrupted' })
 
     this.statusTimer = setTimeout(() => {
       this.statusTimer = null

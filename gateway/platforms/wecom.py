@@ -374,6 +374,8 @@ class WeComAdapter(BasePlatformAdapter):
                     await self._dispatch_payload(payload)
             elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING}:
                 raise RuntimeError("WeCom websocket closed")
+            else:
+                logger.debug("[%s] Ignored non-TEXT websocket frame: type=%s", self.name, msg.type)
 
     async def _heartbeat_loop(self) -> None:
         """Send lightweight application-level pings."""
@@ -795,7 +797,7 @@ class WeComAdapter(BasePlatformAdapter):
             try:
                 return cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
             except ValueError as exc:
-                logger.warning("[%s] Rejected non-image bytes from %s: %s", self.name, url, exc)
+                logger.warning("[%s] Rejected non-image bytes from %s: %s", self.name, safe_url_for_log(url), exc)
                 return None
 
         filename = self._guess_filename(url, headers.get("content-disposition"), content_type)
@@ -1077,7 +1079,7 @@ class WeComAdapter(BasePlatformAdapter):
     ) -> Tuple[bytes, Dict[str, str]]:
         from tools.url_safety import is_safe_url
         if not is_safe_url(url):
-            raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
+            raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
         if not HTTPX_AVAILABLE:
             raise RuntimeError("httpx is required for WeCom media download")

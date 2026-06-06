@@ -302,7 +302,7 @@ def _is_invalid_trusted_cdn_ip(
     """Return True for addresses that can never identify an external CDN."""
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
-    return ip.is_loopback or ip.is_multicast or ip.is_unspecified
+    return ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_link_local
 
 
 def is_safe_url(url: str) -> bool:

@@ -27,7 +27,7 @@ export const friendlyFieldLabel = (key: string, info: EnvVarInfo) =>
     .replace(/\b\w/g, c => c.toUpperCase())
 
 export const credentialPlaceholder = (key: string, info: EnvVarInfo, label: string): string =>
-  isKeyVar(key, info) ? `Paste ${label} key` : /URL$/i.test(key) ? 'https://…' : 'Optional'
+  isKeyVar(key, info) ? `${label} 키 붙여넣기` : /URL$/i.test(key) ? 'https://…' : '선택사항'
 
 // A single credential field: a set key shows as a filled read-only input
 // (redacted value) that edits in place on click. Save appears once typed; a set
@@ -84,14 +84,14 @@ export function KeyField({
           className={cn(CREDENTIAL_CONTROL_CLASS, 'min-w-0 flex-1')}
           onChange={update}
           onKeyDown={keydown}
-          placeholder={placeholder ?? 'Paste key'}
+          placeholder={placeholder ?? '키 붙여넣기'}
           type={editType}
           value={draft}
         />
         {dirty && (
           <Button className="h-8 shrink-0" disabled={busy} onClick={() => void onSave(varKey)} size="sm">
             {busy ? <Loader2 className="size-4 animate-spin" /> : <Save />}
-            {busy ? 'Saving' : 'Save'}
+            {busy ? '저장 중' : '저장'}
           </Button>
         )}
       </div>
@@ -106,12 +106,12 @@ export function KeyField({
                 type="button"
                 variant="text"
               >
-                Remove
+                제거
               </Button>
-              <span className="text-muted-foreground">or</span>
+              <span className="text-muted-foreground">또는</span>
             </>
           )}
-          <span className="text-muted-foreground">esc to cancel</span>
+          <span className="text-muted-foreground">esc로 취소</span>
         </div>
       )}
     </div>
@@ -127,7 +127,7 @@ function CredentialDocsLink({ href }: { href: string }) {
       rel="noreferrer"
       target="_blank"
     >
-      Get a key
+      키 발급받기
       <ExternalLink className="size-3" />
     </a>
   )
@@ -283,7 +283,7 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
         >
           <KeyField
             info={group.primary[1]}
-            placeholder={`Paste ${group.name} key`}
+            placeholder={`${group.name} 키 붙여넣기`}
             rowProps={rowProps}
             varKey={group.primary[0]}
           />

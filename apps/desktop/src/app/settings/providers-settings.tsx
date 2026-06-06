@@ -106,7 +106,7 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
   return (
     <section className="mb-5 grid gap-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-        <SettingsCategoryHeading icon={KeyRound} title="Connect an account" />
+        <SettingsCategoryHeading icon={KeyRound} title="계정 연결" />
         <Button
           className="h-auto px-0 py-0 text-[length:var(--conversation-caption-font-size)]"
           onClick={onWantApiKey}

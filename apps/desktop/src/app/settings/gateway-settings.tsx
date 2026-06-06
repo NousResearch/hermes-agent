@@ -144,7 +144,7 @@ export function GatewaySettings() {
 
         setState(config)
       })
-      .catch(err => notifyError(err, 'Gateway settings failed to load'))
+      .catch(err => notifyError(err, '게이트웨이 설정을 불러오지 못했습니다'))
       .finally(() => {
         if (!cancelled) {
           setLoading(false)
@@ -242,7 +242,7 @@ export function GatewaySettings() {
       return providers.map(p => p.displayName || p.name).join(' / ')
     }
 
-    return 'your identity provider'
+    return '사용자 신원 제공자(Identity provider)'
   }, [probe])
 
   // A username/password gateway authenticates through a credential form on the
@@ -288,11 +288,11 @@ export function GatewaySettings() {
     if (state.mode === 'remote' && !canUseRemote) {
       notify({
         kind: 'warning',
-        title: 'Remote gateway incomplete',
+        title: '원격 게이트웨이 정보 불완전',
         message:
           authMode === 'oauth'
-            ? 'Enter a remote URL and sign in before switching to remote.'
-            : 'Enter a remote URL and session token before switching to remote.'
+            ? '원격 게이트웨이로 전환하기 전에 원격 URL을 입력하고 로그인하세요.'
+            : '원격 게이트웨이로 전환하기 전에 원격 URL과 세션 토큰을 입력하세요.'
       })
 
       return
@@ -309,11 +309,11 @@ export function GatewaySettings() {
       setRemoteToken('')
       notify({
         kind: 'success',
-        title: apply ? 'Gateway connection restarting' : 'Gateway settings saved',
-        message: apply ? 'Hermes Desktop will reconnect using the saved settings.' : 'Saved for the next restart.'
+        title: apply ? '게이트웨이 연결 재시작 중' : '게이트웨이 설정 저장됨',
+        message: apply ? '저장된 설정을 사용하여 Hermes Desktop이 다시 연결됩니다.' : '다음 재시작 시 적용되도록 저장되었습니다.'
       })
     } catch (err) {
-      notifyError(err, apply ? 'Could not apply gateway settings' : 'Could not save gateway settings')
+      notifyError(err, apply ? '게이트웨이 설정을 적용할 수 없습니다' : '게이트웨이 설정을 저장할 수 없습니다')
     } finally {
       setSaving(false)
     }
@@ -324,7 +324,7 @@ export function GatewaySettings() {
   // refresh the connection status from the saved config once it completes.
   const signIn = async () => {
     if (!trimmedUrl) {
-      notify({ kind: 'warning', title: 'Remote gateway incomplete', message: 'Enter a remote URL first.' })
+      notify({ kind: 'warning', title: '원격 게이트웨이 정보 불완전', message: '먼저 원격 URL을 입력하세요.' })
 
       return
     }
@@ -348,16 +348,16 @@ export function GatewaySettings() {
       if (result.connected) {
         const refreshed = await window.hermesDesktop.getConnectionConfig(scope)
         setState(refreshed)
-        notify({ kind: 'success', title: 'Signed in', message: `Connected to ${providerLabel}.` })
+        notify({ kind: 'success', title: '로그인됨', message: `${providerLabel}에 연결되었습니다.` })
       } else {
         notify({
           kind: 'warning',
-          title: 'Sign-in incomplete',
-          message: 'The login window closed before authentication finished.'
+          title: '로그인 완료되지 않음',
+          message: '인증이 완료되기 전에 로그인 창이 닫혔습니다.'
         })
       }
     } catch (err) {
-      notifyError(err, 'Sign-in failed')
+      notifyError(err, '로그인 실패')
     } finally {
       setSigningIn(false)
     }
@@ -370,9 +370,9 @@ export function GatewaySettings() {
       await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl || undefined)
       const refreshed = await window.hermesDesktop.getConnectionConfig(scope)
       setState(refreshed)
-      notify({ kind: 'success', title: 'Signed out', message: 'Cleared the remote gateway session.' })
+      notify({ kind: 'success', title: '로그아웃됨', message: '원격 게이트웨이 세션을 지웠습니다.' })
     } catch (err) {
-      notifyError(err, 'Sign-out failed')
+      notifyError(err, '로그아웃 실패')
     } finally {
       setSigningIn(false)
     }
@@ -382,11 +382,11 @@ export function GatewaySettings() {
     if (!canUseRemote) {
       notify({
         kind: 'warning',
-        title: 'Remote gateway incomplete',
+        title: '원격 게이트웨이 정보 불완전',
         message:
           authMode === 'oauth'
-            ? 'Enter a remote URL and sign in before testing.'
-            : 'Enter a remote URL and session token before testing.'
+            ? '테스트하기 전에 원격 URL을 입력하고 로그인하세요.'
+            : '테스트하기 전에 원격 URL과 세션 토큰을 입력하세요.'
       })
 
       return
@@ -404,25 +404,25 @@ export function GatewaySettings() {
         remoteUrl: trimmedUrl
       })
 
-      const message = `Connected to ${result.baseUrl}${result.version ? ` · Hermes ${result.version}` : ''}`
+      const message = `${result.baseUrl}에 연결되었습니다${result.version ? ` · Hermes ${result.version}` : ''}`
       setLastTest(message)
-      notify({ kind: 'success', title: 'Remote gateway reachable', message })
+      notify({ kind: 'success', title: '원격 게이트웨이에 접근 가능함', message })
     } catch (err) {
-      notifyError(err, 'Remote gateway test failed')
+      notifyError(err, '원격 게이트웨이 테스트 실패')
     } finally {
       setTesting(false)
     }
   }
 
   if (loading) {
-    return <LoadingState label="Loading gateway settings..." />
+    return <LoadingState label="게이트웨이 설정 로드 중..." />
   }
 
   if (!window.hermesDesktop?.getConnectionConfig) {
     return (
       <EmptyState
-        description="The desktop IPC bridge does not expose gateway settings."
-        title="Gateway settings unavailable"
+        description="데스크톱 IPC 브릿지가 게이트웨이 설정을 노출하지 않습니다."
+        title="게이트웨이 설정을 사용할 수 없음"
       />
     )
   }
@@ -432,23 +432,21 @@ export function GatewaySettings() {
       <div className="mb-5">
         <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
           <Globe className="size-4 text-muted-foreground" />
-          Gateway Connection
-          {state.envOverride ? <Pill tone="primary">env override</Pill> : null}
+          게이트웨이 연결
+          {state.envOverride ? <Pill tone="primary">환경 변수 우선</Pill> : null}
         </div>
         <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          Hermes Desktop starts its own local gateway by default. Use a remote gateway when you want this app to control
-          an already-running Hermes backend on another machine or behind a trusted proxy. Pick a profile below to give it
-          its own remote host.
+          Hermes Desktop은 기본적으로 자체 로컬 게이트웨이를 시작합니다. 원격 게이트웨이를 사용하면 다른 컴퓨터나 신뢰할 수 있는 프록시 뒤에 이미 실행 중인 Hermes 백엔드를 제어할 수 있습니다. 각 프로필이 고유한 원격 호스트를 가질 수 있도록 아래에서 프로필을 선택하세요.
         </p>
       </div>
 
       {namedProfiles.length > 0 ? (
         <div className="mb-5 grid gap-2">
           <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
-            Applies to
+            적용 대상
           </div>
           <div className="flex flex-wrap gap-1.5">
-            <ScopeChip active={scope === null} label="All profiles" onSelect={() => setScope(null)} />
+            <ScopeChip active={scope === null} label="모든 프로필" onSelect={() => setScope(null)} />
             {namedProfiles.map(profile => (
               <ScopeChip
                 active={scope === profile.name}
@@ -460,8 +458,8 @@ export function GatewaySettings() {
           </div>
           <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
             {scope === null
-              ? 'Default connection for every profile that has no override of its own.'
-              : `Connection used only when “${scope}” is the active profile. Set it to Local to inherit the default.`}
+              ? '자체 설정이 없는 모든 프로필의 기본 연결입니다.'
+              : `“${scope}” 프로필이 활성화된 경우에만 사용되는 연결입니다. 기본값을 상속하려면 '로컬 게이트웨이'로 설정하세요.`}
           </p>
         </div>
       ) : null}
@@ -470,10 +468,9 @@ export function GatewaySettings() {
         <div className="mb-5 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-[length:var(--conversation-caption-font-size)] text-destructive">
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
           <div>
-            <div className="font-medium">Environment variables are controlling this desktop session.</div>
+            <div className="font-medium">환경 변수가 이 데스크톱 세션을 제어하고 있습니다.</div>
             <div className="mt-1 leading-5">
-              Unset <code>HERMES_DESKTOP_REMOTE_URL</code> and <code>HERMES_DESKTOP_REMOTE_TOKEN</code> to use the saved
-              setting below.
+              아래 저장된 설정을 사용하려면 <code>HERMES_DESKTOP_REMOTE_URL</code> 및 <code>HERMES_DESKTOP_REMOTE_TOKEN</code>의 설정을 해제하세요.
             </div>
           </div>
         </div>
@@ -482,19 +479,19 @@ export function GatewaySettings() {
       <div className="grid gap-3 sm:grid-cols-2">
         <ModeCard
           active={state.mode === 'local'}
-          description="Start a private Hermes backend on localhost. This is the default and works offline."
+          description="로컬호스트(localhost)에서 프라이빗 Hermes 백엔드를 시작합니다. 이것은 기본값이며 오프라인으로 작동합니다."
           disabled={state.envOverride}
           icon={Monitor}
           onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-          title="Local gateway"
+          title="로컬 게이트웨이"
         />
         <ModeCard
           active={state.mode === 'remote'}
-          description="Connect this desktop shell to a remote Hermes backend. Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token."
+          description="이 데스크톱 셸을 원격 Hermes 백엔드에 연결합니다. 호스팅 게이트웨이는 OAuth나 사용자 이름 및 암호를 사용하고, 자체 호스팅의 경우 세션 토큰을 사용할 수 있습니다."
           disabled={state.envOverride}
           icon={Globe}
           onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
-          title="Remote gateway"
+          title="원격 게이트웨이"
         />
       </div>
 
@@ -509,21 +506,21 @@ export function GatewaySettings() {
               value={state.remoteUrl}
             />
           }
-          description="Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes."
-          title="Remote URL"
+          description="원격 대시보드 백엔드의 기본 URL입니다. 예: /hermes 같은 경로 접두사(Path prefix)를 지원합니다."
+          title="원격 URL"
         />
 
         {state.mode === 'remote' && probeStatus === 'probing' ? (
           <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
             <Loader2 className="size-4 animate-spin" />
-            Checking how this gateway authenticates…
+            이 게이트웨이의 인증 방식을 확인하는 중...
           </div>
         ) : null}
 
         {state.mode === 'remote' && probeStatus === 'error' ? (
           <div className="flex items-start gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
             <AlertCircle className="mt-0.5 size-4 shrink-0" />
-            Could not reach this gateway yet. Check the URL — the auth method will appear once it responds.
+            아직 이 게이트웨이에 접근할 수 없습니다. URL을 확인해 주세요. 응답이 있으면 인증 방식이 표시됩니다.
           </div>
         ) : null}
 
@@ -534,30 +531,30 @@ export function GatewaySettings() {
               oauthConnected ? (
                 <div className="flex items-center gap-2">
                   <Pill tone="primary">
-                    <Check className="size-3" /> Signed in
+                    <Check className="size-3" /> 로그인 됨
                   </Pill>
                   <Button disabled={signingIn || state.envOverride} onClick={() => void signOut()} variant="outline">
                     {signingIn ? <Loader2 className="size-4 animate-spin" /> : null}
-                    Sign out
+                    로그아웃
                   </Button>
                 </div>
               ) : (
                 <Button disabled={signingIn || state.envOverride || !trimmedUrl} onClick={() => void signIn()}>
                   {signingIn ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                  {isPasswordProvider ? 'Sign in' : `Sign in with ${providerLabel}`}
+                  {isPasswordProvider ? '로그인' : `${providerLabel} 계정으로 로그인`}
                 </Button>
               )
             }
             description={
               oauthConnected
                 ? isPasswordProvider
-                  ? 'This gateway uses a username and password. You are signed in; the session refreshes automatically.'
-                  : 'This gateway uses OAuth. You are signed in; the session refreshes automatically.'
+                  ? '이 게이트웨이는 사용자 이름과 암호를 사용합니다. 로그인되었습니다. 세션은 자동으로 갱신됩니다.'
+                  : '이 게이트웨이는 OAuth를 사용합니다. 로그인되었습니다. 세션은 자동으로 갱신됩니다.'
                 : isPasswordProvider
-                  ? 'This gateway uses a username and password. Sign in to authorize this desktop app.'
-                  : `This gateway uses OAuth. Sign in with ${providerLabel} to authorize this desktop app.`
+                  ? '이 게이트웨이는 사용자 이름과 암호를 사용합니다. 이 데스크톱 앱을 승인하려면 로그인하세요.'
+                  : `이 게이트웨이는 OAuth를 사용합니다. 이 데스크톱 앱을 승인하려면 ${providerLabel} 계정으로 로그인하세요.`
             }
-            title="Authentication"
+            title="인증"
           />
         ) : null}
 
@@ -571,14 +568,14 @@ export function GatewaySettings() {
                 disabled={state.envOverride}
                 onChange={event => setRemoteToken(event.target.value)}
                 placeholder={
-                  state.remoteTokenSet ? `Existing token ${state.remoteTokenPreview ?? 'saved'}` : 'Paste session token'
+                  state.remoteTokenSet ? `기존 토큰 ${state.remoteTokenPreview ?? '저장됨'}` : '세션 토큰 붙여넣기'
                 }
                 type="password"
                 value={remoteToken}
               />
             }
-            description="The dashboard session token used for REST and WebSocket access. Leave blank to keep the saved token."
-            title="Session token"
+            description="REST 및 WebSocket 접근에 사용되는 대시보드 세션 토큰입니다. 저장된 토큰을 유지하려면 비워두세요."
+            title="세션 토큰"
           />
         ) : null}
       </div>
@@ -594,14 +591,14 @@ export function GatewaySettings() {
           variant="text"
         >
           {testing ? <Loader2 className="size-4 animate-spin" /> : null}
-          Test remote
+          원격 연결 테스트
         </Button>
         <Button disabled={state.envOverride || saving} onClick={() => void save(false)} size="sm" variant="textStrong">
-          Save for next restart
+          저장 (다음 재시작 시 반영)
         </Button>
         <Button disabled={state.envOverride || saving} onClick={() => void save(true)} size="sm">
           {saving ? <Loader2 className="size-4 animate-spin" /> : null}
-          Save and reconnect
+          저장 및 재연결
         </Button>
       </div>
 
@@ -610,11 +607,11 @@ export function GatewaySettings() {
           action={
             <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
               <FileText className="size-4" />
-              Open logs
+              로그 열기
             </Button>
           }
-          description="Reveal desktop.log in your file manager — useful when the gateway fails to start."
-          title="Diagnostics"
+          description="파일 관리자에서 desktop.log를 표시합니다. 게이트웨이 시작에 실패할 때 유용합니다."
+          title="진단"
         />
       </div>
     </SettingsContent>

@@ -51,7 +51,7 @@ export function KeysSettings({ view }: KeysSettingsProps) {
   }, [vars])
 
   if (!vars) {
-    return <LoadingState label="Loading API keys and credentials..." />
+    return <LoadingState label="API 키 및 자격 증명 로드 중..." />
   }
 
   const visible = groups.filter(g => g.category === view)
@@ -82,7 +82,7 @@ export function KeysSettings({ view }: KeysSettingsProps) {
 
       {visible.length === 0 && (
         <div className="rounded-lg border border-dashed border-(--ui-stroke-tertiary) px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
-          Nothing configured in this category yet.
+          아직 이 카테고리에 설정된 항목이 없습니다.
         </div>
       )}
     </SettingsContent>

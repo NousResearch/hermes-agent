@@ -52,16 +52,16 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       setEditing(false)
       setValue('')
       onSaved(envVar.key)
-      notify({ kind: 'success', title: 'Credential saved', message: `${envVar.key} updated.` })
+      notify({ kind: 'success', title: '자격 증명 저장됨', message: `${envVar.key}가 업데이트되었습니다.` })
     } catch (err) {
-      notifyError(err, `Failed to save ${envVar.key}`)
+      notifyError(err, `${envVar.key} 저장 실패`)
     } finally {
       setBusy(false)
     }
   }
 
   async function handleClear() {
-    if (!window.confirm(`Remove ${envVar.key} from .env?`)) {
+    if (!window.confirm(`${envVar.key}를 .env에서 제거하시겠습니까?`)) {
       return
     }
 
@@ -71,9 +71,9 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       await deleteEnvVar(envVar.key)
       setRevealed(null)
       onCleared(envVar.key)
-      notify({ kind: 'success', title: 'Credential removed', message: `${envVar.key} removed.` })
+      notify({ kind: 'success', title: '자격 증명 제거됨', message: `${envVar.key}가 제거되었습니다.` })
     } catch (err) {
-      notifyError(err, `Failed to remove ${envVar.key}`)
+      notifyError(err, `${envVar.key} 제거 실패`)
     } finally {
       setBusy(false)
     }
@@ -90,7 +90,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       const result = await revealEnvVar(envVar.key)
       setRevealed(result.value)
     } catch (err) {
-      notifyError(err, `Failed to reveal ${envVar.key}`)
+      notifyError(err, `${envVar.key} 표시 실패`)
     }
   }
 
@@ -102,7 +102,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             <span className="font-mono text-xs font-medium">{envVar.key}</span>
             <Pill tone={isSet ? 'primary' : 'muted'}>
               {isSet && <Check className="size-3" />}
-              {isSet ? 'Set' : 'Not set'}
+              {isSet ? '설정됨' : '설정 안 됨'}
             </Pill>
           </div>
           {envVar.prompt && envVar.prompt !== envVar.key && (
@@ -143,10 +143,10 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
           />
           <Button disabled={busy || !value} onClick={() => void handleSave()} size="sm">
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
-            Save
+            저장
           </Button>
           <Button onClick={() => setEditing(false)} size="sm" variant="text">
-            Cancel
+            취소
           </Button>
         </div>
       )}
@@ -178,7 +178,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
 
       setEnvState(seeded)
     } catch (err) {
-      notifyError(err, 'Tool configuration failed to load')
+      notifyError(err, '도구 설정을 로드하지 못했습니다')
     } finally {
       setLoading(false)
     }
@@ -215,10 +215,10 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
 
     try {
       await selectToolsetProvider(toolset, provider.name)
-      notify({ kind: 'success', title: 'Provider selected', message: `${provider.name} is now active.` })
+      notify({ kind: 'success', title: '제공자 선택됨', message: `${provider.name}가 이제 활성화되었습니다.` })
       onConfiguredChange?.()
     } catch (err) {
-      notifyError(err, `Failed to select ${provider.name}`)
+      notifyError(err, `${provider.name} 선택 실패`)
     } finally {
       setSelecting(null)
     }
@@ -235,18 +235,18 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     }
 
     if (!cfg.has_category) {
-      return 'This toolset has no provider options — enable it and it works with your current setup.'
+      return '이 도구 세트에는 제공자 옵션이 없습니다. 활성화하면 현재 설정으로 작동합니다.'
     }
 
     if (providers.length === 0) {
-      return 'No providers are available for this toolset right now.'
+      return '현재 이 도구 세트에 사용할 수 있는 제공자가 없습니다.'
     }
 
     return null
   }, [cfg, loading, providers.length])
 
   if (loading) {
-    return <PageLoader className="min-h-32" label="Loading configuration" />
+    return <PageLoader className="min-h-32" label="설정 로드 중" />
   }
 
   if (emptyMessage) {
@@ -276,7 +276,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                 {configured && (
                   <Pill tone="primary">
                     <Check className="size-3" />
-                    Ready
+                    준비됨
                   </Pill>
                 )}
               </span>
@@ -288,11 +288,11 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                 {provider.tag && <p className="text-[0.72rem] text-muted-foreground">{provider.tag}</p>}
                 {provider.requires_nous_auth && (
                   <p className="text-[0.72rem] text-muted-foreground">
-                    Included with a Nous subscription — sign in to Nous Portal to activate.
+                    Nous 구독에 포함되어 있습니다. Nous Portal에 로그인하여 활성화하세요.
                   </p>
                 )}
                 {provider.env_vars.length === 0 ? (
-                  <p className="text-[0.72rem] text-muted-foreground">No API key required.</p>
+                  <p className="text-[0.72rem] text-muted-foreground">API 키가 필요하지 않습니다.</p>
                 ) : (
                   provider.env_vars.map(ev => (
                     <EnvVarField
@@ -306,8 +306,8 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                 )}
                 {provider.post_setup && (
                   <p className="text-[0.72rem] text-muted-foreground">
-                    This provider needs an extra setup step ({provider.post_setup}). Run it from the CLI with{' '}
-                    <code className="font-mono">hermes tools</code> for now.
+                    이 제공자는 추가 설정 단계({provider.post_setup})가 필요합니다. 당분간 CLI에서{' '}
+                    <code className="font-mono">hermes tools</code>로 실행하세요.
                   </p>
                 )}
               </div>

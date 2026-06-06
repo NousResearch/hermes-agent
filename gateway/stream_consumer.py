@@ -601,12 +601,17 @@ class GatewayStreamConsumer:
                         logger.debug("Approval boundary: flush failed (non-critical): %s", e)
 
                 # Step 2: Finalize current stream
-                # If cancelled (timeout), use empty finalize to just close the stream
-                # without showing visible "等待审批中..." after the prompt
-                finalize_text = "" if is_cancelled else (self._accumulated or "⏸ 等待审批中...")
+                # If cancelled (timeout), send minimal finalize to just close the
+                # WeCom stream without visible content. WeCom requires at least
+                # some content for finalize to register, but a single space or
+                # zero-width char is invisible to users.
+                if is_cancelled:
+                    finalize_text = "​"  # zero-width space: invisible but non-empty
+                else:
+                    finalize_text = self._accumulated or "⏸ 等待审批中..."
                 try:
                     await self.adapter.send_stream_frame(
-                        finalize_text or "✅",
+                        finalize_text,
                         finalize=True,
                         chat_id=self.chat_id,
                         reply_to=self._initial_reply_to_id,
@@ -618,6 +623,7 @@ class GatewayStreamConsumer:
                     )
                 except Exception as e:
                     logger.warning("Approval boundary: finalize failed: %s", e)
+                    raise  # Propagate so boundary_ok stays False
 
             # Step 3: Reset native stream state
             self._native_stream_opened = False
@@ -638,6 +644,8 @@ class GatewayStreamConsumer:
 
             # Step 6: Reset segment state (accumulated text, message_id, etc.)
             self._reset_segment_state()
+
+            # Only set boundary_ok = True if we got here without exceptions
             boundary_ok = True
 
         except Exception as e:

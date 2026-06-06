@@ -880,3 +880,66 @@ class TestGatewayDetachedWatcherWindowsFlags:
         assert 'if sys.platform == "win32":' in source
         # Windows branch uses windows_detach_popen_kwargs
         assert "windows_detach_popen_kwargs" in source
+
+
+# ---------------------------------------------------------------------------
+# LocalEnvironment Popen — Windows creationflags must not be passed twice
+# Regression test for #28920: in 0.14.0, tools/environments/local.py passed
+# ``creationflags=`` both explicitly AND via ``**_popen_kwargs``, causing
+# ``TypeError: subprocess.Popen() got multiple values for keyword argument
+# 'creationflags'`` for every tool invocation on Windows.
+# ---------------------------------------------------------------------------
+
+
+class TestLocalEnvironmentWindowsCreationFlagsNotDuplicated:
+    """tools/environments/local.py must pass ``creationflags`` exactly once
+    when running under Windows, regardless of how the Windows branch is
+    assembled (explicit kwarg vs. ``**_popen_kwargs`` spread)."""
+
+    def test_local_py_source_has_no_duplicate_creationflags(self):
+        """Source-level guard: inside the LocalEnvironment Popen call, the
+        explicit ``creationflags=...`` line must not coexist with a
+        ``**_popen_kwargs`` spread that also injects ``creationflags``."""
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "tools" / "environments" / "local.py").read_text(encoding="utf-8")
+        builds_kwargs_with_cf = (
+            '_popen_kwargs = {"creationflags": windows_hide_flags()}' in source
+        )
+        spreads_kwargs = "**_popen_kwargs" in source
+        explicit_cf_kwarg = "creationflags=subprocess.CREATE_NO_WINDOW" in source
+        # Accepted shape: build _popen_kwargs with creationflags, spread it,
+        # and NEVER also pass an explicit ``creationflags=`` to the same Popen.
+        assert not (builds_kwargs_with_cf and spreads_kwargs and explicit_cf_kwarg), (
+            "tools/environments/local.py passes ``creationflags`` twice — once "
+            "explicitly and once via **_popen_kwargs. Regression of #28920."
+        )
+
+    def test_run_bash_passes_creationflags_once_on_windows(self, monkeypatch, tmp_path):
+        """Behavioral guard: mock Popen + force the Windows branch, then call
+        LocalEnvironment._run_bash. Popen must be invoked with ``creationflags``
+        in kwargs exactly once. The duplicated-kwarg bug would raise TypeError
+        at the Popen call site before this assertion is reached."""
+        from tools.environments import local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        sentinel_flags = 0x08000000  # CREATE_NO_WINDOW
+        monkeypatch.setattr(local_mod, "windows_hide_flags", lambda: sentinel_flags)
+        monkeypatch.setattr(local_mod, "_find_bash", lambda: "bash.exe")
+        monkeypatch.setattr(local_mod, "_resolve_safe_cwd", lambda c: c)
+
+        captured = {}
+
+        class _FakeProc:
+            pid = 4242
+            def __init__(self, *a, **kw):
+                captured["args"] = a
+                captured["kwargs"] = kw
+
+        monkeypatch.setattr(local_mod.subprocess, "Popen", _FakeProc)
+
+        env = local_mod.LocalEnvironment(cwd=str(tmp_path))
+        env._run_bash("echo hello")
+
+        kwargs = captured["kwargs"]
+        assert "creationflags" in kwargs, "Windows branch must set creationflags"
+        assert kwargs["creationflags"] == sentinel_flags

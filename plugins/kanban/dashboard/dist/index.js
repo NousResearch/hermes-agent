@@ -3744,9 +3744,9 @@
         }, specifyBusy ? "Specifying…" : "✨ Specify")
       : null;
 
-    // "Decompose" is the orchestrator-driven fan-out. Like Specify, only
+    // "Decompose" is the built-in decomposer fan-out. Like Specify, only
     // makes sense on triage-column tasks — elsewhere the backend short-
-    // circuits with ok:false. When the orchestrator returns fanout:false
+    // circuits with ok:false. When the decomposer returns fanout:false
     // we render the same single-task message as Specify; when it fans
     // out we report the child count for quick at-a-glance verification.
     const decomposeButton = (task.status === "triage" && props.onDecompose)

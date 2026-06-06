@@ -410,6 +410,14 @@ _CODEX_NON_DURABLE_RATIONALE_PATTERNS = (
         ),
     ),
 )
+_CODEX_TEXT_DELIVERY_SIGNALS = {
+    "artifact",
+    "capability_change",
+    "changed_files",
+    "durable_asset_created",
+    "state_transition",
+    "verification",
+}
 _CODEX_SIDECAR_MAX_BYTES = 2_000_000
 _CODEX_SIDECAR_MESSAGE_FIELDS = (
     "final_message",
@@ -2285,6 +2293,10 @@ def _matching_codex_skip_note_labels(
     return sorted({label for label, pattern in patterns if pattern.search(text)})
 
 
+def _codex_non_durable_rationale_labels(text: str) -> list[str]:
+    return _matching_codex_skip_note_labels(text, _CODEX_NON_DURABLE_RATIONALE_PATTERNS)
+
+
 def _journal_focus_note_segments(title: str, outcome_note: str) -> list[str]:
     outcome_segments = [
         segment.strip()
@@ -2381,6 +2393,14 @@ def _codex_record_claims_work(record: dict[str, Any], text: str) -> bool:
     if not claim_text.strip():
         return False
     return bool(_codex_completed_value_claim_markers(claim_text))
+
+
+def _codex_durable_signals(record: dict[str, Any], text: str) -> set[str]:
+    structured_signals = _structured_durable_signals(record)
+    text_signals = _text_durable_signals(text)
+    if _codex_non_durable_rationale_labels(text):
+        text_signals.difference_update(_CODEX_TEXT_DELIVERY_SIGNALS)
+    return structured_signals | text_signals
 
 
 def _iter_recent_claimed_work_items(
@@ -3245,8 +3265,11 @@ def _evaluate_execution_loop_check(
 def _assess_make_work_item(item: dict[str, Any]) -> dict[str, Any]:
     record = item.get("record") or {}
     text = str(item.get("text") or "")
-    durable_signals = _structured_durable_signals(record)
-    durable_signals.update(_text_durable_signals(text))
+    if item.get("source") == "codex_runs":
+        durable_signals = _codex_durable_signals(record, text)
+    else:
+        durable_signals = _structured_durable_signals(record)
+        durable_signals.update(_text_durable_signals(text))
     status_markers = _status_only_markers(text)
     value_categories = _value_categories_from_signals(durable_signals)
     category_labels = _value_category_labels(value_categories)
@@ -3276,6 +3299,18 @@ def _assess_make_work_item(item: dict[str, Any]) -> dict[str, Any]:
             record_id=item.get("id"),
         ),
     }
+
+
+def _codex_journal_skip_applies_to_assessment(
+    record: dict[str, Any],
+    assessment: dict[str, Any],
+) -> bool:
+    if not assessment.get("durable"):
+        return True
+    if _structured_durable_signals(record):
+        return False
+    signals = set(assessment.get("signals") or [])
+    return bool(signals) and signals.issubset(_CODEX_TEXT_DELIVERY_SIGNALS)
 
 
 def _assess_operator_value_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -3351,8 +3386,11 @@ def _evaluate_anti_make_work_check(
         journal_remediation = journal_skip_remediations.get(run_id)
         if (
             assessment.get("source") == "codex_runs"
-            and not assessment.get("durable")
             and journal_remediation
+            and _codex_journal_skip_applies_to_assessment(
+                item.get("record") or {},
+                assessment,
+            )
         ):
             if _codex_record_is_active(item.get("record") or {}):
                 assessment["journal_remediation_ignored"] = journal_remediation

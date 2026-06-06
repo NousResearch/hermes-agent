@@ -863,6 +863,155 @@ def test_journal_skip_notes_exempt_named_inactive_codex_runs_only(tmp_path):
     assert "anti_make_work_check" in benchmark["critical_failures"]
 
 
+def test_codex_untracked_file_text_is_not_durable_delivery_evidence(tmp_path):
+    now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(journal_path, {"entries": []})
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                "codex_untrackedblog": {
+                    "run_id": "codex_untrackedblog",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "exit_code": 0,
+                    "final_message": (
+                        "Drafted the new post at "
+                        "[2026-06-04-zero-dollar-rows.md]"
+                        "(/home/david/stacks/hadto.co/src/content/blog/"
+                        "2026-06-04-zero-dollar-rows.md:1).\n\n"
+                        "Verification: `npm run write:lint -- src/content/blog/"
+                        "2026-06-04-zero-dollar-rows.md` passed clean.\n\n"
+                        "Only the new blog file is untracked. I did not push, "
+                        "open a PR, commit, or publish it."
+                    ),
+                }
+            }
+        },
+    )
+    _write_json(ctx_path, {"sessions": {"ctx_1": {"active": False, "updated_at": recent}}})
+
+    benchmark = self_improvement_tool.evaluate_self_improvement_benchmark(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=tmp_path / "history.json",
+        now=now,
+        persist=False,
+    )
+
+    anti_make_work = benchmark["checks"]["anti_make_work_check"]
+    assert anti_make_work["status"] == "fail"
+    assert anti_make_work["metrics"]["assessed_work_item_count"] == 1
+    assert anti_make_work["metrics"]["durable_evidence_count"] == 0
+    assert anti_make_work["metrics"]["shallow_codex_work_item_count"] == 1
+    shallow_example = anti_make_work["metrics"]["shallow_examples"][0]
+    assert shallow_example["id"] == "codex_untrackedblog"
+    assert shallow_example["signals"] == []
+    assert shallow_example["backfill_fields"] == [
+        "operatorDecisionSupport or nextDecision",
+        "changedFiles, tests, commitShas, pullRequests, or artifactPaths",
+        "controlOwnershipPreserved, incidentRiskReduced, or systemCapabilityChanged when applicable",
+    ]
+    assert "anti_make_work_check" in benchmark["critical_failures"]
+
+
+def test_journal_skip_note_exempts_text_only_untracked_codex_delivery(tmp_path):
+    now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(
+        journal_path,
+        {
+            "entries": [
+                {
+                    "id": "journal-skip-untracked-blog",
+                    "occurredAt": recent,
+                    "summary": "Recorded explicit non-durable Codex skip evidence.",
+                    "operatorDecisionSupport": (
+                        "Operator can see that the inactive blog trace should not "
+                        "count as durable delivery evidence."
+                    ),
+                    "changedFiles": ["src/data/journal.json"],
+                    "tests": ["self_improvement_benchmark persist=False"],
+                    "selfImprovementFocus": [
+                        {
+                            "title": "Skip shallow blog record without durable delivery proof",
+                            "outcomeNote": (
+                                "Skipped benchmark-listed codex_untrackedblog for "
+                                "delivery backfill because its final message describes "
+                                "an untracked blog file with no commit, push, PR, or "
+                                "publish evidence."
+                            ),
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                "codex_untrackedblog": {
+                    "run_id": "codex_untrackedblog",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "exit_code": 0,
+                    "final_message": (
+                        "Created the new post: "
+                        "[2026-06-04-zero-dollar-rows.md]"
+                        "(/home/david/stacks/hadto.co/src/content/blog/"
+                        "2026-06-04-zero-dollar-rows.md).\n\n"
+                        "Verification:\n"
+                        "- `npm run write:lint -- src/content/blog/"
+                        "2026-06-04-zero-dollar-rows.md`: PASS, clean.\n\n"
+                        "Only the new blog file is untracked. I did not push, "
+                        "open a PR, commit, or publish it."
+                    ),
+                }
+            }
+        },
+    )
+    _write_json(ctx_path, {"sessions": {"ctx_1": {"active": False, "updated_at": recent}}})
+
+    benchmark = self_improvement_tool.evaluate_self_improvement_benchmark(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=tmp_path / "history.json",
+        now=now,
+        persist=False,
+    )
+
+    anti_make_work = benchmark["checks"]["anti_make_work_check"]
+    assert anti_make_work["status"] == "pass"
+    assert anti_make_work["metrics"]["raw_claimed_work_item_count"] == 2
+    assert anti_make_work["metrics"]["assessed_work_item_count"] == 1
+    assert anti_make_work["metrics"]["durable_evidence_count"] == 1
+    assert anti_make_work["metrics"]["shallow_codex_work_item_count"] == 0
+    assert anti_make_work["metrics"]["journal_remediated_codex_work_item_count"] == 1
+    remediated = anti_make_work["metrics"]["journal_remediated_codex_examples"][0]
+    assert remediated["id"] == "codex_untrackedblog"
+    assert remediated["journal_remediation"]["entry_id"] == "journal-skip-untracked-blog"
+    assert anti_make_work["metrics"]["shallow_examples"] == []
+    assert "anti_make_work_check" not in benchmark["critical_failures"]
+
+
 def test_journal_skip_note_does_not_exempt_active_codex_run(tmp_path):
     now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
     recent = now.isoformat()

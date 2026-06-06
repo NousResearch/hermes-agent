@@ -60,6 +60,7 @@ from typing import List, Dict, Any, Optional
 # ModuleNotFoundError on broken/partial installs where `fire` isn't present.
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from hermes_constants import get_hermes_home
 

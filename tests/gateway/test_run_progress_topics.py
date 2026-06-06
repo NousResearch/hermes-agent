@@ -471,12 +471,12 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
 # ---------------------------------------------------------------------------
 
 
-def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
+def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=None):
     """Shared setup for long-preview truncation tests.
 
     Returns (adapter, result) after running the agent with LongPreviewAgent.
     ``preview_length`` controls display.tool_preview_length in the config file
-    that _run_agent reads — so the gateway picks it up the same way production does.
+    that _run_agent reads; ``None`` omits the key so platform defaults apply.
     """
     import asyncio
     import yaml
@@ -492,7 +492,9 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     # Write config.yaml so _run_agent picks up tool_preview_length
-    config = {"display": {"tool_preview_length": preview_length}}
+    config = {"display": {}}
+    if preview_length is not None:
+        config["display"]["tool_preview_length"] = preview_length
     (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
 
     adapter = ProgressCaptureAdapter()
@@ -522,19 +524,27 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
 
 
 def test_all_mode_default_truncation_40_chars(monkeypatch, tmp_path):
-    """When tool_preview_length is 0 (default), all/new mode truncates to 40 chars."""
-    adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0)
+    """When tool_preview_length is unset, all/new mode uses the platform default cap."""
+    adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=None)
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # The long command should be truncated — total preview <= 40 chars
     assert "..." in content
-    # Extract the preview part between quotes
     import re
     match = re.search(r'"(.+)"', content)
     assert match, f"No quoted preview found in: {content}"
     preview_text = match.group(1)
     assert len(preview_text) <= 40, f"Preview too long ({len(preview_text)}): {preview_text}"
+
+
+def test_all_mode_zero_preview_length_is_unlimited(monkeypatch, tmp_path):
+    """Explicit tool_preview_length=0 means no truncation, matching agent.display."""
+    adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0)
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    content = adapter.sent[0]["content"]
+    assert "..." not in content, f"Preview was truncated despite zero/unlimited: {content}"
+    assert LongPreviewAgent.LONG_CMD in content
 
 
 def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):

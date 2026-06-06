@@ -20,12 +20,11 @@ export interface ErrorStateProps {
   title: ReactNode
 }
 
-// Shared, presentation-only error layout: the canonical destructive error
-// glyph (plain AlertCircle, no bg chip) over a centered title + body, with an
-// optional actions stack. Used by the top-level React error boundary, the
-// in-dialog update error, and the boot-failure banner so every failure state
-// reads the same. Title/description accept nodes so callers in a Radix Dialog
-// can pass DialogTitle/DialogDescription for accessibility.
+// Shared, presentation-only error layout: the canonical ErrorIcon (no bg chip)
+// over a centered title + body, with an optional actions stack. Used by the
+// React error boundary, the in-dialog update error, and the boot-failure banner
+// so every failure reads the same. Title/description accept nodes so Radix
+// Dialog callers can pass DialogTitle/DialogDescription for accessibility.
 export function ErrorState({ children, className, description, icon, title }: ErrorStateProps) {
   return (
     <div className={cn('grid gap-5', className)}>

@@ -43,10 +43,6 @@ interface DesktopInstallOverlayProps {
   /** When false, the overlay never renders -- useful for dev when we want
    * to suppress it entirely. */
   enabled?: boolean
-  /** DEV ONLY: render a fixed bootstrap snapshot instead of subscribing to the
-   * Electron IPC stream. Used by the dialog gallery to preview install states.
-   * Mount with a `key` so each scenario gets a fresh instance. */
-  stateOverride?: DesktopBootstrapState
 }
 
 interface StageRowProps {
@@ -246,10 +242,10 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
   return state
 }
 
-export function DesktopInstallOverlay({ enabled = true, stateOverride }: DesktopInstallOverlayProps) {
+export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayProps) {
   const { t } = useI18n()
   const copy = t.install
-  const [state, setState] = useState<DesktopBootstrapState>(stateOverride ?? EMPTY_STATE)
+  const [state, setState] = useState<DesktopBootstrapState>(EMPTY_STATE)
   const [logOpen, setLogOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [cancelling, setCancelling] = useState(false)
@@ -270,7 +266,7 @@ export function DesktopInstallOverlay({ enabled = true, stateOverride }: Desktop
 
   // Subscribe to bootstrap events + load initial snapshot
   useEffect(() => {
-    if (!enabled || stateOverride) {
+    if (!enabled) {
       return
     }
 
@@ -300,7 +296,7 @@ export function DesktopInstallOverlay({ enabled = true, stateOverride }: Desktop
       cancelled = true
       off?.()
     }
-  }, [enabled, stateOverride])
+  }, [enabled])
 
   // Autoscroll log to bottom when new lines arrive AND the log is open
   useEffect(() => {

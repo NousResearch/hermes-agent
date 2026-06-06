@@ -579,15 +579,14 @@ function ConnectedTag() {
   )
 }
 
+const PROVIDER_ROW_CLASS =
+  'group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)'
+
 export function KeyProviderRow({ onClick }: { onClick: () => void }) {
   const { t } = useI18n()
 
   return (
-    <button
-      className="group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)"
-      onClick={onClick}
-      type="button"
-    >
+    <button className={PROVIDER_ROW_CLASS} onClick={onClick} type="button">
       <div className="min-w-0">
         <span className="text-[length:var(--conversation-text-font-size)] font-semibold">OpenRouter</span>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.openRouterPitch}</p>
@@ -609,11 +608,7 @@ export function ProviderRow({
   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
 
   return (
-    <button
-      className="group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)"
-      onClick={() => onSelect(provider)}
-      type="button"
-    >
+    <button className={PROVIDER_ROW_CLASS} onClick={() => onSelect(provider)} type="button">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">

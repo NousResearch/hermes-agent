@@ -119,7 +119,34 @@ class TestQuietModeCacheIsolation:
         )
 
     def test_non_quiet_mode_does_not_use_cache(self):
-        """Sanity: quiet_mode=False (TUI path) skips the cache entirely \u2014
+        """Sanity: quiet_mode=False (TUI path) skips the cache entirely —
         explains why the bug only hit Gateway."""
         model_tools.get_tool_definitions(quiet_mode=False)
         assert len(model_tools._tool_defs_cache) == 0
+
+    def test_quiet_mode_cache_key_reacts_to_external_skill_prompt_manifest_changes(self, monkeypatch, tmp_path):
+        from agent.prompt_builder import build_skills_system_prompt, clear_skills_system_prompt_cache
+        import shutil
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+        local_skills = tmp_path / "skills"
+        local_skills.mkdir(parents=True)
+        external_root = tmp_path / "external-skills"
+        external_root.mkdir()
+        ext_skill = external_root / "cache-skill"
+        ext_skill.mkdir()
+        (ext_skill / "SKILL.md").write_text(
+            "---\nname: cache-skill\ndescription: external\n---\n"
+        )
+        (tmp_path / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_root}\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "cache-skill" in first
+
+        shutil.rmtree(ext_skill)
+        second = build_skills_system_prompt()
+        assert "cache-skill" not in second

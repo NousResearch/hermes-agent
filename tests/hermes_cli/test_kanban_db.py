@@ -1526,6 +1526,44 @@ def test_has_spawnable_ready_false_on_empty_queue(kanban_home):
         assert kb.has_spawnable_ready(conn) is False
 
 
+def test_has_spawnable_ready_false_when_only_respawn_guarded_active_pr(
+    kanban_home, monkeypatch
+):
+    """Health telemetry should not warn when ready work is intentionally
+    skipped by the active-PR respawn guard.
+    """
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name == "vibe")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="implementation-parent", assignee="vibe")
+        kb.add_comment(
+            conn,
+            t,
+            "worker",
+            "Opened https://github.com/NousResearch/hermes-agent/pull/123",
+        )
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+        assert kb.has_spawnable_ready(conn) is False
+
+
+def test_has_spawnable_ready_true_when_guarded_task_and_actionable_task(
+    kanban_home, monkeypatch
+):
+    """A guarded ready task should not hide a separate actionable task."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name == "vibe")
+    with kb.connect() as conn:
+        guarded = kb.create_task(conn, title="has-pr", assignee="vibe")
+        kb.add_comment(
+            conn,
+            guarded,
+            "worker",
+            "Opened https://github.com/NousResearch/hermes-agent/pull/124",
+        )
+        kb.create_task(conn, title="fresh-work", assignee="vibe")
+        assert kb.has_spawnable_ready(conn) is True
+
+
 def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable):
     spawns = []
 

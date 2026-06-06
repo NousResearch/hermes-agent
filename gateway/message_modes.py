@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+_BASE_REQUIRED_SKILLS = ("using-superpowers",)
+_DEV_REQUIRED_SKILLS = (*_BASE_REQUIRED_SKILLS, "project-dev-workflow")
+
+
 @dataclass(frozen=True)
 class GatewayMessageMode:
     """Resolved gateway mode for one inbound user message."""
@@ -23,7 +27,7 @@ class GatewayMessageMode:
     load_soul_identity: bool = False
     skip_memory: bool = False
     system_prompt: str = ""
-    required_skills: tuple[str, ...] = ("using-superpowers",)
+    required_skills: tuple[str, ...] = _BASE_REQUIRED_SKILLS
     sticky_mode: Optional[str] = None
     control_response: str = ""
 
@@ -238,6 +242,21 @@ def _copy_mode(
     )
 
 
+def _dev_mode(
+    message: str,
+    *,
+    sticky_mode: Optional[str] = None,
+    control_response: str = "",
+) -> GatewayMessageMode:
+    return GatewayMessageMode(
+        name="dev",
+        message=message,
+        required_skills=_DEV_REQUIRED_SKILLS,
+        sticky_mode=sticky_mode,
+        control_response=control_response,
+    )
+
+
 def _normalize_switch_text(text: str) -> str:
     return "".join(str(text or "").split()).strip(_STRIP_CHARS)
 
@@ -290,8 +309,7 @@ def _copy_lite_mode(
     control_response: str = "",
 ) -> GatewayMessageMode:
     if _lite_should_escalate_to_dev(message):
-        return GatewayMessageMode(
-            name="dev",
+        return _dev_mode(
             message=message,
             sticky_mode="dev",
         )
@@ -316,15 +334,16 @@ def resolve_gateway_message_mode(text: str | None, active_mode: str | None = Non
     """
     raw = str(text or "")
     stripped = raw.lstrip()
-    if not stripped or stripped.startswith("/"):
+    if not stripped:
+        return _dev_mode(raw)
+    if stripped.startswith("/"):
         return GatewayMessageMode(name="dev", message=raw)
 
     normalized = _normalize_switch_text(stripped)
     for mode_name, phrases in _STICKY_MODE_SWITCHES:
         if normalized in phrases:
             if mode_name == "dev":
-                return GatewayMessageMode(
-                    name="dev",
+                return _dev_mode(
                     message=raw,
                     sticky_mode="dev",
                     control_response="已切回开发路由。",
@@ -359,14 +378,12 @@ def resolve_gateway_message_mode(text: str | None, active_mode: str | None = Non
         if stripped.startswith(prefix):
             message = _strip_mode_prefix(raw, prefix)
             if not message:
-                return GatewayMessageMode(
-                    name="dev",
+                return _dev_mode(
                     message=raw,
                     sticky_mode="dev",
                     control_response="已切回开发路由。",
                 )
-            return GatewayMessageMode(
-                name="dev",
+            return _dev_mode(
                 message=message,
                 sticky_mode="dev",
             )
@@ -377,7 +394,7 @@ def resolve_gateway_message_mode(text: str | None, active_mode: str | None = Non
             return _copy_lite_mode(active_template, message=raw)
         return _copy_mode(active_template, message=raw)
 
-    return GatewayMessageMode(name="dev", message=raw)
+    return _dev_mode(raw)
 
 
 __all__ = ["GatewayMessageMode", "resolve_gateway_message_mode"]

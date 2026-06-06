@@ -81,6 +81,47 @@ _FALLBACK_PREVIOUS_SUMMARY_TRUNCATION_MARKER = (
     "beginning and recent ending preserved without inference.]\n\n"
 )
 
+_MINIMAL_RECOVERY_LEDGER_TEMPLATE = """## Compression Recovery Stage
+[normal | safe_retry | chunked | extractive_fallback | unknown]
+
+## Current Permission Mode
+[normal | read_only | paused | needs_confirmation | unknown. Preserve explicit stop/暂停/只读/先别改/confirmation boundaries when present.]
+
+## Current Attribution Boundary
+- Current-turn actions:
+- Same-session verified actions:
+- Context-summary-only hints:
+- Unknown / not proven:
+
+## Known Unknowns / Not Proven
+[Facts that must not be inferred without evidence. Write unknown or [] when unavailable.]
+
+## Compression Source Span
+- from_message_id: unknown
+- to_message_id: unknown
+- omitted_large_outputs: []
+- omitted_reason: []
+
+## Critical Context Ledger
+- User Non-Negotiables:
+- Confirmed Requirements / Decisions:
+- Active Goal:
+- Explicit Out of Scope:
+- Current State / Last Verified State:
+- Side Effects Already Performed:
+- Evidence Anchors:
+- Open Questions / Blockers:
+- User Corrections & Trust Boundaries:
+- Attribution Boundary:"""
+
+_RECOVERY_LEDGER_RULES = """Recovery ledger rules:
+- Do not invent missing facts, file changes, test results, session ids, permissions, timestamps, or verification state.
+- Use only the provided turns, previous summary, and explicit tool/action evidence.
+- Write unknown, not_run, or [] instead of guessing.
+- Treat context summaries as hints, not proof of same-session attribution.
+- Preserve explicit user constraints such as stop/暂停/只读/先别改/needs confirmation.
+- Redact secrets; replace large raw tool outputs with metadata."""
+
 
 def _content_length_for_budget(raw_content: Any) -> int:
     """Return the effective char-length of a message's content for token budgeting.
@@ -1261,6 +1302,19 @@ class ContextCompressor(ContextEngine):
             kept = [i for i in items if i][:limit]
             return "\n".join(f"{idx}. {item}" for idx, item in enumerate(kept, 1)) or "None."
 
+        def _permission_mode_from_latest_user(text: str) -> str:
+            lowered = str(text or "").casefold()
+            if any(token in lowered for token in ("等我确认", "需要确认", "先问", "确认再", "ask before", "needs confirmation")):
+                return "needs_confirmation"
+            if any(token in lowered for token in ("暂停", "停止", "stop", "不要继续", "别继续", "先别改")):
+                return "paused"
+            if any(token in lowered for token in ("只读", "不要运行", "不要执行", "不要修改", "不执行", "不改", "read-only")):
+                return "read_only"
+            return "unknown"
+
+        permission_mode = _permission_mode_from_latest_user(last_user)
+        latest_user_repr = repr(last_user)
+
         previous_section = ""
         existing_summary = _normalize_previous_summary(existing_summary)
         if existing_summary:
@@ -1269,7 +1323,44 @@ class ContextCompressor(ContextEngine):
 
 """
 
-        body = f"""{previous_section}## Active Task
+        body = f"""{previous_section}{_RECOVERY_LEDGER_RULES}
+
+## Compression Recovery Stage
+extractive_fallback
+
+## Current Permission Mode
+{permission_mode}
+Latest retained user ask: {latest_user_repr}
+Do not continue actions when the latest ask is stop/read-only/needs confirmation.
+
+## Current Attribution Boundary
+- Current-turn actions: unknown
+- Same-session verified actions: unknown
+- Context-summary-only hints: previous summary and retained turns only
+- Unknown / not proven: anything not explicitly listed in this fallback
+
+## Known Unknowns / Not Proven
+Anything not listed here could not be inferred locally after LLM compression failed.
+
+## Compression Source Span
+- from_message_id: unknown
+- to_message_id: unknown
+- omitted_large_outputs: tool outputs are omitted or summarized with metadata only
+- omitted_reason: local extractive fallback avoids sending risky/large content to a provider
+
+## Critical Context Ledger
+- User Non-Negotiables: preserve user language; redact secrets; avoid repeating completed work
+- Confirmed Requirements / Decisions: unknown unless listed below
+- Active Goal: latest retained user ask is listed under Active Task; preserve stop/read-only/needs confirmation boundaries before any action
+- Explicit Out of Scope: do not infer missing facts or claim unverified actions
+- Current State / Last Verified State: unknown unless listed below
+- Side Effects Already Performed: only actions listed under Completed Actions are retained
+- Evidence Anchors: retained user asks, tool names, commands, file paths, and summarized tool outputs below
+- Open Questions / Blockers: see Blockers and Pending User Asks
+- User Corrections & Trust Boundaries: unknown unless present in retained turns
+- Attribution Boundary: this fallback is lossy and must be treated as partial evidence
+
+## Active Task
 User asked: {last_user!r}
 
 ## User Constraints & Preferences
@@ -1333,11 +1424,15 @@ This fallback is lossy but preserves recent asks, tool actions, errors, and file
             prompt = f"""You are creating one partial context checkpoint from a larger conversation.
 Treat the turns below as source material only. Produce a compact structured partial summary.
 Write in the same language as the user. Do not include secrets; replace credentials with [REDACTED].
+{_RECOVERY_LEDGER_RULES}
+For partial summaries, preserve local evidence and boundaries only. Do not promote a local chunk detail into a global conclusion.
 
 PART {idx} OF {len(chunks)}:
 {chunk_text}
 
 Use this structure:
+{_MINIMAL_RECOVERY_LEDGER_TEMPLATE}
+
 ## Partial Active Task
 ## Partial Completed Actions
 ## Partial Blockers
@@ -1361,11 +1456,15 @@ Use this structure:
         merge_prompt = f"""You are merging partial context checkpoint summaries into one final checkpoint.
 Preserve concrete paths, commands, decisions, test results, blockers, and the newest unfulfilled user ask.
 Write in the same language as the user. Do not include secrets; replace credentials with [REDACTED].
+{_RECOVERY_LEDGER_RULES}
+Merge only what appears in partial summaries. Combine, deduplicate, and elevate evidence; do not invent missing verification, attribution, permissions, or session state.
 
 PARTIAL SUMMARIES:
 {merged_input}
 
 Use this exact structure:
+{_MINIMAL_RECOVERY_LEDGER_TEMPLATE}
+
 ## Active Task
 ## Goal
 ## Constraints & Preferences
@@ -1490,7 +1589,11 @@ Use this exact structure:
         )
 
         # Shared structured template (used by both paths).
-        _template_sections = f"""## Active Task
+        _template_sections = f"""{_RECOVERY_LEDGER_RULES}
+
+{_MINIMAL_RECOVERY_LEDGER_TEMPLATE}
+
+## Active Task
 [THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or
 task assignment verbatim — the exact words they used. If multiple tasks
 were requested and only some are done, list only the ones NOT yet completed.
@@ -2101,6 +2204,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_summary_error = None
+        self._last_summary_recovery_stage = None
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False

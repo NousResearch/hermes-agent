@@ -735,6 +735,26 @@ class TestAuxModelFallbackSurfacedToCallers:
         assert c._last_aux_model_failure_model is None
         assert c._last_aux_model_failure_error is None
 
+    def test_compress_clears_recovery_stage_at_start_of_next_call(self):
+        """A later normal compression must not report a stale recovery stage."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "normal summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+            )
+
+        c._last_summary_recovery_stage = "chunked"
+        with patch("agent.context_compressor.call_llm", return_value=mock_ok):
+            c.compress(self._make_msgs())
+
+        assert c._last_summary_recovery_stage is None
+
 
 class TestSummaryFailureTrackingForGatewayWarning:
     """Default behavior: failed LLM summary uses a structured local fallback
@@ -1978,6 +1998,64 @@ class TestSummarySafeRetryAndExtractiveFallback:
             {"role": "assistant", "content": "发现 summary 被 provider 拦截"},
             {"role": "user", "content": "长期方案怎么设计"},
         ]
+
+    def test_normal_summary_prompt_requires_minimal_recovery_ledger(self):
+        ok = self._mock_summary("## Active Task\ncontinue")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+
+        with patch("agent.context_compressor.call_llm", return_value=ok) as mock_call:
+            c._generate_summary(self._messages_with_risky_tool_output())
+
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        for heading in (
+            "## Compression Recovery Stage",
+            "## Current Permission Mode",
+            "## Current Attribution Boundary",
+            "## Known Unknowns / Not Proven",
+            "## Compression Source Span",
+            "## Critical Context Ledger",
+        ):
+            assert heading in prompt
+        assert "Do not invent" in prompt
+        assert "unknown" in prompt
+
+    def test_extractive_fallback_outputs_minimal_recovery_ledger(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+
+        result = c._generate_extractive_fallback_summary(
+            self._messages_with_risky_tool_output(),
+            error="provider failed",
+        )
+
+        for heading in (
+            "## Compression Recovery Stage",
+            "## Current Permission Mode",
+            "## Current Attribution Boundary",
+            "## Known Unknowns / Not Proven",
+            "## Compression Source Span",
+            "## Critical Context Ledger",
+        ):
+            assert heading in result
+        assert "extractive_fallback" in result
+        assert "unknown" in result
+        assert "blocked scary output" not in result
+
+    def test_extractive_fallback_preserves_read_only_confirmation_boundary(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+        messages = [
+            {"role": "user", "content": "先只读 review，不要运行命令，等我确认再改"},
+            {"role": "assistant", "content": "收到，只读检查。"},
+        ]
+
+        result = c._generate_extractive_fallback_summary(messages, error="provider failed")
+
+        assert "## Current Permission Mode\nneeds_confirmation" in result
+        assert "Latest retained user ask: '先只读 review，不要运行命令，等我确认再改'" in result
+        assert "Do not continue actions when the latest ask is stop/read-only/needs confirmation." in result
+        assert "continue the latest retained user ask" not in result
 
     def test_blocked_summary_retries_with_scrubbed_prompt(self):
         err = Exception("Your request was blocked.")

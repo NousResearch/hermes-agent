@@ -233,6 +233,12 @@ TOOLSETS = {
         "tools": ["execute_code"],
         "includes": []
     },
+
+    "codex_staged_implement": {
+        "description": "Guarded Codex candidate implementation with explicit scope and safety gates",
+        "tools": ["codex_staged_implement"],
+        "includes": []
+    },
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",

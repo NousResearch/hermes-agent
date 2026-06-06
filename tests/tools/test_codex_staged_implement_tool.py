@@ -196,6 +196,94 @@ def test_dirty_worktree_rejects_without_runner_call(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_dirty_worktree_returns_actionable_fail_closed_resolver(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    (repo / "README.md").write_text("changed\n", encoding="utf-8")
+    (repo / "staged.txt").write_text("staged\n", encoding="utf-8")
+    _git(repo, "add", "staged.txt")
+    (repo / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+    calls = []
+
+    def fake_runner(argv):
+        calls.append(argv)
+        raise AssertionError("runner should not be invoked")
+
+    monkeypatch.setattr(tool, "_run_runner", fake_runner)
+
+    result = _call(workdir=str(repo), allowed_files=["README.md"])
+
+    assert result["status"] == "dirty_worktree"
+    assert result["reason"] == "dirty_worktree"
+    assert result["recommended_next_action"] == "clean_worktree_before_execution"
+    assert result["next_required_action"] == "clean_worktree_before_execution"
+    assert result["authorization_required"] is True
+    assert {option["id"] for option in result["dirty_resolution_options"]} == {
+        "commit_or_checkpoint_current_changes",
+        "stash_current_changes",
+        "create_isolated_worktree",
+        "manually_clean_worktree",
+    }
+    assert all(option["authorization_required"] is True for option in result["dirty_resolution_options"])
+    assert result["dirty_path_classes"] == {
+        "tracked_modified": ["README.md"],
+        "staged": ["staged.txt"],
+        "untracked": ["untracked.txt"],
+        "deleted": [],
+        "renamed": [],
+        "conflicted": [],
+        "other": [],
+    }
+    assert result["diff_stat"]["truncated"] is False
+    assert "README.md" in "\n".join(result["diff_stat"]["unstaged"])
+    assert "staged.txt" in "\n".join(result["diff_stat"]["staged"])
+    assert "diff --git" not in json.dumps(result["diff_stat"])
+    assert calls == []
+
+
+def test_dirty_path_classes_cover_porcelain_boundaries():
+    assert tool._dirty_path_classes(
+        [
+            " M modified.txt",
+            "A  staged.txt",
+            "?? untracked.txt",
+            " D deleted.txt",
+            "R  old.txt -> renamed.txt",
+            "UU conflicted.txt",
+            "!! ignored.txt",
+        ]
+    ) == {
+        "tracked_modified": ["modified.txt"],
+        "staged": ["staged.txt"],
+        "untracked": ["untracked.txt"],
+        "deleted": ["deleted.txt"],
+        "renamed": ["renamed.txt"],
+        "conflicted": ["conflicted.txt"],
+        "other": ["ignored.txt"],
+    }
+
+
+def test_dirty_diff_stat_is_bounded(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    calls = []
+    many_lines = "\n".join(f" file-{index:03d}.txt | 1 +" for index in range(45))
+
+    def fake_git(repo_arg, *args):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout=many_lines, stderr="")
+
+    monkeypatch.setattr(tool, "_git", fake_git)
+
+    result = tool._dirty_diff_stat(repo)
+
+    assert calls == [("diff", "--stat", "--no-ext-diff"), ("diff", "--stat", "--no-ext-diff", "--cached")]
+    assert len(result["unstaged"]) == 40
+    assert len(result["staged"]) == 40
+    assert result["max_lines_per_section"] == 40
+    assert result["truncated"] is True
+    assert "diff --git" not in json.dumps(result)
+
+
 def test_dirty_worktree_paths_are_bounded_without_losing_total_count(tmp_path, monkeypatch):
     repo = _clean_repo(tmp_path)
     for index in range(105):
@@ -1383,5 +1471,28 @@ def test_tool_registration_and_core_exposure():
     assert entry is not None
     assert entry.toolset == "codex_staged_implement"
     assert "codex_staged_implement" in toolsets._HERMES_CORE_TOOLS
+    assert "codex_staged_implement" in toolsets.TOOLSETS
+    assert "codex_staged_implement" in toolsets.resolve_toolset("codex_staged_implement")
     assert "codex_staged_implement" in toolsets.TOOLSETS["hermes-acp"]["tools"]
     assert "codex_staged_implement" in toolsets.TOOLSETS["hermes-api-server"]["tools"]
+
+
+def test_codex_staged_implement_is_enabled_for_default_gateway_tool_resolution():
+    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_platform_tools
+
+    configurable_names = {name for name, _label, _description in CONFIGURABLE_TOOLSETS}
+    assert "codex_staged_implement" in configurable_names
+
+    enabled = _get_platform_tools({}, "qqbot")
+
+    assert "codex_staged_implement" in enabled
+
+
+def test_codex_staged_implement_schema_is_exposed_for_default_gateway_tools():
+    from hermes_cli.tools_config import _get_platform_tools
+    from model_tools import get_tool_definitions
+
+    enabled = _get_platform_tools({}, "qqbot")
+    schemas = get_tool_definitions(enabled_toolsets=sorted(enabled), quiet_mode=True)
+
+    assert "codex_staged_implement" in {schema["function"]["name"] for schema in schemas}

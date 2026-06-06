@@ -46,6 +46,7 @@ _LIST_LIMIT = 200
 _DICT_LIMIT = 80
 _STRING_LIMIT = 4000
 _DIRTY_PATHS_LIMIT = 100
+_DIFF_STAT_LINES_LIMIT = 40
 _INFERRED_SCOPE_NEXT_ACTION = "confirm_inferred_scope_or_execute_with_explicit_scope"
 _INFERRED_SCOPE_TEMPLATES = (
     (
@@ -351,21 +352,110 @@ def _infer_scope_from_task(repo: Path, task_text: str) -> tuple[dict[str, list[s
     return None, "scope is required", None
 
 
+def _dirty_path_from_porcelain(line: str) -> str:
+    raw_path = line[3:] if len(line) > 3 else line
+    if " -> " in raw_path:
+        raw_path = raw_path.split(" -> ", 1)[1]
+    return raw_path.strip()
+
+
+def _dirty_path_classes(lines: list[str]) -> dict[str, list[str]]:
+    classes = {
+        "tracked_modified": [],
+        "staged": [],
+        "untracked": [],
+        "deleted": [],
+        "renamed": [],
+        "conflicted": [],
+        "other": [],
+    }
+    for line in lines:
+        status = (line[:2] + "  ")[:2]
+        index_status, worktree_status = status[0], status[1]
+        path = _dirty_path_from_porcelain(line)
+        if index_status == "?" and worktree_status == "?":
+            bucket = "untracked"
+        elif index_status == "!" and worktree_status == "!":
+            bucket = "other"
+        elif index_status == "U" or worktree_status == "U" or status in {"AA", "DD", "AU", "UA", "DU", "UD"}:
+            bucket = "conflicted"
+        elif index_status == "R" or worktree_status == "R":
+            bucket = "renamed"
+        elif index_status == "D" or worktree_status == "D":
+            bucket = "deleted"
+        elif index_status != " ":
+            bucket = "staged"
+        elif worktree_status == "M":
+            bucket = "tracked_modified"
+        else:
+            bucket = "other"
+        if len(classes[bucket]) < _DIRTY_PATHS_LIMIT:
+            classes[bucket].append(path)
+    return classes
+
+
+def _bounded_diff_stat_lines(repo: Path, *args: str) -> tuple[list[str], bool]:
+    proc = _git(repo, "diff", "--stat", "--no-ext-diff", *args)
+    lines = [line for line in proc.stdout.splitlines() if line]
+    return lines[:_DIFF_STAT_LINES_LIMIT], len(lines) > _DIFF_STAT_LINES_LIMIT
+
+
+def _dirty_diff_stat(repo: Path) -> dict[str, Any]:
+    unstaged, unstaged_truncated = _bounded_diff_stat_lines(repo)
+    staged, staged_truncated = _bounded_diff_stat_lines(repo, "--cached")
+    return {
+        "unstaged": unstaged,
+        "staged": staged,
+        "max_lines_per_section": _DIFF_STAT_LINES_LIMIT,
+        "truncated": unstaged_truncated or staged_truncated,
+    }
+
+
+def _dirty_resolution_metadata(dirty: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "reason": "dirty_worktree",
+        "recommended_next_action": "clean_worktree_before_execution",
+        "next_required_action": "clean_worktree_before_execution",
+        "authorization_required": True,
+        "dirty_resolution_options": [
+            {
+                "id": "commit_or_checkpoint_current_changes",
+                "description": "Commit or otherwise checkpoint current work, then rerun from a clean baseline.",
+                "authorization_required": True,
+            },
+            {
+                "id": "stash_current_changes",
+                "description": "Stash current work, then rerun after confirming the baseline is clean.",
+                "authorization_required": True,
+            },
+            {
+                "id": "create_isolated_worktree",
+                "description": "Create a separate clean worktree and run the staged implementation there.",
+                "authorization_required": True,
+            },
+            {
+                "id": "manually_clean_worktree",
+                "description": "Manually resolve or remove dirty files, then rerun the staged implementation.",
+                "authorization_required": True,
+            },
+        ],
+        "dirty_path_classes": dirty.get("dirty_path_classes", {}),
+        "diff_stat": dirty.get("diff_stat", {"unstaged": [], "staged": [], "truncated": False}),
+    }
+
+
 def _dirty_check(repo: Path) -> dict[str, Any]:
     proc = _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
     lines = [line for line in proc.stdout.splitlines() if line]
-    paths: list[str] = []
-    for line in lines:
-        raw_path = line[3:] if len(line) > 3 else line
-        if " -> " in raw_path:
-            raw_path = raw_path.split(" -> ", 1)[1]
-        paths.append(raw_path.strip())
+    paths = [_dirty_path_from_porcelain(line) for line in lines]
     return {
         "is_clean": proc.returncode == 0 and not lines,
         "porcelain_count": len(lines),
         "dirty_count": len(paths),
         "dirty_paths": paths[:_DIRTY_PATHS_LIMIT],
         "dirty_paths_truncated": len(paths) > _DIRTY_PATHS_LIMIT,
+        "dirty_path_classes": _dirty_path_classes(lines),
+        "diff_stat": _dirty_diff_stat(repo),
     }
 
 
@@ -518,10 +608,9 @@ def _dry_run_plan_result(
             needs_user_confirmation=True,
             proposed_allowlist=allowlist,
             proposed_stage_plan=None,
-            next_required_action="clean_worktree_before_execution",
-            reason="dirty_worktree",
             scope_source=scope_source,
             inferred_template=inferred_template,
+            **_dirty_resolution_metadata(dirty),
         )
     return _base_result(
         status="dry_run_plan",
@@ -979,6 +1068,7 @@ def codex_staged_implement(args: dict[str, Any]) -> str:
                 verification_policy=verification_policy,
                 scope_source=scope_source,
                 inferred_template=inferred_template,
+                **_dirty_resolution_metadata(dirty),
             )
         )
 

@@ -6,7 +6,7 @@ import json
 import pytest
 
 from gateway.config import Platform
-from gateway.message_modes import resolve_gateway_message_mode
+from gateway.message_modes import GatewayMessageMode, resolve_gateway_message_mode
 from gateway.platforms.base import MessageEvent
 from gateway.run import GatewayRunner, _route_gateway_message_mode
 from gateway.session import SessionSource, build_session_key
@@ -25,9 +25,40 @@ def test_default_message_stays_dev_mode():
     assert route.message == "接着开发招生 CRM"
     assert route.session_scope is None
     assert route.enabled_toolsets is None
-    assert route.required_skills == ("using-superpowers",)
+    assert route.required_skills == ("using-superpowers", "project-dev-workflow")
     assert route.skip_context_files is False
     assert route.skip_memory is False
+
+
+def test_non_dev_mode_default_does_not_inherit_dev_workflow_skill():
+    route = GatewayMessageMode(name="ops", message="检查 gateway")
+
+    assert route.required_skills == ("using-superpowers",)
+
+
+def test_ops_required_route_skill_preload_does_not_include_dev_workflow(monkeypatch):
+    from gateway.run import _prepare_route_required_skills
+
+    calls = []
+
+    def fake_skill_view(name, task_id=None, side_effect_free=False, **_kwargs):
+        calls.append((name, task_id, side_effect_free))
+        return json.dumps({"success": True, "name": name, "content": f"# {name}\nloaded"})
+
+    monkeypatch.setattr("tools.skills_tool.skill_view", fake_skill_view)
+    route = GatewayMessageMode(name="ops", message="检查 gateway")
+
+    enabled_toolsets, combined_prompt = _prepare_route_required_skills(
+        ["terminal"],
+        "base prompt",
+        route,
+        task_id="task-ops",
+    )
+
+    assert "skills" in enabled_toolsets
+    assert "skill_view(name=\"using-superpowers\")" in combined_prompt
+    assert "project-dev-workflow" not in combined_prompt
+    assert calls == [("using-superpowers", "task-ops", False)]
 
 
 def test_lite_prefix_strips_text_and_limits_context_and_tools():
@@ -86,7 +117,7 @@ def test_dev_prefix_switches_back_to_default_route_and_strips_text():
     assert route.sticky_mode == "dev"
     assert route.control_response == ""
     assert route.session_scope is None
-    assert route.required_skills == ("using-superpowers",)
+    assert route.required_skills == ("using-superpowers", "project-dev-workflow")
 
 
 def test_slash_commands_are_not_mode_routed():
@@ -95,6 +126,7 @@ def test_slash_commands_are_not_mode_routed():
     assert route.name == "dev"
     assert route.message == "/new"
     assert route.session_scope is None
+    assert route.required_skills == ("using-superpowers",)
 
 
 def test_sticky_lite_mode_routes_followup_without_prefix():
@@ -147,7 +179,7 @@ def test_lite_execution_task_escalates_to_dev_route_and_strips_prefix():
     assert route.name == "dev"
     assert route.message == "建一个 GitHub 库"
     assert route.session_scope is None
-    assert route.required_skills == ("using-superpowers",)
+    assert route.required_skills == ("using-superpowers", "project-dev-workflow")
     assert route.sticky_mode == "dev"
 
 
@@ -330,11 +362,7 @@ def test_required_route_skills_are_preloaded_and_force_skills_toolset(monkeypatc
 
     monkeypatch.setattr("tools.skills_tool.skill_view", fake_skill_view)
 
-    route = GatewayMessageMode(
-        name="ops",
-        message="检查 gateway",
-        required_skills=("using-superpowers",),
-    )
+    route = resolve_gateway_message_mode("继续开发")
 
     enabled_toolsets, combined_prompt = _prepare_route_required_skills(
         ["terminal", "file"],
@@ -347,8 +375,13 @@ def test_required_route_skills_are_preloaded_and_force_skills_toolset(monkeypatc
     assert "base prompt" in combined_prompt
     assert "Required route skills" in combined_prompt
     assert "skill_view(name=\"using-superpowers\")" in combined_prompt
+    assert "skill_view(name=\"project-dev-workflow\")" in combined_prompt
     assert "# using-superpowers\nloaded" in combined_prompt
-    assert calls == [("using-superpowers", None, "task-1", False)]
+    assert "# project-dev-workflow\nloaded" in combined_prompt
+    assert calls == [
+        ("using-superpowers", None, "task-1", False),
+        ("project-dev-workflow", None, "task-1", False),
+    ]
 
 
 def test_route_without_required_skills_does_not_force_skills_toolset(monkeypatch):

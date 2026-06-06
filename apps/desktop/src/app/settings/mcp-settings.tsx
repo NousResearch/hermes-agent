@@ -9,7 +9,8 @@ import { useI18n } from '@/i18n'
 import { Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeSessionId } from '@/store/session'
+import { $activeSessionId, $mcpStatus, setMcpStatus } from '@/store/session'
+import type { McpServerStatusItem } from '@/store/session'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { EmptyState, LoadingState, Pill, SettingsContent } from './primitives'
@@ -47,6 +48,7 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.mcp
   const activeSessionId = useStore($activeSessionId)
+  const mcpRuntimeStatus = useStore($mcpStatus)
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [name, setName] = useState('')
@@ -72,8 +74,32 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
     return () => void (cancelled = true)
   }, [])
 
+  useEffect(() => {
+    if (!gateway) {
+      return
+    }
+
+    let cancelled = false
+
+    gateway
+      .request<{ servers: McpServerStatusItem[] }>('mcp.status')
+      .then(res => {
+        if (!cancelled && Array.isArray(res?.servers)) {
+          setMcpStatus(res.servers)
+        }
+      })
+      .catch(() => {})
+
+    return () => void (cancelled = true)
+  }, [gateway])
+
   const servers = useMemo(() => getServers(config), [config])
   const names = useMemo(() => Object.keys(servers).sort(), [servers])
+
+  const mcpStatusByName = useMemo(
+    () => Object.fromEntries(mcpRuntimeStatus.map(s => [s.name, s])),
+    [mcpRuntimeStatus]
+  )
 
   useDeepLinkHighlight({
     block: 'nearest',
@@ -176,6 +202,15 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
         confirm: true,
         session_id: activeSessionId ?? undefined
       })
+
+      try {
+        const status = await gateway.request<{ servers: McpServerStatusItem[] }>('mcp.status')
+
+        if (Array.isArray(status?.servers)) {
+          setMcpStatus(status.servers)
+        }
+      } catch {}
+
       notify({ kind: 'success', title: m.reloadedTitle, message: m.reloadedMessage })
     } catch (err) {
       notifyError(err, m.reloadFailed)
@@ -204,6 +239,8 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
               {names.map(serverName => {
                 const server = servers[serverName]
                 const active = selected === serverName
+                const runtime = mcpStatusByName[serverName]
+                const isConnected = runtime?.connected === true
 
                 return (
                   <button
@@ -216,10 +253,18 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
                     onClick={() => setSelected(serverName)}
                     type="button"
                   >
-                    <div className="truncate text-sm font-medium">{serverName}</div>
+                    <div className="flex items-center gap-1.5 truncate text-sm font-medium">
+                      {isConnected && (
+                        <span className="inline-block size-2 shrink-0 rounded-full bg-emerald-500" title="Connected" />
+                      )}
+                      <span className="truncate">{serverName}</span>
+                    </div>
                     <div className="mt-1 flex items-center gap-1.5">
                       <Pill>{transportLabel(server)}</Pill>
                       {server.disabled === true && <Pill>{m.disabled}</Pill>}
+                      {runtime && !runtime.connected && !runtime.disabled && (
+                        <span className="text-red-500 text-xs">disconnected</span>
+                      )}
                     </div>
                   </button>
                 )

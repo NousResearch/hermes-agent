@@ -113,6 +113,16 @@ export const $currentPersonality = atom('')
 export const $availablePersonalities = atom<string[]>([])
 export const $introSeed = atom(0)
 export const $contextSuggestions = atom<ContextSuggestion[]>([])
+export interface McpServerStatusItem {
+  connected: boolean
+  disabled: boolean
+  name: string
+  tools: number
+  transport: string
+}
+
+export const $mcpStatus = atom<McpServerStatusItem[]>([])
+
 export const $modelPickerOpen = atom(false)
 
 export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
@@ -152,6 +162,7 @@ export const setCurrentPersonality = (next: Updater<string>) => updateAtom($curr
 export const setAvailablePersonalities = (next: Updater<string[]>) => updateAtom($availablePersonalities, next)
 export const setIntroSeed = (next: Updater<number>) => updateAtom($introSeed, next)
 export const setContextSuggestions = (next: Updater<ContextSuggestion[]>) => updateAtom($contextSuggestions, next)
+export const setMcpStatus = (next: Updater<McpServerStatusItem[]>) => updateAtom($mcpStatus, next)
 export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelPickerOpen, next)
 
 // Watchdog tracking — when does a "working" session count as stuck?

@@ -61,6 +61,8 @@ export type GatewayEventPayload = {
   // secret.request (skill credential capture)
   env_var?: string
   prompt?: string
+  // session.info mcp status
+  mcp_servers?: unknown[]
 }
 
 export function textPart(text: string): ChatMessagePart {

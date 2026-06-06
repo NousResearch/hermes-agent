@@ -30,9 +30,11 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setMcpStatus,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import type { McpServerStatusItem } from '@/store/session'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { recordToolDiff } from '@/store/tool-diffs'
 import type { RpcEvent } from '@/types/hermes'
@@ -707,6 +709,10 @@ export function useMessageStream({
         }
 
         void refreshHermesConfig()
+
+        if (Array.isArray(payload?.mcp_servers)) {
+          setMcpStatus(payload.mcp_servers as McpServerStatusItem[])
+        }
 
         if (modelChanged || providerChanged) {
           void queryClient.invalidateQueries({

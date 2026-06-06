@@ -6043,6 +6043,16 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5015, str(e))
 
 
+@method("mcp.status")
+def _(rid, _params: dict) -> dict:
+    try:
+        from tools.mcp_tool import get_mcp_status
+
+        return _ok(rid, {"servers": get_mcp_status()})
+    except Exception as e:
+        return _err(rid, 5016, str(e))
+
+
 @method("reload.env")
 def _(rid, params: dict) -> dict:
     """Re-read ``~/.hermes/.env`` into the gateway process via

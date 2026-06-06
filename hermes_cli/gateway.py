@@ -3003,6 +3003,99 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
+# macOS 26+ broke launchctl management of the per-user GUI domain: `bootstrap`
+# returns error 5 ("Input/output error") and `kickstart` returns error 125
+# ("Domain does not support specified action"). When launchd refuses to manage
+# the gateway we can't supervise it as a service, so we fall back to a detached
+# background process (the documented `nohup hermes gateway run` workaround).
+# See issue #23387.
+_LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES = frozenset({5, 125})
+
+
+def _launchctl_domain_unsupported(returncode: int) -> bool:
+    """True when launchctl rejected the action because the domain can't manage it.
+
+    Codes 5 and 125 are emitted by macOS 26+ for `bootstrap`/`kickstart` against
+    the `gui/<uid>` (and `user/<uid>`) domains, which no longer support service
+    management. Treat these as "launchd unavailable" and degrade gracefully.
+    """
+    return returncode in _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES
+
+
+def _gateway_run_command() -> list[str]:
+    """Build the `python -m hermes_cli.main [--profile X] gateway run --replace` argv.
+
+    Profile-aware: honors the active HERMES_HOME via `_profile_arg()` so the
+    detached fallback launches into the same profile as the CLI invocation.
+    """
+    cmd = [get_python_path(), "-m", "hermes_cli.main"]
+    profile_arg = _profile_arg()
+    if profile_arg:
+        cmd.extend(profile_arg.split())
+    cmd.extend(["gateway", "run", "--replace"])
+    return cmd
+
+
+def _spawn_detached_gateway() -> bool:
+    """Launch the gateway as a detached background process (launchd fallback).
+
+    Used when launchctl can no longer bootstrap/kickstart the gateway on
+    macOS 26+ (issue #23387). Mirrors the `nohup hermes gateway run --replace`
+    workaround but keeps it CLI-managed: stdout/stderr go to the profile's
+    gateway logs and the PID is tracked via the gateway.pid file that
+    `run_gateway` writes, so stop/status/restart keep working.
+    """
+    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+
+    log_dir = get_hermes_home() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    out_path = log_dir / "gateway.log"
+    err_path = log_dir / "gateway.error.log"
+    try:
+        out = open(out_path, "ab")
+        err = open(err_path, "ab")
+    except OSError:
+        return False
+    try:
+        with out, err:
+            subprocess.Popen(
+                _gateway_run_command(),
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=err,
+                **windows_detach_popen_kwargs(),
+            )
+    except OSError:
+        return False
+    return True
+
+
+def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) -> bool:
+    """Start the gateway detached when launchd can't manage it, with guidance.
+
+    Returns True if the detached gateway was launched. When it can't be
+    launched, prints the manual workaround and (by default) exits non-zero so
+    the failure surfaces instead of silently doing nothing.
+    """
+    from hermes_constants import display_hermes_home as _dhh
+
+    print(f"⚠ launchd cannot manage the gateway on this macOS version ({reason}).")
+    if _spawn_detached_gateway():
+        print("✓ Started gateway as a background process instead")
+        print("  It will NOT auto-start at login or auto-restart on crash.")
+        print(f"  Logs: {_dhh()}/logs/gateway.log")
+        print("  Stop it with: hermes gateway stop")
+        return True
+    print_error("Failed to start the gateway as a background process.")
+    print(
+        f"  Try manually: nohup hermes gateway run --replace "
+        f"> {_dhh()}/logs/gateway.log 2>&1 &"
+    )
+    if exit_on_failure:
+        sys.exit(1)
+    return False
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     # Stable cwd anchor — never the volatile source checkout. See
@@ -3154,11 +3247,17 @@ def launchd_install(force: bool = False):
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(generate_launchd_plist())
 
-    subprocess.run(
-        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-        check=True,
-        timeout=30,
-    )
+    try:
+        subprocess.run(
+            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+            check=True,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as e:
+        if not _launchctl_domain_unsupported(e.returncode):
+            raise
+        _launchd_fallback_to_detached(f"launchctl bootstrap exit {e.returncode}")
+        return
 
     print()
     print("✓ Service installed and loaded!")
@@ -3195,16 +3294,22 @@ def launchd_start():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(
-            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-            check=True,
-            timeout=30,
-        )
-        subprocess.run(
-            ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
-            check=True,
-            timeout=30,
-        )
+        try:
+            subprocess.run(
+                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                check=True,
+                timeout=30,
+            )
+            subprocess.run(
+                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+                check=True,
+                timeout=30,
+            )
+        except subprocess.CalledProcessError as e:
+            if not _launchctl_domain_unsupported(e.returncode):
+                raise
+            _launchd_fallback_to_detached(f"launchctl exit {e.returncode}")
+            return
         print("✓ Service started")
         return
 
@@ -3216,19 +3321,28 @@ def launchd_start():
             timeout=30,
         )
     except subprocess.CalledProcessError as e:
+        if _launchctl_domain_unsupported(e.returncode):
+            _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
+            return
         if e.returncode not in {3, 113}:
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(
-            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-            check=True,
-            timeout=30,
-        )
-        subprocess.run(
-            ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
-            check=True,
-            timeout=30,
-        )
+        try:
+            subprocess.run(
+                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                check=True,
+                timeout=30,
+            )
+            subprocess.run(
+                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+                check=True,
+                timeout=30,
+            )
+        except subprocess.CalledProcessError as e2:
+            if not _launchctl_domain_unsupported(e2.returncode):
+                raise
+            _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
+            return
     print("✓ Service started")
 
 
@@ -3250,8 +3364,11 @@ def launchd_stop():
     try:
         subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
     except subprocess.CalledProcessError as e:
-        if e.returncode in {3, 113}:
-            pass  # Already unloaded — nothing to stop.
+        # 3/113: job already unloaded. 5/125: macOS 26+ can't manage the domain
+        # (issue #23387) — the gateway is a detached fallback process, so just
+        # fall through to the PID-based kill below.
+        if e.returncode in {3, 113} or _launchctl_domain_unsupported(e.returncode):
+            pass
         else:
             raise
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
@@ -3335,17 +3452,29 @@ def launchd_restart():
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
+        if _launchctl_domain_unsupported(e.returncode):
+            # macOS 26+ can't kickstart the domain (issue #23387). The old
+            # process was already drained/terminated above, so relaunch a
+            # fresh detached gateway.
+            _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
+            return
         if e.returncode not in {3, 113}:
             raise
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
-        subprocess.run(
-            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-            check=True,
-            timeout=30,
-        )
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        try:
+            subprocess.run(
+                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                check=True,
+                timeout=30,
+            )
+            subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        except subprocess.CalledProcessError as e2:
+            if not _launchctl_domain_unsupported(e2.returncode):
+                raise
+            _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
+            return
         print("✓ Service restarted")
 
 

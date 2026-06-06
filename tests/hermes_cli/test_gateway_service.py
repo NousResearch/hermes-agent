@@ -679,6 +679,123 @@ class TestLaunchdServiceRecovery:
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
 
+    def test_launchctl_domain_unsupported_recognizes_macos26_codes(self):
+        # macOS 26+ rejects gui/<uid> management with these codes (issue #23387).
+        assert gateway_cli._launchctl_domain_unsupported(5) is True
+        assert gateway_cli._launchctl_domain_unsupported(125) is True
+        # Codes that mean "job not loaded" are NOT domain-unsupported.
+        assert gateway_cli._launchctl_domain_unsupported(3) is False
+        assert gateway_cli._launchctl_domain_unsupported(113) is False
+        assert gateway_cli._launchctl_domain_unsupported(0) is False
+
+    def test_launchd_start_falls_back_to_detached_on_kickstart_125(self, tmp_path, monkeypatch, capsys):
+        """macOS 26 kickstart error 125 should spawn a detached gateway, not crash."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        target = f"{gateway_cli._launchd_domain()}/{label}"
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: False)
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd == ["launchctl", "kickstart", target]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    125, cmd, stderr="Domain does not support specified action"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        spawned = []
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
+        )
+
+        gateway_cli.launchd_start()
+
+        assert spawned == [True]
+        out = capsys.readouterr().out.lower()
+        assert "background process" in out
+
+    def test_launchd_install_falls_back_to_detached_on_bootstrap_5(self, tmp_path, monkeypatch, capsys):
+        """macOS 26 bootstrap error 5 should spawn a detached gateway, not crash."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["launchctl", "bootstrap"]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    5, cmd, stderr="Input/output error"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        spawned = []
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
+        )
+
+        gateway_cli.launchd_install(force=True)
+
+        assert spawned == [True]
+        assert "Service installed and loaded" not in capsys.readouterr().out
+
+    def test_launchd_restart_falls_back_to_detached_on_kickstart_125(self, monkeypatch, capsys):
+        """When kickstart -k returns 125, restart should relaunch detached."""
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd == ["launchctl", "kickstart", "-k", target]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    125, cmd, stderr="Domain does not support specified action"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        spawned = []
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
+        )
+
+        gateway_cli.launchd_restart()
+
+        assert spawned == [True]
+
+    def test_launchd_stop_tolerates_domain_unsupported_bootout(self, monkeypatch, capsys):
+        """bootout exit 125 (macOS 26) must fall through to PID-based kill, not raise."""
+        def fake_run(cmd, check=False, **kwargs):
+            if "bootout" in cmd:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    125, cmd, stderr="Domain does not support specified action"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda **kw: None)
+
+        gateway_cli.launchd_stop()
+
+        assert "stopped" in capsys.readouterr().out.lower()
+
+    def test_launchd_fallback_exits_when_spawn_fails(self, monkeypatch, capsys):
+        """If the detached spawn fails, surface the manual workaround and exit 1."""
+        monkeypatch.setattr(gateway_cli, "_spawn_detached_gateway", lambda: False)
+
+        with pytest.raises(SystemExit) as exc:
+            gateway_cli._launchd_fallback_to_detached("test reason")
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "nohup hermes gateway run" in out
+
 
 class TestGatewayServiceDetection:
     def test_supports_systemd_services_requires_systemctl_binary(self, monkeypatch):

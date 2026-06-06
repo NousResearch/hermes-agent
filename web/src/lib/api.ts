@@ -22,6 +22,7 @@ import type {
   CrewControlResponse,
   CrewOrganizationResponse,
   CrewProfileDetail,
+  CrewUsageResponse,
 } from "@/types/crew";
 
 // Ephemeral session token for protected endpoints.
@@ -377,6 +378,8 @@ export const api = {
     fetchJSON<CrewProfileDetail>(
       `/api/crew/profiles/${encodeURIComponent(name)}`,
     ),
+  getCrewUsage: (days = 30) =>
+    fetchJSON<CrewUsageResponse>(`/api/crew/usage?days=${days}`),
   createProfile: (body: { name: string; clone_from_default: boolean }) =>
     fetchJSON<{ ok: boolean; name: string; path: string }>("/api/profiles", {
       method: "POST",

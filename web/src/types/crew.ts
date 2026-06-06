@@ -104,3 +104,58 @@ export interface CrewProfileDetail {
   generated_at: string;
   node: CrewNode;
 }
+
+// --- Crew Usage / Token Monitor types ---
+
+export interface CrewUsageTokens {
+  sessions: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+}
+
+export interface CrewUsageWorker extends CrewUsageTokens {
+  source: string;
+  last_active: number | null;
+  model: string | null;
+  provider: string | null;
+}
+
+export interface CrewUsageProfileTotal extends CrewUsageTokens {
+  last_active: number | null;
+  model: string | null;
+  provider: string | null;
+  error?: string;
+}
+
+export interface CrewUsageProfile {
+  profile_name: string;
+  profile: CrewProfileSnapshot;
+  display_name: string;
+  department: string;
+  level: CrewLevel;
+  manager: string | null;
+  total: CrewUsageProfileTotal;
+  tasks: { running: number; blocked: number };
+  workers: CrewUsageWorker[];
+}
+
+export interface CrewUsageDepartment {
+  department: string;
+  sessions: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+  profiles: CrewUsageProfile[];
+}
+
+export interface CrewUsageResponse {
+  generated_at: string;
+  period_days: number;
+  totals: CrewUsageTokens;
+  departments: CrewUsageDepartment[];
+  profiles: CrewUsageProfile[];
+}

@@ -99,15 +99,24 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
             return True
     return False
     
+def _email_env(name: str) -> str:
+    """Return an email environment setting, treating blank/whitespace as unset."""
+    return os.getenv(name, "").strip()
+
+
+def _missing_email_settings() -> list[str]:
+    required = (
+        "EMAIL_ADDRESS",
+        "EMAIL_PASSWORD",
+        "EMAIL_IMAP_HOST",
+        "EMAIL_SMTP_HOST",
+    )
+    return [name for name in required if not _email_env(name)]
+
+
 def check_email_requirements() -> bool:
-    """Check if email platform dependencies are available."""
-    addr = os.getenv("EMAIL_ADDRESS")
-    pwd = os.getenv("EMAIL_PASSWORD")
-    imap = os.getenv("EMAIL_IMAP_HOST")
-    smtp = os.getenv("EMAIL_SMTP_HOST")
-    if not all([addr, pwd, imap, smtp]):
-        return False
-    return True
+    """Check if email platform settings are available and non-blank."""
+    return not _missing_email_settings()
 
 
 def _decode_header_value(raw: str) -> str:
@@ -248,13 +257,13 @@ class EmailAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
 
-        self._address = os.getenv("EMAIL_ADDRESS", "")
-        self._password = os.getenv("EMAIL_PASSWORD", "")
-        self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
-        self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
-        self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
-        self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
-        self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+        self._address = _email_env("EMAIL_ADDRESS")
+        self._password = _email_env("EMAIL_PASSWORD")
+        self._imap_host = _email_env("EMAIL_IMAP_HOST")
+        self._imap_port = int(_email_env("EMAIL_IMAP_PORT") or "993")
+        self._smtp_host = _email_env("EMAIL_SMTP_HOST")
+        self._smtp_port = int(_email_env("EMAIL_SMTP_PORT") or "587")
+        self._poll_interval = int(_email_env("EMAIL_POLL_INTERVAL") or "15")
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -295,6 +304,13 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
+        missing = _missing_email_settings()
+        if missing:
+            message = "Email startup skipped: missing required setting(s): " + ", ".join(missing)
+            logger.warning("[Email] %s", message)
+            self._set_fatal_error("email_missing_configuration", message, retryable=False)
+            return False
+
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)

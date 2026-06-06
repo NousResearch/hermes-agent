@@ -2,8 +2,8 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { getProfiles, transcribeAudio } from '@/hermes'
-import { type Translations, translateNow, useI18n } from '@/i18n'
-import { appendTextPart, branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import { translateNow, type Translations, useI18n } from '@/i18n'
+import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
   attachmentDisplayText,
   parseCommandDispatch,
@@ -15,7 +15,8 @@ import {
   type CommandsCatalogLike,
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
-  isDesktopSlashCommand
+  isDesktopSlashCommand,
+  isModelPickerCommand
 } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
@@ -38,6 +39,7 @@ import {
   setAwaitingResponse,
   setBusy,
   setMessages,
+  setModelPickerOpen,
   setSessions,
   setYoloActive
 } from '@/store/session'
@@ -159,6 +161,7 @@ export function usePromptActions({
 }: PromptActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+
   const appendSessionTextMessage = useCallback(
     (sessionId: string, role: ChatMessage['role'], text: string) => {
       const body = text.trim()
@@ -454,6 +457,49 @@ export function usePromptActions({
           return
         }
 
+        // /model opens the desktop model picker overlay — the same full
+        // provider+model picker reachable from the status-bar model button —
+        // instead of the headless prompt_toolkit modal the slash worker can't
+        // render. With explicit args (`/model <name> [--provider ...]`) run the
+        // switch directly through slash.exec so power users can still type it.
+        if (isModelPickerCommand(`/${normalizedName}`)) {
+          if (!arg.trim()) {
+            setModelPickerOpen(true)
+
+            return
+          }
+
+          const sid = sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
+
+          if (!sid) {
+            notify({ kind: 'error', title: 'Session unavailable', message: 'Could not create a new session' })
+
+            return
+          }
+
+          try {
+            const result = await requestGateway<SlashExecResponse>('slash.exec', {
+              session_id: sid,
+              command: command.replace(/^\/+/, '')
+            })
+
+            const body = result?.output || `/${name}: model switched`
+            appendSessionTextMessage(
+              sid,
+              'system',
+              recordInput ? slashStatusText(command, body) : body
+            )
+          } catch (err) {
+            appendSessionTextMessage(
+              sid,
+              'system',
+              `error: ${err instanceof Error ? err.message : String(err)}`
+            )
+          }
+
+          return
+        }
+
         if (normalizedName === 'skin' && !sessionHint && !activeSessionIdRef.current) {
           notify({ kind: 'success', message: handleSkinCommand(arg) })
 
@@ -547,6 +593,7 @@ export function usePromptActions({
               session_id: sessionId,
               title: arg
             })
+
             const finalTitle = (result?.title || arg).trim()
             const queued = result?.pending === true
 

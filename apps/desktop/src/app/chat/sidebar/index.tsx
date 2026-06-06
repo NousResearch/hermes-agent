@@ -52,6 +52,8 @@ import {
   $sidebarOverlayMounted,
   $sidebarPinsOpen,
   $sidebarRecentsOpen,
+  $sidebarSessionOrderIds,
+  $sidebarWorkspaceOrderIds,
   pinSession,
   reorderPinnedSession,
   SESSION_SEARCH_FOCUS_EVENT,
@@ -59,6 +61,8 @@ import {
   setSidebarCronOpen,
   setSidebarPinsOpen,
   setSidebarRecentsOpen,
+  setSidebarSessionOrderIds,
+  setSidebarWorkspaceOrderIds,
   SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '@/store/layout'
@@ -119,11 +123,12 @@ const WORKSPACE_PAGE = 5
 // ALL-profiles view: show only the latest N per profile up front to keep the
 // unified list scannable, then reveal/fetch more in N-sized steps on demand.
 const PROFILE_INITIAL_PAGE = 5
-const WS_ID_PREFIX = 'workspace:'
+const GROUP_DND_ID_PREFIX = 'group:'
 const LOCAL_SESSION_SOURCES = new Set(['cli', 'desktop', 'local', 'tui'])
 
-const wsId = (id: string) => `${WS_ID_PREFIX}${id}`
-const parseWsId = (id: string) => (id.startsWith(WS_ID_PREFIX) ? id.slice(WS_ID_PREFIX.length) : null)
+const groupDndId = (id: string) => `${GROUP_DND_ID_PREFIX}${id}`
+const parseGroupDndId = (id: string) =>
+  id.startsWith(GROUP_DND_ID_PREFIX) ? id.slice(GROUP_DND_ID_PREFIX.length) : null
 const countLabel = (loaded: number, total: number) => (total > loaded ? `${loaded}/${total}` : String(loaded))
 const sessionTime = (s: SessionInfo) => s.last_active || s.started_at || 0
 
@@ -317,8 +322,8 @@ export function ChatSidebar({
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
-  const [agentOrderIds, setAgentOrderIds] = useState<string[]>([])
-  const [workspaceOrderIds, setWorkspaceOrderIds] = useState<string[]>([])
+  const agentOrderIds = useStore($sidebarSessionOrderIds)
+  const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
@@ -482,6 +487,11 @@ export function ChatSidebar({
     [agentSessions]
   )
 
+  const orderedSourceGroups = useMemo(
+    () => orderByIds(sourceGroups, g => g.id, workspaceOrderIds),
+    [sourceGroups, workspaceOrderIds]
+  )
+
   const agentGroups = useMemo(
     () => orderByIds(workspaceGroupsFor(localAgentSessions, s.noWorkspace), g => g.id, workspaceOrderIds),
     [localAgentSessions, s.noWorkspace, workspaceOrderIds]
@@ -551,7 +561,7 @@ export function ChatSidebar({
   const displayAgentSessions = sourceGroups.length ? localAgentSessions : agentSessions
 
   const displayAgentGroups = useMemo(() => {
-    if (sourceGroups.length) {
+    if (orderedSourceGroups.length) {
       const localGroups = agentsGrouped
         ? agentGroups
         : localAgentSessions.length
@@ -566,11 +576,19 @@ export function ChatSidebar({
             ]
           : []
 
-      return [...sourceGroups, ...localGroups]
+      return orderByIds([...orderedSourceGroups, ...localGroups], g => g.id, workspaceOrderIds)
     }
 
     return showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined
-  }, [agentGroups, agentsGrouped, localAgentSessions, profileGroups, showAllProfiles, sourceGroups])
+  }, [
+    agentGroups,
+    agentsGrouped,
+    localAgentSessions,
+    orderedSourceGroups,
+    profileGroups,
+    showAllProfiles,
+    workspaceOrderIds
+  ])
 
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
 
@@ -619,23 +637,24 @@ export function ChatSidebar({
 
     const activeId = String(active.id)
     const overId = String(over.id)
-    const activeWs = parseWsId(activeId)
-    const overWs = parseWsId(overId)
+    const activeGroup = parseGroupDndId(activeId)
+    const overGroup = parseGroupDndId(overId)
 
-    if (activeWs && overWs) {
-      const oldIdx = agentGroups.findIndex(g => g.id === activeWs)
-      const newIdx = agentGroups.findIndex(g => g.id === overWs)
+    if (activeGroup && overGroup) {
+      const groups = displayAgentGroups ?? []
+      const oldIdx = groups.findIndex(g => g.id === activeGroup)
+      const newIdx = groups.findIndex(g => g.id === overGroup)
 
       if (oldIdx < 0 || newIdx < 0) {
         return
       }
 
-      setWorkspaceOrderIds(arrayMove(agentGroups, oldIdx, newIdx).map(g => g.id))
+      setSidebarWorkspaceOrderIds(arrayMove(groups, oldIdx, newIdx).map(g => g.id))
 
       return
     }
 
-    if (activeWs || overWs) {
+    if (activeGroup || overGroup) {
       return
     }
 
@@ -646,7 +665,7 @@ export function ChatSidebar({
       return
     }
 
-    setAgentOrderIds(arrayMove(agentSessions, oldIdx, newIdx).map(s => s.id))
+    setSidebarSessionOrderIds(arrayMove(agentSessions, oldIdx, newIdx).map(s => s.id))
   }
 
   return (
@@ -851,7 +870,7 @@ export function ChatSidebar({
             pinned={false}
             rootClassName="min-h-0 flex-1 p-0"
             sessions={displayAgentSessions}
-            sortable={!showAllProfiles && sourceGroups.length === 0 && agentSessions.length > 1}
+            sortable={!showAllProfiles && agentSessions.length > 1}
             workingSessionIdSet={workingSessionIdSet}
           />
         )}
@@ -1068,7 +1087,7 @@ function SidebarSessionsSection({
     )
 
     inner = dndActive ? (
-      <SortableContext items={groups.map(g => wsId(g.id))} strategy={verticalListSortingStrategy}>
+      <SortableContext items={groups.map(g => groupDndId(g.id))} strategy={verticalListSortingStrategy}>
         {groupNodes}
       </SortableContext>
     ) : (
@@ -1266,7 +1285,7 @@ interface SortableWorkspaceProps {
 }
 
 function SortableSidebarWorkspaceGroup(props: SortableWorkspaceProps) {
-  return <SidebarWorkspaceGroup {...props} {...useSortableBindings(wsId(props.group.id))} />
+  return <SidebarWorkspaceGroup {...props} {...useSortableBindings(groupDndId(props.group.id))} />
 }
 
 function SidebarCount({ children }: { children: React.ReactNode }) {

@@ -111,6 +111,40 @@ async def test_reset_fires_reset_hook(mock_invoke_hook):
 
 @pytest.mark.asyncio
 @patch("hermes_cli.plugins.invoke_hook")
+async def test_session_end_hook_includes_chat_id(mock_invoke_hook):
+    """session:end gateway hook must carry chat_id so hook authors can route replies."""
+    runner = _make_runner()
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    end_calls = [
+        c for c in runner.hooks.emit.call_args_list
+        if c.args and c.args[0] == "session:end"
+    ]
+    assert end_calls, "session:end was not emitted"
+    ctx = end_calls[0].args[1]
+    assert ctx.get("chat_id") == "c1"
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.plugins.invoke_hook")
+async def test_session_reset_hook_includes_chat_id(mock_invoke_hook):
+    """session:reset gateway hook must carry chat_id so hook authors can route replies."""
+    runner = _make_runner()
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    reset_calls = [
+        c for c in runner.hooks.emit.call_args_list
+        if c.args and c.args[0] == "session:reset"
+    ]
+    assert reset_calls, "session:reset was not emitted"
+    ctx = reset_calls[0].args[1]
+    assert ctx.get("chat_id") == "c1"
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.plugins.invoke_hook")
 async def test_finalize_before_reset(mock_invoke_hook):
     """on_session_finalize must fire before on_session_reset."""
     runner = _make_runner()

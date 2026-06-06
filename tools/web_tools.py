@@ -830,10 +830,18 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         backend = _get_search_backend()
         provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
+        if provider is None or not provider.supports_search() or (
+            provider is not None and not provider.is_available()
+        ):
             # Fall back to availability-walked active provider when the
-            # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
+            # configured backend isn't a registered search provider, isn't
+            # available (e.g. Firecrawl without API key), or doesn't
+            # support search.
+            if provider is not None:
+                logger.debug(
+                    "Web search: configured backend '%s' is not available; falling back",
+                    backend,
+                )
             provider = get_active_search_provider()
 
         if provider is None:

@@ -10,6 +10,7 @@ from gateway.runtime.auto_resume_freshness import (
     last_transcript_timestamp,
     startup_auto_resume_max,
 )
+from gateway.runtime.session_cache_policy import plan_idle_cache_evictions, plan_lru_cache_evictions
 import gateway.run as gateway_run
 
 
@@ -68,3 +69,27 @@ def test_auto_resume_freshness_facade_preserves_private_import_surface():
     assert gateway_run._last_transcript_timestamp(history) == last_transcript_timestamp(history)
     assert gateway_run._auto_continue_freshness_window() == auto_continue_freshness_window()
     assert gateway_run._startup_auto_resume_max() == startup_auto_resume_max()
+
+
+def test_session_cache_policy_facades_preserve_private_import_surface(monkeypatch):
+    from collections import OrderedDict
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(gateway_run, "_AGENT_CACHE_MAX_SIZE", 1)
+    monkeypatch.setattr(gateway_run, "_AGENT_CACHE_IDLE_TTL_SECS", 5.0)
+
+    old = SimpleNamespace(_last_activity_ts=0.0)
+    new = SimpleNamespace(_last_activity_ts=9.0)
+    cache = OrderedDict((("old", (old, "sig")), ("new", (new, "sig"))))
+
+    assert gateway_run._plan_lru_cache_evictions(cache) == plan_lru_cache_evictions(
+        cache,
+        max_size=1,
+        pending_sentinel=gateway_run._AGENT_PENDING_SENTINEL,
+    )
+    assert gateway_run._plan_idle_cache_evictions(cache, now=10.0) == plan_idle_cache_evictions(
+        cache,
+        idle_ttl_secs=5.0,
+        now=10.0,
+        pending_sentinel=gateway_run._AGENT_PENDING_SENTINEL,
+    )

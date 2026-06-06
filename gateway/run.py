@@ -61,6 +61,8 @@ from hermes_cli.fallback_config import get_fallback_chain
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
 # memory providers, etc.).  LRU order + idle TTL eviction are enforced
 # from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
+# Values remain module-level for the established monkeypatch/import surface;
+# cache policy decisions live in gateway.runtime.session_cache_policy.
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
@@ -88,6 +90,11 @@ from gateway.runtime.auto_resume_freshness import (
     is_fresh_gateway_interruption,
     last_transcript_timestamp,
     startup_auto_resume_max,
+)
+from gateway.runtime.session_cache_policy import (
+    apply_cache_eviction_plan,
+    plan_idle_cache_evictions,
+    plan_lru_cache_evictions,
 )
 
 _TELEGRAM_NOISY_STATUS_RE = _status_message_filter.TELEGRAM_NOISY_STATUS_RE
@@ -751,6 +758,26 @@ logger = logging.getLogger(__name__)
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
 
+
+def _plan_lru_cache_evictions(cache, running_agents=None):
+    """Backward-compatible facade for session cache LRU policy."""
+    return plan_lru_cache_evictions(
+        cache,
+        running_agents=running_agents,
+        max_size=_AGENT_CACHE_MAX_SIZE,
+        pending_sentinel=_AGENT_PENDING_SENTINEL,
+    )
+
+
+def _plan_idle_cache_evictions(cache, running_agents=None, *, now: float):
+    """Backward-compatible facade for session cache idle-TTL policy."""
+    return plan_idle_cache_evictions(
+        cache,
+        running_agents=running_agents,
+        idle_ttl_secs=_AGENT_CACHE_IDLE_TTL_SECS,
+        now=now,
+        pending_sentinel=_AGENT_PENDING_SENTINEL,
+    )
 
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
@@ -14969,15 +14996,6 @@ class GatewayRunner:
         if not hasattr(_cache, "move_to_end"):
             return
 
-        # Snapshot of agent instances that are actively mid-turn.  Use id()
-        # so the lookup is O(1) and doesn't depend on AIAgent.__eq__ (which
-        # MagicMock overrides in tests).
-        running_ids = {
-            id(a)
-            for a in getattr(self, "_running_agents", {}).values()
-            if a is not None and a is not _AGENT_PENDING_SENTINEL
-        }
-
         # Walk LRU → MRU and evict excess-LRU entries that aren't mid-turn.
         # We only consider entries in the first (size - cap) LRU positions
         # as eviction candidates.  If one of those slots is held by an
@@ -14987,21 +15005,14 @@ class GatewayRunner:
         # already-cached long-running one.  The cache may therefore stay
         # temporarily over cap; it will re-check on the next insert,
         # after active turns have finished.
-        excess = max(0, len(_cache) - _AGENT_CACHE_MAX_SIZE)
-        evict_plan: List[tuple] = []  # [(key, agent), ...]
-        if excess > 0:
-            ordered_keys = list(_cache.keys())
-            for key in ordered_keys[:excess]:
-                entry = _cache.get(key)
-                agent = entry[0] if isinstance(entry, tuple) and entry else None
-                if agent is not None and id(agent) in running_ids:
-                    continue  # active mid-turn; don't evict, don't substitute
-                evict_plan.append((key, agent))
+        evict_plan, remaining_over_cap = plan_lru_cache_evictions(
+            _cache,
+            running_agents=getattr(self, "_running_agents", {}),
+            max_size=_AGENT_CACHE_MAX_SIZE,
+            pending_sentinel=_AGENT_PENDING_SENTINEL,
+        )
+        apply_cache_eviction_plan(_cache, evict_plan)
 
-        for key, _ in evict_plan:
-            _cache.pop(key, None)
-
-        remaining_over_cap = len(_cache) - _AGENT_CACHE_MAX_SIZE
         if remaining_over_cap > 0:
             logger.warning(
                 "Agent cache over cap (%d > %d); %d excess slot(s) held by "
@@ -15038,26 +15049,15 @@ class GatewayRunner:
         if _cache is None or _lock is None:
             return 0
         now = time.time()
-        to_evict: List[tuple] = []
-        running_ids = {
-            id(a)
-            for a in getattr(self, "_running_agents", {}).values()
-            if a is not None and a is not _AGENT_PENDING_SENTINEL
-        }
         with _lock:
-            for key, entry in list(_cache.items()):
-                agent = entry[0] if isinstance(entry, tuple) and entry else None
-                if agent is None:
-                    continue
-                if id(agent) in running_ids:
-                    continue  # mid-turn — don't tear it down
-                last_activity = getattr(agent, "_last_activity_ts", None)
-                if last_activity is None:
-                    continue
-                if (now - last_activity) > _AGENT_CACHE_IDLE_TTL_SECS:
-                    to_evict.append((key, agent))
-            for key, _ in to_evict:
-                _cache.pop(key, None)
+            to_evict = plan_idle_cache_evictions(
+                _cache,
+                running_agents=getattr(self, "_running_agents", {}),
+                idle_ttl_secs=_AGENT_CACHE_IDLE_TTL_SECS,
+                now=now,
+                pending_sentinel=_AGENT_PENDING_SENTINEL,
+            )
+            apply_cache_eviction_plan(_cache, to_evict)
         for key, agent in to_evict:
             logger.info(
                 "Agent cache idle-TTL evict: session=%s (idle=%.0fs)",

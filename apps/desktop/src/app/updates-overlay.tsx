@@ -180,7 +180,7 @@ function IdleView({
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
-        <BrandMark className="size-14" />
+        <BrandMark className="size-16" />
 
         <DialogTitle className="text-center text-xl">{u.availableTitle}</DialogTitle>
         <DialogDescription className="text-center text-sm">

@@ -157,6 +157,20 @@ export interface Translations {
     muteHaptics: string
     unmuteHaptics: string
     openSettings: string
+    openKeybinds: string
+  }
+
+  keybinds: {
+    title: string
+    subtitle: (open: string) => string
+    rebind: string
+    reset: string
+    resetAll: string
+    pressKey: string
+    set: string
+    conflictWith: (label: string) => string
+    categories: Record<string, string>
+    actions: Record<string, string>
   }
 
   language: {

@@ -13,7 +13,6 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getSessionMessages, listAllProfileSessions, type SessionInfo } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
-import { toggleCommandPalette } from '../store/command-palette'
 import {
   $panesFlipped,
   $pinnedSessionIds,
@@ -66,6 +65,7 @@ import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
+import { useKeybinds } from './hooks/use-keybinds'
 import { ModelPickerOverlay } from './model-picker-overlay'
 import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { RightSidebarPane } from './right-sidebar'
@@ -223,31 +223,6 @@ export function DesktopController() {
       window.removeEventListener('keydown', onKeyDown, { capture: true })
     }
   }, [])
-
-  // Global chrome shortcuts (plain Cmd/Ctrl, no alt/shift): Cmd+K / Cmd+P →
-  // command palette (the composer's "drain next queued" moved to Cmd+Shift+K),
-  // Cmd+. → command center (sessions / system / usage).
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) {
-        return
-      }
-
-      const key = event.key.toLowerCase()
-
-      if (key === 'k' || key === 'p') {
-        event.preventDefault()
-        toggleCommandPalette()
-      } else if (key === '.') {
-        event.preventDefault()
-        toggleCommandCenter()
-      }
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [toggleCommandCenter])
 
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
@@ -457,40 +432,13 @@ export function DesktopController() {
     updateSessionState
   })
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-
-      const editing =
-        target?.isContentEditable ||
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement
-
-      if (event.defaultPrevented || event.repeat || event.altKey || event.code !== 'KeyN') {
-        return
-      }
-
-      // Two accelerators for "new session":
-      //   - Cmd/Ctrl+N (browser-like, works while typing in any input)
-      //   - Shift+N    (single-key, only when no input is focused)
-      const accelerator = event.metaKey || event.ctrlKey
-      const singleKey = !accelerator && !editing && event.shiftKey
-
-      if (!accelerator && !singleKey) {
-        return
-      }
-
-      event.preventDefault()
-      startFreshSessionDraft()
-      // Briefly light up the sidebar's ⌘N hint so the shortcut is discoverable.
-      window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [startFreshSessionDraft])
+  // Single global listener for every rebindable hotkey (incl. profile switching)
+  // plus the on-screen keybind editor's capture mode.
+  useKeybinds({
+    startFreshSession: startFreshSessionDraft,
+    toggleCommandCenter,
+    toggleSelectedPin
+  })
 
   // A profile switch/create drops to a fresh new-session draft so the previously
   // open session doesn't bleed across contexts. Skip the initial value.

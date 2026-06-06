@@ -34,6 +34,7 @@ import { cn } from '@/lib/utils'
 import {
   $activeGatewayProfile,
   $profileColors,
+  $profileCreateRequest,
   $profileOrder,
   $profiles,
   $profileScope,
@@ -178,6 +179,20 @@ export function ProfileRail() {
     void refreshActiveProfile()
   }, [])
 
+  // Open the create dialog when the `profile.create` hotkey fires (the dialog
+  // state lives here, so the global keybind bumps a request atom we watch).
+  const createRequest = useStore($profileCreateRequest)
+  const lastCreateRef = useRef(createRequest)
+
+  useEffect(() => {
+    if (createRequest === lastCreateRef.current) {
+      return
+    }
+
+    lastCreateRef.current = createRequest
+    setCreateOpen(true)
+  }, [createRequest])
+
   return (
     <div aria-label="Profiles" className="flex items-center gap-0.5" role="tablist">
       {/* One button toggles default ↔ all: home face when scoped to a profile,
@@ -199,7 +214,12 @@ export function ProfileRail() {
 
       {/* Single-profile: the active default's home icon next to the create +. */}
       {!multiProfile && defaultProfile && (
-        <ProfilePill active glyph="home" label={defaultProfile.name} onSelect={() => selectProfile(defaultProfile.name)} />
+        <ProfilePill
+          active
+          glyph="home"
+          label={defaultProfile.name}
+          onSelect={() => selectProfile(defaultProfile.name)}
+        />
       )}
 
       <div

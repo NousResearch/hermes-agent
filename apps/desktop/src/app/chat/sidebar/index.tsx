@@ -17,7 +17,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -49,6 +49,7 @@ import {
   $sidebarRecentsOpen,
   pinSession,
   reorderPinnedSession,
+  SESSION_SEARCH_FOCUS_EVENT,
   setSidebarAgentsGrouped,
   setSidebarPinsOpen,
   setSidebarRecentsOpen,
@@ -263,7 +264,17 @@ export function ChatSidebar({
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
   const [profileLoadMorePending, setProfileLoadMorePending] = useState<Record<string, boolean>>({})
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const trimmedQuery = searchQuery.trim()
+
+  // Hotkey (session.focusSearch) → focus the field once it's mounted.
+  useEffect(() => {
+    const onFocus = () => searchInputRef.current?.focus({ preventScroll: true })
+
+    window.addEventListener(SESSION_SEARCH_FOCUS_EVENT, onFocus)
+
+    return () => window.removeEventListener(SESSION_SEARCH_FOCUS_EVENT, onFocus)
+  }, [])
 
   // Flash the ⌘N hint full-opacity (no transition) for the press, so hitting
   // the shortcut visibly pings its affordance in the sidebar.
@@ -621,6 +632,7 @@ export function ChatSidebar({
           <div className="shrink-0 px-2 pb-1 pt-1">
             <SearchField
               aria-label={s.searchAria}
+              inputRef={searchInputRef}
               onChange={setSearchQuery}
               placeholder={s.searchPlaceholder}
               value={searchQuery}

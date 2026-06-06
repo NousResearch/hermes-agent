@@ -1017,6 +1017,95 @@ export interface MissionControlDomainScore {
   items: number;
 }
 
+export interface MissionControlModelRuntime extends Record<string, unknown> {
+  provider: string;
+  model: string;
+  reasoning: string;
+  delegationProvider?: string | null;
+  maxTurns?: number;
+}
+
+export interface MissionControlCronRuntime extends Record<string, unknown> {
+  total: number;
+  enabled: number;
+  paused: number;
+  cadences: Record<string, number>;
+  deliveries: Record<string, number>;
+  lastStatusCounts: Record<string, number>;
+  failedJobs: number;
+  overdueCount: number;
+  nextRunKnown: boolean;
+  nextRunDueInSeconds: number | null;
+  lastRunAgeSeconds: number | null;
+  lastRunAgeBuckets: Record<string, number>;
+  reflectionFreshness: string;
+  reflectionLastRunAgeSeconds: number | null;
+}
+
+export interface MissionControlMcpRuntime extends Record<string, unknown> {
+  configured: number;
+  servers: string[];
+  serverDetails: MissionControlInfoItem[];
+  serverNamesRedacted: boolean;
+  enabled: number;
+  disabled: number;
+  statusCounts: Record<string, number>;
+  transportCounts: Record<string, number>;
+}
+
+export interface MissionControlToolsRuntime extends Record<string, unknown> {
+  configuredToolsets: string[];
+  configuredToolsetCount: number;
+  configuredToolsetBuckets: Record<string, number>;
+  configuredToolsetNamesRedacted: boolean;
+  disabledToolsets: string[];
+  disabledToolsetCount: number;
+  disabledToolsetBuckets: Record<string, number>;
+  registeredToolCount: number;
+  enabledToolCount: number;
+}
+
+export interface MissionControlSafetyRuntime extends Record<string, unknown> {
+  approvalsMode: string;
+  cronApprovalsMode: string;
+  approvalFlowConfigured: boolean;
+  autoApproveEnabled: boolean;
+  redactSecrets: boolean;
+  terminalBackend: string;
+  terminalIsolated: boolean;
+  privateUrlsAllowed: boolean;
+  toolOutputLimits: Record<string, unknown>;
+  promptInjection: Record<string, unknown>;
+}
+
+export interface MissionControlRuntime {
+  generatedAt: string;
+  home: string;
+  model: MissionControlModelRuntime;
+  env: Record<string, unknown>;
+  identity: Record<string, unknown>;
+  sessions: Record<string, unknown>;
+  skills: Record<string, unknown>;
+  cron: MissionControlCronRuntime;
+  mcp: MissionControlMcpRuntime;
+  gateway: Record<string, unknown>;
+  tools: MissionControlToolsRuntime;
+  safety: MissionControlSafetyRuntime;
+  voice: Record<string, unknown>;
+  dashboard: Record<string, unknown>;
+  memory: Record<string, unknown>;
+  semantic: Record<string, unknown>;
+  analytics: Record<string, unknown>;
+  quality: Record<string, unknown>;
+  multiUser: Record<string, unknown>;
+  reflection: Record<string, unknown>;
+  hosting: Record<string, unknown>;
+  dataFlow: MissionControlInfoItem[];
+  preflight: MissionControlInfoItem[];
+  customization: MissionControlInfoItem[];
+  production: Record<string, unknown>;
+}
+
 export interface MissionControlSnapshot {
   ok: boolean;
   source: {
@@ -1042,33 +1131,7 @@ export interface MissionControlSnapshot {
     resources?: MissionControlInfoItem[];
     dataFlowSurfaces?: MissionControlInfoItem[];
   };
-  runtime: {
-    generatedAt: string;
-    home: string;
-    model: Record<string, unknown>;
-    env: Record<string, unknown>;
-    identity: Record<string, unknown>;
-    sessions: Record<string, unknown>;
-    skills: Record<string, unknown>;
-    cron: Record<string, unknown>;
-    mcp: Record<string, unknown>;
-    gateway: Record<string, unknown>;
-    tools: Record<string, unknown>;
-    safety: Record<string, unknown>;
-    voice: Record<string, unknown>;
-    dashboard: Record<string, unknown>;
-    memory: Record<string, unknown>;
-    semantic: Record<string, unknown>;
-    analytics: Record<string, unknown>;
-    quality: Record<string, unknown>;
-    multiUser: Record<string, unknown>;
-    reflection: Record<string, unknown>;
-    hosting: Record<string, unknown>;
-    dataFlow: MissionControlInfoItem[];
-    preflight: MissionControlInfoItem[];
-    customization: MissionControlInfoItem[];
-    production: Record<string, unknown>;
-  };
+  runtime: MissionControlRuntime;
   coverage: {
     summary: {
       total: number;

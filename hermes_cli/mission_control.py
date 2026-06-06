@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sqlite3
 import time
 from typing import Any, Iterable
@@ -399,6 +400,140 @@ DATA_FLOW_SURFACES: list[dict[str, str]] = [
 
 _STATE_WEIGHT = {"active": 100, "partial": 68, "watch": 38, "planned": 18}
 
+KNOWN_PROVIDER_FAMILIES = {
+    "anthropic",
+    "auto",
+    "copilot",
+    "deepseek",
+    "gemini",
+    "github-copilot",
+    "google",
+    "grok",
+    "huggingface",
+    "kilocode",
+    "kimi",
+    "local",
+    "mistral",
+    "moonshot",
+    "nous",
+    "ollama",
+    "openai",
+    "openai-codex",
+    "opencode-go",
+    "opencode-zen",
+    "openrouter",
+    "qwen-oauth",
+    "xai",
+    "zai",
+}
+
+KNOWN_VOICE_PROVIDERS = {
+    "edge",
+    "elevenlabs",
+    "groq",
+    "local",
+    "minimax",
+    "mistral",
+    "neutts",
+    "openai",
+    "whisper",
+}
+
+KNOWN_GATEWAY_FAMILIES = {
+    "api",
+    "discord",
+    "email",
+    "feishu",
+    "homeassistant",
+    "local",
+    "matrix",
+    "signal",
+    "slack",
+    "sms",
+    "telegram",
+    "web",
+    "whatsapp",
+    "yuanbao",
+}
+
+SAFE_SESSION_END_REASONS = {
+    "completed",
+    "done",
+    "error",
+    "interrupted",
+    "max_iterations",
+    "max_turns",
+    "stopped",
+    "timeout",
+    "tool_error",
+}
+
+SAFE_HANDOFF_STATES = {"pending", "ready", "sent", "failed", "cancelled", "completed"}
+SAFE_CRON_STATUSES = {"success", "ok", "error", "failed", "skipped", "running", "pending", "timeout"}
+SAFE_MODEL_WORDS = {
+    "ai",
+    "anthropic",
+    "audio",
+    "base",
+    "chat",
+    "claude",
+    "code",
+    "coder",
+    "codex",
+    "dall",
+    "deepseek",
+    "e",
+    "embedding",
+    "embeddings",
+    "exp",
+    "experimental",
+    "fast",
+    "flash",
+    "gemini",
+    "gemma",
+    "glm",
+    "google",
+    "gpt",
+    "4o",
+    "grok",
+    "haiku",
+    "hermes",
+    "high",
+    "instruct",
+    "kimi",
+    "large",
+    "latest",
+    "llama",
+    "medium",
+    "meta",
+    "mini",
+    "mistral",
+    "mixtral",
+    "moonshot",
+    "nous",
+    "o",
+    "omni",
+    "online",
+    "openai",
+    "openrouter",
+    "opus",
+    "oss",
+    "preview",
+    "pro",
+    "qwen",
+    "realtime",
+    "reasoning",
+    "search",
+    "small",
+    "sonnet",
+    "thinking",
+    "transcribe",
+    "turbo",
+    "vision",
+    "xai",
+    "z",
+}
+
 
 @dataclass(frozen=True)
 class CapabilityState:
@@ -478,20 +613,140 @@ def _source_label(value: Any) -> str | None:
 
 
 def _safe_model_label(value: Any) -> str:
-    """Return a model label while collapsing local file paths to a filename."""
+    """Return a model label without exposing local paths or private deployment names."""
     raw = str(value or "auto").strip()
     if not raw:
         return "auto"
     lower = raw.lower()
     looks_like_path = (
         raw.startswith(("/", "~", "./", "../"))
+        or lower.startswith("file://")
         or "\\" in raw
         or (len(raw) > 2 and raw[1:3] == ":\\")
         or lower.endswith((".gguf", ".safetensors", ".bin", ".pt", ".pth", ".onnx"))
     )
     if looks_like_path:
         return "local-model"
-    return raw
+    if "://" in lower:
+        return "custom-model"
+    if lower in {"auto", "local-model"}:
+        return lower
+    if lower == "local":
+        return "local-model"
+    if lower.startswith(("custom:", "custom/", "custom-")):
+        return "custom-model"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/+:-]*", raw):
+        return "custom-model"
+
+    # Exact model names can include provider and version separators.  Keep them
+    # only when every token is from a public model/provider vocabulary or a pure
+    # version token (e.g. ``gpt-5.5``, ``anthropic/claude-sonnet-4``).  Unknown
+    # words often encode private deployments, project names, paths, or clients.
+    tokens = [token for token in re.split(r"[^a-z0-9.]+", lower) if token]
+    version_token = re.compile(r"^(?:v?\d+(?:\.\d+)*|\d+(?:\.\d+)?[bkmt])$")
+    public_family_version_token = re.compile(r"^(?:qwen|llama|gemma|glm|o|r)\d+(?:\.\d+)*$")
+    if tokens and all(token in SAFE_MODEL_WORDS or version_token.match(token) or public_family_version_token.match(token) for token in tokens):
+        return raw
+    return "custom-model"
+
+
+def _safe_choice_label(value: Any, *, allowed: set[str], default: str = "custom") -> str:
+    raw = str(value or "").strip().lower().replace("-", "_")
+    if not raw:
+        return default
+    return raw if raw in allowed else default
+
+
+def _safe_family_label(value: Any, *, known: set[str], default: str = "custom") -> str | None:
+    """Collapse user-defined provider/platform labels to stable families."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    lower = raw.lower()
+    if lower.startswith(("/", "~", "./", "../", "file://")) or "://" in lower:
+        return "local" if default == "provider" else "custom"
+    if lower.startswith("custom"):
+        return "custom"
+    if lower in known:
+        return lower
+    for family in sorted(known, key=len, reverse=True):
+        if lower == family or lower.startswith(f"{family}:") or lower.startswith(f"{family}/"):
+            return family
+    return default
+
+
+def _safe_provider_label(value: Any) -> str:
+    label = _safe_family_label(value, known=KNOWN_PROVIDER_FAMILIES, default="custom")
+    return label or "auto"
+
+
+def _safe_voice_label(value: Any) -> str | None:
+    return _safe_family_label(value, known=KNOWN_VOICE_PROVIDERS, default="custom")
+
+
+def _safe_gateway_label(value: Any) -> str:
+    label = _source_label(value)
+    if label in KNOWN_GATEWAY_FAMILIES:
+        return label
+    return "other"
+
+
+def _safe_status(value: Any, *, allowed: set[str], default: str = "other") -> str:
+    raw = str(value or "").strip().lower().replace("-", "_")
+    if not raw:
+        return "unknown"
+    return raw if raw in allowed else default
+
+
+def _toolset_bucket(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return "unknown"
+    if raw.startswith("mcp") or raw.startswith("mcp-") or raw.startswith("mcp:"):
+        return "mcp"
+    if raw.startswith("plugin") or raw.startswith("plugin-") or raw.startswith("plugin:"):
+        return "plugin"
+    builtin = {
+        "browser", "code_execution", "cronjob", "delegation", "file", "memory",
+        "search", "session_search", "skills", "terminal", "todo", "tts", "vision", "web",
+        "image_gen", "video", "messaging", "clarify", "kanban", "spotify",
+        "homeassistant", "discord", "discord_admin", "feishu_doc", "feishu_drive", "yuanbao",
+    }
+    return "builtin" if raw in builtin else "custom"
+
+
+def _increment(mapping: dict[str, int], key: str, amount: int = 1) -> None:
+    mapping[key] = mapping.get(key, 0) + amount
+
+
+def _parse_timestamp(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except Exception:
+        pass
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def _age_bucket(seconds: int | None) -> str:
+    if seconds is None:
+        return "never"
+    if seconds < 3600:
+        return "under_1h"
+    if seconds < 24 * 3600:
+        return "under_24h"
+    if seconds < 7 * 24 * 3600:
+        return "under_7d"
+    return "over_7d"
 
 
 def _read_json(path: Path) -> Any:
@@ -611,12 +866,22 @@ def _state_db_metrics(home: Path) -> dict[str, Any]:
         "trigramFtsPresent": False,
         "summaries": 0,
         "stateMetaRows": 0,
+        "endReasonCounts": {},
+        "childSessionCount": 0,
+        "rootSessionCount": 0,
+        "complexSessionCount": 0,
+        "handoffStateCounts": {},
+        "rewindTotal": 0,
+        "avgApiCalls": 0,
+        "maxApiCalls": 0,
+        "roleCounts": {},
+        "delegateTaskCalls": 0,
     }
     if not path.exists():
         return base
     con: sqlite3.Connection | None = None
     try:
-        con = sqlite3.connect(path)
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         con.row_factory = sqlite3.Row
         tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
         base["ftsPresent"] = any("fts" in name.lower() for name in tables)
@@ -649,6 +914,37 @@ def _state_db_metrics(home: Path) -> dict[str, Any]:
                     base["todayEstimatedCostUsd"] = round(float(con.execute("SELECT COALESCE(SUM(estimated_cost_usd), 0) FROM sessions WHERE started_at >= ?", (day_start,)).fetchone()[0] or 0), 4)
                 if "actual_cost_usd" in cols:
                     base["todayActualCostUsd"] = round(float(con.execute("SELECT COALESCE(SUM(actual_cost_usd), 0) FROM sessions WHERE started_at >= ?", (day_start,)).fetchone()[0] or 0), 4)
+            if "end_reason" in cols:
+                end_counts: dict[str, int] = {}
+                for row in con.execute("SELECT end_reason, COUNT(*) FROM sessions WHERE COALESCE(end_reason, '') != '' GROUP BY end_reason"):
+                    _increment(end_counts, _safe_status(row[0], allowed=SAFE_SESSION_END_REASONS), _safe_int(row[1]))
+                base["endReasonCounts"] = end_counts
+            if "parent_session_id" in cols:
+                base["childSessionCount"] = _safe_int(con.execute("SELECT COUNT(*) FROM sessions WHERE COALESCE(parent_session_id, '') != ''").fetchone()[0])
+                base["rootSessionCount"] = max(base["total"] - base["childSessionCount"], 0)
+            else:
+                base["rootSessionCount"] = base["total"]
+            complexity_clauses = []
+            if "message_count" in cols:
+                complexity_clauses.append("message_count >= 20")
+            if "tool_call_count" in cols:
+                complexity_clauses.append("tool_call_count >= 10")
+            if "api_call_count" in cols:
+                complexity_clauses.append("api_call_count >= 10")
+            if complexity_clauses:
+                complexity_query = "SELECT COUNT(*) FROM sessions WHERE " + " OR ".join(complexity_clauses)
+                base["complexSessionCount"] = _safe_int(con.execute(complexity_query).fetchone()[0])
+            if "handoff_state" in cols:
+                handoff_counts: dict[str, int] = {}
+                for row in con.execute("SELECT handoff_state, COUNT(*) FROM sessions WHERE COALESCE(handoff_state, '') != '' GROUP BY handoff_state"):
+                    _increment(handoff_counts, _safe_status(row[0], allowed=SAFE_HANDOFF_STATES), _safe_int(row[1]))
+                base["handoffStateCounts"] = handoff_counts
+            if "rewind_count" in cols:
+                base["rewindTotal"] = _safe_int(con.execute("SELECT COALESCE(SUM(rewind_count), 0) FROM sessions").fetchone()[0])
+            if "api_call_count" in cols:
+                values = con.execute("SELECT COALESCE(AVG(api_call_count), 0), COALESCE(MAX(api_call_count), 0) FROM sessions").fetchone()
+                base["avgApiCalls"] = round(float(values[0] or 0), 2)
+                base["maxApiCalls"] = _safe_int(values[1])
             if "source" in cols:
                 source_counts: dict[str, int] = {}
                 for row in con.execute("SELECT source, COUNT(*) FROM sessions GROUP BY source ORDER BY COUNT(*) DESC LIMIT 50"):
@@ -685,6 +981,16 @@ def _state_db_metrics(home: Path) -> dict[str, Any]:
                 base["activeMessages"] = _safe_int(con.execute("SELECT COUNT(*) FROM messages WHERE active=1").fetchone()[0])
             else:
                 base["activeMessages"] = base["messages"]
+            if "role" in msg_cols:
+                role_counts: dict[str, int] = {}
+                for row in con.execute("SELECT role, COUNT(*) FROM messages GROUP BY role"):
+                    role = str(row[0] or "unknown").lower()
+                    if role not in {"user", "assistant", "tool", "system", "developer"}:
+                        role = "other"
+                    _increment(role_counts, role, _safe_int(row[1]))
+                base["roleCounts"] = role_counts
+            if "tool_name" in msg_cols:
+                base["delegateTaskCalls"] = _safe_int(con.execute("SELECT COUNT(*) FROM messages WHERE lower(COALESCE(tool_name, '')) = 'delegate_task'").fetchone()[0])
         if "summaries" in tables:
             base["summaries"] = _safe_int(con.execute("SELECT COUNT(*) FROM summaries").fetchone()[0])
         if "state_meta" in tables:
@@ -731,7 +1037,8 @@ def _memory_metrics(home: Path, sessions: dict[str, Any]) -> dict[str, Any]:
 def _semantic_metrics(env_info: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
     semantic_cfg = cfg.get("semantic") if isinstance(cfg.get("semantic"), dict) else {}
     vector_cfg = cfg.get("vector") if isinstance(cfg.get("vector"), dict) else {}
-    provider = semantic_cfg.get("provider") or vector_cfg.get("provider") or ("pinecone" if "pinecone" in env_info.get("families", []) else "none")
+    raw_provider = semantic_cfg.get("provider") or vector_cfg.get("provider") or ("pinecone" if "pinecone" in env_info.get("families", []) else "none")
+    provider = "pinecone" if str(raw_provider).lower() == "pinecone" else ("none" if str(raw_provider).lower() == "none" else _safe_provider_label(raw_provider))
     env_sem = env_info.get("semantic", {}) if isinstance(env_info.get("semantic"), dict) else {}
     index_configured = bool(env_sem.get("pineconeIndexPresent") or semantic_cfg.get("index") or vector_cfg.get("index"))
     return {
@@ -1032,6 +1339,14 @@ def _cron_metrics(home: Path) -> dict[str, Any]:
     heartbeat = 0
     reflection = 0
     last_error_present = False
+    last_status_counts: dict[str, int] = {}
+    overdue_count = 0
+    failed_jobs = 0
+    next_due_values: list[int] = []
+    last_run_ages: list[int] = []
+    reflection_run_ages: list[int] = []
+    last_run_age_buckets: dict[str, int] = {"never": 0, "under_1h": 0, "under_24h": 0, "under_7d": 0, "over_7d": 0}
+    now = time.time()
     for job in jobs:
         disabled = job.get("disabled") or job.get("paused") or job.get("enabled") is False
         if not disabled:
@@ -1054,12 +1369,41 @@ def _cron_metrics(home: Path) -> dict[str, Any]:
             label = "other"
         deliveries[label] = deliveries.get(label, 0) + 1
         descriptor = " ".join(str(job.get(k) or "") for k in ["name", "prompt", "skills", "script"]).lower()
-        if any(token in descriptor for token in ["heartbeat", "check-in", "checkin", "morning", "evening", "weekly review"]):
+        is_heartbeat = any(token in descriptor for token in ["heartbeat", "check-in", "checkin", "morning", "evening", "weekly review"])
+        is_reflection = any(token in descriptor for token in ["reflection", "curator", "dream", "consolidat", "memory review"])
+        if is_heartbeat:
             heartbeat += 1
-        if any(token in descriptor for token in ["reflection", "curator", "dream", "consolidat", "memory review"]):
+        if is_reflection:
             reflection += 1
         if job.get("last_error") or job.get("error"):
             last_error_present = True
+        status = _safe_status(job.get("last_status") or job.get("status"), allowed=SAFE_CRON_STATUSES)
+        if status != "unknown":
+            _increment(last_status_counts, status)
+        if status in {"error", "failed", "timeout"} or job.get("last_error") or job.get("error"):
+            failed_jobs += 1
+        next_ts = _parse_timestamp(job.get("next_run_at") or job.get("next_run"))
+        if next_ts is not None:
+            due_in = int(next_ts - now)
+            next_due_values.append(due_in)
+            if not disabled and due_in < 0:
+                overdue_count += 1
+        last_ts = _parse_timestamp(job.get("last_run_at") or job.get("last_run") or job.get("last_finished_at"))
+        if last_ts is not None:
+            age_seconds = max(0, int(now - last_ts))
+            last_run_ages.append(age_seconds)
+            _increment(last_run_age_buckets, _age_bucket(age_seconds))
+            if is_reflection:
+                reflection_run_ages.append(age_seconds)
+        else:
+            _increment(last_run_age_buckets, "never")
+    reflection_freshness = "not_configured"
+    if reflection:
+        if not reflection_run_ages:
+            reflection_freshness = "unknown"
+        else:
+            freshest_reflection = min(reflection_run_ages)
+            reflection_freshness = "fresh" if freshest_reflection <= 36 * 3600 else "stale"
     return {
         "filePresent": jobs_path.exists(),
         "path": _compact_path(jobs_path, home),
@@ -1073,6 +1417,17 @@ def _cron_metrics(home: Path) -> dict[str, Any]:
         "reflectionJobs": reflection,
         "genericJobs": max(len(jobs) - heartbeat - reflection, 0),
         "lastErrorPresent": last_error_present,
+        "lastStatusCounts": last_status_counts,
+        "failedJobs": failed_jobs,
+        "overdueCount": overdue_count,
+        "nextRunKnown": bool(next_due_values),
+        "nextRunDueInSeconds": min(next_due_values) if next_due_values else None,
+        "lastRunAgeSeconds": min(last_run_ages) if last_run_ages else None,
+        "lastRunAgeBuckets": last_run_age_buckets,
+        "reflectionLastRunAgeSeconds": min(reflection_run_ages) if reflection_run_ages else None,
+        "reflectionFreshness": reflection_freshness,
+        "timezoneConfigured": False,
+        "timezoneSource": "unknown",
     }
 
 def _mcp_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -1085,11 +1440,38 @@ def _mcp_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
     nested_servers = mcp.get("servers") if isinstance(mcp, dict) else None
     if isinstance(nested_servers, dict):
         servers.update(nested_servers)
+    enabled = 0
+    transport_counts: dict[str, int] = {"stdio": 0, "http": 0, "sse": 0, "unknown": 0}
+    status_counts: dict[str, int] = {"enabled": 0, "disabled": 0}
+    server_summaries: list[dict[str, Any]] = []
+    for idx, key in enumerate(sorted(servers.keys()), start=1):
+        value = servers.get(key)
+        disabled = isinstance(value, dict) and value.get("enabled") is False
+        if not disabled:
+            enabled += 1
+        _increment(status_counts, "disabled" if disabled else "enabled")
+        transport = "unknown"
+        if isinstance(value, dict):
+            raw_transport = str(value.get("transport") or "").lower()
+            if raw_transport in transport_counts:
+                transport = raw_transport
+            elif value.get("url"):
+                url = str(value.get("url") or "").lower()
+                transport = "sse" if "sse" in url else "http"
+            elif value.get("command"):
+                transport = "stdio"
+        _increment(transport_counts, transport)
+        if idx <= 12:
+            server_summaries.append({"label": f"server-{idx}", "enabled": not disabled, "transport": transport})
     return {
         "configured": len(servers),
-        "servers": [f"server-{idx}" for idx, _ in enumerate(sorted(servers.keys())[:12], start=1)],
+        "servers": [item["label"] for item in server_summaries],
+        "serverDetails": server_summaries,
         "serverNamesRedacted": True,
-        "enabled": sum(1 for v in servers.values() if not (isinstance(v, dict) and v.get("enabled") is False)),
+        "enabled": enabled,
+        "disabled": max(len(servers) - enabled, 0),
+        "statusCounts": status_counts,
+        "transportCounts": transport_counts,
     }
 
 
@@ -1108,21 +1490,27 @@ def _model_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(provider, str) or not provider.strip():
         provider = model_name.split("/", 1)[0] if "/" in model_name else "auto"
     return {
-        "provider": provider,
+        "provider": _safe_provider_label(provider),
         "model": model_name,
-        "reasoning": agent.get("reasoning_effort") or delegation.get("reasoning_effort") or "default",
-        "delegationProvider": delegation.get("provider") or None,
+        "reasoning": _safe_choice_label(agent.get("reasoning_effort") or delegation.get("reasoning_effort") or "default", allowed={"none", "minimal", "low", "medium", "high", "xhigh", "default", "show", "hide"}, default="custom"),
+        "delegationProvider": _safe_provider_label(delegation.get("provider")) if delegation.get("provider") else None,
         "maxTurns": _safe_int(agent.get("max_turns"), 0),
     }
 
 
 def _gateway_metrics(cfg: dict[str, Any], env_info: dict[str, Any]) -> dict[str, Any]:
-    configured_families = [f for f in env_info.get("families", []) if f in {"telegram", "discord", "slack", "matrix", "signal", "email", "sms", "homeassistant"}]
+    configured_labels: list[str] = []
+    configured_entries = 0
+    for family in env_info.get("families", []):
+        if family in KNOWN_GATEWAY_FAMILIES:
+            configured_labels.append(str(family))
+            configured_entries += 1
     platforms_cfg = ((cfg.get("gateway") or {}).get("platforms") or {}) if isinstance(cfg.get("gateway"), dict) else {}
     if isinstance(platforms_cfg, dict):
         for name, pcfg in platforms_cfg.items():
             if isinstance(pcfg, dict) and pcfg.get("enabled"):
-                configured_families.append(str(name))
+                configured_entries += 1
+                configured_labels.append(_safe_gateway_label(name))
     running = False
     pid = None
     runtime_state = "unknown"
@@ -1133,16 +1521,18 @@ def _gateway_metrics(cfg: dict[str, Any], env_info: dict[str, Any]) -> dict[str,
         running = bool(pid)
         status = read_runtime_status()
         if isinstance(status, dict):
-            runtime_state = str(status.get("state") or status.get("status") or ("running" if running else "stopped"))
+            runtime_state = _safe_status(status.get("state") or status.get("status") or ("running" if running else "stopped"), allowed={"running", "stopped", "starting", "ready", "error", "failed", "unknown"})
     except Exception:
         runtime_state = "unavailable"
-    unique = sorted(set(configured_families))
+    unique = sorted(set(configured_labels))
     return {
         "running": running,
         "pidPresent": bool(pid),
         "state": runtime_state,
         "configuredPlatforms": unique,
-        "configuredCount": len(unique),
+        "configuredCount": configured_entries or len(unique),
+        "platformNamesRedacted": True,
+        "customPlatformCount": sum(1 for label in configured_labels if label == "other"),
     }
 
 
@@ -1151,17 +1541,28 @@ def _tool_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
     disabled = ((cfg.get("agent") or {}).get("disabled_toolsets") or []) if isinstance(cfg.get("agent"), dict) else []
     tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
     configured_toolsets = list(toolsets) if isinstance(toolsets, list) else []
+    disabled_toolsets = list(disabled) if isinstance(disabled, list) else []
     repo_root = Path(__file__).resolve().parents[1]
     builtin_tool_files = list((repo_root / "tools").glob("*.py")) if (repo_root / "tools").exists() else []
     read_file_present = any(p.name in {"file_operations.py", "file.py"} for p in builtin_tool_files)
     terminal_present = any("terminal" in p.name for p in builtin_tool_files)
+    buckets: dict[str, int] = {}
+    disabled_buckets: dict[str, int] = {}
+    for item in configured_toolsets:
+        _increment(buckets, _toolset_bucket(item))
+    for item in disabled_toolsets:
+        _increment(disabled_buckets, _toolset_bucket(item))
     return {
-        "configuredToolsets": configured_toolsets,
+        "configuredToolsets": [f"toolset-{idx}" for idx, _ in enumerate(configured_toolsets[:12], start=1)],
         "configuredToolsetCount": len(configured_toolsets),
-        "disabledToolsets": list(disabled) if isinstance(disabled, list) else [],
+        "configuredToolsetBuckets": buckets,
+        "configuredToolsetNamesRedacted": True,
+        "disabledToolsets": [f"disabled-toolset-{idx}" for idx, _ in enumerate(disabled_toolsets[:12], start=1)],
+        "disabledToolsetCount": len(disabled_toolsets),
+        "disabledToolsetBuckets": disabled_buckets,
         "toolSearch": bool(tools_cfg.get("tool_search")),
         "registeredToolCount": len(builtin_tool_files),
-        "enabledToolCount": max(len(builtin_tool_files) - (len(disabled) if isinstance(disabled, list) else 0), 0),
+        "enabledToolCount": max(len(builtin_tool_files) - len(disabled_toolsets), 0),
         "dangerClasses": {"safe": 0, "destructive": 0, "expensive": 0, "unknown": len(builtin_tool_files)},
         "fileAccess": {
             "readFileToolPresent": read_file_present,
@@ -1175,15 +1576,21 @@ def _safety_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
     raw_approvals = cfg.get("approvals")
     raw_security = cfg.get("security")
     raw_terminal = cfg.get("terminal")
+    raw_tools = cfg.get("tools")
     approvals: dict[str, Any] = raw_approvals if isinstance(raw_approvals, dict) else {}
     security: dict[str, Any] = raw_security if isinstance(raw_security, dict) else {}
     terminal: dict[str, Any] = raw_terminal if isinstance(raw_terminal, dict) else {}
-    mode = str(approvals.get("mode") or "manual")
-    cron_mode = str(approvals.get("cron_mode") or approvals.get("mode") or "manual")
-    terminal_backend = str(terminal.get("backend") or "local")
-    isolated = terminal_backend in {"docker", "ssh", "daytona", "singularity", "modal", "kubernetes", "firecracker"}
-    approval_enabled = mode.lower() not in {"off", "none", "disabled", "false"}
-    auto_enabled = mode.lower() in {"smart", "auto", "auto_approve", "auto-approve"}
+    tools_cfg: dict[str, Any] = raw_tools if isinstance(raw_tools, dict) else {}
+    raw_mode = str(approvals.get("mode") or "manual")
+    raw_cron_mode = str(approvals.get("cron_mode") or approvals.get("mode") or "manual")
+    safe_modes = {"manual", "smart", "auto", "auto_approve", "off", "none", "disabled"}
+    mode = _safe_choice_label(raw_mode, allowed=safe_modes, default="custom")
+    cron_mode = _safe_choice_label(raw_cron_mode, allowed=safe_modes, default="custom")
+    raw_terminal_backend = str(terminal.get("backend") or "local")
+    terminal_backend = _safe_choice_label(raw_terminal_backend, allowed={"local", "docker", "ssh", "daytona", "singularity", "modal", "kubernetes", "firecracker", "managed_modal"}, default="custom")
+    isolated = terminal_backend in {"docker", "ssh", "daytona", "singularity", "modal", "kubernetes", "firecracker", "managed_modal"}
+    approval_enabled = mode not in {"off", "none", "disabled"}
+    auto_enabled = mode in {"smart", "auto", "auto_approve"}
     repo_root = Path(__file__).resolve().parents[1]
     marker_supported = False
     try:
@@ -1196,6 +1603,11 @@ def _safety_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
                 break
     except Exception:
         marker_supported = False
+    limit_values: list[int] = []
+    for key in ["max_output_chars", "tool_output_limit", "tool_output_limit_chars", "terminal_output_limit", "terminal_output_limit_chars"]:
+        value = _safe_int(tools_cfg.get(key), 0)
+        if value > 0:
+            limit_values.append(value)
     return {
         "approvalsMode": mode,
         "cronApprovalsMode": cron_mode,
@@ -1208,9 +1620,16 @@ def _safety_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
         "terminalBackend": terminal_backend,
         "terminalIsolated": isolated,
         "privateUrlsAllowed": bool(security.get("allow_private_urls")),
+        "toolOutputLimits": {
+            "configured": bool(limit_values),
+            "count": len(limit_values),
+            "minChars": min(limit_values) if limit_values else None,
+            "maxChars": max(limit_values) if limit_values else None,
+        },
         "promptInjection": {
             "toolOutputMarkersSupported": marker_supported,
             "toolOutputMarkersEnabled": marker_supported,
+            "toolOutputLimitConfigured": bool(limit_values),
             "untrustedExternalContentTracked": marker_supported,
             "attackableRequiresManualApproval": approval_enabled and marker_supported,
             "privateUrlsAllowed": bool(security.get("allow_private_urls")),
@@ -1259,8 +1678,8 @@ def _build_runtime(cfg: dict[str, Any], home: Path, dashboard_state: dict[str, A
         "safety": safety,
         "voice": {
             "sttEnabled": bool(((cfg.get("stt") or {}).get("enabled")) if isinstance(cfg.get("stt"), dict) else False),
-            "sttProvider": ((cfg.get("stt") or {}).get("provider")) if isinstance(cfg.get("stt"), dict) else None,
-            "ttsProvider": ((cfg.get("tts") or {}).get("provider")) if isinstance(cfg.get("tts"), dict) else None,
+            "sttProvider": _safe_voice_label(((cfg.get("stt") or {}).get("provider")) if isinstance(cfg.get("stt"), dict) else None),
+            "ttsProvider": _safe_voice_label(((cfg.get("tts") or {}).get("provider")) if isinstance(cfg.get("tts"), dict) else None),
         },
         "dashboard": dashboard,
     }
@@ -1269,7 +1688,13 @@ def _build_runtime(cfg: dict[str, Any], home: Path, dashboard_state: dict[str, A
     runtime["analytics"] = _analytics_metrics(sessions, cfg)
     runtime["quality"] = _quality_metrics(home)
     runtime["multiUser"] = _multi_user_metrics(home, env_info)
-    runtime["reflection"] = {"enabled": runtime["cron"].get("reflectionJobs", 0) > 0, "jobs": runtime["cron"].get("reflectionJobs", 0), "curatorEnabled": runtime["cron"].get("reflectionJobs", 0) > 0}
+    runtime["reflection"] = {
+        "enabled": runtime["cron"].get("reflectionJobs", 0) > 0,
+        "jobs": runtime["cron"].get("reflectionJobs", 0),
+        "curatorEnabled": runtime["cron"].get("reflectionJobs", 0) > 0,
+        "freshness": runtime["cron"].get("reflectionFreshness"),
+        "lastRunAgeSeconds": runtime["cron"].get("reflectionLastRunAgeSeconds"),
+    }
     runtime["hosting"] = _hosting_metrics(cfg, safety, env_info)
     runtime["dataFlow"] = _data_flow(runtime)
     runtime["preflight"] = _preflight_checks(runtime, home)
@@ -1394,7 +1819,7 @@ def _readiness_for_step(step: dict[str, Any], runtime: dict[str, Any]) -> Capabi
         pi = safety.get("promptInjection", {})
         full = pi.get("toolOutputMarkersEnabled") and pi.get("attackableRequiresManualApproval") and not pi.get("privateUrlsAllowed")
         status = "active" if full else ("partial" if safety.get("approvalFlowConfigured") and safety.get("redactSecrets") else "watch")
-        return _state(status, [f"tool-output markers: {pi.get('toolOutputMarkersEnabled')}", f"attackable requires manual approval: {pi.get('attackableRequiresManualApproval')}", f"private URLs allowed: {pi.get('privateUrlsAllowed')}"], "Treat external content as data; require manual approval when attackable content is involved.")
+        return _state(status, [f"tool-output markers: {pi.get('toolOutputMarkersEnabled')}", f"output limit configured: {pi.get('toolOutputLimitConfigured')}", f"attackable requires manual approval: {pi.get('attackableRequiresManualApproval')}", f"private URLs allowed: {pi.get('privateUrlsAllowed')}"], "Treat external content as data; require manual approval when attackable content is involved.")
     if step_id == "step-23":
         totals = runtime["analytics"]["totals"]
         tokens = totals["inputTokens"] + totals["outputTokens"]

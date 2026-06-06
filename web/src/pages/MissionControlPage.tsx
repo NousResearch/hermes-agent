@@ -3,27 +3,34 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   Activity,
+  AlertTriangle,
   ArrowUpRight,
   BookOpen,
-  ClipboardCheck,
-  ListChecks,
-  Route,
-  ServerCog,
   Bot,
+  Boxes,
   Brain,
   CalendarClock,
   CheckCircle2,
   CircleDot,
+  ClipboardCheck,
+  Command,
+  Cpu,
   Database,
   Fingerprint,
   Gauge,
   Globe2,
   Layers3,
+  ListChecks,
   LockKeyhole,
   Radar,
   RefreshCw,
+  Route,
+  Search,
+  ServerCog,
   ShieldCheck,
+  Smartphone,
   Sparkles,
+  TimerReset,
   Workflow,
   Zap,
 } from "lucide-react";
@@ -91,6 +98,39 @@ function checkTone(status: unknown): "success" | "warning" | "secondary" | "outl
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value);
+}
+
+function formatDuration(value: unknown): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "unknown";
+  const seconds = Math.abs(value);
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+
+function signedDuration(value: unknown): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "unknown";
+  return value < 0 ? `${formatDuration(value)} overdue` : `in ${formatDuration(value)}`;
+}
+
+function sumRecordValues(value: unknown): number {
+  const record = recordOf(value);
+  return Object.values(record).reduce<number>((total, item) => total + (typeof item === "number" && Number.isFinite(item) ? item : 0), 0);
+}
+
+function statusMatch(item: MissionControlCoverageItem, status: string): boolean {
+  return status === "all" || item.status === status;
+}
+
+function coverageMatches(item: MissionControlCoverageItem, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return [item.id, item.number, item.title, item.domain, item.part, item.summary, item.next]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .includes(needle);
 }
 
 function statusTone(status: MissionControlStatus): "success" | "warning" | "secondary" | "outline" {
@@ -253,7 +293,7 @@ function CoverageCard({ item, compact = false }: { item: MissionControlCoverageI
 }
 
 function ActionCard({ action }: { action: MissionControlSnapshot["actionQueue"][number] }) {
-  const className = "group block min-w-0 rounded-[1.35rem] border border-current/10 bg-background-base/40 p-4 text-left transition hover:border-current/20 hover:bg-midground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-midground/60";
+  const className = "group block min-h-[44px] min-w-0 rounded-[1.35rem] border border-current/10 bg-background-base/40 p-4 text-left transition hover:border-current/20 hover:bg-midground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-midground/60";
   const body = (
     <div className="flex items-start gap-3">
       <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-midground/10 font-mono text-xs text-midground">
@@ -327,17 +367,23 @@ function RuntimePanel({ data }: { data: MissionControlSnapshot }) {
   const memorySqlite = recordOf(memory.sqlite);
   const semantic = recordOf(runtime.semantic);
   const production = recordOf(runtime.production);
+  const cronStatusCount = sumRecordValues(cron.lastStatusCounts);
+  const toolBuckets = recordOf(runtime.tools.configuredToolsetBuckets);
+  const mcpStatus = recordOf(mcp.statusCounts);
+  const outputLimits = recordOf(safety.toolOutputLimits);
 
   const rows = [
     ["Model", `${str(model, "provider")} · ${str(model, "model")}`, `Reasoning ${str(model, "reasoning")}`],
     ["Sessions", `${num(sessions, "total")} sessions · ${num(sessions, "messages")} messages`, `${num(sessions, "toolCalls")} tool calls · ${num(sessions, "apiCalls")} API calls`],
+    ["Session graph", `${num(sessions, "rootSessionCount")} roots · ${num(sessions, "childSessionCount")} child`, `${num(sessions, "complexSessionCount")} complex · ${num(sessions, "rewindTotal")} rewinds`],
     ["Memory", `${num(memorySqlite, "sessions")} sessions · FTS ${boolText(memorySqlite, "ftsPresent")}`, `${num(memorySqlite, "summaries")} summaries · ${num(memorySqlite, "archivedSessions")} archived`],
     ["Semantic", `${str(semantic, "provider")}`, `configured ${boolText(semantic, "configured")} · index ${boolText(semantic, "indexConfigured")}`],
     ["Gateway", `${num(gateway, "configuredCount")} configured`, platforms.length ? platforms.join(", ") : `running: ${boolText(gateway, "running")}`],
     ["Skills", `${num(skills, "total")} installed`, `${num(skills, "agentskillsCompliant")} portable · ${num(skills, "autoCreatedCount")} auto-created`],
-    ["Cron", `${num(cron, "enabled")} enabled / ${num(cron, "total")} total`, `${num(cron, "reflectionJobs")} reflection · ${num(cron, "heartbeatJobs")} heartbeat`],
-    ["MCP", `${num(mcp, "configured")} configured`, `${num(mcp, "enabled")} enabled · names redacted`],
-    ["Safety", `approvals: ${str(safety, "approvalsMode")}`, `isolated: ${boolText(safety, "terminalIsolated")} · redaction: ${boolText(safety, "redactSecrets")}`],
+    ["Cron", `${num(cron, "enabled")} enabled / ${num(cron, "total")} total`, `${num(cron, "overdueCount")} overdue · ${cronStatusCount} status sample(s) · reflection ${str(cron, "reflectionFreshness", "unknown")}`],
+    ["MCP", `${num(mcp, "configured")} configured`, `${num(mcpStatus, "enabled")} enabled · ${num(mcpStatus, "disabled")} disabled · names redacted`],
+    ["Tools", `${num(runtime.tools, "registeredToolCount")} registered`, `${num(toolBuckets, "builtin")} builtin · ${num(toolBuckets, "custom")} custom bucket(s)`],
+    ["Safety", `approvals: ${str(safety, "approvalsMode")}`, `isolated: ${boolText(safety, "terminalIsolated")} · redaction: ${boolText(safety, "redactSecrets")} · output cap: ${boolText(outputLimits, "configured")}`],
     ["Voice", `STT ${boolText(voice, "sttEnabled")}`, `TTS ${str(voice, "ttsProvider", "not configured")}`],
     ["Analytics", `${formatNumber(num(analyticsTotals, "inputTokens") + num(analyticsTotals, "outputTokens"))} tokens`, `$${formatNumber(num(analyticsTotals, "actualCostUsd"))} actual · $${formatNumber(num(analyticsTotals, "estimatedCostUsd"))} estimated`],
     ["Production", `${num(production, "score")}% score`, `${objectArray(production.blockers).length} blocker/watch item(s)`],
@@ -354,6 +400,168 @@ function RuntimePanel({ data }: { data: MissionControlSnapshot }) {
         </div>
       ))}
     </div>
+  );
+}
+
+function InsightTile({
+  label,
+  value,
+  detail,
+  icon: Icon,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  icon: LucideIcon;
+  tone?: "neutral" | "success" | "warning";
+}) {
+  const toneClass = tone === "success" ? "text-emerald-300 bg-emerald-400/10" : tone === "warning" ? "text-amber-300 bg-amber-400/10" : "text-midground bg-midground/10";
+  return (
+    <div className="min-w-0 rounded-[1.4rem] border border-current/10 bg-background-base/35 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] uppercase tracking-[0.24em] text-text-tertiary">{label}</p>
+          <p className="mt-2 truncate text-xl font-semibold tracking-[-0.04em] text-foreground sm:text-2xl">{value}</p>
+        </div>
+        <div className={cn("grid h-10 w-10 shrink-0 place-items-center rounded-2xl", toneClass)}>
+          <Icon className="h-5 w-5" aria-hidden="true" />
+        </div>
+      </div>
+      <p className="mt-3 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{detail}</p>
+    </div>
+  );
+}
+
+function MissionCockpitPanel({ data }: { data: MissionControlSnapshot }) {
+  const { runtime } = data;
+  const sessions = runtime.sessions;
+  const cron = runtime.cron;
+  const mcp = runtime.mcp;
+  const tools = runtime.tools;
+  const gateway = runtime.gateway;
+  const safety = runtime.safety;
+  const production = recordOf(runtime.production);
+  const roleCounts = recordOf(sessions.roleCounts);
+  const toolBuckets = recordOf(tools.configuredToolsetBuckets);
+  const mcpTransports = recordOf(mcp.transportCounts);
+  const topAction = data.actionQueue[0];
+  const readiness = data.coverage.summary.readiness;
+  const totalMessages = num(sessions, "messages");
+  const toolCalls = num(sessions, "toolCalls");
+  const automationRatio = totalMessages ? Math.round((toolCalls / totalMessages) * 100) : 0;
+  const blockers = objectArray(production.blockers).length;
+  const nextRun = signedDuration(cron.nextRunDueInSeconds);
+
+  return (
+    <section id="mission-cockpit" className="grid gap-4 xl:grid-cols-[minmax(0,1.18fr)_minmax(0,0.82fr)]" aria-label="Mission cockpit" data-testid="mission-cockpit">
+      <Card className="relative isolate overflow-hidden border-current/10 bg-card/70 shadow-[0_30px_120px_rgba(0,0,0,0.28)] backdrop-blur-2xl">
+        <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(circle_at_12%_18%,rgba(255,230,203,0.18),transparent_32%),radial-gradient(circle_at_92%_10%,rgba(59,130,246,0.12),transparent_28%)]" />
+        <CardContent className="p-5 sm:p-6">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={blockers ? "warning" : "success"}>{blockers ? `${blockers} watch` : "clear to operate"}</Badge>
+                <Badge tone="outline">privacy boundary on</Badge>
+                <Badge tone="secondary">generated {formatDuration(Date.now() / 1000 - Date.parse(data.runtime.generatedAt) / 1000)} ago</Badge>
+              </div>
+              <h2 className="mt-4 max-w-3xl text-3xl font-semibold tracking-[-0.06em] text-foreground sm:text-4xl">
+                Command cockpit: action, trust and runtime pulse in one sweep.
+              </h2>
+              <p className="mt-3 max-w-2xl text-sm leading-7 text-muted-foreground">
+                The dashboard now favors decisions over data dumps: weakest blueprint areas, live automation health, privacy posture, and the next operator move are visible before the long source map.
+              </p>
+            </div>
+            <div className="min-w-[12rem] rounded-[1.4rem] border border-current/10 bg-background-base/40 p-4 text-left">
+              <p className="text-[10px] uppercase tracking-[0.24em] text-text-tertiary">readiness vector</p>
+              <div className="mt-3 flex items-end gap-2">
+                <span className="text-5xl font-semibold tracking-[-0.08em] text-midground">{readiness}</span>
+                <span className="pb-2 text-sm text-muted-foreground">/100</span>
+              </div>
+              <div className="mt-4 h-2 overflow-hidden rounded-full bg-midground/10" role="progressbar" aria-label="Overall blueprint readiness" aria-valuemin={0} aria-valuemax={100} aria-valuenow={readiness}>
+                <div className="h-full rounded-full bg-midground shadow-[0_0_30px_rgba(255,230,203,0.35)]" style={{ width: `${Math.max(4, readiness)}%` }} />
+              </div>
+            </div>
+          </div>
+
+          {topAction && (
+            <div className="mt-6 rounded-[1.5rem] border border-current/10 bg-background-base/35 p-4" data-testid="mission-cockpit-top-action">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-[0.24em] text-text-tertiary">next best action</p>
+                  <h3 className="mt-2 text-base font-semibold tracking-[-0.03em] text-foreground">{topAction.title}</h3>
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{topAction.reason}</p>
+                </div>
+                <Link to={topAction.route} className="inline-flex min-h-[44px] shrink-0 items-center justify-center rounded-2xl border border-current/15 px-4 text-sm font-medium text-foreground transition hover:bg-midground/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-midground/60">
+                  Open route <ArrowUpRight className="ml-2 h-4 w-4" aria-hidden="true" />
+                </Link>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+        <InsightTile label="automation density" value={`${automationRatio}%`} detail={`${formatNumber(toolCalls)} tool calls across ${formatNumber(totalMessages)} messages; content remains hidden.`} icon={Cpu} />
+        <InsightTile label="session topology" value={`${num(sessions, "rootSessionCount")} / ${num(sessions, "childSessionCount")}`} detail={`${num(sessions, "complexSessionCount")} complex sessions · avg ${formatNumber(num(sessions, "avgApiCalls"))} API calls`} icon={Workflow} />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:col-span-2 2xl:grid-cols-4">
+        <InsightTile label="gateway pulse" value={str(gateway, "state")} detail={`${num(gateway, "configuredCount")} platform family · names redacted: ${boolText(gateway, "platformNamesRedacted")}`} icon={Command} tone={gateway.running ? "success" : "warning"} />
+        <InsightTile label="scheduler" value={nextRun} detail={`${num(cron, "enabled")} enabled · ${num(cron, "overdueCount")} overdue · ${num(cron, "failedJobs")} failed`} icon={TimerReset} tone={num(cron, "overdueCount") || num(cron, "failedJobs") ? "warning" : "success"} />
+        <InsightTile label="tool surface" value={`${num(tools, "registeredToolCount")}`} detail={`${num(toolBuckets, "builtin")} builtin · ${num(toolBuckets, "mcp")} MCP · ${num(toolBuckets, "custom")} custom bucket(s)`} icon={Boxes} />
+        <InsightTile label="MCP transports" value={`${num(mcp, "configured")}`} detail={`${num(mcpTransports, "stdio")} stdio · ${num(mcpTransports, "http")} http · ${num(mcpTransports, "sse")} sse`} icon={ServerCog} />
+      </div>
+
+      <div className="grid gap-3 xl:col-span-2 md:grid-cols-2">
+        <div className="rounded-[1.5rem] border border-current/10 bg-background-base/35 p-4" data-testid="mission-role-mix">
+          <p className="text-[10px] uppercase tracking-[0.24em] text-text-tertiary">conversation role mix</p>
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {Object.entries(roleCounts).map(([role, value]) => (
+              <div key={role} className="rounded-2xl border border-current/10 bg-card/40 p-3">
+                <p className="text-xs font-medium text-foreground">{role}</p>
+                <p className="mt-1 font-mono text-sm text-text-tertiary">{formatNumber(typeof value === "number" ? value : 0)}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-[1.5rem] border border-current/10 bg-background-base/35 p-4" data-testid="mission-privacy-posture">
+          <p className="text-[10px] uppercase tracking-[0.24em] text-text-tertiary">privacy posture</p>
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            <Badge tone={safety.redactSecrets ? "success" : "warning"}>secrets: {boolText(safety, "redactSecrets")}</Badge>
+            <Badge tone={tools.configuredToolsetNamesRedacted ? "success" : "warning"}>toolsets redacted</Badge>
+            <Badge tone={mcp.serverNamesRedacted ? "success" : "warning"}>MCP names redacted</Badge>
+            <Badge tone="outline">session content omitted</Badge>
+          </div>
+          <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
+            Mission Control serializes aggregate counts and safe families only. Prompts, commands, platform IDs, file paths, custom labels, and server names stay outside the UI boundary.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SectionNav() {
+  const sections = [
+    ["cockpit", "Cockpit"],
+    ["production", "Production"],
+    ["operator-queue", "Actions"],
+    ["live-runtime", "Runtime"],
+    ["source-coverage", "Coverage"],
+    ["data-flow", "Data flow"],
+    ["privacy-boundary", "Privacy"],
+  ];
+  return (
+    <nav aria-label="Mission Control sections" className="sticky top-2 z-20 -mx-1 overflow-x-auto rounded-2xl border border-current/10 bg-background-base/80 p-1 shadow-[0_20px_80px_rgba(0,0,0,0.22)] backdrop-blur-2xl" data-testid="mission-section-nav">
+      <div className="flex min-w-max gap-1">
+        {sections.map(([id, label]) => (
+          <a key={id} href={`#mission-${id}`} className="inline-flex min-h-[44px] items-center justify-center rounded-xl px-3 text-xs font-medium text-muted-foreground transition hover:bg-midground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-midground/60 sm:px-4">
+            {label}
+          </a>
+        ))}
+      </div>
+    </nav>
   );
 }
 
@@ -501,6 +709,9 @@ export default function MissionControlPage() {
   const [data, setData] = useState<MissionControlSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [coverageQuery, setCoverageQuery] = useState("");
+  const [coverageStatus, setCoverageStatus] = useState("all");
+  const [showAllSteps, setShowAllSteps] = useState(false);
   const { setAfterTitle, setEnd } = usePageHeader();
 
   const load = useCallback(() => {
@@ -521,7 +732,7 @@ export default function MissionControlPage() {
       </div>,
     );
     setEnd(
-      <Button ghost size="icon" onClick={load} disabled={loading} aria-label="Refresh Mission Control" data-testid="mission-refresh-button">
+      <Button ghost size="icon" className="min-h-[44px] min-w-[44px]" onClick={load} disabled={loading} aria-label="Refresh Mission Control" data-testid="mission-refresh-button">
         {loading ? <Spinner /> : <RefreshCw />}
       </Button>,
     );
@@ -535,6 +746,10 @@ export default function MissionControlPage() {
     void Promise.resolve().then(load);
   }, [load]);
 
+  useEffect(() => {
+    setShowAllSteps(false);
+  }, [coverageQuery, coverageStatus]);
+
   const topSteps = useMemo(
     () => [...(data?.coverage.steps ?? [])].sort((a, b) => a.readiness - b.readiness).slice(0, 6),
     [data],
@@ -547,6 +762,11 @@ export default function MissionControlPage() {
     () => (data?.coverage.features ?? []).filter((f) => f.id.startsWith("O")),
     [data],
   );
+  const filteredSteps = useMemo(
+    () => (data?.coverage.steps ?? []).filter((step) => statusMatch(step, coverageStatus) && coverageMatches(step, coverageQuery)),
+    [coverageQuery, coverageStatus, data],
+  );
+  const visibleSteps = showAllSteps ? filteredSteps : filteredSteps.slice(0, 12);
 
   if (loading && !data) {
     return (
@@ -599,10 +819,10 @@ export default function MissionControlPage() {
               This is not a static mirror. Hermes maps every step, Hermes feature, and OpenClaw feature from the guide to live local runtime evidence — without exposing raw chat content, commands, logs, secrets, or absolute local paths.
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
-              <a href={data.source.url} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center rounded-xl border border-current/15 px-4 text-sm font-medium text-foreground transition hover:bg-midground/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-midground/60">
+              <a href={data.source.url} target="_blank" rel="noreferrer" className="inline-flex min-h-[44px] items-center rounded-xl border border-current/15 px-4 text-sm font-medium text-foreground transition hover:bg-midground/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-midground/60">
                 Source guide <ArrowUpRight className="ml-2 h-4 w-4" />
               </a>
-              <Link to="/system" className="inline-flex h-10 items-center rounded-xl px-4 text-sm font-medium text-muted-foreground transition hover:bg-midground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-midground/60">
+              <Link to="/system" className="inline-flex min-h-[44px] items-center rounded-xl px-4 text-sm font-medium text-muted-foreground transition hover:bg-midground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-midground/60">
                 System evidence
               </Link>
             </div>
@@ -618,6 +838,9 @@ export default function MissionControlPage() {
         <MetricCard label="Cron" value={formatNumber(num(cron, "enabled"))} detail={`${formatNumber(num(cron, "total"))} scheduled job(s)`} icon={CalendarClock} />
         <MetricCard label="MCP" value={formatNumber(num(mcp, "configured"))} detail="configured external tool servers" icon={Workflow} />
       </div>
+
+      <SectionNav />
+      <MissionCockpitPanel data={data} />
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
         <Section id="production" eyebrow="production" title="Production readiness, honestly separated" icon={ServerCog}>
@@ -657,10 +880,72 @@ export default function MissionControlPage() {
       </Section>
 
       <Section id="source-coverage" eyebrow="source coverage" title="All guide steps, mapped to routes and evidence" icon={Layers3}>
-        <div data-testid="mission-blueprint-steps">
-          <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3" data-testid="mission-step-grid">
-            {data.coverage.steps.map((step) => <CoverageCard key={step.id} item={step} />)}
+        <div className="space-y-4" data-testid="mission-blueprint-steps">
+          <div className="rounded-[1.5rem] border border-current/10 bg-background-base/35 p-3 sm:p-4" data-testid="mission-coverage-controls">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:items-center">
+              <label className="relative block min-w-0">
+                <span className="sr-only">Search guide steps</span>
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-tertiary" aria-hidden="true" />
+                <input
+                  value={coverageQuery}
+                  onChange={(event) => setCoverageQuery(event.target.value)}
+                  placeholder="Search steps, domains, next actions…"
+                  className="min-h-[44px] w-full rounded-2xl border border-current/10 bg-card/70 pl-10 pr-3 text-sm text-foreground outline-none transition placeholder:text-text-tertiary focus:border-midground/50 focus:ring-2 focus:ring-midground/20"
+                  data-testid="mission-coverage-search"
+                />
+              </label>
+              <label className="grid gap-1 text-[10px] uppercase tracking-[0.22em] text-text-tertiary">
+                Status
+                <select
+                  value={coverageStatus}
+                  onChange={(event) => setCoverageStatus(event.target.value)}
+                  className="min-h-[44px] rounded-2xl border border-current/10 bg-card/70 px-3 text-sm normal-case tracking-normal text-foreground outline-none focus:border-midground/50 focus:ring-2 focus:ring-midground/20"
+                  data-testid="mission-coverage-status-filter"
+                >
+                  <option value="all">All</option>
+                  <option value="active">Active</option>
+                  <option value="partial">Partial</option>
+                  <option value="watch">Watch</option>
+                  <option value="planned">Planned</option>
+                </select>
+              </label>
+              <div className="flex min-h-[44px] items-center rounded-2xl border border-current/10 bg-card/50 px-3 text-xs text-muted-foreground">
+                <Smartphone className="mr-2 h-4 w-4 text-midground" aria-hidden="true" />
+                {visibleSteps.length}/{filteredSteps.length} visible · {data.coverage.steps.length} total
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-text-tertiary">
+              <span className="inline-flex min-h-8 items-center rounded-full border border-current/10 px-3">evidence collapses by default</span>
+              <span className="inline-flex min-h-8 items-center rounded-full border border-current/10 px-3">search is local only</span>
+              <span className="inline-flex min-h-8 items-center rounded-full border border-current/10 px-3">raw prompts never rendered</span>
+            </div>
           </div>
+
+          {filteredSteps.length === 0 ? (
+            <div className="rounded-[1.5rem] border border-current/10 bg-background-base/35 p-8 text-center" data-testid="mission-coverage-empty">
+              <AlertTriangle className="mx-auto h-8 w-8 text-text-tertiary" aria-hidden="true" />
+              <h3 className="mt-3 text-sm font-semibold text-foreground">No guide steps match that filter.</h3>
+              <p className="mt-1 text-xs text-muted-foreground">Clear the search or switch status back to all.</p>
+            </div>
+          ) : (
+            <>
+              <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3" data-testid="mission-step-grid">
+                {visibleSteps.map((step) => <CoverageCard key={step.id} item={step} compact />)}
+              </div>
+              {filteredSteps.length > visibleSteps.length && (
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setShowAllSteps(true)}
+                    className="inline-flex min-h-[44px] items-center justify-center rounded-2xl border border-current/15 px-4 text-sm font-medium text-foreground transition hover:bg-midground/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-midground/60"
+                    data-testid="mission-show-all-steps"
+                  >
+                    Show all {filteredSteps.length} mapped steps
+                  </button>
+                </div>
+              )}
+            </>
+          )}
         </div>
       </Section>
 

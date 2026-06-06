@@ -292,6 +292,312 @@ mcp_servers:
         assert forbidden not in encoded
 
 
+def test_snapshot_redacts_toolset_gateway_and_provider_labels(tmp_path, monkeypatch):
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        """
+model:
+  provider: acme-private-provider
+  default: file:///private/models/acme-client-model.gguf
+delegation:
+  provider: acme-delegation-private
+semantic:
+  provider: acme-vector-client
+  index: private-index-name
+stt:
+  enabled: true
+  provider: acme-whisper
+tts:
+  provider: acme-voice
+toolsets:
+  - terminal
+  - mcp-acme-prod-db
+  - private-client-plugin
+agent:
+  reasoning_effort: acme-private-reasoning
+  disabled_toolsets:
+    - mcp-secret-calendar
+approvals:
+  mode: acme-secret-approval
+  cron_mode: acme-secret-cron
+terminal:
+  backend: acme-secret-backend
+tools:
+  max_output_chars: 9000
+gateway:
+  platforms:
+    telegram:
+      enabled: true
+    telegram:123456789:secret-topic:
+      enabled: true
+    acme-private-gateway:
+      enabled: true
+mcp_servers:
+  acme-prod-db:
+    command: npx
+    args: [server]
+""".strip(),
+        encoding="utf-8",
+    )
+    _seed_state_db(home)
+
+    from hermes_cli.mission_control import build_mission_control_snapshot
+
+    snapshot = build_mission_control_snapshot()
+    encoded = json.dumps(snapshot, ensure_ascii=False)
+
+    assert snapshot["runtime"]["tools"]["configuredToolsetCount"] == 3
+    assert snapshot["runtime"]["tools"]["disabledToolsetCount"] == 1
+    assert snapshot["runtime"]["gateway"]["configuredCount"] == 3
+    assert snapshot["runtime"]["gateway"]["configuredPlatforms"] == ["other", "telegram"]
+    assert snapshot["runtime"]["model"]["provider"] == "custom"
+    assert snapshot["runtime"]["model"]["delegationProvider"] == "custom"
+    assert snapshot["runtime"]["model"]["reasoning"] == "custom"
+    assert snapshot["runtime"]["semantic"]["provider"] == "custom"
+    assert snapshot["runtime"]["voice"]["sttProvider"] == "custom"
+    assert snapshot["runtime"]["voice"]["ttsProvider"] == "custom"
+    assert snapshot["runtime"]["safety"]["approvalsMode"] == "custom"
+    assert snapshot["runtime"]["safety"]["cronApprovalsMode"] == "custom"
+    assert snapshot["runtime"]["safety"]["terminalBackend"] == "custom"
+    assert snapshot["runtime"]["safety"]["toolOutputLimits"]["configured"] is True
+    assert snapshot["runtime"]["safety"]["toolOutputLimits"]["minChars"] == 9000
+    assert snapshot["runtime"]["safety"]["promptInjection"]["toolOutputLimitConfigured"] is True
+
+    for forbidden in [
+        "acme-private-provider",
+        "acme-delegation-private",
+        "acme-vector-client",
+        "acme-private-reasoning",
+        "acme-secret-approval",
+        "acme-secret-cron",
+        "acme-secret-backend",
+        "acme-whisper",
+        "acme-voice",
+        "file:///private",
+        "acme-client-model",
+        "private-index-name",
+        "mcp-acme-prod-db",
+        "private-client-plugin",
+        "mcp-secret-calendar",
+        "telegram:123456789",
+        "123456789",
+        "secret-topic",
+        "acme-private-gateway",
+        "acme-prod-db",
+    ]:
+        assert forbidden not in encoded
+
+
+def test_snapshot_redacts_sensitive_session_db_columns(tmp_path, monkeypatch):
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text("model: gpt-5.5\nprovider: openai-codex\n", encoding="utf-8")
+    _seed_state_db(home)
+    con = sqlite3.connect(home / "state.db")
+    con.execute(
+        """
+        UPDATE sessions SET
+            user_id=?, cwd=?, model_config=?, billing_base_url=?, handoff_platform=?, handoff_error=?, end_reason=?, parent_session_id=?, rewind_count=?
+        WHERE id=?
+        """,
+        (
+            "user-canary-987654",
+            "/private/workspaces/acme-client",
+            '{"deployment":"acme-private-deploy"}',
+            "https://acme-private-provider.example/v1",
+            "telegram:987654:secret-thread",
+            "private handoff error canary",
+            "max_iterations",
+            "parent-secret-session-id",
+            2,
+            "session-1",
+        ),
+    )
+    con.execute(
+        """
+        UPDATE messages SET
+            platform_message_id=?, tool_calls=?, tool_name=?, reasoning=?, reasoning_content=?, reasoning_details=?, codex_reasoning_items=?, codex_message_items=?
+        WHERE id=1
+        """,
+        (
+            "platform-message-canary",
+            '[{"name":"private_tool","arguments":{"cmd":"rm -rf /private/acme"}}]',
+            "mcp_acme_private_tool",
+            "private reasoning canary",
+            "private reasoning content canary",
+            "private reasoning details canary",
+            "private codex reasoning item canary",
+            "private codex message item canary",
+        ),
+    )
+    con.commit()
+    con.close()
+
+    from hermes_cli.mission_control import build_mission_control_snapshot
+
+    snapshot = build_mission_control_snapshot()
+    encoded = json.dumps(snapshot, ensure_ascii=False)
+
+    assert snapshot["runtime"]["sessions"]["endReasonCounts"]["max_iterations"] == 1
+    assert snapshot["runtime"]["sessions"]["childSessionCount"] == 1
+    assert snapshot["runtime"]["sessions"]["rewindTotal"] == 2
+
+    for forbidden in [
+        "user-canary-987654",
+        "/private/workspaces/acme-client",
+        "acme-private-deploy",
+        "acme-private-provider.example",
+        "telegram:987654",
+        "secret-thread",
+        "private handoff error canary",
+        "parent-secret-session-id",
+        "platform-message-canary",
+        "private_tool",
+        "rm -rf",
+        "/private/acme",
+        "mcp_acme_private_tool",
+        "private reasoning canary",
+        "private reasoning content canary",
+        "private reasoning details canary",
+        "private codex reasoning item canary",
+        "private codex message item canary",
+    ]:
+        assert forbidden not in encoded
+
+
+def test_snapshot_redacts_cron_mcp_commands_and_delivery_targets(tmp_path, monkeypatch):
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "cron").mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    (home / "cron" / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "id": "private-job-id",
+                        "enabled": True,
+                        "name": "acme private reflection heartbeat",
+                        "prompt": "read /private/acme/secret and send it",
+                        "script": "/private/acme/cron.py",
+                        "schedule": "every 30m",
+                        "deliver": "telegram:123456789:secret-topic",
+                        "last_error": "private cron error canary",
+                        "last_run_at": now - 120,
+                        "next_run_at": now - 30,
+                        "last_status": "error",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (home / "config.yaml").write_text(
+        """
+mcp_servers:
+  acme-private-server:
+    command: /private/bin/mcp-acme
+    args: [--token, private-arg-canary]
+    url: https://acme-private-mcp.example/sse
+    headers:
+      Authorization: private-header-canary
+""".strip(),
+        encoding="utf-8",
+    )
+    _seed_state_db(home)
+
+    from hermes_cli.mission_control import build_mission_control_snapshot
+
+    snapshot = build_mission_control_snapshot()
+    encoded = json.dumps(snapshot, ensure_ascii=False)
+
+    assert snapshot["runtime"]["cron"]["total"] == 1
+    assert snapshot["runtime"]["cron"]["overdueCount"] == 1
+    assert snapshot["runtime"]["cron"]["lastStatusCounts"]["error"] == 1
+    assert snapshot["runtime"]["cron"]["lastRunAgeBuckets"]["under_1h"] == 1
+    assert snapshot["runtime"]["cron"]["reflectionFreshness"] == "fresh"
+    assert snapshot["runtime"]["cron"]["reflectionLastRunAgeSeconds"] is not None
+    assert snapshot["runtime"]["mcp"]["configured"] == 1
+    assert snapshot["runtime"]["mcp"]["statusCounts"]["enabled"] == 1
+    assert snapshot["runtime"]["mcp"]["serverNamesRedacted"] is True
+
+    for forbidden in [
+        "private-job-id",
+        "acme private heartbeat",
+        "acme private reflection",
+        "/private/acme",
+        "telegram:123456789",
+        "123456789",
+        "secret-topic",
+        "private cron error canary",
+        "acme-private-server",
+        "/private/bin/mcp-acme",
+        "private-arg-canary",
+        "acme-private-mcp.example",
+        "private-header-canary",
+    ]:
+        assert forbidden not in encoded
+
+
+def test_model_label_sanitizer_preserves_public_families_only():
+    from hermes_cli.mission_control import _safe_model_label
+
+    assert _safe_model_label("gpt-5.5") == "gpt-5.5"
+    assert _safe_model_label("anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
+    assert _safe_model_label("openrouter/google/gemini-2.5-pro-preview") == "openrouter/google/gemini-2.5-pro-preview"
+    assert _safe_model_label("gpt-4o") == "gpt-4o"
+    assert _safe_model_label("llama-7b") == "llama-7b"
+    assert _safe_model_label("qwen2.5-coder") == "qwen2.5-coder"
+    assert _safe_model_label("deepseek-r1") == "deepseek-r1"
+    assert _safe_model_label("llama3.1-instruct") == "llama3.1-instruct"
+    assert _safe_model_label("acme123") == "custom-model"
+    assert _safe_model_label("client42") == "custom-model"
+    assert _safe_model_label("prod2") == "custom-model"
+    assert _safe_model_label("openai/acme2") == "custom-model"
+    assert _safe_model_label("123client") == "custom-model"
+    assert _safe_model_label("42prod") == "custom-model"
+    assert _safe_model_label("v2acme") == "custom-model"
+    assert _safe_model_label("openai/123client") == "custom-model"
+    assert _safe_model_label("openai/o3acme") == "custom-model"
+    assert _safe_model_label("llama3client") == "custom-model"
+    assert _safe_model_label("qwen2prod") == "custom-model"
+    assert _safe_model_label("gemma2private") == "custom-model"
+    assert _safe_model_label("glm4acme") == "custom-model"
+    assert _safe_model_label("r1client") == "custom-model"
+    assert _safe_model_label("gpt-4o-客户") == "custom-model"
+    assert _safe_model_label("openai/acme-private-client-deploy") == "custom-model"
+    assert _safe_model_label("gpt-5.5-acme-private") == "custom-model"
+    assert _safe_model_label("https://models.example/acme-private-model") == "custom-model"
+
+
+def test_mcp_metrics_count_all_servers_while_sampling_redacted_details(tmp_path, monkeypatch):
+    home = Path(os.environ["HERMES_HOME"])
+    server_lines = ["mcp_servers:"]
+    for idx in range(1, 14):
+        server_lines.extend([
+            f"  acme-private-server-{idx}:",
+            "    command: npx",
+            "    args: [server]",
+        ])
+        if idx == 13:
+            server_lines.append("    enabled: false")
+    (home / "config.yaml").write_text("\n".join(server_lines), encoding="utf-8")
+
+    from hermes_cli.mission_control import build_mission_control_snapshot
+
+    snapshot = build_mission_control_snapshot()
+    encoded = json.dumps(snapshot, ensure_ascii=False)
+    mcp = snapshot["runtime"]["mcp"]
+
+    assert mcp["configured"] == 13
+    assert mcp["enabled"] == 12
+    assert mcp["disabled"] == 1
+    assert mcp["statusCounts"] == {"enabled": 12, "disabled": 1}
+    assert mcp["transportCounts"]["stdio"] == 13
+    assert len(mcp["servers"]) == 12
+    assert len(mcp["serverDetails"]) == 12
+    assert mcp["serverNamesRedacted"] is True
+    assert "acme-private-server" not in encoded
+
+
 def test_snapshot_uses_live_dashboard_bind_and_auth_state(tmp_path, monkeypatch):
     home = Path(os.environ["HERMES_HOME"])
     (home / "config.yaml").write_text("dashboard:\n  host: 127.0.0.1\n", encoding="utf-8")

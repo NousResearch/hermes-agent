@@ -6291,7 +6291,7 @@ async def get_crew_usage(days: int = 30):
                 try:
                     where_clause = "WHERE started_at > ?" if cutoff is not None else ""
                     # Per-worker (per-source) breakdown
-                    cur_w = db._conn.execute(f""""
+                    cur_w = db._conn.execute(f"""
                         SELECT
                             COALESCE(source, 'unknown') as source,
                             COUNT(*) as sessions,
@@ -6308,7 +6308,7 @@ async def get_crew_usage(days: int = 30):
                         FROM sessions {where_clause}
                         GROUP BY source
                         ORDER BY SUM(COALESCE(input_tokens, 0)) + SUM(COALESCE(output_tokens, 0)) DESC
-                    """, *([cutoff] if cutoff is not None else []))
+                    """, (cutoff,) if cutoff is not None else ())
                     for row in cur_w.fetchall():
                         row_dict = dict(row)
                         worker_entry = {
@@ -6328,7 +6328,7 @@ async def get_crew_usage(days: int = 30):
                         workers.append(worker_entry)
 
                     # Profile total row
-                    cur_t = db._conn.execute(f""""
+                    cur_t = db._conn.execute(f"""
                         SELECT
                             COUNT(*) as sessions,
                             SUM(COALESCE(input_tokens, 0)) as input_tokens,
@@ -6342,7 +6342,7 @@ async def get_crew_usage(days: int = 30):
                             COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost_usd,
                             MAX(started_at) as last_active
                         FROM sessions {where_clause}
-                    """, *([cutoff] if cutoff is not None else []))
+                    """, (cutoff,) if cutoff is not None else ())
                     total_row = dict(cur_t.fetchone())
 
                     # Lightweight model/provider from latest session (Step 2-alt:

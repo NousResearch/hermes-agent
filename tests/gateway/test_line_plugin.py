@@ -23,6 +23,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.platforms.base import MessageType
+
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 # Load plugins/platforms/line/adapter.py under plugin_adapter_line so it
@@ -297,7 +299,58 @@ class TestMarkdownAndChunking:
 
 
 # ---------------------------------------------------------------------------
-# 7. Send routing (reply -> push fallback, batching, system-bypass)
+# 7. Inbound MessageEvent type mapping
+# ---------------------------------------------------------------------------
+
+class TestInboundMessageEvents:
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        ad.handle_message = AsyncMock()
+        ad._download_media = AsyncMock(return_value="/tmp/line-media.bin")
+        return ad
+
+    @pytest.mark.parametrize("line_type, expected", [
+        ("text", MessageType.TEXT),
+        ("image", MessageType.PHOTO),
+        ("audio", MessageType.VOICE),
+        ("video", MessageType.VIDEO),
+        ("file", MessageType.DOCUMENT),
+        ("sticker", MessageType.STICKER),
+        ("location", MessageType.LOCATION),
+        ("unknown", MessageType.TEXT),
+    ])
+    def test_message_event_maps_line_type_to_hermes_type(self, adapter, line_type, expected):
+        msg = {"type": line_type, "id": "M123"}
+        if line_type == "text":
+            msg["text"] = "hello"
+        elif line_type == "sticker":
+            msg["keywords"] = ["ok"]
+        elif line_type == "location":
+            msg.update({"title": "HQ", "address": "123 Main"})
+
+        event = {
+            "replyToken": "rt-token",
+            "source": {"type": "user", "userId": "U123"},
+            "message": msg,
+        }
+
+        asyncio.run(adapter._handle_message_event(event))
+
+        captured = adapter.handle_message.call_args.args[0]
+        assert captured.message_type == expected
+
+
+# ---------------------------------------------------------------------------
+# 8. Send routing (reply -> push fallback, batching, system-bypass)
 # ---------------------------------------------------------------------------
 
 class TestSendRouting:

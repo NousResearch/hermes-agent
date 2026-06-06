@@ -3278,6 +3278,20 @@ class TestWebhookSecurity(unittest.TestCase):
         with patch.dict(os.environ, {"FEISHU_APP_ID": "cli", "FEISHU_APP_SECRET": "sec", "FEISHU_ENCRYPT_KEY": encrypt_key}, clear=True):
             return FeishuAdapter(PlatformConfig())
 
+    @staticmethod
+    def _send_webhook(
+        adapter: "FeishuAdapter",
+        body: bytes,
+        headers: dict[str, str] | None = None,
+    ):
+        request = SimpleNamespace(
+            remote="127.0.0.1",
+            content_length=len(body),
+            headers=headers or {"Content-Type": "application/json"},
+            content=_FakeRequestContent(body),
+        )
+        return asyncio.run(adapter._handle_webhook_request(request))
+
     def test_signature_valid_passes(self):
         import hashlib
 
@@ -3303,6 +3317,91 @@ class TestWebhookSecurity(unittest.TestCase):
     def test_signature_missing_headers_rejected(self):
         adapter = self._make_adapter("test_secret")
         self.assertFalse(adapter._is_webhook_signature_valid({}, b'{}'))
+
+    def test_signed_encrypted_event_is_decrypted_and_dispatched(self):
+        import hashlib
+
+        adapter = self._make_adapter("test_secret")
+        body = json.dumps({"encrypt": "ciphertext"}).encode()
+        timestamp = "1700000000"
+        nonce = "abc123"
+        signature = hashlib.sha256(
+            f"{timestamp}{nonce}test_secret{body.decode()}".encode()
+        ).hexdigest()
+        headers = {
+            "Content-Type": "application/json",
+            "x-lark-request-timestamp": timestamp,
+            "x-lark-request-nonce": nonce,
+            "x-lark-signature": signature,
+        }
+        decrypted = json.dumps(
+            {"header": {"event_type": "im.message.receive_v1"}, "event": {}}
+        )
+        cipher = Mock()
+        cipher.decrypt_str.return_value = decrypted
+
+        with patch(
+            "plugins.platforms.feishu.adapter.AESCipher", return_value=cipher
+        ) as cipher_class, patch.object(adapter, "_on_message_event") as on_message:
+            response = self._send_webhook(adapter, body, headers)
+
+        self.assertEqual(response.status, 200)
+        cipher_class.assert_called_once_with("test_secret")
+        cipher.decrypt_str.assert_called_once_with("ciphertext")
+        on_message.assert_called_once()
+
+    def test_encrypted_event_rejects_bad_signature_without_decrypting(self):
+        adapter = self._make_adapter("test_secret")
+        body = json.dumps({"encrypt": "ciphertext"}).encode()
+        headers = {
+            "Content-Type": "application/json",
+            "x-lark-request-timestamp": "1700000000",
+            "x-lark-request-nonce": "abc123",
+            "x-lark-signature": "invalid",
+        }
+
+        with patch("plugins.platforms.feishu.adapter.AESCipher") as cipher_class:
+            response = self._send_webhook(adapter, body, headers)
+
+        self.assertEqual(response.status, 401)
+        cipher_class.assert_not_called()
+
+    def test_unsigned_encrypted_url_verification_is_decrypted(self):
+        adapter = self._make_adapter("test_secret")
+        body = json.dumps({"encrypt": "ciphertext"}).encode()
+        cipher = Mock()
+        cipher.decrypt_str.return_value = json.dumps(
+            {
+                "type": "url_verification",
+                "challenge": "unsigned_encrypted_challenge",
+            }
+        )
+
+        with patch(
+            "plugins.platforms.feishu.adapter.AESCipher", return_value=cipher
+        ):
+            response = self._send_webhook(adapter, body)
+
+        self.assertEqual(response.status, 200)
+        self.assertIn(b"unsigned_encrypted_challenge", response.body)
+        cipher.decrypt_str.assert_called_once_with("ciphertext")
+
+    def test_unsigned_encrypted_event_is_not_dispatched(self):
+        adapter = self._make_adapter("test_secret")
+        body = json.dumps({"encrypt": "ciphertext"}).encode()
+        cipher = Mock()
+        cipher.decrypt_str.return_value = json.dumps(
+            {"header": {"event_type": "im.message.receive_v1"}, "event": {}}
+        )
+
+        with patch(
+            "plugins.platforms.feishu.adapter.AESCipher", return_value=cipher
+        ), patch.object(adapter, "_on_message_event") as on_message:
+            response = self._send_webhook(adapter, body)
+
+        self.assertEqual(response.status, 401)
+        self.assertIn(b"invalid signature", response.body)
+        on_message.assert_not_called()
 
     def test_rate_limit_allows_requests_within_window(self):
         adapter = self._make_adapter()
@@ -3445,6 +3544,24 @@ class TestWebhookSecurity(unittest.TestCase):
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 200)
         self.assertIn(b"test_challenge_token", response.body)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_schema_v2_url_verification_returns_nested_challenge(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        body = json.dumps(
+            {
+                "schema": "2.0",
+                "header": {"event_type": "url_verification"},
+                "event": {"challenge": "schema_v2_challenge"},
+            }
+        ).encode()
+        response = self._send_webhook(adapter, body)
+
+        self.assertEqual(response.status, 200)
+        self.assertIn(b"schema_v2_challenge", response.body)
 
 
 class TestDedupTTL(unittest.TestCase):

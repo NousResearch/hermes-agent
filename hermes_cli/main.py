@@ -7648,6 +7648,22 @@ def cmd_gui(args: argparse.Namespace):
     sys.exit(launch_result.returncode)
 
 
+def _port_is_in_use(host: str, port: int, timeout: float = 0.25) -> bool:
+    """Return True if a TCP server is already listening on ``host:port``.
+
+    Used by ``hermes dashboard --detach`` to fail fast on an occupied
+    bind address instead of letting the user wait 15s for the grandchild
+    to fail to bind.  Lives at module scope so it can be patched in
+    tests without monkey-patching the global ``socket`` module (which
+    trips up ``socketserver`` and other stdlib consumers that import it
+    at interpreter startup).
+    """
+    import socket as _socket
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _probe:
+        _probe.settimeout(timeout)
+        return _probe.connect_ex((host, port)) == 0
+
+
 def _find_stale_dashboard_pids(
     *,
     exclude_pids: set[int] | None = None,
@@ -7684,6 +7700,28 @@ def _find_stale_dashboard_pids(
     ]
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
+
+    # If a previous `hermes dashboard --detach` left a PID file behind,
+    # prefer it.  The PID file is a precise pointer (no pgrep heuristics),
+    # and survives even if the cmdline doesn't match the patterns above
+    # (for instance, if the user re-execs under a different interpreter).
+    pid_file_pids: list[int] = []
+    try:
+        from hermes_constants import get_hermes_home
+        _pid_path = get_hermes_home() / "run" / "dashboard.pid"
+    except Exception:
+        _pid_path = None
+    if _pid_path and _pid_path.exists():
+        try:
+            _raw = _pid_path.read_text().strip()
+            if _raw:
+                pid_file_pids.append(int(_raw))
+        except (OSError, ValueError):
+            # Stale / unreadable PID file — fall through to the cmdline
+            # scan, which is the original behaviour.  Don't delete the
+            # file ourselves: a separate hermes dashboard --stop run can
+            # clean it up after the process is actually confirmed dead.
+            pass
 
     try:
         if sys.platform == "win32":
@@ -7750,9 +7788,27 @@ def _find_stale_dashboard_pids(
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
 
-    if exclude_pids:
-        dashboard_pids = [p for p in dashboard_pids if p not in exclude_pids]
-    return dashboard_pids
+    # Merge PID file hits.  Drop self, drop already-excluded.  This is
+    # additive, not replacement: a user might have a stale PID file and
+    # a separately-launched `hermes dashboard` we still want to clean up.
+    from gateway.status import _pid_exists
+    combined: list[int] = []
+    seen: set[int] = set()
+    for p in pid_file_pids + dashboard_pids:
+        if p == self_pid:
+            continue
+        if exclude_pids and p in exclude_pids:
+            continue
+        if p in seen:
+            continue
+        if not _pid_exists(p):
+            # PID file pointed at a process that's already gone.  Skip
+            # silently — the next --stop run after the failed start will
+            # overwrite the file.
+            continue
+        seen.add(p)
+        combined.append(p)
+    return combined
 
 
 def _print_curator_first_run_notice() -> None:
@@ -12313,6 +12369,17 @@ def _report_dashboard_status() -> int:
 
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
+    # Service-manager flags run before status/stop so that, e.g.,
+    # `hermes dashboard --install-launchd --status` cleanly installs
+    # and reports current state.  --install-launchd itself doesn't
+    # conflict with start-a-server flags (it never starts a server in
+    # the foreground) so we put the dispatch up top.
+    if getattr(args, "install_launchd", False):
+        _install_launchd(args)
+        return
+    if getattr(args, "uninstall_launchd", False):
+        _uninstall_launchd()
+        return
     # --status: report running dashboards and exit, no deps needed.
     if getattr(args, "status", False):
         count = _report_dashboard_status()
@@ -12399,11 +12466,315 @@ def cmd_dashboard(args):
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
     # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.
+    detach = bool(getattr(args, "detach", False))
+    pid_file = getattr(args, "pid_file", None)
+    if detach and not pid_file:
+        # Default the PID file to ~/.hermes/run/dashboard.pid so --status
+        # and --stop can find the detached process without depending on
+        # pgrep heuristics.  Skip if HOME isn't writable; the caller
+        # already passed --pid-file in that case.
+        from hermes_constants import get_hermes_home
+        try:
+            pid_dir = get_hermes_home() / "run"
+            pid_dir.mkdir(parents=True, exist_ok=True)
+            pid_file = str(pid_dir / "dashboard.pid")
+        except OSError:
+            pid_file = None
+
+    if detach:
+        # Reject obvious misuses early with a clean error rather than
+        # letting the detach path struggle with a port we know is taken.
+        _chk = _port_is_in_use(args.host, args.port)
+        if _chk:
+            print(
+                f"Port {args.port} on {args.host} is already in use. "
+                f"Pick another with --port, or run `hermes dashboard --stop` first.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    # When we're the detached grandchild, --detach is NOT in our argv
+    # (the launcher stripped it before re-execing us), but --pid-file IS
+    # still set.  In that case we should write the PID file but not
+    # re-enter the detach path.  `detach` already covers the launcher
+    # case; here we additionally write the file before uvicorn.run().
+    if not detach and pid_file:
+        try:
+            os.makedirs(os.path.dirname(pid_file) or ".", exist_ok=True)
+            with open(pid_file, "w") as _pf:
+                _pf.write(str(os.getpid()))
+        except OSError as _exc:
+            print(
+                f"Warning: could not write PID file {pid_file}: {_exc}",
+                file=sys.stderr,
+            )
+
     start_server(
         host=args.host,
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
+        detach=detach,
+        pid_file=pid_file,
+    )
+
+
+# ── macOS LaunchAgent install / uninstall ────────────────────────────────
+#
+# `hermes dashboard --install-launchd` writes a user-level LaunchAgent
+# plist into ~/Library/LaunchAgents/ and bootstraps it so the dashboard
+# runs as a supervised service — restarts on crash, starts at login,
+# survives reboots.  The plist is templated from
+# contrib/launchd/ai.hermes.dashboard.plist so the install path is
+# always in sync with the source.
+#
+# Design notes:
+# * We use `launchctl bootstrap gui/$UID <plist>` (the modern
+#   replacement for `launchctl load -w`) which is the API on
+#   macOS 10.11+.  The `gui/$UID` domain keeps the job in the
+#   user's GUI session so it has access to the keychain and
+#   gets the standard user environment (PATH, HOME, etc.).
+# * The launched process still uses `--detach --no-open` so the
+#   service doesn't try to pop a browser window or block on
+#   stdin.  The double-fork in --detach becomes a no-op under
+#   launchd (we're already daemonised) but the PID file logic
+#   still runs, which means `hermes dashboard --status` can find
+#   the service reliably.
+# * On non-macOS we exit 1 with a hint to the platform-equivalent
+#   setup (systemd user unit on Linux, NSSM/SCM on Windows) so
+#   the user isn't left wondering why the flag is a no-op.
+
+
+_LAUNCHD_LABEL = "ai.hermes.dashboard"
+_LAUNCHD_PLIST_NAME = "ai.hermes.dashboard.plist"
+
+
+def _launchd_plist_template_path() -> Path:
+    """Locate the plist template shipped with the package.
+
+    PyInstaller-style wheels install under
+    ``<prefix>/contrib/launchd/ai.hermes.dashboard.plist`` (alongside
+    the ``hermes_cli`` package).  Source checkouts find it relative
+    to ``PROJECT_ROOT`` so ``hermes dashboard --install-launchd``
+    works in dev without an editable install dance.
+    """
+    candidates = [
+        PROJECT_ROOT / "contrib" / "launchd" / _LAUNCHD_PLIST_NAME,
+    ]
+    # Packaged install: importlib.resources relative to hermes_cli.
+    try:
+        from importlib.resources import files as _ir_files
+
+        packaged = _ir_files("hermes_cli").joinpath(
+            "..", "contrib", "launchd", _LAUNCHD_PLIST_NAME
+        )
+        if packaged.is_file():
+            candidates.append(Path(str(packaged)))
+    except (ImportError, AttributeError):
+        pass
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        f"LaunchAgent template not found.  Searched: "
+        f"{[str(c) for c in candidates]}"
+    )
+
+
+def _render_launchd_plist(
+    template: str, *, hermes_bin: Path, host: str, port: int,
+) -> str:
+    """Substitute placeholders in the plist template.
+
+    The template uses ``__TOKEN__`` style placeholders (rather than
+    ``{token}``) so the substitution is mechanical and doesn't
+    interfere with any XML braces the user might add later.  Unknown
+    placeholders raise so a typo in the template can't ship a
+    broken plist silently.
+    """
+    from hermes_constants import get_hermes_home
+
+    home = Path.home()
+    hermes_home = get_hermes_home()
+    log_dir = hermes_home / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "launchd.dashboard.log"
+
+    # Use the env PATH so the launched process can find node/npm when
+    # plugins spawn them.  Fall back to a sensible default if PATH
+    # is unset (shouldn't happen, but be defensive).
+    path_env = os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
+
+    replacements = {
+        "__HERMES_BIN__": str(hermes_bin),
+        "__DASHBOARD_HOST__": host,
+        "__DASHBOARD_PORT__": str(port),
+        "__HOME__": str(home),
+        "__PATH__": path_env,
+        "__HERMES_HOME__": str(hermes_home),
+        "__LOG_PATH__": str(log_path),
+    }
+    rendered = template
+    for token, value in replacements.items():
+        rendered = rendered.replace(token, value)
+    # Sanity: any remaining __TOKEN__ markers indicate a typo.
+    leftover = [
+        marker for marker in __import__("re").findall(r"__[A-Z_]+__", rendered)
+        if marker not in replacements
+    ]
+    if leftover:
+        raise ValueError(
+            f"LaunchAgent template has unrendered placeholders: {leftover}"
+        )
+    return rendered
+
+
+def _run_launchctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    """Run ``launchctl`` with a sensible stdio setup.
+
+    ``check=True`` (default) raises CalledProcessError on non-zero
+    exit so callers can catch one error type.  We capture stdout/
+    stderr so the user sees the launchctl error verbatim instead of
+    a generic "failed" message.
+    """
+    return subprocess.run(
+        ["launchctl"] + list(args),
+        check=check,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _install_launchd(args) -> None:
+    """Install the LaunchAgent plist and bootstrap it under the user GUI domain."""
+    if sys.platform != "darwin":
+        print(
+            "✗ --install-launchd is macOS-only.  On Linux, install a "
+            "systemd user unit (~/.config/systemd/user/hermes-dashboard.service); "
+            "on Windows, use NSSM or the Service Control Manager.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Pin host/port to the launchd-managed instance.  We refuse to
+    # use 0.0.0.0 (insecure flag) here because the LaunchAgent is a
+    # long-lived service; binding to all interfaces by default would
+    # expose the dashboard to the LAN forever.  Force-loopback unless
+    # the user explicitly opts in.
+    host = getattr(args, "host", None) or "127.0.0.1"
+    if host == "0.0.0.0" and not getattr(args, "insecure", False):
+        print(
+            "✗ Refusing to install a LaunchAgent bound to 0.0.0.0 "
+            "without --insecure (the service would expose the "
+            "dashboard to your LAN at every login).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    port = int(getattr(args, "port", None) or 9119)
+
+    # Refuse to install if another dashboard is already running
+    # (whether the LaunchAgent itself or a manual --detach) so the
+    # user doesn't end up with two servers fighting for the port.
+    # The precheck deliberately does NOT consult the PID file alone
+    # because the manual --detach can be running even when no
+    # LaunchAgent is installed yet.
+    try:
+        if _port_is_in_use(host, port):
+            print(
+                f"✗ Port {port} on {host} is already in use.  "
+                f"Stop the running dashboard with `hermes dashboard --stop` "
+                f"first, or pick a different --port.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    except OSError as exc:
+        # _port_is_in_use can raise on EHOSTUNREACH etc.  Don't
+        # gate the install on network reachability.
+        print(f"⚠ Could not probe port {port} on {host}: {exc}", file=sys.stderr)
+
+    # Locate and render the template.
+    try:
+        template_path = _launchd_plist_template_path()
+    except FileNotFoundError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        sys.exit(1)
+    rendered = _render_launchd_plist(
+        template_path.read_text(encoding="utf-8"),
+        hermes_bin=Path(sys.executable).parent / "hermes",
+        host=host,
+        port=port,
+    )
+
+    agents_dir = Path.home() / "Library" / "LaunchAgents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    plist_dest = agents_dir / _LAUNCHD_PLIST_NAME
+
+    # Unload any previous install so the bootstrap is clean even
+    # when re-running on an upgraded version.  bootout returns
+    # non-zero if the job isn't loaded; treat that as success.
+    gui_domain = f"gui/{os.getuid()}"
+    _run_launchctl("bootout", gui_domain, str(plist_dest), check=False)
+
+    plist_dest.write_text(rendered, encoding="utf-8")
+    print(f"✓ Wrote {plist_dest}")
+
+    # Bootstrap the job under the user's GUI domain so it inherits
+    # the standard user env (PATH, keychain access, etc.).  This is
+    # the macOS 10.11+ replacement for `launchctl load -w`.
+    result = _run_launchctl("bootstrap", gui_domain, str(plist_dest), check=False)
+    if result.returncode != 0:
+        # `launchctl bootstrap` requires a fully-qualified target
+        # on some macOS versions; fall back to the legacy
+        # `launchctl load -w` so we work everywhere.
+        if "domain" in (result.stderr or "").lower():
+            print(
+                f"⚠ launchctl bootstrap refused: {result.stderr.strip()}\n"
+                f"  Falling back to `launchctl load -w`.",
+                file=sys.stderr,
+            )
+            _run_launchctl("load", "-w", str(plist_dest))
+        else:
+            print(
+                f"✗ launchctl bootstrap failed (exit {result.returncode}): "
+                f"{result.stderr.strip()}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    print(
+        f"✓ Loaded {gui_domain}/{_LAUNCHD_LABEL}.\n"
+        f"  The dashboard will start at every login and restart on crash.\n"
+        f"  Stop it with:  launchctl bootout {gui_domain}/{_LAUNCHD_LABEL}\n"
+        f"  Or run:        hermes dashboard --uninstall-launchd"
+    )
+
+
+def _uninstall_launchd() -> None:
+    """Unload the LaunchAgent and remove the plist."""
+    if sys.platform != "darwin":
+        print(
+            "✗ --uninstall-launchd is macOS-only.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    agents_dir = Path.home() / "Library" / "LaunchAgents"
+    plist_dest = agents_dir / _LAUNCHD_PLIST_NAME
+    gui_domain = f"gui/{os.getuid()}"
+
+    # bootout returns non-zero if the job isn't loaded; that's fine.
+    _run_launchctl("bootout", gui_domain, str(plist_dest), check=False)
+
+    if plist_dest.exists():
+        plist_dest.unlink()
+        print(f"✓ Removed {plist_dest}")
+    else:
+        print(f"  No plist at {plist_dest} (nothing to remove).")
+
+    print(
+        f"  The dashboard will no longer start at login.  Any running "
+        f"instance is still up — stop it with:  hermes dashboard --stop"
     )
 
 
@@ -15722,6 +16093,28 @@ Examples:
             "where npm may not be available. Pre-build with: cd web && npm run build"
         ),
     )
+    dashboard_parser.add_argument(
+        "--detach",
+        action="store_true",
+        help=(
+            "Run the dashboard in the background, reparented to init (PID 1) "
+            "so it survives the launching terminal closing. The launching "
+            "process exits 0 once the port is reachable; the server keeps "
+            "running until you `hermes dashboard --stop` it. Default PID "
+            "file is ~/.hermes/run/dashboard.pid — use --pid-file to override. "
+            "On macOS, a more permanent option is to install a LaunchAgent "
+            "so it also survives reboots."
+        ),
+    )
+    dashboard_parser.add_argument(
+        "--pid-file",
+        default=None,
+        help=(
+            "Where to write the detached server's PID (default: "
+            "~/.hermes/run/dashboard.pid when --detach is set). Ignored "
+            "without --detach."
+        ),
+    )
     # Lifecycle flags — mutually exclusive with each other and with the
     # start-a-server flags above (if both are passed, --stop / --status win
     # because they exit before the server is started).  The dashboard has
@@ -15737,6 +16130,30 @@ Examples:
         "--status",
         action="store_true",
         help="List running hermes dashboard processes and exit",
+    )
+    # Service-manager flags.  These are also mutually exclusive with
+    # start-a-server flags (they exit before the server is started),
+    # but the conflict is silent on purpose: `hermes dashboard
+    # --install-launchd` is a setup action, not a server start.
+    dashboard_parser.add_argument(
+        "--install-launchd",
+        action="store_true",
+        help=(
+            "Install a macOS LaunchAgent (~/Library/LaunchAgents/"
+            "ai.hermes.dashboard.plist) that supervises the dashboard "
+            "across reboots.  Loads it via `launchctl bootstrap` so the "
+            "server starts immediately and is also started at every "
+            "subsequent login.  macOS only; on Linux/Windows this prints "
+            "the systemd / NSSM equivalent and exits 1."
+        ),
+    )
+    dashboard_parser.add_argument(
+        "--uninstall-launchd",
+        action="store_true",
+        help=(
+            "Unload the LaunchAgent installed by --install-launchd and "
+            "remove the plist.  macOS only."
+        ),
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
 

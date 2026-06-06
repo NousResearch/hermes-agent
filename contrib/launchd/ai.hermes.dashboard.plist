@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hermes Dashboard user-level LaunchAgent.
+     Installed by `hermes dashboard (install-launchd flag)` into
+     ~/Library/LaunchAgents/ai.hermes.dashboard.plist and loaded
+     with `launchctl bootstrap gui/$UID`.  launchd supervises the
+     process: restarts it on crash, restarts on login (KeepAlive
+     SuccessfulExit=false + RunAtLoad), and keeps it alive across
+     reboots so the dashboard is reachable at
+     http://127.0.0.1:9119 whenever the user is logged in.
+     Uninstall with `hermes dashboard (uninstall-launchd flag)`. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.hermes.dashboard</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HERMES_BIN__</string>
+        <string>-m</string>
+        <string>hermes_cli.main</string>
+        <string>dashboard</string>
+        <string>--detach</string>
+        <string>--no-open</string>
+        <string>--host</string>
+        <string>__DASHBOARD_HOST__</string>
+        <string>--port</string>
+        <string>__DASHBOARD_PORT__</string>
+    </array>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>__PATH__</string>
+        <key>HERMES_HOME</key>
+        <string>__HERMES_HOME__</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_PATH__</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_PATH__</string>
+
+    <key>Nice</key>
+    <integer>5</integer>
+</dict>
+</plist>

@@ -1111,6 +1111,9 @@ export interface Translations {
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
       desktopVersion: (version: string) => string
+      backendVersion: (version: string) => string
+      clientLabel: (version: string) => string
+      backendLabel: (version: string) => string
       commit: (sha: string) => string
       branch: (branch: string) => string
       closeCommandCenter: string

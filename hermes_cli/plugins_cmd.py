@@ -10,6 +10,7 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 from __future__ import annotations
 
 import functools
+import importlib.metadata
 import json
 import logging
 import os
@@ -730,11 +731,11 @@ def _plugin_exists(name: str) -> bool:
 
 def _discover_all_plugins() -> list:
     """Return a list of (name, version, description, source, dir_path) for
-    every plugin the loader can see — user + bundled + project.
+    every plugin the loader can see — user + bundled + project + entry point.
 
     Matches the ordering/dedup of ``PluginManager.discover_and_load``:
-    bundled first, then user, then project; user overrides bundled on
-    name collision.
+    bundled first, then user, then project, then entry points. Later sources
+    override earlier ones on name collision.
     """
     try:
         import yaml
@@ -778,7 +779,44 @@ def _discover_all_plugins() -> list:
             if source == "user" and (d / ".git").exists():
                 src_label = "git"
             seen[name] = (name, version, description, src_label, d)
+
+    for name, version, description, path in _discover_entrypoint_plugins():
+        seen[name] = (name, version, description, "entrypoint", path)
     return list(seen.values())
+
+
+def _discover_entrypoint_plugins() -> list[tuple[str, str, str, str]]:
+    """Return plugin entries advertised through ``hermes_agent.plugins``.
+
+    Entry-point plugins are installed as Python packages, so they do not have a
+    plugin directory under ``~/.hermes/plugins``. Include package metadata here
+    so ``hermes plugins list`` can show and enable them.
+    """
+    from hermes_cli.plugins import ENTRY_POINTS_GROUP
+
+    try:
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=ENTRY_POINTS_GROUP)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(ENTRY_POINTS_GROUP, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+    except Exception as exc:
+        logger.debug("Entry-point plugin discovery failed: %s", exc)
+        return []
+
+    entries: list[tuple[str, str, str, str]] = []
+    for ep in group_eps:
+        version = ""
+        description = ""
+        dist = getattr(ep, "dist", None)
+        metadata = getattr(dist, "metadata", None)
+        if metadata is not None:
+            version = str(getattr(dist, "version", "") or "")
+            description = str(metadata.get("Summary", "") or "")
+        entries.append((ep.name, version, description, ep.value))
+    return entries
 
 
 def _plugin_status(name: str, enabled: set, disabled: set) -> str:

@@ -941,20 +941,23 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
             logger.debug("Could not remove skills prompt snapshot: %s", e)
 
 
-def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
+def _build_skills_manifest(skills_dirs: list[Path]) -> dict[str, list[int]]:
     """Build an mtime/size manifest of all SKILL.md and DESCRIPTION.md files."""
     manifest: dict[str, list[int]] = {}
-    for filename in ("SKILL.md", "DESCRIPTION.md"):
-        for path in iter_skill_index_files(skills_dir, filename):
-            try:
-                st = path.stat()
-            except OSError:
-                continue
-            manifest[str(path.relative_to(skills_dir))] = [st.st_mtime_ns, st.st_size]
+    for skills_dir in skills_dirs:
+        dir_prefix = str(skills_dir.resolve())
+        for filename in ("SKILL.md", "DESCRIPTION.md"):
+            for path in iter_skill_index_files(skills_dir, filename):
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                rel = str(path.relative_to(skills_dir))
+                manifest[f"{dir_prefix}::{rel}"] = [st.st_mtime_ns, st.st_size]
     return manifest
 
 
-def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
+def _load_skills_snapshot(skills_dir: Path, external_dirs: list[Path]) -> Optional[dict]:
     """Load the disk snapshot if it exists and its manifest still matches."""
     snapshot_path = _skills_prompt_snapshot_path()
     if not snapshot_path.exists():
@@ -967,13 +970,14 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
         return None
     if snapshot.get("version") != _SKILLS_SNAPSHOT_VERSION:
         return None
-    if snapshot.get("manifest") != _build_skills_manifest(skills_dir):
+    if snapshot.get("manifest") != _build_skills_manifest([skills_dir, *external_dirs]):
         return None
     return snapshot
 
 
 def _write_skills_snapshot(
     skills_dir: Path,
+    external_dirs: list[Path],
     manifest: dict[str, list[int]],
     skill_entries: list[dict],
     category_descriptions: dict[str, str],
@@ -1116,9 +1120,11 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    cache_manifest = _build_skills_manifest([skills_dir, *external_dirs])
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
+        json.dumps(cache_manifest, sort_keys=True),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
@@ -1131,7 +1137,7 @@ def build_skills_system_prompt(
             return cached
 
     # ── Layer 2: disk snapshot ────────────────────────────────────────
-    snapshot = _load_skills_snapshot(skills_dir)
+    snapshot = _load_skills_snapshot(skills_dir, external_dirs)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
@@ -1200,7 +1206,8 @@ def build_skills_system_prompt(
 
         _write_skills_snapshot(
             skills_dir,
-            _build_skills_manifest(skills_dir),
+            external_dirs,
+            cache_manifest,
             skill_entries,
             category_descriptions,
         )

@@ -3,6 +3,7 @@
 import builtins
 import importlib
 import logging
+import shutil
 import sys
 
 import pytest
@@ -370,6 +371,29 @@ class TestBuildSkillsSystemPrompt:
 
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
+
+    def test_rebuilds_prompt_when_external_skills_change(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_skills = tmp_path / "skills"
+        local_skills.mkdir(parents=True)
+
+        external_root = tmp_path / "external-skills"
+        external_root.mkdir()
+        ext_skill = external_root / "external-only-skill"
+        ext_skill.mkdir()
+        (ext_skill / "SKILL.md").write_text(
+            "---\nname: external-only-skill\ndescription: External version\n---\n"
+        )
+        (tmp_path / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_root}\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "external-only-skill" in first
+
+        shutil.rmtree(ext_skill)
+        second = build_skills_system_prompt()
+        assert "external-only-skill" not in second
 
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

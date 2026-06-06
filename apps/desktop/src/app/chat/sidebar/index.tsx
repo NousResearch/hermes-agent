@@ -19,6 +19,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -38,6 +39,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { profileColor } from '@/lib/profile-color'
+import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { cn } from '@/lib/utils'
 import { $cronJobs } from '@/store/cron'
@@ -118,6 +120,7 @@ const WORKSPACE_PAGE = 5
 // unified list scannable, then reveal/fetch more in N-sized steps on demand.
 const PROFILE_INITIAL_PAGE = 5
 const WS_ID_PREFIX = 'workspace:'
+const LOCAL_SESSION_SOURCES = new Set(['cli', 'desktop', 'local', 'tui'])
 
 const wsId = (id: string) => `${WS_ID_PREFIX}${id}`
 const parseWsId = (id: string) => (id.startsWith(WS_ID_PREFIX) ? id.slice(WS_ID_PREFIX.length) : null)
@@ -206,6 +209,46 @@ function workspaceGroupsFor(sessions: SessionInfo[], noWorkspaceLabel: string): 
   }
 
   return [...groups.values()]
+}
+
+function sourceSessionGroupsFor(sessions: SessionInfo[]): {
+  localSessions: SessionInfo[]
+  sourceGroups: SidebarSessionGroup[]
+} {
+  const groups = new Map<string, SidebarSessionGroup>()
+  const localSessions: SessionInfo[] = []
+
+  for (const session of sessions) {
+    const sourceId = normalizeSessionSource(session.source)
+
+    if (!sourceId || LOCAL_SESSION_SOURCES.has(sourceId)) {
+      localSessions.push(session)
+
+      continue
+    }
+
+    const label = sessionSourceLabel(sourceId) ?? sourceId
+    const group = groups.get(sourceId) ?? {
+      id: `source:${sourceId}`,
+      label,
+      mode: 'source',
+      path: null,
+      sessions: [],
+      sourceId
+    }
+
+    group.sessions.push(session)
+    groups.set(sourceId, group)
+  }
+
+  for (const group of groups.values()) {
+    group.sessions.sort((a, b) => sessionTime(b) - sessionTime(a))
+  }
+
+  return {
+    localSessions,
+    sourceGroups: [...groups.values()].sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
+  }
 }
 
 function useSortableBindings(id: string) {
@@ -434,9 +477,14 @@ export function ChatSidebar({
     [unpinnedAgentSessions, agentOrderIds]
   )
 
+  const { localSessions: localAgentSessions, sourceGroups } = useMemo(
+    () => sourceSessionGroupsFor(agentSessions),
+    [agentSessions]
+  )
+
   const agentGroups = useMemo(
-    () => orderByIds(workspaceGroupsFor(agentSessions, s.noWorkspace), g => g.id, workspaceOrderIds),
-    [agentSessions, s.noWorkspace, workspaceOrderIds]
+    () => orderByIds(workspaceGroupsFor(localAgentSessions, s.noWorkspace), g => g.id, workspaceOrderIds),
+    [localAgentSessions, s.noWorkspace, workspaceOrderIds]
   )
 
   const loadMoreForProfileGroup = useCallback(
@@ -449,9 +497,7 @@ export function ChatSidebar({
 
       void Promise.resolve(onLoadMoreProfileSessions(profile))
         .catch(() => undefined)
-        .finally(() =>
-          setProfileLoadMorePending(({ [profile]: _done, ...rest }) => rest)
-        )
+        .finally(() => setProfileLoadMorePending(({ [profile]: _done, ...rest }) => rest))
     },
     [onLoadMoreProfileSessions]
   )
@@ -482,15 +528,17 @@ export function ChatSidebar({
       groups.set(key, group)
     }
 
-    return [...groups.values()]
-      .map(group => ({
-        ...group,
-        loadingMore: Boolean(profileLoadMorePending[group.id]),
-        onLoadMore: onLoadMoreProfileSessions ? () => loadMoreForProfileGroup(group.id) : undefined,
-        totalCount: Math.max(group.sessions.length, sessionProfileTotals[group.id] ?? 0)
-      }))
-      // default (root) first, then the rest alphabetically.
-      .sort((a, b) => (a.id === 'default' ? -1 : b.id === 'default' ? 1 : a.label.localeCompare(b.label)))
+    return (
+      [...groups.values()]
+        .map(group => ({
+          ...group,
+          loadingMore: Boolean(profileLoadMorePending[group.id]),
+          onLoadMore: onLoadMoreProfileSessions ? () => loadMoreForProfileGroup(group.id) : undefined,
+          totalCount: Math.max(group.sessions.length, sessionProfileTotals[group.id] ?? 0)
+        }))
+        // default (root) first, then the rest alphabetically.
+        .sort((a, b) => (a.id === 'default' ? -1 : b.id === 'default' ? 1 : a.label.localeCompare(b.label)))
+    )
   }, [
     showAllProfiles,
     agentSessions,
@@ -499,6 +547,30 @@ export function ChatSidebar({
     profileLoadMorePending,
     sessionProfileTotals
   ])
+
+  const displayAgentSessions = sourceGroups.length ? localAgentSessions : agentSessions
+
+  const displayAgentGroups = useMemo(() => {
+    if (sourceGroups.length) {
+      const localGroups = agentsGrouped
+        ? agentGroups
+        : localAgentSessions.length
+          ? [
+              {
+                id: 'local-sessions',
+                label: 'Local',
+                mode: 'workspace' as const,
+                path: null,
+                sessions: localAgentSessions
+              }
+            ]
+          : []
+
+      return [...sourceGroups, ...localGroups]
+    }
+
+    return showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined
+  }, [agentGroups, agentsGrouped, localAgentSessions, profileGroups, showAllProfiles, sourceGroups])
 
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
 
@@ -735,7 +807,7 @@ export function ChatSidebar({
               ) : null
             }
             forceEmptyState={showSessionSkeletons}
-            groups={showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined}
+            groups={displayAgentGroups}
             headerAction={
               // Always reserve the icon-xs (size-6) slot so the header keeps the
               // same height whether or not the toggle renders — otherwise the
@@ -744,7 +816,7 @@ export function ChatSidebar({
               // the toggle does nothing, and it's irrelevant in the ALL-profiles
               // view (always grouped by profile), so hide the button (not the slot).
               <div className="grid size-6 shrink-0 place-items-center">
-                {!showAllProfiles && agentSessions.length > 0 ? (
+                {!showAllProfiles && localAgentSessions.length > 0 ? (
                   <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
                     <Button
                       aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
@@ -778,8 +850,8 @@ export function ChatSidebar({
             open={agentsOpen}
             pinned={false}
             rootClassName="min-h-0 flex-1 p-0"
-            sessions={agentSessions}
-            sortable={!showAllProfiles && agentSessions.length > 1}
+            sessions={displayAgentSessions}
+            sortable={!showAllProfiles && sourceGroups.length === 0 && agentSessions.length > 1}
             workingSessionIdSet={workingSessionIdSet}
           />
         )}
@@ -880,8 +952,9 @@ interface SidebarSessionGroup {
   // Profile color for the ALL-profiles view; absent for workspace groups.
   color?: null | string
   loadingMore?: boolean
-  mode?: 'profile' | 'workspace'
+  mode?: 'profile' | 'source' | 'workspace'
   onLoadMore?: () => void
+  sourceId?: string
   totalCount?: number
 }
 
@@ -1069,6 +1142,7 @@ function SidebarWorkspaceGroup({
   const { t } = useI18n()
   const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
+  const isSourceGroup = group.mode === 'source'
   const pageStep = isProfileGroup ? PROFILE_INITIAL_PAGE : WORKSPACE_PAGE
   const [open, setOpen] = useState(true)
   const [visibleCount, setVisibleCount] = useState(pageStep)
@@ -1102,7 +1176,18 @@ function SidebarWorkspaceGroup({
           type="button"
         >
           {group.color ? (
-            <span aria-hidden="true" className="size-2 shrink-0 rounded-full" style={{ backgroundColor: group.color }} />
+            <span
+              aria-hidden="true"
+              className="size-2 shrink-0 rounded-full"
+              style={{ backgroundColor: group.color }}
+            />
+          ) : null}
+          {isSourceGroup && group.sourceId ? (
+            <PlatformAvatar
+              className="size-4 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
+              platformId={group.sourceId}
+              platformName={group.label}
+            />
           ) : null}
           <span className="truncate">{group.label}</span>
           <SidebarCount>
@@ -1151,7 +1236,11 @@ function SidebarWorkspaceGroup({
           {renderRows(visibleSessions)}
           {hiddenCount > 0 &&
             (isProfileGroup ? (
-              <SidebarLoadMoreRow loading={Boolean(group.loadingMore)} onClick={handleProfileLoadMore} step={nextCount} />
+              <SidebarLoadMoreRow
+                loading={Boolean(group.loadingMore)}
+                onClick={handleProfileLoadMore}
+                step={nextCount}
+              />
             ) : (
               <Tip label={s.showMoreIn(nextCount, group.label)}>
                 <button

@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tui_gateway import server
 
 
@@ -1013,6 +1015,22 @@ def test_session_title_queues_when_db_row_not_ready(monkeypatch):
         assert get_resp["result"]["title"] == "queued title"
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_desktop_approval_notify_raises_when_transport_write_fails(monkeypatch):
+    """Lost Desktop approval events must not park the agent until timeout."""
+    emitted = []
+
+    def _failed_emit(event, sid, payload=None):
+        emitted.append((event, sid, payload))
+        return False
+
+    monkeypatch.setattr(server, "_emit", _failed_emit)
+
+    with pytest.raises(RuntimeError, match="approval.request could not be delivered"):
+        server._emit_approval_request_or_raise("sid-dead", {"command": "rm -rf /x"})
+
+    assert emitted == [("approval.request", "sid-dead", {"command": "rm -rf /x"})]
 
 
 def test_notification_event_routing_by_session_key(monkeypatch):

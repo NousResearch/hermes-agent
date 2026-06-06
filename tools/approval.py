@@ -1387,6 +1387,8 @@ def check_all_command_guards(command: str, env_type: str,
                     "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
                     "pattern_key": primary_key,
                     "description": combined_desc,
+                    "outcome": "notify_failed",
+                    "user_consent": False,
                 }
             resolved = decision["resolved"]
             choice = decision["choice"]

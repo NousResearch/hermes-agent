@@ -513,7 +513,23 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     params = {"type": event, "session_id": sid}
     if payload is not None:
         params["payload"] = payload
-    write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+    return write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+
+
+def _emit_approval_request_or_raise(sid: str, data: dict) -> None:
+    """Emit a Desktop/TUI approval request and fail closed if it cannot render.
+
+    The dangerous-command guard treats gateway notify callbacks as synchronous:
+    after the callback returns, the agent thread waits for the user to resolve
+    the pending approval.  If the Desktop/WebSocket transport is already gone,
+    ``write_json`` returns ``False``.  Ignoring that result leaves the agent
+    parked until the 5-minute approval timeout with no visible button.  Raising
+    here converts the broken UI path into an immediate ``notify_failed`` block.
+    """
+    if not _emit("approval.request", sid, data):
+        raise RuntimeError(
+            f"approval.request could not be delivered for Desktop session {sid}"
+        )
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -716,7 +732,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 )
 
                 register_gateway_notify(
-                    key, lambda data: _emit("approval.request", sid, data)
+                    key,
+                    lambda data, _sid=sid: _emit_approval_request_or_raise(_sid, data),
                 )
                 notify_registered = True
                 load_permanent_allowlist()
@@ -1627,7 +1644,7 @@ def _sync_session_key_after_compress(
         try:
             register_gateway_notify(
                 new_session_id,
-                lambda data: _emit("approval.request", sid, data),
+                lambda data, _sid=sid: _emit_approval_request_or_raise(_sid, data),
             )
         except Exception:
             pass
@@ -2662,7 +2679,10 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     try:
         from tools.approval import register_gateway_notify, load_permanent_allowlist
 
-        register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
+        register_gateway_notify(
+            key,
+            lambda data, _sid=sid: _emit_approval_request_or_raise(_sid, data),
+        )
         load_permanent_allowlist()
     except Exception:
         pass

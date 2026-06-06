@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
+from datetime import datetime, timezone, timedelta
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -4333,7 +4334,6 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(target_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
-
             # Embed description limit is 4096; message usually fits easily.
             max_desc = 4088
             body = message if len(message) <= max_desc else message[: max_desc - 3] + "..."
@@ -4354,6 +4354,81 @@ class DiscordAdapter(BasePlatformAdapter):
             view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def send_kanban_review_card(
+        self,
+        chat_id: str,
+        *,
+        task_id: str,
+        title: str,
+        reason: str,
+        board: Optional[str] = None,
+        pending_since: Optional[int] = None,
+        assignee: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Kanban-specific review/approval card for blocked tasks.
+
+        This is intentionally *not* wired to the normal command-approval queue:
+        the worker has already stopped and recorded a blocked event.  The
+        buttons mutate the Kanban task directly: Approve marks it done, Details
+        posts the latest handoff, Keep blocked adds an audit comment.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            clean_title = (title or task_id).strip()[:256]
+            clean_reason = (reason or "review-required").strip()
+            if len(clean_reason) > 900:
+                clean_reason = clean_reason[:897] + "..."
+
+            since_text = "unknown"
+            if pending_since:
+                try:
+                    ist = timezone(timedelta(hours=5, minutes=30))
+                    since_text = datetime.fromtimestamp(int(pending_since), ist).strftime("%H:%M IST")
+                except Exception:
+                    since_text = "unknown"
+
+            embed = discord.Embed(
+                title="🚨 Review needed",
+                description=f"**{clean_title}**\n`{task_id}` — blocked",
+                color=discord.Color.orange(),
+            )
+            embed.add_field(name="Reason", value=clean_reason, inline=False)
+            embed.add_field(name="Pending since", value=since_text, inline=True)
+            if assignee:
+                embed.add_field(name="Worker", value=f"@{assignee}", inline=True)
+            if board:
+                embed.add_field(name="Board", value=board, inline=True)
+            embed.add_field(
+                name="Actions",
+                value="Approve = mark task done • Details = show handoff • Keep blocked = audit no-op",
+                inline=False,
+            )
+
+            view = KanbanReviewCardView(
+                task_id=task_id,
+                board=board,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+
+            msg = await channel.send(embed=embed, view=view)
+            view._message = msg
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception as e:
+            logger.warning("[%s] send_kanban_review_card failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
     async def send_clarify(
@@ -5256,7 +5331,7 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, KanbanReviewCardView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -5480,6 +5555,193 @@ def _define_discord_view_classes() -> None:
                     if embed:
                         embed.color = discord.Color.greyple()
                         embed.set_footer(text="⏱ Prompt expired — no action taken")
+                    await msg.edit(embed=embed, view=self)
+                except Exception:
+                    pass
+
+    class KanbanReviewCardView(discord.ui.View):
+        """Kanban-specific review card buttons for review-required blocks."""
+
+        def __init__(
+            self,
+            task_id: str,
+            board: Optional[str],
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(timeout=86400)  # review cards can sit overnight
+            self.task_id = task_id
+            self.board = board
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+
+            approve = discord.ui.Button(
+                label="✅ Approve", style=discord.ButtonStyle.success,
+                custom_id=f"kanban_review:{task_id}:approve",
+            )
+            approve.callback = self._on_approve
+            self.add_item(approve)
+
+            details = discord.ui.Button(
+                label="📋 Details", style=discord.ButtonStyle.primary,
+                custom_id=f"kanban_review:{task_id}:details",
+            )
+            details.callback = self._on_details
+            self.add_item(details)
+
+            keep = discord.ui.Button(
+                label="⏸ Keep blocked", style=discord.ButtonStyle.secondary,
+                custom_id=f"kanban_review:{task_id}:keep_blocked",
+            )
+            keep.callback = self._on_keep_blocked
+            self.add_item(keep)
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
+
+        def _display_name(self, interaction: discord.Interaction) -> str:
+            return getattr(getattr(interaction, "user", None), "display_name", "user")
+
+        async def _edit_resolved(
+            self, interaction: discord.Interaction, *, color: discord.Color, footer: str,
+        ) -> None:
+            embed = interaction.message.embeds[0] if (
+                interaction.message and interaction.message.embeds
+            ) else None
+            if embed:
+                embed.color = color
+                embed.set_footer(text=footer)
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(embed=embed, view=self)
+
+        def _approve_sync(self, actor: str) -> tuple[bool, str]:
+            from hermes_cli import kanban_db as _kb
+            conn = _kb.connect(board=self.board)
+            try:
+                task = _kb.get_task(conn, self.task_id)
+                if not task:
+                    return False, f"Task {self.task_id} not found"
+                ok = _kb.complete_task(
+                    conn,
+                    self.task_id,
+                    result=f"Approved via Discord review card by {actor}.",
+                    summary=f"Approved via Discord review card by {actor}.",
+                    metadata={"approved_by": actor, "approval_surface": "discord_kanban_review_card"},
+                )
+                if ok:
+                    _kb.add_comment(
+                        conn, self.task_id, f"discord:{actor}",
+                        "Approved via Discord Kanban review card.",
+                    )
+                    return True, f"Approved `{self.task_id}` and marked it done."
+                return False, f"Task {self.task_id} is no longer blocked/ready/running."
+            finally:
+                conn.close()
+
+        def _keep_blocked_sync(self, actor: str) -> tuple[bool, str]:
+            from hermes_cli import kanban_db as _kb
+            conn = _kb.connect(board=self.board)
+            try:
+                task = _kb.get_task(conn, self.task_id)
+                if not task:
+                    return False, f"Task {self.task_id} not found"
+                _kb.add_comment(
+                    conn, self.task_id, f"discord:{actor}",
+                    "Kept blocked via Discord Kanban review card.",
+                )
+                return True, f"Kept `{self.task_id}` blocked."
+            finally:
+                conn.close()
+
+        def _details_sync(self) -> str:
+            from hermes_cli import kanban_db as _kb
+            conn = _kb.connect(board=self.board)
+            try:
+                task = _kb.get_task(conn, self.task_id)
+                if not task:
+                    return f"Task `{self.task_id}` not found."
+                run = _kb.latest_run(conn, self.task_id)
+                events = _kb.list_events(conn, self.task_id)
+                last_block = next((e for e in reversed(events) if e.kind == "blocked"), None)
+                parts = [
+                    f"**{task.title}**",
+                    f"`{task.id}` — `{task.status}`" + (f" — @{task.assignee}" if task.assignee else ""),
+                ]
+                if last_block and last_block.payload and last_block.payload.get("reason"):
+                    parts.append(f"**Reason:** {str(last_block.payload['reason'])[:900]}")
+                if run and getattr(run, "summary", None):
+                    parts.append(f"**Handoff:** {str(run.summary).strip()[:1200]}")
+                elif task.body:
+                    parts.append(f"**Body:** {task.body.strip()[:1200]}")
+                return "\n\n".join(parts)[:1900]
+            finally:
+                conn.close()
+
+        async def _on_approve(self, interaction: discord.Interaction) -> None:
+            if self.resolved:
+                await interaction.response.send_message("This review card is already resolved~", ephemeral=True)
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized to approve this Kanban task~", ephemeral=True)
+                return
+            actor = self._display_name(interaction)
+            ok, text = await asyncio.to_thread(self._approve_sync, actor)
+            if ok:
+                self.resolved = True
+                await self._edit_resolved(
+                    interaction,
+                    color=discord.Color.green(),
+                    footer=f"Approved by {actor}",
+                )
+                followup = getattr(interaction, "followup", None)
+                if followup and hasattr(followup, "send"):
+                    await followup.send(text)
+            else:
+                await interaction.response.send_message(text, ephemeral=True)
+
+        async def _on_details(self, interaction: discord.Interaction) -> None:
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized to view this Kanban task~", ephemeral=True)
+                return
+            details = await asyncio.to_thread(self._details_sync)
+            await interaction.response.send_message(details, ephemeral=True)
+
+        async def _on_keep_blocked(self, interaction: discord.Interaction) -> None:
+            if self.resolved:
+                await interaction.response.send_message("This review card is already resolved~", ephemeral=True)
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized to resolve this Kanban review~", ephemeral=True)
+                return
+            actor = self._display_name(interaction)
+            ok, text = await asyncio.to_thread(self._keep_blocked_sync, actor)
+            if ok:
+                self.resolved = True
+                await self._edit_resolved(
+                    interaction,
+                    color=discord.Color.greyple(),
+                    footer=f"Kept blocked by {actor}",
+                )
+                followup = getattr(interaction, "followup", None)
+                if followup and hasattr(followup, "send"):
+                    await followup.send(text)
+            else:
+                await interaction.response.send_message(text, ephemeral=True)
+
+        async def on_timeout(self):
+            for child in self.children:
+                child.disabled = True
+            msg = getattr(self, '_message', None)
+            if msg:
+                try:
+                    embed = msg.embeds[0] if msg.embeds else None
+                    if embed:
+                        embed.color = discord.Color.greyple()
+                        embed.set_footer(text="Review card expired")
                     await msg.edit(embed=embed, view=self)
                 except Exception:
                     pass

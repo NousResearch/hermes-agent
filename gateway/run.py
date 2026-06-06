@@ -42,7 +42,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List, Union
+from typing import Dict, Optional, Any, List, Union, Callable, Awaitable, cast
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -5410,6 +5410,7 @@ class GatewayRunner:
                     title = (task.title if task else sub["task_id"])[:120]
                     for ev in d["events"]:
                         kind = ev.kind
+                        review_card: Optional[dict[str, Any]] = None
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
@@ -5438,9 +5439,21 @@ class GatewayRunner:
                                 f" — {title}{handoff}"
                             )
                         elif kind == "blocked":
+                            msg = ""
                             reason = ""
+                            review_card = None
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
+                                raw_reason = str(ev.payload["reason"])
+                                reason = f": {raw_reason[:160]}"
+                                if raw_reason.strip().lower().startswith("review-required"):
+                                    review_card = {
+                                        "task_id": sub["task_id"],
+                                        "title": title,
+                                        "reason": raw_reason,
+                                        "board": board_slug,
+                                        "pending_since": getattr(ev, "created_at", None),
+                                        "assignee": who,
+                                    }
                             msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
                         elif kind == "gave_up":
                             err = ""
@@ -5473,9 +5486,28 @@ class GatewayRunner:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
+                            send_review_card = cast(
+                                Optional[Callable[..., Awaitable[Any]]],
+                                getattr(adapter, "send_kanban_review_card", None),
                             )
+                            if review_card is not None and send_review_card is not None:
+                                result = await send_review_card(
+                                    sub["chat_id"],
+                                    metadata=metadata,
+                                    **review_card,
+                                )
+                                if not getattr(result, "success", False):
+                                    logger.warning(
+                                        "kanban notifier: review card send failed for %s (%s); falling back to text",
+                                        sub["task_id"], getattr(result, "error", "unknown"),
+                                    )
+                                    await adapter.send(
+                                        sub["chat_id"], msg, metadata=metadata,
+                                    )
+                            else:
+                                await adapter.send(
+                                    sub["chat_id"], msg, metadata=metadata,
+                                )
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,

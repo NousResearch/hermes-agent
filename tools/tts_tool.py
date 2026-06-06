@@ -55,6 +55,12 @@ from urllib.parse import urljoin
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
+
+# Cached tts_normalize function — loaded once from ~/.hermes/scripts via
+# importlib.util (NOT sys.path.insert) to avoid module shadowing attacks.
+_tts_normalize_fn: Optional[Callable] = None
+_tts_normalize_loaded: bool = False
+
 def get_env_value(name, default=None):
     """Read env values through the live config module.
 
@@ -1880,15 +1886,23 @@ def text_to_speech_tool(
 
     # Normalize text for TTS: expand abbreviations (Mr.→Mister), convert numbers
     # to words, clean symbols/URLs, etc. Uses the canonical tts_normalize module.
-    try:
-        import sys as _sys
-        _scripts_dir = os.path.expanduser("~/.hermes/scripts")
-        if _scripts_dir not in _sys.path:
-            _sys.path.insert(0, _scripts_dir)
-        from tts_normalize import tts_normalize as _tts_normalize
-        text = _tts_normalize(text)
-    except Exception as _norm_err:
-        logger.debug("TTS normalization unavailable or failed: %s", _norm_err)
+    # Load via importlib.util to avoid sys.path.insert which places a user-writable
+    # directory at the highest import priority, enabling module shadowing attacks.
+    global _tts_normalize_fn, _tts_normalize_loaded
+    if not _tts_normalize_loaded:
+        try:
+            import importlib.util as _ilu
+            _norm_path = os.path.join(os.path.expanduser("~/.hermes/scripts"), "tts_normalize.py")
+            _spec = _ilu.spec_from_file_location("tts_normalize", _norm_path)
+            if _spec and _spec.loader:
+                _mod = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                _tts_normalize_fn = getattr(_mod, "tts_normalize", None)
+        except Exception as _norm_err:
+            logger.debug("TTS normalization unavailable or failed: %s", _norm_err)
+        _tts_normalize_loaded = True
+    if _tts_normalize_fn:
+        text = _tts_normalize_fn(text)
 
     # Detect platform from gateway env var to choose the best output format.
     # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can

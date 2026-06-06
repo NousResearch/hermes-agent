@@ -5598,6 +5598,8 @@ def cmd_gui(args: argparse.Namespace):
         env["HERMES_DESKTOP_HERMES_ROOT"] = str(Path(args.hermes_root).expanduser().resolve())
     if getattr(args, "cwd", None):
         env["HERMES_DESKTOP_CWD"] = str(Path(args.cwd).expanduser().resolve())
+    else:
+        env["HERMES_DESKTOP_CWD"] = os.getcwd()
 
     # Desktop launch options from config.yaml (`desktop.electron_flags`,
     # `desktop.disable_gpu`). The GPU policy is bridged to the env var the

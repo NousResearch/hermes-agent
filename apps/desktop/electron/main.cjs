@@ -5250,6 +5250,21 @@ ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => {
   }
 })
 
+ipcMain.handle('hermes:fs:trashItem', async (_event, filePath) => {
+  const resolved = path.resolve(String(filePath || ''))
+
+  if (!resolved) {
+    return { ok: false, error: 'invalid-path' }
+  }
+
+  try {
+    await shell.trashItem(resolved)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) || 'trash-failed' }
+  }
+})
+
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => {
   const input = String(startPath || '')
   const resolved = input.startsWith('file:') ? fileURLToPath(input) : path.resolve(input)

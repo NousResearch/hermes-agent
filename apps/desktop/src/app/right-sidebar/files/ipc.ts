@@ -159,3 +159,16 @@ export function clearProjectDirCache(rootPath?: string) {
   gitRootCache.delete(key)
   gitignoreCache.delete(key)
 }
+
+export interface TrashFileResult {
+  ok: boolean
+  error?: string
+}
+
+export function trashFile(filePath: string): Promise<TrashFileResult> {
+  if (!window.hermesDesktop?.trashFile) {
+    return Promise.resolve({ ok: false, error: 'no-bridge' })
+  }
+
+  return window.hermesDesktop.trashFile(filePath)
+}

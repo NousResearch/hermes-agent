@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   revealLogs: () => ipcRenderer.invoke('hermes:logs:reveal'),
   getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
+  trashFile: filePath => ipcRenderer.invoke('hermes:fs:trashItem', filePath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
   terminal: {
     dispose: id => ipcRenderer.invoke('hermes:terminal:dispose', id),

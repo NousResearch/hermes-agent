@@ -3,6 +3,7 @@
 import { type ComponentProps, useState } from 'react'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { useI18n } from '@/i18n'
 import { Download } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -51,6 +52,8 @@ export interface ZoomableImageProps extends ComponentProps<'img'> {
 }
 
 export function ZoomableImage({ className, containerClassName, src, alt, slot, ...props }: ZoomableImageProps) {
+  const { t } = useI18n()
+  const copy = t.desktop
   const [saving, setSaving] = useState(false)
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const canOpen = Boolean(src)
@@ -67,7 +70,7 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
         const saved = await window.hermesDesktop.saveImageFromUrl(src)
 
         if (saved) {
-          notify({ kind: 'success', title: 'Image saved', message: imageFilename(src) })
+          notify({ kind: 'success', title: copy.imageSaved, message: imageFilename(src) })
         }
 
         return
@@ -80,17 +83,17 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
           await startBrowserDownload(src)
           notify({
             kind: 'info',
-            title: 'Download started',
-            message: 'Restart Hermes Desktop to use Save Image.'
+            title: copy.downloadStarted,
+            message: copy.restartToUseSaveImage
           })
         } catch (fallbackError) {
-          notifyError(fallbackError, 'Restart Hermes Desktop to save images')
+          notifyError(fallbackError, copy.restartToSaveImages)
         }
 
         return
       }
 
-      notifyError(error, 'Image download failed')
+      notifyError(error, copy.imageDownloadFailed)
     } finally {
       setSaving(false)
     }

@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getAuxiliaryModels, getGlobalModelInfo, getGlobalModelOptions, setModelAssignment } from '@/hermes'
 import type { AuxiliaryModelsResponse, ModelOptionProvider, StaleAuxAssignment } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -14,43 +15,34 @@ import { ListRow, LoadingState, Pill, SectionHeading } from './primitives'
 // hints make the assignments readable; raw task keys (vision, mcp, …) are
 // opaque to most users.
 interface AuxTaskMeta {
-  hint: string
   key: string
-  label: string
 }
 
 const AUX_TASKS: readonly AuxTaskMeta[] = [
-  { key: 'vision', label: 'Vision', hint: 'Image analysis' },
-  { key: 'web_extract', label: 'Web extract', hint: 'Page summarization' },
-  { key: 'compression', label: 'Compression', hint: 'Context compaction' },
-  { key: 'skills_hub', label: 'Skills hub', hint: 'Skill search' },
-  { key: 'approval', label: 'Approval', hint: 'Smart auto-approve' },
-  { key: 'mcp', label: 'MCP', hint: 'MCP tool routing' },
-  { key: 'title_generation', label: 'Title gen', hint: 'Session titles' },
-  { key: 'curator', label: 'Curator', hint: 'Skill-usage review' }
+  { key: 'vision' },
+  { key: 'web_extract' },
+  { key: 'compression' },
+  { key: 'skills_hub' },
+  { key: 'approval' },
+  { key: 'mcp' },
+  { key: 'title_generation' },
+  { key: 'curator' }
 ]
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
-
-const AUX_TASK_LABELS: Record<string, string> = Object.fromEntries(
-  AUX_TASKS.map(meta => [meta.key, meta.label])
-)
-
-function taskLabel(key: string): string {
-  return AUX_TASK_LABELS[key] ?? key
-}
 
 interface StaleAuxWarningProps {
   applying: boolean
   onReset: () => void
   slots: readonly StaleAuxAssignment[]
+  taskLabel: (key: string) => string
 }
 
 // Shared notice: auxiliary tasks still pinned to a provider that isn't the
 // current main. Surfaces the silent credit-burn path (e.g. aux pinned to a
 // $0-balance provider after switching main away from it) and offers the
 // existing one-click reset rather than auto-clearing legitimate pins.
-function StaleAuxWarning({ applying, onReset, slots }: StaleAuxWarningProps) {
+function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarningProps) {
   if (!slots.length) {
     return null
   }
@@ -79,6 +71,8 @@ interface ModelSettingsProps {
 }
 
 export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
+  const { t } = useI18n()
+  const m = t.settings.model
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [mainModel, setMainModel] = useState<{ model: string; provider: string } | null>(null)
@@ -131,6 +125,8 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     () => providers.find(provider => provider.slug === auxDraft.provider)?.models ?? [],
     [auxDraft.provider, providers]
   )
+
+  const auxiliaryTaskLabel = useCallback((key: string) => m.tasks[key]?.label ?? key, [m.tasks])
 
   // Persistent mismatch: any aux slot pinned to a provider different from the
   // current main, regardless of whether the user just switched. Catches the
@@ -253,19 +249,19 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   }, [mainModel, refresh])
 
   if (loading && !mainModel) {
-    return <LoadingState label="Loading model configuration..." />
+    return <LoadingState label={m.loading} />
   }
 
   return (
     <div className="grid gap-6">
       <section>
         <p className="mb-3 text-xs text-muted-foreground">
-          Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.
+          {m.appliesDesc}
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <Select onValueChange={setSelectedProvider} value={selectedProvider}>
             <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-              <SelectValue placeholder="Provider" />
+              <SelectValue placeholder={m.provider} />
             </SelectTrigger>
             <SelectContent>
               {providerOptions.map(provider => (
@@ -277,7 +273,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           </Select>
           <Select onValueChange={setSelectedModel} value={selectedModel}>
             <SelectTrigger className={cn('min-w-60', CONTROL_TEXT)}>
-              <SelectValue placeholder="Model" />
+              <SelectValue placeholder={m.model} />
             </SelectTrigger>
             <SelectContent>
               {(selectedProviderModels.length ? selectedProviderModels : []).map(model => (
@@ -293,39 +289,50 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             size="sm"
           >
             {applying && <Loader2 className="size-3.5 animate-spin" />}
-            {applying ? 'Applying...' : 'Apply'}
+            {applying ? m.applying : t.common.apply}
           </Button>
         </div>
         {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
         {switchStaleAux.length > 0 && (
           <div className="mt-2">
-            <StaleAuxWarning applying={applying} onReset={() => void resetAuxiliaryModels()} slots={switchStaleAux} />
+            <StaleAuxWarning
+              applying={applying}
+              onReset={() => void resetAuxiliaryModels()}
+              slots={switchStaleAux}
+              taskLabel={auxiliaryTaskLabel}
+            />
           </div>
         )}
       </section>
 
       <section>
         <div className="mb-2.5 flex items-center justify-between">
-          <SectionHeading icon={Cpu} title="Auxiliary models" />
+          <SectionHeading icon={Cpu} title={m.auxiliaryTitle} />
           <Button
             disabled={!mainModel || applying}
             onClick={() => void resetAuxiliaryModels()}
             size="sm"
             variant="textStrong"
           >
-            Reset all to main
+            {m.resetAllToMain}
           </Button>
         </div>
         <p className="mb-2 text-xs text-muted-foreground">
-          Helper tasks run on the main model by default. Assign a dedicated model to any task to override.
+          {m.auxiliaryDesc}
         </p>
         {switchStaleAux.length === 0 && persistentStaleAux.length > 0 && (
           <div className="mb-2.5">
-            <StaleAuxWarning applying={applying} onReset={() => void resetAuxiliaryModels()} slots={persistentStaleAux} />
+            <StaleAuxWarning
+              applying={applying}
+              onReset={() => void resetAuxiliaryModels()}
+              slots={persistentStaleAux}
+              taskLabel={auxiliaryTaskLabel}
+            />
           </div>
         )}
         <div className="grid gap-1">
           {AUX_TASKS.map(meta => {
+            const copy = m.tasks[meta.key] ?? { label: meta.key, hint: meta.key }
             const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
             const isAuto = !current || !current.provider || current.provider === 'auto'
             const isEditing = editingAuxTask === meta.key
@@ -341,7 +348,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         size="sm"
                         variant="text"
                       >
-                        Set to main
+                        {m.setToMain}
                       </Button>
                       <Button
                         disabled={!providers.length || applying}
@@ -349,7 +356,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         size="sm"
                         variant="textStrong"
                       >
-                        Change
+                        {m.change}
                       </Button>
                     </div>
                   )
@@ -362,7 +369,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         value={auxDraft.provider}
                       >
                         <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                          <SelectValue placeholder="Provider" />
+                          <SelectValue placeholder={m.provider} />
                         </SelectTrigger>
                         <SelectContent>
                           {providerOptions.map(provider => (
@@ -377,7 +384,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         value={auxDraft.model}
                       >
                         <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                          <SelectValue placeholder="Model" />
+                          <SelectValue placeholder={m.model} />
                         </SelectTrigger>
                         <SelectContent>
                           {(auxDraftProviderModels.length ? auxDraftProviderModels : []).map(model => (
@@ -392,10 +399,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         onClick={() => void applyAuxiliaryDraft(meta.key)}
                         size="sm"
                       >
-                        {applying ? 'Applying...' : 'Apply'}
+                        {applying ? m.applying : t.common.apply}
                       </Button>
                       <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
-                        Cancel
+                        {t.common.cancel}
                       </Button>
                     </div>
                   )
@@ -403,15 +410,15 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                 description={
                   <span className="font-mono text-[0.68rem]">
                     {isAuto
-                      ? 'auto · use main model'
-                      : `${current.provider} · ${current.model || '(provider default)'}`}
+                      ? m.autoUseMain
+                      : `${current.provider} · ${current.model || m.providerDefault}`}
                   </span>
                 }
                 key={meta.key}
                 title={
                   <span className="flex items-baseline gap-2">
-                    {meta.label}
-                    <Pill>{meta.hint}</Pill>
+                    {copy.label}
+                    <Pill>{copy.hint}</Pill>
                   </span>
                 }
               />

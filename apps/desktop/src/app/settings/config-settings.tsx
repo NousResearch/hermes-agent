@@ -39,6 +39,7 @@ function ConfigField({
   onChange: (value: unknown) => void
 }) {
   const { t } = useI18n()
+  const c = t.settings.config
 
   const label =
     t.settings.fieldLabels[schemaKey] ?? FIELD_LABELS[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey)
@@ -88,8 +89,8 @@ function ConfigField({
               {option
                 ? (optionLabels?.[option] ?? prettyName(option))
                 : schemaKey === 'display.personality'
-                  ? 'None'
-                  : '(none)'}
+                  ? c.none
+                  : c.noneParen}
             </SelectItem>
           ))}
         </SelectContent>
@@ -109,7 +110,7 @@ function ConfigField({
             onChange(n)
           }
         }}
-        placeholder="Not set"
+        placeholder={c.notSet}
         type="number"
         value={value === undefined || value === null ? '' : String(value)}
       />
@@ -128,7 +129,7 @@ function ConfigField({
               .filter(Boolean)
           )
         }
-        placeholder="comma-separated values"
+        placeholder={c.commaSeparated}
         value={Array.isArray(value) ? value.join(', ') : String(value ?? '')}
       />
     )
@@ -145,7 +146,7 @@ function ConfigField({
             /* keep last valid */
           }
         }}
-        placeholder="Not set"
+        placeholder={c.notSet}
         spellCheck={false}
         value={JSON.stringify(value, null, 2)}
       />,
@@ -160,14 +161,14 @@ function ConfigField({
       <Textarea
         className={cn('min-h-24 resize-y bg-background', CONTROL_TEXT)}
         onChange={e => onChange(e.target.value)}
-        placeholder="Not set"
+        placeholder={c.notSet}
         value={String(value ?? '')}
       />
     ) : (
       <Input
         className={CONTROL_TEXT}
         onChange={e => onChange(e.target.value)}
-        placeholder="Not set"
+        placeholder={c.notSet}
         value={String(value ?? '')}
       />
     ),
@@ -186,6 +187,8 @@ export function ConfigSettings({
   onMainModelChanged?: (provider: string, model: string) => void
   importInputRef: React.RefObject<HTMLInputElement | null>
 }) {
+  const { t } = useI18n()
+  const c = t.settings.config
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [_defaults, setDefaults] = useState<HermesConfigRecord | null>(null)
   const [schema, setSchema] = useState<Record<string, ConfigFieldSchema> | null>(null)
@@ -206,7 +209,7 @@ export function ConfigSettings({
         setDefaults(d)
         setSchema(s.fields)
       })
-      .catch(err => notifyError(err, 'Settings failed to load'))
+      .catch(err => notifyError(err, c.failedLoad))
 
     return () => void (cancelled = true)
   }, [])
@@ -250,7 +253,7 @@ export function ConfigSettings({
           }
         } catch (err) {
           if (saveVersionRef.current === v) {
-            notifyError(err, 'Autosave failed')
+            notifyError(err, c.autosaveFailed)
           }
         }
       })()
@@ -323,9 +326,9 @@ export function ConfigSettings({
     reader.onload = () => {
       try {
         updateConfig(JSON.parse(String(reader.result)))
-        notify({ kind: 'success', title: 'Config imported', message: 'Saving…' })
+        notify({ kind: 'success', title: c.imported, message: t.common.saving })
       } catch (err) {
-        notifyError(err, 'Invalid config JSON')
+        notifyError(err, c.invalidJson)
       }
     }
 
@@ -334,7 +337,7 @@ export function ConfigSettings({
   }
 
   if (!config || !schema) {
-    return <LoadingState label="Loading Hermes configuration..." />
+    return <LoadingState label={c.loading} />
   }
 
   return (
@@ -345,7 +348,7 @@ export function ConfigSettings({
         </div>
       )}
       {fields.length === 0 ? (
-        <EmptyState description="This section has no adjustable settings." title="Nothing to configure" />
+        <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : (
         <div className="grid gap-1">
           {fields.map(([key, field]) => (

@@ -3,6 +3,7 @@ import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
@@ -42,6 +43,8 @@ function DialogContent({
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
 }) {
+  const { t } = useI18n()
+
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -60,13 +63,13 @@ function DialogContent({
         {showCloseButton && (
           <DialogPrimitive.Close asChild data-slot="dialog-close-button">
             <Button
-              aria-label="Close"
+              aria-label={t.common.close}
               className="absolute right-2.5 top-2.5 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
               size="icon-xs"
               variant="ghost"
             >
               <Codicon name="close" size="1rem" />
-              <span className="sr-only">Close</span>
+              <span className="sr-only">{t.common.close}</span>
             </Button>
           </DialogPrimitive.Close>
         )}

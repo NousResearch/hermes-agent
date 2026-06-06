@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { $terminalTakeover, setRightSidebarTab, setTerminalTakeover } from '../store'
@@ -19,13 +20,14 @@ interface TerminalTabProps {
 }
 
 export function TerminalTab({ cwd, onAddSelectionToChat }: TerminalTabProps) {
+  const { t } = useI18n()
   const { addSelectionToChat, hostRef, selection, selectionStyle, shellName, status } = useTerminalSession({
     cwd,
     onAddSelectionToChat
   })
 
   const takeover = useStore($terminalTakeover)
-  const label = takeover ? 'Return to split view' : 'Focus terminal view'
+  const label = takeover ? t.rightSidebar.terminalSplit : t.rightSidebar.terminalFocus
 
   const toggleTakeover = () => {
     // Pre-select the Terminal tab so the slot is ready to host us on return.
@@ -77,7 +79,7 @@ export function TerminalTab({ cwd, onAddSelectionToChat }: TerminalTabProps) {
               type="button"
               variant="secondary"
             >
-              Add to chat
+              {t.rightSidebar.addToChat}
               <span className="ml-1 text-[0.6rem] text-(--ui-text-tertiary)">{addSelectionShortcutLabel()}</span>
             </Button>
           </div>

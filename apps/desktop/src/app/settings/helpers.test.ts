@@ -2,9 +2,53 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
+import { defineFieldCopy } from './field-copy'
 import { getNested, providerGroup, setNested, stripToolsetLabel, toolsetDisplayLabel } from './helpers'
 
 describe('settings helpers', () => {
+  describe('defineFieldCopy', () => {
+    it('flattens nested field copy paths', () => {
+      const copy = defineFieldCopy({
+        display: {
+          personality: 'Personality'
+        },
+        stt: {
+          elevenlabs: {
+            language_code: 'Language'
+          }
+        }
+      })
+
+      expect(copy[['display', 'personality'].join('.')]).toBe('Personality')
+      expect(copy[['stt', 'elevenlabs', 'language_code'].join('.')]).toBe('Language')
+    })
+
+    it('keeps top-level flat field keys', () => {
+      expect(
+        defineFieldCopy({
+          model_context_length: 'Context Window',
+          file_read_max_chars: 'File Read Limit'
+        })
+      ).toEqual({
+        model_context_length: 'Context Window',
+        file_read_max_chars: 'File Read Limit'
+      })
+    })
+
+    it('rejects duplicate flattened paths', () => {
+      const duplicateKey = ['display', 'personality'].join('.')
+
+      expect(() =>
+        defineFieldCopy({
+          display: {
+            personality: 'Personality'
+          },
+          [duplicateKey]: 'Duplicate'
+        })
+      ).toThrow('Duplicate field copy key: display.personality')
+    })
+  })
+
   it('reads and writes nested config paths', () => {
     const config: HermesConfigRecord = { display: { theme: 'mono' } }
     const next = setNested(config, 'display.theme', 'slate')

@@ -13,6 +13,7 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getSessionMessages, listAllProfileSessions, type SessionInfo } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { fetchResolvedProjectDir } from '../lib/project-dir'
 import { toggleCommandPalette } from '../store/command-palette'
 import {
   $panesFlipped,
@@ -38,6 +39,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
+  getRememberedWorkspaceCwd,
   mergeSessionPage,
   sessionPinId,
   setAwaitingResponse,
@@ -612,6 +614,27 @@ export function DesktopController() {
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
 
+  // Seed the new-chat workspace from the launch directory (`--cwd`, settings
+  // default, or home) when the user has not picked a folder before.
+  useEffect(() => {
+    if (gatewayState !== 'open') {
+      return
+    }
+
+    if (getRememberedWorkspaceCwd() || $currentCwd.get().trim()) {
+      return
+    }
+
+    void fetchResolvedProjectDir().then(dir => {
+      if (!dir || getRememberedWorkspaceCwd() || $currentCwd.get().trim()) {
+        return
+      }
+
+      $currentCwd.set(dir)
+      void refreshProjectBranch(dir)
+    })
+  }, [gatewayState, refreshProjectBranch])
+
   useRouteResume({
     activeSessionId,
     activeSessionIdRef,
@@ -743,6 +766,7 @@ export function DesktopController() {
       onAttachImageBlob={composer.attachImageBlob}
       onBranchInNewChat={branchInNewChat}
       onCancel={cancelRun}
+      onChangeProjectFolder={changeSessionCwd}
       onDeleteSelectedSession={() => {
         if (selectedStoredSessionId) {
           void removeSession(selectedStoredSessionId)

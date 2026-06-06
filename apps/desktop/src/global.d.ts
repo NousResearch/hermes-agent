@@ -46,6 +46,8 @@ declare global {
       fetchLinkTitle: (url: string) => Promise<string>
       settings: {
         getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string }>
+        /** Launch-time project directory (`--cwd`, env, settings default, or home). */
+        getResolvedProjectDir: () => Promise<{ dir: string }>
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }

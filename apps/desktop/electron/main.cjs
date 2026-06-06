@@ -5051,6 +5051,10 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
 // settings mount and seeds the value into the picker; writing back persists
 // it via writeDefaultProjectDir so resolveHermesCwd picks it up on the next
 // session spawn (no app restart needed).
+ipcMain.handle('hermes:projectDir:resolved', async () => ({
+  dir: resolveHermesCwd()
+}))
+
 ipcMain.handle('hermes:setting:defaultProjectDir:get', async () => ({
   dir: readDefaultProjectDir(),
   defaultLabel: path.join(app.getPath('home'), 'hermes-projects')

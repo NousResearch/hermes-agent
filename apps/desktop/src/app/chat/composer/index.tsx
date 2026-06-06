@@ -14,6 +14,7 @@ import {
 } from 'react'
 
 import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
+import { NewChatProjectPicker } from '@/components/chat/new-chat-project-picker'
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
@@ -40,7 +41,7 @@ import {
   shouldAutoDrainOnSettle,
   updateQueuedPrompt
 } from '@/store/composer-queue'
-import { $gatewayState, $messages } from '@/store/session'
+import { $currentBranch, $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 
 import { extractDroppedFiles, HERMES_PATHS_MIME } from '../hooks/use-composer-actions'
@@ -111,8 +112,11 @@ export function ChatBar({
   focusKey,
   gateway,
   maxRecordingSeconds = 120,
+  onChangeProjectFolder,
+  projectBranch,
   queueSessionKey,
   sessionId,
+  showProjectPicker = false,
   state,
   onCancel,
   onAddUrl,
@@ -171,15 +175,19 @@ export function ChatBar({
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
   const canSteer =
     busy && !!onSteer && attachments.length === 0 && trimmedDraft.length > 0 && !SLASH_COMMAND_RE.test(trimmedDraft)
+
   const showHelpHint = draft === '?'
 
   const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
+  const currentBranch = useStore($currentBranch)
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
+  const branchLabel = (projectBranch ?? currentBranch).trim()
   const followUpPlaceholders = t.composer.followUpPlaceholders
 
   // Resting placeholder: a starter for brand-new sessions, a continuation for
@@ -1438,7 +1446,7 @@ export function ChatBar({
     <>
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
         <ComposerPrimitive.Root
-          className="group/composer absolute bottom-0 left-1/2 z-30 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 rounded-2xl pt-2 pb-[var(--composer-shell-pad-block-end)]"
+          className="group/composer absolute bottom-0 left-1/2 z-30 flex w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 flex-col rounded-2xl pt-2 pb-[var(--composer-shell-pad-block-end)]"
           data-drag-active={dragActive ? '' : undefined}
           data-slot="composer-root"
           data-thread-scrolled-up={scrolledUp ? '' : undefined}
@@ -1457,6 +1465,15 @@ export function ChatBar({
           }}
           ref={composerRef}
         >
+          {showProjectPicker && onChangeProjectFolder ? (
+            <NewChatProjectPicker
+              branch={branchLabel}
+              className="mb-2 w-full shrink-0"
+              cwd={cwd ?? ''}
+              disabled={disabled}
+              onChangeCwd={onChangeProjectFolder}
+            />
+          ) : null}
           {showHelpHint && <HelpHint />}
           {trigger && (
             <ComposerTriggerPopover

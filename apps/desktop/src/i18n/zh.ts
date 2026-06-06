@@ -754,6 +754,17 @@ export const zh: Translations = {
     }
   },
 
+  newChatProject: {
+    label: '项目文件夹',
+    hint: '选择本会话中工具与终端的工作目录。',
+    notSet: '未选择文件夹',
+    choose: '选择文件夹',
+    change: '更改',
+    chooseTitle: '选择项目文件夹',
+    branchPrefix: '分支',
+    workspaceName: name => `工作区: ${name}`
+  },
+
   composer: {
     message: '消息',
     placeholderStarting: '正在启动 Hermes…',

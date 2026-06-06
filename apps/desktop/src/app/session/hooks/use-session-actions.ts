@@ -308,8 +308,8 @@ export function useSessionActions({
       })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
-      // New chats inherit the current workspace.
-      setCurrentCwd(getRememberedWorkspaceCwd())
+      // New chats inherit the last chosen workspace, or the launch directory.
+      $currentCwd.set(getRememberedWorkspaceCwd() || $currentCwd.get())
       setCurrentBranch('')
       clearComposerDraft()
       clearComposerAttachments()
@@ -334,11 +334,13 @@ export function useSessionActions({
         // Pass the owning profile so a new chat under a non-launch profile (global
         // remote mode) builds its agent + persists against THAT profile's home/db.
         const newChatProfile = $newChatProfile.get()
+
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           ...(cwd && { cwd }),
           ...(newChatProfile ? { profile: newChatProfile } : {})
         })
+
         const stored = created.stored_session_id ?? null
 
         if (

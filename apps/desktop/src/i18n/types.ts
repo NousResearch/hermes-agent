@@ -539,6 +539,17 @@ export interface Translations {
     }
   }
 
+  newChatProject: {
+    label: string
+    hint: string
+    notSet: string
+    choose: string
+    change: string
+    chooseTitle: string
+    branchPrefix: string
+    workspaceName: (name: string) => string
+  }
+
   composer: {
     message: string
     placeholderStarting: string

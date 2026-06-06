@@ -625,6 +625,17 @@ export const en: Translations = {
     }
   },
 
+  newChatProject: {
+    label: 'Project folder',
+    hint: 'Choose where tools and the terminal run for this session.',
+    notSet: 'No folder selected',
+    choose: 'Choose folder',
+    change: 'Change',
+    chooseTitle: 'Choose project folder',
+    branchPrefix: 'Branch',
+    workspaceName: name => `Workspace: ${name}`
+  },
+
   composer: {
     message: 'Message',
     placeholderStarting: 'Starting Hermes...',

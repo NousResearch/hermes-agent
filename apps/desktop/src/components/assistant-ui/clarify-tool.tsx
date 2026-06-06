@@ -164,10 +164,10 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       data-slot="clarify-inline"
     >
       <span aria-hidden className="arc-border" />
-      <div className="flex items-center gap-2.5">
+      <div className="flex items-start gap-2.5">
         <span
           aria-hidden
-          className="grid size-6 shrink-0 place-items-center rounded-md bg-[color-mix(in_srgb,var(--dt-primary)_14%,transparent)] text-primary ring-1 ring-inset ring-primary/15"
+          className="mt-px grid size-6 shrink-0 place-items-center rounded-md bg-[color-mix(in_srgb,var(--dt-primary)_14%,transparent)] text-primary ring-1 ring-inset ring-primary/15"
         >
           <HelpCircle className="size-3.5" />
         </span>

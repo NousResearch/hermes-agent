@@ -742,9 +742,20 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
     return firstStringField(result, ['message', 'reason', 'detail']) || `Tool returned status "${result.status}".`
   }
 
+  // A non-zero exit code alone is a weak failure signal: grep returns 1 on
+  // no-match, diff returns 1 on differences, piped commands surface the last
+  // stage's code, etc. — all routinely produce useful output and aren't
+  // failures. Only treat it as an error when the command produced no real
+  // output to show; otherwise render the output normally (not red).
   const exit = numberValue(result.exit_code)
 
-  return exit !== null && exit !== 0 ? `Command failed with exit code ${exit}.` : ''
+  if (exit !== null && exit !== 0) {
+    const hasOutput = Boolean(firstStringField(result, ['output', 'stdout', 'stderr'])?.trim())
+
+    return hasOutput ? '' : `Command failed with exit code ${exit}.`
+  }
+
+  return ''
 }
 
 function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): ToolStatus {

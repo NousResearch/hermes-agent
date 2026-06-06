@@ -23,9 +23,11 @@ update when it's noticed.
 import json
 import logging
 import os
+import posixpath
 import datetime
 import threading
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 # fal_client is imported lazily — see _load_fal_client(). Pulling it
@@ -606,6 +608,124 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
 # ---------------------------------------------------------------------------
 # Tool entry point
 # ---------------------------------------------------------------------------
+def _looks_like_absolute_file_path(value: str) -> bool:
+    if not value or not isinstance(value, str):
+        return False
+    lower = value.lower()
+    if lower.startswith(("http://", "https://", "data:")):
+        return False
+    if os.path.isabs(value):
+        return True
+    return len(value) >= 3 and value[1] == ":" and value[2] in {"/", "\\"}
+
+
+def _active_terminal_env(task_id: str | None):
+    try:
+        from tools.terminal_tool import get_active_env
+
+        return get_active_env(task_id or "default")
+    except Exception as exc:  # noqa: BLE001 - artifact hinting must not break generation
+        logger.debug("Could not inspect active terminal environment: %s", exc)
+        return None
+
+
+def _agent_cache_base_for_env(env: Any) -> str | None:
+    if env is not None:
+        explicit = getattr(env, "agent_visible_cache_base", None)
+        if callable(explicit):
+            try:
+                value = explicit()
+                if value:
+                    return str(value).rstrip("/")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("active env agent_visible_cache_base failed: %s", exc)
+
+        remote_home = getattr(env, "_remote_home", None)
+        if remote_home:
+            return f"{str(remote_home).rstrip('/')}/.hermes"
+
+        env_name = env.__class__.__name__
+        if env_name in {"DockerEnvironment", "SingularityEnvironment", "ModalEnvironment"}:
+            return "/root/.hermes"
+
+    # If no environment has been created yet, only backends with deterministic
+    # Hermes cache roots can be translated without side effects. SSH can still
+    # use a shell-visible tilde path; its first environment sync will upload
+    # the cache file before the first command runs.
+    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    if backend in {"docker", "singularity", "modal"}:
+        return "/root/.hermes"
+    if backend == "ssh":
+        return "~/.hermes"
+    return None
+
+
+def _agent_visible_cache_path(host_path: str, env: Any) -> str | None:
+    if not _looks_like_absolute_file_path(host_path):
+        return None
+
+    cache_base = _agent_cache_base_for_env(env)
+    if not cache_base:
+        return None
+
+    try:
+        from tools.credential_files import get_cache_directory_mounts
+
+        path = Path(host_path)
+        for mount in get_cache_directory_mounts(container_base=cache_base):
+            host_dir = Path(mount["host_path"])
+            try:
+                rel = path.relative_to(host_dir)
+            except ValueError:
+                continue
+            return posixpath.join(mount["container_path"], rel.as_posix())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not translate image cache path for backend: %s", exc)
+    return None
+
+
+def _force_artifact_sync(env: Any) -> None:
+    sync_manager = getattr(env, "_sync_manager", None)
+    if sync_manager is None:
+        return
+    try:
+        sync_manager.sync(force=True)
+    except Exception as exc:  # noqa: BLE001 - keep generation success; log for operators
+        logger.warning("Could not force-sync generated image artifact: %s", exc)
+
+
+def _postprocess_image_generate_result(raw: str, task_id: str | None = None) -> str:
+    """Annotate successful local image results with backend-visible paths.
+
+    ``image`` remains the host/gateway-deliverable path.  When the active
+    terminal backend has a different filesystem, ``agent_visible_image`` gives
+    the path the agent can use with terminal/file tools.
+    """
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return raw
+
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return raw
+
+    image = payload.get("image")
+    if not isinstance(image, str) or not _looks_like_absolute_file_path(image):
+        return raw
+
+    env = _active_terminal_env(task_id)
+    agent_path = _agent_visible_cache_path(image, env)
+    if not agent_path or agent_path == image:
+        return raw
+
+    if env is not None:
+        _force_artifact_sync(env)
+
+    payload.setdefault("host_image", image)
+    payload.setdefault("agent_visible_image", agent_path)
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def image_generate_tool(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
@@ -891,7 +1011,10 @@ IMAGE_GENERATE_SCHEMA = {
         "backend (FAL, OpenAI, etc.) and model are user-configured and not "
         "selectable by the agent. Returns either a URL or an absolute file "
         "path in the `image` field; display it with markdown "
-        "![description](url-or-path) and the gateway will deliver it."
+        "![description](url-or-path) and the gateway will deliver it. When "
+        "the active terminal backend has a different filesystem, successful "
+        "local-file results may also include `agent_visible_image` for "
+        "follow-up terminal/file operations."
     ),
     "parameters": {
         "type": "object",
@@ -1035,17 +1158,19 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    task_id = kw.get("task_id")
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
     dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
     if dispatched is not None:
-        return dispatched
+        return _postprocess_image_generate_result(dispatched, task_id=task_id)
 
-    return image_generate_tool(
+    raw = image_generate_tool(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
     )
+    return _postprocess_image_generate_result(raw, task_id=task_id)
 
 
 registry.register(

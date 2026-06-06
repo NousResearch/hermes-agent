@@ -2431,10 +2431,17 @@ async def cancel_oauth_session(session_id: str, request: Request):
 
 
 def _session_latest_descendant(session_id: str):
-    """Resolve a session id to the newest child leaf session.
+    """Resolve a dashboard resume target to the live chat continuation.
 
-    /model may create child sessions. Dashboard refresh should continue the
-    newest child instead of reopening the old parent.
+    Historically this walked to the newest child leaf, but not every child is a
+    continuation of the visible conversation: delegate/subagent runs, branch
+    rows, and partial empty children also carry ``parent_session_id``. Resuming
+    those children makes embedded chat render the new-chat empty state. Reuse
+    the canonical compression-chain rule from ``SessionDB.get_compression_tip``
+    instead: only follow children created after a parent ended with
+    ``end_reason='compression'``.
+
+    The endpoint name is kept for frontend/backward compatibility.
     """
     from hermes_state import SessionDB
 
@@ -2449,60 +2456,57 @@ def _session_latest_descendant(session_id: str):
             except Exception:
                 return None
 
+    def compression_path(db: SessionDB, start: str, tip: str) -> list[str]:
+        path = [start]
+        if start == tip:
+            return path
+
+        current = start
+        seen = {start}
+        for _ in range(100):
+            try:
+                with db._lock:
+                    row = db._conn.execute(
+                        "SELECT id FROM sessions "
+                        "WHERE parent_session_id = ? "
+                        "  AND started_at >= ("
+                        "      SELECT ended_at FROM sessions "
+                        "      WHERE id = ? AND end_reason = 'compression'"
+                        "  ) "
+                        "ORDER BY started_at DESC LIMIT 1",
+                        (current, current),
+                    ).fetchone()
+            except Exception:
+                break
+            if row is None:
+                break
+            child = row_get(row, "id", 0)
+            if not child or child in seen:
+                break
+            path.append(child)
+            if child == tip:
+                return path
+            seen.add(child)
+            current = child
+
+        # Defensive fallback: preserve the requested→resolved relationship even
+        # if the chain was modified concurrently while we were building path.
+        if path[-1] != tip:
+            path.append(tip)
+        return path
+
     db = SessionDB()
     try:
         sid = db.resolve_session_id(session_id)
         if not sid or not db.get_session(sid):
             return None, []
 
-        conn = (
-            getattr(db, "conn", None)
-            or getattr(db, "_conn", None)
-            or getattr(db, "connection", None)
-            or getattr(db, "_connection", None)
-        )
+        try:
+            tip = db.get_compression_tip(sid) or sid
+        except Exception:
+            tip = sid
 
-        rows = []
-        if conn is not None:
-            raw_rows = conn.execute(
-                "SELECT id, parent_session_id, started_at FROM sessions"
-            ).fetchall()
-            for row in raw_rows:
-                rows.append({
-                    "id": row_get(row, "id", 0),
-                    "parent_session_id": row_get(row, "parent_session_id", 1),
-                    "started_at": row_get(row, "started_at", 2),
-                })
-        else:
-            rows = db.list_sessions_rich(limit=10000, offset=0)
-
-        children = {}
-        for row in rows:
-            rid = row.get("id")
-            parent = row.get("parent_session_id")
-            if rid and parent:
-                children.setdefault(parent, []).append(row)
-
-        def started(row):
-            try:
-                return float(row.get("started_at") or 0)
-            except Exception:
-                return 0.0
-
-        current = sid
-        path = [sid]
-        seen = {sid}
-
-        while children.get(current):
-            candidates = [r for r in children[current] if r.get("id") not in seen]
-            if not candidates:
-                break
-            candidates.sort(key=started, reverse=True)
-            current = candidates[0]["id"]
-            path.append(current)
-            seen.add(current)
-
-        return current, path
+        return tip, compression_path(db, sid, tip)
     finally:
         db.close()
 

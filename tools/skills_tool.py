@@ -862,6 +862,8 @@ def skill_view(
         JSON string with skill content or error message
     """
     try:
+        # Run before ":" qualified-name dispatch so Windows drive paths like
+        # C:\skills\foo cannot be reinterpreted as a plugin namespace.
         lookup_error = _skill_lookup_path_error(name)
         if lookup_error:
             return json.dumps(

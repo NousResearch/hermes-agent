@@ -166,14 +166,15 @@ export function ChatBar({
   const slash = useSlashCompletions({ gateway: gateway ?? null })
 
   const stacked = expanded || narrow || tight
-  const hasComposerPayload = draft.trim().length > 0 || attachments.length > 0
+  const trimmedDraft = draft.trim()
+  const hasComposerPayload = trimmedDraft.length > 0 || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
   const canSteer =
-    busy && !!onSteer && attachments.length === 0 && draft.trim().length > 0 && !SLASH_COMMAND_RE.test(draft.trim())
+    busy && !!onSteer && attachments.length === 0 && trimmedDraft.length > 0 && !SLASH_COMMAND_RE.test(trimmedDraft)
   const showHelpHint = draft === '?'
 
   const { t } = useI18n()

@@ -3,18 +3,27 @@ set -euo pipefail
 
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 VPS_HOST="${HERMES_VPS_HOST:-linux-nat@103.142.150.185}"
-VPS_PATH="${HERMES_VPS_PATH:-/home/linux-nat/projects/hermes-agent}"
+VPS_PATH="${HERMES_VPS_PATH:-/home/linux-nat/projects/hermes-agent/main}"
 DRY_RUN=""
 
 if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN="--dry-run"
 fi
 
+case "$VPS_PATH" in
+  /home/linux-nat/projects/hermes-agent|/srv/projects/hermes-agent)
+    echo "Refusing to sync into the project container. Use a real worktree path such as /home/linux-nat/projects/hermes-agent/main." >&2
+    exit 2
+    ;;
+esac
+
 ssh "$VPS_HOST" "mkdir -p '$VPS_PATH'"
 
 rsync -az --delete $DRY_RUN \
   --include='/.env.example' \
   --include='/.envrc' \
+  --exclude='/.git' \
+  --exclude='/.git/' \
   --exclude='/.env' \
   --exclude='/.env.*' \
   --exclude='/.hermes/.env' \

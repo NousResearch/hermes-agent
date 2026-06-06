@@ -17,9 +17,16 @@ _NEXT_DENY_PREFIXES = ("/login", "/auth/", "/api/auth/")
 
 
 def client_ip(request: Request) -> str:
-    """First ``X-Forwarded-For`` hop, else the peer address."""
-    fwd = request.headers.get("x-forwarded-for", "")
-    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")
+    """Return the direct peer IP for audit/rate-limit decisions.
+
+    Do not read ``X-Forwarded-For`` here. ``/auth/password-login`` uses this
+    value as its online-guessing rate-limit key, and clients can spoof
+    forwarded headers when they reach the dashboard directly. Uvicorn's
+    trusted proxy handling may already rewrite ``request.client`` for
+    deployments that explicitly enable trusted forwarded headers; otherwise
+    the safe default is the socket peer.
+    """
+    return request.client.host if request.client else ""
 
 
 def extract_bearer(request: Request) -> str:

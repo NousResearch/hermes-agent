@@ -1,0 +1,27 @@
+# Sanitized reusable project watchdog policy template.
+# Render with concrete downstream project metadata; do not commit live Matrix IDs,
+# secrets, or machine-specific absolute paths into this template.
+schema_version: 1
+downstream_only: true
+project_tag: "{{ project_tag }}"
+board_slug: "{{ board_slug }}"
+coordinator_profile: "{{ coordinator_profile }}"
+owners:
+  dispatch_owner: "{{ coordinator_profile }}"
+  watchdog_owner: "{{ coordinator_profile }}"
+  pa_audit_owner: "{{ pa_audit_owner }}"
+bindings:
+  matrix:
+    room_alias: "{{ matrix_room_alias }}"
+    space_alias: "{{ matrix_space_alias }}"
+    encryption: "{{ explicit_encryption_policy }}"
+  github:
+    repository: "{{ github_repository }}"
+  repository:
+    path: "{{ project_repository_path }}"
+runtime_artifacts:
+  runtime_config: "projects/{{ project_tag }}/watchdog/runtime_config.yaml"
+  state_dir: "projects/{{ project_tag }}/watchdog/state"
+  latest_report_dir: "projects/{{ project_tag }}/watchdog/latest-report"
+  recipes_dir: "projects/{{ project_tag }}/watchdog/recipes"
+  validation_gates: "projects/{{ project_tag }}/watchdog/validation_gates.yaml"

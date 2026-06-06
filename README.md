@@ -174,6 +174,12 @@ See `hermes claw migrate --help` for all options, or use the `openclaw-migration
 
 ---
 
+## Downstream Hermes Maintenance notes
+
+- [Deterministic downstream project watchdog bootstrap](docs/deterministic-project-watchdog-bootstrap.md) documents the downstream-only project watchdog index/backfill contract. Do not upstream this project-specific maintenance artifact to NousResearch/hermes-agent.
+
+---
+
 ## Contributing
 
 We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.

@@ -1,0 +1,17 @@
+# Sanitized reusable project watchdog runtime template.
+# Paths are repository/project-relative placeholders, never host-specific paths.
+schema_version: 1
+project_tag: "{{ project_tag }}"
+board_slug: "{{ board_slug }}"
+coordinator_profile: "{{ coordinator_profile }}"
+state_dir: "projects/{{ project_tag }}/watchdog/state"
+latest_report_dir: "projects/{{ project_tag }}/watchdog/latest-report"
+report_status_lines:
+  - Self status
+  - Lineage status
+scheduler:
+  owner_profile: "{{ coordinator_profile }}"
+  recipes:
+    systemd: "projects/{{ project_tag }}/watchdog/recipes/project-watchdog.service"
+    cron: "projects/{{ project_tag }}/watchdog/recipes/project-watchdog.crontab"
+    hermes_cron: "projects/{{ project_tag }}/watchdog/recipes/hermes-cron.yaml"

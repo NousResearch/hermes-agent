@@ -1,14 +1,16 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { ErrorState } from '@/components/ui/error-state'
+import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
+import { Loader } from '@/components/ui/loader'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
-import { AlertCircle, Check, CheckCircle2, Copy, Loader2, Sparkles, Terminal } from '@/lib/icons'
+import { AlertCircle, Check, CheckCircle2, Copy, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   $updateApply,
@@ -119,7 +121,7 @@ function IdleView({
 
   if (!status && checking) {
     return (
-      <CenteredStatus icon={<Loader2 className="size-6 animate-spin text-primary" />} title={u.checking} />
+      <CenteredStatus icon={<Loader className="size-12" label={u.checking} type="lemniscate-bloom" />} title={u.checking} />
     )
   }
 
@@ -131,7 +133,7 @@ function IdleView({
             {u.tryAgain}
           </Button>
         }
-        icon={<AlertCircle className="size-6 text-muted-foreground" />}
+        icon={<ErrorIcon />}
         title={u.checkFailedTitle}
       />
     )
@@ -156,7 +158,7 @@ function IdleView({
           </Button>
         }
         body={u.connectionRetry}
-        icon={<AlertCircle className="size-6 text-muted-foreground" />}
+        icon={<ErrorIcon />}
         title={u.checkFailedTitle}
       />
     )
@@ -179,9 +181,7 @@ function IdleView({
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
-        <span className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <Sparkles className="size-7" />
-        </span>
+        <BrandMark className="size-16" />
 
         <DialogTitle className="text-center text-xl">{u.availableTitle}</DialogTitle>
         <DialogDescription className="text-center text-sm">
@@ -209,13 +209,9 @@ function IdleView({
         <Button className="font-semibold" onClick={onInstall} size="lg">
           {u.updateNow}
         </Button>
-        <button
-          className="text-center text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-          onClick={onLater}
-          type="button"
-        >
+        <Button className="font-medium" onClick={onLater} type="button" variant="text">
           {u.maybeLater}
-        </button>
+        </Button>
       </div>
 
       {remaining > 0 && (
@@ -242,9 +238,7 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
-        <span className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <Terminal className="size-7" />
-        </span>
+        <Terminal className="size-8 text-primary" />
 
         <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
         <DialogDescription className="text-center text-sm">
@@ -280,7 +274,7 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
         {u.manualPickedUp}
       </p>
 
-      <Button className="font-semibold" onClick={onDone} size="lg" variant="outline">
+      <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
         {u.done}
       </Button>
     </div>
@@ -300,9 +294,7 @@ function ApplyingView({ apply }: { apply: UpdateApplyState }) {
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7">
       <div className="flex flex-col items-center gap-3 text-center">
-        <span className="relative flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <Loader2 className="size-7 animate-spin" />
-        </span>
+        <Loader className="size-16" label={label} type="lemniscate-bloom" />
 
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
         <DialogDescription className="text-center text-sm">
@@ -365,7 +357,7 @@ function CenteredStatus({
   return (
     <div className="grid gap-4 px-6 pb-6 pt-8 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
-        <span className="flex size-14 items-center justify-center rounded-2xl bg-muted/40">{icon}</span>
+        {icon}
 
         <DialogTitle className="text-center text-lg">{title}</DialogTitle>
         {body && <DialogDescription className="text-center text-sm">{body}</DialogDescription>}

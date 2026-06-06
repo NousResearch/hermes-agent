@@ -103,10 +103,7 @@ function SudoDialog() {
     <Dialog onOpenChange={onOpenChange} open>
       <DialogContent showCloseButton={false}>
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Lock className="size-4 text-primary" />
-            {copy.sudoTitle}
-          </DialogTitle>
+          <DialogTitle icon={Lock}>{copy.sudoTitle}</DialogTitle>
           <DialogDescription>{copy.sudoDesc}</DialogDescription>
         </DialogHeader>
 
@@ -200,10 +197,7 @@ function SecretDialog() {
     <Dialog onOpenChange={onOpenChange} open>
       <DialogContent showCloseButton={false}>
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <KeyRound className="size-4 text-primary" />
-            {request.envVar || copy.secretTitle}
-          </DialogTitle>
+          <DialogTitle icon={KeyRound}>{request.envVar || copy.secretTitle}</DialogTitle>
           <DialogDescription>{request.prompt || copy.secretDesc}</DialogDescription>
         </DialogHeader>
 

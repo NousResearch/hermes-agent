@@ -19,6 +19,44 @@ export const attachedImageNotice = (info?: ({ name?: string } & ImageMeta) | nul
   return `${label}${meta ? ` · ${meta}` : ''}`
 }
 
+// Notice rendered in the transcript when a file is attached via file.attach.
+// Handles all MIME kinds (IMAGE / PDF / TEXT / BINARY) — image-specific
+// metadata (width/height/tokens) is included when present.
+export const attachedFileNotice = (
+  info?:
+    | {
+        name?: string
+        mime_type?: string
+        size_bytes?: number
+        kind?: 'IMAGE' | 'PDF' | 'TEXT' | 'BINARY'
+        width?: number
+        height?: number
+        token_estimate?: number
+      }
+    | null
+) => {
+  if (!info) return '📎 Attached file'
+
+  const mime = info.mime_type ?? 'unknown'
+  const label =
+    mime.startsWith('image/')
+      ? `📎 Attached image: ${info.name ?? 'image'}`
+      : mime === 'application/pdf'
+        ? `📎 Attached PDF: ${info.name ?? 'document'}`
+        : `📎 Attached file: ${info.name ?? 'file'}`
+
+  const parts: string[] = []
+  if (info.size_bytes !== undefined) {
+    const b = info.size_bytes
+    parts.push(b < 1024 ? `${b} B` : `${(b / 1024).toFixed(1)} KB`)
+  }
+  parts.push(mime)
+  if (info.width && info.height) parts.push(`${info.width}×${info.height}`)
+  if (info.token_estimate) parts.push(`~${info.token_estimate} tok`)
+
+  return `${label} · ${parts.join(' · ')}`
+}
+
 export const userDisplay = (text: string) => {
   if (text.length <= LONG_MSG) {
     return text

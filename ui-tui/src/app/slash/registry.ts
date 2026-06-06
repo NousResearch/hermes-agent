@@ -1,3 +1,4 @@
+import { attachCommands } from './commands/attach.js'
 import { coreCommands } from './commands/core.js'
 import { debugCommands } from './commands/debug.js'
 import { opsCommands } from './commands/ops.js'
@@ -10,7 +11,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   ...sessionCommands,
   ...opsCommands,
   ...setupCommands,
-  ...debugCommands
+  ...debugCommands,
+  ...attachCommands
 ]
 
 const byName = new Map<string, SlashCommand>(

@@ -8512,11 +8512,11 @@ class HermesCLI:
         tokens = shlex.split(cmd)
 
         if len(tokens) == 1:
-            _cprint()
+            _cprint("")
             _cprint("+" + "-" * 68 + "+")
             _cprint("|" + " " * 22 + "(^_^) Scheduled Tasks" + " " * 23 + "|")
             _cprint("+" + "-" * 68 + "+")
-            _cprint()
+            _cprint("")
             _cprint("  Commands:")
             _cprint("    /cron list")
             _cprint('    /cron add "every 2h" "Check server status" [--skill blogwatcher]')
@@ -8528,7 +8528,7 @@ class HermesCLI:
             _cprint("    /cron resume <job_id>")
             _cprint("    /cron run <job_id>")
             _cprint("    /cron remove <job_id>")
-            _cprint()
+            _cprint("")
             result = _cron_api(action="list")
             jobs = result.get("jobs", []) if result.get("success") else []
             if jobs:
@@ -8542,10 +8542,10 @@ class HermesCLI:
                     _cprint(f"      {job.get('prompt_preview', '')}")
                     if job.get("next_run_at"):
                         _cprint(f"      Next: {job['next_run_at']}")
-                    _cprint()
+                    _cprint("")
             else:
                 _cprint("  No scheduled jobs. Use '/cron add' to create one.")
-            _cprint()
+            _cprint("")
             return
 
         subcommand = tokens[1].lower()
@@ -8560,7 +8560,7 @@ class HermesCLI:
                 _cprint("(._.) No scheduled jobs.")
                 return
 
-            _cprint()
+            _cprint("")
             _cprint("Scheduled Jobs:")
             _cprint("-" * 80)
             for job in jobs:
@@ -8574,7 +8574,7 @@ class HermesCLI:
                 _cprint(f"  Prompt: {job.get('prompt_preview', '')}")
                 if job.get("last_run_at"):
                     _cprint(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
-                _cprint()
+                _cprint("")
             return
 
         if subcommand in {"add", "create"}:

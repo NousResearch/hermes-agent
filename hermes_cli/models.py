@@ -28,6 +28,42 @@ COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
+_MODEL_LISTING_METADATA_KEYS = ("router_backend", "router_host", "router_hosts")
+_LAST_API_MODEL_METADATA_BY_BASE_URL: dict[str, dict[str, dict[str, Any]]] = {}
+
+
+def _api_model_metadata_cache_key(base_url: Optional[str]) -> str:
+    return (base_url or "").strip().rstrip("/").lower()
+
+
+def _extract_api_model_listing(data: Any) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    models: list[str] = []
+    metadata: dict[str, dict[str, Any]] = {}
+
+    items = data.get("data", []) if isinstance(data, dict) else []
+    if not isinstance(items, list):
+        return models, metadata
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        model_id = str(item.get("id", "") or "").strip()
+        if not model_id:
+            continue
+
+        models.append(model_id)
+
+        model_meta: dict[str, Any] = {}
+        for key in _MODEL_LISTING_METADATA_KEYS:
+            value = item.get(key)
+            if value not in (None, "", []):
+                model_meta[key] = value
+        if model_meta:
+            metadata[model_id] = model_meta
+
+    return models, metadata
+
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
@@ -3213,6 +3249,7 @@ def probe_api_models(
     if not normalized:
         return {
             "models": None,
+            "model_metadata": {},
             "probed_url": None,
             "resolved_base_url": "",
             "suggested_base_url": None,
@@ -3223,6 +3260,7 @@ def probe_api_models(
         models = _fetch_github_models(api_key=api_key, timeout=timeout)
         return {
             "models": models,
+            "model_metadata": {},
             "probed_url": COPILOT_MODELS_URL,
             "resolved_base_url": COPILOT_BASE_URL,
             "suggested_base_url": None,
@@ -3255,8 +3293,10 @@ def probe_api_models(
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
+                models, model_metadata = _extract_api_model_listing(data)
                 return {
-                    "models": [m.get("id", "") for m in data.get("data", [])],
+                    "models": models,
+                    "model_metadata": model_metadata,
                     "probed_url": url,
                     "resolved_base_url": candidate_base.rstrip("/"),
                     "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,
@@ -3267,6 +3307,7 @@ def probe_api_models(
 
     return {
         "models": None,
+        "model_metadata": {},
         "probed_url": tried[0] if tried else normalized.rstrip("/") + "/models",
         "resolved_base_url": normalized,
         "suggested_base_url": alternate_base if alternate_base != normalized else None,
@@ -3285,7 +3326,18 @@ def fetch_api_models(
     Returns a list of model ID strings, or ``None`` if the endpoint could not
     be reached (network error, timeout, auth failure, etc.).
     """
-    return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
+    probe = probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode)
+    metadata = probe.get("model_metadata") or {}
+    for cache_base in {base_url, probe.get("resolved_base_url")}:
+        cache_key = _api_model_metadata_cache_key(cache_base)
+        if cache_key:
+            _LAST_API_MODEL_METADATA_BY_BASE_URL[cache_key] = metadata
+    return probe.get("models")
+
+
+def cached_api_model_metadata(base_url: Optional[str]) -> dict[str, dict[str, Any]]:
+    """Return metadata from the most recent ``fetch_api_models`` call for a base URL."""
+    return dict(_LAST_API_MODEL_METADATA_BY_BASE_URL.get(_api_model_metadata_cache_key(base_url), {}))
 
 
 # ---------------------------------------------------------------------------

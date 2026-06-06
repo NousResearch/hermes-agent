@@ -20,7 +20,7 @@ import {
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
-import { setSessionYolo } from '@/lib/yolo-session'
+import { setDesktopYoloMode } from '@/lib/yolo-session'
 import {
   $composerAttachments,
   addComposerAttachment,
@@ -38,8 +38,7 @@ import {
   setAwaitingResponse,
   setBusy,
   setMessages,
-  setSessions,
-  setYoloActive
+  setSessions
 } from '@/store/session'
 
 import type { ClientSessionState, ImageAttachResponse, SessionTitleResponse, SlashExecResponse } from '../../types'
@@ -421,16 +420,14 @@ export function usePromptActions({
           const sid = sessionHint || activeSessionIdRef.current
           const next = !$yoloActive.get()
 
-          if (!sid) {
-            setYoloActive(next)
-            notify({ kind: 'success', message: next ? 'YOLO armed for this chat' : 'YOLO off' })
-
-            return
-          }
-
           try {
-            const active = await setSessionYolo(requestGateway, sid, next)
-            appendSessionTextMessage(sid, 'system', `YOLO ${active ? 'on' : 'off'} for this session`)
+            const active = await setDesktopYoloMode(requestGateway, sid, next)
+
+            if (sid) {
+              appendSessionTextMessage(sid, 'system', `YOLO ${active ? 'on' : 'off'} for this session`)
+            } else {
+              notify({ kind: 'success', message: active ? 'YOLO on by default' : 'YOLO off by default' })
+            }
           } catch {
             notify({ kind: 'error', title: 'YOLO', message: 'Could not toggle YOLO' })
           }

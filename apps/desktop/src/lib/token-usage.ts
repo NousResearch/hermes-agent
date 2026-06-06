@@ -1,6 +1,13 @@
-import type { TokenUsagePayload, Usage } from '../types.js'
+import type { UsageStats } from '@/types/hermes'
 
-export const ZERO: Usage = { calls: 0, input: 0, output: 0, total: 0 }
+export interface TokenUsagePayload {
+  context_length?: unknown
+  context_pct?: unknown
+  context_tokens?: unknown
+  input_tokens?: unknown
+  output_tokens?: unknown
+  total_tokens?: unknown
+}
 
 function finiteNumber(value: unknown): number | undefined {
   if (typeof value === 'number') {
@@ -41,12 +48,12 @@ function percentFrom(payload: TokenUsagePayload): number | undefined {
   return used !== undefined && max !== undefined ? Math.min(100, (used / max) * 100) : undefined
 }
 
-export function usageFromTokenUsagePayload(payload: null | TokenUsagePayload | undefined): Partial<Usage> | null {
+export function usageFromTokenUsagePayload(payload: TokenUsagePayload | null | undefined): Partial<UsageStats> | null {
   if (!payload) {
     return null
   }
 
-  const usage: Partial<Usage> = {}
+  const usage: Partial<UsageStats> = {}
   const input = nonNegativeNumber(payload.input_tokens)
   const output = nonNegativeNumber(payload.output_tokens)
   const total = nonNegativeNumber(payload.total_tokens)
@@ -81,7 +88,10 @@ export function usageFromTokenUsagePayload(payload: null | TokenUsagePayload | u
   return Object.keys(usage).length ? usage : null
 }
 
-export function mergeTokenUsagePayload(current: Usage, payload: null | TokenUsagePayload | undefined): Usage {
+export function mergeTokenUsagePayload(
+  current: UsageStats,
+  payload: TokenUsagePayload | null | undefined
+): UsageStats {
   const usage = usageFromTokenUsagePayload(payload)
 
   return usage ? { ...current, ...usage } : current

@@ -176,6 +176,15 @@ export interface Usage {
   total: number
 }
 
+export interface TokenUsagePayload {
+  context_length?: unknown
+  context_pct?: unknown
+  context_tokens?: unknown
+  input_tokens?: unknown
+  output_tokens?: unknown
+  total_tokens?: unknown
+}
+
 export interface SudoReq {
   requestId: string
 }

@@ -1,4 +1,4 @@
-import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.js'
+import type { SessionInfo, SlashCategory, SubagentStatus, TokenUsagePayload, Usage } from './types.js'
 
 export interface GatewaySkin {
   banner_hero?: string
@@ -509,6 +509,7 @@ export type GatewayEvent =
   | { payload?: { skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
   | { payload: SessionInfo; session_id?: string; type: 'session.info' }
+  | { payload?: TokenUsagePayload; session_id?: string; type: 'token.usage' }
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
   | { payload?: undefined; session_id?: string; type: 'message.start' }
   | { payload?: { kind?: string; text?: string }; session_id?: string; type: 'status.update' }

@@ -7243,6 +7243,82 @@ def _desktop_stamp_path() -> Path:
     return get_hermes_home() / "desktop-build-stamp.json"
 
 
+def _run_git_text(project_root: Path, args: list[str]) -> str | None:
+    try:
+        proc = subprocess.Popen(
+            ["git", *args],
+            cwd=project_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        output, _ = proc.communicate(timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return output.strip() or None
+
+
+def _normalize_github_repository(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.strip()
+    if value.startswith("git@github.com:"):
+        value = value.removeprefix("git@github.com:")
+    elif value.startswith("https://github.com/"):
+        value = value.removeprefix("https://github.com/")
+    else:
+        return None
+    value = value.removesuffix(".git").rstrip("/")
+    parts = [part for part in value.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return f"{parts[0]}/{parts[1]}"
+
+
+def _current_desktop_install_identity(project_root: Path) -> dict[str, str | None] | None:
+    commit = _run_git_text(project_root, ["rev-parse", "HEAD"])
+    if not commit:
+        return None
+    branch = _run_git_text(project_root, ["rev-parse", "--abbrev-ref", "HEAD"])
+    if branch == "HEAD":
+        branch = None
+    remote_name = None
+    if branch:
+        remote_name = _run_git_text(project_root, ["config", "--get", f"branch.{branch}.remote"])
+    remote_url = _run_git_text(project_root, ["remote", "get-url", remote_name or "origin"])
+    repository = _normalize_github_repository(remote_url)
+    return {
+        "commit": commit,
+        "branch": branch,
+        "repository": repository,
+    }
+
+
+def _desktop_packaged_install_stamp_path(packaged_executable: Path) -> Path | None:
+    if sys.platform == "darwin":
+        # .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app/Contents/Resources/install-stamp.json
+        return packaged_executable.parent.parent / "Resources" / "install-stamp.json"
+    if sys.platform == "win32":
+        return packaged_executable.parent / "resources" / "install-stamp.json"
+    return packaged_executable.parent / "resources" / "install-stamp.json"
+
+
+def _read_desktop_install_identity(stamp_path: Path) -> dict[str, str | None] | None:
+    try:
+        payload = json.loads(stamp_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or not payload.get("commit"):
+        return None
+    return {
+        "commit": payload.get("commit"),
+        "branch": payload.get("branch"),
+        "repository": payload.get("repository"),
+    }
+
+
 def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
     """Return True when the desktop build output is stale or missing.
 
@@ -7251,12 +7327,24 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     ``hermes update`` that pulled new source but hasn't built yet).
     """
     # If there's no build output at all, we definitely need to build
+    packaged_executable = None
     if source_mode:
         if not _desktop_dist_exists(desktop_dir):
             return True
     else:
-        if _desktop_packaged_executable(desktop_dir) is None:
+        packaged_executable = _desktop_packaged_executable(desktop_dir)
+        if packaged_executable is None:
             return True
+        current_identity = _current_desktop_install_identity(project_root)
+        if current_identity:
+            embedded_stamp_path = _desktop_packaged_install_stamp_path(packaged_executable)
+            embedded_identity = (
+                _read_desktop_install_identity(embedded_stamp_path)
+                if embedded_stamp_path is not None and embedded_stamp_path.is_file()
+                else None
+            )
+            if embedded_identity != current_identity:
+                return True
 
     stamp_file = _desktop_stamp_path()
     if not stamp_file.is_file():
@@ -7270,6 +7358,12 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     # If the mode changed (source vs packaged), force a rebuild
     if stamp_data.get("sourceMode") != source_mode:
         return True
+
+    if not source_mode:
+        current_identity = _current_desktop_install_identity(project_root)
+        saved_identity = stamp_data.get("installIdentity")
+        if current_identity and saved_identity and saved_identity != current_identity:
+            return True
 
     saved_hash = stamp_data.get("contentHash")
     if not saved_hash:
@@ -7291,6 +7385,10 @@ def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None
             "sourceMode": source_mode,
             "builtAt": datetime.now(timezone.utc).isoformat(),
         }
+        if not source_mode:
+            identity = _current_desktop_install_identity(project_root)
+            if identity:
+                stamp_data["installIdentity"] = identity
         stamp_file.write_text(json.dumps(stamp_data, indent=2) + "\n", encoding="utf-8")
     except Exception as exc:
         # Never let stamp-writing block or fail a build
@@ -9750,6 +9848,44 @@ def _resolve_update_branch(args) -> str:
     return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
+def _resolve_update_target(
+    git_cmd: list[str], cwd: Path, branch: str
+) -> tuple[str, str, str]:
+    """Return the remote, remote branch, and compare ref for ``branch``.
+
+    ``hermes update`` historically hard-coded ``origin/<branch>``. That works
+    for normal installs, but managed desktop installs can have ``origin`` point
+    at upstream while their local ``main`` tracks a fork remote. Honor the
+    branch's configured upstream when it exists so update checks and pulls the
+    ref Git would use for that branch.
+    """
+    fallback_remote = "origin"
+    fallback_ref = f"{fallback_remote}/{branch}"
+    try:
+        result = subprocess.run(
+            git_cmd
+            + [
+                "for-each-ref",
+                "--format=%(upstream:short)",
+                f"refs/heads/{branch}",
+            ],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return fallback_remote, branch, fallback_ref
+
+    upstream_ref = result.stdout.strip() if result.returncode == 0 else ""
+    if "/" not in upstream_ref:
+        return fallback_remote, branch, fallback_ref
+
+    remote, remote_branch = upstream_ref.split("/", 1)
+    if not remote or not remote_branch:
+        return fallback_remote, branch, fallback_ref
+    return remote, remote_branch, upstream_ref
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
@@ -10429,9 +10565,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
             and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
         )
 
+        update_remote, update_remote_branch, update_ref = _resolve_update_target(
+            git_cmd, PROJECT_ROOT, branch
+        )
+        if update_remote != "origin":
+            fetch_target_result = subprocess.run(
+                git_cmd + ["fetch", update_remote],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            if fetch_target_result.returncode != 0:
+                stderr = fetch_target_result.stderr.strip()
+                print(f"✗ Failed to fetch updates from {update_remote}.")
+                if stderr:
+                    print(f"  {stderr.splitlines()[0]}")
+                sys.exit(1)
+
         # Check if there are updates
         result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+            git_cmd + ["rev-list", f"HEAD..{update_ref}", "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -10495,7 +10648,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
             pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
+                git_cmd + ["pull", "--ff-only", update_remote, update_remote_branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
@@ -10508,17 +10661,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
                 reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                    git_cmd + ["reset", "--hard", update_ref],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                 )
                 if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
+                    print(f"✗ Failed to reset to {update_ref}.")
                     if reset_result.stderr.strip():
                         print(f"  {reset_result.stderr.strip()}")
                     print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        f"  Try manually: git fetch {update_remote} && git reset --hard {update_ref}"
                     )
                     sys.exit(1)
 
@@ -12498,6 +12651,131 @@ _TOP_LEVEL_VALUE_FLAGS = frozenset(
         "-c", "--continue",
     }
 )
+
+_POST_SUBCOMMAND_TOP_LEVEL_BOOL_FLAGS = frozenset(
+    {
+        "-w", "--worktree",
+        "--accept-hooks",
+        "--yolo",
+        "--pass-session-id",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--tui",
+        "--cli",
+        "--dev",
+    }
+)
+
+_POST_SUBCOMMAND_TOP_LEVEL_VALUE_FLAGS = frozenset(
+    {
+        "-m", "--model",
+        "--provider",
+        "-t", "--toolsets",
+        "-s", "--skills",
+    }
+)
+
+
+def _hoist_post_subcommand_global_flags(
+    argv: list[str],
+    known_cmds: set[str] | frozenset[str],
+    subcommand_option_strings: dict[str, set[str]] | None = None,
+) -> list[str]:
+    """Move known top-level launcher flags before the subcommand.
+
+    ``argparse`` only accepts parent-parser options before a subcommand unless
+    each child parser repeats them. That is easy to forget in launchers and
+    relaunch paths: ``hermes dashboard --no-open --tui`` should not die just
+    because ``--tui`` trails the dashboard command. Keep this deliberately
+    conservative: hoist only top-level flags whose values remain meaningful at
+    the parent level, and leave command-specific flags untouched.
+    """
+    if not argv:
+        return argv
+
+    try:
+        separator_index = argv.index("--")
+    except ValueError:
+        separator_index = len(argv)
+
+    head = argv[:separator_index]
+    tail = argv[separator_index:]
+
+    command_index = None
+    i = 0
+    while i < len(head):
+        token = head[i]
+        if token.startswith("-"):
+            if "=" in token:
+                i += 1
+                continue
+            if token in _TOP_LEVEL_VALUE_FLAGS and i + 1 < len(head):
+                i += 2
+                continue
+            i += 1
+            continue
+        if token in known_cmds:
+            command_index = i
+            break
+        return argv
+
+    if command_index is None:
+        return argv
+
+    prefix = head[:command_index]
+    command_and_args = head[command_index:]
+    command_name = command_and_args[0]
+    native_options = (subcommand_option_strings or {}).get(command_name, set())
+    hoisted: list[str] = []
+    remainder: list[str] = []
+    i = 0
+    while i < len(command_and_args):
+        token = command_and_args[i]
+        if i > 0 and token in _POST_SUBCOMMAND_TOP_LEVEL_BOOL_FLAGS:
+            (remainder if token in native_options else hoisted).append(token)
+            i += 1
+            continue
+
+        if i > 0:
+            inline_value_match = next(
+                (
+                    flag
+                    for flag in _POST_SUBCOMMAND_TOP_LEVEL_VALUE_FLAGS
+                    if token.startswith(f"{flag}=")
+                ),
+                None,
+            )
+            if inline_value_match:
+                (remainder if inline_value_match in native_options else hoisted).append(token)
+                i += 1
+                continue
+
+            if token in _POST_SUBCOMMAND_TOP_LEVEL_VALUE_FLAGS and i + 1 < len(command_and_args):
+                (remainder if token in native_options else hoisted).extend(
+                    [token, command_and_args[i + 1]]
+                )
+                i += 2
+                continue
+
+        remainder.append(token)
+        i += 1
+
+    if not hoisted:
+        return argv
+
+    return [*prefix, *hoisted, *remainder, *tail]
+
+
+def _subcommand_option_strings(subparsers) -> dict[str, set[str]]:  # noqa: ANN001
+    choices = getattr(subparsers, "choices", {}) or {}
+    return {
+        name: {
+            option
+            for action in getattr(parser, "_actions", [])
+            for option in getattr(action, "option_strings", [])
+        }
+        for name, parser in choices.items()
+    }
 
 
 def _first_positional_argv() -> str | None:
@@ -15921,8 +16199,6 @@ Examples:
         # and raises OSError on failure (which propagates as a traceback).
         sys.exit(1)
 
-    _processed_argv = _coalesce_session_name_args(sys.argv[1:])
-
     # ── Defensive subparser routing (bpo-9338 workaround) ───────────
     # On some Python versions (notably <3.11), argparse fails to route
     # subcommand tokens when the parent parser has nargs='?' optional
@@ -15937,6 +16213,11 @@ Examples:
 
     _known_cmds = (
         set(subparsers.choices.keys()) if hasattr(subparsers, "choices") else set()
+    )
+    _processed_argv = _hoist_post_subcommand_global_flags(
+        _coalesce_session_name_args(sys.argv[1:]),
+        _known_cmds,
+        _subcommand_option_strings(subparsers),
     )
     _has_cmd_token = any(
         t in _known_cmds for t in _processed_argv if not t.startswith("-")

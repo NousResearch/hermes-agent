@@ -16,6 +16,7 @@ import {
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { mergeTokenUsagePayload, type TokenUsagePayload } from '@/lib/token-usage'
 import { setClarifyRequest } from '@/store/clarify'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -705,6 +706,10 @@ export function useMessageStream({
           void queryClient.invalidateQueries({
             queryKey: explicitSid && sessionId ? ['model-options', sessionId] : ['model-options']
           })
+        }
+      } else if (event.type === 'token.usage') {
+        if (!explicitSid || isActiveEvent) {
+          setCurrentUsage(current => mergeTokenUsagePayload(current, event.payload as TokenUsagePayload | undefined))
         }
       } else if (event.type === 'message.start') {
         if (!sessionId) {

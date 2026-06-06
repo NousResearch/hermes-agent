@@ -36,8 +36,11 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: test_durations.json
-          # Single stable key. main always overwrites, PRs always find it.
-          key: test-durations
+          # Caches are immutable; use a per-run key and restore the latest
+          # compatible duration file by prefix.
+          key: test-durations-${{ github.run_id }}
+          restore-keys: |
+            test-durations-
 
       - name: Install ripgrep (prebuilt binary)
         run: |
@@ -54,7 +57,9 @@ jobs:
           rg --version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          enable-cache: "false"
 
       - name: Set up Python 3.11
         run: uv python install 3.11
@@ -136,7 +141,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: test_durations.json
-          key: test-durations
+          key: test-durations-${{ github.run_id }}
 
   e2e:
     runs-on: ubuntu-latest
@@ -160,7 +165,9 @@ jobs:
           rg --version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          enable-cache: "false"
 
       - name: Set up Python 3.11
         run: uv python install 3.11

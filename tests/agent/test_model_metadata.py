@@ -1133,6 +1133,14 @@ class TestParseContextLimitFromError:
         msg = "Maximum context size 65536 exceeded"
         assert parse_context_limit_from_error(msg) == 65536
 
+    def test_available_context_size_format(self):
+        msg = "HTTP 400: request (70838 tokens) exceeds the available context size (65536 tokens), try increasing it"
+        assert parse_context_limit_from_error(msg) == 65536
+
+    def test_structured_n_ctx_format(self):
+        msg = "llama runner rejected request: {'n_prompt_tokens': 70838, 'n_ctx': 65536}"
+        assert parse_context_limit_from_error(msg) == 65536
+
     def test_no_limit_in_message(self):
         assert parse_context_limit_from_error("Something went wrong with the API") is None
 
@@ -1238,6 +1246,18 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length("unknown/model", "http://local", 65536)
             assert get_model_context_length("unknown/model", base_url="http://local") == 65536
+
+    def test_provider_confirmed_cache_caps_over_optimistic_custom_config(self, tmp_path):
+        cache_file = tmp_path / "cache.yaml"
+        base_url = "http://10.10.20.211:8080/v1"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("qwen3.6-27b", base_url, 65536)
+            assert get_model_context_length(
+                "qwen3.6-27b",
+                base_url=base_url,
+                provider="custom",
+                config_context_length=131072,
+            ) == 65536
 
     def test_special_chars_in_model_name(self, tmp_path):
         """Model names with colons, slashes, etc. don't break the cache."""

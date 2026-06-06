@@ -94,10 +94,12 @@ export const $currentProvider = atom('')
 export const $currentReasoningEffort = atom('')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(false)
-// Effective approval-bypass state mirrored from the gateway (session.info).
-// Persistence lives in the backend config (approvals.mode), so this is a plain
-// reflection of the truth the gateway reports rather than its own store.
-export const $yoloActive = atom(false)
+export const DEFAULT_DESKTOP_YOLO_ACTIVE = true
+// Desktop new-chat default. The backend approval bypass remains session-scoped;
+// this preference decides whether desktop applies that bypass to new sessions.
+export const $desktopYoloDefault = atom(DEFAULT_DESKTOP_YOLO_ACTIVE)
+// Effective approval-bypass state for the active desktop session/draft.
+export const $yoloActive = atom(DEFAULT_DESKTOP_YOLO_ACTIVE)
 export const $currentCwd = atom(getRememberedWorkspaceCwd())
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
@@ -134,6 +136,7 @@ export const setCurrentProvider = (next: Updater<string>) => updateAtom($current
 export const setCurrentReasoningEffort = (next: Updater<string>) => updateAtom($currentReasoningEffort, next)
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
+export const setDesktopYoloDefaultActive = (next: Updater<boolean>) => updateAtom($desktopYoloDefault, next)
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
 
 export const setCurrentCwd = (next: Updater<string>) => {

@@ -144,6 +144,24 @@ export async function listSessions(
   }
 }
 
+export function autoArchiveOldSessions(
+  preserveIds: string[] = []
+): Promise<{ ok: boolean; archived: number; skipped?: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean; archived: number; skipped?: boolean }>({
+    path: '/api/sessions/auto-archive',
+    method: 'POST',
+    body: { preserve_ids: Array.from(new Set(preserveIds.filter(Boolean))).slice(0, 5000) }
+  })
+}
+
+export function bulkArchiveSessions(preserveIds: string[] = []): Promise<{ ok: boolean; archived: number }> {
+  return window.hermesDesktop.api<{ ok: boolean; archived: number }>({
+    path: '/api/sessions/bulk-archive',
+    method: 'POST',
+    body: { preserve_ids: Array.from(new Set(preserveIds.filter(Boolean))).slice(0, 5000) }
+  })
+}
+
 // Unified, read-only session list aggregated across ALL profiles. Served by the
 // primary backend straight off each profile's state.db — no per-profile backend
 // is spawned. Single-profile users get the same rows as listSessions(), tagged

@@ -18,9 +18,9 @@ import {
 } from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
+import { contextBarLabel, contextCapacityClassName, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
-import { setSessionYolo } from '@/lib/yolo-session'
+import { setDesktopYoloMode } from '@/lib/yolo-session'
 import { $desktopActionTasks } from '@/store/activity'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
@@ -98,6 +98,10 @@ export function useStatusbarItems({
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+  const contextCapacityClass = useMemo(
+    () => contextCapacityClassName(currentUsage.context_percent),
+    [currentUsage.context_percent]
+  )
 
   // Per-session approval bypass (same scope as the TUI's Shift+Tab). On a
   // new-chat draft (no runtime session yet) we arm locally; the session-create
@@ -108,12 +112,8 @@ export function useStatusbarItems({
 
     setYoloActive(next)
 
-    if (!sid) {
-      return
-    }
-
     try {
-      await setSessionYolo(requestGateway, sid, next)
+      await setDesktopYoloMode(requestGateway, sid, next)
     } catch {
       setYoloActive(!next)
     }
@@ -304,7 +304,7 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        detail: contextBar || undefined,
+        detail: contextBar ? <span className={contextCapacityClass}>{contextBar}</span> : undefined,
         hidden: !contextUsage,
         id: 'context-usage',
         label: contextUsage,

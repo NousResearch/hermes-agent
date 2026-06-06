@@ -156,6 +156,57 @@ def test_build_models_payload_returns_expected_shape():
     assert payload["providers"] == rows
 
 
+def test_build_models_payload_maps_legacy_custom_to_named_provider():
+    """Desktop sessions may still report provider='custom' while carrying the
+    base_url for a named custom provider. The payload must return the named
+    slug so the picker checkmark lands under that provider instead of CUSTOM."""
+    rows = [
+        {"slug": "custom", "name": "Custom endpoint",
+         "models": ["qwen3.6-27b"], "total_models": 1,
+         "is_current": True, "is_user_defined": False,
+         "source": "canonical"},
+        {"slug": "custom:taro", "name": "taro",
+         "models": ["qwen3.6-27b"], "total_models": 1,
+         "is_current": True, "is_user_defined": True,
+         "source": "user-config", "api_url": "http://10.10.20.211:8080/v1"},
+    ]
+    ctx = _empty_ctx(
+        provider="custom",
+        model="qwen3.6-27b",
+        base_url="http://10.10.20.211:8080/v1/",
+    )
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    assert payload["provider"] == "custom:taro"
+    slugs = [row["slug"] for row in payload["providers"]]
+    assert "custom" not in slugs
+    assert payload["providers"][0]["is_current"] is True
+
+
+def test_build_models_payload_hides_shadow_custom_for_named_current():
+    rows = [
+        {"slug": "custom", "name": "Custom endpoint",
+         "models": ["qwen3.6-27b"], "total_models": 1,
+         "is_current": False, "is_user_defined": False,
+         "source": "canonical"},
+        {"slug": "custom:taro", "name": "taro",
+         "models": ["qwen3.6-27b"], "total_models": 1,
+         "is_current": True, "is_user_defined": True,
+         "source": "user-config", "api_url": "http://10.10.20.211:8080/v1"},
+    ]
+    ctx = _empty_ctx(
+        provider="custom:taro",
+        model="qwen3.6-27b",
+        base_url="http://10.10.20.211:8080/v1",
+    )
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    assert payload["provider"] == "custom:taro"
+    assert [row["slug"] for row in payload["providers"]] == ["custom:taro"]
+
+
 def test_build_models_payload_does_not_call_provider_model_ids():
     """``build_models_payload`` is a thin shape adapter — it delegates the
     actual curation to ``list_authenticated_providers`` (which DOES call

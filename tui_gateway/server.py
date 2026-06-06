@@ -23,6 +23,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.fallback_config import get_fallback_chain
 from utils import is_truthy_value
 from tui_gateway.transport import (
     StdioTransport,
@@ -519,6 +520,16 @@ def _emit(event: str, sid: str, payload: dict | None = None):
 def _status_update(sid: str, kind: str, text: str | None = None):
     body = (text if text is not None else kind).strip()
     if not body:
+        return
+    # Structured token_usage events are JSON-encoded; unpack and re-emit
+    # as a typed event so the desktop app can consume them directly.
+    if kind == "token_usage":
+        import json
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, TypeError):
+            return
+        _emit("token.usage", sid, payload)
         return
     _emit(
         "status.update",
@@ -1214,7 +1225,10 @@ def _load_reasoning_config() -> dict | None:
     effort = str(
         (_load_cfg().get("agent") or {}).get("reasoning_effort", "") or ""
     ).strip()
-    return parse_reasoning_effort(effort)
+    # Desktop/TUI sessions default to Thinking Off.  AIAgent treats
+    # ``reasoning_config=None`` as provider default, which can become Medium on
+    # the first real turn even though the desktop startup UI showed Off.
+    return parse_reasoning_effort(effort) or {"enabled": False}
 
 
 def _load_service_tier() -> str | None:
@@ -1736,6 +1750,15 @@ def _current_profile_name() -> str:
         return "default"
 
 
+def _reasoning_effort_for_session_info(agent) -> str:
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    if not isinstance(reasoning_config, dict):
+        return "none"
+    if reasoning_config.get("enabled") is False:
+        return "none"
+    return str(reasoning_config.get("effort", "") or "")
+
+
 # Monotonic GUI<->backend contract version. The desktop app refuses to drive a
 # backend reporting less than its required value (or none at all — a pre-GUI
 # checkout), surfacing a one-click "update to align" prompt instead of failing
@@ -1752,13 +1775,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     cwd = _session_cwd(session)
     cfg_personality = ((_load_cfg().get("display") or {}).get("personality") or "")
     personality = (session or {}).get("personality", cfg_personality)
-    reasoning_config = getattr(agent, "reasoning_config", None)
-    reasoning_effort = ""
-    if (
-        isinstance(reasoning_config, dict)
-        and reasoning_config.get("enabled") is not False
-    ):
-        reasoning_effort = str(reasoning_config.get("effort", "") or "")
+    reasoning_effort = _reasoning_effort_for_session_info(agent)
     service_tier = getattr(agent, "service_tier", None) or ""
     # Effective approval-bypass state — the same three sources that
     # check_all_command_guards() ORs together: persistent config
@@ -2351,7 +2368,10 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
         "session_db": _get_db(),
-        "fallback_model": getattr(agent, "_fallback_model", None),
+        "fallback_model": (
+            list(getattr(agent, "_fallback_chain", None) or [])
+            or getattr(agent, "_fallback_model", None)
+        ),
     }
 
 
@@ -2525,6 +2545,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None, session_db=No
         pass
 
     cfg = _load_cfg()
+    fallback_chain = get_fallback_chain(cfg)
     agent_cfg = cfg.get("agent") or {}
     system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))
     startup_skills = _parse_tui_skills_env()
@@ -2556,6 +2577,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None, session_db=No
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),
+        fallback_model=fallback_chain or None,
         quiet_mode=True,
         # verbose_logging controls DEBUG-level agent logging; it is intentionally
         # independent of tool_progress_mode (which only controls per-tool
@@ -3064,6 +3086,7 @@ def _(rid, params: dict) -> dict:
             "messages": _history_to_messages(history),
             "info": {
                 "model": _resolve_model(),
+                "reasoning_effort": _reasoning_effort_for_session_info(None),
                 "tools": {},
                 "skills": {},
                 "cwd": _sessions[sid]["cwd"],
@@ -5493,6 +5516,11 @@ def _(rid, params: dict) -> dict:
             _write_config_key("agent.reasoning_effort", arg)
             if session and session.get("agent") is not None:
                 session["agent"].reasoning_config = parsed
+                _emit(
+                    "session.info",
+                    params.get("session_id", ""),
+                    _session_info(session["agent"], session),
+                )
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))
@@ -5736,7 +5764,7 @@ def _(rid, params: dict) -> dict:
     if key == "reasoning":
         cfg = _load_cfg()
         effort = str(
-            (cfg.get("agent") or {}).get("reasoning_effort", "medium") or "medium"
+            (cfg.get("agent") or {}).get("reasoning_effort", "") or ""
         )
         display = (
             "show"

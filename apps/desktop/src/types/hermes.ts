@@ -173,6 +173,9 @@ export interface HermesConfig {
     personality?: string
     skin?: string
   }
+  desktop?: {
+    yolo_default?: boolean
+  }
   terminal?: {
     cwd?: string
   }
@@ -223,11 +226,19 @@ export interface ModelOptionProvider {
   /** Per-model option support, keyed by model id (present when the picker
    *  requested capabilities). Lets the UI gate fast/reasoning controls. */
   capabilities?: Record<string, ModelCapabilities>
+  /** Per-model provider metadata from live /models endpoints. */
+  model_metadata?: Record<string, ModelMetadata>
 }
 
 export interface ModelCapabilities {
   fast: boolean
   reasoning: boolean
+}
+
+export interface ModelMetadata {
+  router_backend?: string
+  router_host?: string
+  router_hosts?: string[]
 }
 
 export interface ModelOptionsResponse {

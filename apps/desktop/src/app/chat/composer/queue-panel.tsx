@@ -30,13 +30,13 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
   }
 
   return (
-    <div className="rounded-t-2xl border border-b-0 border-border/65 bg-[color-mix(in_srgb,var(--dt-card)_70%,transparent)] pt-0.5 pb-1">
+    <div className="rounded-t-2xl border border-b-0 border-border/65 bg-[color-mix(in_srgb,var(--dt-card)_70%,transparent)] pt-0.5 pb-1 mx-1">
       <button
-        className="flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-[0.72rem] font-medium text-muted-foreground/92 transition-colors hover:text-foreground/90"
+        className="flex w-full items-center gap-1.5 px-2 text-left text-[0.6rem] font-medium text-muted-foreground/92 transition-colors hover:text-foreground/90"
         onClick={() => setCollapsed(open => !open)}
         type="button"
       >
-        <DisclosureCaret className="shrink-0" open={!collapsed} size="0.875rem" />
+        <DisclosureCaret className="shrink-0" open={!collapsed} size="1em" />
         <span className="truncate">{c.queued(entries.length)}</span>
       </button>
 
@@ -64,11 +64,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                   <p className="truncate text-[0.73rem] leading-4 text-foreground/92">{entryPreview(entry, c)}</p>
                   {(attachmentsCount > 0 || isEditing) && (
                     <div className="mt-0.5 flex items-center gap-1.5 text-[0.64rem] text-muted-foreground/75">
-                      {attachmentsCount > 0 && (
-                        <span>
-                          {c.attachments(attachmentsCount)}
-                        </span>
-                      )}
+                      {attachmentsCount > 0 && <span>{c.attachments(attachmentsCount)}</span>}
                       {isEditing && (
                         <span className="text-[color-mix(in_srgb,var(--dt-composer-ring)_78%,var(--muted-foreground))]">
                           {c.editingInComposer}

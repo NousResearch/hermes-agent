@@ -410,6 +410,10 @@ export function useMessageStream({
       phase: 'running' | 'complete',
       sourceEventType?: string
     ) => {
+      // Text deltas flush on a timer but tool events apply now; flush first so
+      // a tool part can't jump ahead of the text that preceded it.
+      flushQueuedDeltas(sessionId)
+
       if (!nativeSubagentSessionsRef.current.has(sessionId)) {
         for (const subagentPayload of delegateTaskPayloads(payload, phase, sourceEventType)) {
           upsertSubagent(
@@ -428,7 +432,7 @@ export function useMessageStream({
         { pending: m => phase !== 'complete' || (m.pending ?? false) }
       )
     },
-    [mutateStream]
+    [flushQueuedDeltas, mutateStream]
   )
 
   const completeAssistantMessage = useCallback(

@@ -236,6 +236,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       >
         {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+        {messageStatus === 'running' && <StreamStallIndicator activity={`${content.length}:${messageText.length}`} />}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {previewTargets.map(target => (
@@ -281,6 +282,39 @@ const ResponseLoadingIndicator: FC = () => {
 
   return (
     <StatusRow data-slot="aui_response-loading" label="Hermes is loading a response">
+      <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
+      <ActivityTimerText seconds={elapsed} />
+    </StatusRow>
+  )
+}
+
+// Seconds of no visible output (text or part count) before a still-running turn
+// is treated as stalled and the thinking indicator returns at the tail.
+const STREAM_STALL_S = 2
+
+// Tail "still thinking" indicator: the pre-first-token spinner goes away once
+// text flows, but if the stream then goes quiet mid-turn (tool think-time,
+// provider stall) nothing signals that work continues. Watch a per-render
+// activity signal; when it hasn't changed for STREAM_STALL_S, re-show the
+// dither + a timer counting from the last activity.
+const StreamStallIndicator: FC<{ activity: string }> = ({ activity }) => {
+  const [stalled, setStalled] = useState(false)
+
+  useEffect(() => {
+    setStalled(false)
+    const id = window.setTimeout(() => setStalled(true), STREAM_STALL_S * 1000)
+
+    return () => window.clearTimeout(id)
+  }, [activity])
+
+  const elapsed = useElapsedSeconds(stalled)
+
+  if (!stalled) {
+    return null
+  }
+
+  return (
+    <StatusRow className="mt-1.5" data-slot="aui_stream-stall" label="Hermes is thinking">
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
@@ -434,6 +468,22 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
         .some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
   )
 
+  // A reasoning group with no actual text is pure noise — drop the whole
+  // "Thinking" disclosure rather than leave an empty header eating a row. This
+  // applies live too: encrypted/spinner-coerced reasoning (Opus reasoning max)
+  // never carries visible text, and the bottom-of-thread loader already signals
+  // "thinking", so an empty header is never wanted. Real reasoning surfaces the
+  // instant its first token lands.
+  const hasContent = useAuiState(s =>
+    s.message.parts
+      .slice(Math.max(0, startIndex), endIndex + 1)
+      .some(p => p?.type === 'reasoning' && typeof p.text === 'string' && p.text.trim().length > 0)
+  )
+
+  if (!hasContent) {
+    return null
+  }
+
   return (
     <ThinkingDisclosure messageRunning={messageRunning} pending={pending} timerKey={`reasoning:${messageId}`}>
       {children}
@@ -449,7 +499,7 @@ const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ te
   return (
     <MarkdownTextContent
       containerClassName={cn(
-        'text-xs leading-relaxed text-muted-foreground/85',
+        'text-xs leading-snug text-muted-foreground/85',
         isRunning && 'shimmer text-muted-foreground/55'
       )}
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}

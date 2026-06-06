@@ -521,8 +521,7 @@ export const en: Translations = {
     editTitle: 'Edit cron job',
     createTitle: 'New cron job',
     editDesc: 'Update the schedule, prompt, or delivery target. Changes apply on next run.',
-    createDesc:
-      'Schedule a prompt to run automatically. Use cron syntax or a natural phrase like "every 15 minutes".',
+    createDesc: 'Schedule a prompt to run automatically. Use cron syntax or a natural phrase like "every 15 minutes".',
     nameLabel: 'Name',
     namePlaceholder: 'Morning briefing',
     promptLabel: 'Prompt',
@@ -592,7 +591,7 @@ export const en: Translations = {
     groupTitleGrouped: 'Ungroup sessions',
     groupTitleUngrouped: 'Group by workspace',
     allPinned: 'Everything here is pinned. Unpin a chat to show it in recents.',
-    shiftClickHint: 'Shift-click a chat to pin · drag to reorder',
+    shiftClickHint: 'Shift-click a chat to pin',
     noWorkspace: 'No workspace',
     newSessionIn: label => `New session in ${label}`,
     reorderWorkspace: label => `Reorder workspace ${label}`,

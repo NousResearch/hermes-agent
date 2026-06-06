@@ -1743,6 +1743,40 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Catalog visibility — progressive-disclosure controls.
+        #
+        # Two separate mechanisms:
+        #
+        #   skills.disabled / skills.platform_disabled
+        #     HARD block. Disabled skills are filtered from the
+        #     <available_skills> catalog AND blocked from
+        #     skill_view() / /skill <name> / autocomplete. Use this
+        #     to turn a skill off entirely (per-platform or globally).
+        #
+        #   skills.hidden / skills.platform_hidden
+        #     CATALOG-ONLY filter. Hidden skills disappear from
+        #     <available_skills> but remain fully loadable on demand
+        #     via skill_view(), /skill <name>, autocomplete, the hub
+        #     UI, etc. Pair with a router-style meta-skill that knows
+        #     the names so it can load them when the task calls for
+        #     them. The "I don't want this skill costing me 30 tokens
+        #     of catalog space every turn, but I still want the agent
+        #     to be ABLE to use it" knob.
+        #
+        # Both accept a flat list (global) or a per-platform map.
+        # Platform precedence: explicit list (even empty) for the
+        # active platform > global list. Active platform resolves
+        # from HERMES_PLATFORM env > HERMES_SESSION_PLATFORM (set by
+        # the gateway). On the CLI with no platform set, only the
+        # global lists apply. See website/docs/user-guide/skills/ for
+        # the full recipe.
+        #
+        # Defaults are commented out so config.yaml stays clean —
+        # add the keys explicitly only when you want to use them.
+        # "disabled": [],
+        # "platform_disabled": {"discord": []},
+        # "hidden": [],
+        # "platform_hidden": {"discord": []},
     },
 
     # Curator — background skill maintenance.

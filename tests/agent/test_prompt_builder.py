@@ -371,6 +371,79 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def test_excludes_hidden_skills(self, monkeypatch, tmp_path):
+        """Skills in skills.hidden should be filtered from the catalog
+        (but remain loadable via skill_view — which this test does NOT
+        exercise; see tests/tools/test_skills_tool.py for that side)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+
+        visible = skills_dir / "visible-skill"
+        visible.mkdir()
+        (visible / "SKILL.md").write_text(
+            "---\nname: visible-skill\ndescription: Should appear\n---\n"
+        )
+
+        hidden = skills_dir / "hidden-skill"
+        hidden.mkdir()
+        (hidden / "SKILL.md").write_text(
+            "---\nname: hidden-skill\ndescription: Should not appear in catalog\n---\n"
+        )
+
+        from unittest.mock import patch
+        with patch(
+            "agent.prompt_builder.get_hidden_skill_names",
+            return_value={"hidden-skill"},
+        ):
+            result = build_skills_system_prompt()
+
+        assert "visible-skill" in result
+        assert "hidden-skill" not in result
+
+    def test_hidden_and_disabled_compose(self, monkeypatch, tmp_path):
+        """Both hidden and disabled skills are excluded from the catalog."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+        for name in ("visible", "off-skill", "hidden-skill"):
+            d = skills_dir / name
+            d.mkdir()
+            (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: x\n---\n")
+
+        from unittest.mock import patch
+        with patch(
+            "agent.prompt_builder.get_disabled_skill_names",
+            return_value={"off-skill"},
+        ), patch(
+            "agent.prompt_builder.get_hidden_skill_names",
+            return_value={"hidden-skill"},
+        ):
+            result = build_skills_system_prompt()
+
+        assert "visible" in result
+        assert "off-skill" not in result
+        assert "hidden-skill" not in result
+
+    def test_rebuilds_prompt_when_hidden_skills_change(self, monkeypatch, tmp_path):
+        """Cache key must include hidden set so flipping skills.hidden invalidates."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "router-target"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: router-target\ndescription: Behind the router\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "router-target" in first
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  hidden: [router-target]\n"
+        )
+
+        second = build_skills_system_prompt()
+        assert "router-target" not in second
+
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)

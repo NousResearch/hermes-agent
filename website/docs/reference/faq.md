@@ -729,6 +729,38 @@ After changing this, **restart the gateway** (`hermes gateway restart` or kill a
 Skills with very long descriptions are truncated to 40 characters in the Telegram menu to stay within payload size limits. If skills aren't appearing, it may be a total payload size issue rather than the 100 command count limit — disabling unused skills helps with both.
 :::
 
+### Skills catalog is too big — `<available_skills>` token cost
+
+**Scenario:** Your skill library has grown to 100+ skills and the `<available_skills>` block injected into every system prompt costs thousands of tokens per turn. You don't want to delete skills, but you also don't want them sitting in the catalog when the agent only uses them occasionally.
+
+**Solution:** Use `skills.hidden` (and per-platform `skills.platform_hidden`) for **progressive disclosure**.
+
+```yaml
+skills:
+  # Hidden skills disappear from <available_skills> but stay loadable
+  # via skill_view() / /skill <name>. Pair with a router-style meta-skill
+  # that knows the names so the agent can pull them on demand.
+  hidden:
+    - rarely-used-skill
+    - heavy-reference-skill
+  platform_hidden:
+    discord:
+      - cli-only-skill        # hidden from Discord catalog only
+```
+
+**`hidden` vs `disabled` — when to use which:**
+
+| | `disabled` / `platform_disabled` | `hidden` / `platform_hidden` |
+|---|---|---|
+| Catalog (system prompt) | excluded | excluded |
+| `skill_view()` / `/skill <name>` | **blocked** (hard error) | **still works** |
+| `hermes skills` UI | shown as disabled | shown normally |
+| Use case | turning a skill off | progressive disclosure |
+
+The pattern is: build a small **router skill** (always in the catalog) that documents what the hidden skills do and tells the agent when to load each one. The agent reads the router, picks the right skill, calls `skill_view("name")`, and proceeds — paying the skill's full token cost only when it's actually needed, instead of every turn.
+
+After changing this, the new catalog applies to **new sessions**. Restart the gateway or `/reset` to refresh active sessions.
+
 ### Shared thread sessions (multiple users, one conversation)
 
 **Scenario:** You have a Telegram or Discord thread where multiple people mention the bot. You want all mentions in that thread to be part of one shared conversation, not separate per-user sessions.

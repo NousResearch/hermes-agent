@@ -244,6 +244,156 @@ class TestGetDisabledSkillNames:
 
 
 # ---------------------------------------------------------------------------
+# get_hidden_skill_names — catalog-only filter (progressive disclosure)
+# ---------------------------------------------------------------------------
+
+class TestGetHiddenSkillNames:
+    """Tests for agent.skill_utils.get_hidden_skill_names.
+
+    Mirrors TestGetDisabledSkillNames.  Hidden skills are filtered from
+    the <available_skills> catalog only — they remain loadable via
+    skill_view().  See agent/skill_utils.py for the rationale.
+    """
+
+    def test_explicit_platform_param(self, tmp_path, monkeypatch):
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "skills:\n"
+            "  hidden:\n"
+            "    - global-hidden\n"
+            "  platform_hidden:\n"
+            "    telegram:\n"
+            "      - tg-only-hidden\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+
+        from agent.skill_utils import get_hidden_skill_names
+        result = get_hidden_skill_names(platform="telegram")
+        assert result == {"tg-only-hidden"}
+
+    def test_session_platform_env_var(self, tmp_path, monkeypatch):
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "skills:\n"
+            "  platform_hidden:\n"
+            "    discord:\n"
+            "      - discord-hidden\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+
+        from agent.skill_utils import get_hidden_skill_names
+        assert get_hidden_skill_names() == {"discord-hidden"}
+
+    def test_hermes_platform_takes_precedence(self, tmp_path, monkeypatch):
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "skills:\n"
+            "  platform_hidden:\n"
+            "    telegram:\n"
+            "      - tg-hidden\n"
+            "    discord:\n"
+            "      - discord-hidden\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+
+        from agent.skill_utils import get_hidden_skill_names
+        assert get_hidden_skill_names() == {"tg-hidden"}
+
+    def test_explicit_param_overrides_env_vars(self, tmp_path, monkeypatch):
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "skills:\n"
+            "  platform_hidden:\n"
+            "    telegram:\n"
+            "      - tg-hidden\n"
+            "    slack:\n"
+            "      - slack-hidden\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+
+        from agent.skill_utils import get_hidden_skill_names
+        assert get_hidden_skill_names(platform="slack") == {"slack-hidden"}
+
+    def test_no_platform_returns_global(self, tmp_path, monkeypatch):
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "skills:\n"
+            "  hidden:\n"
+            "    - global-hidden\n"
+            "  platform_hidden:\n"
+            "    telegram:\n"
+            "      - tg-hidden\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+
+        from agent.skill_utils import get_hidden_skill_names
+        assert get_hidden_skill_names() == {"global-hidden"}
+
+    def test_empty_platform_list_overrides_global(self, tmp_path, monkeypatch):
+        """An explicit empty platform_hidden list wins over the global hidden list."""
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "skills:\n"
+            "  hidden:\n"
+            "    - global-hidden\n"
+            "  platform_hidden:\n"
+            "    telegram: []\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from agent.skill_utils import get_hidden_skill_names
+        assert get_hidden_skill_names(platform="telegram") == set()
+
+    def test_missing_skills_config(self, tmp_path, monkeypatch):
+        config = tmp_path / "config.yaml"
+        config.write_text("foo: bar\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from agent.skill_utils import get_hidden_skill_names
+        assert get_hidden_skill_names() == set()
+
+    def test_missing_config_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "nonexistent"))
+        from agent.skill_utils import get_hidden_skill_names
+        assert get_hidden_skill_names() == set()
+
+    def test_string_value_normalized_to_set(self, tmp_path, monkeypatch):
+        """A bare string (not a list) for hidden should still parse to a single-element set."""
+        config = tmp_path / "config.yaml"
+        config.write_text("skills:\n  hidden: only-one\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+        from agent.skill_utils import get_hidden_skill_names
+        assert get_hidden_skill_names() == {"only-one"}
+
+    def test_hidden_independent_of_disabled(self, tmp_path, monkeypatch):
+        """skills.hidden and skills.disabled are independent; hidden does NOT affect get_disabled_skill_names."""
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "skills:\n"
+            "  disabled:\n"
+            "    - off-skill\n"
+            "  hidden:\n"
+            "    - hidden-skill\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+        from agent.skill_utils import get_disabled_skill_names, get_hidden_skill_names
+        assert get_disabled_skill_names() == {"off-skill"}
+        assert get_hidden_skill_names() == {"hidden-skill"}
+
+
+# ---------------------------------------------------------------------------
 # _find_all_skills — disabled filtering
 # ---------------------------------------------------------------------------
 

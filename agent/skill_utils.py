@@ -314,6 +314,68 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return _normalize_string_set(skills_cfg.get("disabled"))
 
 
+def get_hidden_skill_names(platform: str | None = None) -> Set[str]:
+    """Read *hidden* skill names from config.yaml.
+
+    Hidden skills are filtered out of the ``<available_skills>`` catalog
+    injected into the system prompt, but remain fully loadable on demand
+    via ``skill_view()``, ``/skill <name>``, autocomplete, the skills hub
+    UI, and every other code path.  The intent is **progressive
+    disclosure**: pair this with a router-style meta-skill that knows
+    when to load each off-catalog skill, so the per-turn token cost of a
+    large skill library disappears without the agent losing access.
+
+    This is distinct from ``skills.disabled`` /
+    ``skills.platform_disabled``, which is a *hard* block — disabled
+    skills are also blocked from ``skill_view()`` and listed as
+    "disabled" in the hub UI.
+
+    Resolution mirrors :func:`get_disabled_skill_names`: explicit
+    ``platform`` argument > ``HERMES_PLATFORM`` env > session-context
+    ``HERMES_SESSION_PLATFORM`` > the global ``skills.hidden`` list.
+    A platform key with an explicit list (even empty) wins over the
+    global list for that platform — same precedence model as
+    ``platform_disabled`` so user mental models compose.
+
+    Args:
+        platform: Explicit platform name (e.g. ``"discord"``).  When
+            *None*, resolves from environment / session context.
+
+    Returns:
+        Set of skill names hidden from the catalog for the resolved
+        platform.  Empty set when the config file is missing,
+        unreadable, or has no relevant entries.
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return set()
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug("Could not read skill config %s: %s", config_path, e)
+        return set()
+    if not isinstance(parsed, dict):
+        return set()
+
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return set()
+
+    from gateway.session_context import get_session_env
+    resolved_platform = (
+        platform
+        or os.getenv("HERMES_PLATFORM")
+        or get_session_env("HERMES_SESSION_PLATFORM")
+    )
+    if resolved_platform:
+        platform_hidden = (skills_cfg.get("platform_hidden") or {}).get(
+            resolved_platform
+        )
+        if platform_hidden is not None:
+            return _normalize_string_set(platform_hidden)
+    return _normalize_string_set(skills_cfg.get("hidden"))
+
+
 def _normalize_string_set(values) -> Set[str]:
     if values is None:
         return set()

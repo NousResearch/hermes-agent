@@ -508,6 +508,25 @@ class TestSkillView:
         assert result["success"] is False
         assert "disabled" in result["error"].lower()
 
+    def test_view_hidden_skill_still_loads(self, tmp_path, monkeypatch):
+        """Skills in skills.hidden are filtered from the catalog but MUST
+        remain loadable via skill_view.  This is the whole point of
+        progressive disclosure: the agent can still pull a hidden skill
+        on demand when a router/meta-skill knows its name.
+        """
+        # Hidden, NOT disabled — _is_skill_disabled returns False, the
+        # default behaviour of the real config-reading path.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config = tmp_path / "config.yaml"
+        config.write_text("skills:\n  hidden: [router-target]\n")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "router-target")
+            raw = skill_view("router-target")
+        result = json.loads(raw)
+        assert result["success"] is True, f"hidden skill should load: {result}"
+        assert result["name"] == "router-target"
+
     def test_view_enabled_skill_allowed(self, tmp_path):
         """Non-disabled skills should be viewable normally."""
         with (

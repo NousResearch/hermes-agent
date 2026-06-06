@@ -20,6 +20,7 @@ from agent.skill_utils import (
     extract_skill_description,
     get_all_skills_dirs,
     get_disabled_skill_names,
+    get_hidden_skill_names,
     iter_skill_index_files,
     parse_frontmatter,
     skill_matches_environment,
@@ -1116,6 +1117,12 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    hidden = get_hidden_skill_names()
+    # Catalog filter is the union: disabled skills are off entirely (also
+    # blocked from skill_view), hidden skills only disappear from the
+    # <available_skills> block and remain loadable on demand. Both must
+    # be excluded from the system-prompt catalog.
+    catalog_excluded = disabled | hidden
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1123,6 +1130,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        tuple(sorted(hidden)),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1147,7 +1155,7 @@ def build_skills_system_prompt(
             platforms = entry.get("platforms") or []
             if not skill_matches_platform({"platforms": platforms}):
                 continue
-            if frontmatter_name in disabled or skill_name in disabled:
+            if frontmatter_name in catalog_excluded or skill_name in catalog_excluded:
                 continue
             if not _skill_should_show(
                 entry.get("conditions") or {},
@@ -1172,7 +1180,7 @@ def build_skills_system_prompt(
             if not is_compatible:
                 continue
             skill_name = entry["skill_name"]
-            if entry["frontmatter_name"] in disabled or skill_name in disabled:
+            if entry["frontmatter_name"] in catalog_excluded or skill_name in catalog_excluded:
                 continue
             if not _skill_should_show(
                 extract_skill_conditions(frontmatter),
@@ -1227,7 +1235,7 @@ def build_skills_system_prompt(
                 frontmatter_name = entry["frontmatter_name"]
                 if frontmatter_name in seen_skill_names:
                     continue
-                if frontmatter_name in disabled or skill_name in disabled:
+                if frontmatter_name in catalog_excluded or skill_name in catalog_excluded:
                     continue
                 if not _skill_should_show(
                     extract_skill_conditions(frontmatter),

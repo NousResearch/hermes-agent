@@ -9079,6 +9079,40 @@ def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
             pass
 
 
+def _run_quarantined_install(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    scripts_dir: Path | None = None,
+) -> None:
+    """Run an editable install, quarantining the running ``hermes.exe`` first.
+
+    Any ``pip install -e .`` (or ``--reinstall``) rewrites the entry-point
+    shims, and on Windows the live ``hermes.exe`` is the running process —
+    pip can neither delete nor overwrite it, so without quarantine the shim
+    is left missing and ``hermes`` drops off PATH. This wraps
+    :func:`_run_install_with_heartbeat` with the same rename-out-of-the-way /
+    restore-on-failure dance that the primary install path uses, so EVERY
+    install that touches the shims is protected — including the
+    verification-repair reinstalls in
+    :func:`_verify_core_dependencies_installed`, which previously called
+    ``_run_install_with_heartbeat`` directly and bypassed quarantine.
+
+    Off-Windows (``scripts_dir is None``) this is a thin pass-through.
+    """
+    moved: list[tuple[Path, Path]] = []
+    if scripts_dir is not None:
+        moved = _quarantine_running_hermes_exe(scripts_dir)
+    try:
+        _run_install_with_heartbeat(cmd, env=env)
+    except BaseException:
+        # Restore shims if pip/uv didn't write replacements (e.g. install
+        # failed before the entry-points step). Don't swallow the error.
+        if scripts_dir is not None:
+            _restore_quarantined_exes(moved)
+        raise
+
+
 def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
     """Sweep ``hermes.exe.old.*`` left by prior updates.
 
@@ -9189,17 +9223,9 @@ def _install_python_dependencies_with_optional_fallback(
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
 
     def _install(args: list[str]) -> None:
-        moved: list[tuple[Path, Path]] = []
-        if scripts_dir is not None:
-            moved = _quarantine_running_hermes_exe(scripts_dir)
-        try:
-            _run_install_with_heartbeat(install_cmd_prefix + args, env=env)
-        except BaseException:
-            # Restore shims if uv didn't write replacements (e.g. install
-            # failed before the entry-points step). Don't swallow the error.
-            if scripts_dir is not None:
-                _restore_quarantined_exes(moved)
-            raise
+        _run_quarantined_install(
+            install_cmd_prefix + args, env=env, scripts_dir=scripts_dir
+        )
 
     try:
         _install(["install", "-e", f".[{group}]"])
@@ -9366,9 +9392,16 @@ def _verify_core_dependencies_installed(
     # purpose — the missing dep is in *base* deps; rerunning the full all-
     # extras install can cost minutes and trips on whatever optional extra
     # was already broken upstream. Base is fast and is what's actually wrong.
+    #
+    # Quarantine the running ``hermes.exe`` first: ``--reinstall -e .``
+    # rewrites the entry-point shims, and on Windows pip can't overwrite the
+    # live launcher, which would leave ``hermes`` off PATH.
+    scripts_dir = _venv_scripts_dir() if _is_windows() else None
     repair_args = ["install", "--reinstall", "-e", "."]
     try:
-        _run_install_with_heartbeat(install_cmd_prefix + repair_args, env=env)
+        _run_quarantined_install(
+            install_cmd_prefix + repair_args, env=env, scripts_dir=scripts_dir
+        )
     except subprocess.CalledProcessError as e:
         logger.warning("dep verification: repair install failed: %s", e)
         print("  ⚠ Repair install failed; check `hermes update` output above.")
@@ -15737,6 +15770,21 @@ Examples:
         "--status",
         action="store_true",
         help="List running hermes dashboard processes and exit",
+    )
+    # Backward-compat shim: older Hermes desktop app shells (<= 0.15.x) spawn the
+    # backend as `hermes dashboard --no-open --tui --host ... --port ...`. The
+    # `--tui` flag was removed from this subcommand in cae6b5486 (embedded chat is
+    # always on now). When a user's CLI updates past that commit but their desktop
+    # app binary has not, argparse used to hard-error with "unrecognized arguments:
+    # --tui" and exit(2) — the backend died before becoming ready and the GUI just
+    # showed "Hermes couldn't start" with no actionable cause. Accept and silently
+    # ignore the flag so an old app + new CLI degrades gracefully instead of
+    # bricking. Hidden from --help; safe to delete once the floor app version is
+    # well past 0.16.0.
+    dashboard_parser.add_argument(
+        "--tui",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
 

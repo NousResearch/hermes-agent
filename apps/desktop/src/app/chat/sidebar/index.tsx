@@ -192,7 +192,11 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
   }
 }
 
-function workspaceGroupsFor(sessions: SessionInfo[], noWorkspaceLabel: string): SidebarSessionGroup[] {
+function workspaceGroupsFor(
+  sessions: SessionInfo[],
+  noWorkspaceLabel: string,
+  options: { preserveSessionOrder?: boolean } = {}
+): SidebarSessionGroup[] {
   const groups = new Map<string, SidebarSessionGroup>()
 
   for (const session of sessions) {
@@ -205,12 +209,14 @@ function workspaceGroupsFor(sessions: SessionInfo[], noWorkspaceLabel: string): 
     groups.set(id, group)
   }
 
-  // Groups keep recency order (Map insertion = first-seen in the recency-sorted
-  // input, so an active project floats up), but rows *within* a group sort by
-  // creation time so they don't reshuffle every time a message lands — keeps
-  // muscle memory intact.
-  for (const group of groups.values()) {
-    group.sessions.sort((a, b) => b.started_at - a.started_at)
+  if (!options.preserveSessionOrder) {
+    // Groups keep recency order (Map insertion = first-seen in the recency-sorted
+    // input, so an active project floats up), but rows *within* a group sort by
+    // creation time so they don't reshuffle every time a message lands — keeps
+    // muscle memory intact.
+    for (const group of groups.values()) {
+      group.sessions.sort((a, b) => b.started_at - a.started_at)
+    }
   }
 
   return [...groups.values()]
@@ -244,10 +250,6 @@ function sourceSessionGroupsFor(sessions: SessionInfo[]): {
 
     group.sessions.push(session)
     groups.set(sourceId, group)
-  }
-
-  for (const group of groups.values()) {
-    group.sessions.sort((a, b) => sessionTime(b) - sessionTime(a))
   }
 
   return {
@@ -493,8 +495,13 @@ export function ChatSidebar({
   )
 
   const agentGroups = useMemo(
-    () => orderByIds(workspaceGroupsFor(localAgentSessions, s.noWorkspace), g => g.id, workspaceOrderIds),
-    [localAgentSessions, s.noWorkspace, workspaceOrderIds]
+    () =>
+      orderByIds(
+        workspaceGroupsFor(localAgentSessions, s.noWorkspace, { preserveSessionOrder: sourceGroups.length > 0 }),
+        g => g.id,
+        workspaceOrderIds
+      ),
+    [localAgentSessions, s.noWorkspace, sourceGroups.length, workspaceOrderIds]
   )
 
   const loadMoreForProfileGroup = useCallback(

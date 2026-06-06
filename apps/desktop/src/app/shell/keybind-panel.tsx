@@ -14,6 +14,7 @@ import {
   type KeybindReadonly
 } from '@/lib/keybinds/actions'
 import { formatCombo } from '@/lib/keybinds/combo'
+import { arraysEqual } from '@/lib/storage'
 import {
   $bindings,
   $capture,
@@ -143,6 +144,7 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
   const combos = bindings[action.id] ?? []
   const capturing = capture === action.id
   const label = k.actions[action.id] ?? action.id
+  const isDefault = arraysEqual(combos, [...action.defaults])
 
   const conflict = combos
     .flatMap(combo => conflictsFor(action.id, combo).map(other => k.actions[other] ?? other))
@@ -181,15 +183,21 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
         )}
       </button>
 
-      <button
-        aria-label={k.reset}
-        className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-all hover:bg-(--ui-control-active-background) hover:text-foreground group-hover:opacity-100"
-        onClick={() => resetBinding(action.id)}
-        title={k.reset}
-        type="button"
-      >
-        <Codicon name="discard" size="0.8125rem" />
-      </button>
+      {/* Reset only shows once a binding diverges from its default; the spacer
+          holds the column otherwise so rows stay aligned. */}
+      {isDefault ? (
+        <span aria-hidden className="size-6 shrink-0" />
+      ) : (
+        <button
+          aria-label={k.reset}
+          className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-all hover:bg-(--ui-control-active-background) hover:text-foreground group-hover:opacity-100"
+          onClick={() => resetBinding(action.id)}
+          title={k.reset}
+          type="button"
+        >
+          <Codicon name="discard" size="0.8125rem" />
+        </button>
+      )}
     </div>
   )
 }

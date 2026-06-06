@@ -170,6 +170,10 @@ class SessionManager:
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
         self._cwd_backfilled = False
+        # Fail-loud (robustness): records WHY a recent `_restore` of a session
+        # failed (e.g. "No LLM provider configured"), so the server can surface
+        # the real reason to the client instead of a generic "session not found".
+        self._restore_errors: Dict[str, str] = {}
 
     # ---- public API ---------------------------------------------------------
 
@@ -193,6 +197,15 @@ class SessionManager:
             with self._lock:
                 state = self._sessions.get(session_id)  # a concurrent restore may have installed it
             return state if state is not None else self._restore(session_id)
+
+    def last_restore_error(self, session_id: str) -> Optional[str]:
+        """The reason a recent `_restore` of *session_id* failed, if any.
+
+        Set by `_restore` when the agent could not be rebuilt; consulted by the
+        server so a failed restore surfaces the real cause instead of a generic
+        "session not found". Cleared on a successful restore.
+        """
+        return self._restore_errors.get(session_id)
 
     def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
         """Deep-copy a session's history into a new session."""
@@ -444,9 +457,15 @@ class SessionManager:
                 session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
                 requested_provider=meta.get("provider") or row.get("billing_provider"),
                 base_url=meta.get("base_url") or row.get("billing_base_url"))
-        except Exception:
-            logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
+        except Exception as exc:
+            # Fail loud (robustness): record the real reason so the server can tell the client why the
+            # session can't run, instead of returning a bare None that surfaces as "session not found".
+            reason = str(exc).strip() or exc.__class__.__name__
+            self._restore_errors[session_id] = reason
+            logger.warning("Failed to recreate agent for ACP session %s: %s", session_id, reason, exc_info=True)
             return None
+        # Successful restore — clear any stale failure record.
+        self._restore_errors.pop(session_id, None)
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
                                     history, persist=False)
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))

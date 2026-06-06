@@ -618,6 +618,25 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     ) -> LoadSessionResponse | None:
         state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
         if state is None:
+            reason = self.session_manager.last_restore_error(session_id)
+            if reason:
+                # Fail loud: the session exists in the DB but its agent could
+                # not be rebuilt (e.g. its provider/model was removed). A bare
+                # ``return None`` is normalized to a silent ``{}`` SUCCESS on
+                # the wire (acp normalize_result), so the client believes the
+                # load worked and only discovers the problem on its next
+                # prompt. Surface the real reason as a JSON-RPC error instead.
+                logger.warning(
+                    "load_session: session %s could not be restored: %s",
+                    session_id, reason,
+                )
+                from acp.exceptions import RequestError
+
+                raise RequestError(
+                    -32603,
+                    f"Session {session_id} could not be restored: {reason}",
+                    {"sessionId": session_id},
+                )
             logger.warning("load_session: session %s not found", session_id)
             return None
         await self._attach_session_mcp(state, mcp_servers, "Loaded session %s", session_id)
@@ -812,7 +831,22 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         """Run Hermes on the user's prompt and stream events back to the editor."""
         state = await asyncio.to_thread(self.session_manager.get_session, session_id)
         if state is None:
-            logger.error("prompt: session %s not found", session_id)
+            # Fail loud (robustness): if the session exists in the DB but its
+            # agent could not be rebuilt, tell the client the real reason rather
+            # than a bare "not found" (e.g. its provider/model was removed).
+            reason = self.session_manager.last_restore_error(session_id)
+            if reason:
+                logger.error("prompt: session %s could not be restored: %s", session_id, reason)
+                if self._conn:
+                    await self._conn.session_update(
+                        session_id,
+                        acp.update_agent_message_text(
+                            f"⚠️ This session can't run: {reason}. Its model or provider may "
+                            "have been removed — start a new session, or restore that provider."
+                        ),
+                    )
+            else:
+                logger.error("prompt: session %s not found", session_id)
             return PromptResponse(stop_reason="refusal")
 
         user_text = _extract_text(prompt).strip()
@@ -980,6 +1014,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                         update.message_id = state.message_ids.current()
                     state.message_ids.close()
                 await conn.session_update(session_id, update)
+
+            # Fail loud: a non-retryable provider error (401 token_expired, billing exhausted, …) comes back
+            # with final_response=None + failed=True and the reason in ``error`` (agent/conversation_loop.py).
+            # Without this the client saw an EMPTY "completed" turn with no explanation. Surface the reason as a
+            # visible message — only when nothing was streamed — so the user knows to re-authenticate, switch
+            # model, etc.
+            if result.get("failed") and not final_response and not streamed_message and conn:
+                reason = (result.get("error") or "the model provider returned an error").strip()
+                await conn.session_update(session_id, acp.update_agent_message_text(f"⚠️ Turn failed: {reason}"))
 
         finally:
             # Go idle before draining so recursive prompt() calls can acquire the session.

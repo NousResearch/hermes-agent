@@ -2785,6 +2785,33 @@ class AIAgent:
             except Exception:
                 pass
 
+    def _sync_affective_nervous_system_for_turn(
+        self,
+        *,
+        original_user_message: Any,
+        final_response: Any,
+        messages: list[dict[str, Any]],
+        interrupted: bool,
+        response_transformed: bool = False,
+    ) -> None:
+        """Let the synthetic affective regulator observe a completed turn."""
+        if interrupted:
+            return
+        affective = getattr(self, "_affective_nervous_system", None)
+        if not (affective and final_response and original_user_message):
+            return
+        try:
+            affective.observe_turn(
+                user_content=original_user_message,
+                assistant_content=final_response,
+                messages=messages,
+                session_id=self.session_id or "",
+                interrupted=interrupted,
+                response_transformed=response_transformed,
+            )
+        except Exception:
+            pass
+
     def _sync_external_memory_for_turn(
         self,
         *,

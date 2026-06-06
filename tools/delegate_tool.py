@@ -2383,7 +2383,19 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
 
     parent_provider = getattr(parent_agent, "provider", None) or ""
     parent_pool = getattr(parent_agent, "_credential_pool", None)
-    if parent_pool is not None and effective_provider == parent_provider:
+    raw_parent_pool_provider = getattr(parent_pool, "provider", "")
+    parent_pool_provider = (
+        raw_parent_pool_provider.strip().lower()
+        if isinstance(raw_parent_pool_provider, str)
+        else ""
+    )
+    effective_provider_norm = (effective_provider or "").strip().lower()
+    parent_provider_norm = (parent_provider or "").strip().lower()
+    if (
+        parent_pool is not None
+        and effective_provider_norm == parent_provider_norm
+        and (not parent_pool_provider or parent_pool_provider == effective_provider_norm)
+    ):
         return parent_pool
 
     try:

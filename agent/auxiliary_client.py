@@ -3493,6 +3493,42 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── MiniMax OAuth (PKCE/device-code → Anthropic Messages API) ──────
+    # MiniMax OAuth registers as provider id ``minimax-oauth`` with auth_type
+    # ``oauth_minimax``.  The generic PROVIDER_REGISTRY fallback below only
+    # handles api_key/oauth_external providers; without this branch auxiliary
+    # calls log "unhandled auth_type oauth_minimax" and fall through to the
+    # auto chain (usually OpenRouter) even though the main MiniMax runtime is
+    # fully configured.
+    if provider == "minimax-oauth":
+        try:
+            from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+            from agent.anthropic_adapter import build_anthropic_client
+
+            creds = resolve_minimax_oauth_runtime_credentials()
+            api_key = str(creds.get("api_key", "") or "")
+            base_url = str(creds.get("base_url", "") or "").rstrip("/")
+            if not api_key or not base_url:
+                raise ValueError("MiniMax OAuth runtime credentials are incomplete")
+            final_model = _normalize_resolved_model(
+                model or _read_main_model() or "MiniMax-M3",
+                provider,
+            ) or "MiniMax-M3"
+            real_client = build_anthropic_client(api_key, base_url)
+            sync_wrapper = AnthropicAuxiliaryClient(
+                real_client, final_model, api_key, base_url, is_oauth=True,
+            )
+            return (
+                AsyncAnthropicAuxiliaryClient(sync_wrapper), final_model
+            ) if async_mode else (sync_wrapper, final_model)
+        except Exception as exc:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth requested but MiniMax "
+                "OAuth credentials could not be resolved (%s)",
+                exc,
+            )
+            return None, None
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:

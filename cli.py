@@ -13697,6 +13697,53 @@ class HermesCLI:
             """Down arrow: browse history when on last line, else move cursor down."""
             event.app.current_buffer.auto_down(count=event.arg)
 
+        
+        @kb.add('c-up', filter=_normal_input)
+        @kb.add('s-up', filter=_normal_input)
+        def _move_cursor_up(event):
+            buf = event.app.current_buffer
+            doc = buf.document
+            if doc.line_count > 1:
+                # Hard newlines: move between logical lines
+                row = doc.cursor_position_row
+                if row > 0:
+                    target_row = row - 1
+                    col = min(doc.cursor_position_col, len(doc.lines[target_row]))
+                    buf.cursor_position = doc.translate_row_col_to_index(target_row, col)
+            elif buf.cursor_position > 0:
+                # Visual wrapping: move between visual rows
+                cols = event.app.output.get_size().columns
+                pos = buf.cursor_position
+                visual_row = pos // cols
+                if visual_row > 0:
+                    visual_col = pos % cols
+                    target = (visual_row - 1) * cols + visual_col
+                    buf.cursor_position = target
+
+        @kb.add('c-down', filter=_normal_input)
+        @kb.add('s-down', filter=_normal_input)
+        def _move_cursor_down(event):
+            buf = event.app.current_buffer
+            doc = buf.document
+            if doc.line_count > 1:
+                # Hard newlines: move between logical lines
+                row = doc.cursor_position_row
+                if row < doc.line_count - 1:
+                    target_row = row + 1
+                    col = min(doc.cursor_position_col, len(doc.lines[target_row]))
+                    buf.cursor_position = doc.translate_row_col_to_index(target_row, col)
+            else:
+                # Visual wrapping: move between visual rows
+                cols = event.app.output.get_size().columns
+                pos = buf.cursor_position
+                visual_row = pos // cols
+                last_visual_row = len(buf.text) // cols
+                if visual_row < last_visual_row:
+                    visual_col = pos % cols
+                    target = (visual_row + 1) * cols + visual_col
+                    buf.cursor_position = min(target, len(buf.text))
+
+        
         @kb.add('c-l')
         def handle_ctrl_l(event):
             """Ctrl+L: force a clean full-screen repaint.

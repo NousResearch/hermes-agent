@@ -324,7 +324,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     
     Returns the password if entered, or empty string if:
     - User presses Enter without input (skip)
-    - Timeout expires (45s default)
+    - Timeout expires (45s default; 0 = wait indefinitely)
     - Any error occurs
     
     Only works in interactive mode (HERMES_INTERACTIVE=1).
@@ -402,14 +402,18 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         print("├" + "─" * 58 + "┤")
         print("│  Enter password below (input is hidden), or:            │")
         print("│    • Press Enter to skip (command fails gracefully)     │")
-        print(f"│    • Wait {timeout_seconds}s to auto-skip" + " " * 27 + "│")
+        if timeout_seconds > 0:
+            print(f"│    • Wait {timeout_seconds}s to auto-skip" + " " * 27 + "│")
+        else:
+            print("│    • Waiting for input (no timeout)                     │")
         print("└" + "─" * 58 + "┘")
         print()
         print("  Password (hidden): ", end="", flush=True)
         
         password_thread = threading.Thread(target=read_password_thread, daemon=True)
         password_thread.start()
-        password_thread.join(timeout=timeout_seconds)
+        # timeout_seconds <= 0 means wait indefinitely (None = no timeout)
+        password_thread.join(timeout=timeout_seconds if timeout_seconds > 0 else None)
         
         if result["done"]:
             password = result["password"] or ""
@@ -778,7 +782,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     methods for how they handle the non-None sudo_stdin case.
 
     If SUDO_PASSWORD is not set and in interactive mode (HERMES_INTERACTIVE=1):
-      Prompts user for password with 45s timeout, caches for session.
+      Prompts user for password with 45s timeout (HERMES_SUDO_TIMEOUT=0 to wait indefinitely), caches for session.
 
     If SUDO_PASSWORD is not set and NOT interactive:
       Command runs as-is (fails gracefully with "sudo: a password is required").
@@ -806,7 +810,9 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
         return command, None
 
     if not has_configured_password and not sudo_password and env_var_enabled("HERMES_INTERACTIVE"):
-        sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
+        sudo_password = _prompt_for_sudo_password(
+            timeout_seconds=_parse_env_var("HERMES_SUDO_TIMEOUT", "45")
+        )
         if sudo_password:
             _set_cached_sudo_password(sudo_password)
 

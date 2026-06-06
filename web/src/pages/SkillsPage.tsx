@@ -36,6 +36,7 @@ import type {
   SkillHubPreview,
   SkillHubScan,
 } from "@/lib/api";
+import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -127,6 +128,7 @@ export default function SkillsPage() {
   const [view, setView] = useState<"skills" | "toolsets" | "hub">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
+  const [configToolset, setConfigToolset] = useState<ToolsetInfo | null>(null);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
@@ -163,6 +165,16 @@ export default function SkillsPage() {
         next.delete(skill.name);
         return next;
       });
+    }
+  };
+
+  /* ---- Refresh toolsets after a config change ---- */
+  const refreshToolsets = async () => {
+    try {
+      const tsets = await api.getToolsets();
+      setToolsets(tsets);
+    } catch {
+      /* non-fatal: the drawer already toasted on the failing write */
     }
   };
 
@@ -508,6 +520,16 @@ export default function SkillsPage() {
                                     : t.skills.disabledForCli}
                                 </span>
                               )}
+                              <div className="mt-3">
+                                <Button
+                                  size="xs"
+                                  outlined
+                                  onClick={() => setConfigToolset(ts)}
+                                >
+                                  <Wrench className="h-3 w-3 mr-1" />
+                                  Configure
+                                </Button>
+                              </div>
                             </div>
                           </div>
                         </CardContent>
@@ -522,6 +544,13 @@ export default function SkillsPage() {
           )}
         </div>
       </div>
+      {configToolset && (
+        <ToolsetConfigDrawer
+          toolset={configToolset}
+          onClose={() => setConfigToolset(null)}
+          onChanged={() => void refreshToolsets()}
+        />
+      )}
       <PluginSlot name="skills:bottom" />
     </div>
   );

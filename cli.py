@@ -5965,6 +5965,24 @@ class HermesCLI:
         killed = process_registry.kill_all()
         print(f"  ✅ Stopped {killed} process(es).")
 
+    def _handle_panic_command(self):
+        """Handle /panic — emergency halt: interrupt agent, kill processes, exit."""
+        import sys
+
+        # Interrupt running agent if any
+        if getattr(self, "_agent_running", False) and hasattr(self, "agent") and self.agent:
+            self.agent.interrupt("panic")
+            _cprint(f"  {_BOLD}⛔ Agent interrupted.{_RST}")
+
+        # Kill all background processes
+        from tools.process_registry import process_registry
+        killed = process_registry.kill_all()
+        if killed:
+            _cprint(f"  {_BOLD}⛔ Killed {killed} background process(es).{_RST}")
+
+        _cprint(f"  {_BOLD}🚨 Panic — exiting immediately (code 75).{_RST}")
+        sys.exit(75)
+
     def _handle_agents_command(self):
         """Handle /agents — show background processes and agent status."""
         from tools.process_registry import format_uptime_short, process_registry
@@ -9125,6 +9143,8 @@ class HermesCLI:
             self._handle_snapshot_command(cmd_original)
         elif canonical == "stop":
             self._handle_stop_command()
+        elif canonical == "panic":
+            self._handle_panic_command()
         elif canonical == "agents":
             self._handle_agents_command()
         elif canonical == "background":

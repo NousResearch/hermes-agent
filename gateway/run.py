@@ -8227,6 +8227,9 @@ class GatewayRunner:
         
         if canonical == "stop":
             return await self._handle_stop_command(event)
+
+        if canonical == "panic":
+            return await self._handle_panic_command(event)
         
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
@@ -10700,6 +10703,50 @@ class GatewayRunner:
             return EphemeralReply(t("gateway.stop.stopped"))
 
         return t("gateway.stop.no_active")
+
+    async def _handle_panic_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /panic command - emergency halt: interrupt ALL agents and shut down the gateway.
+
+        Unlike /stop (which only interrupts the current session's agent),
+        /panic interrupts every running agent across all sessions and then
+        initiates a clean gateway shutdown.  Use when the agent is in a
+        destructive loop, burning tokens, or producing harmful output and
+        a simple /stop is insufficient.
+        """
+        # Interrupt all running agents across all sessions
+        interrupted = 0
+        for session_key, agent in list(self._running_agents.items()):
+            if agent is _AGENT_PENDING_SENTINEL:
+                await self._interrupt_and_clear_session(
+                    session_key,
+                    None,
+                    interrupt_reason="panic",
+                    invalidation_reason="panic_command",
+                )
+                interrupted += 1
+            elif agent:
+                agent.interrupt("panic")
+                await self._interrupt_and_clear_session(
+                    session_key,
+                    None,
+                    interrupt_reason="panic",
+                    invalidation_reason="panic_command",
+                )
+                interrupted += 1
+
+        logger.warning(
+            "PANIC: emergency halt triggered by user %s on %s — interrupted %d agent(s)",
+            event.source.user_id if event.source else "?",
+            event.source.platform.value if event.source and event.source.platform else "?",
+            interrupted,
+        )
+
+        # Request clean gateway shutdown
+        self._request_clean_exit("panic")
+
+        if interrupted:
+            return EphemeralReply(t("gateway.panic.halted", count=interrupted))
+        return EphemeralReply(t("gateway.panic.no_agents"))
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — surface and

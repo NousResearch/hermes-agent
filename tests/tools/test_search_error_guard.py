@@ -109,6 +109,26 @@ class TestSearchErrorGuard:
         assert res.error is None, f"truncated success wrongly errored: {res.error!r}"
         assert len(res.matches) == 5
 
+    def test_files_only_preserves_spaced_paths_end_to_end(self, method, tmp_path):
+        root = tmp_path / "workspace"
+        root.mkdir()
+        spaced = root / "Meeting Notes.txt"
+        nested_dir = root / "project files"
+        nested_dir.mkdir()
+        nested = nested_dir / "release notes.md"
+        spaced.write_text("needle\n")
+        nested.write_text("needle\n")
+
+        res = _search(
+            _ops(tmp_path), method, "needle", "workspace", output_mode="files_only"
+        )
+
+        assert res.error is None
+        assert set(res.files) == {
+            "workspace/Meeting Notes.txt",
+            "workspace/project files/release notes.md",
+        }
+
     def test_files_only_excludes_diagnostics(self, method, partial_error_tree):
         # files_only mode must not list a diagnostic line as a fake file path.
         res = _search(_ops(partial_error_tree), method, "needle",
@@ -216,3 +236,41 @@ class TestSplitToolDiagnostics:
         assert diagnostics == ""
         assert "--" in payload
         assert "a.py-6-after" in payload
+
+    def test_files_only_preserves_spaced_paths(self):
+        # Regression: files_only output is one bare path per line and may
+        # contain spaces. The content-mode shape regex forbids whitespace, so
+        # without mode awareness these valid matches are silently dropped.
+        out = "normal.py\nMy Document.md\nsub/Meeting Notes.txt\nsub/clean.txt\n"
+        diagnostics, payload = _split_tool_diagnostics(out, output_mode="files_only")
+        assert diagnostics == ""
+        lines = payload.split("\n")
+        assert "My Document.md" in lines
+        assert "sub/Meeting Notes.txt" in lines
+        assert len(lines) == 4
+
+    def test_files_only_still_drops_regex_parse_error(self):
+        # The hard-error block (indented pattern + caret, trailing "error: ")
+        # must still be classified as diagnostics in files_only mode so a real
+        # failure is surfaced rather than returned as fake file paths.
+        out = "rg: regex parse error:\n    (?:[)\n       ^\nerror: unclosed character class\n"
+        diagnostics, payload = _split_tool_diagnostics(out, output_mode="files_only")
+        assert payload.strip() == ""
+        assert "regex parse error" in diagnostics
+
+    def test_files_only_keeps_path_named_like_error_summary(self):
+        # A file literally named "error: notes.md" is a valid match, not a
+        # diagnostic: outside an rg parse-error block, an "error:"-prefixed
+        # line is a real path and must be preserved.
+        out = "src/a.py\nerror: notes.md\nsrc/b.py\n"
+        diagnostics, payload = _split_tool_diagnostics(out, output_mode="files_only")
+        assert diagnostics == ""
+        assert "error: notes.md" in payload.split("\n")
+
+    def test_files_only_keeps_indented_path_outside_error_block(self):
+        # A path with leading whitespace is still a real match when no
+        # parse-error block is active; it must not be mistaken for a caret line.
+        out = "src/a.py\n  weird name.txt\nsrc/b.py\n"
+        diagnostics, payload = _split_tool_diagnostics(out, output_mode="files_only")
+        assert diagnostics == ""
+        assert "  weird name.txt" in payload.split("\n")

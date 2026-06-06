@@ -345,7 +345,7 @@ def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]
     return result.stdout, None
 
 
-def _split_tool_diagnostics(output: str) -> tuple[str, str]:
+def _split_tool_diagnostics(output: str, output_mode: str = "content") -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output.
 
     ``_exec`` runs commands with ``stderr=subprocess.STDOUT``, so error and
@@ -367,6 +367,7 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
     """
     diagnostics: list[str] = []
     payload: list[str] = []
+    in_rg_parse_error = False
     for line in output.split('\n'):
         if not line.strip():
             continue
@@ -379,6 +380,28 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
         stripped = line.lstrip()
         if stripped.startswith("rg: ") or stripped.startswith("grep: "):
             diagnostics.append(line)
+            # rg's "regex parse error:" header is followed by several
+            # continuation lines with no tool prefix (an indented echo of the
+            # offending pattern + a caret, then a bare "error: <summary>").
+            # Track that we're inside such a block so those continuations are
+            # classified as diagnostics — but only there.
+            in_rg_parse_error = "regex parse error" in stripped
+            continue
+        if output_mode == "files_only":
+            # files_only output is one bare path per line and may legitimately
+            # contain spaces ("My Document.md") or even start with "error:".
+            # The content-mode shape regex forbids whitespace, so using it here
+            # would misclassify valid paths as diagnostics and silently drop
+            # them. The ONLY non-path lines in this mode are the continuation
+            # of an rg regex-parse-error block, and a parse error aborts the
+            # search (no matches are interleaved with it). So strip a line only
+            # when it is a continuation INSIDE an active parse-error block;
+            # every other line is a real path and is preserved verbatim.
+            if in_rg_parse_error and (line[:1].isspace() or stripped.startswith("error: ")):
+                diagnostics.append(line)
+            else:
+                in_rg_parse_error = False
+                payload.append(line)
             continue
         # Otherwise classify by output shape. rg's regex-parse-error block
         # also emits an indented caret line and a trailing "error: ..." line
@@ -2306,7 +2329,7 @@ class ShellFileOperations(FileOperations):
         # diagnostic lines ("rg: <file>: <error>", "rg: regex parse error:")
         # are interleaved with match output. Split them out: diagnostics must
         # not be parsed as matches, and on a hard error they ARE the message.
-        diagnostics, payload = _split_tool_diagnostics(stdout)
+        diagnostics, payload = _split_tool_diagnostics(stdout, output_mode)
 
         # rg exit codes: 0=matches found, 1=no matches, 2=error. rg returns 2
         # even on partial errors (e.g. one unreadable file in a tree that
@@ -2434,7 +2457,7 @@ class ShellFileOperations(FileOperations):
         # ("grep: <file>: <error>") are interleaved with matches. Split them
         # out so they're never parsed as matches and so a hard error has a
         # clean message.
-        diagnostics, payload = _split_tool_diagnostics(stdout)
+        diagnostics, payload = _split_tool_diagnostics(stdout, output_mode)
 
         # grep exit codes: 0=matches found, 1=no matches, 2=error. grep
         # returns 2 on partial errors (e.g. an unreadable file) even when

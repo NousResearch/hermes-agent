@@ -5,19 +5,24 @@
 # replayed on top of the latest official main. It never switches to main and
 # never hard-resets your branch. If Git hits conflicts, the rebase stops with
 # your backup branch and any autostash left intact for manual recovery.
+# Before updating, it also takes a Hermes backup so config/state can be
+# restored outside Git if needed.
 
 set -euo pipefail
 
 OFFICIAL_REPO_SLUG="NousResearch/hermes-agent"
 OFFICIAL_REPO_URL="https://github.com/NousResearch/hermes-agent.git"
 DEFAULT_EXPECTED_BRANCH="local/hindsight-embedded-profile-env"
+DEFAULT_BACKUP_WRAPPER="/home/hermes/hermes-backups/backup-hermes.sh"
+BACKUP_WRAPPER="${HERMES_UPDATE_BACKUP_SCRIPT:-$DEFAULT_BACKUP_WRAPPER}"
 
 usage() {
     cat <<'EOF'
 Usage: scripts/update-current-branch.sh [options]
 
 Rebase the current branch onto the latest official Hermes main while preserving
-local commits and uncommitted work.
+local commits and uncommitted work. Before fetching/rebasing, the script takes
+an initial Hermes backup by calling the configured backup wrapper script.
 
 Options:
   --no-push                Do not update the branch's upstream remote after
@@ -33,6 +38,7 @@ Options:
   --any-branch             Disable the expected-branch guard for one run.
   --upstream REF           Rebase onto this ref instead of auto-detected
                            official main (for example origin/main).
+  --no-backup              Skip the initial Hermes backup step.
   --dry-run                Show what would be updated without changing refs.
   -h, --help               Show this help.
 
@@ -42,6 +48,7 @@ Examples:
   scripts/update-current-branch.sh --no-restart
   scripts/update-current-branch.sh --expected-branch my/local-branch
   scripts/update-current-branch.sh --upstream origin/main
+  scripts/update-current-branch.sh --no-backup
 EOF
 }
 
@@ -165,12 +172,23 @@ restore_stash_if_needed() {
     exit 1
 }
 
+run_initial_backup() {
+    [ "$RUN_INITIAL_BACKUP" = "1" ] || return 0
+
+    [ -x "$BACKUP_WRAPPER" ] || die "backup wrapper is missing or not executable: $BACKUP_WRAPPER"
+
+    info "Creating Hermes backup via $BACKUP_WRAPPER"
+    run "$BACKUP_WRAPPER"
+    ok "Hermes backup completed"
+}
+
 DRY_RUN=0
 PUSH_FORK=1
 RESTART_SERVICES=1
 UPSTREAM_REF=""
 EXPECTED_BRANCH="${HERMES_UPDATE_BRANCH:-$DEFAULT_EXPECTED_BRANCH}"
 ALLOW_ANY_BRANCH=0
+RUN_INITIAL_BACKUP=1
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -201,6 +219,10 @@ while [ "$#" -gt 0 ]; do
             UPSTREAM_REF="$2"
             shift 2
             ;;
+        --no-backup)
+            RUN_INITIAL_BACKUP=0
+            shift
+            ;;
         --dry-run)
             DRY_RUN=1
             shift
@@ -229,6 +251,8 @@ if [ "$ALLOW_ANY_BRANCH" != "1" ]; then
         die "refusing to update branch '$current_branch'; expected '$EXPECTED_BRANCH'. Use --expected-branch NAME for a planned branch rename, or --any-branch to override once."
     fi
 fi
+
+run_initial_backup
 
 if [ -z "$UPSTREAM_REF" ]; then
     if official="$(official_remote)"; then

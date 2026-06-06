@@ -343,6 +343,10 @@ class WeComAdapter(BasePlatformAdapter):
         if is_control:
             # Control lane: high priority, reserved token pool
             if key not in self._control_queues:
+                logger.debug(
+                    "[%s] Creating control queue + worker for chat %s",
+                    self.name, key,
+                )
                 self._control_queues[key] = asyncio.Queue()
                 self._control_workers[key] = asyncio.create_task(
                     self._control_send_worker(key)
@@ -351,12 +355,20 @@ class WeComAdapter(BasePlatformAdapter):
         else:
             # Normal lane
             if key not in self._chat_queues:
+                logger.debug(
+                    "[%s] Creating normal queue + worker for chat %s",
+                    self.name, key,
+                )
                 self._chat_queues[key] = asyncio.Queue()
                 self._chat_workers[key] = asyncio.create_task(
                     self._chat_send_worker(key)
                 )
             queue = self._chat_queues[key]
 
+        logger.debug(
+            "[%s] Enqueuing send for chat %s (lane=%s, qsize=%d)",
+            self.name, key, "control" if is_control else "normal", queue.qsize(),
+        )
         future = asyncio.get_running_loop().create_future()
         await queue.put((coro_factory, future))
         return await future
@@ -364,6 +376,7 @@ class WeComAdapter(BasePlatformAdapter):
     async def _chat_send_worker(self, chat_key: str) -> None:
         """Per-chat worker: drain normal queue with token-bucket rate limiting."""
         queue = self._chat_queues[chat_key]
+        logger.debug("[%s] Normal send worker started for chat %s", self.name, chat_key)
         try:
             while True:
                 coro_factory, future = await queue.get()
@@ -371,6 +384,10 @@ class WeComAdapter(BasePlatformAdapter):
                     # Token bucket: wait only if bucket is empty
                     wait = self._bucket_try_consume(chat_key)
                     if wait > 0:
+                        logger.debug(
+                            "[%s] Normal worker rate-limited for chat %s, waiting %.1fs",
+                            self.name, chat_key, wait,
+                        )
                         await asyncio.sleep(wait)
                         # Re-consume after wait
                         self._bucket_try_consume(chat_key)

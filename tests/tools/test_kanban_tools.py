@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 
 import pytest
 
@@ -309,6 +310,92 @@ def test_complete_happy_path(worker_env):
         assert run.metadata == {"files": 2}
     finally:
         conn.close()
+
+
+
+def test_complete_creates_or_reuses_draft_pr(monkeypatch, worker_env, tmp_path):
+    """one_task_one_pr tasks should create or reuse a draft PR on completion."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    branch_name = "hermes/fix-task-123"
+    task_body = {
+        "pr_policy": {"mode": "one_task_one_pr", "draft_only": True},
+        "branching": {"branch_name": branch_name, "branch_scope": "task"},
+        "draft_pr": {
+            "draft": True,
+            "title": "draft: worker-test",
+            "mode": "one_task_one_pr",
+        },
+    }
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET body=?, branch_name=?, workspace_kind=?, workspace_path=? WHERE id=?",
+            (
+                json.dumps(task_body, ensure_ascii=False),
+                branch_name,
+                "dir",
+                str(workspace),
+                worker_env,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(kt.shutil, "which", lambda name: "/usr/bin/gh" if name == "gh" else None)
+
+    calls = []
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None):
+        calls.append((list(cmd), cwd))
+        if cmd[:3] == ["git", "branch", "--show-current"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{branch_name}\n", stderr="")
+        if cmd[:4] == ["git", "push", "-u", "origin"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            if len([c for c in calls if c[0][:3] == ["gh", "pr", "list"]]) == 1:
+                return subprocess.CompletedProcess(cmd, 0, stdout="[]\n", stderr="")
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps([
+                    {
+                        "number": 42,
+                        "url": "https://github.com/example/repo/pull/42",
+                        "state": "OPEN",
+                        "isDraft": True,
+                        "title": "draft: worker-test",
+                    }
+                ]) + "\n",
+                stderr="",
+            )
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="https://github.com/example/repo/pull/42\n", stderr="")
+        if cmd[:3] == ["gh", "pr", "edit"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(kt.subprocess, "run", fake_run)
+
+    out = kt._handle_complete({
+        "summary": "done and ready for review",
+        "metadata": {
+            "changed_files": ["application/core/Controller.php"],
+            "tests_run": ["pytest -q"],
+            "approval_status": "pending",
+        },
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["pull_request"]["number"] == 42
+    assert d["pull_request"]["reused_existing_pr"] is False
+    assert d["pull_request"]["branch_name"] == branch_name
+    assert any(cmd[:3] == ["gh", "pr", "create"] for cmd, _ in calls)
 
 
 def test_complete_metadata_round_trips_through_show(worker_env):

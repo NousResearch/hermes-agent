@@ -31,6 +31,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import subprocess
+from pathlib import Path
 from typing import Any, Optional
 
 from tools.registry import registry, tool_error
@@ -286,6 +289,225 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     if text in {"false", "0", "no"}:
         return False, None
     return default, f"{name} must be a boolean or 'true'/'false'"
+
+
+def _task_body_json(task) -> dict[str, Any]:
+    """Best-effort decode of a task body that may contain JSON handoff data."""
+    body = getattr(task, "body", None)
+    if not body:
+        return {}
+    text = str(body).strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _merged_task_pr_context(task, metadata: Optional[dict]) -> dict[str, Any]:
+    """Merge PR policy details from the task body and completion metadata."""
+    merged: dict[str, Any] = {}
+    task_body = _task_body_json(task)
+    if task_body:
+        for key in ("pr_policy", "branching", "draft_pr", "rerun_handling"):
+            value = task_body.get(key)
+            if isinstance(value, dict):
+                merged[key] = dict(value)
+    if metadata and isinstance(metadata, dict):
+        for key in ("pr_policy", "branching", "draft_pr", "rerun_handling"):
+            value = metadata.get(key)
+            if isinstance(value, dict):
+                current = merged.setdefault(key, {})
+                current.update(value)
+    return merged
+
+
+def _sanitize_lines(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple, set)):
+        items = list(value)
+    else:
+        items = [value]
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item).strip()
+        if text and text not in seen:
+            seen.add(text)
+            cleaned.append(text)
+    return cleaned
+
+
+def _render_pr_body(task, summary: Optional[str], metadata: Optional[dict], pr_context: dict[str, Any]) -> str:
+    """Build the draft PR body expected by the one-task-one-PR policy."""
+    meta = metadata if isinstance(metadata, dict) else {}
+    draft_pr = pr_context.get("draft_pr") if isinstance(pr_context.get("draft_pr"), dict) else {}
+    branching = pr_context.get("branching") if isinstance(pr_context.get("branching"), dict) else {}
+    pr_policy = pr_context.get("pr_policy") if isinstance(pr_context.get("pr_policy"), dict) else {}
+
+    changed_files = _sanitize_lines(meta.get("changed_files") or meta.get("files_touched"))
+    tests_run = _sanitize_lines(meta.get("tests_run") or meta.get("validation") or meta.get("tests"))
+    known_risks = _sanitize_lines(meta.get("known_risks") or meta.get("risks"))
+    rollback_notes = _sanitize_lines(meta.get("rollback_note") or meta.get("rollback_notes"))
+    approval_status = str(meta.get("approval_status") or meta.get("approval") or "pending").strip()
+    summary_lines = _sanitize_lines(summary or meta.get("summary") or meta.get("result"))
+
+    lines = [
+        "## Summary",
+        f"- Task: {getattr(task, 'title', '')}",
+        f"- Policy: {pr_policy.get('mode', 'one_task_one_pr')}",
+        f"- Branch: `{branching.get('branch_name', '')}`",
+    ]
+    if summary_lines:
+        lines.extend([f"- {line}" for line in summary_lines])
+    else:
+        lines.append("- Completion summary not supplied; see task comments/events for details.")
+
+    lines.extend([
+        "",
+        "## What changed",
+    ])
+    what_changed = _sanitize_lines(meta.get("what_changed") or meta.get("changes"))
+    if what_changed:
+        lines.extend([f"- {line}" for line in what_changed])
+    else:
+        lines.append("- See the completed task summary and changed files below.")
+
+    lines.extend([
+        "",
+        "## Files touched",
+    ])
+    if changed_files:
+        lines.extend([f"- `{path}`" for path in changed_files])
+    else:
+        lines.append("- Not provided in completion metadata.")
+
+    lines.extend([
+        "",
+        "## Tests / validation",
+    ])
+    if tests_run:
+        lines.extend([f"- {line}" for line in tests_run])
+    else:
+        lines.append("- Not provided in completion metadata.")
+
+    lines.extend([
+        "",
+        "## Known risks",
+    ])
+    if known_risks:
+        lines.extend([f"- {line}" for line in known_risks])
+    else:
+        lines.append("- None recorded.")
+
+    lines.extend([
+        "",
+        "## Rollback note",
+    ])
+    if rollback_notes:
+        lines.extend([f"- {line}" for line in rollback_notes])
+    else:
+        lines.append("- Revert the latest commit(s) on this branch and close the PR if needed.")
+
+    lines.extend([
+        "",
+        "## Approval status",
+        f"- {approval_status}",
+        "",
+        "## Task policy",
+        f"- Draft PR title hint: {draft_pr.get('title', '')}",
+        f"- Draft PR mode: {draft_pr.get('mode', '')}",
+    ])
+    return "\n".join(lines).strip()
+
+
+def _run_repo_command(cwd: Path, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "Command failed (code %s): %s\nSTDOUT:\n%s\nSTDERR:\n%s"
+            % (proc.returncode, " ".join(cmd), proc.stdout, proc.stderr)
+        )
+    return proc
+
+
+def _maybe_create_draft_pr(task, summary: Optional[str], metadata: Optional[dict], board: Optional[str] = None) -> Optional[dict[str, Any]]:
+    """Create or update the task's draft PR when the one-task-one-PR policy is active."""
+    pr_context = _merged_task_pr_context(task, metadata)
+    pr_policy = pr_context.get("pr_policy") if isinstance(pr_context.get("pr_policy"), dict) else {}
+    if pr_policy.get("mode") != "one_task_one_pr":
+        return None
+
+    branching = pr_context.get("branching") if isinstance(pr_context.get("branching"), dict) else {}
+    draft_pr = pr_context.get("draft_pr") if isinstance(pr_context.get("draft_pr"), dict) else {}
+    branch_name = str(getattr(task, "branch_name", None) or branching.get("branch_name") or "").strip()
+    workspace_path = str(getattr(task, "workspace_path", None) or branching.get("workspace_path") or "").strip()
+    if not branch_name:
+        raise RuntimeError("one_task_one_pr is active but no branch_name is available")
+    if not workspace_path:
+        raise RuntimeError("one_task_one_pr is active but no workspace_path is available")
+
+    workspace = Path(workspace_path).expanduser()
+    if not workspace.exists():
+        raise RuntimeError(f"workspace path does not exist: {workspace}")
+    if shutil.which("gh") is None:
+        raise RuntimeError("gh CLI is required to create draft PRs")
+
+    current_branch = _run_repo_command(workspace, ["git", "branch", "--show-current"]).stdout.strip()
+    if current_branch and current_branch != branch_name:
+        _run_repo_command(workspace, ["git", "checkout", branch_name])
+    _run_repo_command(workspace, ["git", "push", "-u", "origin", "HEAD"])
+
+    list_proc = _run_repo_command(
+        workspace,
+        ["gh", "pr", "list", "--head", branch_name, "--state", "open", "--json", "number,url,state,isDraft,title", "--limit", "10"],
+    )
+    existing = json.loads(list_proc.stdout or "[]")
+    if not isinstance(existing, list):
+        existing = []
+
+    title = str(draft_pr.get("title") or f"draft: {getattr(task, 'title', 'task')}").strip()
+    body = _render_pr_body(task, summary, metadata, pr_context)
+
+    if existing:
+        pr = existing[0] if isinstance(existing[0], dict) else {}
+        number = pr.get("number")
+        if number is not None:
+            _run_repo_command(
+                workspace,
+                ["gh", "pr", "edit", str(number), "--title", title, "--body", body],
+            )
+            refreshed = _run_repo_command(
+                workspace,
+                ["gh", "pr", "list", "--head", branch_name, "--state", "open", "--json", "number,url,state,isDraft,title", "--limit", "10"],
+            )
+            refreshed_items = json.loads(refreshed.stdout or "[]")
+            if isinstance(refreshed_items, list) and refreshed_items and isinstance(refreshed_items[0], dict):
+                pr = refreshed_items[0]
+        pr["reused_existing_pr"] = True
+        pr["branch_name"] = branch_name
+        pr["workspace_path"] = str(workspace)
+        return pr
+
+    _run_repo_command(
+        workspace,
+        ["gh", "pr", "create", "--draft", "--title", title, "--body", body, "--head", branch_name],
+    )
+    refreshed = _run_repo_command(
+        workspace,
+        ["gh", "pr", "list", "--head", branch_name, "--state", "open", "--json", "number,url,state,isDraft,title", "--limit", "10"],
+    )
+    refreshed_items = json.loads(refreshed.stdout or "[]")
+    pr = refreshed_items[0] if isinstance(refreshed_items, list) and refreshed_items and isinstance(refreshed_items[0], dict) else {}
+    pr["reused_existing_pr"] = False
+    pr["branch_name"] = branch_name
+    pr["workspace_path"] = str(workspace)
+    return pr
 
 
 def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
@@ -553,6 +775,20 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            task = kb.get_task(conn, tid)
+            if task is None:
+                return tool_error(f"task {tid} not found")
+
+            pr_info: Optional[dict[str, Any]] = None
+            try:
+                pr_info = _maybe_create_draft_pr(task, summary=summary, metadata=metadata, board=board)
+            except Exception as pr_exc:
+                return tool_error(f"kanban_complete PR setup failed: {pr_exc}")
+            if pr_info:
+                enriched_metadata = dict(metadata or {})
+                enriched_metadata["pull_request"] = pr_info
+                metadata = enriched_metadata
+
             try:
                 ok = kb.complete_task(
                     conn, tid,
@@ -585,7 +821,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            return _ok(task_id=tid, run_id=run.id if run else None, pull_request=pr_info)
         finally:
             conn.close()
     except ValueError as e:
@@ -979,8 +1215,7 @@ KANBAN_LIST_SCHEMA = {
 KANBAN_COMPLETE_SCHEMA = {
     "name": "kanban_complete",
     "description": (
-        "Mark your current task done with a structured handoff for "
-        "downstream workers and humans. Prefer ``summary`` for a "
+        "Mark your current task done with a structured handoff. Prefer ``summary`` for a "
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). At least one of "
@@ -993,7 +1228,10 @@ KANBAN_COMPLETE_SCHEMA = {
         "in ``artifacts`` — the gateway notifier will upload them as "
         "native attachments to the human who subscribed to the task, "
         "so the deliverable lands in their chat alongside the summary "
-        "instead of being a path they have to fetch by hand."
+        "instead of being a path they have to fetch by hand. When the "
+        "task body carries the one_task_one_pr policy and branch metadata, "
+        "kanban_complete will also create or reuse the matching draft PR "
+        "and include the PR details in the tool result."
     ),
     "parameters": {
         "type": "object",

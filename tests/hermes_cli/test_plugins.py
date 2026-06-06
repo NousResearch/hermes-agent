@@ -272,6 +272,54 @@ class TestPluginDiscovery:
 
         assert calls == [{"command": "interrupt"}]
 
+    def test_execution_middleware_double_next_call_does_not_run_terminal_twice(self, monkeypatch):
+        calls = []
+
+        def middleware(**kwargs):
+            first = kwargs["next_call"](kwargs["args"])
+            # Deliberate misuse: a second next_call() must not re-run the
+            # downstream tool. The chain surfaces it as an error and preserves
+            # the first (successful) downstream result.
+            kwargs["next_call"](kwargs["args"])
+            return first
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        def terminal(args):
+            calls.append(args)
+            return "terminal-result"
+
+        result = run_tool_execution_middleware("terminal", {"command": "printf ok"}, terminal)
+
+        assert result == "terminal-result"
+        assert calls == [{"command": "printf ok"}]
+
+    def test_request_middleware_tolerates_non_deepcopyable_payload(self, monkeypatch):
+        import threading
+
+        recorded = {}
+
+        def middleware(**kwargs):
+            recorded["args"] = kwargs["args"]
+            return None
+
+        manager = types.SimpleNamespace(
+            _middleware={"tool_request": [middleware]},
+            invoke_middleware=lambda kind, **kwargs: [middleware(**kwargs)],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        # threading.Lock is not deepcopyable; a hard deepcopy would raise.
+        args = {"command": "noop", "lock": threading.Lock()}
+        result = apply_tool_request_middleware("terminal", args)
+
+        # Middleware ran (payload was copied via the shallow fallback) and the
+        # non-deepcopyable member is shared by reference rather than aborting.
+        assert recorded["args"]["command"] == "noop"
+        assert result.payload["command"] == "noop"
+        assert result.payload["lock"] is args["lock"]
+
     def test_discover_project_plugins(self, tmp_path, monkeypatch):
         """Plugins in ./.hermes/plugins/ are discovered."""
         project_dir = tmp_path / "project"

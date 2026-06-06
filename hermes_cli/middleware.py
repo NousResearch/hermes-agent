@@ -55,6 +55,25 @@ def middleware_payload(**kwargs: Any) -> Dict[str, Any]:
     return kwargs
 
 
+def _safe_copy(payload: Any) -> Any:
+    """Deep-copy a request payload, tolerating non-deepcopyable members.
+
+    Request payloads are normally plain JSON-shaped dicts, but an LLM request
+    can occasionally carry non-deepcopyable objects (clients, callbacks, file
+    handles). A hard ``deepcopy`` failure there would otherwise abort the whole
+    request-middleware pass. Fall back to a shallow ``dict`` copy so middleware
+    still runs and the original nested objects are shared by reference rather
+    than corrupting the live payload.
+    """
+    try:
+        return deepcopy(payload)
+    except Exception as exc:  # pragma: no cover - exercised via fallback test
+        logger.debug("deepcopy failed for request payload (%s); using shallow copy", exc)
+        if isinstance(payload, dict):
+            return dict(payload)
+        return payload
+
+
 def apply_llm_request_middleware(
     request: Dict[str, Any],
     **context: Any,
@@ -72,8 +91,8 @@ def apply_llm_request_middleware(
             trace=[],
         )
 
-    original_request = deepcopy(request)
-    current_request = deepcopy(original_request)
+    original_request = _safe_copy(request)
+    current_request = _safe_copy(original_request)
     trace: List[Dict[str, Any]] = []
 
     for result in _invoke_middleware(
@@ -87,7 +106,7 @@ def apply_llm_request_middleware(
         next_request = result.get("request")
         if not isinstance(next_request, dict):
             continue
-        current_request = deepcopy(next_request)
+        current_request = _safe_copy(next_request)
         trace.append(_trace_entry(result))
 
     return RequestMiddlewareResult(
@@ -116,8 +135,8 @@ def apply_tool_request_middleware(
             trace=[],
         )
 
-    original_args = deepcopy(args)
-    current_args = deepcopy(original_args)
+    original_args = _safe_copy(args)
+    current_args = _safe_copy(original_args)
     trace: List[Dict[str, Any]] = []
 
     for result in _invoke_middleware(
@@ -132,7 +151,7 @@ def apply_tool_request_middleware(
         next_args = result.get("args")
         if not isinstance(next_args, dict):
             continue
-        current_args = deepcopy(next_args)
+        current_args = _safe_copy(next_args)
         trace.append(_trace_entry(result))
 
     return RequestMiddlewareResult(
@@ -242,6 +261,16 @@ def _run_execution_chain(
 
         def next_call(next_payload: Any = None) -> Any:
             nonlocal next_called, next_succeeded, next_result
+            # ``next_call`` is single-use per middleware frame. Calling it more
+            # than once would re-run the downstream provider/tool, so a second
+            # invocation is a contract violation rather than a retry. Surface it
+            # instead of silently executing the terminal call twice.
+            if next_called:
+                raise RuntimeError(
+                    f"Middleware '{kind}' callback "
+                    f"{getattr(callback, '__name__', repr(callback))} called "
+                    "next_call() more than once; downstream execution is single-use"
+                )
             next_called = True
             try:
                 next_result = call_at(index + 1, payload if next_payload is None else next_payload)

@@ -41,7 +41,10 @@ describe('ModelSettings', () => {
     await renderModelSettings()
 
     await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
-    expect(screen.getByText('nous / hermes-4')).toBeTruthy()
+    // The current model is loaded into the main-slot selectors (provider name
+    // + model id), not a standalone label.
+    expect(await screen.findByText('Nous')).toBeTruthy()
+    expect(screen.getByText('hermes-4')).toBeTruthy()
   })
 
   it('renders the auxiliary task rows', async () => {
@@ -66,5 +69,36 @@ describe('ModelSettings', () => {
         task: 'vision'
       })
     )
+  })
+
+  it('warns when a main switch leaves auxiliary tasks pinned to another provider', async () => {
+    setModelAssignment.mockResolvedValueOnce({
+      provider: 'openrouter',
+      model: 'anthropic/claude-opus-4.7',
+      gateway_tools: [],
+      stale_aux: [{ task: 'compression', provider: 'nous', model: 'hermes-4' }]
+    })
+
+    await renderModelSettings()
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
+
+    const applyButton = await screen.findByRole('button', { name: 'Apply' })
+    fireEvent.click(applyButton)
+
+    // The switch-time notice names the pinned provider and offers a reset.
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
+    expect(screen.getByText('nous')).toBeTruthy()
+  })
+
+  it('shows a persistent banner when a loaded aux slot mismatches the main provider', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'curator', provider: 'openrouter', model: 'anthropic/claude-opus-4.7', base_url: '' }]
+    })
+
+    await renderModelSettings()
+
+    // Banner present on load, no switch required.
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
   })
 })

@@ -4,8 +4,9 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { IndicatorStyle } from '../app/interfaces.js'
+import type { IndicatorStyle, Notice } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
+import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
@@ -206,6 +207,26 @@ function statusSessionCountLabel(count: number) {
   return `${count} ${count === 1 ? 'session' : 'sessions'}`
 }
 
+// Colour a credits notice by its level. The notice TEXT already carries its
+// own glyph (⚠ • ✕ ✓) from the Python policy — we only tint it here, never
+// prepend another glyph. `success` maps to the theme's green status colour.
+function noticeColor(level: Notice['level'], t: Theme): string {
+  if (level === 'error') {
+    return t.color.error
+  }
+
+  if (level === 'warn') {
+    return t.color.warn
+  }
+
+  if (level === 'success') {
+    return t.color.statusGood
+  }
+
+  // 'info' / undefined — keep it readable but understated.
+  return t.color.accent
+}
+
 function ctxBar(pct: number | undefined, w = 10) {
   const p = Math.max(0, Math.min(100, pct ?? 0))
   const filled = Math.round((p / 100) * w)
@@ -403,6 +424,7 @@ export function StatusRuleView({
   modelFast,
   modelReasoningEffort,
   indicatorStyle = 'kaomoji',
+  notice,
   usage,
   bgCount,
   liveSessionCount,
@@ -444,13 +466,32 @@ export function StatusRuleView({
       ? '◉ STT'
       : i18n.t('voice.idle', { state: voiceEnabled ? i18n.t('voice.on') : i18n.t('voice.off') }) + (voiceTts ? ' [tts]' : '')
 
+  // A credits notice replaces the status/verb slot, but only when idle —
+  // while busy the FaceTicker always wins (R1 render priority). The notice
+  // text carries its own glyph; we only tint it (R1) and let it shrink (R3-M7).
+  const showNotice = !busy && !!notice?.text
+  // The notice slot is shrinkable (flexShrink={1}, truncate-end), so reserve
+  // only a small bounded width for it in the essentials budget — enough that
+  // a short notice never gets crushed, but a long one ellipsizes instead of
+  // shoving `model │ ctx` off-screen (R3-M7). Cap at the notice's own width
+  // so short notices reserve exactly what they need.
+  const NOTICE_RESERVE_MAX = 24
+  const noticeReserve = showNotice ? Math.min(stringWidth(notice!.text), NOTICE_RESERVE_MAX) : 0
+
   // Width of the must-keep left segments (indicator + model + context). They
   // are pinned (never shrink) and reserved so the cwd/branch on the right
   // yields first. The busy face width depends on the active /indicator style
-  // (kaomoji is wide + verb; unicode is a bare 1-col spinner).
+  // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
+  // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
+  const slotWidth = busy
+    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
+    : showNotice
+      ? noticeReserve
+      : stringWidth(statusText)
+
   const essentialWidth =
     stringWidth('─ ') +
-    (busy ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null) : stringWidth(statusText)) +
+    slotWidth +
     stringWidth(' │ ') +
     stringWidth(modelText) +
     (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
@@ -475,6 +516,14 @@ export function StatusRuleView({
   }
 
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+  // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
+  // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
+  // math (display formatting) — never parseFloat a *_usd. Signed: a mid-session top-up that
+  // raises remaining nets a negative Δ (honest).
+  const devCreditsText =
+    typeof usage.dev_credits_spent_micros === 'number'
+      ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
+      : ''
 
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
@@ -483,6 +532,9 @@ export function StatusRuleView({
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(bgText))
   const showCostSeg = segs.cost && showCost && !!costText && fits(SEP + stringWidth(costText))
+  // No segs flag / no showCost coupling — it's a server-gated dev readout, lowest priority,
+  // so it consumes tail budget LAST and drops first on a narrow terminal.
+  const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
 
   const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
     event.stopImmediatePropagation?.()
@@ -500,16 +552,37 @@ export function StatusRuleView({
   return (
     <Box height={1}>
       <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
-        {/* Pinned essentials — never shrink, always visible. */}
+        {/* Leading pinned chrome: border + busy face / idle status. When a
+            notice occupies the slot the status text is dropped — the notice
+            renders as a separate shrinkable box below so a long notice
+            ellipsizes instead of crushing model │ ctx (R3-M7). */}
         <Box flexDirection="row" flexShrink={0}>
           <Text color={t.color.border}>{'─ '}</Text>
           {busy ? (
             <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
-          ) : (
+          ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
               {statusText}
             </Text>
           )}
+        </Box>
+        {/* Notice slot — the only shrinkable left element (R3-M7). Sits in a
+            flexShrink={1} box with truncate-end so it yields/ellipsizes
+            before the pinned model │ ctx box ever clips. */}
+        {showNotice ? (
+          <Box flexDirection="row" flexShrink={1} overflow="hidden">
+            <Text color={noticeColor(notice!.level, t)} wrap="truncate-end">
+              {notice!.text}
+            </Text>
+          </Box>
+        ) : null}
+        {/* Pinned essentials — model + context never shrink, always visible. */}
+        <Box flexDirection="row" flexShrink={0}>
+          {DEV_CREDITS_MODE ? (
+            <Text color={t.color.warn} wrap="truncate-end">
+              {' (dev credits)'}
+            </Text>
+          ) : null}
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             {modelText}
@@ -563,6 +636,12 @@ export function StatusRuleView({
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             {costText}
+          </Text>
+        ) : null}
+        {showDevCredits ? (
+          <Text color={t.color.accent} wrap="truncate-end">
+            {' │ '}
+            {devCreditsText}
           </Text>
         ) : null}
         {/* SpawnHud isn't part of the tail budget (its width is dynamic), so it
@@ -694,6 +773,7 @@ interface StatusRuleProps {
   modelFast?: boolean
   modelReasoningEffort?: string
   indicatorStyle?: IndicatorStyle
+  notice?: Notice | null
   sessionStartedAt?: null | number
   showCost: boolean
   status: string

@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
+
+if TYPE_CHECKING:
+    from typing import TypeGuard
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -111,6 +118,223 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     if snapshot.unavailable_reason:
         lines.append(f"Unavailable: {snapshot.unavailable_reason}")
     return lines
+
+
+def _fmt_usd(d: float) -> str:
+    return f"${d:,.2f}"
+
+
+def _is_finite_num(v: Any) -> TypeGuard[float]:
+    """True iff v is a real numeric value (int or float, not bool, not NaN/Inf).
+
+    Typed as a ``TypeGuard[float]`` so the type checker narrows ``v`` to a real
+    number in the positive branch — callers can then do arithmetic / pass it to
+    ``_fmt_usd`` without a None-operand warning.
+    """
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
+    """Map a NousPortalAccountInfo into an AccountUsageSnapshot for /usage.
+
+    Shows dollar magnitudes (subscription / top-up / total) + renewal date + a
+    portal CTA. When the portal supplies a subscription denominator
+    (``monthly_credits``), also emits a subscription-usage window so the renderer
+    shows a real ``% used`` gauge; when it's absent (older portals) the view
+    gracefully degrades to magnitudes-only. Returns None when there's no usable
+    account info to show (fail-open: caller just shows nothing).
+    """
+    try:
+        from hermes_cli.nous_account import nous_portal_billing_url
+
+        if account_info is None or not getattr(account_info, "logged_in", False):
+            return None
+
+        access = getattr(account_info, "paid_service_access_info", None)
+        sub = getattr(account_info, "subscription", None)
+
+        windows: list[AccountUsageWindow] = []
+        details: list[str] = []
+
+        # Subscription usage gauge — only when the portal supplies a positive
+        # monthly_credits denominator AND a finite remaining balance that does
+        # not exceed the cap. Money math is on float dollars (allowed: numeric
+        # account fields, NOT a server-provided *_usd string). used = cap -
+        # remaining; clamp [0,100] so a debt balance (remaining < 0) reads 100%.
+        # Excluded on purpose:
+        #   - non-finite values (NaN/Infinity slip past isinstance and json.loads
+        #     parses bare NaN/Infinity by default) → would render "$nan"/"$inf"
+        #     and a falsely-confident gauge;
+        #   - remaining > cap (rollover balance spanning the period) → monthly_credits
+        #     is no longer a meaningful denominator, and "$X of $Y left" with X>Y
+        #     reads as a contradiction. Both fall back to the magnitudes lines.
+        if sub is not None:
+            monthly_credits = getattr(sub, "monthly_credits", None)
+            sub_remaining = getattr(sub, "credits_remaining", None)
+            if (
+                _is_finite_num(monthly_credits)
+                and monthly_credits > 0
+                and _is_finite_num(sub_remaining)
+                and sub_remaining <= monthly_credits
+            ):
+                used = monthly_credits - sub_remaining
+                used_pct = max(0.0, min(100.0, used / monthly_credits * 100.0))
+                windows.append(
+                    AccountUsageWindow(
+                        label="Subscription",
+                        used_percent=used_pct,
+                        detail=f"{_fmt_usd(sub_remaining)} of {_fmt_usd(monthly_credits)} left",
+                    )
+                )
+
+        if access is not None:
+            sub_credits = getattr(access, "subscription_credits_remaining", None)
+            if _is_finite_num(sub_credits):
+                details.append(f"Subscription credits: {_fmt_usd(sub_credits)}")
+            purchased = getattr(access, "purchased_credits_remaining", None)
+            if _is_finite_num(purchased):
+                details.append(f"Top-up credits: {_fmt_usd(purchased)}")
+            total_usable = getattr(access, "total_usable_credits", None)
+            if _is_finite_num(total_usable):
+                details.append(f"Total usable: {_fmt_usd(total_usable)}")
+
+        if sub is not None:
+            rollover = getattr(sub, "rollover_credits", None)
+            if _is_finite_num(rollover) and rollover > 0:
+                details.append(f"Rollover: {_fmt_usd(rollover)}")
+            period_end = getattr(sub, "current_period_end", None)
+            if period_end:
+                details.append(f"Renews: {period_end}")
+
+        paid = getattr(account_info, "paid_service_access", None)
+        if paid is False:
+            details.append("Status: access depleted — top up to restore")
+
+        if not windows and not details:
+            return None
+
+        details.append(f"Manage / top up: {nous_portal_billing_url(account_info)}")
+
+        plan = getattr(sub, "plan", None) if sub is not None else None
+        return AccountUsageSnapshot(
+            provider="nous",
+            source="portal-account",
+            fetched_at=_utc_now(),
+            title="Nous credits",
+            plan=plan,
+            windows=tuple(windows),
+            details=tuple(details),
+        )
+    except (AttributeError, TypeError):
+        return None
+
+
+def nous_credits_lines(*, markdown: bool = False, timeout: float = 10.0) -> list[str]:
+    """Return rendered Nous-credits /usage lines, or [] when there's nothing to show.
+
+    Account-independent of any live agent: gated on "a Nous account is logged in"
+    (a cheap local auth-state check), then a wall-clock-bounded portal fetch. Shared
+    by the CLI ``_show_usage`` and the TUI ``session.usage`` RPC so both surfaces show
+    the same block regardless of session API-call count or resume state. Fail-open:
+    any auth/portal hiccup or timeout returns [] (the caller shows nothing).
+
+    Dev override: when HERMES_DEV_CREDITS_FIXTURE selects a fixture state, /usage
+    renders from that fixture instead of the real portal (so the block + gauge are
+    testable without a live account). Throwaway scaffolding.
+    """
+    # Dev fixture short-circuit — render /usage from the injected state, no portal.
+    try:
+        from agent.credits_tracker import dev_fixture_credits_state
+
+        fixture = dev_fixture_credits_state()
+    except Exception:
+        fixture = None
+    if fixture is not None:
+        snapshot = _snapshot_from_credits_state(fixture)
+        return render_account_usage_lines(snapshot, markdown=markdown)
+
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+
+        tok = (get_provider_auth_state("nous") or {}).get("access_token")
+        if not (isinstance(tok, str) and tok.strip()):
+            return []
+    except Exception:
+        return []
+    try:
+        import concurrent.futures
+
+        from hermes_cli.nous_account import get_nous_portal_account_info
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            account = pool.submit(
+                get_nous_portal_account_info, force_fresh=True
+            ).result(timeout=timeout)
+        snapshot = build_nous_credits_snapshot(account)
+        return render_account_usage_lines(snapshot, markdown=markdown)
+    except Exception:
+        # Fail-open (caller shows nothing), but leave a breadcrumb so a dead
+        # /usage credits block is diagnosable in agent.log without a dev flag.
+        logger.debug("credits ▸ /usage portal fetch/render failed (fail-open)", exc_info=True)
+        return []
+
+
+def _snapshot_from_credits_state(state) -> Optional[AccountUsageSnapshot]:
+    """Map a header-shaped CreditsState (e.g. a dev fixture) to the /usage snapshot.
+
+    Renders the same magnitudes + monthly-grant % window the portal path produces,
+    so HERMES_DEV_CREDITS_FIXTURE can exercise /usage without a live account. The
+    *_usd strings are mock display values here (not server balance to compute on);
+    the % comes from CreditsState.used_fraction (micros math). Fail-open → None.
+    """
+    try:
+        if state is None:
+            return None
+
+        windows: list[AccountUsageWindow] = []
+        details: list[str] = []
+
+        uf = getattr(state, "used_fraction", None)
+        if isinstance(uf, (int, float)) and math.isfinite(uf):
+            cap_usd = getattr(state, "subscription_limit_usd", None)
+            sub_usd = getattr(state, "subscription_usd", None)
+            detail = None
+            if sub_usd and cap_usd:
+                detail = f"${sub_usd} of ${cap_usd} left"
+            windows.append(
+                AccountUsageWindow(
+                    label="Subscription",
+                    used_percent=max(0.0, min(100.0, uf * 100.0)),
+                    detail=detail,
+                )
+            )
+
+        sub_usd = getattr(state, "subscription_usd", None)
+        if sub_usd:
+            details.append(f"Subscription credits: ${sub_usd}")
+        purchased_usd = getattr(state, "purchased_usd", None)
+        if purchased_usd:
+            details.append(f"Top-up credits: ${purchased_usd}")
+        remaining_usd = getattr(state, "remaining_usd", None)
+        if remaining_usd:
+            details.append(f"Total usable: ${remaining_usd}")
+        if getattr(state, "paid_access", True) is False:
+            details.append("Status: access depleted — top up to restore")
+
+        if not windows and not details:
+            return None
+
+        details.append("(dev fixture — HERMES_DEV_CREDITS_FIXTURE)")
+        return AccountUsageSnapshot(
+            provider="nous",
+            source="dev-fixture",
+            fetched_at=_utc_now(),
+            title="Nous credits",
+            windows=tuple(windows),
+            details=tuple(details),
+        )
+    except (AttributeError, TypeError):
+        return None
 
 
 def _resolve_codex_usage_url(base_url: str) -> str:

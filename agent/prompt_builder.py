@@ -178,6 +178,25 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+GOAL_GUIDANCE = (
+    "# Multi-turn goal pursuit\n"
+    "You can use `set_goal` to establish a standing goal that the system will "
+    "automatically continue working on across multiple conversation turns. "
+    "After each turn, a Judge model evaluates whether the goal is satisfied; "
+    "if not, a continuation prompt is injected and you keep working. "
+    "Use this when a task requires multiple steps — e.g. refactoring a large "
+    "codebase, conducting multi-phase research, or building a feature with "
+    "several sub-components. After setting a goal, simply continue working "
+    "normally; the system handles the rest.\n\n"
+    "Key points:\n"
+    "- Set a **specific, verifiable goal** so the Judge knows when it's done.\n"
+    "- The turn budget defaults to 20 turns; set `max_turns` higher for large tasks.\n"
+    "- Call `get_goal_status` to check progress at any time.\n"
+    "- Call `clear_goal` when the goal is no longer relevant.\n"
+    "- If you're blocked and need user input, say so — the Judge treats "
+    "this as \"done\" with a reason, so the goal pauses and the user can respond."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "

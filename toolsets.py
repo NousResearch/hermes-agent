@@ -52,6 +52,8 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
+    # Goal management (autonomous multi-turn goal pursuit)
+    "set_goal", "get_goal_status", "clear_goal",
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management

@@ -2262,6 +2262,12 @@ DEFAULT_CONFIG = {
 
     # ``hermes update`` behaviour.
     "updates": {
+        # Automatically check for and apply updates in the background.
+        # When enabled, the gateway runs a background thread that periodically
+        # checks git/PyPI for new versions and applies them automatically.
+        "auto_update": False,
+        # Interval in seconds between auto-update checks. Default: 24 hours.
+        "auto_update_interval": 86400,
         # Run a full ``hermes backup``-style zip of HERMES_HOME before every
         # ``hermes update``.  Backups land in ``<HERMES_HOME>/backups/`` and
         # can be restored with ``hermes import <path>``.  Off by default —

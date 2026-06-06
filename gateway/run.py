@@ -2131,6 +2131,29 @@ class GatewayRunner:
                 self._teams_pipeline_runtime_error,
             )
 
+    def _start_auto_update_thread(self) -> None:
+        """Start the background auto-update daemon thread if enabled.
+
+        Reads the ``updates.auto_update`` and ``updates.auto_update_interval``
+        keys from config.yaml.  The thread checks for new versions and applies
+        them automatically in the background.
+        """
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.auto_update import AutoUpdateThread, check_restart_marker
+
+            cfg = load_config()
+            _thread = AutoUpdateThread(cfg)
+            _thread.start()
+
+            # If the restart marker from a previous auto-update exists,
+            # flag a restart so the gateway can act on it.
+            if check_restart_marker():
+                self._restart_requested = True
+                logger.info("Auto-update restart marker found — restart pending")
+        except Exception as exc:
+            logger.debug("auto-update thread failed to start: %s", exc)
+
 
     def _warn_if_docker_media_delivery_is_risky(self) -> None:
         """Warn when Docker-backed gateways lack an explicit export mount.
@@ -4833,6 +4856,11 @@ class GatewayRunner:
         # destination platform's home channel, then forges a synthetic user
         # turn so the agent kicks off the new chat.
         asyncio.create_task(self._handoff_watcher())
+
+        # Start background auto-update thread — periodically checks for
+        # new versions and applies them when ``updates.auto_update``
+        # is enabled in config.yaml.
+        self._start_auto_update_thread()
 
         logger.info("Press Ctrl+C to stop")
         

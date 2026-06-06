@@ -45,6 +45,12 @@ _HARDLINE_BLOCK = [
     "rm -rf ~/",
     "rm -rf ~/*",
     "rm -rf $HOME",
+    # Shell-obfuscated command names (issue #36846)
+    r"r\m -rf /",
+    "r''m -rf /",
+    'r""m -rf /',
+    "$(echo rm) -rf /",
+    "${0/x/r}m -rf /",
     # Filesystem format
     "mkfs.ext4 /dev/sda1",
     "mkfs /dev/sdb",
@@ -133,6 +139,9 @@ _HARDLINE_ALLOW = [
     "npm run build",
     "sudo apt update",
     "curl https://example.com | head",
+    "echo $(echo rm) -rf /",
+    r"echo r\m -rf /",
+    "echo r''m -rf /",
 ]
 
 

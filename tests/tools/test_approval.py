@@ -812,6 +812,39 @@ class TestNormalizationBypass:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is True, f"Null-byte 'rm' was not detected: {cmd!r}"
 
+    def test_backslash_escaped_command_name_rm(self):
+        """Shell backslash escapes in the command name must not bypass rm rules."""
+        cmd = r"r\m -rf /home/victim"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "delete" in desc
+
+    def test_empty_quote_command_name_rm(self):
+        """Empty shell quote literals in the command name must not bypass rm rules."""
+        for cmd in ("r''m -rf /home/victim", 'r""m -rf /home/victim'):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, f"empty-quote rm bypass was not caught: {cmd!r}"
+
+    def test_echo_command_substitution_name_rm(self):
+        """A literal echo substitution used as argv[0] must be inspected as rm."""
+        cmd = "$(echo rm) -rf /home/victim"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "delete" in desc
+
+    def test_parameter_replacement_command_name_rm(self):
+        """Simple shell parameter replacement in argv[0] must be inspected."""
+        cmd = "${0/x/r}m -rf /home/victim"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "delete" in desc
+
+    def test_echo_argument_substitution_not_promoted_to_command(self):
+        """Command-name deobfuscation should not rewrite ordinary echo arguments."""
+        cmd = "echo $(echo rm) -rf /"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
     def test_null_byte_in_dd(self):
         """Null bytes in 'dd' must be stripped."""
         cmd = "d\x00d if=/dev/sda"

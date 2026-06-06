@@ -356,6 +356,172 @@ class TestWebServerEndpoints:
         assert config["dashboard"]["theme"] == "ember"
         assert config["dashboard"]["font"] == "jetbrains-mono"
 
+    def test_get_jarvis_cockpit_reads_only_local_seed_contract(self, tmp_path, monkeypatch):
+        """Jarvis Cockpit exposes a read-only local contract from whitelisted docs."""
+        import hermes_cli.web_server as ws
+
+        docs_root = tmp_path / "docs"
+        todo_dir = docs_root / "runbooks" / "jarvis-todo"
+        todo_dir.mkdir(parents=True)
+        (todo_dir / "jarvis-actions.json").write_text(json.dumps({
+            "version": 1,
+            "updated_at": "2026-06-06T23:36:05+02:00",
+            "scope": "jarvis-system-only",
+            "rules": {
+                "not_microsoft_todo": True,
+                "local_only": True,
+                "external_writes_allowed": False,
+            },
+            "items": [{
+                "id": "cockpit-readonly-api",
+                "title": "Implement narrow read-only Jarvis Cockpit API",
+                "status": "todo",
+                "priority": "P1",
+                "risk": "green-local",
+                "owner": "Hektor",
+                "source": "docs/plans/2026-06-06-hermes-jarvis-cockpit-plan.md",
+                "gate_required": False,
+                "artifact_refs": ["hermes-cockpit-plan"],
+            }],
+            "artifact_pointers": [{
+                "id": "hermes-cockpit-plan",
+                "title": "Hermes Dashboard Jarvis Cockpit Implementation Plan",
+                "kind": "plan",
+                "path": str(docs_root / "plans" / "2026-06-06-hermes-jarvis-cockpit-plan.md"),
+                "safe_to_open_in_cockpit": True,
+                "contains_dispatch_operational_data": False,
+                "contains_secrets": False,
+            }],
+        }))
+        (docs_root / "source-map").mkdir()
+        (docs_root / "source-map" / "personas-dashboards-source-map.md").write_text("# personas\n")
+
+        monkeypatch.setattr(ws, "_JARVIS_COCKPIT_DOCS_ROOT", docs_root)
+        resp = self.client.get("/api/jarvis/cockpit")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["jarvis_todo"][0]["id"] == "cockpit-readonly-api"
+        assert data["artifacts"][0]["id"] == "hermes-cockpit-plan"
+        assert data["dispatch_boundary"]["dispatch_embedded"] is False
+        assert data["safety"] == {
+            "read_only": True,
+            "microsoft_writes": False,
+            "blikk_writes": False,
+            "mail_mutation": False,
+            "secrets_read": False,
+            "dispatch_embedded": False,
+        }
+        source_states = {source["id"]: source["state"] for source in data["sources"]}
+        assert source_states["jarvis-actions"] == "ok"
+        assert source_states["personas-dashboards-source-map"] == "ok"
+        assert source_states["jarvis-system-current-state"] == "missing"
+        assert source_states["gates"] == "missing"
+        assert {source["id"] for source in data["missing"]} == {
+            "jarvis-system-current-state",
+            "next-recommendation-guard",
+            "hermes-desktop-pinned-session-routing",
+            "alfred-dispatch-operator-pack",
+            "gates",
+        }
+
+    def test_get_jarvis_cockpit_reports_missing_allowlisted_files_without_crashing(self, tmp_path, monkeypatch):
+        """Missing whitelist entries remain HTTP 200 and are surfaced in sources + missing."""
+        import hermes_cli.web_server as ws
+
+        docs_root = tmp_path / "docs"
+        monkeypatch.setattr(ws, "_JARVIS_COCKPIT_DOCS_ROOT", docs_root)
+
+        resp = self.client.get("/api/jarvis/cockpit")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        missing_by_id = {source["id"]: source for source in data["missing"]}
+        expected_missing = {
+            "jarvis-system-current-state",
+            "personas-dashboards-source-map",
+            "next-recommendation-guard",
+            "hermes-desktop-pinned-session-routing",
+            "alfred-dispatch-operator-pack",
+            "jarvis-actions",
+            "gates",
+        }
+        assert set(missing_by_id) == expected_missing
+        assert all(source["state"] == "missing" for source in data["sources"])
+        assert data["jarvis_todo"] == []
+        assert data["artifacts"] == []
+        assert data["gates"] == []
+
+    def test_get_jarvis_cockpit_does_not_touch_forbidden_boundary_helpers(self, tmp_path, monkeypatch):
+        """The endpoint must not use live Graph/Blikk/mail/secrets/config/Dispatch helpers."""
+        import hermes_cli.web_server as ws
+
+        docs_root = tmp_path / "docs"
+        (docs_root / "runbooks" / "jarvis-todo").mkdir(parents=True)
+        (docs_root / "runbooks" / "jarvis-todo" / "jarvis-actions.json").write_text(
+            json.dumps({"items": [], "artifact_pointers": []})
+        )
+        monkeypatch.setattr(ws, "_JARVIS_COCKPIT_DOCS_ROOT", docs_root)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("forbidden boundary helper was called")
+
+        for name in (
+            "load_env",
+            "get_env_path",
+            "get_config_path",
+            "load_config",
+            "save_config",
+            "save_env_value",
+            "remove_env_value",
+            "get_running_pid",
+            "read_runtime_status",
+        ):
+            monkeypatch.setattr(ws, name, forbidden, raising=False)
+        monkeypatch.setattr(ws.urllib.request, "urlopen", forbidden)
+        monkeypatch.setattr(ws.subprocess, "run", forbidden)
+
+        resp = self.client.get("/api/jarvis/cockpit")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["dispatch_boundary"] == {
+            "dispatch_embedded": False,
+            "dispatch_url": "http://127.0.0.1:3001",
+            "rule": "Dispatch stays in real Dispatch Dashboard",
+        }
+        assert data["safety"] == {
+            "read_only": True,
+            "microsoft_writes": False,
+            "blikk_writes": False,
+            "mail_mutation": False,
+            "secrets_read": False,
+            "dispatch_embedded": False,
+        }
+
+    def test_get_jarvis_cockpit_does_not_follow_symlinked_forbidden_files(self, tmp_path, monkeypatch):
+        """A whitelisted path that is a symlink to a forbidden file is reported missing."""
+        import hermes_cli.web_server as ws
+
+        docs_root = tmp_path / "docs"
+        todo_dir = docs_root / "runbooks" / "jarvis-todo"
+        todo_dir.mkdir(parents=True)
+        forbidden_env = tmp_path / ".env"
+        forbidden_env.write_text("MICROSOFT_TOKEN=do-not-read\n")
+        (todo_dir / "jarvis-actions.json").symlink_to(forbidden_env)
+
+        monkeypatch.setattr(ws, "_JARVIS_COCKPIT_DOCS_ROOT", docs_root)
+        resp = self.client.get("/api/jarvis/cockpit")
+
+        assert resp.status_code == 200
+        body = resp.text
+        data = resp.json()
+        assert "do-not-read" not in body
+        assert data["jarvis_todo"] == []
+        source = next(source for source in data["sources"] if source["id"] == "jarvis-actions")
+        assert source["state"] == "missing"
+        assert source["reason"] == "not_a_safe_regular_file"
 
     def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
         """Session rows without persisted cwd must not inherit TERMINAL_CWD.

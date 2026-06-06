@@ -862,6 +862,207 @@ async def get_media(path: str):
 
     encoded = base64.b64encode(target.read_bytes()).decode("ascii")
     return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[target.suffix.lower()]};base64,{encoded}"}
+_JARVIS_COCKPIT_DOCS_ROOT = Path("/Users/tobias/Company/Jarvis-Core/docs")
+_JARVIS_COCKPIT_DISPATCH_URL = "http://127.0.0.1:3001"
+_JARVIS_COCKPIT_SAFE_FILES: tuple[tuple[str, str], ...] = (
+    ("jarvis-system-current-state", "source-map/jarvis-system-current-state.md"),
+    ("personas-dashboards-source-map", "source-map/personas-dashboards-source-map.md"),
+    ("next-recommendation-guard", "runbooks/next-recommendation-guard.md"),
+    ("hermes-desktop-pinned-session-routing", "runbooks/hermes-desktop-pinned-session-routing.md"),
+    ("alfred-dispatch-operator-pack", "runbooks/alfred-dispatch-operator-pack.md"),
+)
+_JARVIS_COCKPIT_TODO_RELATIVE_PATH = Path("runbooks/jarvis-todo/jarvis-actions.json")
+_JARVIS_COCKPIT_GATES_RELATIVE_DIR = Path("runbooks/gates")
+
+
+def _jarvis_cockpit_safety() -> Dict[str, bool]:
+    """Hard-coded safety contract for the read-only Jarvis Cockpit endpoint."""
+    return {
+        "read_only": True,
+        "microsoft_writes": False,
+        "blikk_writes": False,
+        "mail_mutation": False,
+        "secrets_read": False,
+        "dispatch_embedded": False,
+    }
+
+
+def _jarvis_cockpit_source_record(source_id: str, path: Path, state: str, *, reason: str | None = None) -> Dict[str, Any]:
+    record: Dict[str, Any] = {"id": source_id, "path": str(path), "state": state}
+    if reason:
+        record["reason"] = reason
+    try:
+        stat_result = path.stat(follow_symlinks=False)
+        if state == "ok":
+            record["size_bytes"] = stat_result.st_size
+            record["updated_at"] = datetime.fromtimestamp(stat_result.st_mtime, timezone.utc).isoformat()
+    except OSError:
+        pass
+    return record
+
+
+def _jarvis_cockpit_safe_regular_file(source_id: str, relative_path: Path | str) -> tuple[Path, Dict[str, Any]]:
+    """Return a whitelisted docs path plus source status without following symlinks."""
+    path = _JARVIS_COCKPIT_DOCS_ROOT / relative_path
+    try:
+        stat_result = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return path, _jarvis_cockpit_source_record(source_id, path, "missing", reason="missing")
+    except OSError:
+        return path, _jarvis_cockpit_source_record(source_id, path, "missing", reason="not_a_safe_regular_file")
+    if stat.S_ISLNK(stat_result.st_mode) or not stat.S_ISREG(stat_result.st_mode):
+        return path, _jarvis_cockpit_source_record(source_id, path, "missing", reason="not_a_safe_regular_file")
+    return path, _jarvis_cockpit_source_record(source_id, path, "ok")
+
+
+def _jarvis_cockpit_read_json_source(source_id: str, relative_path: Path | str) -> tuple[dict[str, Any] | None, Dict[str, Any]]:
+    path, source = _jarvis_cockpit_safe_regular_file(source_id, relative_path)
+    if source["state"] != "ok":
+        return None, source
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data, source
+        source["state"] = "error"
+        source["reason"] = "json_root_not_object"
+        return None, source
+    except (OSError, json.JSONDecodeError):
+        source["state"] = "error"
+        source["reason"] = "json_parse_failed"
+        return None, source
+
+
+def _jarvis_cockpit_count_by(items: list[dict[str, Any]], key: str) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for item in items:
+        value = item.get(key)
+        if isinstance(value, str) and value:
+            counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _jarvis_cockpit_safe_artifacts(raw_artifacts: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_artifacts, list):
+        return []
+    artifacts: list[dict[str, Any]] = []
+    for raw in raw_artifacts:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("contains_secrets") is True or raw.get("contains_dispatch_operational_data") is True:
+            continue
+        artifact = {
+            "id": raw.get("id"),
+            "title": raw.get("title"),
+            "kind": raw.get("kind"),
+            "path": raw.get("path"),
+            "safe_to_open_in_cockpit": bool(raw.get("safe_to_open_in_cockpit", False)),
+            "summary": raw.get("summary"),
+            "updated_at": raw.get("updated_at"),
+            "contains_dispatch_operational_data": False,
+            "contains_secrets": False,
+        }
+        artifacts.append({key: value for key, value in artifact.items() if value is not None})
+    return artifacts
+
+
+def _jarvis_cockpit_read_gates() -> tuple[list[dict[str, Any]], Dict[str, Any]]:
+    gates_dir = _JARVIS_COCKPIT_DOCS_ROOT / _JARVIS_COCKPIT_GATES_RELATIVE_DIR
+    try:
+        stat_result = gates_dir.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return [], _jarvis_cockpit_source_record("gates", gates_dir, "missing", reason="missing")
+    except OSError:
+        return [], _jarvis_cockpit_source_record("gates", gates_dir, "missing", reason="not_a_safe_directory")
+    if stat.S_ISLNK(stat_result.st_mode) or not stat.S_ISDIR(stat_result.st_mode):
+        return [], _jarvis_cockpit_source_record("gates", gates_dir, "missing", reason="not_a_safe_directory")
+    gates: list[dict[str, Any]] = []
+    for path in sorted(gates_dir.glob("*.json")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            gates.append(data)
+        elif isinstance(data, list):
+            gates.extend(gate for gate in data if isinstance(gate, dict))
+    return gates, _jarvis_cockpit_source_record("gates", gates_dir, "ok")
+
+
+@app.get("/api/jarvis/cockpit")
+async def get_jarvis_cockpit():
+    """Read-only local Jarvis Cockpit contract for Hermes Desktop.
+
+    This endpoint reads only the narrow Jarvis-Core docs allowlist below. It
+    deliberately does not touch Graph, Blikk, mail, Dispatch databases, auth
+    caches, Keychain, .env, profile config, cron, NUC or backup resources.
+    """
+    sources: list[dict[str, Any]] = []
+    for source_id, relative_path in _JARVIS_COCKPIT_SAFE_FILES:
+        _path, source = _jarvis_cockpit_safe_regular_file(source_id, relative_path)
+        sources.append(source)
+    todo_data, todo_source = _jarvis_cockpit_read_json_source("jarvis-actions", _JARVIS_COCKPIT_TODO_RELATIVE_PATH)
+    sources.append(todo_source)
+    gates, gates_source = _jarvis_cockpit_read_gates()
+    sources.append(gates_source)
+
+    jarvis_todo: list[dict[str, Any]] = []
+    artifacts: list[dict[str, Any]] = []
+    updated_at = datetime.now(timezone.utc).isoformat()
+    if todo_data:
+        raw_items = todo_data.get("items")
+        if isinstance(raw_items, list):
+            jarvis_todo = [item for item in raw_items if isinstance(item, dict)]
+        artifacts = _jarvis_cockpit_safe_artifacts(todo_data.get("artifact_pointers"))
+        if isinstance(todo_data.get("updated_at"), str):
+            updated_at = todo_data["updated_at"]
+
+    todo_by_status = _jarvis_cockpit_count_by(jarvis_todo, "status")
+    waiting_gates = [gate for gate in gates if gate.get("status") == "waiting"]
+    missing_sources = [source for source in sources if source.get("state") == "missing"]
+    status_cards = [
+        {
+            "id": "safety-boundary", "title": "Safety boundary", "kind": "safety", "state": "ok",
+            "summary": "Read-only local Jarvis docs only; no live writes, secrets, Microsoft Graph, Blikk, mail or Dispatch embedding.",
+            "details": ["Dispatch is exposed as a link only.", "Missing allowlisted files are reported, not fatal."],
+            "source": "api/jarvis/cockpit", "updated_at": updated_at, "actions": [],
+        },
+        {
+            "id": "jarvis-todo", "title": "Jarvis To Do", "kind": "system",
+            "state": "ok" if todo_source.get("state") == "ok" else "missing",
+            "summary": f"{len(jarvis_todo)} local Jarvis action item(s).",
+            "details": [f"{status}: {count}" for status, count in sorted(todo_by_status.items())],
+            "source": str(_JARVIS_COCKPIT_TODO_RELATIVE_PATH), "updated_at": updated_at, "actions": [],
+        },
+        {
+            "id": "gates-waiting", "title": "Gates waiting", "kind": "safety",
+            "state": "attention" if waiting_gates else ("missing" if gates_source.get("state") == "missing" else "ok"),
+            "summary": f"{len(waiting_gates)} local gate(s) waiting.",
+            "details": [gate.get("title", gate.get("id", "untitled gate")) for gate in waiting_gates[:3]],
+            "source": str(_JARVIS_COCKPIT_GATES_RELATIVE_DIR), "updated_at": updated_at, "actions": [],
+        },
+        {
+            "id": "dispatch-link", "title": "Open Dispatch Dashboard", "kind": "dispatch-link", "state": "ok",
+            "summary": "Dispatch stays outside Jarvis Cockpit and is available as a link only.",
+            "details": [], "source": "dispatch-boundary", "updated_at": updated_at,
+            "actions": [{"label": "Open Dispatch Dashboard", "type": "open-url", "target": _JARVIS_COCKPIT_DISPATCH_URL, "external_write": False}],
+        },
+    ]
+    return {
+        "status": "ok",
+        "updated_at": updated_at,
+        "dispatch_boundary": {"dispatch_embedded": False, "dispatch_url": _JARVIS_COCKPIT_DISPATCH_URL, "rule": "Dispatch stays in real Dispatch Dashboard"},
+        "jarvis_todo": jarvis_todo,
+        "gates": gates,
+        "status_cards": status_cards,
+        "artifacts": artifacts,
+        "sources": sources,
+        "missing": missing_sources,
+        "safety": _jarvis_cockpit_safety(),
+    }
 
 
 @app.get("/api/status")

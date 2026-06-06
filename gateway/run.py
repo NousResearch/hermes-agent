@@ -18238,6 +18238,10 @@ class GatewayRunner:
                     + message
                 )
 
+            # Clean up per-session interrupt flag after use to prevent unbounded
+            # set growth (#39813 review feedback).
+            self._interrupted_by_user_msg.discard(session_key)
+
             # Consume one-shot /reload-skills note (if the user ran
             # /reload-skills since their last turn in this session). Same
             # queue pattern as CLI: prepend to the NEXT user message, then

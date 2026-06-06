@@ -27,6 +27,7 @@ import { $previewServerRestartStatus } from '@/store/preview'
 import {
   $activeSessionId,
   $busy,
+  $connection,
   $currentFastMode,
   $currentModel,
   $currentProvider,
@@ -41,6 +42,7 @@ import {
 } from '@/store/session'
 import { $subagentsBySession, activeSubagentCount } from '@/store/subagents'
 import { $desktopVersion, $updateApply, $updateStatus, setUpdateOverlayOpen } from '@/store/updates'
+import { resolveVersionBar } from '@/lib/version-bar'
 import type { StatusResponse } from '@/types/hermes'
 
 import { CRON_ROUTE } from '../../routes'
@@ -98,6 +100,7 @@ export function useStatusbarItems({
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
   const desktopVersion = useStore($desktopVersion)
+  const connection = useStore($connection)
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
@@ -199,7 +202,18 @@ export function useStatusbarItems({
     const sha = updateStatus?.currentSha?.slice(0, 7) ?? null
     const behind = updateStatus?.behind ?? 0
     const applying = updateApply.applying || updateApply.stage === 'restart'
-    const base = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
+
+    // In remote thin-client mode the client and backend are separate installs;
+    // show both versions and flag skew. Local mode is unchanged.
+    const versionBar = resolveVersionBar({
+      appVersion,
+      sha,
+      backendVersion: statusSnapshot?.version,
+      mode: connection?.mode,
+      copy: { clientLabel: copy.clientLabel, backendLabel: copy.backendLabel, unknown: copy.unknown }
+    })
+
+    const base = versionBar.label
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
 
     const label = applying
@@ -212,6 +226,7 @@ export function useStatusbarItems({
       applying ? updateApply.message || copy.updateInProgress : null,
       !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
       appVersion && copy.desktopVersion(appVersion),
+      versionBar.showsBackend && versionBar.backendVersion && copy.backendVersion(versionBar.backendVersion),
       sha && copy.commit(sha),
       updateStatus?.branch && copy.branch(updateStatus.branch)
     ]
@@ -219,8 +234,9 @@ export function useStatusbarItems({
       .join(' · ')
 
     return {
-      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
-      detail: appVersion && sha && !applying ? sha : undefined,
+      className:
+        versionBar.skew || (!applying && behind > 0) ? 'text-primary hover:text-primary' : undefined,
+      detail: appVersion && sha && !applying && !versionBar.showsBackend ? sha : undefined,
       hidden: !appVersion && !sha,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version',
@@ -231,6 +247,8 @@ export function useStatusbarItems({
     }
   }, [
     desktopVersion?.appVersion,
+    connection?.mode,
+    statusSnapshot?.version,
     copy,
     updateApply.applying,
     updateApply.message,

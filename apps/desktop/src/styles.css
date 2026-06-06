@@ -60,7 +60,6 @@
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
 
-  --shadow-ink: var(--dt-foreground);
   --shadow-xs: 0 0.0625rem 0.125rem color-mix(in srgb, #000 5%, transparent);
   --shadow-sm:
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-foreground) 6%, transparent),
@@ -69,19 +68,24 @@
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-foreground) 8%, transparent),
     0 0.25rem 1rem color-mix(in srgb, #000 8%, transparent),
     0 1rem 2rem -1.5rem color-mix(in srgb, #000 18%, transparent);
+  /* Soft floating shadow for borderless modals/overlays. Single top light
+     source: every layer is centered (x=0) and cast downward, with negative
+     spread that grows with the blur so each layer is pulled horizontally inward
+     — the shadow pools below the panel instead of bleeding out every side.
+     Layered (contact → ambient) for a smooth, natural falloff. */
+  --shadow-nous:
+    0 0.125rem 0.25rem -0.125rem color-mix(in srgb, #000 7%, transparent),
+    0 0.5rem 0.75rem -0.375rem color-mix(in srgb, #000 6%, transparent),
+    0 1.25rem 1.75rem -0.875rem color-mix(in srgb, #000 6%, transparent),
+    0 2.25rem 3rem -1.75rem color-mix(in srgb, #000 0%, transparent);
+  /* Hairline border paired with --shadow-nous on borderless overlays.
+     currentColor resolves per-element, so it adapts to text color/theme. */
+  --stroke-nous: color-mix(in srgb, currentColor 3%, transparent);
   --shadow-lg:
     inset 0 0.0625rem 0 color-mix(in srgb, #fff 28%, transparent),
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-foreground) 8%, transparent),
     0 0.75rem 2rem color-mix(in srgb, #000 12%, transparent);
-  --shadow-header:
-    0 0.0625rem 0 color-mix(in srgb, var(--dt-foreground) 7%, transparent),
-    0 0.625rem 1.5rem -1.25rem color-mix(in srgb, #000 16%, transparent);
   --shadow-composer: 0 0.0625rem 0.125rem color-mix(in srgb, #000 5%, transparent);
-  --shadow-composer-focus:
-    0 0 0 0.125rem color-mix(in srgb, var(--dt-composer-ring) calc(10% * var(--composer-ring-strength)), transparent),
-    0 0 0 0.0625rem color-mix(in srgb, var(--dt-composer-ring) calc(22% * var(--composer-ring-strength)), transparent),
-    0 0.25rem 0.875rem color-mix(in srgb, #000 8%, transparent),
-    0 0.75rem 2rem -1.25rem color-mix(in srgb, #000 14%, transparent);
 }
 
 @layer base {
@@ -610,28 +614,10 @@ button {
   -webkit-app-region: no-drag;
 }
 
-[data-slot='button'] {
-  box-shadow: none;
-  transition-duration: 100ms;
-}
-
-[data-slot='button'][data-variant='outline'],
-[data-slot='button'][data-variant='secondary'] {
-  border-color: var(--ui-stroke-secondary);
-  background: var(--ui-bg-tertiary);
-  color: var(--ui-text-primary);
-}
-
-[data-slot='button'][data-variant='ghost'] {
-  color: var(--ui-text-secondary);
-}
-
-[data-slot='button'][data-variant='outline']:hover,
-[data-slot='button'][data-variant='secondary']:hover,
-[data-slot='button'][data-variant='ghost']:hover {
-  background: var(--chrome-action-hover);
-  color: var(--ui-text-primary);
-}
+/* Button variant styling lives entirely in the cva in components/ui/button.tsx
+   (the single source of truth). Don't re-add [data-slot='button'] rules here —
+   attribute selectors out-specify the Tailwind utilities and silently override
+   the variants. */
 
 [data-slot='dropdown-menu-content'],
 [data-slot='select-content'],

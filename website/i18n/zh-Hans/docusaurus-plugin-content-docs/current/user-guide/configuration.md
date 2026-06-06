@@ -1176,13 +1176,13 @@ display:
 
 ### 运行时元数据页脚（仅限 gateway）
 
-当 `display.runtime_footer.enabled: true` 时，Hermes 在每个 gateway 轮次的**最终**消息中附加一个小型运行时上下文页脚 —— 与 CLI 在其状态栏中显示的相同信息（模型、上下文 %、cwd、会话时长、token、成本）。默认关闭；如果您的团队希望每个回复都包含来源信息，请按 gateway 选择加入。
+当 `display.runtime_footer.enabled: true` 时，Hermes 在每个 gateway 轮次的**最终**消息中附加一个小型运行时上下文页脚。目前页脚可显示模型、上下文窗口百分比和当前工作目录。默认关闭；如果您的团队希望每个回复都包含这些来源信息，请按 gateway 选择加入。
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # 任意：model、context_pct、cwd、duration、tokens、cost
+    fields: ["model", "context_pct", "cwd"]   # 支持字段：model、context_pct、cwd
 ```
 
 `/footer` 斜杠命令在任何会话中运行时切换此功能。

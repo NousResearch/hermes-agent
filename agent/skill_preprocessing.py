@@ -1,7 +1,9 @@
 """Shared SKILL.md preprocessing helpers."""
 
 import logging
+import os
 import re
+import signal
 import subprocess
 from pathlib import Path
 
@@ -66,17 +68,46 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     Failures return a short ``[inline-shell error: ...]`` marker instead of
     raising, so one bad snippet can't wreck the whole skill message.
     """
+    effective_timeout = max(1, int(timeout))
+    popen_kwargs = {
+        "cwd": str(cwd) if cwd else None,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name == "posix":
+        # Put the shell and its children in their own process group. Python's
+        # subprocess.run(timeout=...) only kills the immediate shell process;
+        # a sleeping/grandchild process that still owns stdout/stderr can keep
+        # communicate() blocked until it exits, which hides timeout markers in
+        # skill slash-command rendering under the test live-system guard.
+        popen_kwargs["start_new_session"] = True
+
     try:
-        completed = subprocess.run(
-            ["bash", "-c", command],
-            cwd=str(cwd) if cwd else None,
-            capture_output=True,
-            text=True,
-            timeout=max(1, int(timeout)),
-            check=False,
-        )
+        proc = subprocess.Popen(["bash", "-c", command], **popen_kwargs)
+        try:
+            stdout, stderr = proc.communicate(timeout=effective_timeout)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            try:
+                proc.communicate(timeout=1)
+            except Exception:
+                pass
+            return f"[inline-shell timeout after {effective_timeout}s: {command}]"
     except subprocess.TimeoutExpired:
-        return f"[inline-shell timeout after {timeout}s: {command}]"
+        return f"[inline-shell timeout after {effective_timeout}s: {command}]"
     except FileNotFoundError:
         return "[inline-shell error: bash not found]"
     except RuntimeError as exc:
@@ -90,9 +121,9 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     except Exception as exc:
         return f"[inline-shell error: {exc}]"
 
-    output = (completed.stdout or "").rstrip("\n")
-    if not output and completed.stderr:
-        output = completed.stderr.rstrip("\n")
+    output = (stdout or "").rstrip("\n")
+    if not output and stderr:
+        output = stderr.rstrip("\n")
     if len(output) > _INLINE_SHELL_MAX_OUTPUT:
         output = output[:_INLINE_SHELL_MAX_OUTPUT] + "...[truncated]"
     return output

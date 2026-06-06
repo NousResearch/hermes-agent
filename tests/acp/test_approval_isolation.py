@@ -210,6 +210,7 @@ class TestAcpExecAskGate:
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
 
         from tools.approval import check_all_command_guards
 
@@ -219,9 +220,14 @@ class TestAcpExecAskGate:
             called_with.append((command, description))
             return "once"
 
-        # Without HERMES_INTERACTIVE: takes auto-approve path, callback NOT called
+        approvable_dangerous_command = "chmod 777 /tmp/test-exec-ask"
+
+        # Without HERMES_INTERACTIVE: takes auto-approve path, callback NOT called.
+        # Use a dangerous-but-not-hardline command so this remains a focused ACP
+        # callback-routing regression test even after Tirith/hardline guards learned
+        # to block destructive rm fixtures before any approval prompt can run.
         result = check_all_command_guards(
-            "rm -rf /tmp/test-exec-ask", "local", approval_callback=fake_cb,
+            approvable_dangerous_command, "local", approval_callback=fake_cb,
         )
         assert result["approved"] is True
         assert called_with == [], (
@@ -233,7 +239,7 @@ class TestAcpExecAskGate:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         called_with.clear()
         result = check_all_command_guards(
-            "rm -rf /tmp/test-exec-ask", "local", approval_callback=fake_cb,
+            approvable_dangerous_command, "local", approval_callback=fake_cb,
         )
         assert called_with, (
             "with HERMES_INTERACTIVE the approval path should consult the "
@@ -241,3 +247,14 @@ class TestAcpExecAskGate:
             "GHSA-96vc-wcxf-jjff"
         )
         assert result["approved"] is True
+
+        # Hardline commands must remain unconditionally blocked before the ACP
+        # direct callback path. This proves the fixture change above did not
+        # weaken the Tirith/hardline safety floor.
+        called_with.clear()
+        result = check_all_command_guards(
+            "rm -rf /", "local", approval_callback=fake_cb,
+        )
+        assert result["approved"] is False
+        assert result.get("hardline") is True
+        assert called_with == []

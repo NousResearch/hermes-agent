@@ -114,7 +114,7 @@ This is the most critical step in the entire setup. Without the correct intents 
 On the **Bot** page, scroll down to **Privileged Gateway Intents**. You'll see three toggles:
 
 | Intent | Purpose | Required? |
-|--------|---------|-----------| 
+|--------|---------|-----------|
 | **Presence Intent** | See user online/offline status | Optional |
 | **Server Members Intent** | Access the member list, resolve usernames | **Required** |
 | **Message Content Intent** | Read the text content of messages | **Required** |
@@ -170,7 +170,7 @@ This method requires **Public Bot** to be set to **ON** in Step 2. If you set Pu
 You can construct the invite URL directly using this format:
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=274878286912
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309237763136
 ```
 
 Replace `YOUR_APP_ID` with the Application ID from Step 1.
@@ -187,6 +187,7 @@ These are the minimum permissions your bot needs:
 
 ### Recommended Additional Permissions
 
+- **Create Public Threads** - create threads
 - **Send Messages in Threads** — respond in thread conversations
 - **Add Reactions** — react to messages for acknowledgment
 
@@ -195,7 +196,7 @@ These are the minimum permissions your bot needs:
 | Level | Permissions Integer | What's Included |
 |-------|-------------------|-----------------|
 | Minimal | `117760` | View Channels, Send Messages, Read Message History, Attach Files |
-| Recommended | `274878286912` | All of the above plus Embed Links, Send Messages in Threads, Add Reactions |
+| Recommended | `309237763136` | All of the above plus Embed Links, Send Messages in Threads, Add Reactions, Create Public Threads |
 
 ## Step 6: Invite to Your Server
 

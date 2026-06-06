@@ -7456,6 +7456,17 @@ class GatewayRunner:
                 if _action == "allow":
                     break
 
+        if not is_internal:
+            try:
+                from hermes_cli.ops_status import rewrite_ops_message as _rewrite_ops_message
+
+                _ops_rewrite = _rewrite_ops_message(event.text or "")
+            except Exception:
+                _ops_rewrite = None
+            if isinstance(_ops_rewrite, str):
+                event = dataclasses.replace(event, text=_ops_rewrite)
+                source = event.source
+
         if is_internal:
             pass
         elif source.user_id is None:
@@ -7873,6 +7884,9 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
 
+            if _cmd_def_inner and _cmd_def_inner.name == "ops":
+                return await self._handle_ops_command(event)
+
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
             # /btw is an alias of /background and resolves to the same canonical
@@ -8197,6 +8211,9 @@ class GatewayRunner:
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
+
+        if canonical == "ops":
+            return await self._handle_ops_command(event)
 
         if canonical == "platform":
             return await self._handle_platform_command(event)
@@ -10488,6 +10505,12 @@ class GatewayRunner:
         ])
 
         return "\n".join(lines)
+
+    async def _handle_ops_command(self, event: MessageEvent) -> str:
+        """Handle /ops status command."""
+        from hermes_cli.ops_status import gateway_ops_status_reply
+
+        return await asyncio.to_thread(gateway_ops_status_reply, event.get_command_args())
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""

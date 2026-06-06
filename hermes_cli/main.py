@@ -6527,6 +6527,13 @@ def cmd_status(args):
     show_status(args)
 
 
+def cmd_ops(args):
+    """Read-only operational checks."""
+    from hermes_cli.ops_status import ops_command
+
+    return ops_command(args)
+
+
 def cmd_cron(args):
     """Cron job management."""
     from hermes_cli.cron import cron_command
@@ -12464,7 +12471,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
-        "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
+        "model", "ops", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -13528,6 +13535,33 @@ def main():
         "--deep", action="store_true", help="Run deep checks (may take longer)"
     )
     status_parser.set_defaults(func=cmd_status)
+
+    # =========================================================================
+    # ops command
+    # =========================================================================
+    ops_parser = subparsers.add_parser(
+        "ops",
+        help="Read-only operational checks",
+        description="Read-only operational checks for Hermes runtime surfaces",
+    )
+    ops_subparsers = ops_parser.add_subparsers(dest="ops_command")
+    ops_subparsers.required = True
+    ops_status = ops_subparsers.add_parser(
+        "status",
+        help="Show compact read-only ops status",
+        description="Show compact read-only ops status",
+    )
+    ops_status.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the status snapshot as JSON instead of compact text",
+    )
+    ops_status.add_argument(
+        "--proof",
+        action="store_true",
+        help="Write a sanitized markdown status proof and print its path",
+    )
+    ops_parser.set_defaults(func=cmd_ops)
 
     # =========================================================================
     # cron command

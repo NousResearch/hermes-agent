@@ -29,12 +29,14 @@ Session context:
 
 import logging
 import os
+import sys
+import ntpath
 import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional, Sequence
 
-from hermes_constants import get_config_path, get_hermes_home
+from hermes_constants import get_config_path, get_hermes_home, normalize_windows_msys_path
 
 # Sentinel to track whether setup_logging() has already run.  The function
 # is idempotent — calling it twice is safe but the second call is a no-op
@@ -344,10 +346,14 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         rotating handlers.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, filename, *args, **kwargs):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
-        super().__init__(*args, **kwargs)
+        requested_delay = kwargs.pop("delay", False)
+        super().__init__(filename, *args, delay=True, **kwargs)
+        self.baseFilename = str(normalize_windows_msys_path(self.baseFilename))
+        if not requested_delay:
+            self.stream = self._open()
         # Snapshot the inode of the currently open stream so emit() can
         # detect external rotation without an extra fstat per write.
         self._stat_dev: Optional[int] = None
@@ -457,11 +463,12 @@ def _add_rotating_handler(
         Optional filter to attach to the handler (e.g. ``_ComponentFilter``
         for gateway.log).
     """
-    resolved = path.resolve()
+    path = normalize_windows_msys_path(path)
+    resolved = _rotating_path_key(path)
     for existing in logger.handlers:
         if (
             isinstance(existing, RotatingFileHandler)
-            and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
+            and _rotating_path_key(getattr(existing, "baseFilename", "")) == resolved
         ):
             return  # already attached
 
@@ -475,6 +482,14 @@ def _add_rotating_handler(
     if log_filter is not None:
         handler.addFilter(log_filter)
     logger.addHandler(handler)
+
+
+def _rotating_path_key(path: str | Path) -> str:
+    """Return a stable path key without invoking Windows ``Path.resolve()``."""
+    normalized = normalize_windows_msys_path(path)
+    if sys.platform == "win32":
+        return ntpath.normcase(ntpath.normpath(str(normalized)))
+    return str(Path(normalized).resolve())
 
 
 def _read_logging_config():

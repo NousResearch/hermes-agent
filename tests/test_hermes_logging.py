@@ -693,6 +693,13 @@ class TestAddRotatingHandler:
                 logger.removeHandler(h)
                 h.close()
 
+    def test_rotating_path_key_unmangles_msys_drive_segment(self, monkeypatch):
+        monkeypatch.setattr(hermes_logging.sys, "platform", "win32")
+
+        key = hermes_logging._rotating_path_key(r"C:\c\Users\kevin\AppData\Local\hermes\logs\agent.log")
+
+        assert key == r"c:\users\kevin\appdata\local\hermes\logs\agent.log"
+
     def test_log_filter_attached(self, tmp_path):
         """Optional log_filter is attached to the handler."""
         log_path = tmp_path / "filtered.log"

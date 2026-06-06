@@ -11,6 +11,7 @@ from hermes_constants import (
     get_default_hermes_root,
     get_hermes_home,
     is_container,
+    normalize_windows_msys_path,
     parse_reasoning_effort,
     secure_parent_dir,
 )
@@ -103,6 +104,75 @@ class TestGetHermesHome:
         monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
 
         assert get_hermes_home() == local_appdata / "hermes"
+
+    def test_windows_hermes_home_unmangles_duplicate_drive_segment(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
+        monkeypatch.setenv("HERMES_HOME", r"C:\c\Users\kevin\AppData\Local\hermes")
+
+        assert str(get_hermes_home()) == r"C:\Users\kevin\AppData\Local\hermes"
+
+    def test_windows_default_home_unmangles_localappdata(self, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
+        monkeypatch.setenv("LOCALAPPDATA", r"C:\c\Users\kevin\AppData\Local")
+
+        assert str(get_hermes_home()) == r"C:\Users\kevin\AppData\Local\hermes"
+
+
+class TestNormalizeWindowsMsysPath:
+    def test_unmangles_duplicate_drive_segment_on_windows(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+
+        result = normalize_windows_msys_path(r"C:\c\Users\kevin\AppData\Local\hermes")
+
+        assert str(result) == r"C:\Users\kevin\AppData\Local\hermes"
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("/c/Users/kevin/AppData/Local/hermes", r"C:\Users\kevin\AppData\Local\hermes"),
+            ("/C/Users/kevin/AppData/Local/hermes", r"C:\Users\kevin\AppData\Local\hermes"),
+            ("/cygdrive/c/Users/kevin/AppData/Local/hermes", r"C:\Users\kevin\AppData\Local\hermes"),
+            ("/mnt/c/Users/kevin/AppData/Local/hermes", r"C:\Users\kevin\AppData\Local\hermes"),
+            ("/c", "C:\\"),
+        ],
+    )
+    def test_translates_raw_msys_paths_on_windows(self, raw, expected, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+
+        result = normalize_windows_msys_path(raw)
+
+        assert str(result) == expected
+
+    def test_preserves_regular_windows_path(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+
+        result = normalize_windows_msys_path(r"C:\cache\hermes")
+
+        assert str(result) == r"C:\cache\hermes"
+
+    def test_preserves_non_windows_path(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "linux")
+
+        result = normalize_windows_msys_path("/c/Users/kevin/.hermes")
+
+        assert result == Path("/c/Users/kevin/.hermes")
+
+    def test_default_root_avoids_windows_resolve_for_profiles(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("LOCALAPPDATA", r"C:\c\Users\kevin\AppData\Local")
+        monkeypatch.setenv("HERMES_HOME", r"C:\c\Users\kevin\AppData\Local\hermes\profiles\coder")
+
+        assert str(get_default_hermes_root()) == r"C:\Users\kevin\AppData\Local\hermes"
+
+    def test_default_root_handles_raw_msys_profile_path(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("LOCALAPPDATA", "/c/Users/kevin/AppData/Local")
+        monkeypatch.setenv("HERMES_HOME", "/c/Users/kevin/AppData/Local/hermes/profiles/coder")
+
+        assert str(get_default_hermes_root()) == r"C:\Users\kevin\AppData\Local\hermes"
 
 
 class TestIsContainer:
@@ -297,4 +367,3 @@ class TestSecureParentDir:
         secure_parent_dir(link_target)
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
-

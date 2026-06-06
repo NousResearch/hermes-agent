@@ -1145,6 +1145,7 @@ _ACTION_LOG_FILES: Dict[str, str] = {
     "prompt-size": "action-prompt-size.log",
     "dump": "action-dump.log",
     "config-migrate": "action-config-migrate.log",
+    "tools-post-setup": "action-tools-post-setup.log",
 }
 
 # ``name`` → most recently spawned Popen handle.  Used so ``status`` can
@@ -7682,6 +7683,106 @@ async def select_toolset_provider(name: str, body: ToolsetProviderSelect):
         raise HTTPException(status_code=400, detail=str(exc).strip('"'))
     save_config(config)
     return {"ok": True, "name": name, "provider": body.provider}
+
+
+class ToolsetEnvUpdate(BaseModel):
+    env: Dict[str, str]
+
+
+@app.put("/api/tools/toolsets/{name}/env")
+async def save_toolset_env(name: str, body: ToolsetEnvUpdate):
+    """Persist API keys for a toolset's provider env vars.
+
+    Writes each ``key: value`` to ``~/.hermes/.env`` via ``save_env_value`` —
+    the same store ``hermes tools`` writes when it prompts for keys. Keys are
+    validated against the env-var allowlist for the toolset's category (the
+    union of every visible provider's ``env_vars``), so the GUI can't write an
+    arbitrary env var through this endpoint. A blank value is treated as
+    "leave unchanged" and skipped. Returns the saved/skipped key lists and the
+    refreshed ``is_set`` status. Returns 400 for unknown toolset or env keys.
+    """
+    from hermes_cli.tools_config import (
+        TOOL_CATEGORIES,
+        _get_effective_configurable_toolsets,
+        _visible_providers,
+    )
+    from hermes_cli.config import get_env_value, save_env_value
+
+    valid_ts = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
+    if name not in valid_ts:
+        raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
+
+    config = load_config()
+    cat = TOOL_CATEGORIES.get(name)
+    allowed: set[str] = set()
+    if cat:
+        for prov in _visible_providers(cat, config, force_fresh=True):
+            for e in prov.get("env_vars", []):
+                allowed.add(e["key"])
+
+    unknown = [k for k in body.env if k not in allowed]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown env var(s) for toolset {name}: {', '.join(sorted(unknown))}",
+        )
+
+    saved: List[str] = []
+    skipped: List[str] = []
+    for key, value in body.env.items():
+        if value and value.strip():
+            try:
+                save_env_value(key, value.strip())
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            saved.append(key)
+        else:
+            skipped.append(key)
+
+    status = {k: bool(get_env_value(k)) for k in allowed}
+    return {"ok": True, "name": name, "saved": saved, "skipped": skipped, "is_set": status}
+
+
+class ToolsetPostSetup(BaseModel):
+    key: str
+
+
+@app.post("/api/tools/toolsets/{name}/post-setup")
+async def run_toolset_post_setup(name: str, body: ToolsetPostSetup):
+    """Spawn a provider's post-setup install hook as a background action.
+
+    Post-setup hooks (npm install for browser/Camofox, pip install for
+    KittenTTS/Piper/ddgs, cua-driver fetch, etc.) are long-running and
+    text-output, so this follows the spawn-action pattern: it launches
+    ``hermes tools post-setup <key>`` and the frontend tails the log via
+    ``GET /api/actions/tools-post-setup/status``. The ``key`` is validated
+    against the declared post-setup allowlist before spawning. Returns 400
+    for unknown toolset or post-setup key.
+    """
+    from hermes_cli.tools_config import (
+        _get_effective_configurable_toolsets,
+        valid_post_setup_keys,
+    )
+
+    valid_ts = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
+    if name not in valid_ts:
+        raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
+
+    if body.key not in valid_post_setup_keys():
+        raise HTTPException(
+            status_code=400, detail=f"Unknown post-setup key: {body.key}"
+        )
+
+    try:
+        proc = _spawn_hermes_action(
+            ["tools", "post-setup", body.key], "tools-post-setup"
+        )
+    except Exception as exc:
+        _log.exception("Failed to spawn tools post-setup")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to run post-setup: {exc}"
+        )
+    return {"ok": True, "pid": proc.pid, "name": "tools-post-setup", "key": body.key}
 
 
 # ---------------------------------------------------------------------------

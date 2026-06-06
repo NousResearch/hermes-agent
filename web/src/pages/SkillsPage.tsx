@@ -36,6 +36,7 @@ import type {
   SkillHubPreview,
   SkillHubScan,
 } from "@/lib/api";
+import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -127,6 +128,7 @@ export default function SkillsPage() {
   const [view, setView] = useState<"skills" | "toolsets" | "hub">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
+  const [configToolset, setConfigToolset] = useState<ToolsetInfo | null>(null);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
@@ -163,6 +165,16 @@ export default function SkillsPage() {
         next.delete(skill.name);
         return next;
       });
+    }
+  };
+
+  /* ---- Refresh toolsets after a config change ---- */
+  const refreshToolsets = async () => {
+    try {
+      const tsets = await api.getToolsets();
+      setToolsets(tsets);
+    } catch {
+      /* non-fatal: the drawer already toasted on the failing write */
     }
   };
 
@@ -508,6 +520,16 @@ export default function SkillsPage() {
                                     : t.skills.disabledForCli}
                                 </span>
                               )}
+                              <div className="mt-3">
+                                <Button
+                                  size="xs"
+                                  outlined
+                                  onClick={() => setConfigToolset(ts)}
+                                >
+                                  <Wrench className="h-3 w-3 mr-1" />
+                                  Configure
+                                </Button>
+                              </div>
                             </div>
                           </div>
                         </CardContent>
@@ -522,6 +544,13 @@ export default function SkillsPage() {
           )}
         </div>
       </div>
+      {configToolset && (
+        <ToolsetConfigDrawer
+          toolset={configToolset}
+          onClose={() => setConfigToolset(null)}
+          onChanged={() => void refreshToolsets()}
+        />
+      )}
       <PluginSlot name="skills:bottom" />
     </div>
   );
@@ -1187,13 +1216,15 @@ function SkillDetailDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <p className="text-xs text-text-secondary -mt-1">{result.description}</p>
-        <p className="text-xs font-mono text-text-tertiary truncate">
-          {result.identifier}
-        </p>
+        <div className="mt-1 flex flex-col gap-1">
+          <p className="text-xs text-text-secondary">{result.description}</p>
+          <p className="text-xs font-mono text-text-tertiary truncate">
+            {result.identifier}
+          </p>
+        </div>
 
         {/* Action row */}
-        <div className="flex flex-wrap items-center gap-2 border-y border-border py-2">
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-y border-border py-2.5">
           <Button
             size="sm"
             outlined={tab !== "readme"}
@@ -1217,18 +1248,18 @@ function SkillDetailDialog({
           >
             {scan ? "Re-scan" : "Security scan"}
           </Button>
-          {result.repo && (
-            <a
-              href={`https://github.com/${result.repo}`}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-              {result.repo}
-            </a>
-          )}
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-3">
+            {result.repo && (
+              <a
+                href={`https://github.com/${result.repo}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                {result.repo}
+              </a>
+            )}
             {installed ? (
               <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
                 Installed
@@ -1246,14 +1277,14 @@ function SkillDetailDialog({
         </div>
 
         {/* Body */}
-        <div className="max-h-[55vh] overflow-auto">
+        <div className="mt-3 max-h-[55vh] overflow-auto">
           {tab === "readme" ? (
             previewLoading ? (
               <div className="flex items-center justify-center py-12">
                 <Spinner className="text-xl text-primary" />
               </div>
             ) : preview ? (
-              <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-2.5">
                 {preview.tags.length > 0 && (
                   <div className="flex flex-wrap items-center gap-1">
                     {preview.tags.map((tag) => (
@@ -1275,7 +1306,7 @@ function SkillDetailDialog({
                   </div>
                 )}
                 <pre className="whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs font-mono text-text-secondary leading-relaxed">
-                  {preview.skill_md || "(SKILL.md is empty)"}
+                  {(preview.skill_md || "").trim() || "(SKILL.md is empty)"}
                 </pre>
               </div>
             ) : (

@@ -1,0 +1,56 @@
+# CODEOWNERS — automatic review routing.
+#
+# ──────────────────────────────────────────────────────────────────────
+# This file is a COMMENTED-OUT TEMPLATE. It does nothing until you
+# uncomment rules and replace the @placeholder owners with real GitHub
+# usernames or @NousResearch/<team> team slugs. Every active (uncommented)
+# line MUST reference an owner who has write access to the repo, or GitHub
+# silently ignores the rule.
+#
+# Syntax: <path-pattern>  <owner> [<owner> ...]
+# Last matching pattern wins (unlike .gitignore — order matters, most
+# specific last). See:
+# https://docs.github.com/articles/about-code-owners
+#
+# To make owner review mandatory, enable "Require review from Code Owners"
+# in the branch protection rule for `main` (Settings → Branches).
+# ──────────────────────────────────────────────────────────────────────
+
+# Default owner for everything not matched by a more specific rule below.
+# *                                   @NousResearch/maintainers
+
+# ── Core agent / runtime ────────────────────────────────────────────────
+# /run_agent.py                       @NousResearch/maintainers
+# /cli.py                             @NousResearch/maintainers
+# /agent/                             @NousResearch/maintainers
+# /toolsets.py                        @NousResearch/maintainers
+# /tools/                             @NousResearch/maintainers
+# /providers/                         @NousResearch/maintainers
+# /hermes_state.py                    @NousResearch/maintainers
+
+# ── Gateway / CLI / server surfaces ──────────────────────────────────────
+# /gateway/                           @NousResearch/maintainers
+# /hermes_cli/                        @NousResearch/maintainers
+# /mcp_serve.py                       @NousResearch/maintainers
+
+# ── Frontends ────────────────────────────────────────────────────────────
+# /web/                               @NousResearch/frontend
+# /ui-tui/                            @NousResearch/frontend
+
+# ── Docs site ────────────────────────────────────────────────────────────
+# /website/                           @NousResearch/docs
+# /docs/                              @NousResearch/docs
+
+# ── Build / packaging / infra ────────────────────────────────────────────
+# /Dockerfile                         @NousResearch/infra
+# /docker/                            @NousResearch/infra
+# /pyproject.toml                     @NousResearch/maintainers
+# /uv.lock                            @NousResearch/maintainers
+# /flake.nix                          @NousResearch/infra
+# /flake.lock                         @NousResearch/infra
+# /nix/                               @NousResearch/infra
+
+# ── CI / repo automation (high-trust: workflows can read secrets) ─────────
+# /.github/                           @NousResearch/maintainers
+# /.github/workflows/                 @NousResearch/maintainers
+# /scripts/                           @NousResearch/maintainers

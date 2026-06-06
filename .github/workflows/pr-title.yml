@@ -1,0 +1,136 @@
+name: PR Title Lint
+
+# Enforce Conventional Commits on the PR *title*.
+#
+# Why the title specifically: this repo squash-merges, and the squash
+# commit subject defaults to the PR title. The existing history is uniform
+# Conventional Commits (`fix(cli): ...`, `chore(actions): ...`,
+# `fix(model picker): ...`), and scripts/release.py / changelog tooling
+# parse that prefix. A malformed title therefore lands a malformed commit
+# on main and degrades the generated changelog.
+#
+# Implemented as a plain regex with no third-party action — consistent
+# with the repo's minimal-third-party-action / supply-chain posture
+# (the only marketplace actions used elsewhere are SHA-pinned essentials).
+# The title is read from an env var, never interpolated into the shell, to
+# avoid script injection via a crafted PR title.
+
+on:
+  pull_request:
+    # `edited` fires when the title changes, so fixing a bad title re-runs
+    # the check and flips the sticky comment to ✅ without a new push.
+    types: [opened, edited, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write  # upsert the advisory sticky comment
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint-title:
+    name: Conventional Commits title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate title
+        id: validate
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          # Conventional Commits subject line:
+          #   type(optional scope)(optional !): subject
+          # Types: the Angular set. Scope is permissive (lowercase words,
+          # spaces, dots, slashes, hyphens) because the repo uses scopes
+          # like "model picker" and "dashboard_auth". Subject must be
+          # non-empty.
+          PATTERN='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9 ._/-]+\))?!?: .+'
+          if printf '%s' "$PR_TITLE" | grep -qP "$PATTERN"; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR title OK: $PR_TITLE"
+          else
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## ❌ PR title is not a valid Conventional Commit"
+              echo
+              echo "**Current title:** \`$PR_TITLE\`"
+              echo
+              echo "This repo squash-merges, so the PR title becomes the commit"
+              echo "subject on \`main\` and feeds the changelog tooling. Use:"
+              echo
+              echo '```'
+              echo 'type(optional-scope): short summary'
+              echo '```'
+              echo
+              echo "**Allowed types:** build, chore, ci, docs, feat, fix, perf,"
+              echo "refactor, revert, style, test"
+              echo
+              echo "**Examples:**"
+              echo '- `fix(cli): handle empty model list in picker`'
+              echo '- `feat(gateway): add per-route rate limiting`'
+              echo '- `chore(actions): bump checkout to v6.0.2`'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upsert sticky advisory comment
+        # Best-effort: fork PRs run with a read-only token and cannot post
+        # comments. Guard to same-repo PRs and never fail the job on the
+        # comment itself — the blocking gate is the final step below, which
+        # works for fork PRs too (it needs no token).
+        if: always() && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
+        env:
+          VALID: ${{ steps.validate.outputs.valid }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        with:
+          script: |
+            const marker = '<!-- pr-title-lint -->';
+            const valid = process.env.VALID === 'true';
+            const title = process.env.PR_TITLE;
+            const body = valid
+              ? `${marker}\n✅ PR title follows Conventional Commits.`
+              : `${marker}\n### ❌ PR title is not a valid Conventional Commit\n\n` +
+                `**Current title:** \`${title}\`\n\n` +
+                `This repo squash-merges, so the PR title becomes the commit ` +
+                `subject on \`main\` and feeds the changelog tooling.\n\n` +
+                "Format: `type(optional-scope): short summary`\n\n" +
+                `**Allowed types:** build, chore, ci, docs, feat, fix, perf, ` +
+                `refactor, revert, style, test\n\n` +
+                "**Examples:**\n" +
+                "- `fix(cli): handle empty model list in picker`\n" +
+                "- `feat(gateway): add per-route rate limiting`\n" +
+                "- `chore(actions): bump checkout to v6.0.2`";
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else if (!valid) {
+              // Only open a new comment when there's a problem; don't add
+              // noise to PRs that were correct from the start.
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail if title is invalid
+        if: steps.validate.outputs.valid != 'true'
+        run: |
+          echo "::error title=Invalid PR title::See the job summary / PR comment for the required Conventional Commits format."
+          exit 1

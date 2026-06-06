@@ -1,0 +1,108 @@
+name: Frontend CI
+
+# Lint / type-check / test / build the two TypeScript frontends:
+#
+#   web/      Vite + React dashboard (served by `hermes dashboard`).
+#             Scripts: lint (eslint), build (tsc -b && vite build — the
+#             `tsc -b` also type-checks, so there is no separate step).
+#
+#   ui-tui/   Ink-based terminal UI. Scripts: lint (eslint),
+#             type-check (tsc --noEmit), test (vitest run), build
+#             (esbuild bundle). Depends on the in-repo workspace package
+#             packages/hermes-ink via `file:` — its entry points
+#             (index.js / *.d.ts) are committed, so `npm ci` resolves the
+#             dep without a pre-build of the subpackage.
+#
+# Before this workflow these two trees had no CI: a broken `tsc` or a
+# failing vitest test could land on main with no signal. Only osv-scanner
+# touched them, and only to scan their lockfiles for known CVEs.
+#
+# A single workflow-level path filter covers both dirs; both jobs run when
+# either tree (or this file) changes. A web-only change re-running the
+# ui-tui job is cheap and avoids pulling in a third-party paths-filter
+# action — consistent with the repo's minimal-third-party-action posture.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'ui-tui/**'
+      - '.github/workflows/frontend.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'ui-tui/**'
+      - '.github/workflows/frontend.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: web (dashboard)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Lint (eslint)
+        run: npm run lint
+        working-directory: web
+
+      - name: Build (tsc -b && vite build)
+        # `tsc -b` type-checks across the project references
+        # (tsconfig.app.json / tsconfig.node.json) before vite bundles —
+        # this step is both the type-check and the build gate.
+        run: npm run build
+        working-directory: web
+
+  ui-tui:
+    name: ui-tui (terminal UI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui-tui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: ui-tui
+
+      - name: Lint (eslint)
+        run: npm run lint
+        working-directory: ui-tui
+
+      - name: Type-check (tsc --noEmit)
+        run: npm run type-check
+        working-directory: ui-tui
+
+      - name: Test (vitest run)
+        run: npm run test
+        working-directory: ui-tui
+
+      - name: Build (esbuild bundle)
+        run: npm run build
+        working-directory: ui-tui

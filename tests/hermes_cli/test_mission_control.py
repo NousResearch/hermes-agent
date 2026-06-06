@@ -237,6 +237,110 @@ mcp_servers:
     assert "<secret should not surface>" not in encoded
 
 
+def test_snapshot_counts_gateway_telegram_allowlist_env_without_exposing_ids(tmp_path, monkeypatch):
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        """
+model: gpt-5.5
+provider: openai-codex
+gateway:
+  platforms:
+    telegram:
+      enabled: true
+""".strip(),
+        encoding="utf-8",
+    )
+    (home / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=placeholder-telegram-token\n"
+        "TELEGRAM_ALLOWED_USERS=123456,789012\n",
+        encoding="utf-8",
+    )
+    _seed_state_db(home)
+
+    from hermes_cli.mission_control import build_mission_control_snapshot
+
+    snapshot = build_mission_control_snapshot()
+    encoded = json.dumps(snapshot, ensure_ascii=False)
+
+    assert snapshot["runtime"]["env"]["telegram"]["allowedUserCount"] == 2
+    allowed_key = next(item for item in snapshot["runtime"]["env"]["requiredKeys"] if item["key"] == "ALLOWED_USER_IDS")
+    assert allowed_key["isSet"] is True
+    assert allowed_key["count"] == 2
+    allowed_preflight = next(item for item in snapshot["runtime"]["preflight"] if item["id"] == "allowed_users")
+    assert allowed_preflight["status"] == "pass"
+    assert "123456" not in encoded
+    assert "789012" not in encoded
+
+
+def test_snapshot_treats_systemd_gateway_service_as_managed_hosting(tmp_path, monkeypatch):
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        """
+model: gpt-5.5
+provider: openai-codex
+approvals:
+  mode: smart
+""".strip(),
+        encoding="utf-8",
+    )
+    (home / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=placeholder-telegram-token\n"
+        "TELEGRAM_ALLOWED_USERS=123456\n",
+        encoding="utf-8",
+    )
+    _seed_state_db(home)
+
+    import hermes_cli.gateway as gateway_cli
+
+    class FakeGatewaySnapshot:
+        manager = "systemd (user)"
+        service_installed = True
+        service_running = True
+        gateway_pids = (4242,)
+        service_scope = "user"
+
+        @property
+        def running(self):
+            return self.service_running or bool(self.gateway_pids)
+
+        @property
+        def has_process_service_mismatch(self):
+            return False
+
+    monkeypatch.setattr(gateway_cli, "get_gateway_runtime_snapshot", lambda system=False: FakeGatewaySnapshot())
+
+    from hermes_cli.mission_control import build_mission_control_snapshot
+
+    snapshot = build_mission_control_snapshot()
+    hosting = snapshot["runtime"]["hosting"]
+
+    assert snapshot["runtime"]["gateway"]["serviceManager"] == "systemd"
+    assert snapshot["runtime"]["gateway"]["serviceInstalled"] is True
+    assert snapshot["runtime"]["gateway"]["serviceRunning"] is True
+    assert hosting["installMethod"] == "systemd"
+    assert hosting["managedService"] is True
+    hosting_signal = next(item for item in snapshot["runtime"]["production"]["signals"] if item["id"] == "hosting")
+    assert hosting_signal["status"] == "pass"
+    step_25 = next(item for item in snapshot["coverage"]["steps"] if item["id"] == "step-25")
+    assert step_25["status"] == "active"
+
+
+def test_snapshot_treats_uppercase_soul_md_as_identity_file(tmp_path, monkeypatch):
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text("model: gpt-5.5\nprovider: openai-codex\n", encoding="utf-8")
+    (home / "SOUL.md").write_text("You are direct and technically precise.\n", encoding="utf-8")
+    _seed_state_db(home)
+
+    from hermes_cli.mission_control import build_mission_control_snapshot
+
+    snapshot = build_mission_control_snapshot()
+
+    assert snapshot["runtime"]["identity"]["soulPresent"] is True
+    assert "~/.hermes/SOUL.md" in snapshot["runtime"]["identity"]["files"]
+    step_5 = next(item for item in snapshot["coverage"]["steps"] if item["id"] == "step-5")
+    assert step_5["status"] == "active"
+
+
 def test_snapshot_redacts_runtime_labels_that_can_embed_private_names(tmp_path, monkeypatch):
     home = Path(os.environ["HERMES_HOME"])
     (home / "skills" / "acme-client-lawsuit" / "internal").mkdir(parents=True)

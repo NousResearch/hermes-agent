@@ -691,6 +691,28 @@ def _safe_gateway_label(value: Any) -> str:
     return "other"
 
 
+def _safe_service_manager_label(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if "systemd" in raw:
+        return "systemd"
+    if "launchd" in raw:
+        return "launchd"
+    if "s6" in raw:
+        return "s6"
+    if "docker" in raw:
+        return "docker"
+    if "termux" in raw:
+        return "termux"
+    if "manual" in raw:
+        return "manual"
+    return "unknown"
+
+
+def _safe_service_scope(value: Any) -> str | None:
+    raw = str(value or "").strip().lower()
+    return raw if raw in {"user", "system", "container", "manual"} else None
+
+
 def _safe_status(value: Any, *, allowed: set[str], default: str = "other") -> str:
     raw = str(value or "").strip().lower().replace("-", "_")
     if not raw:
@@ -786,8 +808,16 @@ def _env_families(home: Path) -> dict[str, Any]:
                 return len([p for p in value.replace(";", ",").split(",") if p.strip()])
         return 0
 
+    telegram_allowlist_keys = (
+        "ALLOWED_USER_IDS",
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_ALLOWED_USER_IDS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "GATEWAY_ALLOWED_USERS",
+    )
+
     family_tests = {
-        "telegram": lambda k: "TELEGRAM" in k or k in {"ALLOWED_USER_IDS"},
+        "telegram": lambda k: "TELEGRAM" in k or k in {"ALLOWED_USER_IDS", "GATEWAY_ALLOWED_USERS"},
         "discord": lambda k: "DISCORD" in k,
         "slack": lambda k: "SLACK" in k,
         "matrix": lambda k: "MATRIX" in k,
@@ -808,7 +838,7 @@ def _env_families(home: Path) -> dict[str, Any]:
     llm_families = [f for f in families if f in {"anthropic", "openai", "openrouter", "gemini", "ollama"}]
     required = [
         {"key": "TELEGRAM_BOT_TOKEN", "category": "telegram", "isSet": present("TELEGRAM_BOT_TOKEN")},
-        {"key": "ALLOWED_USER_IDS", "category": "telegram", "isSet": present("ALLOWED_USER_IDS", "TELEGRAM_ALLOWED_USER_IDS"), "count": count_csv("ALLOWED_USER_IDS", "TELEGRAM_ALLOWED_USER_IDS")},
+        {"key": "ALLOWED_USER_IDS", "category": "telegram", "isSet": present(*telegram_allowlist_keys), "count": count_csv(*telegram_allowlist_keys)},
         {"key": "LLM_API_KEY", "category": "model", "isSet": bool(llm_families)},
         {"key": "DASHBOARD_TOKEN", "category": "dashboard", "isSet": present("DASHBOARD_TOKEN", "HERMES_DASHBOARD_TOKEN")},
     ]
@@ -830,7 +860,7 @@ def _env_families(home: Path) -> dict[str, Any]:
         "optionalKeys": optional,
         "telegram": {
             "tokenPresent": present("TELEGRAM_BOT_TOKEN"),
-            "allowedUserCount": count_csv("ALLOWED_USER_IDS", "TELEGRAM_ALLOWED_USER_IDS"),
+            "allowedUserCount": count_csv(*telegram_allowlist_keys),
         },
         "dashboard": {"tokenPresent": present("DASHBOARD_TOKEN", "HERMES_DASHBOARD_TOKEN")},
         "semantic": {"pineconeKeyPresent": present("PINECONE_API_KEY"), "pineconeIndexPresent": present("PINECONE_INDEX", "PINECONE_INDEX_NAME")},
@@ -1254,7 +1284,7 @@ def _production_readiness(runtime: dict[str, Any]) -> dict[str, Any]:
         {"id": "mcp", "label": "MCP", "status": "pass" if runtime["mcp"].get("configured") else "unknown", "detail": f"{runtime['mcp'].get('configured', 0)} configured"},
         {"id": "cron", "label": "Cron", "status": "pass" if runtime["cron"].get("enabled") else "unknown", "detail": f"{runtime['cron'].get('enabled', 0)} enabled"},
         {"id": "quality", "label": "Quality gates", "status": "pass" if runtime["quality"].get("pythonMissionControlTestsPresent") and runtime["quality"].get("frontendBuildScriptPresent") else "warn", "detail": "test/build hooks present; last run evidence shown after verification"},
-        {"id": "hosting", "label": "Hosting posture", "status": "pass" if runtime["hosting"].get("hardenedContainer") else ("warn" if runtime["hosting"].get("containerized") else "unknown"), "detail": runtime["hosting"].get("installMethod")},
+        {"id": "hosting", "label": "Hosting posture", "status": "pass" if (runtime["hosting"].get("hardenedContainer") or runtime["hosting"].get("managedService")) else ("warn" if runtime["hosting"].get("containerized") else "unknown"), "detail": runtime["hosting"].get("installMethod")},
     ]
     score_map = {"pass": 100, "warn": 60, "unknown": 35, "fail": 0, "not_applicable": 70}
     score = round(sum(score_map.get(str(s.get("status")), 35) for s in signals) / len(signals)) if signals else 0
@@ -1262,9 +1292,14 @@ def _production_readiness(runtime: dict[str, Any]) -> dict[str, Any]:
     return {"score": score, "signals": signals, "blockers": blockers[:5]}
 
 
-def _hosting_metrics(cfg: dict[str, Any], safety: dict[str, Any], env_info: dict[str, Any]) -> dict[str, Any]:
+def _hosting_metrics(cfg: dict[str, Any], safety: dict[str, Any], env_info: dict[str, Any], gateway_info: dict[str, Any] | None = None) -> dict[str, Any]:
+    gateway_info = gateway_info or {}
     terminal_backend = safety.get("terminalBackend") or "local"
     install_method = "docker" if terminal_backend == "docker" else ("ssh" if terminal_backend == "ssh" else "unknown")
+    service_manager = str(gateway_info.get("serviceManager") or "unknown")
+    managed_service = bool(gateway_info.get("managedService") or gateway_info.get("serviceInstalled") or gateway_info.get("serviceRunning"))
+    if install_method == "unknown" and managed_service and service_manager != "unknown":
+        install_method = service_manager
     docker = cfg.get("docker") if isinstance(cfg.get("docker"), dict) else {}
     hardened = None
     if install_method == "docker" or docker:
@@ -1273,8 +1308,12 @@ def _hosting_metrics(cfg: dict[str, Any], safety: dict[str, Any], env_info: dict
     return {
         "installMethod": install_method,
         "terminalBackend": terminal_backend,
-        "containerized": install_method == "docker",
+        "containerized": install_method in {"docker", "s6"},
         "hardenedContainer": hardened,
+        "managedService": managed_service,
+        "serviceManager": service_manager,
+        "serviceRunning": bool(gateway_info.get("serviceRunning")),
+        "serviceInstalled": bool(gateway_info.get("serviceInstalled")),
         "meshVpnSignal": bool((env_info.get("network") or {}).get("tailscaleSignalPresent")) if isinstance(env_info.get("network"), dict) else False,
         "publicPortSignal": None,
     }
@@ -1513,26 +1552,54 @@ def _gateway_metrics(cfg: dict[str, Any], env_info: dict[str, Any]) -> dict[str,
                 configured_labels.append(_safe_gateway_label(name))
     running = False
     pid = None
+    pid_present = False
     runtime_state = "unknown"
+    service_manager = "unknown"
+    service_installed = False
+    service_running = False
+    service_scope = None
+    managed_service = False
     try:
         from gateway.status import get_running_pid, read_runtime_status
 
         pid = get_running_pid()
+        pid_present = bool(pid)
         running = bool(pid)
         status = read_runtime_status()
         if isinstance(status, dict):
             runtime_state = _safe_status(status.get("state") or status.get("status") or ("running" if running else "stopped"), allowed={"running", "stopped", "starting", "ready", "error", "failed", "unknown"})
     except Exception:
         runtime_state = "unavailable"
+    try:
+        from .gateway import get_gateway_runtime_snapshot
+
+        snapshot = get_gateway_runtime_snapshot()
+        service_manager = _safe_service_manager_label(getattr(snapshot, "manager", None))
+        service_installed = bool(getattr(snapshot, "service_installed", False))
+        service_running = bool(getattr(snapshot, "service_running", False))
+        service_scope = _safe_service_scope(getattr(snapshot, "service_scope", None))
+        snapshot_pids = tuple(getattr(snapshot, "gateway_pids", ()) or ())
+        pid_present = pid_present or bool(snapshot_pids)
+        running = running or bool(getattr(snapshot, "running", False))
+        managed_service = service_installed or service_running or service_manager in {"systemd", "launchd", "s6"}
+        if runtime_state in {"unknown", "stopped"} and running:
+            runtime_state = "running"
+    except Exception:
+        pass
     unique = sorted(set(configured_labels))
     return {
         "running": running,
-        "pidPresent": bool(pid),
+        "pidPresent": pid_present,
         "state": runtime_state,
         "configuredPlatforms": unique,
         "configuredCount": configured_entries or len(unique),
         "platformNamesRedacted": True,
         "customPlatformCount": sum(1 for label in configured_labels if label == "other"),
+        "serviceManager": service_manager,
+        "serviceInstalled": service_installed,
+        "serviceRunning": service_running,
+        "serviceScope": service_scope,
+        "managedService": managed_service,
     }
 
 
@@ -1637,10 +1704,10 @@ def _safety_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 def _identity_metrics(home: Path) -> dict[str, Any]:
-    soul = home / "soul.md"
+    soul_candidates = [home / "soul.md", home / "SOUL.md"]
     memory_dir = home / "memories"
     candidates = [
-        soul,
+        *soul_candidates,
         home / "MEMORY.md",
         home / "USER.md",
         home / "memory.md",
@@ -1652,7 +1719,7 @@ def _identity_metrics(home: Path) -> dict[str, Any]:
     ]
     files = [p for p in candidates if p.exists()]
     return {
-        "soulPresent": soul.exists(),
+        "soulPresent": any(p.exists() for p in soul_candidates),
         "profileFiles": len(files),
         "totalBytes": sum(p.stat().st_size for p in files if p.exists()),
         "files": [_compact_path(p, home) for p in files[:8]],
@@ -1695,7 +1762,7 @@ def _build_runtime(cfg: dict[str, Any], home: Path, dashboard_state: dict[str, A
         "freshness": runtime["cron"].get("reflectionFreshness"),
         "lastRunAgeSeconds": runtime["cron"].get("reflectionLastRunAgeSeconds"),
     }
-    runtime["hosting"] = _hosting_metrics(cfg, safety, env_info)
+    runtime["hosting"] = _hosting_metrics(cfg, safety, env_info, runtime["gateway"])
     runtime["dataFlow"] = _data_flow(runtime)
     runtime["preflight"] = _preflight_checks(runtime, home)
     runtime["customization"] = _customization_runtime(runtime)
@@ -1829,8 +1896,8 @@ def _readiness_for_step(step: dict[str, Any], runtime: dict[str, Any]) -> Capabi
         return _state("active", ["/mission-control route exposes this blueprint", f"auth mode: {dash.get('authMode')}", f"bind exposure: {dash.get('bindExposure')}"], "Keep coverage, runtime evidence, and privacy boundaries distinct.")
     if step_id == "step-25":
         host = runtime["hosting"]
-        status = "active" if host.get("hardenedContainer") else ("partial" if host.get("containerized") or host.get("meshVpnSignal") or safety.get("terminalBackend") != "local" else "watch")
-        return _state(status, [f"install method: {host.get('installMethod')}", f"terminal backend: {host.get('terminalBackend')}", f"mesh VPN signal: {host.get('meshVpnSignal')}"], "Prefer low-cost VPS/mesh networking over public dashboard exposure.")
+        status = "active" if (host.get("hardenedContainer") or host.get("managedService")) else ("partial" if host.get("containerized") or host.get("meshVpnSignal") or safety.get("terminalBackend") != "local" else "watch")
+        return _state(status, [f"install method: {host.get('installMethod')}", f"terminal backend: {host.get('terminalBackend')}", f"managed service: {host.get('managedService')}", f"mesh VPN signal: {host.get('meshVpnSignal')}"], "Prefer low-cost VPS/mesh networking over public dashboard exposure.")
     if step_id == "step-26":
         q = runtime["quality"]
         status = "active" if q.get("pythonMissionControlTestsPresent") and q.get("frontendBuildScriptPresent") else "partial"
@@ -1861,7 +1928,9 @@ def _readiness_for_step(step: dict[str, Any], runtime: dict[str, Any]) -> Capabi
     if domain == "dashboard":
         return _state("active", ["/mission-control route exposes this blueprint", "server-only snapshot protects local state"], "Keep coverage and readiness distinct.")
     if domain == "hosting":
-        return _state("partial", [f"terminal backend: {safety['terminalBackend']}", "hosting posture depends on deployment target"], "Prefer low-cost VPS/mesh networking over low-value complexity.")
+        host = runtime["hosting"]
+        status = "active" if host.get("managedService") else ("partial" if host.get("installMethod") != "unknown" else "watch")
+        return _state(status, [f"install method: {host.get('installMethod')}", f"managed service: {host.get('managedService')}", f"terminal backend: {safety['terminalBackend']}"], "Prefer low-cost VPS/mesh networking over low-value complexity.")
     if domain == "quality":
         return _state("partial", ["Mission Control tests/build scripts are discoverable", "latest pass/fail evidence comes from verification runs"], "Run browser smoke on desktop and mobile before shipping.")
     if domain in {"configuration", "identity", "runtime", "agent-loop"}:

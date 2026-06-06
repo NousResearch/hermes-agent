@@ -743,3 +743,13 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
 
+
+
+def test_neutralize_catalog_text_escapes_markup_ansi_and_invisible_chars():
+    from hermes_cli.skills_hub import _neutralize_catalog_text
+
+    rendered = _neutralize_catalog_text("[bold]run me[/]\x1b[31m\u200b", max_chars=200)
+
+    assert r"\[bold]run me\[/]" in rendered
+    assert "<ESC>" in rendered
+    assert "<U+200B>" in rendered

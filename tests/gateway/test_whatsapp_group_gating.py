@@ -90,6 +90,152 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter._should_process_message(_group_message("/status")) is True
 
 
+# --- Regression: device-suffix mismatch in reply-to-bot detection (issue #29023) ---
+#
+# Baileys' sock.user.id and sock.user.lid include a multi-device numeric
+# suffix (e.g. "15551230000@10@s.whatsapp.net") but quotedParticipant
+# arrives WITHOUT it ("15551230000@s.whatsapp.net").  _bot_ids_from_message
+# must produce a suffix-stripped alias so the set-membership check succeeds.
+
+
+class TestWithoutDeviceSuffix:
+    """Unit tests for the extracted _without_whatsapp_device_suffix helper."""
+
+    def test_strips_numeric_device_from_s_whatsapp_net(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        assert WhatsAppAdapter._without_whatsapp_device_suffix(
+            "15551230000@10@s.whatsapp.net"
+        ) == "15551230000@s.whatsapp.net"
+
+    def test_strips_numeric_device_from_lid(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        assert WhatsAppAdapter._without_whatsapp_device_suffix(
+            "15551230000@99@lid"
+        ) == "15551230000@lid"
+
+    def test_large_device_number(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        assert WhatsAppAdapter._without_whatsapp_device_suffix(
+            "15551230000@999@s.whatsapp.net"
+        ) == "15551230000@s.whatsapp.net"
+
+    def test_no_suffix_passthrough(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        assert WhatsAppAdapter._without_whatsapp_device_suffix(
+            "15551230000@s.whatsapp.net"
+        ) == "15551230000@s.whatsapp.net"
+
+    def test_non_numeric_middle_segment_not_stripped(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        # "s" is not a digit — this is NOT a device suffix, must be preserved
+        assert WhatsAppAdapter._without_whatsapp_device_suffix(
+            "user@s.whatsapp.net"
+        ) == "user@s.whatsapp.net"
+
+    def test_empty_string_passthrough(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        assert WhatsAppAdapter._without_whatsapp_device_suffix("") == ""
+
+    def test_bare_phone_passthrough(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        assert WhatsAppAdapter._without_whatsapp_device_suffix("15551230000") == "15551230000"
+
+    def test_two_segment_jid_passthrough(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        # Normal JID with no device segment — no stripping
+        assert WhatsAppAdapter._without_whatsapp_device_suffix(
+            "15551230000@lid"
+        ) == "15551230000@lid"
+
+
+def test_reply_to_bot_via_suffix_stripped_alias():
+    """Reply to bot should be detected when botIds carry a device suffix
+    but quotedParticipant does not — both s.whatsapp.net and lid variants."""
+    adapter = _make_adapter(require_mention=True)
+
+    # Both suffixed botIds should produce aliases that match the unsuffixed
+    # quotedParticipant, so _message_is_reply_to_bot returns True.
+    data = _group_message(
+        "replying by voice",
+        botIds=["15551230000@10@s.whatsapp.net", "15551230000@10@lid"],
+        quotedParticipant="15551230000@s.whatsapp.net",
+    )
+    assert adapter._message_is_reply_to_bot(data) is True
+    assert adapter._should_process_message(data) is True
+
+
+def test_reply_to_bot_via_raw_colon_format():
+    """Baileys sends botIds with colons (e.g. '15551230000:10@...')
+    which _normalize_whatsapp_id converts to '@'. The suffix-stripped alias
+    must still be produced after normalization."""
+    adapter = _make_adapter(require_mention=True)
+
+    data = _group_message(
+        "thanks bot",
+        botIds=["15551230000:10@s.whatsapp.net", "15551230000:10@lid"],
+        quotedParticipant="15551230000@s.whatsapp.net",
+    )
+    assert adapter._message_is_reply_to_bot(data) is True
+    assert adapter._should_process_message(data) is True
+
+
+def test_reply_to_bot_legacy_no_suffix_still_works():
+    """Legacy (non-multi-device) botIds without any device suffix must
+    continue to match quotedParticipant unchanged."""
+    adapter = _make_adapter(require_mention=True)
+
+    data = _group_message(
+        "thanks bot",
+        botIds=["15551230000@s.whatsapp.net", "15551230000@lid"],
+        quotedParticipant="15551230000@s.whatsapp.net",
+    )
+    assert adapter._message_is_reply_to_bot(data) is True
+    assert adapter._should_process_message(data) is True
+
+
+def test_reply_to_different_user_stays_blocked():
+    """Replying to another group member must NOT be treated as a reply
+    to the bot, even when botIds carry a device suffix."""
+    adapter = _make_adapter(require_mention=True)
+
+    data = _group_message(
+        "not the bot",
+        botIds=["15551230000@10@s.whatsapp.net"],
+        quotedParticipant="15550001111@s.whatsapp.net",
+    )
+    assert adapter._message_is_reply_to_bot(data) is False
+    assert adapter._should_process_message(data) is False
+
+
+def test_mention_also_matches_suffix_stripped_bot_ids():
+    """An explicit @mention of the bot's bare phone number should match
+    even when botIds carry a device suffix."""
+    adapter = _make_adapter(require_mention=True)
+
+    data = _group_message(
+        "@15551230000 what's up?",
+        botIds=["15551230000@10@s.whatsapp.net"],
+        mentionedIds=["15551230000@s.whatsapp.net"],
+    )
+    assert adapter._message_mentions_bot(data) is True
+    assert adapter._should_process_message(data) is True
+
+
+def test_bot_ids_set_contains_both_suffixed_and_stripped():
+    """_bot_ids_from_message must return BOTH the original normalized ID
+    and its suffix-stripped alias, so both code paths (reply check, mention
+    check) can match whichever format the incoming data uses."""
+    adapter = _make_adapter(require_mention=True)
+
+    data = _group_message(
+        "test",
+        botIds=["15551230000@10@s.whatsapp.net"],
+    )
+    ids = adapter._bot_ids_from_message(data)
+    assert "15551230000@10@s.whatsapp.net" in ids  # original
+    assert "15551230000@s.whatsapp.net" in ids       # stripped alias
+
+
 def test_regex_mention_patterns_allow_custom_wake_words():
     adapter = _make_adapter(require_mention=True, mention_patterns=[r"^\s*chompy\b"])
 

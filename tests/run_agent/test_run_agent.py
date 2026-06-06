@@ -4545,6 +4545,52 @@ class TestRunConversation:
         )
 
 
+class TestHookPayloadSanitizesSimpleNamespace:
+    """Regression: ``_hook_jsonable`` referenced ``SimpleNamespace`` without
+    importing it, so sanitizing any hook payload that contained one raised
+    ``NameError: name 'SimpleNamespace' is not defined``.
+
+    The non-OpenAI providers (Bedrock, Codex responses, the auxiliary client,
+    and the chat-completion stream stub) build their response / message /
+    tool_call objects as ``types.SimpleNamespace`` — see
+    ``agent/bedrock_adapter.py``, ``agent/codex_responses_adapter.py``, and
+    ``agent/auxiliary_client.py``. Those raw objects are handed straight to
+    ``_api_response_payload_for_hook`` for the ``post_api_request`` hook, so the
+    crash silently killed observability hooks for every one of those providers
+    (the call sites swallow the exception with ``except Exception: pass``).
+    """
+
+    def test_hook_jsonable_normalizes_simplenamespace(self):
+        ns = SimpleNamespace(id="call_1", value=42, nested=SimpleNamespace(name="x"))
+        result = AIAgent._sanitize_hook_payload(ns)
+        assert result == {"id": "call_1", "value": 42, "nested": {"name": "x"}}
+
+    def test_api_response_payload_for_hook_normalizes_simplenamespace_tool_calls(self, agent):
+        # Shape mirrors agent/bedrock_adapter.py::normalize_converse_response and
+        # agent/codex_responses_adapter.py — raw SDK objects are SimpleNamespace.
+        tool_call = SimpleNamespace(
+            id="call_1",
+            type="function",
+            function=SimpleNamespace(name="web_search", arguments='{"q": "hi"}'),
+        )
+        assistant_message = SimpleNamespace(
+            role="assistant",
+            content="",
+            tool_calls=[tool_call],
+        )
+        response = SimpleNamespace(model="anthropic.claude-3", usage=None)
+
+        payload = agent._api_response_payload_for_hook(
+            response, assistant_message, finish_reason="tool_calls"
+        )
+
+        assert payload["model"] == "anthropic.claude-3"
+        assert payload["finish_reason"] == "tool_calls"
+        normalized_call = payload["assistant_message"]["tool_calls"][0]
+        assert normalized_call["id"] == "call_1"
+        assert normalized_call["function"]["name"] == "web_search"
+
+
 class TestRetryExhaustion:
     """Regression: retry_count > max_retries was dead code (off-by-one).
 

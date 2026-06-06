@@ -205,9 +205,11 @@ export const zhHant = defineLocale({
       toolViewTitle: '工具呼叫顯示',
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
       product: '產品',
-      productDesc: '易讀的工具活動與精簡摘要。',
+      productDesc: '對使用者友善的工具活動展示，簡潔摘要。',
       technical: '技術',
-      technicalDesc: '包含原始工具參數、結果與底層細節。',
+      technicalDesc: '包含原始工具參數/結果和底層細節。',
+      keepExpandedTitle: '保持工具呼叫展開',
+      keepExpandedDesc: '預設展開所有工具呼叫和推理區塊，而非折疊顯示。',
       themeTitle: '主題',
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。'
     },

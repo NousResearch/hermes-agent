@@ -84,6 +84,7 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
+import { $keepToolCallsExpanded } from '@/store/tool-view'
 import { $voicePlayback } from '@/store/voice-playback'
 
 type ThreadLoadingState = 'response' | 'session'
@@ -375,13 +376,14 @@ const ThinkingDisclosure: FC<{
   // reasoning surfaces a live preview without manual interaction. The first
   // explicit toggle wins from then on.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
+  const keepExpanded = useStore($keepToolCallsExpanded)
   const elapsed = useElapsedSeconds(pending, timerKey)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const enterRef = useEnterAnimation(messageRunning, timerKey)
 
-  const open = userOpen ?? pending
-  const isPreview = pending && userOpen === null
+  const open = userOpen ?? (keepExpanded || pending)
+  const isPreview = pending && userOpen === null && !keepExpanded
 
   // While the preview is live, pin the scroll container to the bottom on
   // every content growth so the latest tokens are always visible. Combined

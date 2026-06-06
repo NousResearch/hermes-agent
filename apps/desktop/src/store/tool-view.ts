@@ -8,19 +8,28 @@ type ToolDisclosureStates = Record<string, boolean>
 
 const TOOL_VIEW_TECHNICAL_STORAGE_KEY = 'hermes.desktop.toolView.technical'
 const TOOL_DISCLOSURE_STORAGE_KEY = 'hermes.desktop.toolDisclosure.v1'
+const KEEP_TOOL_CALLS_EXPANDED_STORAGE_KEY = 'hermes.desktop.toolView.keepExpanded'
 const MAX_DISCLOSURE_STATES = 240
 
 export const $toolViewMode = atom<ToolViewMode>(
   storedBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, false) ? 'technical' : 'product'
 )
+export const $keepToolCallsExpanded = atom<boolean>(
+  storedBoolean(KEEP_TOOL_CALLS_EXPANDED_STORAGE_KEY, false)
+)
 export const $toolDisclosureStates = atom<ToolDisclosureStates>(loadToolDisclosureStates())
 const disclosureOpenCache = new Map<string, ReadableAtom<boolean | undefined>>()
 
 $toolViewMode.subscribe(mode => persistBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, mode === 'technical'))
+$keepToolCallsExpanded.subscribe(expanded => persistBoolean(KEEP_TOOL_CALLS_EXPANDED_STORAGE_KEY, expanded))
 $toolDisclosureStates.subscribe(persistToolDisclosureStates)
 
 export function setToolViewMode(mode: ToolViewMode) {
   $toolViewMode.set(mode)
+}
+
+export function setKeepToolCallsExpanded(expanded: boolean) {
+  $keepToolCallsExpanded.set(expanded)
 }
 
 export function $toolDisclosureOpen(id: string): ReadableAtom<boolean | undefined> {

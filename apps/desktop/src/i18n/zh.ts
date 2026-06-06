@@ -283,9 +283,11 @@ export const zh: Translations = {
       toolViewTitle: '工具调用显示',
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       product: '产品',
-      productDesc: '易读的工具活动与简洁摘要。',
+      productDesc: '对用户友好的工具活动展示，简洁摘要。',
       technical: '技术',
-      technicalDesc: '包含原始工具参数/结果及底层细节。',
+      technicalDesc: '包含原始工具参数/结果和底层细节。',
+      keepExpandedTitle: '保持工具调用展开',
+      keepExpandedDesc: '默认展开所有工具调用和推理块，而非折叠显示。',
       themeTitle: '主题',
       themeDesc: '仅桌面端调色板。所选模式叠加其上。'
     },

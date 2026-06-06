@@ -22,7 +22,7 @@ import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
-import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
+import { $toolDisclosureOpen, $toolViewMode, $keepToolCallsExpanded, setToolDisclosureOpen } from '@/store/tool-view'
 
 import { PendingToolApproval } from './tool-approval'
 import {
@@ -189,8 +189,9 @@ interface ToolEntryProps {
 
 function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean {
   const persistedOpen = useStore($toolDisclosureOpen(disclosureId))
+  const keepExpanded = useStore($keepToolCallsExpanded)
 
-  return persistedOpen ?? fallbackOpen
+  return persistedOpen ?? (keepExpanded || fallbackOpen)
 }
 
 function ToolEntry({ part }: ToolEntryProps) {

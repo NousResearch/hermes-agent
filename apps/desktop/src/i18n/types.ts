@@ -217,6 +217,8 @@ export interface Translations {
       productDesc: string
       technical: string
       technicalDesc: string
+      keepExpandedTitle: string
+      keepExpandedDesc: string
       themeTitle: string
       themeDesc: string
     }

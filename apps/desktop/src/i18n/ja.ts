@@ -211,9 +211,11 @@ export const ja = defineLocale({
       toolViewTitle: 'ツール呼び出しの表示',
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
       product: 'プロダクト',
-      productDesc: '読みやすいツール活動と簡潔な要約を表示します。',
+      productDesc: '人間に読みやすいツールアクティビティと簡潔な要約。',
       technical: 'テクニカル',
-      technicalDesc: '生のツール引数、結果、低レベルの詳細を含めます。',
+      technicalDesc: '生のツール引数/結果と低レベルの詳細を含む。',
+      keepExpandedTitle: 'ツール呼び出しを展開したままにする',
+      keepExpandedDesc: 'すべてのツール呼び出しと推論ブロックをデフォルトで折りたたみではなく展開して表示します。',
       themeTitle: 'テーマ',
       themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。'
     },

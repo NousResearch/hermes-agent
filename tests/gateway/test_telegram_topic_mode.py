@@ -157,6 +157,25 @@ def _make_runner(session_db=None):
     return runner
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_reset_tip(monkeypatch):
+    """Pin the random /new reset tip to a fixed, collision-free string.
+
+    The /new handler appends a random tip from ``hermes_cli.tips`` to the
+    reset message. One tip ("...isolated contexts for parallel work.")
+    contains the substring "parallel work", which several tests in this
+    file assert is ABSENT from non-topic reset messages. Left unseeded,
+    that tip is drawn ~1-in-N runs and flakily fails those assertions
+    (and conversely could mask the topic-header assertions that DO expect
+    "parallel work"). Stub the corpus so every test is deterministic and
+    asserts only against the header text it actually means to check.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.tips.get_random_tip",
+        lambda: "use /help to see available commands",
+    )
+
+
 @pytest.mark.asyncio
 async def test_root_telegram_dm_prompt_is_system_lobby_when_topic_mode_enabled(monkeypatch):
     import gateway.run as gateway_run

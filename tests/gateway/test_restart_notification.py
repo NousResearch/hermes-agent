@@ -389,7 +389,7 @@ async def test_send_restart_notification_delivers_and_cleans_up(tmp_path, monkey
     adapter.send.assert_called_once()
     call_args = adapter.send.call_args
     assert call_args[0][0] == "42"  # chat_id
-    assert "restarted" in call_args[0][1].lower()
+    assert call_args[0][1] == "♻ Gateway restarted. Hermes is back and ready."
     assert call_args[1].get("metadata") is None  # no thread
     assert not notify_path.exists()
 

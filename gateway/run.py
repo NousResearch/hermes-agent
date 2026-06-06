@@ -15562,7 +15562,7 @@ class GatewayRunner:
             )
             result = await adapter.send(
                 str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
+                "♻ Gateway restarted. Hermes is back and ready.",
                 metadata=metadata,
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")

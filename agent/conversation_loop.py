@@ -348,6 +348,21 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         )
 
 
+def _build_runtime_metadata_note(agent: Any) -> str:
+    """Build runtime metadata that should be injected into the API user message."""
+    from hermes_time import now as _hermes_now
+
+    now = _hermes_now()
+    lines = [f"Conversation started: {now.strftime('%A, %B %d, %Y')}"]
+    if getattr(agent, "pass_session_id", False) and getattr(agent, "session_id", None):
+        lines.append(f"Session ID: {agent.session_id}")
+    if agent.model:
+        lines.append(f"Model: {agent.model}")
+    if agent.provider:
+        lines.append(f"Provider: {agent.provider}")
+    return "\n".join(lines)
+
+
 def run_conversation(
     agent,
     user_message: str,
@@ -777,6 +792,7 @@ def run_conversation(
     # Use original_user_message (clean input) — user_message may contain
     # injected skill content that bloats / breaks provider queries.
     _ext_prefetch_cache = ""
+    _runtime_metadata_note = _build_runtime_metadata_note(agent)
     if agent._memory_manager:
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
@@ -948,16 +964,18 @@ def run_conversation(
             api_msg = msg.copy()
 
             # Inject ephemeral context into the current turn's user message.
-            # Sources: memory manager prefetch + plugin pre_llm_call hooks
-            # with target="user_message" (the default).  Both are
-            # API-call-time only — the original message in `messages` is
-            # never mutated, so nothing leaks into session persistence.
+            # Sources: memory manager prefetch + runtime metadata + plugin
+            # pre_llm_call hooks with target="user_message" (the default).
+            # All are API-call-time only — the original message in `messages`
+            # is never mutated, so nothing leaks into session persistence.
             if idx == current_turn_user_idx and msg.get("role") == "user":
                 _injections = []
                 if _ext_prefetch_cache:
                     _fenced = build_memory_context_block(_ext_prefetch_cache)
                     if _fenced:
                         _injections.append(_fenced)
+                if _runtime_metadata_note:
+                    _injections.append(_runtime_metadata_note)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
                 if _injections:

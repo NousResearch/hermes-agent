@@ -203,8 +203,7 @@ class TestPromptStabilityInvariant:
         stored = (
             "You are Hermes Agent.\n"
             "\n"
-            "Conversation started: Sunday, May 17, 2026\n"
-            "Session ID: 20260517_153500_abc123\n"
+            "You are a helper for every task.\n"
         )
         db = MagicMock()
         db.get_session.return_value = {"system_prompt": stored}

@@ -1085,30 +1085,17 @@ class TestBuildSystemPrompt:
 
     def test_includes_datetime(self, agent):
         prompt = agent._build_system_prompt()
-        # Should contain current date info like "Conversation started:"
-        assert "Conversation started:" in prompt
+        # Runtime metadata is no longer in the cached system prompt.
+        assert "Conversation started:" not in prompt
+        assert "\nModel:" not in prompt
+        assert "\nProvider:" not in prompt
+        assert "Session ID:" not in prompt
 
     def test_datetime_is_date_only_not_minute_precision(self, agent):
-        """Timestamp must be date-only (no HH:MM) so the system prompt
-        stays byte-stable for the full day. Minute precision invalidates
-        prefix-cache KV on every rebuild path (compression, fresh-agent
-        gateway turns, session resume without a stored prompt)."""
+        """Timestamp-style runtime metadata is no longer in the cached prompt.
+        It is now injected per API call in the user message."""
         prompt = agent._build_system_prompt()
-        # Find the line and strip it for inspection
-        for line in prompt.splitlines():
-            if line.startswith("Conversation started:"):
-                # Must NOT contain AM/PM indicator (minute precision had %I:%M %p)
-                assert " AM" not in line and " PM" not in line, (
-                    f"Timestamp line has time-of-day, breaks daily cache stability: {line!r}"
-                )
-                # Must NOT contain a colon followed by two digits (HH:MM pattern)
-                import re as _re
-                assert not _re.search(r":\d{2}", line), (
-                    f"Timestamp line has HH:MM, breaks daily cache stability: {line!r}"
-                )
-                break
-        else:
-            assert False, "Expected a 'Conversation started:' line in the system prompt"
+        assert "Conversation started:" not in prompt
 
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
@@ -3375,7 +3362,12 @@ class TestRunConversation:
         ]
         assert all("message_count" in c and isinstance(c.get("request_messages"), list) for c in pre_request_calls)
         assert all("request" in c and "messages" in c["request"]["body"] for c in pre_request_calls)
-        assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
+        assert any(
+            msg.get("role") == "user"
+            and "search something" in str(msg.get("content"))
+            and "Conversation started:" in str(msg.get("content"))
+            for msg in pre_request_calls[0]["request_messages"]
+        )
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
 

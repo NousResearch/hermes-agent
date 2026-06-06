@@ -6721,44 +6721,311 @@ async def update_skills_hub():
     return {"ok": True, "pid": proc.pid, "name": "skills-update"}
 
 
+# Human-readable labels for each hub source id (matches `hermes skills search`
+# provenance).  Keep in sync with create_source_router()'s source list.
+_SKILL_HUB_SOURCE_LABELS = {
+    "official": "Official (Nous)",
+    "hermes-index": "Hermes Index",
+    "skills-sh": "skills.sh",
+    "well-known": "Well-Known",
+    "url": "Direct URL",
+    "github": "GitHub",
+    "clawhub": "ClawHub",
+    "claude-marketplace": "Claude Marketplace",
+    "lobehub": "LobeHub",
+    "browse-sh": "browse.sh",
+}
+
+
+def _skill_meta_to_payload(m) -> dict:
+    return {
+        "name": m.name,
+        "description": m.description,
+        "source": m.source,
+        "identifier": m.identifier,
+        "trust_level": m.trust_level,
+        "repo": m.repo,
+        "tags": list(m.tags or []),
+    }
+
+
+def _installed_hub_identifiers() -> dict:
+    """Map identifier -> installed lock entry for hub-installed skills.
+
+    Lets the UI mark search results that are already installed.  Best-effort:
+    returns an empty dict if the lock file can't be read.
+    """
+    try:
+        from tools.skills_hub import HubLockFile
+
+        out = {}
+        for entry in HubLockFile().list_installed():
+            ident = entry.get("identifier")
+            if ident:
+                out[ident] = {
+                    "name": entry.get("name"),
+                    "trust_level": entry.get("trust_level"),
+                    "scan_verdict": entry.get("scan_verdict"),
+                }
+        return out
+    except Exception:
+        return {}
+
+
+@app.get("/api/skills/hub/sources")
+async def list_skills_hub_sources():
+    """List the configured skill-hub sources and installed-skill provenance.
+
+    Gives the dashboard something to show BEFORE a search runs — which hubs
+    are wired up, their trust tier, and a set of featured skills pulled from
+    the centralized index (zero extra API calls).  Without this the Browse-hub
+    tab is a blank page with no indication it's even connected to anything.
+    """
+
+    def _run():
+        from tools.skills_hub import create_source_router
+
+        sources = create_source_router()
+        out = []
+        index_available = False
+        featured = []
+        for src in sources:
+            sid = src.source_id()
+            entry = {
+                "id": sid,
+                "label": _SKILL_HUB_SOURCE_LABELS.get(sid, sid),
+            }
+            # GitHub exposes a rate-limit flag; the index an availability flag.
+            if sid == "github":
+                try:
+                    entry["rate_limited"] = bool(getattr(src, "is_rate_limited", False))
+                except Exception:
+                    entry["rate_limited"] = False
+            if sid == "hermes-index":
+                try:
+                    index_available = bool(getattr(src, "is_available", False))
+                except Exception:
+                    index_available = False
+                entry["available"] = index_available
+                # Empty-query search on the index returns featured/popular skills.
+                if index_available:
+                    try:
+                        featured = [
+                            _skill_meta_to_payload(m) for m in src.search("", limit=12)
+                        ]
+                    except Exception:
+                        featured = []
+            out.append(entry)
+        return {
+            "sources": out,
+            "index_available": index_available,
+            "featured": featured,
+            "installed": _installed_hub_identifiers(),
+        }
+
+    try:
+        return await asyncio.to_thread(_run)
+    except Exception as exc:
+        _log.exception("skills hub sources listing failed")
+        raise HTTPException(status_code=502, detail=f"Hub sources failed: {exc}")
+
+
 @app.get("/api/skills/hub/search")
 async def search_skills_hub(q: str = "", source: str = "all", limit: int = 20):
     """Search the skill hub across all configured sources.
 
     Network-bound (parallel source search); runs in a thread so the FastAPI
     loop isn't blocked.  Returns structured results the UI installs by
-    identifier via POST /api/skills/hub/install.
+    identifier via POST /api/skills/hub/install, previews via
+    /api/skills/hub/preview, and scans via /api/skills/hub/scan.
     """
     query = (q or "").strip()
     if not query:
-        return {"results": []}
+        return {"results": [], "source_counts": {}, "timed_out": [], "installed": {}}
 
     def _run():
-        from tools.skills_hub import create_source_router, unified_search
+        from tools.skills_hub import create_source_router, parallel_search_sources
 
         sources = create_source_router()
-        metas = unified_search(
-            query, sources, source_filter=source or "all", limit=min(max(limit, 1), 50)
+        capped = min(max(limit, 1), 50)
+        all_results, source_counts, timed_out = parallel_search_sources(
+            sources, query=query, source_filter=source or "all", overall_timeout=30
         )
-        return [
-            {
-                "name": m.name,
-                "description": m.description,
-                "source": m.source,
-                "identifier": m.identifier,
-                "trust_level": m.trust_level,
-                "repo": m.repo,
-                "tags": list(m.tags or []),
-            }
-            for m in metas
-        ]
+
+        # Dedupe by identifier, preferring higher trust (mirrors unified_search).
+        _rank = {"builtin": 2, "trusted": 1, "community": 0}
+        seen = {}
+        for r in all_results:
+            if r.identifier not in seen:
+                seen[r.identifier] = r
+            elif _rank.get(r.trust_level, 0) > _rank.get(seen[r.identifier].trust_level, 0):
+                seen[r.identifier] = r
+        deduped = list(seen.values())[:capped]
+
+        return {
+            "results": [_skill_meta_to_payload(m) for m in deduped],
+            "source_counts": source_counts,
+            "timed_out": timed_out,
+            "installed": _installed_hub_identifiers(),
+        }
 
     try:
-        results = await asyncio.to_thread(_run)
+        return await asyncio.to_thread(_run)
     except Exception as exc:
         _log.exception("skills hub search failed")
         raise HTTPException(status_code=502, detail=f"Hub search failed: {exc}")
-    return {"results": results}
+
+
+@app.get("/api/skills/hub/preview")
+async def preview_skill_hub(identifier: str = ""):
+    """Fetch a hub skill's SKILL.md content + metadata for in-dashboard reading.
+
+    Resolves the identifier across configured sources (same path the CLI
+    installer uses), then returns the rendered SKILL.md text and the file
+    manifest WITHOUT installing anything.  This is the 'read the actual skill
+    before installing' affordance the Browse-hub tab was missing.
+    """
+    ident = (identifier or "").strip()
+    if not ident:
+        raise HTTPException(status_code=400, detail="identifier is required")
+
+    def _run():
+        from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
+        from tools.skills_hub import create_source_router
+
+        sources = create_source_router()
+        meta, bundle, _src = _resolve_source_meta_and_bundle(ident, sources)
+        if not bundle and not meta:
+            return None
+
+        files = {}
+        skill_md = ""
+        if bundle:
+            for rel, content in (bundle.files or {}).items():
+                if isinstance(content, bytes):
+                    # Some sources (e.g. official optional skills) store every
+                    # file as bytes.  Decode text so SKILL.md / docs render;
+                    # only fall back to a placeholder for genuinely-binary data.
+                    try:
+                        files[rel] = content.decode("utf-8")
+                    except UnicodeDecodeError:
+                        files[rel] = "(binary file)"
+                else:
+                    files[rel] = content
+            skill_md = files.get("SKILL.md", "") or ""
+
+        m = meta or bundle
+        return {
+            "name": getattr(m, "name", ident),
+            "description": getattr(m, "description", "") or "",
+            "source": getattr(m, "source", "") or "",
+            "identifier": getattr(m, "identifier", ident) or ident,
+            "trust_level": getattr(m, "trust_level", "community") or "community",
+            "repo": getattr(m, "repo", None),
+            "tags": list(getattr(m, "tags", None) or []),
+            "skill_md": skill_md,
+            "files": sorted(files.keys()),
+        }
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:
+        _log.exception("skills hub preview failed")
+        raise HTTPException(status_code=502, detail=f"Hub preview failed: {exc}")
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {ident}")
+    return result
+
+
+@app.get("/api/skills/hub/scan")
+async def scan_skill_hub(identifier: str = ""):
+    """Run the install-time security scan on a hub skill WITHOUT installing it.
+
+    Fetches the bundle, quarantines it, and runs the same `scan_skill` /
+    `should_allow_install` pipeline the CLI installer uses — then cleans up the
+    quarantine.  Returns the verdict, per-finding detail, trust tier, and the
+    install-policy decision so the dashboard can show a visual safety result
+    on demand (the 'scan' button the Browse-hub tab was missing).
+    """
+    ident = (identifier or "").strip()
+    if not ident:
+        raise HTTPException(status_code=400, detail="identifier is required")
+
+    def _run():
+        import shutil as _shutil
+
+        from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
+        from tools.skills_hub import create_source_router, quarantine_bundle
+        from tools.skills_guard import scan_skill, should_allow_install
+
+        sources = create_source_router()
+        meta, bundle, _src = _resolve_source_meta_and_bundle(ident, sources)
+        if not bundle:
+            return None
+
+        if bundle.source == "official":
+            scan_source = "official"
+        else:
+            scan_source = (
+                getattr(bundle, "identifier", "")
+                or getattr(meta, "identifier", "")
+                or ident
+            )
+
+        q_path = None
+        try:
+            q_path = quarantine_bundle(bundle)
+            result = scan_skill(q_path, source=scan_source)
+        finally:
+            if q_path is not None:
+                _shutil.rmtree(q_path, ignore_errors=True)
+
+        allowed, reason = should_allow_install(result, force=False)
+        # `allowed` may be None ("ask") for agent-created/dangerous gates.
+        if allowed is True:
+            policy = "allow"
+        elif allowed is None:
+            policy = "ask"
+        else:
+            policy = "block"
+
+        findings = [
+            {
+                "severity": f.severity,
+                "category": f.category,
+                "file": f.file,
+                "line": f.line,
+                "description": f.description,
+            }
+            for f in result.findings
+        ]
+        # Per-severity tally for an at-a-glance summary.
+        counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        for f in result.findings:
+            if f.severity in counts:
+                counts[f.severity] += 1
+
+        return {
+            "name": result.skill_name,
+            "identifier": ident,
+            "source": result.source,
+            "trust_level": result.trust_level,
+            "verdict": result.verdict,
+            "summary": result.summary,
+            "policy": policy,
+            "policy_reason": reason,
+            "findings": findings,
+            "severity_counts": counts,
+        }
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:
+        _log.exception("skills hub scan failed")
+        raise HTTPException(status_code=502, detail=f"Hub scan failed: {exc}")
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {ident}")
+    return result
 
 
 # ---------------------------------------------------------------------------

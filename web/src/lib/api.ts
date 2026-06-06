@@ -916,8 +916,18 @@ export const api = {
   updateSkillsFromHub: () =>
     fetchJSON<ActionResponse>("/api/skills/hub/update", { method: "POST" }),
   searchSkillsHub: (q: string, source = "all", limit = 20) =>
-    fetchJSON<{ results: SkillHubResult[] }>(
+    fetchJSON<SkillHubSearchResponse>(
       `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}`,
+    ),
+  getSkillHubSources: () =>
+    fetchJSON<SkillHubSourcesResponse>("/api/skills/hub/sources"),
+  previewSkillFromHub: (identifier: string) =>
+    fetchJSON<SkillHubPreview>(
+      `/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`,
+    ),
+  scanSkillFromHub: (identifier: string) =>
+    fetchJSON<SkillHubScan>(
+      `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
 };
 
@@ -973,6 +983,77 @@ export interface SkillHubResult {
   trust_level: string;
   repo: string | null;
   tags: string[];
+}
+
+/** Lock-entry summary for an already-installed hub skill (keyed by identifier). */
+export interface SkillHubInstalledEntry {
+  name: string | null;
+  trust_level: string | null;
+  scan_verdict: string | null;
+}
+
+export interface SkillHubSearchResponse {
+  results: SkillHubResult[];
+  /** source_id -> number of results returned by that source. */
+  source_counts: Record<string, number>;
+  /** source ids that didn't return within the parallel-search timeout. */
+  timed_out: string[];
+  /** identifier -> installed lock entry (for "already installed" badges). */
+  installed: Record<string, SkillHubInstalledEntry>;
+}
+
+export interface SkillHubSource {
+  id: string;
+  label: string;
+  /** GitHub only: whether the API is currently rate-limited. */
+  rate_limited?: boolean;
+  /** hermes-index only: whether the centralized index loaded. */
+  available?: boolean;
+}
+
+export interface SkillHubSourcesResponse {
+  sources: SkillHubSource[];
+  index_available: boolean;
+  /** Featured/popular skills from the centralized index (zero extra API calls). */
+  featured: SkillHubResult[];
+  installed: Record<string, SkillHubInstalledEntry>;
+}
+
+export interface SkillHubPreview {
+  name: string;
+  description: string;
+  source: string;
+  identifier: string;
+  trust_level: string;
+  repo: string | null;
+  tags: string[];
+  /** Rendered SKILL.md content (the actual skill text). */
+  skill_md: string;
+  /** Relative paths of every file in the bundle. */
+  files: string[];
+}
+
+export interface SkillHubScanFinding {
+  severity: string;
+  category: string;
+  file: string;
+  line: number;
+  description: string;
+}
+
+export interface SkillHubScan {
+  name: string;
+  identifier: string;
+  source: string;
+  trust_level: string;
+  /** "safe" | "caution" | "dangerous". */
+  verdict: string;
+  summary: string;
+  /** Install-policy decision for this trust+verdict combo. */
+  policy: "allow" | "ask" | "block";
+  policy_reason: string;
+  findings: SkillHubScanFinding[];
+  severity_counts: Record<string, number>;
 }
 
 // ── Admin types ───────────────────────────────────────────────────────

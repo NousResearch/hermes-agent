@@ -401,6 +401,33 @@ class TestWebServerEndpoints:
         assert row["is_default_profile"] is True
         assert isinstance(data.get("errors"), list)
 
+    def test_profiles_sessions_uses_lightweight_directory_scan(self, monkeypatch):
+        """The boot-time session aggregator must not depend on heavy profile metadata."""
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+        import hermes_cli.profiles as profiles_mod
+
+        named = get_hermes_home() / "profiles" / "fastprof"
+        named.mkdir(parents=True)
+        db = SessionDB(db_path=named / "state.db")
+        try:
+            db.create_session(session_id="named-agg", source="cli")
+            db.append_message(session_id="named-agg", role="user", content="hi")
+        finally:
+            db.close()
+
+        monkeypatch.setattr(
+            profiles_mod,
+            "list_profiles",
+            lambda: (_ for _ in ()).throw(RuntimeError("heavy metadata path should not run")),
+        )
+
+        resp = self.client.get("/api/profiles/sessions?limit=20&min_messages=0")
+        assert resp.status_code == 200
+        rows = {s["id"]: s for s in resp.json()["sessions"]}
+        assert rows["named-agg"]["profile"] == "fastprof"
+        assert rows["named-agg"]["is_default_profile"] is False
+
     def test_profiles_sessions_rejects_unknown_archived_value(self):
         resp = self.client.get("/api/profiles/sessions?archived=bogus")
         assert resp.status_code == 400

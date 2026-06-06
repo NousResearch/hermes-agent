@@ -744,6 +744,32 @@ class TestFindAliasForProfile:
         (wrapper_dir / "pip").write_text("#!/bin/sh\nexec python -m pip \"$@\"\n")
         assert find_alias_for_profile("steve") is None
 
+    def test_profile_alias_map_prefers_custom_over_profile_named(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import (
+            _profile_alias_map,
+            create_wrapper_script,
+            find_alias_for_profile,
+        )
+
+        create_wrapper_script("steve")
+        create_wrapper_script("qiaobusi", target="steve")
+
+        assert _profile_alias_map()["steve"] == "qiaobusi"
+        assert find_alias_for_profile("steve") == "qiaobusi"
+
+    def test_profile_alias_map_skips_large_extensionless_files(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import _get_wrapper_dir, find_alias_for_profile
+
+        wrapper_dir = _get_wrapper_dir()
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        (wrapper_dir / "large-tool").write_text(
+            "#!/bin/sh\nhermes -p steve\n" + ("x" * 16_384)
+        )
+
+        assert find_alias_for_profile("steve") is None
+
     def test_custom_alias_on_windows(self, profile_env, monkeypatch):
         monkeypatch.setattr("sys.platform", "win32")
         from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile

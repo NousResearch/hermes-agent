@@ -1634,6 +1634,46 @@ async def get_sessions(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+def _profile_session_targets(profiles_mod) -> List[Tuple[str, Path]]:
+    """Return profile names + homes for session aggregation without heavy metadata.
+
+    The desktop asks ``/api/profiles/sessions`` during boot. Calling
+    ``profiles_mod.list_profiles()`` here is unnecessarily expensive because it
+    reads profile config, scans aliases, counts skills, and checks gateway PIDs;
+    the session aggregator only needs profile directories. A slow metadata scan
+    blocks the dashboard event loop and can make unrelated boot requests hit the
+    Electron IPC timeout.
+    """
+    targets: List[Tuple[str, Path]] = []
+    seen: set[str] = set()
+
+    def add(name: str, home: Path) -> None:
+        if name in seen or not home.is_dir():
+            return
+        seen.add(name)
+        targets.append((name, home))
+
+    try:
+        add("default", profiles_mod.get_profile_dir("default"))
+    except Exception:
+        try:
+            add("default", profiles_mod._get_default_hermes_home())
+        except Exception:
+            pass
+
+    try:
+        profiles_root = profiles_mod._get_profiles_root()
+        profile_re = profiles_mod._PROFILE_ID_RE
+        if profiles_root.is_dir():
+            for entry in sorted(profiles_root.iterdir()):
+                if entry.is_dir() and profile_re.match(entry.name):
+                    add(entry.name, entry)
+    except Exception:
+        _log.exception("GET /api/profiles/sessions: lightweight profile directory scan failed")
+
+    return targets
+
+
 @app.get("/api/profiles/sessions")
 async def get_profiles_sessions(
     limit: int = 20,
@@ -1665,12 +1705,7 @@ async def get_profiles_sessions(
         name, home = _cron_profile_home(profile)
         targets.append((name, home))
     else:
-        try:
-            infos = profiles_mod.list_profiles()
-            targets = [(info.name, info.path) for info in infos]
-        except Exception:
-            _log.exception("GET /api/profiles/sessions: list_profiles failed")
-            targets = []
+        targets = _profile_session_targets(profiles_mod)
         if not targets:
             targets.append(("default", profiles_mod.get_profile_dir("default")))
 
@@ -7195,11 +7230,18 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
 @app.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
-    try:
-        return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
-    except Exception:
-        _log.exception("GET /api/profiles failed; falling back to profile directory scan")
-        return {"profiles": _fallback_profile_dicts(profiles_mod)}
+
+    def build_profiles_response():
+        try:
+            return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
+        except Exception:
+            _log.exception("GET /api/profiles failed; falling back to profile directory scan")
+            return {"profiles": _fallback_profile_dicts(profiles_mod)}
+
+    # Profile listing may touch config files, gateway pid files, skill trees and
+    # alias wrappers. Keep that synchronous filesystem walk off the dashboard
+    # event loop so desktop boot/status API calls do not queue behind it.
+    return await asyncio.to_thread(build_profiles_response)
 
 
 @app.post("/api/profiles")

@@ -13,6 +13,7 @@ StepFun HTTP API is plain JSON over stdlib-compatible ``requests``.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict
 from unittest.mock import MagicMock
 
@@ -40,9 +41,24 @@ def _make_response(*, status_code: int = 200, body: bytes = b"", json_body: Any 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """Don't let ambient STEPFUN_API_KEY from the host env leak into tests."""
+    """Don't let ambient STEPFUN_API_KEY from the host env leak into tests.
+
+    The TTS provider reads STEPFUN_API_KEY / STEPFUN_BASE_URL through
+    ``hermes_cli.config.get_env_value``, which consults a cached .env
+    loader (not just os.environ). Mock that helper to fall through to
+    os.environ so ``monkeypatch.setenv`` inside individual tests can
+    inject credentials cleanly. Pattern borrowed from
+    tests/hermes_cli/test_runtime_provider_resolution.py.
+    """
     for key in ("STEPFUN_API_KEY", "STEPFUN_BASE_URL", "HERMES_SESSION_PLATFORM"):
         monkeypatch.delenv(key, raising=False)
+
+    import hermes_cli.config as _cfg_mod
+
+    def _passthrough(name, default=None):
+        return os.environ.get(name, default)
+
+    monkeypatch.setattr(_cfg_mod, "get_env_value", _passthrough)
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +140,9 @@ class TestBuiltinSync:
 
 
 class TestNormalizeBaseUrl:
-    """The /v1 base URL safety — audio endpoints return 404 when routed
-    through /step_plan/v1."""
+    """The /v1 base URL is always required for the audio endpoint, but
+    /step_plan/v1 is a valid prefix ONLY for the Step Plan tier models
+    (stepaudio-2.5-tts). step-tts-2 is PAYG-only and 404s on /step_plan/v1."""
 
     def test_default_when_empty(self):
         from tools.tts_tool import DEFAULT_STEPFUN_TTS_BASE_URL, _normalize_stepfun_tts_base_url
@@ -138,12 +155,28 @@ class TestNormalizeBaseUrl:
 
         assert _normalize_stepfun_tts_base_url("https://api.stepfun.ai/v1/") == "https://api.stepfun.ai/v1"
 
-    def test_step_plan_prefix_rewritten(self):
+    def test_step_plan_prefix_preserved_for_stepaudio_default(self):
+        """stepaudio-2.5-tts (the default) works on /step_plan/v1 — keep
+        the prefix so Step Plan subscribers get plan-tier billing."""
         from tools.tts_tool import _normalize_stepfun_tts_base_url
 
-        # /step_plan/v1 does NOT serve audio endpoints.
+        assert (
+            _normalize_stepfun_tts_base_url("https://api.stepfun.ai/step_plan/v1", model="stepaudio-2.5-tts")
+            == "https://api.stepfun.ai/step_plan/v1"
+        )
+        # No model passed (default = stepaudio) should also preserve step_plan.
         assert (
             _normalize_stepfun_tts_base_url("https://api.stepfun.ai/step_plan/v1")
+            == "https://api.stepfun.ai/step_plan/v1"
+        )
+
+    def test_step_plan_prefix_rewritten_for_steptts2(self):
+        """step-tts-2 is PAYG-only; the model isn't in the Step Plan
+        catalogue so /step_plan/v1 returns 404. Rewrite to /v1."""
+        from tools.tts_tool import _normalize_stepfun_tts_base_url
+
+        assert (
+            _normalize_stepfun_tts_base_url("https://api.stepfun.ai/step_plan/v1", model="step-tts-2")
             == "https://api.stepfun.ai/v1"
         )
 
@@ -241,18 +274,22 @@ class TestGenerateStepFunTts:
 
         assert result == output_path
         assert (tmp_path / "out.mp3").read_bytes() == audio
-        assert captured["url"] == "https://api.stepfun.ai/v1/audio/speech"
+        # Default is now stepaudio-2.5-tts so Step Plan subscribers hit
+        # the plan tier; URL is /step_plan/v1 (no STEPFUN_BASE_URL in env
+        # so the default is used).
+        assert captured["url"] == "https://api.stepfun.ai/step_plan/v1/audio/speech"
         assert captured["headers"]["Authorization"] == "Bearer test-key"
         assert captured["headers"]["Content-Type"] == "application/json"
-        assert captured["json"]["model"] == "step-tts-2"
+        assert captured["json"]["model"] == "stepaudio-2.5-tts"
         assert captured["json"]["input"] == "Hello world"
         assert captured["json"]["voice"] == "lively-girl"
         assert captured["json"]["response_format"] == "mp3"
         assert captured["json"]["speed"] == 1.0
         assert captured["json"]["volume"] == 1.0
-        # step-tts-2 default branch must NOT include ``instruction``
-        assert "instruction" not in captured["json"]
-        # No emotion/style configured → no voice_label
+        # stepaudio-2.5-tts default branch must NOT include emotion/style
+        assert "emotion" not in captured["json"]
+        assert "style" not in captured["json"]
+        # No voice_label on either model
         assert "voice_label" not in captured["json"]
 
     def test_steptts2_emotion_and_style_sent_as_flat_top_level_fields(self, tmp_path, monkeypatch):
@@ -291,7 +328,7 @@ class TestGenerateStepFunTts:
         monkeypatch.setenv("STEPFUN_API_KEY", "test-key")
         captured = _patched_post(monkeypatch, _make_response(body=b"x"))
 
-        config = {"stepfun": {"emotion": "Sad"}}
+        config = {"stepfun": {"model": "step-tts-2", "emotion": "Sad"}}
         _generate_stepfun_tts("hi", str(tmp_path / "x.mp3"), config)
 
         assert captured["json"]["emotion"] == "Sad"
@@ -304,7 +341,7 @@ class TestGenerateStepFunTts:
         monkeypatch.setenv("STEPFUN_API_KEY", "test-key")
         captured = _patched_post(monkeypatch, _make_response(body=b"x"))
 
-        config = {"stepfun": {"style": "Tender"}}
+        config = {"stepfun": {"model": "step-tts-2", "style": "Tender"}}
         _generate_stepfun_tts("hi", str(tmp_path / "x.mp3"), config)
 
         assert captured["json"]["style"] == "Tender"
@@ -458,10 +495,10 @@ class TestGenerateStepFunTts:
 
         assert captured["json"]["response_format"] == "opus"
 
-    def test_step_plan_base_url_is_rewritten(self, tmp_path, monkeypatch):
-        """Audio endpoints return 404 when routed through /step_plan/v1;
-        the provider must force-rewrite to /v1 even when the user
-        explicitly sets STEPFUN_BASE_URL to the Step Plan prefix."""
+    def test_step_plan_base_url_preserved_for_default_stepaudio(self, tmp_path, monkeypatch):
+        """Default model is stepaudio-2.5-tts, which works on /step_plan/v1.
+        With STEPFUN_BASE_URL set to the Step Plan prefix, the provider
+        must preserve it (not rewrite) so the request hits the plan tier."""
         from tools.tts_tool import _generate_stepfun_tts
 
         monkeypatch.setenv("STEPFUN_API_KEY", "test-key")
@@ -470,7 +507,23 @@ class TestGenerateStepFunTts:
 
         _generate_stepfun_tts("hi", str(tmp_path / "x.mp3"), {})
 
+        assert captured["url"] == "https://api.stepfun.ai/step_plan/v1/audio/speech"
+        assert captured["json"]["model"] == "stepaudio-2.5-tts"
+
+    def test_step_plan_base_url_rewritten_when_steptts2_explicit(self, tmp_path, monkeypatch):
+        """If the user explicitly picks step-tts-2, the Step Plan URL is
+        not valid for that model and must be rewritten to /v1."""
+        from tools.tts_tool import _generate_stepfun_tts
+
+        monkeypatch.setenv("STEPFUN_API_KEY", "test-key")
+        monkeypatch.setenv("STEPFUN_BASE_URL", "https://api.stepfun.ai/step_plan/v1")
+        captured = _patched_post(monkeypatch, _make_response(body=b"x"))
+
+        config = {"stepfun": {"model": "step-tts-2"}}
+        _generate_stepfun_tts("hi", str(tmp_path / "x.mp3"), config)
+
         assert captured["url"] == "https://api.stepfun.ai/v1/audio/speech"
+        assert captured["json"]["model"] == "step-tts-2"
 
     def test_config_base_url_overrides_env(self, tmp_path, monkeypatch):
         from tools.tts_tool import _generate_stepfun_tts
@@ -525,7 +578,9 @@ class TestGenerateStepFunTts:
 
         # Slow is a speaking-style tag — but we put it in the emotion slot
         # because that's what the user typed. The API happily accepts it.
-        config = {"stepfun": {"emotion": "Slow"}}
+        # Pin to step-tts-2 because that's the model that supports
+        # emotion/style flat fields (stepaudio-2.5-tts would drop them).
+        config = {"stepfun": {"model": "step-tts-2", "emotion": "Slow"}}
         _generate_stepfun_tts("hi", str(tmp_path / "x.mp3"), config)
 
         assert captured["json"]["emotion"] == "Slow"
@@ -537,7 +592,9 @@ class TestGenerateStepFunTts:
         captured = _patched_post(monkeypatch, _make_response(body=b"x"))
 
         # Happy is an emotion tag — but in the style slot, the API accepts it.
-        config = {"stepfun": {"style": "Happy"}}
+        # Pin to step-tts-2 because that's the model that supports
+        # emotion/style flat fields (stepaudio-2.5-tts would drop them).
+        config = {"stepfun": {"model": "step-tts-2", "style": "Happy"}}
         _generate_stepfun_tts("hi", str(tmp_path / "x.mp3"), config)
 
         assert captured["json"]["style"] == "Happy"
@@ -577,7 +634,9 @@ class TestGenerateStepFunTts:
         monkeypatch.setenv("STEPFUN_API_KEY", "test-key")
         captured = _patched_post(monkeypatch, _make_response(body=b"x"))
 
-        config = {"stepfun": {"emotion": "Overjoyed"}}
+        # Pin to step-tts-2 because that's the model that supports
+        # emotion/style (stepaudio-2.5-tts would drop them with a log).
+        config = {"stepfun": {"model": "step-tts-2", "emotion": "Overjoyed"}}
         with caplog.at_level(logging.WARNING, logger="tools.tts_tool"):
             _generate_stepfun_tts("hi", str(tmp_path / "x.mp3"), config)
 

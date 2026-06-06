@@ -1337,7 +1337,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 # Config (all optional, all under ``tts.stepfun.``)::
 #
 #     stepfun:
-#       model: step-tts-2              # step-tts-2 (default) | stepaudio-2.5-tts
+#       model: stepaudio-2.5-tts       # default; step-tts-2 still selectable (PAYG only)
 #       voice: lively-girl             # system voice id (see Voice ID List)
 #       emotion: Happy                 # step-tts-2 only; ignored for stepaudio-2.5-tts
 #       style: Slow                    # step-tts-2 only; ignored for stepaudio-2.5-tts
@@ -1345,16 +1345,24 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 #       volume: 1.0                    # 0.1 – 2.0; applied via ``volume`` field
 #       instruction: ""                # natural-language emotion/style (stepaudio-2.5-tts only)
 #       response_format: mp3           # mp3 | wav | flac | opus | pcm
-#       base_url: ""                   # override; default https://api.stepfun.ai/v1
+#       base_url: ""                   # override; default https://api.stepfun.ai/step_plan/v1
 #
 # API docs: https://platform.stepfun.ai/docs/en/guides/developer/tts
-# Hermes-only contract: audio endpoints return 404 when routed through
-# ``/step_plan/v1`` — the base URL is force-normalized to ``/v1`` even when
-# STEPFUN_BASE_URL points at the Step Plan prefix (same safety as the StepFun
-# STT provider).
-DEFAULT_STEPFUN_TTS_MODEL = "step-tts-2"
+#
+# Default is ``stepaudio-2.5-tts`` (the Step Plan model) so users with a
+# Flash-Plus / Flash-Max subscription get their TTS calls billed to the
+# plan's quota rather than pay-as-you-go. ``step-tts-2`` is still
+# supported by setting ``tts.stepfun.model: step-tts-2`` explicitly, but
+# the /v1/audio/speech endpoint for step-tts-2 only exists on the PAYG
+# base URL (``https://api.stepfun.ai/v1``) — not the Step Plan URL
+# (``/step_plan/v1``). See _normalize_stepfun_tts_base_url below.
+DEFAULT_STEPFUN_TTS_MODEL = "stepaudio-2.5-tts"
 DEFAULT_STEPFUN_TTS_VOICE = "lively-girl"
-DEFAULT_STEPFUN_TTS_BASE_URL = "https://api.stepfun.ai/v1"
+# Default base URL is the Step Plan tier so subscribers hit plan quota
+# by default; users without a Step Plan can override via
+# tts.stepfun.base_url or STEPFUN_BASE_URL to point at /v1 (PAYG).
+# (Both URLs work for stepaudio-2.5-tts; only /v1 works for step-tts-2.)
+DEFAULT_STEPFUN_TTS_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_TTS_MODELS = frozenset({"step-tts-2", "stepaudio-2.5-tts"})
 STEPFUN_TTS_RESPONSE_FORMATS = frozenset({"mp3", "wav", "flac", "opus", "pcm"})
 # step-tts-2 voice tags (https://platform.stepfun.ai/docs/en/guides/developer/tts#voice-tags-list).
@@ -1378,22 +1386,32 @@ STEPFUN_TTS_STYLE_TAGS = frozenset({
 STEPFUN_TTS_ALL_TAGS = STEPFUN_TTS_EMOTION_TAGS | STEPFUN_TTS_STYLE_TAGS
 
 
-def _normalize_stepfun_tts_base_url(raw: object) -> str:
-    """Return a /v1 audio-safe base URL for StepFun.
+def _normalize_stepfun_tts_base_url(raw: object, model: str | None = None) -> str:
+    """Return a base URL valid for the requested StepFun TTS model.
 
-    The Step Plan prefix ``/step_plan/v1`` does not serve audio endpoints —
-    StepFun returns ``404 model_invalid`` for any /v1/audio/* request routed
-    through it. Force the URL to the canonical /v1 path. Mirrors the safety
-    pattern in the StepFun STT provider (tools/transcription_tools.py).
+    Model / base-URL matrix (verified against the StepFun API):
+
+    - ``stepaudio-2.5-tts``  → works on BOTH ``/v1`` (PAYG) and
+      ``/step_plan/v1`` (Step Plan tier). The Step Plan URL is preferred
+      so Flash-Plus / Flash-Max subscribers consume plan quota, not
+      pay-as-you-go credit.
+    - ``step-tts-2``         → only works on ``/v1`` (PAYG). The model
+      is not in the Step Plan catalogue at all, so any ``/step_plan/v1``
+      request returns 404. If a user picks step-tts-2 we must rewrite
+      ``/step_plan/v1`` → ``/v1`` even if STEPFUN_BASE_URL points at
+      the Step Plan prefix.
+
+    Always anchor on ``/v1`` — the audio endpoints are namespaced under it.
+    Handles ``https://api.stepfun.ai`` → ``https://api.stepfun.ai/v1``
+    and ``https://api.stepfun.ai/v2`` → ``https://api.stepfun.ai/v1``.
     """
     base = str(raw or "").strip().rstrip("/") or DEFAULT_STEPFUN_TTS_BASE_URL
-    if "step_plan" in base:
+
+    # step-tts-2 is PAYG-only: strip /step_plan if the caller picked it.
+    if model == "step-tts-2" and "step_plan" in base:
         base = "https://api.stepfun.ai/v1"
-    # Always anchor on /v1 — the audio endpoints are namespaced under it.
+
     if not base.endswith("/v1"):
-        # Strip any trailing path the user supplied and replace with /v1.
-        # Handles "https://api.stepfun.ai" → "https://api.stepfun.ai/v1"
-        # and "https://api.stepfun.ai/v2" → "https://api.stepfun.ai/v1".
         from urllib.parse import urlparse, urlunparse
         parsed = urlparse(base)
         base = urlunparse(parsed._replace(path="/v1"))
@@ -1502,6 +1520,7 @@ def _generate_stepfun_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
     base_url = _normalize_stepfun_tts_base_url(
         sf_config.get("base_url") or get_env_value("STEPFUN_BASE_URL"),
+        model=model,
     )
 
     payload: Dict[str, Any] = {

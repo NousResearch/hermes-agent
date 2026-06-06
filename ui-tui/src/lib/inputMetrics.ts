@@ -179,7 +179,11 @@ export function transcriptGutterWidth(role: Role, userPrompt: string) {
 }
 
 export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: string, termuxMode = false) {
-  const horizontalReserve = termuxMode ? 2 : 4
+  // Transcript rows reserve the prompt gutter plus the outer transcript padding.
+  // Keep this in sync with MessageLine's rendered Box geometry: a one-cell
+  // prompt such as `❯` at 26 cols should leave 21 body columns, while wider
+  // prompts still reduce the body enough to affect wrapping estimates.
+  const horizontalReserve = termuxMode ? 2 : 3
   const available = Math.max(1, totalCols - transcriptGutterWidth(role, userPrompt) - horizontalReserve)
 
   if (termuxMode) {

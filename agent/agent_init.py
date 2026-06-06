@@ -885,6 +885,14 @@ def init_agent(
                     headers["x-anthropic-beta"] = _FINE_GRAINED
                 client_kwargs["default_headers"] = headers
 
+        # User-configured request headers (model.default_headers in
+        # config.yaml) override provider/SDK defaults. Lets custom
+        # OpenAI-compatible endpoints behind a gateway/WAF that rejects the
+        # OpenAI SDK's identifying headers swap in a plain User-Agent. (#40033)
+        # client_kwargs is the same dict object as agent._client_kwargs, so
+        # this mutation is reflected in the client built just below.
+        agent._apply_user_default_headers()
+
         agent.api_key = client_kwargs.get("api_key", "")
         agent.base_url = client_kwargs.get("base_url", agent.base_url)
         try:

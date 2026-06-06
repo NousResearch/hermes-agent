@@ -3809,6 +3809,45 @@ class AIAgent:
             else:
                 self._client_kwargs.pop("default_headers", None)
 
+        # User-configured overrides win over URL/profile defaults — keep them
+        # applied across credential swaps and client rebuilds, not just at
+        # first construction.
+        self._apply_user_default_headers()
+
+    def _apply_user_default_headers(self) -> None:
+        """Merge user-configured request headers onto the OpenAI client.
+
+        Reads ``model.default_headers`` from config.yaml and merges it onto
+        ``self._client_kwargs["default_headers"]``, with user values taking
+        precedence over provider- and SDK-supplied defaults.
+
+        This exists for ``custom`` OpenAI-compatible endpoints sitting behind
+        a gateway/WAF that rejects the OpenAI Python SDK's identifying headers
+        (``User-Agent: OpenAI/Python ...``, ``X-Stainless-*``). Setting e.g.
+        ``model.default_headers: {User-Agent: curl/8.7.1}`` lets the request
+        reach such an upstream instead of failing with an opaque 4xx/502 even
+        though the same body works under ``curl``. (#40033)
+
+        No-op for Anthropic/Bedrock modes, which don't use the OpenAI client,
+        and when no overrides are configured.
+        """
+        if self.api_mode in ("anthropic_messages", "bedrock_converse"):
+            return
+        try:
+            from hermes_cli.config import cfg_get, load_config
+            user_headers = cfg_get(load_config(), "model", "default_headers")
+        except Exception:
+            return
+        if not isinstance(user_headers, dict) or not user_headers:
+            return
+        merged = dict(self._client_kwargs.get("default_headers") or {})
+        for key, value in user_headers.items():
+            if value is None:
+                continue
+            merged[str(key)] = str(value)
+        if merged:
+            self._client_kwargs["default_headers"] = merged
+
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url

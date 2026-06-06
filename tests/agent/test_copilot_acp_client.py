@@ -98,6 +98,25 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertNotIn("abc123def456", content)
         self.assertIn("OPENAI_API_KEY=", content)
 
+    def test_read_text_file_honors_first_page_pagination(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            text_file = root / "sample.txt"
+            text_file.write_text("one\ntwo\nthree\n")
+
+            response = self._dispatch(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 33,
+                    "method": "fs/read_text_file",
+                    "params": {"path": str(text_file), "line": 1, "limit": 1},
+                },
+                cwd=str(root),
+            )
+
+        content = ((response.get("result") or {}).get("content") or "")
+        self.assertEqual(content, "one\n")
+
     def test_write_text_file_reuses_write_denylist(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir) / "home"

@@ -2622,10 +2622,15 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
-def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
+def _build_service_path_dirs(
+    project_root: Path | None = None,
+    hermes_home: Path | None = None,
+) -> list[str]:
     """Build PATH directory list for service units, excluding non-existent dirs."""
     if project_root is None:
         project_root = PROJECT_ROOT
+    if hermes_home is None:
+        hermes_home = get_hermes_home()
 
     def _is_dir(path: Path) -> bool:
         try:
@@ -2645,7 +2650,6 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     if _is_dir(node_bin):
         candidates.append(str(node_bin))
 
-    hermes_home = get_hermes_home()
     hermes_node = hermes_home / "node" / "bin"
     if _is_dir(hermes_node):
         candidates.append(str(hermes_node))
@@ -2726,6 +2730,18 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
         profile_arg = _profile_arg_for_target_user(hermes_home, home_dir)
+        # Rebuild path_entries using the target user's hermes_home so that
+        # paths like ~/.hermes/node/bin are resolved against the correct home
+        # directory rather than the calling user's (e.g. /root when run via
+        # sudo).  The initial _build_service_path_dirs() above uses
+        # get_hermes_home(), which returns /root/.hermes under sudo — those
+        # hermes-local node dirs never exist for root and are silently
+        # omitted, causing a persistent "unit is outdated" false positive.
+        path_entries = _build_service_path_dirs(hermes_home=Path(hermes_home))
+        if resolved_node:
+            resolved_node_dir = str(Path(resolved_node).resolve().parent)
+            if resolved_node_dir not in path_entries:
+                path_entries.append(resolved_node_dir)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
         # actually access them.

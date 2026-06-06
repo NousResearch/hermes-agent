@@ -5694,3 +5694,146 @@ def test_notification_event_dedup_key_keeps_completions_one_shot():
     assert server._notification_event_dedup_key(first) == server._notification_event_dedup_key(
         replay
     )
+
+
+# ---------------------------------------------------------------------------
+# file.attach / file.list / file.detach — generalized file upload JSON-RPC.
+# Added in v2 design. Tests use the same fake_cli injection pattern as the
+# existing image.attach tests above.
+# ---------------------------------------------------------------------------
+
+
+def _file_attach_fake_cli(sandbox_root, *, validate_raises=None):
+    """Build a fake cli module exposing the symbols that file.attach handler
+    imports. If validate_raises is set, _validate_upload will raise that.
+    """
+    from cli import _copy_to_sandbox as real_copy_to_sandbox  # for kind/mime dispatch
+
+    fake = types.ModuleType("cli")
+    fake._split_path_input = lambda raw: (raw, "")
+    fake._resolve_attachment_path = lambda raw: Path(raw) if raw else None
+    fake._detect_mime = lambda p: "image/png" if str(p).endswith(".png") else "text/markdown" if str(p).endswith(".md") else "application/octet-stream"
+    fake._validate_upload = (
+        (lambda p, m, s: (_ for _ in ()).throw(validate_raises))
+        if validate_raises
+        else lambda p, m, s: types.SimpleNamespace(mime_type=m, size_bytes=s, allowed=True)
+    )
+    fake._copy_to_sandbox = real_copy_to_sandbox
+    fake._list_attached = lambda session_id: []  # overridden per-test
+    return fake
+
+
+def test_file_attach_appends_text_file(monkeypatch, tmp_path):
+    """A markdown file goes through the pipeline and is registered as attached."""
+    monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "cli", _file_attach_fake_cli(tmp_path))
+    server._sessions["file-sid-1"] = _session()
+
+    md = tmp_path / "notes.md"
+    md.write_bytes(b"# Title\n\nBody text.\n")
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "file.attach",
+            "params": {"session_id": "file-sid-1", "path": str(md)},
+        }
+    )
+
+    assert "result" in resp, f"unexpected error: {resp}"
+    assert resp["result"]["attached"] is True
+    assert resp["result"]["name"] == "notes.md"
+    assert resp["result"]["mime_type"] == "text/markdown"
+    assert resp["result"]["size_bytes"] > 0
+    assert "stored_path" in resp["result"]
+
+
+def test_file_attach_rejects_executable(monkeypatch, tmp_path):
+    """An executable MIME is rejected by _validate_upload before copy."""
+    monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+    monkeypatch.setitem(
+        sys.modules,
+        "cli",
+        _file_attach_fake_cli(tmp_path, validate_raises=ValueError("MIME type not allowed: 'application/x-msdownload'")),
+    )
+    server._sessions["file-sid-2"] = _session()
+
+    bad = tmp_path / "evil.exe"
+    bad.write_bytes(b"MZ\x90\x00")
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "file.attach",
+            "params": {"session_id": "file-sid-2", "path": str(bad)},
+        }
+    )
+
+    assert "error" in resp
+    assert "not allowed" in resp["error"]["message"].lower()
+
+
+def test_file_attach_missing_path(monkeypatch, tmp_path):
+    """A nonexistent path is rejected by _resolve_attachment_path."""
+    monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+    fake = _file_attach_fake_cli(tmp_path)
+    fake._resolve_attachment_path = lambda raw: None  # not found
+    monkeypatch.setitem(sys.modules, "cli", fake)
+    server._sessions["file-sid-3"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "file.attach",
+            "params": {"session_id": "file-sid-3", "path": "/no/such/file.txt"},
+        }
+    )
+
+    assert "error" in resp
+    assert "not found" in resp["error"]["message"].lower()
+
+
+def test_file_attach_missing_path_field(monkeypatch, tmp_path):
+    """Empty path field returns 4015."""
+    monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "cli", _file_attach_fake_cli(tmp_path))
+    server._sessions["file-sid-4"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "file.attach",
+            "params": {"session_id": "file-sid-4", "path": ""},
+        }
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4015
+
+
+def test_file_attach_respects_size_limit(monkeypatch, tmp_path):
+    """A file over MAX_UPLOAD_SIZE_BYTES is rejected by _validate_upload."""
+    monkeypatch.setenv("HERMES_SANDBOX_ROOT", str(tmp_path))
+    monkeypatch.setitem(
+        sys.modules,
+        "cli",
+        _file_attach_fake_cli(
+            tmp_path,
+            validate_raises=ValueError("File big.png is 200.0 MB, exceeds size limit of 0.0 MB."),
+        ),
+    )
+    server._sessions["file-sid-5"] = _session()
+
+    big = tmp_path / "big.png"
+    big.write_bytes(b"x" * 100)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "file.attach",
+            "params": {"session_id": "file-sid-5", "path": str(big)},
+        }
+    )
+
+    assert "error" in resp
+    assert "size" in resp["error"]["message"].lower()

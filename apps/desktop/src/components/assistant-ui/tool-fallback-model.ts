@@ -90,6 +90,7 @@ const TOOL_META: Record<string, ToolMeta> = {
   },
   browser_type: { done: 'Typed on page', pending: 'Typing on page', icon: 'globe', tone: 'browser' },
   clarify: { done: 'Asked a question', pending: 'Asking a question', icon: 'question', tone: 'agent' },
+  cronjob: { done: 'Cron job', pending: 'Scheduling cron job', icon: 'watch', tone: 'agent' },
   edit_file: { done: 'Edited file', pending: 'Editing file', icon: 'edit', tone: 'file' },
   execute_code: { done: 'Ran code', pending: 'Running code', icon: 'terminal', tone: 'terminal' },
   image_generate: { done: 'Generated image', pending: 'Generating image', icon: 'file-media', tone: 'image' },
@@ -899,6 +900,80 @@ function fallbackDetailText(args: unknown, result: unknown): string {
   return formatToolResultSummary(args) || minimalValueSummary(args)
 }
 
+function cronScalar(value: unknown): string {
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+
+  return ''
+}
+
+function formatCronTime(iso: string): string {
+  const ts = Date.parse(iso)
+
+  if (Number.isNaN(ts)) return iso
+
+  return new Date(ts).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+function cronjobSubtitle(
+  argsRecord: Record<string, unknown>,
+  resultRecord: Record<string, unknown>
+): string {
+  const jobs = Array.isArray(resultRecord.jobs) ? resultRecord.jobs : null
+
+  if (jobs) {
+    return jobs.length ? `${jobs.length} cron job${jobs.length === 1 ? '' : 's'}` : 'No cron jobs'
+  }
+
+  const message = firstStringField(resultRecord, ['message'])
+
+  if (message) return message
+
+  const action = firstStringField(argsRecord, ['action']) || 'manage'
+  const name = firstStringField(resultRecord, ['name']) || firstStringField(argsRecord, ['name', 'job_id'])
+  const label = `${action[0]?.toUpperCase() ?? ''}${action.slice(1)}`
+
+  return name ? `${label} ${name}` : `Cron ${action}`
+}
+
+function cronjobDetail(
+  argsRecord: Record<string, unknown>,
+  resultRecord: Record<string, unknown>
+): string {
+  const jobs = Array.isArray(resultRecord.jobs) ? resultRecord.jobs : null
+
+  if (jobs) {
+    if (!jobs.length) return 'No cron jobs scheduled'
+
+    return jobs
+      .slice(0, 20)
+      .map(job => {
+        const row = isRecord(job) ? job : {}
+        const name = firstStringField(row, ['name', 'id']) || 'job'
+        const sched = firstStringField(row, ['schedule_display', 'schedule'])
+
+        return sched ? `- ${name} · ${sched}` : `- ${name}`
+      })
+      .join('\n')
+  }
+
+  const nextRun = cronScalar(resultRecord.next_run_at)
+  const rows: [string, string][] = [
+    ['Schedule', cronScalar(resultRecord.schedule)],
+    ['Repeat', cronScalar(resultRecord.repeat)],
+    ['Delivery', cronScalar(resultRecord.deliver)],
+    ['Next run', nextRun ? formatCronTime(nextRun) : '']
+  ]
+  const lines = rows.filter(([, value]) => value).map(([key, value]) => `${key}: ${value}`)
+
+  return lines.length ? lines.join('\n') : fallbackDetailText(argsRecord, resultRecord)
+}
+
 function toolSubtitle(
   part: ToolPart,
   argsRecord: Record<string, unknown>,
@@ -990,6 +1065,10 @@ function toolSubtitle(
       findFirstUrl(argsRecord, resultRecord)
 
     return url ? hostnameOf(url) : 'Fetched webpage'
+  }
+
+  if (toolName === 'cronjob') {
+    return cronjobSubtitle(argsRecord, resultRecord)
   }
 
   return (
@@ -1090,6 +1169,10 @@ function toolDetailText(
     return detail
       .replace(/^\s*-\s*Duration\s+S\s*:\s*[-+]?[\d.]+(?:e[-+]?\d+)?\s*$/gim, `- Duration: ${duration}`)
       .replace(/\bDuration\s+S\s*:/gi, 'Duration:')
+  }
+
+  if (part.toolName === 'cronjob') {
+    return cronjobDetail(argsRecord, resultRecord)
   }
 
   return fallbackDetailText(argsRecord, resultRecord)

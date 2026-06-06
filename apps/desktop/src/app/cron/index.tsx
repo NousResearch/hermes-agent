@@ -1,5 +1,6 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -19,15 +20,18 @@ import {
   createCronJob,
   type CronJob,
   deleteCronJob,
+  getCronJobRuns,
   getCronJobs,
   pauseCronJob,
   resumeCronJob,
+  type SessionInfo,
   triggerCronJob,
   updateCronJob
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, Clock } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $cronFocusJobId, setCronFocusJobId } from '@/store/cron'
 import { notify, notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -35,7 +39,7 @@ import { OverlayView } from '../overlays/overlay-view'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import { CronJobActionsMenu, CronJobActionsTrigger } from './cron-job-actions-menu'
+import { jobState, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -108,10 +112,6 @@ function jobScheduleDisplay(job: CronJob): string {
 
 function jobScheduleExpr(job: CronJob): string {
   return asText(job.schedule?.expr) || asText(job.schedule_display) || ''
-}
-
-function jobState(job: CronJob): string {
-  return asText(job.state) || (job.enabled === false ? 'disabled' : 'scheduled')
 }
 
 function jobDeliver(job: CronJob): string {
@@ -261,16 +261,28 @@ function matchesQuery(job: CronJob, q: string): boolean {
 
 interface CronViewProps extends React.ComponentProps<'section'> {
   onClose: () => void
+  onOpenSession?: (sessionId: string) => void
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
-export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: CronViewProps) {
+export function CronView({
+  onClose,
+  onOpenSession,
+  setStatusbarItemGroup: _setStatusbarItemGroup,
+  ...props
+}: CronViewProps) {
   const { t } = useI18n()
   const c = t.cron
   const [jobs, setJobs] = useState<CronJob[] | null>(null)
   const [query, setQuery] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const [busyJobId, setBusyJobId] = useState<null | string>(null)
+  // Master/detail: the job whose schedule + run history fill the right pane.
+  const [selectedJobId, setSelectedJobId] = useState<null | string>(null)
+  // Set when a job is opened from the sidebar so we scroll it into view once the
+  // row exists. Cleared after the scroll fires.
+  const pendingScrollRef = useRef<null | string>(null)
+  const focusJobId = useStore($cronFocusJobId)
 
   const [editor, setEditor] = useState<EditorState>({ mode: 'closed' })
   const [pendingDelete, setPendingDelete] = useState<CronJob | null>(null)
@@ -295,6 +307,22 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
     void refresh()
   }, [refresh])
 
+  // Sidebar → "open this job": resolve the focus id (or name) to a job, select
+  // it, queue a scroll, then clear the one-shot focus so re-opening cron
+  // normally doesn't re-trigger it.
+  useEffect(() => {
+    if (!focusJobId || !jobs) {return}
+
+    const match = jobs.find(job => job.id === focusJobId || jobName(job) === focusJobId)
+
+    if (match) {
+      setSelectedJobId(match.id)
+      pendingScrollRef.current = match.id
+    }
+
+    setCronFocusJobId(null)
+  }, [focusJobId, jobs])
+
   const visibleJobs = useMemo(() => {
     if (!jobs) {
       return []
@@ -302,6 +330,25 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
 
     return jobs.filter(job => matchesQuery(job, query.trim())).sort((a, b) => jobTitle(a).localeCompare(jobTitle(b)))
   }, [jobs, query])
+
+  // Detail always reflects a concrete job: the explicitly selected one, else the
+  // first visible row, so the right pane is never empty while jobs exist.
+  const selectedJob = useMemo(
+    () => visibleJobs.find(job => job.id === selectedJobId) ?? visibleJobs[0] ?? null,
+    [visibleJobs, selectedJobId]
+  )
+
+  // Scroll a sidebar-opened job into view once its list row is mounted.
+  useEffect(() => {
+    const target = pendingScrollRef.current
+
+    if (!target || selectedJob?.id !== target) {return}
+
+    pendingScrollRef.current = null
+    requestAnimationFrame(() => {
+      document.querySelector(`[data-cron-row="${CSS.escape(target)}"]`)?.scrollIntoView({ block: 'nearest' })
+    })
+  }, [selectedJob])
 
   const enabledCount = jobs?.filter(job => job.enabled).length ?? 0
   const totalCount = jobs?.length ?? 0
@@ -420,12 +467,11 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
             title={totalCount === 0 ? c.emptyTitleNew : c.emptyTitleSearch}
           />
         ) : (
-          <div className="h-full overflow-y-auto px-4 py-3">
-            {/* Inline header replaces the old top-bar "New cron" button. We
-                still need a single, always-visible affordance to add a job
-                when the list is non-empty (rows themselves only expose
-                edit/pause/trigger/delete). */}
-            <div className="mb-2 flex items-center justify-between">
+          // Master/detail: job list on the left, the selected job's schedule,
+          // actions, and run history on the right. Replaces the old accordion
+          // (collapse-in-row inside a modal) — fewer clicks, no nested toggles.
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="flex items-center justify-between px-4 pb-2 pt-3">
               <span className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">
                 {c.active(enabledCount, totalCount)}
               </span>
@@ -434,19 +480,32 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
                 {c.newCron}
               </Button>
             </div>
-            <div className="divide-y divide-border/40 rounded-lg border border-border/40 bg-background/70">
-              {visibleJobs.map(job => (
-                <CronJobRow
-                  busy={busyJobId === job.id}
-                  c={c}
-                  job={job}
-                  key={job.id}
-                  onDelete={() => setPendingDelete(job)}
-                  onEdit={() => setEditor({ mode: 'edit', job })}
-                  onPauseResume={() => void handlePauseResume(job)}
-                  onTrigger={() => void handleTrigger(job)}
-                />
-              ))}
+            <div className="grid min-h-0 flex-1 grid-cols-[minmax(12rem,17rem)_minmax(0,1fr)] gap-3 px-4 pb-3">
+              <div className="min-h-0 overflow-y-auto rounded-lg border border-border/40 bg-background/70 p-1">
+                {visibleJobs.map(job => (
+                  <CronJobListRow
+                    active={selectedJob?.id === job.id}
+                    c={c}
+                    job={job}
+                    key={job.id}
+                    onSelect={() => setSelectedJobId(job.id)}
+                  />
+                ))}
+              </div>
+              <div className="min-h-0 overflow-y-auto rounded-lg border border-border/40 bg-background/70">
+                {selectedJob && (
+                  <CronJobDetail
+                    busy={busyJobId === selectedJob.id}
+                    c={c}
+                    job={selectedJob}
+                    onDelete={() => setPendingDelete(selectedJob)}
+                    onEdit={() => setEditor({ mode: 'edit', job: selectedJob })}
+                    onOpenSession={onOpenSession}
+                    onPauseResume={() => void handlePauseResume(selectedJob)}
+                    onTrigger={() => void handleTrigger(selectedJob)}
+                  />
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -481,12 +540,48 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
   )
 }
 
-function CronJobRow({
+function CronJobListRow({
+  active,
+  c,
+  job,
+  onSelect
+}: {
+  active: boolean
+  c: Translations['cron']
+  job: CronJob
+  onSelect: () => void
+}) {
+  const state = jobState(job)
+
+  return (
+    <button
+      className={cn(
+        'flex w-full flex-col gap-1 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+        active ? 'bg-(--chrome-action-hover)' : 'hover:bg-(--chrome-action-hover)'
+      )}
+      data-cron-row={job.id}
+      onClick={onSelect}
+      type="button"
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          aria-hidden="true"
+          className={cn('size-1.5 shrink-0 rounded-full', STATE_DOT[state] ?? 'bg-muted-foreground')}
+        />
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">{jobTitle(job)}</span>
+      </div>
+      <span className="truncate pl-3.5 text-[0.68rem] text-muted-foreground">{jobScheduleDisplay(job)}</span>
+    </button>
+  )
+}
+
+function CronJobDetail({
   busy,
   c,
   job,
   onDelete,
   onEdit,
+  onOpenSession,
   onPauseResume,
   onTrigger
 }: {
@@ -495,32 +590,27 @@ function CronJobRow({
   job: CronJob
   onDelete: () => void
   onEdit: () => void
+  onOpenSession?: (sessionId: string) => void
   onPauseResume: () => void
   onTrigger: () => void
 }) {
   const state = jobState(job)
   const isPaused = state === 'paused'
-  const hasName = Boolean(jobName(job))
-  const prompt = jobPrompt(job)
   const deliver = jobDeliver(job)
+  const prompt = jobPrompt(job)
 
   return (
-    <div className="grid gap-3 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-      <button
-        className="min-w-0 cursor-pointer rounded-md text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-        onClick={onEdit}
-        type="button"
-      >
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex flex-col gap-3 border-b border-border/40 px-4 py-3">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate text-sm font-medium">{jobTitle(job)}</span>
+          <span className="text-sm font-medium">{jobTitle(job)}</span>
           <StatePill tone={STATE_TONE[state] ?? 'muted'}>{c.states[state] ?? state}</StatePill>
           {deliver && deliver !== DEFAULT_DELIVER && (
             <StatePill tone="muted">{c.deliveryLabels[deliver] ?? deliver}</StatePill>
           )}
         </div>
-        {hasName && prompt && <p className="mt-1 truncate text-xs text-muted-foreground">{truncate(prompt, 120)}</p>}
-        <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.68rem] text-muted-foreground">
-          <span className="inline-flex items-center gap-1 font-mono">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.68rem] text-muted-foreground">
+          <span className="inline-flex items-center gap-1">
             <Clock className="size-3" />
             {jobScheduleDisplay(job)}
           </span>
@@ -531,31 +621,124 @@ function CronJobRow({
             {c.next} {formatTime(job.next_run_at)}
           </span>
         </div>
+        {prompt && <p className="line-clamp-3 text-xs text-muted-foreground">{prompt}</p>}
         {job.last_error && (
-          <p className="mt-1 inline-flex items-start gap-1 text-[0.68rem] text-destructive">
+          <p className="inline-flex items-start gap-1 text-[0.68rem] text-destructive">
             <AlertTriangle className="mt-px size-3 shrink-0" />
             <span className="line-clamp-2">{job.last_error}</span>
           </p>
         )}
-      </button>
-
-      <div className="flex shrink-0 items-center">
-        <CronJobActionsMenu
-          busy={busy}
-          isPaused={isPaused}
-          onDelete={onDelete}
-          onEdit={onEdit}
-          onPauseResume={onPauseResume}
-          onTrigger={onTrigger}
-          title={jobTitle(job)}
-        >
-          <CronJobActionsTrigger
-            className="text-muted-foreground hover:text-foreground"
-            onClick={event => event.stopPropagation()}
-            title={jobTitle(job)}
-          />
-        </CronJobActionsMenu>
+        <div className="flex flex-wrap gap-1.5">
+          <Button disabled={busy} onClick={onPauseResume} size="sm" variant="outline">
+            <Codicon name={isPaused ? 'play' : 'debug-pause'} size="0.875rem" />
+            {isPaused ? c.resumeTitle : c.pauseTitle}
+          </Button>
+          <Button disabled={busy} onClick={onTrigger} size="sm" variant="outline">
+            <Codicon name="zap" size="0.875rem" />
+            {c.triggerNow}
+          </Button>
+          <Button onClick={onEdit} size="sm" variant="outline">
+            <Codicon name="edit" size="0.875rem" />
+            {c.edit}
+          </Button>
+          <Button onClick={onDelete} size="sm" variant="ghost">
+            <Codicon name="trash" size="0.875rem" />
+          </Button>
+        </div>
       </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <CronJobRuns c={c} jobId={job.id} onOpenSession={onOpenSession} />
+      </div>
+    </div>
+  )
+}
+
+function formatRunTime(seconds?: null | number): string {
+  if (!seconds) {
+    return '—'
+  }
+
+  const date = new Date(seconds * 1000)
+
+  return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString()
+}
+
+// Runs are produced by the background scheduler tick (no UI signal), so poll
+// while the panel is open + on tab re-focus so a fired run shows up within a few
+// seconds instead of waiting for a reload.
+const RUNS_POLL_INTERVAL_MS = 8000
+
+function CronJobRuns({
+  c,
+  jobId,
+  onOpenSession
+}: {
+  c: Translations['cron']
+  jobId: string
+  onOpenSession?: (sessionId: string) => void
+}) {
+  const [runs, setRuns] = useState<null | SessionInfo[]>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    const load = () =>
+      getCronJobRuns(jobId)
+        .then(result => {
+          if (!cancelled) {setRuns(result)}
+        })
+        .catch(() => {
+          if (!cancelled) {setRuns(prev => prev ?? [])}
+        })
+
+    void load()
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {void load()}
+    }, RUNS_POLL_INTERVAL_MS)
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {void load()}
+    }
+
+    document.addEventListener('visibilitychange', onVisible)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [jobId])
+
+  return (
+    <div>
+      <div className="mb-1.5 text-[0.62rem] font-medium uppercase tracking-wide text-muted-foreground">
+        {c.runHistory}
+        {runs && runs.length > 0 ? ` · ${runs.length}` : ''}
+      </div>
+      {runs === null ? (
+        <div className="flex items-center gap-1.5 py-1 text-xs text-muted-foreground">
+          <Codicon name="loading" size="0.75rem" spinning />
+        </div>
+      ) : runs.length === 0 ? (
+        <div className="py-1 text-xs text-muted-foreground">{c.noRuns}</div>
+      ) : (
+        <div className="flex flex-col gap-px">
+          {runs.map(run => (
+            <button
+              className="flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs hover:bg-(--chrome-action-hover) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              key={run.id}
+              onClick={() => onOpenSession?.(run.id)}
+              type="button"
+            >
+              <span className="truncate text-foreground">{run.title?.trim() || run.preview?.trim() || run.id}</span>
+              <span className="shrink-0 text-[0.62rem] text-muted-foreground tabular-nums">
+                {formatRunTime(run.last_active || run.started_at)}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -275,6 +275,21 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
     return SKILLS_DIR / name
 
 
+def _iter_skill_mds(skills_dir: Path):
+    """Yield ``SKILL.md`` paths at the two expected depths.
+
+    Skills live at either ``<skills_dir>/<name>/SKILL.md`` (depth 1) or
+    ``<skills_dir>/<category>/<name>/SKILL.md`` (depth 2).  Using
+    :pymethod:`Path.glob` with explicit depth patterns instead of
+    :pymethod:`Path.rglob` prevents recursive nesting — when a skill
+    directory already contains an inner copy of itself (e.g.
+    ``agent-quality-gate/agent-quality-gate/SKILL.md``), ``rglob`` would
+    match the nested copy and compound the problem on subsequent edits.
+    """
+    yield from skills_dir.glob("*/SKILL.md")
+    yield from skills_dir.glob("*/*/SKILL.md")
+
+
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     """
     Find a skill by name across all skill directories.
@@ -287,7 +302,7 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
-        for skill_md in skills_dir.rglob("SKILL.md"):
+        for skill_md in _iter_skill_mds(skills_dir):
             if is_excluded_skill_path(skill_md):
                 continue
             if skill_md.parent.name == name:
@@ -350,7 +365,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
         if not skills_dir.is_dir():
             continue
         try:
-            for skill_md in skills_dir.rglob("SKILL.md"):
+            for skill_md in _iter_skill_mds(skills_dir):
                 if is_excluded_skill_path(skill_md):
                     continue
                 if skill_md.parent.name == name:

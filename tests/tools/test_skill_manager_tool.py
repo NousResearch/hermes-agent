@@ -939,3 +939,67 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+
+class TestFindSkillDepthLimit:
+    """Regression: _find_skill must not match nested SKILL.md copies.
+
+    When a skill directory contains an inner copy of itself (e.g.
+    ``agent-quality-gate/agent-quality-gate/SKILL.md``), ``rglob`` would
+    match the nested copy and compound the nesting on subsequent edits.
+    The fix uses depth-limited ``glob`` patterns instead.
+    """
+
+    def test_finds_top_level_skill(self, tmp_path):
+        """_find_skill resolves a normal skill at depth 1."""
+        from tools.skill_manager_tool import _find_skill
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        with _skill_dir(tmp_path):
+            result = _find_skill("my-skill")
+        assert result is not None
+        assert result["path"] == skill_dir
+
+    def test_finds_category_skill(self, tmp_path):
+        """_find_skill resolves a skill nested under a category dir."""
+        from tools.skill_manager_tool import _find_skill
+        cat_dir = tmp_path / "devops"
+        skill_dir = cat_dir / "my-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        with _skill_dir(tmp_path):
+            result = _find_skill("my-skill")
+        assert result is not None
+        assert result["path"] == skill_dir
+
+    def test_ignores_nested_duplicate(self, tmp_path):
+        """_find_skill does NOT match a recursively-nested copy.
+
+        Scenario: ``my-skill/my-skill/SKILL.md`` exists (depth 2 inside
+        the skill dir itself).  ``rglob`` would match the nested copy;
+        depth-limited ``glob`` must skip it.
+        """
+        from tools.skill_manager_tool import _find_skill
+        skill_dir = tmp_path / "my-skill"
+        nested = skill_dir / "my-skill"
+        nested.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        (nested / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        with _skill_dir(tmp_path):
+            result = _find_skill("my-skill")
+        assert result is not None
+        # Must resolve to the TOP-level dir, not the nested copy.
+        assert result["path"] == skill_dir
+
+    def test_ignores_deeply_nested_copy(self, tmp_path):
+        """_find_skill skips deeply nested copies (depth 3+)."""
+        from tools.skill_manager_tool import _find_skill
+        skill_dir = tmp_path / "my-skill"
+        deep = skill_dir / "my-skill" / "my-skill"
+        deep.mkdir(parents=True)
+        (deep / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        with _skill_dir(tmp_path):
+            result = _find_skill("my-skill")
+        # No SKILL.md at depth 1 or 2 inside the skill dir → not found.
+        assert result is None

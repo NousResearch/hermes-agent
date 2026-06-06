@@ -50,10 +50,10 @@ def test_fallback_disabled_skips_firecrawl(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_fallback_enabled_uses_firecrawl(monkeypatch: pytest.MonkeyPatch) -> None:
-    """DISABLE 미설정(기본) → 실패 URL은 Firecrawl 폴백을 탄다."""
+    """config가 명시적 opt-in(extract_fallback=firecrawl) → 실패 URL은 Firecrawl 폴백."""
     monkeypatch.delenv("CRAWL4AI_DISABLE_FALLBACK", raising=False)
     import hermes_cli.config as hc
-    monkeypatch.setattr(hc, "load_config", lambda *a, **k: {"web": {}})
+    monkeypatch.setattr(hc, "load_config", lambda *a, **k: {"web": {"extract_fallback": "firecrawl"}})
     monkeypatch.setattr(c4, "_read_local", _fail_read)
 
     import plugins.web.firecrawl.provider as fc_mod
@@ -79,11 +79,11 @@ def test_fallback_enabled_uses_firecrawl(monkeypatch: pytest.MonkeyPatch) -> Non
     assert out[0]["content"] == "FC"
 
 
-def test_fallback_disabled_falsey_values_still_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """DISABLE=0/빈값 → 폴백 유지(스위치는 명시적 truthy일 때만 작동)."""
+def test_env_falsey_with_optin_keeps_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """config opt-in(firecrawl) 상태에서 env 0/빈값은 폴백을 끄지 않고, env truthy만 강제 차단."""
     monkeypatch.delenv("CRAWL4AI_DISABLE_FALLBACK", raising=False)
     import hermes_cli.config as hc
-    monkeypatch.setattr(hc, "load_config", lambda *a, **k: {"web": {}})
+    monkeypatch.setattr(hc, "load_config", lambda *a, **k: {"web": {"extract_fallback": "firecrawl"}})
     monkeypatch.setenv("CRAWL4AI_DISABLE_FALLBACK", "0")
     assert c4._fallback_disabled() is False
     monkeypatch.setenv("CRAWL4AI_DISABLE_FALLBACK", "")
@@ -100,11 +100,35 @@ def test_config_extract_fallback_none_disables(monkeypatch: pytest.MonkeyPatch) 
     assert c4._fallback_disabled() is True
 
 
-def test_config_extract_fallback_default_keeps_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """config 미설정/``firecrawl`` → 기본=폴백 유지(하위호환)."""
+def test_config_missing_key_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """fail-closed: extract_fallback 키 없음 → 폴백 차단. firecrawl 명시만 opt-in."""
     monkeypatch.delenv("CRAWL4AI_DISABLE_FALLBACK", raising=False)
     import hermes_cli.config as hc
-    monkeypatch.setattr(hc, "load_config", lambda *a, **k: {"web": {"extract_fallback": "firecrawl"}})
-    assert c4._fallback_disabled() is False
     monkeypatch.setattr(hc, "load_config", lambda *a, **k: {"web": {}})
-    assert c4._fallback_disabled() is False
+    assert c4._fallback_disabled() is True          # 키 없음 → 차단
+    monkeypatch.setattr(hc, "load_config", lambda *a, **k: {"web": {"extract_fallback": "firecrawl"}})
+    assert c4._fallback_disabled() is False          # 명시 opt-in → 허용
+
+
+def test_config_parse_failure_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Codex 마일스톤 검증 회귀: config parse 실패로 DEFAULT_CONFIG(web/키 없음)면 차단.
+
+    invest 도메인이 config 손상 시 Firecrawl로 새지 않도록 fail-closed 보장."""
+    monkeypatch.delenv("CRAWL4AI_DISABLE_FALLBACK", raising=False)
+    import hermes_cli.config as hc
+    monkeypatch.setattr(hc, "load_config", lambda *a, **k: {"some": "default"})  # web 키 자체 없음
+    assert c4._fallback_disabled() is True
+    monkeypatch.setattr(hc, "load_config", lambda *a, **k: {})                    # 완전 빈 dict
+    assert c4._fallback_disabled() is True
+
+
+def test_config_load_exception_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Codex 마일스톤 검증 회귀: load_config 예외 → 폴백 차단(fail-closed)."""
+    monkeypatch.delenv("CRAWL4AI_DISABLE_FALLBACK", raising=False)
+    import hermes_cli.config as hc
+
+    def _boom(*a, **k):
+        raise RuntimeError("config unreadable")
+
+    monkeypatch.setattr(hc, "load_config", _boom)
+    assert c4._fallback_disabled() is True

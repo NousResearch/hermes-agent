@@ -31,12 +31,24 @@ _READ_TIMEOUT_S = float(os.environ.get("CRAWL4AI_READ_TIMEOUT", "35"))
 _ACCESS_LOG = os.path.expanduser("~/.hermes/crawl4ai-service/access.log")
 
 
-def _config_fallback_disabled() -> bool:
-    """프로파일 config ``web.extract_fallback: none``이면 폴백 차단.
+# Firecrawl 폴백을 켜는 명시적 opt-in 값. 이 외(미설정·none·off·읽기 실패)는
+# 모두 "차단"으로 간주(fail-closed).
+_FALLBACK_ENABLE_VALUES = ("firecrawl", "on", "yes", "enabled", "true", "1")
 
-    워커 서브프로세스는 자기 프로파일의 config를 ``load_config()``로 로드하므로,
-    이 키가 프로파일별 차등을 만든다(env 전역과 달리). 값이 ``none``/``off``/
-    ``disabled``이면 차단, 그 외(미설정·``firecrawl``)는 기본=폴백 유지(하위호환)."""
+
+def _config_fallback_enabled() -> bool:
+    """프로파일 config ``web.extract_fallback``가 Firecrawl 폴백을 **명시적으로**
+    켰는지 여부. **fail-closed**: config를 못 읽거나(예외), ``web``/키가 없거나,
+    ``none``/``off`` 등이면 ``False``(=폴백 차단)를 반환한다.
+
+    근거(2026-06-06 Codex 마일스톤 검증 치명): invest처럼 Firecrawl이 금지된
+    도메인은 config 손상·parse 실패(``load_config``가 DEFAULT_CONFIG로 떨어져
+    ``extract_fallback: none``이 사라지는 경우 포함)에도 Firecrawl로 새면 안 된다.
+    그래서 안전 기본값을 "차단"에 두고, news-curator처럼 폴백이 필요한 역할만
+    ``extract_fallback: firecrawl``로 명시적으로 opt-in 한다.
+
+    워커 서브프로세스는 자기 프로파일 config를 ``load_config()``로 로드하므로
+    이 키가 프로파일별 차등을 만든다(env 전역과 달리)."""
     try:
         from hermes_cli.config import load_config
 
@@ -44,24 +56,24 @@ def _config_fallback_disabled() -> bool:
         web = cfg.get("web") if isinstance(cfg, dict) else None
         val = web.get("extract_fallback") if isinstance(web, dict) else None
         if isinstance(val, str):
-            return val.strip().lower() in ("none", "off", "disabled", "no")
+            return val.strip().lower() in _FALLBACK_ENABLE_VALUES
     except Exception:
         pass
     return False
 
 
 def _fallback_disabled() -> bool:
-    """Firecrawl 폴백 차단 여부(프로파일별). invest 도메인처럼 Firecrawl이 금지된
-    역할은 폴백을 끈다. 끄면 실패 URL은 Firecrawl로 넘기지 않고 backend="none"
-    에러로 남긴다(도메인 차단 룰 준수).
+    """Firecrawl 폴백 차단 여부(프로파일별, **fail-closed**). 폴백은 명시적
+    opt-in일 때만 켜지고, 그 외(미설정·차단값·config 읽기 실패)는 모두 차단된다.
+    차단 시 실패 URL은 Firecrawl로 넘기지 않고 backend="none" 에러로 남는다.
 
-    우선순위: ① env ``CRAWL4AI_DISABLE_FALLBACK``(테스트·전역 킬스위치) →
-    ② 프로파일 config ``web.extract_fallback: none``."""
+    우선순위: ① env ``CRAWL4AI_DISABLE_FALLBACK``(강제 차단 킬스위치) →
+    ② 프로파일 config ``web.extract_fallback`` opt-in 여부(없으면 차단)."""
     if os.environ.get("CRAWL4AI_DISABLE_FALLBACK", "").strip().lower() in (
         "1", "true", "yes", "on",
     ):
         return True
-    return _config_fallback_disabled()
+    return not _config_fallback_enabled()
 
 
 def _log(line: str) -> None:

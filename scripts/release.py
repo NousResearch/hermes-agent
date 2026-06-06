@@ -1737,11 +1737,16 @@ def get_commits(since_tag=None):
     else:
         range_spec = "HEAD"
 
-    # Format: hash<US>author_name<US>author_email<US>subject\0body
-    # Using %x1f (unit separator) to avoid conflict with | in author names
+    # Format: hash<US>author_name<US>author_email<US>subject<US>body, with a
+    # trailing NUL terminating each record. %x1f (unit separator) splits the
+    # fields (avoids conflict with | in author names); the NUL is the only
+    # record boundary. git joins records with a newline, so we must NOT key off
+    # the body's trailing NUL plus that newline as a "\0\0" pair — git never
+    # emits two adjacent NULs, which would collapse the whole log into one entry
+    # and drop every commit except HEAD.
     log = git(
         "log", range_spec,
-        "--format=%H%x1f%an%x1f%ae%x1f%s%x00%b%x00",
+        "--format=%H%x1f%an%x1f%ae%x1f%s%x1f%b%x00",
         "--no-merges",
     )
 
@@ -1749,23 +1754,22 @@ def get_commits(since_tag=None):
         return []
 
     commits = []
-    # Split on double-null to get each commit entry, since body ends with \0
-    # and format ends with \0, each record ends with \0\0 between entries
-    for entry in log.split("\0\0"):
-        entry = entry.strip()
+    # Each record is NUL-terminated; split on it and drop the empty tail. git
+    # joins records with a newline, so trim only that leading newline — NOT
+    # str.strip(), which also eats the %x1f unit separators (they count as
+    # whitespace in Python) and would drop the empty body field on commits
+    # without a body, leaving too few parts to unpack.
+    for entry in log.split("\0"):
+        entry = entry.lstrip("\n")
         if not entry:
             continue
-        # Split on first null to separate "hash<US>name<US>email<US>subject" from "body"
-        if "\0" in entry:
-            header, body = entry.split("\0", 1)
-            body = body.strip()
-        else:
-            header = entry
-            body = ""
-        parts = header.split("\x1f", 3)
-        if len(parts) != 4:
+        # hash<US>name<US>email<US>subject<US>body — body may span lines, so it
+        # is the final field (maxsplit=4 keeps any <US> in the body intact).
+        parts = entry.split("\x1f", 4)
+        if len(parts) != 5:
             continue
-        sha, name, email, subject = parts
+        sha, name, email, subject, body = parts
+        body = body.strip()
         coauthor_info = parse_coauthors(body)
         coauthors = [resolve_author(ca["name"], ca["email"]) for ca in coauthor_info]
         commits.append({

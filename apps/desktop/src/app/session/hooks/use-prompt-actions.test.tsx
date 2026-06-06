@@ -41,6 +41,7 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 interface HarnessHandle {
+  steerPrompt: (text: string) => Promise<boolean>
   submitText: (text: string, options?: { attachments?: never[]; fromQueue?: boolean }) => Promise<boolean>
 }
 
@@ -88,8 +89,8 @@ function Harness({
   })
 
   useEffect(() => {
-    onReady({ submitText: actions.submitText })
-  }, [actions.submitText, onReady])
+    onReady({ steerPrompt: actions.steerPrompt, submitText: actions.submitText })
+  }, [actions.steerPrompt, actions.submitText, onReady])
 
   return null
 }
@@ -257,5 +258,59 @@ describe('usePromptActions submit / queue drain semantics', () => {
 
     expect(accepted).toBe(false)
     expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+  })
+})
+
+describe('usePromptActions steerPrompt', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('injects the trimmed text via session.steer and reports acceptance on a queued status', async () => {
+    const requestGateway = vi.fn(async () => ({ status: 'queued' }) as never)
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    const accepted = await handle!.steerPrompt('  nudge the run  ')
+
+    expect(accepted).toBe(true)
+    // Steer never starts a turn — it rides the live run via session.steer only.
+    expect(requestGateway).toHaveBeenCalledWith('session.steer', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'nudge the run'
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+  })
+
+  it('reports rejection (so the caller queues) when the gateway has no live tool window', async () => {
+    const requestGateway = vi.fn(async () => ({ status: 'rejected' }) as never)
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    expect(await handle!.steerPrompt('too late')).toBe(false)
+  })
+
+  it('reports rejection (never throws) when the steer RPC errors', async () => {
+    const requestGateway = vi.fn(async () => {
+      throw new Error('agent does not support steer')
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    expect(await handle!.steerPrompt('boom')).toBe(false)
+  })
+
+  it('skips the RPC entirely for empty text', async () => {
+    const requestGateway = vi.fn(async () => ({ status: 'queued' }) as never)
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    expect(await handle!.steerPrompt('   ')).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalled()
   })
 })

@@ -548,6 +548,7 @@ export interface Translations {
     followUpPlaceholders: readonly string[]
     startVoice: string
     queueMessage: string
+    steer: string
     stop: string
     send: string
     speaking: string

@@ -157,7 +157,7 @@ TOOLSETS = {
     
     "moa": {
         "description": "Advanced reasoning and problem-solving tools",
-        "tools": ["mixture_of_agents"],
+        "tools": ["mixture_of_agents", "llm_council"],
         "includes": []
     },
     

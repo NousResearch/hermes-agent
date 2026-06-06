@@ -218,7 +218,7 @@ class TestBuildWebUISkipsWhenFresh:
 
         assert result is True
         args, kwargs = mock_run.call_args
-        assert args[0] == ["/usr/bin/npm", "ci", "--silent"]
+        assert args[0] == ["/usr/bin/npm", "ci", "--workspace", "web", "--silent"]
         assert kwargs["cwd"] == tmp_path
 
 

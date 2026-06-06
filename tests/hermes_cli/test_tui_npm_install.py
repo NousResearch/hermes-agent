@@ -255,6 +255,8 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
     assert calls[0][0][0] == [
         "/bin/npm",
         "install",
+        "--workspace",
+        "ui-tui",
         "--silent",
         "--no-fund",
         "--no-audit",

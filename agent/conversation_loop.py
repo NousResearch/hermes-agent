@@ -641,7 +641,14 @@ def run_conversation(
             # Skipped when deferring — a deferred estimate is known to over-count
             # vs the last real provider prompt, so trusting it for the display
             # would re-introduce the very desync we're avoiding.
-            if _preflight_tokens > (_compressor.last_prompt_tokens or 0):
+            _last = _compressor.last_prompt_tokens
+            # Do NOT overwrite the -1 sentinel. compress_context() sets
+            # last_prompt_tokens=-1 right after compression to mark "no real API
+            # usage yet". `(x or 0)` evaluates to -1 (truthy) for the sentinel,
+            # so the old comparison was always True and clobbered the sentinel
+            # with a schema-inflated rough estimate — re-triggering compression
+            # on the next turn (#36718). Treat any negative value as "no data".
+            if _last >= 0 and _preflight_tokens > _last:
                 _compressor.last_prompt_tokens = _preflight_tokens
 
         if _preflight_deferred:

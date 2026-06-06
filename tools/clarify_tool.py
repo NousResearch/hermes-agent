@@ -12,12 +12,26 @@ a thin dispatcher that delegates to a platform-provided callback.
 """
 
 import json
+import re
 from typing import List, Optional, Callable
 
 
 # Maximum number of predefined choices the agent can offer.
 # A 5th "Other (type your answer)" option is always appended by the UI.
 MAX_CHOICES = 4
+
+# Discord/chat-platform markup that has no meaning in clarify questions.
+# LLMs sometimes hallucinate these into question text.
+_DISCORD_MENTION_RE = re.compile(
+    r"<@[!&]?\d+>"       # user / role mentions: <@123>, <@!123>, <@&123>
+    r"|<#\d+>"            # channel mentions: <#123>
+    r"|@(?:everyone|here)"  # mass mentions
+)
+
+
+def _sanitize_clarify_text(text: str) -> str:
+    """Strip platform-specific markup that LLMs may hallucinate into question text."""
+    return _DISCORD_MENTION_RE.sub("", text).strip()
 
 
 def clarify_tool(
@@ -42,13 +56,16 @@ def clarify_tool(
     if not question or not question.strip():
         return tool_error("Question text is required.")
 
-    question = question.strip()
+    question = _sanitize_clarify_text(question)
+    if not question:
+        return tool_error("Question text is required (empty after sanitizing).")
 
     # Validate and trim choices
     if choices is not None:
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings.")
-        choices = [str(c).strip() for c in choices if str(c).strip()]
+        choices = [_sanitize_clarify_text(str(c)) for c in choices]
+        choices = [c for c in choices if c]
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
         if not choices:
@@ -107,7 +124,7 @@ CLARIFY_SCHEMA = {
         "properties": {
             "question": {
                 "type": "string",
-                "description": "The question to present to the user.",
+                "description": "The question to present to the user. Use plain text only — no Discord/Telegram markup, no @mentions, no platform-specific formatting.",
             },
             "choices": {
                 "type": "array",

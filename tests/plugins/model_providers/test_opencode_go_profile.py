@@ -17,31 +17,33 @@ def opencode_go_profile():
 
 
 class TestOpenCodeGoKimiReasoning:
-    """Kimi K2 models use Moonshot's thinking + reasoning_effort shape on OpenCode Go."""
+    """Kimi K2 models on OpenCode Go use reasoning_effort only — extra_body is
+    rejected by the Fireworks backend ("Extra inputs are not permitted")."""
 
-    def test_high_effort_emits_thinking_and_effort(self, opencode_go_profile):
+    def test_high_effort_emits_effort_only(self, opencode_go_profile):
         extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "high"},
             model="kimi-k2.6",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        # Fireworks rejects extra_body entirely — only reasoning_effort is emitted.
+        assert extra_body == {}
         assert top_level == {"reasoning_effort": "high"}
 
-    def test_disabled_emits_thinking_disabled_without_effort(self, opencode_go_profile):
+    def test_disabled_emits_nothing(self, opencode_go_profile):
         extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": False},
             model="kimi-k2.6",
         )
-        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert extra_body == {}
         assert top_level == {}
 
-    def test_minimal_effort_enables_thinking_without_effort(self, opencode_go_profile):
-        # "minimal" is not a Moonshot-supported value — drop it, keep thinking on.
+    def test_minimal_effort_emits_nothing(self, opencode_go_profile):
+        # "minimal" is not a supported effort value — drop it entirely.
         extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "minimal"},
             model="kimi-k2.6",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {}
         assert top_level == {}
 
     @pytest.mark.parametrize(
@@ -56,7 +58,7 @@ class TestOpenCodeGoKimiReasoning:
             reasoning_config={"enabled": True, "effort": effort},
             model="moonshotai/kimi-k2.6",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {}
         assert top_level == {"reasoning_effort": "high"}
 
     def test_low_and_medium_pass_through(self, opencode_go_profile):
@@ -65,7 +67,7 @@ class TestOpenCodeGoKimiReasoning:
                 reasoning_config={"enabled": True, "effort": effort},
                 model="kimi-k2.5",
             )
-            assert extra_body == {"thinking": {"type": "enabled"}}
+            assert extra_body == {}
             assert top_level == {"reasoning_effort": effort}
 
     def test_no_config_preserves_server_default(self, opencode_go_profile):
@@ -149,7 +151,7 @@ class TestOpenCodeGoModelGating:
 class TestOpenCodeGoFullKwargsIntegration:
     """End-to-end transport kwargs include the profile-provided controls."""
 
-    def test_kimi_reasoning_reaches_extra_body_and_top_level(self, opencode_go_profile):
+    def test_kimi_reasoning_uses_effort_only(self, opencode_go_profile):
         from agent.transports.chat_completions import ChatCompletionsTransport
 
         kwargs = ChatCompletionsTransport().build_kwargs(
@@ -160,7 +162,8 @@ class TestOpenCodeGoFullKwargsIntegration:
             reasoning_config={"enabled": True, "effort": "high"},
             base_url="https://opencode.ai/zen/go/v1",
         )
-        assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+        # Fireworks rejects extra_body entirely — only reasoning_effort emitted.
+        assert kwargs.get("extra_body", {}) == {}
         assert kwargs["reasoning_effort"] == "high"
 
     def test_deepseek_thinking_reaches_extra_body_and_top_level(

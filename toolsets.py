@@ -187,7 +187,7 @@ TOOLSETS = {
     
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
-        "tools": ["send_message"],
+        "tools": ["send_message", "telegram"],
         "includes": []
     },
 
@@ -283,6 +283,12 @@ TOOLSETS = {
     "discord_admin": {
         "description": "Discord server management (list channels/roles, pin messages, assign roles)",
         "tools": ["discord_admin"],
+        "includes": [],
+    },
+
+    "telegram": {
+        "description": "Telegram chat introspection (list chats, get chat info, list members, lookup users)",
+        "tools": ["telegram"],
         "includes": [],
     },
 
@@ -415,7 +421,9 @@ TOOLSETS = {
 
     "hermes-telegram": {
         "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + [
+            "telegram",
+        ],
         "includes": []
     },
     

@@ -373,6 +373,21 @@ class TestSkillView:
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
 
+    def test_legacy_flat_lookup_ignores_support_files(self, tmp_path):
+        """A template/reference named <skill>.md must not collide with a real skill."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "notion", category="productivity")
+            template_dir = tmp_path / "creative" / "popular-web-designs" / "templates"
+            template_dir.mkdir(parents=True)
+            (template_dir / "notion.md").write_text("# Not a skill\n")
+
+            raw = skill_view("notion")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["name"] == "notion"
+        assert result["path"] == "productivity/notion/SKILL.md"
+
     def test_skill_view_applies_template_vars(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),

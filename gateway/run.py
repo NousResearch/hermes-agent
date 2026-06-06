@@ -12455,6 +12455,12 @@ class GatewayRunner:
             max_iterations = int(fast_cfg.get("max_turns", 4) or 4)
         except (TypeError, ValueError):
             max_iterations = 4
+        if max_iterations > 6:
+            logger.warning(
+                "voice.fast_reply max_turns=%s exceeds latency-safe cap; clamping to 6",
+                max_iterations,
+            )
+            max_iterations = 6
 
         reasoning_config = fast_cfg.get("reasoning")
         if not isinstance(reasoning_config, dict):
@@ -16441,6 +16447,7 @@ class GatewayRunner:
         cache_keys: dict | None = None,
         user_id: str | None = None,
         user_id_alt: str | None = None,
+        disabled_toolsets: list | None = None,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -16488,6 +16495,7 @@ class GatewayRunner:
                 runtime.get("provider", ""),
                 runtime.get("api_mode", ""),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
+                sorted(disabled_toolsets) if disabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
@@ -18099,6 +18107,7 @@ class GatewayRunner:
                 cache_keys=self._extract_cache_busting_config(user_config),
                 user_id=getattr(source, "user_id", None),
                 user_id_alt=getattr(source, "user_id_alt", None),
+                disabled_toolsets=disabled_toolsets,
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)

@@ -2891,6 +2891,27 @@ class TestVoiceTTSPlayback:
         assert route["max_iterations"] == 3
         assert route["reasoning_config"] == {"enabled": False}
 
+    def test_voice_fast_reply_route_clamps_excessive_max_turns(self, monkeypatch):
+        """Fast voice replies must keep a latency-safe iteration ceiling."""
+        from hermes_cli import runtime_provider
+        runner = self._make_runner()
+
+        monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **_: {
+            "api_key": "key",
+            "base_url": "https://example.invalid/v1",
+            "provider": "google-gemini-cli",
+            "api_mode": "openai",
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+        })
+
+        route = runner._voice_fast_reply_route({
+            "voice": {"fast_reply": {"enabled": True, "max_turns": 99}}
+        })
+
+        assert route["max_iterations"] == 6
+
 
 class TestUDPKeepalive:
     """UDP keepalive prevents Discord from dropping the voice session."""

@@ -84,6 +84,19 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-discord"], "")
         assert sig1 != sig2
 
+    def test_disabled_toolset_change_different_signature(self):
+        """Disabled toolsets affect frozen tool schemas and must bust cache."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1", "provider": "openrouter"}
+        sig1 = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", disabled_toolsets=[]
+        )
+        sig2 = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", disabled_toolsets=["terminal"]
+        )
+        assert sig1 != sig2
+
     def test_reasoning_not_in_signature(self):
         """Reasoning config is set per-message, not part of the signature."""
         from gateway.run import GatewayRunner

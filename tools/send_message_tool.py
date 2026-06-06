@@ -605,6 +605,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     except ImportError:
         _feishu_available = False
 
+    try:
+        from gateway.platforms.qqbot.constants import MAX_MESSAGE_LENGTH as QQBOT_MAX_MESSAGE_LENGTH
+    except ImportError:
+        QQBOT_MAX_MESSAGE_LENGTH = 4000
+
     media_files = media_files or []
 
     if platform == Platform.SLACK and message:
@@ -619,6 +624,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     _MAX_LENGTHS = {
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
+        Platform.QQBOT: QQBOT_MAX_MESSAGE_LENGTH,
     }
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH

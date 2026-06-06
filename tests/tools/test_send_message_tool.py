@@ -1636,6 +1636,35 @@ class TestSendToPlatformDiscordMedia:
         call_kwargs = send_mock.await_args.kwargs
         assert call_kwargs["media_files"] == [("/fake/img.png", False)]
 
+    def test_qqbot_long_message_is_chunked_before_direct_send(self):
+        """QQBot direct sends should chunk long messages instead of truncating once."""
+        call_log = []
+
+        async def mock_send_qqbot(_pconfig, _chat_id, message):
+            call_log.append(message)
+            return {"success": True, "message_id": f"msg-{len(call_log)}"}
+
+        long_msg = "A" * 4001
+
+        with patch("tools.send_message_tool._send_qqbot", side_effect=mock_send_qqbot):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.QQBOT,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "channel-1",
+                    long_msg,
+                )
+            )
+
+        assert result["success"] is True
+        assert len(call_log) == 2
+        assert call_log[0].endswith(" (1/2)")
+        assert call_log[1].endswith(" (2/2)")
+        delivered_text = call_log[0].removesuffix(" (1/2)") + call_log[1].removesuffix(" (2/2)")
+        assert delivered_text == long_msg
+        assert all(len(chunk) <= 4000 for chunk in call_log)
+
+
 
 class TestSendMatrixUrlEncoding:
     """_send_matrix URL-encodes Matrix room IDs in the API path."""

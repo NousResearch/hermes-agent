@@ -4654,6 +4654,46 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
 
+    # ── Version 25 → 26: seed display.interface in raw config (issue #38798) ──
+    # Commit d6b0c23f added display.interface="cli" to DEFAULT_CONFIG and
+    # deliberately relied on the generic missing-field migration + load_config()
+    # deep-merge to propagate the key.  That works for new keys that load_config()
+    # merges from DEFAULT_CONFIG, but only if the generic path runs and saves.
+    # The generic path is gated on get_missing_config_fields() returning non-empty
+    # results (which it does via load_config() — but on a clean config the save
+    # may be skipped).  This explicit block guarantees display.interface is seeded
+    # in the raw on-disk YAML for any user upgrading from a v25 config.
+    if current_ver < 26:
+        config = read_raw_config()
+        raw_display = config.get("display")
+        if not isinstance(raw_display, dict):
+            raw_display = {}
+        if "interface" not in raw_display:
+            raw_display["interface"] = "cli"
+            config["display"] = raw_display
+            save_config(config)
+            results["config_added"].append("display.interface=cli")
+            if not quiet:
+                print("  ✓ Seeded display.interface=cli in config.yaml")
+
+    # ── Version 26 → 27: seed updates.non_interactive_local_changes (issue #38798) ──
+    # Commit 72eb42d9e added updates.non_interactive_local_changes="stash" to
+    # DEFAULT_CONFIG and relied on the generic migration path.  This explicit block
+    # mirrors the v25→v26 block above for the same reason: guarantee the key is
+    # present in the raw on-disk YAML for any user upgrading from a v26 config.
+    if current_ver < 27:
+        config = read_raw_config()
+        raw_updates = config.get("updates")
+        if not isinstance(raw_updates, dict):
+            raw_updates = {}
+        if "non_interactive_local_changes" not in raw_updates:
+            raw_updates["non_interactive_local_changes"] = "stash"
+            config["updates"] = raw_updates
+            save_config(config)
+            results["config_added"].append("updates.non_interactive_local_changes=stash")
+            if not quiet:
+                print("  ✓ Seeded updates.non_interactive_local_changes=stash in config.yaml")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     

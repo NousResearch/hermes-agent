@@ -10920,9 +10920,9 @@ class GatewayRunner:
 
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""
-        from hermes_cli import __release_date__, __version__
+        from hermes_cli.banner import format_banner_version_label
 
-        return f"Hermes Agent v{__version__} ({__release_date__})"
+        return format_banner_version_label()
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""

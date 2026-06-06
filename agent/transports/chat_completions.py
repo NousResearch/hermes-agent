@@ -36,6 +36,9 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if not normalized_model.startswith("gemini"):
         return None
 
+    # Early previews of Gemini 3.5 Flash and Gemini 3 Flash Preview reject thinking_config entirely with HTTP 400
+    if normalized_model in ("gemini-3.5-flash", "gemini-3-flash-preview"):
+        return None
     if reasoning_config.get("enabled") is False:
         # Gemini can hide thought parts even when internal thinking still
         # happens; omit thinkingLevel to avoid model-specific validation quirks.

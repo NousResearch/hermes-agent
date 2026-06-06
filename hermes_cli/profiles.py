@@ -51,11 +51,12 @@ _PROFILE_DIRS = [
     "home",
 ]
 
-# Files copied during --clone (if they exist in the source)
+# Files copied during --clone (if they exist in the source). SOUL.md is
+# handled separately so creating a named profile from the default/root profile
+# does not silently inherit the default agent (Halo) identity.
 _CLONE_CONFIG_FILES = [
     "config.yaml",
     ".env",
-    "SOUL.md",
 ]
 
 # Subdirectory files copied during --clone (path relative to profile root).
@@ -816,6 +817,21 @@ def create_profile(
                             os.chmod(str(dst), 0o600)
                         except OSError:
                             pass
+
+            # Copy profile identity only when cloning from another named
+            # profile. When cloning from the default/root profile, do not copy
+            # root SOUL.md into the new named profile because that file is the
+            # default agent identity (often Halo-specific), not universal
+            # policy. The generic seeded SOUL below gives the new profile its
+            # own editable identity slot.
+            try:
+                source_is_default = source_dir.resolve() == _get_default_hermes_home().resolve()
+            except (OSError, ValueError):
+                source_is_default = False
+            if not source_is_default:
+                source_soul = source_dir / "SOUL.md"
+                if source_soul.exists():
+                    shutil.copy2(source_soul, profile_dir / "SOUL.md")
 
             # Clone installed skills from the source profile. The dashboard's
             # "clone from default" flow is expected to preserve both bundled

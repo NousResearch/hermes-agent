@@ -18,6 +18,7 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
+    load_soul_md,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
@@ -501,6 +502,45 @@ class TestBuildContextFilesPrompt:
             result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Project Context" in result
         assert "Hermes Agent" in result
+
+    def test_default_profile_uses_root_soul_as_identity(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "AGENTS.md").write_text("UNIVERSAL POLICY", encoding="utf-8")
+        (hermes_home / "SOUL.md").write_text("DEFAULT HALO IDENTITY", encoding="utf-8")
+
+        assert load_soul_md() == "DEFAULT HALO IDENTITY"
+
+    def test_named_profile_uses_own_soul_not_default_root_soul(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        profile_home = root / "profiles" / "dev"
+        profile_home.mkdir(parents=True)
+        (root / "SOUL.md").write_text("HALO ROOT IDENTITY SHOULD NOT LEAK", encoding="utf-8")
+        (profile_home / "SOUL.md").write_text("DEV PROFILE IDENTITY", encoding="utf-8")
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        assert load_soul_md() == "DEV PROFILE IDENTITY"
+
+    def test_named_profile_receives_universal_agents_without_root_soul_leak(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        project = tmp_path / "project"
+        profile_home = root / "profiles" / "dev"
+        profile_home.mkdir(parents=True)
+        project.mkdir()
+        (root / "AGENTS.md").write_text("UNIVERSAL MASTER POLICY", encoding="utf-8")
+        (root / "SOUL.md").write_text("HALO ROOT IDENTITY SHOULD NOT LEAK", encoding="utf-8")
+        (profile_home / "SOUL.md").write_text("DEV PROFILE IDENTITY", encoding="utf-8")
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        result = build_context_files_prompt(cwd=str(project), skip_soul=True)
+
+        assert "UNIVERSAL MASTER POLICY" in result
+        assert "DEV PROFILE IDENTITY" not in result
+        assert "HALO ROOT IDENTITY SHOULD NOT LEAK" not in result
 
     def test_loads_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")

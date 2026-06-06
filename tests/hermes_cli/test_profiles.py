@@ -183,7 +183,10 @@ class TestCreateProfile:
 
         assert (profile_dir / "config.yaml").read_text() == "model: test"
         assert (profile_dir / ".env").read_text() == "KEY=val"
-        assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
+        # Root SOUL.md is the default profile identity, not universal policy;
+        # cloned named profiles get their own seeded identity instead.
+        assert (profile_dir / "SOUL.md").read_text() != "Be helpful."
+        assert "Hermes Agent" in (profile_dir / "SOUL.md").read_text()
 
     def test_clone_config_copies_source_skills(self, profile_env):
         tmp_path = profile_env
@@ -1327,12 +1330,14 @@ class TestEdgeCases:
         source_dir = create_profile("source", no_alias=True)
         (source_dir / "config.yaml").write_text("model: cloned")
         (source_dir / ".env").write_text("SECRET=yes")
+        (source_dir / "SOUL.md").write_text("SOURCE PROFILE IDENTITY")
 
         target_dir = create_profile(
             "target", clone_from="source", clone_config=True, no_alias=True,
         )
         assert (target_dir / "config.yaml").read_text() == "model: cloned"
         assert (target_dir / ".env").read_text() == "SECRET=yes"
+        assert (target_dir / "SOUL.md").read_text() == "SOURCE PROFILE IDENTITY"
 
     def test_delete_clears_active_profile(self, profile_env):
         """Deleting the active profile resets active to default."""

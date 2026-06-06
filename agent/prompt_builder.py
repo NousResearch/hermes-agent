@@ -11,7 +11,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
+from hermes_constants import get_default_hermes_root, get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
@@ -1398,12 +1398,25 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
-def load_soul_md() -> Optional[str]:
-    """Load SOUL.md from HERMES_HOME and return its content, or None.
+def _same_path(left: Path, right: Path) -> bool:
+    """Best-effort path equality that tolerates missing paths."""
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left == right
 
-    Used as the agent identity (slot #1 in the system prompt).  When this
+
+def load_soul_md() -> Optional[str]:
+    """Load the active profile's SOUL.md identity and return its content.
+
+    The default profile uses root ``SOUL.md`` as its identity file. Named
+    profiles use ``profiles/<name>/SOUL.md`` via their profile-scoped
+    ``HERMES_HOME``. Root ``SOUL.md`` is deliberately not treated as a
+    universal/master policy file; universal rules belong in root ``AGENTS.md``.
+
+    Used as the agent identity (slot #1 in the system prompt). When this
     returns content, ``build_context_files_prompt`` should be called with
-    ``skip_soul=True`` so SOUL.md isn't injected twice.
+    ``skip_soul=True`` so the active profile identity is not injected twice.
     """
     try:
         from hermes_cli.config import ensure_hermes_home
@@ -1424,6 +1437,31 @@ def load_soul_md() -> Optional[str]:
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
         return None
+
+
+def _load_universal_agents_md(cwd_path: Path) -> str:
+    """Load root AGENTS.md universal coordination policy, if present.
+
+    Root ``AGENTS.md`` is the universal policy/context source shared by the
+    default profile and all named profiles. It is separate from root
+    ``SOUL.md``, which remains the default profile's identity file.
+    """
+    root = get_default_hermes_root()
+    if _same_path(cwd_path, root):
+        # Let the normal project-context loader handle this file once.
+        return ""
+    for name in ["AGENTS.md", "agents.md"]:
+        candidate = root / name
+        if candidate.exists():
+            try:
+                content = candidate.read_text(encoding="utf-8").strip()
+                if content:
+                    content = _scan_context_content(content, name)
+                    result = f"## {name} (universal, {candidate})\n\n{content}"
+                    return _truncate_content(result, "AGENTS.md")
+            except Exception as e:
+                logger.debug("Could not read universal %s: %s", candidate, e)
+    return ""
 
 
 def _load_hermes_md(cwd_path: Path) -> str:
@@ -1520,17 +1558,23 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
-    SOUL.md from HERMES_HOME is independent and always included when present.
+    Root AGENTS.md is loaded as universal policy for every profile when present.
+    SOUL.md from HERMES_HOME is independent profile identity and always included
+    when present.
     Each context source is capped at 20,000 chars.
 
-    When *skip_soul* is True, SOUL.md is not included here (it was already
-    loaded via ``load_soul_md()`` for the identity slot).
+    When *skip_soul* is True, the active profile's SOUL.md is not included here
+    (it was already loaded via ``load_soul_md()`` for the identity slot).
     """
     if cwd is None:
         cwd = os.getcwd()
 
     cwd_path = Path(cwd).resolve()
     sections = []
+
+    universal_agents = _load_universal_agents_md(cwd_path)
+    if universal_agents:
+        sections.append(universal_agents)
 
     # Priority-based project context: first match wins
     project_context = (

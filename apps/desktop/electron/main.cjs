@@ -3147,6 +3147,40 @@ function installZoomShortcuts(window) {
       window.webContents.setZoomLevel(next)
     }
   })
+
+  // Ctrl/Cmd + mouse wheel zoom support (#40295).
+  // The input-event handler fires for all input including mouse wheel.
+  // We cannot call preventDefault() from here, so we also inject a
+  // DOM-level wheel listener (via did-finish-load) that suppresses
+  // the native scroll when the modifier is held.
+  const WHEEL_ZOOM_STEP = 0.1
+  window.webContents.on('input-event', (_event, input) => {
+    if (input.type !== 'mouseWheel') return
+    const mod = IS_MAC ? input.meta : input.control
+    if (!mod || input.alt || input.shift) return
+
+    const delta = input.deltaY
+    if (delta === 0) return
+
+    const direction = delta < 0 ? 1 : -1 // wheel up = zoom in
+    const current = window.webContents.getZoomLevel()
+    const next = Math.max(-9, Math.min(9, current + direction * WHEEL_ZOOM_STEP))
+    window.webContents.setZoomLevel(next)
+  })
+
+  // Inject a DOM listener on page load to prevent native scroll during zoom.
+  window.webContents.on('did-finish-load', () => {
+    window.webContents.executeJavaScript(`
+      if (!window.__hermesZoomWheelInstalled) {
+        window.__hermesZoomWheelInstalled = true
+        document.addEventListener('wheel', (e) => {
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault()
+          }
+        }, { passive: false })
+      }
+    `).catch(() => {})
+  })
 }
 
 function installContextMenu(window) {

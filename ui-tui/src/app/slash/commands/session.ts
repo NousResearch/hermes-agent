@@ -518,7 +518,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'session usage (live counts — worker sees zeros)',
+    help: 'session usage + Nous credits',
     name: 'usage',
     run: (_arg, ctx) => {
       ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
@@ -532,8 +532,19 @@ export const sessionCommands: SlashCommand[] = [
           })
         }
 
+        // Nous credits block is agent-independent (a portal fetch), so it shows
+        // even with zero API calls or on a resumed session. Render it whenever
+        // present, before the token panel.
+        const creditsLines = r?.credits_lines ?? []
+        if (creditsLines.length) {
+          ctx.transcript.panel('Nous credits', [{ text: creditsLines.join('\n') }])
+        }
+
         if (!r?.calls) {
-          return ctx.transcript.sys('no API calls yet')
+          if (!creditsLines.length) {
+            ctx.transcript.sys('no API calls yet')
+          }
+          return
         }
 
         const f = (v: number | undefined) => (v ?? 0).toLocaleString()

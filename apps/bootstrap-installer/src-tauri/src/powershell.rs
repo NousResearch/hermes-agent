@@ -202,7 +202,9 @@ fn build_command(script_path: &Path, args: &[String]) -> Command {
 }
 
 /// Canonical PowerShell 5.1 location under a Windows root (`%SystemRoot%`).
-#[cfg(target_os = "windows")]
+/// Kept separate (and test-visible) so the path layout is unit-tested on any
+/// host, not just Windows.
+#[cfg(any(target_os = "windows", test))]
 fn powershell_under_root(root: &Path) -> std::path::PathBuf {
     root.join("System32")
         .join("WindowsPowerShell")
@@ -341,5 +343,15 @@ info line
         let script = Path::new("/tmp/install.sh");
         let cwd = stable_script_cwd(script, Some("/"));
         assert_eq!(cwd, Some(Path::new("/")));
+    }
+
+    #[test]
+    fn powershell_under_root_uses_system32_v1_layout() {
+        let resolved = powershell_under_root(Path::new("C:\\Windows"));
+        let normalized = resolved.to_string_lossy().replace('\\', "/");
+        assert!(
+            normalized.ends_with("System32/WindowsPowerShell/v1.0/powershell.exe"),
+            "unexpected powershell path: {normalized}"
+        );
     }
 }

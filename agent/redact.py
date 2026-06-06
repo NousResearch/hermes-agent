@@ -172,15 +172,6 @@ _URL_USERINFO_RE = re.compile(
     r"(https?|wss?|ftp)://([^/\s:@]+):([^/\s@]+)@",
 )
 
-# HTTP access logs often use a relative request target rather than a full URL:
-# `"POST /webhook?password=... HTTP/1.1"`. The full-URL redactor above only
-# sees strings containing `://`, so handle request-target query strings too.
-_HTTP_REQUEST_TARGET_QUERY_RE = re.compile(
-    r"\b((?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT)\s+[^ \t\r\n\"']*?)"
-    r"\?([^ \t\r\n\"']+)",
-    re.IGNORECASE,
-)
-
 # Form-urlencoded body detection: conservative — only applies when the entire
 # text looks like a query string (k=v&k=v pattern with no newlines).
 _FORM_BODY_RE = re.compile(
@@ -296,15 +287,6 @@ def _redact_url_userinfo(text: str) -> str:
         lambda m: f"{m.group(1)}://{m.group(2)}:***@",
         text,
     )
-
-
-def _redact_http_request_target_query_params(text: str) -> str:
-    """Redact sensitive query params in HTTP access-log request targets."""
-    def _sub(m: re.Match) -> str:
-        prefix = m.group(1)
-        query = _redact_query_string(m.group(2))
-        return f"{prefix}?{query}"
-    return _HTTP_REQUEST_TARGET_QUERY_RE.sub(_sub, text)
 
 
 def _redact_form_body(text: str) -> str:
@@ -465,24 +447,6 @@ def _has_known_prefix_substring(text: str) -> bool:
     """
     return any(p in text for p in _PREFIX_SUBSTRINGS)
 
-
-_HTTP_METHOD_SUBSTRINGS = (
-    "GET ",
-    "POST ",
-    "PUT ",
-    "PATCH ",
-    "DELETE ",
-    "HEAD ",
-    "OPTIONS ",
-    "TRACE ",
-    "CONNECT ",
-)
-
-
-def _has_http_method_substring(text: str) -> bool:
-    """Cheap pre-check before scanning for access-log request targets."""
-    upper = text.upper()
-    return any(method in upper for method in _HTTP_METHOD_SUBSTRINGS)
 
 
 class RedactingFormatter(logging.Formatter):

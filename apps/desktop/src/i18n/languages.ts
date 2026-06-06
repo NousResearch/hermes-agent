@@ -6,31 +6,36 @@ export const LOCALE_OPTIONS = [
   {
     id: 'en',
     name: 'English',
+    englishName: 'English',
     configValue: 'en'
   },
   {
     id: 'zh',
     name: '简体中文',
+    englishName: 'Simplified Chinese',
     configValue: 'zh'
   },
   {
     id: 'zh-hant',
     name: '繁體中文',
+    englishName: 'Traditional Chinese',
     configValue: 'zh-hant'
   },
   {
     id: 'ja',
     name: '日本語',
+    englishName: 'Japanese',
     configValue: 'ja'
   }
-] as const satisfies readonly { configValue: string; id: Locale; name: string }[]
+] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
-// Endonyms (native names) for the language picker so users recognize their
-// language regardless of the current UI language. No country flags:
-// languages are not countries.
-export const LOCALE_META: Record<Locale, { name: string }> = Object.fromEntries(
-  LOCALE_OPTIONS.map(locale => [locale.id, { name: locale.name }])
-) as Record<Locale, { name: string }>
+// `name` is the endonym (native name) shown in the picker so users recognize
+// their language regardless of the current UI language. No country flags:
+// languages are not countries. `englishName` is search-only (not shown) so an
+// English speaker can type "japanese"/"traditional" to filter the list.
+export const LOCALE_META: Record<Locale, { name: string; englishName: string }> = Object.fromEntries(
+  LOCALE_OPTIONS.map(locale => [locale.id, { name: locale.name, englishName: locale.englishName }])
+) as Record<Locale, { name: string; englishName: string }>
 
 const LOCALE_ALIASES: Record<string, Locale> = {
   en: 'en',

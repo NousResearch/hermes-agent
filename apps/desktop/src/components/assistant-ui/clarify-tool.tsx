@@ -160,7 +160,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   return (
     <div
-      className="relative mb-3 mt-2 grid gap-2 rounded-[0.5rem] border border-border/70 bg-card/40 px-3 py-2.5 text-sm shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_3%,transparent)]"
+      className="relative mb-3 mt-2 grid gap-6 rounded-[0.5rem] border border-border/70 bg-card/40 px-3 py-2.5 text-sm shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_3%,transparent)]"
       data-slot="clarify-inline"
     >
       <span aria-hidden className="arc-border" />

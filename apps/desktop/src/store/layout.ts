@@ -13,7 +13,8 @@ import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, t
 
 export const SIDEBAR_DEFAULT_WIDTH = 237
 export const SIDEBAR_MAX_WIDTH = 360
-export const FILE_BROWSER_DEFAULT_WIDTH = '17rem'
+// Open at the same width as the sessions sidebar so the two rails match.
+export const FILE_BROWSER_DEFAULT_WIDTH = `${SIDEBAR_DEFAULT_WIDTH}px`
 export const FILE_BROWSER_MIN_WIDTH = '14rem'
 export const FILE_BROWSER_MAX_WIDTH = '20rem'
 

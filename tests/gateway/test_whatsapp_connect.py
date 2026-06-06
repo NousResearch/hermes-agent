@@ -701,3 +701,100 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+
+# ---------------------------------------------------------------------------
+# aiohttp requirement gate
+# ---------------------------------------------------------------------------
+
+
+class TestAiohttpRequirementGate:
+    """check_whatsapp_requirements() must gate on aiohttp, not just Node.js.
+
+    aiohttp ships with the ``messaging`` extra, not the core install, and
+    WhatsApp has no ``platform.*`` lazy-install hook in tools/lazy_deps.py — so
+    a Node-present / aiohttp-absent profile (e.g. ``pip install
+    hermes-agent[all]``) used to pass the gate and then fail deep inside
+    connect() with a generic "Failed to start bridge: No module named
+    'aiohttp'".  These tests pin the gate and the precise fatal error.
+    """
+
+    def test_aiohttp_available_true_when_importable(self):
+        # aiohttp is installed in the messaging/test env, so the helper's
+        # success path is exercised directly.
+        from gateway.platforms.whatsapp import _aiohttp_available
+
+        assert _aiohttp_available() is True
+
+    def test_aiohttp_available_false_when_import_fails(self, monkeypatch):
+        """The helper returns False when ``import aiohttp`` raises ImportError."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "aiohttp":
+                raise ImportError("simulated missing aiohttp")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        from gateway.platforms.whatsapp import _aiohttp_available
+
+        assert _aiohttp_available() is False
+
+    def test_requirements_false_when_aiohttp_missing(self):
+        """Node present but aiohttp missing -> requirements gate fails."""
+        from gateway.platforms import whatsapp
+
+        with patch("gateway.platforms.whatsapp.shutil.which", return_value="/usr/bin/node"), \
+             patch("gateway.platforms.whatsapp.subprocess.run",
+                   return_value=MagicMock(returncode=0)), \
+             patch("gateway.platforms.whatsapp._aiohttp_available", return_value=False):
+            assert whatsapp.check_whatsapp_requirements() is False
+
+    def test_requirements_true_when_node_and_aiohttp_present(self):
+        from gateway.platforms import whatsapp
+
+        with patch("gateway.platforms.whatsapp.shutil.which", return_value="/usr/bin/node"), \
+             patch("gateway.platforms.whatsapp.subprocess.run",
+                   return_value=MagicMock(returncode=0)), \
+             patch("gateway.platforms.whatsapp._aiohttp_available", return_value=True):
+            assert whatsapp.check_whatsapp_requirements() is True
+
+    def test_requirements_false_when_node_missing(self):
+        """Node missing short-circuits before aiohttp is ever consulted."""
+        from gateway.platforms import whatsapp
+
+        with patch("gateway.platforms.whatsapp.shutil.which", return_value=None), \
+             patch("gateway.platforms.whatsapp._aiohttp_available", return_value=True):
+            assert whatsapp.check_whatsapp_requirements() is False
+
+    @pytest.mark.asyncio
+    async def test_connect_sets_aiohttp_fatal_error_when_missing(self):
+        """connect() fast-fails with a non-retryable aiohttp error."""
+        adapter = _make_adapter()
+
+        with patch("gateway.platforms.whatsapp._aiohttp_available", return_value=False):
+            result = await adapter.connect()
+
+        assert result is False
+        assert adapter._fatal_error_code == "whatsapp_aiohttp_missing"
+        assert adapter._fatal_error_retryable is False
+
+    @pytest.mark.asyncio
+    async def test_connect_aiohttp_check_precedes_node_check(self):
+        """When aiohttp is missing, the aiohttp error wins over node-missing.
+
+        The aiohttp gate runs first, so even a simultaneously node-less env
+        reports the aiohttp cause (not the misleading "Node.js is not
+        installed" message).
+        """
+        adapter = _make_adapter()
+
+        with patch("gateway.platforms.whatsapp._aiohttp_available", return_value=False), \
+             patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=False):
+            result = await adapter.connect()
+
+        assert result is False
+        assert adapter._fatal_error_code == "whatsapp_aiohttp_missing"

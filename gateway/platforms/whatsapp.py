@@ -191,11 +191,34 @@ from gateway.platforms.base import (
 )
 
 
+def _aiohttp_available() -> bool:
+    """True if aiohttp is importable.
+
+    aiohttp drives every HTTP call to the Node bridge (see ``connect``,
+    ``send``, ``_poll_messages``…). It ships with the ``messaging`` extra,
+    not the core install, and — unlike Slack/Discord — WhatsApp has no
+    ``platform.*`` lazy-install entry in ``tools/lazy_deps.py``, so a Node-only
+    or lean ``[all]`` profile can genuinely lack it. Mirrors the SMS /
+    BlueBubbles requirement checks.
+    """
+    try:
+        import aiohttp  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def check_whatsapp_requirements() -> bool:
     """
     Check if WhatsApp dependencies are available.
-    
-    WhatsApp requires a Node.js bridge for most implementations.
+
+    WhatsApp needs two things: a Node.js runtime for the bridge subprocess,
+    and the ``aiohttp`` client library for all HTTP communication with that
+    bridge. Validating only Node.js let an aiohttp-absent install pass this
+    gate and then fail deep inside ``connect()`` — the bare ``import aiohttp``
+    there raised ``ModuleNotFoundError`` straight into the broad except, which
+    logged a generic "Failed to start bridge" with no hint about the real
+    cause.
     """
     # Check for Node.js.  Resolve via shutil.which so we respect PATHEXT
     # (node.exe vs node) and get a meaningful "not installed" signal
@@ -210,9 +233,11 @@ def check_whatsapp_requirements() -> bool:
             text=True,
             timeout=5
         )
-        return result.returncode == 0
+        if result.returncode != 0:
+            return False
     except Exception:
         return False
+    return _aiohttp_available()
 
 
 class WhatsAppAdapter(BasePlatformAdapter):
@@ -533,6 +558,23 @@ class WhatsAppAdapter(BasePlatformAdapter):
         
         This launches the Node.js bridge process and waits for it to be ready.
         """
+        # aiohttp powers every HTTP call to the bridge below and ships with the
+        # `messaging` extra, not the core install. Check it explicitly first so
+        # a Node-present / aiohttp-absent install gets a precise, actionable
+        # error here instead of a generic "Failed to start bridge" once the bare
+        # `import aiohttp` further down raises into the broad except handler.
+        if not _aiohttp_available():
+            logger.warning(
+                "[%s] aiohttp not installed. WhatsApp needs the messaging extra.",
+                self.name,
+            )
+            self._set_fatal_error(
+                "whatsapp_aiohttp_missing",
+                "aiohttp is not installed — run "
+                "`pip install 'hermes-agent[messaging]'` and re-run `hermes gateway`.",
+                retryable=False,
+            )
+            return False
         if not check_whatsapp_requirements():
             logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
             self._set_fatal_error(

@@ -6882,7 +6882,7 @@ class GatewayRunner:
         elif platform == Platform.WHATSAPP:
             from gateway.platforms.whatsapp import WhatsAppAdapter, check_whatsapp_requirements
             if not check_whatsapp_requirements():
-                logger.warning("WhatsApp: Node.js not installed or bridge not configured")
+                logger.warning("WhatsApp: Node.js or aiohttp not installed, or bridge not configured")
                 return None
             return WhatsAppAdapter(config)
         

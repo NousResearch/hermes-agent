@@ -276,6 +276,33 @@ class MemoryProvider(ABC):
           should all have ``env_var`` set and this method stays no-op).
         """
 
+    def prepare_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        old_text: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Optionally intercept or rewrite a built-in memory-tool write.
+
+        Return ``None`` to let the built-in memory tool proceed unchanged.
+
+        Providers that need write-boundary enforcement may return a dict with:
+        - ``handled``: bool — when True, the provider already handled the write
+          and the built-in memory store must be skipped.
+        - ``result``: JSON-serializable tool result to return when ``handled``.
+        - ``action`` / ``target`` / ``content``: optional rewritten values to
+          commit via the built-in store when ``handled`` is False.
+        - ``metadata``: optional metadata additions/overrides that should flow
+          into any downstream ``on_memory_write`` bridge call.
+
+        ``old_text`` is populated for ``replace`` and ``remove`` actions so a
+        provider can locate the existing durable fact before deciding whether to
+        rewrite, reject, or handle the mutation externally.
+        """
+        return None
+
     def on_memory_write(
         self,
         action: str,

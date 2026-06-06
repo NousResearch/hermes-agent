@@ -902,29 +902,57 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
         elif function_name == "memory":
-            target = function_args.get("target", "memory")
-            from tools.memory_tool import memory_tool as _memory_tool
-            function_result = _memory_tool(
-                action=function_args.get("action"),
-                target=target,
-                content=function_args.get("content"),
-                old_text=function_args.get("old_text"),
-                store=agent._memory_store,
+            requested_action = function_args.get("action")
+            requested_target = function_args.get("target", "memory")
+            requested_content = function_args.get("content")
+            memory_metadata = agent._build_memory_write_metadata(
+                task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", None),
             )
-            # Bridge: notify external memory provider of built-in memory writes
-            if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
+            prepared_write = None
+            if agent._memory_manager and requested_action in {"add", "replace", "remove"}:
                 try:
-                    agent._memory_manager.on_memory_write(
-                        function_args.get("action", ""),
-                        target,
-                        function_args.get("content", ""),
-                        metadata=agent._build_memory_write_metadata(
-                            task_id=effective_task_id,
-                            tool_call_id=getattr(tool_call, "id", None),
-                        ),
+                    prepared_write = agent._memory_manager.prepare_memory_write(
+                        requested_action,
+                        requested_target,
+                        requested_content or "",
+                        metadata=memory_metadata,
+                        old_text=function_args.get("old_text"),
                     )
                 except Exception:
-                    pass
+                    prepared_write = None
+            resolved_action = prepared_write.get("action", requested_action) if prepared_write else requested_action
+            resolved_target = prepared_write.get("target", requested_target) if prepared_write else requested_target
+            resolved_content = prepared_write.get("content", requested_content) if prepared_write else requested_content
+            if prepared_write and isinstance(prepared_write.get("metadata"), dict):
+                memory_metadata = {**memory_metadata, **prepared_write["metadata"]}
+            if prepared_write and prepared_write.get("handled"):
+                handled_result = prepared_write.get("result", {"success": True})
+                function_result = (
+                    handled_result
+                    if isinstance(handled_result, str)
+                    else json.dumps(handled_result, ensure_ascii=False)
+                )
+            else:
+                from tools.memory_tool import memory_tool as _memory_tool
+                function_result = _memory_tool(
+                    action=resolved_action,
+                    target=resolved_target,
+                    content=resolved_content,
+                    old_text=function_args.get("old_text"),
+                    store=agent._memory_store,
+                )
+                # Bridge: notify external memory provider of built-in memory writes
+                if agent._memory_manager and resolved_action in {"add", "replace", "remove"}:
+                    try:
+                        agent._memory_manager.on_memory_write(
+                            resolved_action,
+                            resolved_target,
+                            resolved_content or "",
+                            metadata=memory_metadata,
+                        )
+                    except Exception:
+                        pass
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")

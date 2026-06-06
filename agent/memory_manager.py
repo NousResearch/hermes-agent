@@ -608,6 +608,39 @@ class MemoryManager:
                     provider.name, e,
                 )
 
+    def prepare_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        old_text: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Give external providers a chance to intercept or rewrite a write.
+
+        Returns the first non-None provider decision. Builtin memory is skipped
+        because it is the write source, not a policy layer.
+        """
+        for provider in self._providers:
+            if provider.name == "builtin":
+                continue
+            try:
+                result = provider.prepare_memory_write(
+                    action,
+                    target,
+                    content,
+                    metadata=dict(metadata or {}),
+                    old_text=old_text,
+                )
+                if result is not None:
+                    return result
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' prepare_memory_write failed: %s",
+                    provider.name, e,
+                )
+        return None
+
     def on_delegation(self, task: str, result: str, *,
                       child_session_id: str = "", **kwargs) -> None:
         """Notify all providers that a subagent completed."""

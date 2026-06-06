@@ -2514,6 +2514,87 @@ class TestConcurrentToolExecution:
             mock_todo.assert_called_once()
         assert "ok" in result
 
+    def test_invoke_tool_memory_intercept_skips_native_write(self, agent_with_memory_tool):
+        agent_with_memory_tool._memory_manager = MagicMock()
+        agent_with_memory_tool._memory_manager.prepare_memory_write.return_value = {
+            "handled": True,
+            "result": {
+                "success": True,
+                "target": "cca",
+                "message": "Routed to repo doctrine.",
+            },
+        }
+
+        with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("native memory_tool should not run")):
+            result = json.loads(
+                agent_with_memory_tool._invoke_tool(
+                    "memory",
+                    {"action": "add", "target": "memory", "content": "Deployment doctrine lives in repo memory."},
+                    "task-1",
+                    tool_call_id="mem-1",
+                )
+            )
+
+        assert result == {
+            "success": True,
+            "target": "cca",
+            "message": "Routed to repo doctrine.",
+        }
+        agent_with_memory_tool._memory_manager.prepare_memory_write.assert_called_once()
+        agent_with_memory_tool._memory_manager.on_memory_write.assert_not_called()
+
+    def test_sequential_memory_intercept_skips_native_write(self, agent_with_memory_tool):
+        tool_call = _mock_tool_call(
+            name="memory",
+            arguments='{"action":"add","target":"memory","content":"ssh access doctrine belongs in cca"}',
+            call_id="mem-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent_with_memory_tool._memory_manager = MagicMock()
+        agent_with_memory_tool._memory_manager.prepare_memory_write.return_value = {
+            "handled": True,
+            "result": {
+                "success": True,
+                "target": "cca",
+                "message": "Routed to repo doctrine.",
+            },
+        }
+
+        with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("native memory_tool should not run")):
+            agent_with_memory_tool._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert len(messages) == 1
+        assert json.loads(messages[0]["content"]) == {
+            "success": True,
+            "target": "cca",
+            "message": "Routed to repo doctrine.",
+        }
+        agent_with_memory_tool._memory_manager.prepare_memory_write.assert_called_once()
+        agent_with_memory_tool._memory_manager.on_memory_write.assert_not_called()
+
+    def test_invoke_tool_memory_remove_forwards_old_text_and_bridges_on_success(self, agent_with_memory_tool):
+        agent_with_memory_tool._memory_manager = MagicMock()
+        agent_with_memory_tool._memory_manager.prepare_memory_write.return_value = None
+
+        with patch("tools.memory_tool.memory_tool", return_value=json.dumps({"success": True, "message": "Entry removed.", "target": "memory"})) as mock_memory_tool:
+            result = json.loads(
+                agent_with_memory_tool._invoke_tool(
+                    "memory",
+                    {"action": "remove", "target": "memory", "old_text": "transcrypt01"},
+                    "task-1",
+                    tool_call_id="mem-rm-1",
+                )
+            )
+
+        assert result == {"success": True, "message": "Entry removed.", "target": "memory"}
+        agent_with_memory_tool._memory_manager.prepare_memory_write.assert_called_once()
+        prepare_args = agent_with_memory_tool._memory_manager.prepare_memory_write.call_args
+        assert prepare_args.args[:3] == ("remove", "memory", "")
+        assert prepare_args.kwargs["old_text"] == "transcrypt01"
+        mock_memory_tool.assert_called_once()
+        agent_with_memory_tool._memory_manager.on_memory_write.assert_called_once()
+
     def test_invoke_tool_agent_level_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
         """Agent-owned tool paths should close observer tool spans."""
         hook_calls = []

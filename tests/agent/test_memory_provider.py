@@ -84,6 +84,19 @@ class MetadataMemoryProvider(FakeMemoryProvider):
         self.memory_writes.append((action, target, content, metadata or {}))
 
 
+class PreparedMemoryWriteProvider(FakeMemoryProvider):
+    """Provider that can intercept or rewrite built-in memory writes."""
+
+    def __init__(self, name="prepared", prepared_result=None):
+        super().__init__(name=name)
+        self.prepared_result = prepared_result
+        self.prepare_calls = []
+
+    def prepare_memory_write(self, action, target, content, metadata=None, old_text=None):
+        self.prepare_calls.append((action, target, content, metadata or {}, old_text))
+        return self.prepared_result
+
+
 class MessagesMemoryProvider(FakeMemoryProvider):
     """Provider that opts into completed-turn message context."""
 
@@ -1161,6 +1174,74 @@ class TestOnMemoryWriteBridge:
         mgr.on_memory_write("add", "user", "test")
         # Good provider still received the call despite bad provider crashing
         assert good.memory_writes == [("add", "user", "test")]
+
+
+class TestPrepareMemoryWriteBridge:
+    def test_prepare_memory_write_returns_provider_intercept(self):
+        mgr = MemoryManager()
+        p = PreparedMemoryWriteProvider(
+            prepared_result={
+                "handled": True,
+                "result": {"success": True, "target": "cca", "message": "Routed externally."},
+            }
+        )
+        mgr.add_provider(p)
+
+        result = mgr.prepare_memory_write(
+            "add",
+            "memory",
+            "reachable as hermes over ssh",
+            metadata={"write_origin": "assistant_tool"},
+        )
+
+        assert result == {
+            "handled": True,
+            "result": {"success": True, "target": "cca", "message": "Routed externally."},
+        }
+        assert p.prepare_calls == [
+            (
+                "add",
+                "memory",
+                "reachable as hermes over ssh",
+                {"write_origin": "assistant_tool"},
+                None,
+            )
+        ]
+
+    def test_prepare_memory_write_skips_builtin_provider_and_tolerates_failure(self):
+        mgr = MemoryManager()
+        builtin = PreparedMemoryWriteProvider(name="builtin", prepared_result={"handled": True})
+        bad = PreparedMemoryWriteProvider(name="bad")
+        bad.prepare_memory_write = MagicMock(side_effect=RuntimeError("boom"))
+        good = PreparedMemoryWriteProvider(name="good", prepared_result={"target": "user"})
+        mgr.add_provider(builtin)
+        mgr.add_provider(bad)
+        mgr._providers.append(good)
+
+        result = mgr.prepare_memory_write("add", "memory", "User prefers concise responses")
+
+        assert result == {"target": "user"}
+        assert builtin.prepare_calls == []
+        assert good.prepare_calls == [
+            ("add", "memory", "User prefers concise responses", {}, None)
+        ]
+
+    def test_prepare_memory_write_forwards_old_text_for_mutations(self):
+        mgr = MemoryManager()
+        p = PreparedMemoryWriteProvider(prepared_result={"handled": True})
+        mgr.add_provider(p)
+
+        mgr.prepare_memory_write(
+            "remove",
+            "memory",
+            "",
+            metadata={"write_origin": "assistant_tool"},
+            old_text="transcrypt01",
+        )
+
+        assert p.prepare_calls == [
+            ("remove", "memory", "", {"write_origin": "assistant_tool"}, "transcrypt01")
+        ]
 
 
 class TestHonchoCadenceTracking:

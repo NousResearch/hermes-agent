@@ -117,14 +117,13 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
         </Button>
       </div>
       <p className="-mt-2 mb-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-        Sign in with a subscription — no API key to copy. Hermes runs the browser sign-in for you, right here in the
-        app.
+        구독 계정으로 로그인하세요 — 복사할 API 키가 없습니다. 앱 내에서 바로 브라우저 로그인을 실행할 수 있습니다.
       </p>
       {featured && <FeaturedProviderRow onSelect={select} provider={featured} />}
       {connected.length > 0 && (
         <>
           <p className="mt-1 px-0.5 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)">
-            Connected
+            연결됨
           </p>
           {connected.map(p => (
             <ProviderRow key={p.id} onSelect={select} provider={p} />
@@ -146,7 +145,7 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
           type="button"
           variant="text"
         >
-          {showAll ? 'Collapse' : connected.length > 0 ? 'Connect another provider' : 'Other providers'}
+          {showAll ? '접기' : connected.length > 0 ? '다른 제공자 연결' : '다른 제공자'}
           <ChevronDown className={cn('size-3.5 transition', showAll && 'rotate-180')} />
         </Button>
       )}
@@ -157,7 +156,7 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
 function NoProviderKeys() {
   return (
     <div className="grid min-h-32 place-items-center px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
-      No provider API keys available.
+      사용 가능한 제공자 API 키가 없습니다.
     </div>
   )
 }
@@ -195,7 +194,7 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
   }, [onboardingActive])
 
   if (!vars) {
-    return <LoadingState label="Loading providers..." />
+    return <LoadingState label="제공자 로드 중..." />
   }
 
   const hasOauth = oauthProviders.length > 0

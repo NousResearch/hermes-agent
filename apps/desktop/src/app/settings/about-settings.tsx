@@ -165,7 +165,7 @@ export function AboutSettings() {
 
         <ListRow
           description={a.automaticUpdatesDesc}
-          hint={a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
+          hint={a.branchCommit(status?.branch ?? '알 수 없음', status?.currentSha?.slice(0, 7) ?? '알 수 없음')}
           title={a.automaticUpdates}
         />
       </div>

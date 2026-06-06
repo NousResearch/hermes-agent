@@ -63,7 +63,7 @@ export function EnvVarActionsMenu({
             }}
           >
             <ExternalLink className="size-3.5" />
-            <span>Docs</span>
+            <span>문서</span>
           </DropdownMenuItem>
         )}
 
@@ -75,7 +75,7 @@ export function EnvVarActionsMenu({
             }}
           >
             {isRevealed ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-            <span>{isRevealed ? 'Hide value' : 'Reveal value'}</span>
+            <span>{isRevealed ? '값 숨기기' : '값 보기'}</span>
           </DropdownMenuItem>
         )}
 
@@ -86,7 +86,7 @@ export function EnvVarActionsMenu({
           }}
         >
           <Codicon name="edit" size="0.875rem" />
-          <span>{isSet ? 'Replace' : 'Set'}</span>
+          <span>{isSet ? '교체' : '설정'}</span>
         </DropdownMenuItem>
 
         {hasClear && (
@@ -101,7 +101,7 @@ export function EnvVarActionsMenu({
               variant="destructive"
             >
               <Trash2 className="size-3.5" />
-              <span>Clear</span>
+              <span>지우기</span>
             </DropdownMenuItem>
           </>
         )}
@@ -120,7 +120,7 @@ export function EnvVarActionsTrigger({ className, label, ...props }: EnvVarActio
       aria-label={`Actions for ${label}`}
       className={cn('text-muted-foreground hover:text-foreground', className)}
       size="icon-sm"
-      title="Credential actions"
+      title="자격 증명 작업"
       variant="ghost"
       {...props}
     >

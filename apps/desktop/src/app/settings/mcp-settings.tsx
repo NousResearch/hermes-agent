@@ -64,7 +64,7 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
         const first = Object.keys(getServers(next)).sort()[0] ?? null
         setSelected(first)
       })
-      .catch(err => notifyError(err, 'MCP config failed to load'))
+      .catch(err => notifyError(err, 'MCP 설정을 로드하지 못했습니다'))
 
     return () => void (cancelled = true)
   }, [])
@@ -88,14 +88,14 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
   }, [selected, servers])
 
   if (!config) {
-    return <LoadingState label="Loading MCP servers..." />
+    return <LoadingState label="MCP 서버 로드 중..." />
   }
 
   const saveServer = async () => {
     const nextName = name.trim()
 
     if (!nextName) {
-      notify({ kind: 'error', title: 'Name required', message: 'Give this MCP server a config key.' })
+      notify({ kind: 'error', title: '이름 필요', message: '이 MCP 서버에 설정 키를 지정하세요.' })
 
       return
     }
@@ -106,12 +106,12 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
       const raw = JSON.parse(body)
 
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-        throw new Error('Server config must be a JSON object')
+        throw new Error('서버 설정은 JSON 객체여야 합니다')
       }
 
       parsed = raw as Record<string, unknown>
     } catch (err) {
-      notifyError(err, 'Invalid MCP JSON')
+      notifyError(err, '유효하지 않은 MCP JSON')
 
       return
     }
@@ -132,9 +132,9 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
       setConfig(nextConfig)
       setSelected(nextName)
       onConfigSaved?.()
-      notify({ kind: 'success', title: 'MCP server saved', message: `${nextName} applies after MCP reload.` })
+      notify({ kind: 'success', title: 'MCP 서버 저장됨', message: `${nextName} 서버는 MCP 새로고침 후 적용됩니다.` })
     } catch (err) {
-      notifyError(err, 'Save failed')
+      notifyError(err, '저장 실패')
     } finally {
       setSaving(false)
     }
@@ -153,7 +153,7 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
       setSelected(Object.keys(nextServers).sort()[0] ?? null)
       onConfigSaved?.()
     } catch (err) {
-      notifyError(err, 'Remove failed')
+      notifyError(err, '삭제 실패')
     } finally {
       setSaving(false)
     }
@@ -161,7 +161,7 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
 
   const reloadMcp = async () => {
     if (!gateway) {
-      notify({ kind: 'warning', title: 'Gateway unavailable', message: 'Reconnect the gateway before reloading MCP.' })
+      notify({ kind: 'warning', title: '게이트웨이 사용 불가', message: 'MCP를 새로고침하기 전에 게이트웨이를 다시 연결하세요.' })
 
       return
     }
@@ -173,9 +173,9 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
         confirm: true,
         session_id: activeSessionId ?? undefined
       })
-      notify({ kind: 'success', title: 'MCP tools reloaded', message: 'New tool schemas apply to fresh turns.' })
+      notify({ kind: 'success', title: 'MCP 도구 새로고침 됨', message: '새 턴부터 새로운 도구 스키마가 적용됩니다.' })
     } catch (err) {
-      notifyError(err, 'MCP reload failed')
+      notifyError(err, 'MCP 새로고침 실패')
     } finally {
       setReloading(false)
     }
@@ -185,17 +185,17 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
     <SettingsContent>
       <div className="mb-4 flex items-center justify-end gap-4">
         <Button onClick={() => setSelected(null)} size="xs" variant="text">
-          New server
+          새 서버
         </Button>
         <Button disabled={reloading} onClick={() => void reloadMcp()} size="xs" variant="text">
-          {reloading ? 'Reloading...' : 'Reload MCP'}
+          {reloading ? '새로고침 중...' : 'MCP 새로고침'}
         </Button>
       </div>
 
       <div className="grid min-h-0 gap-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
         <div className="min-h-64">
           {names.length === 0 ? (
-            <EmptyState description="Add a stdio or HTTP server to expose MCP tools." title="No MCP servers" />
+            <EmptyState description="MCP 도구를 사용하려면 stdio 또는 HTTP 서버를 추가하세요." title="MCP 서버 없음" />
           ) : (
             <div className="grid gap-0.5">
               {names.map(serverName => {
@@ -216,7 +216,7 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
                     <div className="truncate text-sm font-medium">{serverName}</div>
                     <div className="mt-1 flex items-center gap-1.5">
                       <Pill>{transportLabel(server)}</Pill>
-                      {server.disabled === true && <Pill>disabled</Pill>}
+                      {server.disabled === true && <Pill>비활성화됨</Pill>}
                     </div>
                   </button>
                 )
@@ -228,14 +228,14 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
         <div className="grid content-start gap-3">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Wrench className="size-4 text-muted-foreground" />
-            {selected ? 'Edit server' : 'New server'}
+            {selected ? '서버 편집' : '새 서버'}
           </div>
           <label className="grid gap-1.5">
-            <span className="text-xs text-muted-foreground">Name</span>
+            <span className="text-xs text-muted-foreground">이름</span>
             <Input onChange={event => setName(event.currentTarget.value)} placeholder="filesystem" value={name} />
           </label>
           <label className="grid gap-1.5">
-            <span className="text-xs text-muted-foreground">Server JSON</span>
+            <span className="text-xs text-muted-foreground">서버 JSON</span>
             <Textarea
               className="min-h-80 font-mono text-xs"
               onChange={event => setBody(event.currentTarget.value)}
@@ -252,13 +252,13 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
                 size="xs"
                 variant="text"
               >
-                Remove
+                삭제
               </Button>
             ) : (
               <span />
             )}
             <Button disabled={saving} onClick={() => void saveServer()} size="sm">
-              {saving ? 'Saving...' : 'Save server'}
+              {saving ? '저장 중...' : '서버 저장'}
             </Button>
           </div>
         </div>

@@ -43,7 +43,7 @@ export function SessionsSettings() {
       const result = await listSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
       setLocalSessions(result.sessions)
     } catch (err) {
-      notifyError(err, 'Could not load archived sessions')
+      notifyError(err, '보관된 대화를 불러오지 못했습니다')
     } finally {
       setLoading(false)
     }
@@ -62,16 +62,16 @@ export function SessionsSettings() {
       // Surface it again in the sidebar without waiting for a full refresh.
       setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
       triggerHaptic('selection')
-      notify({ durationMs: 2_000, kind: 'success', message: 'Restored' })
+      notify({ durationMs: 2_000, kind: 'success', message: '복원됨' })
     } catch (err) {
-      notifyError(err, 'Unarchive failed')
+      notifyError(err, '보관 취소 실패')
     } finally {
       setBusyId(null)
     }
   }, [])
 
   const remove = useCallback(async (session: SessionInfo) => {
-    if (!window.confirm(`Permanently delete "${sessionTitle(session)}"? This cannot be undone.`)) {
+    if (!window.confirm(`"${sessionTitle(session)}"을(를) 영구적으로 삭제하시겠습니까? 이 작업은 취소할 수 없습니다.`)) {
       return
     }
 
@@ -82,7 +82,7 @@ export function SessionsSettings() {
       setLocalSessions(prev => prev.filter(s => s.id !== session.id))
       triggerHaptic('warning')
     } catch (err) {
-      notifyError(err, 'Delete failed')
+      notifyError(err, '삭제 실패')
     } finally {
       setBusyId(null)
     }
@@ -95,7 +95,7 @@ export function SessionsSettings() {
   })
 
   if (loading) {
-    return <LoadingState label="Loading archived sessions…" />
+    return <LoadingState label="보관된 대화 불러오는 중…" />
   }
 
   return (
@@ -105,15 +105,14 @@ export function SessionsSettings() {
       <SectionHeading
         icon={Archive}
         meta={sessions.length ? String(sessions.length) : undefined}
-        title="Archived sessions"
+        title="보관된 대화"
       />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        Archived chats are hidden from the sidebar but keep all their messages. Ctrl/⌘-click a chat in the sidebar to
-        archive it.
+        보관된 대화는 사이드바에서 숨겨지지만 모든 메시지는 유지됩니다. 사이드바의 대화를 Ctrl/⌘-클릭하여 보관할 수 있습니다.
       </p>
 
       {sessions.length === 0 ? (
-        <EmptyState description="Archive a chat to hide it here." title="Nothing archived" />
+        <EmptyState description="대화를 보관하여 여기에 숨깁니다." title="보관된 항목 없음" />
       ) : (
         <div className="grid gap-1">
           {sessions.map(session => {
@@ -133,11 +132,11 @@ export function SessionsSettings() {
                         variant="textStrong"
                       >
                         {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
-                        <span>Unarchive</span>
+                        <span>보관 취소</span>
                       </Button>
-                      <Tip label="Delete permanently">
+                      <Tip label="영구 삭제">
                         <Button
-                          aria-label="Delete permanently"
+                          aria-label="영구 삭제"
                           className="text-muted-foreground hover:text-destructive"
                           disabled={busy}
                           onClick={() => void remove(session)}
@@ -151,7 +150,7 @@ export function SessionsSettings() {
                     </div>
                   }
                   description={session.preview || undefined}
-                  hint={label ? `${label} · ${session.message_count} messages` : `${session.message_count} messages`}
+                  hint={label ? `${label} · ${session.message_count}개 메시지` : `${session.message_count}개 메시지`}
                   title={sessionTitle(session)}
                 />
               </div>
@@ -217,9 +216,9 @@ function DefaultProjectDirSetting() {
 
       const result = await settings.setDefaultProjectDir(picked.dir)
       setDir(result.dir)
-      notify({ durationMs: 2_000, kind: 'success', message: 'Default project directory updated' })
+      notify({ durationMs: 2_000, kind: 'success', message: '기본 프로젝트 디렉토리가 업데이트되었습니다' })
     } catch (err) {
-      notifyError(err, 'Could not update default directory')
+      notifyError(err, '기본 디렉토리를 업데이트하지 못했습니다')
     } finally {
       setBusy(false)
     }
@@ -238,7 +237,7 @@ function DefaultProjectDirSetting() {
       await settings.setDefaultProjectDir(null)
       setDir(null)
     } catch (err) {
-      notifyError(err, 'Could not clear default directory')
+      notifyError(err, '기본 디렉토리를 지우지 못했습니다')
     } finally {
       setBusy(false)
     }
@@ -246,26 +245,26 @@ function DefaultProjectDirSetting() {
 
   return (
     <div className="mb-6">
-      <SectionHeading icon={FolderOpen} title="Default project directory" />
+      <SectionHeading icon={FolderOpen} title="기본 프로젝트 디렉토리" />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        New sessions start in this folder unless you pick another. Leave it unset to use your home directory.
+        다른 폴더를 선택하지 않으면 새 대화는 이 폴더에서 시작됩니다. 홈 디렉토리를 사용하려면 설정하지 않은 상태로 두세요.
       </p>
       <ListRow
         action={
           <div className="flex items-center gap-3">
             <Button disabled={busy} onClick={() => void choose()} size="sm" type="button" variant="textStrong">
               <FolderOpen className="size-3.5" />
-              <span>{dir ? 'Change' : 'Choose'}</span>
+              <span>{dir ? '변경' : '선택'}</span>
             </Button>
             {dir && (
               <Button disabled={busy} onClick={() => void clear()} size="sm" type="button" variant="text">
-                Clear
+                지우기
               </Button>
             )}
           </div>
         }
-        description={dir || `Defaults to ${fallback || '~/hermes-projects'}.`}
-        title={dir ? dir : 'Not set'}
+        description={dir || `기본값: ${fallback || '~/hermes-projects'}.`}
+        title={dir ? dir : '설정 안 됨'}
       />
     </div>
   )

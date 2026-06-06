@@ -92,18 +92,18 @@ const NEW_SESSION_KBD: readonly string[] =
 const SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
-    label: 'New session',
+    label: '새 세션',
     icon: props => <Codicon name="robot" {...props} />,
     action: 'new-session'
   },
   {
     id: 'skills',
-    label: 'Skills & Tools',
+    label: '기술 및 도구',
     icon: props => <Codicon name="symbol-misc" {...props} />,
     route: SKILLS_ROUTE
   },
-  { id: 'messaging', label: 'Messaging', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
-  { id: 'artifacts', label: 'Artifacts', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
+  { id: 'messaging', label: '메시징', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
+  { id: 'artifacts', label: '아티팩트', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]
 
 const WORKSPACE_PAGE = 5

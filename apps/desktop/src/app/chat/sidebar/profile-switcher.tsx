@@ -187,11 +187,11 @@ export function ProfileRail() {
           <ProfilePill
             active={isAll || onDefault}
             glyph={isAll ? 'layers' : 'home'}
-            label={onDefault ? 'Show all profiles' : `Switch to ${defaultProfile.name}`}
+            label={onDefault ? '모든 프로필 표시' : `${defaultProfile.name}(으)로 전환`}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
           />
         ) : (
-          <ProfilePill active={isAll} glyph="layers" label="All profiles" onSelect={() => setShowAllProfiles(true)} />
+          <ProfilePill active={isAll} glyph="layers" label="모든 프로필" onSelect={() => setShowAllProfiles(true)} />
         ))}
 
       {/* Single-profile: the active default's home icon next to the create +. */}
@@ -233,9 +233,9 @@ export function ProfileRail() {
           </DndContext>
         )}
 
-        <Tip label="New profile">
+        <Tip label="새 프로필">
           <button
-            aria-label="New profile"
+            aria-label="새 프로필"
             className="grid size-5 shrink-0 place-items-center rounded-[3px] text-(--ui-text-tertiary) opacity-55 transition hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100"
             onClick={() => setCreateOpen(true)}
             type="button"
@@ -246,7 +246,7 @@ export function ProfileRail() {
       </div>
 
       {multiProfile && (
-        <ProfilePill active={false} glyph="ellipsis" label="Manage profiles…" onSelect={() => navigate(PROFILES_ROUTE)} />
+        <ProfilePill active={false} glyph="ellipsis" label="프로필 관리…" onSelect={() => navigate(PROFILES_ROUTE)} />
       )}
 
       {/* Land in the new profile on a fresh chat (selectProfile triggers the
@@ -442,15 +442,15 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
         >
           <ContextMenuItem onSelect={() => setPickerOpen(true)}>
             <Codicon name="symbol-color" size="0.875rem" />
-            <span>Color…</span>
+            <span>색상…</span>
           </ContextMenuItem>
           <ContextMenuItem onSelect={onRename}>
             <Codicon name="edit" size="0.875rem" />
-            <span>Rename</span>
+            <span>이름 바꾸기</span>
           </ContextMenuItem>
           <ContextMenuItem className="text-destructive focus:text-destructive" onSelect={onDelete} variant="destructive">
             <Codicon name="trash" size="0.875rem" />
-            <span>Delete</span>
+            <span>삭제</span>
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -483,7 +483,7 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
           type="button"
         >
           <Codicon name="sync" size="0.75rem" />
-          Auto
+          자동
         </button>
       </PopoverContent>
     </Popover>

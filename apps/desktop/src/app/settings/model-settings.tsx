@@ -20,14 +20,14 @@ interface AuxTaskMeta {
 }
 
 const AUX_TASKS: readonly AuxTaskMeta[] = [
-  { key: 'vision', label: 'Vision', hint: 'Image analysis' },
-  { key: 'web_extract', label: 'Web extract', hint: 'Page summarization' },
-  { key: 'compression', label: 'Compression', hint: 'Context compaction' },
-  { key: 'skills_hub', label: 'Skills hub', hint: 'Skill search' },
-  { key: 'approval', label: 'Approval', hint: 'Smart auto-approve' },
-  { key: 'mcp', label: 'MCP', hint: 'MCP tool routing' },
-  { key: 'title_generation', label: 'Title gen', hint: 'Session titles' },
-  { key: 'curator', label: 'Curator', hint: 'Skill-usage review' }
+  { key: 'vision', label: '비전', hint: '이미지 분석' },
+  { key: 'web_extract', label: '웹 추출', hint: '페이지 요약' },
+  { key: 'compression', label: '압축', hint: '컨텍스트 압축' },
+  { key: 'skills_hub', label: '스킬 허브', hint: '스킬 검색' },
+  { key: 'approval', label: '승인', hint: '스마트 자동 승인' },
+  { key: 'mcp', label: 'MCP', hint: 'MCP 도구 라우팅' },
+  { key: 'title_generation', label: '제목 생성', hint: '세션 제목' },
+  { key: 'curator', label: '큐레이터', hint: '스킬 사용 리뷰' }
 ]
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
@@ -63,11 +63,11 @@ function StaleAuxWarning({ applying, onReset, slots }: StaleAuxWarningProps) {
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
       <AlertTriangle className="size-3.5 shrink-0" />
       <span className="grow">
-        {slots.length} auxiliary task{slots.length === 1 ? '' : 's'} ({names}) still run on{' '}
-        <span className="font-mono">{allSameProvider ? provider : 'other providers'}</span>, not your main model.
+        {slots.length}개의 보조 작업({names})이(가) 기본 모델이 아닌{' '}
+        <span className="font-mono">{allSameProvider ? provider : '다른 제공자'}</span>에서 실행 중입니다.
       </span>
       <Button disabled={applying} onClick={onReset} size="sm" variant="textStrong">
-        Reset all to main
+        모두 기본 모델로 초기화
       </Button>
     </div>
   )
@@ -253,19 +253,19 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   }, [mainModel, refresh])
 
   if (loading && !mainModel) {
-    return <LoadingState label="Loading model configuration..." />
+    return <LoadingState label="모델 설정 로드 중..." />
   }
 
   return (
     <div className="grid gap-6">
       <section>
         <p className="mb-3 text-xs text-muted-foreground">
-          Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.
+          새 세션에 적용됩니다. 활성 채팅을 즉시 변경하려면 컴포저의 모델 선택기를 사용하세요.
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <Select onValueChange={setSelectedProvider} value={selectedProvider}>
             <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-              <SelectValue placeholder="Provider" />
+              <SelectValue placeholder="제공자" />
             </SelectTrigger>
             <SelectContent>
               {providerOptions.map(provider => (
@@ -277,7 +277,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           </Select>
           <Select onValueChange={setSelectedModel} value={selectedModel}>
             <SelectTrigger className={cn('min-w-60', CONTROL_TEXT)}>
-              <SelectValue placeholder="Model" />
+              <SelectValue placeholder="모델" />
             </SelectTrigger>
             <SelectContent>
               {(selectedProviderModels.length ? selectedProviderModels : []).map(model => (
@@ -293,7 +293,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             size="sm"
           >
             {applying && <Loader2 className="size-3.5 animate-spin" />}
-            {applying ? 'Applying...' : 'Apply'}
+            {applying ? '적용 중...' : '적용'}
           </Button>
         </div>
         {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
@@ -306,18 +306,18 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
       <section>
         <div className="mb-2.5 flex items-center justify-between">
-          <SectionHeading icon={Cpu} title="Auxiliary models" />
+          <SectionHeading icon={Cpu} title="보조 모델" />
           <Button
             disabled={!mainModel || applying}
             onClick={() => void resetAuxiliaryModels()}
             size="sm"
             variant="textStrong"
           >
-            Reset all to main
+            모두 기본 모델로 초기화
           </Button>
         </div>
         <p className="mb-2 text-xs text-muted-foreground">
-          Helper tasks run on the main model by default. Assign a dedicated model to any task to override.
+          보조 작업은 기본적으로 기본 모델에서 실행됩니다. 작업을 덮어쓰려면 전용 모델을 할당하세요.
         </p>
         {switchStaleAux.length === 0 && persistentStaleAux.length > 0 && (
           <div className="mb-2.5">
@@ -341,7 +341,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         size="sm"
                         variant="text"
                       >
-                        Set to main
+                        기본 모델로 설정
                       </Button>
                       <Button
                         disabled={!providers.length || applying}
@@ -349,7 +349,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         size="sm"
                         variant="textStrong"
                       >
-                        Change
+                        변경
                       </Button>
                     </div>
                   )
@@ -362,7 +362,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         value={auxDraft.provider}
                       >
                         <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                          <SelectValue placeholder="Provider" />
+                          <SelectValue placeholder="제공자" />
                         </SelectTrigger>
                         <SelectContent>
                           {providerOptions.map(provider => (
@@ -377,7 +377,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         value={auxDraft.model}
                       >
                         <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                          <SelectValue placeholder="Model" />
+                          <SelectValue placeholder="모델" />
                         </SelectTrigger>
                         <SelectContent>
                           {(auxDraftProviderModels.length ? auxDraftProviderModels : []).map(model => (
@@ -392,10 +392,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         onClick={() => void applyAuxiliaryDraft(meta.key)}
                         size="sm"
                       >
-                        {applying ? 'Applying...' : 'Apply'}
+                        {applying ? '적용 중...' : '적용'}
                       </Button>
                       <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
-                        Cancel
+                        취소
                       </Button>
                     </div>
                   )
@@ -403,8 +403,8 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                 description={
                   <span className="font-mono text-[0.68rem]">
                     {isAuto
-                      ? 'auto · use main model'
-                      : `${current.provider} · ${current.model || '(provider default)'}`}
+                      ? '자동 · 기본 모델 사용'
+                      : `${current.provider} · ${current.model || '(제공자 기본값)'}`}
                   </span>
                 }
                 key={meta.key}

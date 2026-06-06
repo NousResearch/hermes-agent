@@ -22,14 +22,14 @@ import {
 } from '@/store/updates'
 
 const STAGE_LABELS: Record<DesktopUpdateStage, string> = {
-  idle: 'Getting ready…',
-  prepare: 'Getting ready…',
-  fetch: 'Downloading…',
-  pull: 'Almost there…',
-  pydeps: 'Finishing up…',
-  restart: 'Restarting Hermes…',
-  manual: 'Update from your terminal',
-  error: 'Update paused'
+  idle: '준비 중…',
+  prepare: '준비 중…',
+  fetch: '다운로드 중…',
+  pull: '거의 다 되었습니다…',
+  pydeps: '마무리 중…',
+  restart: 'Hermes 재시작 중…',
+  manual: '터미널에서 업데이트',
+  error: '업데이트 일시 중지됨'
 }
 
 function totalItems(groups: readonly CommitGroup[]) {
@@ -126,7 +126,7 @@ function IdleView({
 }) {
   if (!status && checking) {
     return (
-      <CenteredStatus icon={<Loader2 className="size-6 animate-spin text-primary" />} title="Looking for updates…" />
+      <CenteredStatus icon={<Loader2 className="size-6 animate-spin text-primary" />} title="업데이트 확인 중…" />
     )
   }
 
@@ -135,11 +135,11 @@ function IdleView({
       <CenteredStatus
         action={
           <Button onClick={onRetryCheck} size="sm">
-            Try again
+            다시 시도
           </Button>
         }
         icon={<AlertCircle className="size-6 text-muted-foreground" />}
-        title="Couldn’t check for updates"
+        title="업데이트를 확인할 수 없습니다"
       />
     )
   }
@@ -147,9 +147,9 @@ function IdleView({
   if (!status.supported) {
     return (
       <CenteredStatus
-        body={status.message ?? 'This version of Hermes can’t update itself from inside the app.'}
+        body={status.message ?? '이 버전의 Hermes는 앱 내에서 자체적으로 업데이트할 수 없습니다.'}
         icon={<AlertCircle className="size-6 text-muted-foreground" />}
-        title="Update not available"
+        title="업데이트를 사용할 수 없음"
       />
     )
   }
@@ -159,12 +159,12 @@ function IdleView({
       <CenteredStatus
         action={
           <Button disabled={checking} onClick={onRetryCheck} size="sm">
-            Try again
+            다시 시도
           </Button>
         }
-        body="Check your connection and try again."
+        body="네트워크 연결을 확인하고 다시 시도하세요."
         icon={<AlertCircle className="size-6 text-muted-foreground" />}
-        title="Couldn’t check for updates"
+        title="업데이트를 확인할 수 없습니다"
       />
     )
   }
@@ -172,9 +172,9 @@ function IdleView({
   if (behind === 0) {
     return (
       <CenteredStatus
-        body="You’re running the latest version."
+        body="최신 버전을 사용 중입니다."
         icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
-        title="You’re all set"
+        title="준비 완료"
       />
     )
   }
@@ -190,9 +190,9 @@ function IdleView({
           <Sparkles className="size-7" />
         </span>
 
-        <DialogTitle className="text-center text-xl">New update available</DialogTitle>
+        <DialogTitle className="text-center text-xl">새로운 업데이트 사용 가능</DialogTitle>
         <DialogDescription className="text-center text-sm">
-          A new version of Hermes is ready to install.
+          Hermes의 새 버전을 설치할 준비가 되었습니다.
         </DialogDescription>
       </div>
 
@@ -214,20 +214,20 @@ function IdleView({
 
       <div className="grid gap-2">
         <Button className="font-semibold" onClick={onInstall} size="lg">
-          Update now
+          지금 업데이트
         </Button>
         <button
           className="text-center text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
           onClick={onLater}
           type="button"
         >
-          Maybe later
+          나중에
         </button>
       </div>
 
       {remaining > 0 && (
         <p className="text-center text-xs text-muted-foreground">
-          + {remaining} more change{remaining === 1 ? '' : 's'} included.
+          + {remaining}개의 변경 사항이 더 포함되어 있습니다.
         </p>
       )}
     </div>
@@ -251,9 +251,9 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
           <Terminal className="size-7" />
         </span>
 
-        <DialogTitle className="text-center text-xl">Update from your terminal</DialogTitle>
+        <DialogTitle className="text-center text-xl">터미널에서 업데이트</DialogTitle>
         <DialogDescription className="text-center text-sm">
-          You installed Hermes from the command line, so updates run there too. Paste this into your terminal:
+          명령줄에서 Hermes를 설치했으므로 업데이트도 터미널에서 실행됩니다. 터미널에 다음 명령어를 붙여넣으세요:
         </DialogDescription>
       </div>
 
@@ -270,30 +270,30 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
           {copied ? (
             <>
               <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-              Copied
+              복사됨
             </>
           ) : (
             <>
               <Copy className="size-3.5" />
-              Copy
+              복사
             </>
           )}
         </span>
       </button>
 
       <p className="text-center text-xs text-muted-foreground">
-        Hermes will pick up the new version next time you launch it.
+        다음 번에 Hermes를 실행할 때 새 버전이 적용됩니다.
       </p>
 
       <Button className="font-semibold" onClick={onDone} size="lg" variant="outline">
-        Done
+        완료
       </Button>
     </div>
   )
 }
 
 function ApplyingView({ apply }: { apply: UpdateApplyState }) {
-  const label = STAGE_LABELS[apply.stage] ?? 'Updating Hermes…'
+  const label = STAGE_LABELS[apply.stage] ?? 'Hermes 업데이트 중…'
 
   const percent =
     typeof apply.percent === 'number' && Number.isFinite(apply.percent)
@@ -309,7 +309,7 @@ function ApplyingView({ apply }: { apply: UpdateApplyState }) {
 
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
         <DialogDescription className="text-center text-sm">
-          The Hermes updater will take over in its own window and reopen Hermes when it&rsquo;s done.
+          Hermes 업데이터가 자체 창에서 실행되며 완료되면 Hermes를 다시 엽니다.
         </DialogDescription>
       </div>
 
@@ -323,7 +323,7 @@ function ApplyingView({ apply }: { apply: UpdateApplyState }) {
         />
       </div>
 
-      <p className="text-center text-xs text-muted-foreground">Hermes will close to apply the update.</p>
+      <p className="text-center text-xs text-muted-foreground">업데이트를 적용하기 위해 Hermes가 닫힙니다.</p>
     </div>
   )
 }
@@ -334,18 +334,18 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
       className="px-6 pb-6 pt-7 pr-8"
       description={
         <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
-          {message || 'No worries — nothing was lost. You can try again now.'}
+          {message || '걱정 마세요. 손실된 데이터는 없습니다. 지금 다시 시도할 수 있습니다.'}
         </DialogDescription>
       }
       title={
-        <DialogTitle className="text-center text-xl font-semibold tracking-tight">Update didn’t finish</DialogTitle>
+        <DialogTitle className="text-center text-xl font-semibold tracking-tight">업데이트를 완료하지 못했습니다</DialogTitle>
       }
     >
       <Button className="font-semibold" onClick={onRetry} size="lg">
-        Try again
+        다시 시도
       </Button>
       <Button onClick={onDismiss} variant="text">
-        Not now
+        나중에
       </Button>
     </ErrorState>
   )

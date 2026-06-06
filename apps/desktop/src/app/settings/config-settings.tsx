@@ -88,8 +88,8 @@ function ConfigField({
               {option
                 ? (optionLabels?.[option] ?? prettyName(option))
                 : schemaKey === 'display.personality'
-                  ? 'None'
-                  : '(none)'}
+                  ? '없음'
+                  : '(없음)'}
             </SelectItem>
           ))}
         </SelectContent>
@@ -109,7 +109,7 @@ function ConfigField({
             onChange(n)
           }
         }}
-        placeholder="Not set"
+        placeholder="설정되지 않음"
         type="number"
         value={value === undefined || value === null ? '' : String(value)}
       />
@@ -128,7 +128,7 @@ function ConfigField({
               .filter(Boolean)
           )
         }
-        placeholder="comma-separated values"
+        placeholder="쉼표로 구분된 값"
         value={Array.isArray(value) ? value.join(', ') : String(value ?? '')}
       />
     )
@@ -145,7 +145,7 @@ function ConfigField({
             /* keep last valid */
           }
         }}
-        placeholder="Not set"
+        placeholder="설정되지 않음"
         spellCheck={false}
         value={JSON.stringify(value, null, 2)}
       />,
@@ -160,14 +160,14 @@ function ConfigField({
       <Textarea
         className={cn('min-h-24 resize-y bg-background', CONTROL_TEXT)}
         onChange={e => onChange(e.target.value)}
-        placeholder="Not set"
+        placeholder="설정되지 않음"
         value={String(value ?? '')}
       />
     ) : (
       <Input
         className={CONTROL_TEXT}
         onChange={e => onChange(e.target.value)}
-        placeholder="Not set"
+        placeholder="설정되지 않음"
         value={String(value ?? '')}
       />
     ),
@@ -206,7 +206,7 @@ export function ConfigSettings({
         setDefaults(d)
         setSchema(s.fields)
       })
-      .catch(err => notifyError(err, 'Settings failed to load'))
+      .catch(err => notifyError(err, '설정을 로드하지 못했습니다'))
 
     return () => void (cancelled = true)
   }, [])
@@ -250,7 +250,7 @@ export function ConfigSettings({
           }
         } catch (err) {
           if (saveVersionRef.current === v) {
-            notifyError(err, 'Autosave failed')
+            notifyError(err, '자동 저장 실패')
           }
         }
       })()
@@ -323,9 +323,9 @@ export function ConfigSettings({
     reader.onload = () => {
       try {
         updateConfig(JSON.parse(String(reader.result)))
-        notify({ kind: 'success', title: 'Config imported', message: 'Saving…' })
+        notify({ kind: 'success', title: '설정 가져오기 완료', message: '저장 중…' })
       } catch (err) {
-        notifyError(err, 'Invalid config JSON')
+        notifyError(err, '유효하지 않은 설정 JSON')
       }
     }
 
@@ -334,7 +334,7 @@ export function ConfigSettings({
   }
 
   if (!config || !schema) {
-    return <LoadingState label="Loading Hermes configuration..." />
+    return <LoadingState label="Hermes 설정 로드 중..." />
   }
 
   return (
@@ -345,7 +345,7 @@ export function ConfigSettings({
         </div>
       )}
       {fields.length === 0 ? (
-        <EmptyState description="This section has no adjustable settings." title="Nothing to configure" />
+        <EmptyState description="이 섹션에는 조정 가능한 설정이 없습니다." title="구성할 내용 없음" />
       ) : (
         <div className="grid gap-1">
           {fields.map(([key, field]) => (

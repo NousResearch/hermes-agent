@@ -812,7 +812,7 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
                     <div
                       className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
                       key={entry.day}
-                      title={`${entry.day} · in ${formatTokens(entry.input_tokens)} · out ${formatTokens(entry.output_tokens)}`}
+                      title={`${entry.day} · 입력 ${formatTokens(entry.input_tokens)} · 출력 ${formatTokens(entry.output_tokens)}`}
                     >
                       <div
                         className="w-full bg-[color:var(--dt-primary)]/50"

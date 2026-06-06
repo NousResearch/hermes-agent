@@ -205,6 +205,48 @@ class TestSendMessageTool:
             force_document=False,
         )
 
+    def test_homeassistant_target_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("homeassistant", "mobile_app_my_phone")
+
+        assert chat_id == "mobile_app_my_phone"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_homeassistant_target_bypasses_channel_directory(self):
+        ha_platform = Platform("homeassistant")
+        ha_cfg = SimpleNamespace(enabled=True, token="tok", extra={"url": "http://hass.local"})
+        config = SimpleNamespace(
+            platforms={ha_platform: ha_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("should not resolve HA targets")), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "homeassistant:mobile_app_my_phone",
+                        "message": "lights off",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            ha_platform,
+            ha_cfg,
+            "mobile_app_my_phone",
+            "lights off",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()

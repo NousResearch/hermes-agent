@@ -1391,7 +1391,7 @@ export const zhHant = defineLocale({
     },
     startingSignIn: provider => `正在為 ${provider} 啟動登入...`,
     verifyingCode: provider => `正在透過 ${provider} 驗證您的代碼...`,
-    connectedProvider: provider => `${provider} 已連線。`,
+    connectedProvider: provider => `${provider} 已連線`,
     connectedPicking: provider => `${provider} 已連線。正在選擇預設模型...`,
     signInFailed: '登入失敗，請重試。',
     pickDifferentProvider: '選擇其他提供方',
@@ -1417,7 +1417,7 @@ export const zhHant = defineLocale({
     free: '免費',
     price: (input, output) => `${input} 輸入 / ${output} 輸出 每 Mtok`,
     change: '變更',
-    startChatting: '開始聊天',
+    startChatting: '開始',
     docs: provider => `${provider} 文件`
   },
 

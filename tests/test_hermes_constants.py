@@ -8,7 +8,9 @@ import pytest
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
+    _dir_has_data,
     get_default_hermes_root,
+    get_hermes_dir,
     get_hermes_home,
     is_container,
     parse_reasoning_effort,
@@ -103,6 +105,104 @@ class TestGetHermesHome:
         monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
 
         assert get_hermes_home() == local_appdata / "hermes"
+
+
+class TestDirHasData:
+    """Tests for _dir_has_data() — used by get_hermes_dir() to disambiguate
+    legacy vs new layout.  An empty directory must not count as data,
+    otherwise a stray empty dir from a prior install can shadow the
+    populated alternative.  #27602."""
+
+    def test_missing_dir_is_not_data(self, tmp_path):
+        assert _dir_has_data(tmp_path / "nope") is False
+
+    def test_empty_dir_is_not_data(self, tmp_path):
+        d = tmp_path / "empty"
+        d.mkdir()
+        assert _dir_has_data(d) is False
+
+    def test_populated_dir_is_data(self, tmp_path):
+        d = tmp_path / "populated"
+        d.mkdir()
+        (d / "anything.txt").write_text("x")
+        assert _dir_has_data(d) is True
+
+    def test_subdirectory_counts_as_data(self, tmp_path):
+        d = tmp_path / "with_subdir"
+        d.mkdir()
+        (d / "subdir").mkdir()
+        assert _dir_has_data(d) is True
+
+    def test_path_pointing_at_file_is_not_data(self, tmp_path):
+        f = tmp_path / "file.txt"
+        f.write_text("x")
+        assert _dir_has_data(f) is False
+
+
+class TestGetHermesDir:
+    """Tests for get_hermes_dir() — picks between legacy and new layout
+    based on which one actually has data on disk, instead of "old wins if
+    it exists at all".  #27602."""
+
+    def test_neither_exists_returns_new(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        new = tmp_path / "platforms/pairing"
+        old = tmp_path / "pairing"
+        assert get_hermes_dir("platforms/pairing", "pairing") == new
+
+    def test_old_empty_returns_new(self, tmp_path, monkeypatch):
+        """The reported footgun: empty pairing/ shadows populated
+        platforms/pairing/.  After the fix, the empty old dir loses."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        new = tmp_path / "platforms/pairing"
+        old = tmp_path / "pairing"
+        old.mkdir()
+        assert get_hermes_dir("platforms/pairing", "pairing") == new
+
+    def test_old_populated_returns_old(self, tmp_path, monkeypatch):
+        """Backwards-compat: legacy install with real data keeps working."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        new = tmp_path / "platforms/pairing"
+        old = tmp_path / "pairing"
+        old.mkdir()
+        (old / "feishu-approved.json").write_text("{}")
+        assert get_hermes_dir("platforms/pairing", "pairing") == old
+
+    def test_new_populated_wins_over_old(self, tmp_path, monkeypatch):
+        """Both populated → new layout wins (the canonical direction)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        new = tmp_path / "platforms/pairing"
+        old = tmp_path / "pairing"
+        old.mkdir()
+        new.mkdir(parents=True)
+        (old / "old.json").write_text("{}")
+        (new / "new.json").write_text("{}")
+        assert get_hermes_dir("platforms/pairing", "pairing") == new
+
+    def test_new_empty_old_populated_returns_old(self, tmp_path, monkeypatch):
+        """Mid-migration: new dir scaffolded but empty, old has real data."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        new = tmp_path / "platforms/pairing"
+        old = tmp_path / "pairing"
+        old.mkdir()
+        new.mkdir(parents=True)
+        (old / "feishu-approved.json").write_text("{}")
+        assert get_hermes_dir("platforms/pairing", "pairing") == old
+
+    def test_works_with_image_cache_paths(self, tmp_path, monkeypatch):
+        """Sanity check: the resolver isn't pair-specific, it's used
+        elsewhere too (e.g. ``cache/images`` vs ``image_cache``)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # legacy wins because it has data
+        old = tmp_path / "image_cache"
+        old.mkdir()
+        (old / "img.png").write_text("x")
+        assert get_hermes_dir("cache/images", "image_cache") == old
+        # new wins when both populated
+        new = tmp_path / "cache" / "images"
+        new.mkdir(parents=True)
+        (new / "img.png").write_text("x")
+        assert get_hermes_dir("cache/images", "image_cache") == new
 
 
 class TestIsContainer:

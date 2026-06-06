@@ -221,6 +221,24 @@ def get_bundled_skills_dir(default: Path | None = None) -> Path:
     return get_hermes_home() / "skills"
 
 
+def _dir_has_data(path: Path) -> bool:
+    """Return True if *path* exists and contains at least one entry.
+
+    Used by :func:`get_hermes_dir` to disambiguate the legacy-vs-new
+    fallback.  An empty directory does NOT count as "data" — its mere
+    existence (e.g. left behind by a previous install or by a
+    half-completed migration) must not cause us to abandon a populated
+    alternative.  See NousResearch/hermes-agent#27602.
+    """
+    if not path.is_dir():
+        return False
+    try:
+        first = next(path.iterdir(), None)
+    except OSError:
+        return False
+    return first is not None
+
+
 def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     """Resolve a Hermes subdirectory with backward compatibility.
 
@@ -233,13 +251,30 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
         old_name: Legacy path relative to HERMES_HOME (e.g. ``"image_cache"``).
 
     Returns:
-        Absolute ``Path`` — old location if it exists on disk, otherwise the new one.
+        Absolute ``Path`` — the one with actual data on disk (new layout
+        wins ties), falling back to the new layout if neither exists.
+
+    .. note::
+        Existence alone is not enough to pick the old layout; the old
+        directory must contain at least one entry.  Otherwise a stray
+        empty ``pairing/`` left behind by a prior install could shadow
+        a populated ``platforms/pairing/`` (#27602).
     """
     home = get_hermes_home()
+    new_path = home / new_subpath
     old_path = home / old_name
-    if old_path.exists():
+
+    new_has_data = _dir_has_data(new_path)
+    old_has_data = _dir_has_data(old_path)
+
+    # Prefer the new layout when it has data — that's the canonical
+    # direction.  Only fall back to the legacy path when it's the one
+    # carrying real state.
+    if new_has_data:
+        return new_path
+    if old_has_data:
         return old_path
-    return home / new_subpath
+    return new_path
 
 
 def display_hermes_home() -> str:

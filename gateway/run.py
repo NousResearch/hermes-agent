@@ -12293,15 +12293,26 @@ class GatewayRunner:
         if has_agent_tts:
             return False
 
-        # Dedup: base adapter auto-TTS already handles voice input
-        # (play_tts plays in VC when connected, so runner can skip).
-        # When streaming already delivered the text (already_sent=True),
-        # the base adapter will receive None and can't run auto-TTS,
-        # so the runner must take over.
-        if is_voice_input and not already_sent:
+        if self._runner_should_skip_voice_input_auto_tts(event, already_sent=already_sent):
             return False
 
         return True
+
+    def _runner_should_skip_voice_input_auto_tts(
+        self,
+        event: MessageEvent,
+        *,
+        already_sent: bool = False,
+    ) -> bool:
+        """Return True when the base adapter owns TTS for this voice input.
+
+        Non-streamed voice input returns final text to the platform adapter,
+        which can run its voice-first auto-TTS path and keep normal text
+        fallback if TTS delivery fails.  If streaming already delivered the
+        text, the adapter receives no final text, so the runner must generate
+        the voice reply instead.
+        """
+        return event.message_type == MessageType.VOICE and not already_sent
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""

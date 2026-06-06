@@ -2662,12 +2662,13 @@ class TestVoiceTTSPlayback:
         return runner
 
     def _call_should_reply(self, runner, voice_mode, msg_type, response="Hello",
-                           agent_msgs=None, already_sent=False):
+                           agent_msgs=None, already_sent=False, platform=None):
         from gateway.platforms.base import MessageEvent, SessionSource
         from gateway.config import Platform
-        runner._voice_mode["discord:ch1"] = voice_mode
+        platform = platform or Platform.DISCORD
+        runner._voice_mode[f"{platform.value}:ch1"] = voice_mode
         source = SessionSource(
-            platform=Platform.DISCORD, chat_id="ch1",
+            platform=platform, chat_id="ch1",
             user_id="1", user_name="test", chat_type="channel",
         )
         event = MessageEvent(source=source, text="test", message_type=msg_type)
@@ -2682,6 +2683,19 @@ class TestVoiceTTSPlayback:
         from gateway.platforms.base import MessageType
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.VOICE, already_sent=False) is False
+
+    def test_telegram_voice_input_runner_skips_for_adapter_auto_tts(self):
+        """Telegram voice input stays on adapter auto-TTS to avoid duplicate audio."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageType
+        runner = self._make_runner()
+        assert self._call_should_reply(
+            runner,
+            "voice_only",
+            MessageType.VOICE,
+            already_sent=False,
+            platform=Platform.TELEGRAM,
+        ) is False
 
     def test_text_input_voice_all_runner_fires(self):
         """Streaming OFF + text input + voice_mode=all: runner generates TTS."""
@@ -2729,6 +2743,19 @@ class TestVoiceTTSPlayback:
         from gateway.platforms.base import MessageType
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.VOICE, already_sent=True) is True
+
+    def test_streaming_on_telegram_voice_input_runner_fires(self):
+        """Streaming Telegram voice input uses runner TTS because adapter has no final text."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageType
+        runner = self._make_runner()
+        assert self._call_should_reply(
+            runner,
+            "voice_only",
+            MessageType.VOICE,
+            already_sent=True,
+            platform=Platform.TELEGRAM,
+        ) is True
 
     def test_streaming_on_text_input_runner_fires(self):
         """Streaming ON + text input: runner handles TTS (same as before)."""

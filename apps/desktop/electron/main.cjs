@@ -1314,6 +1314,31 @@ function resolveUpdaterBinary() {
   return fileExists(candidate) ? candidate : null
 }
 
+function repairMacUpdaterHelper(updater) {
+  if (!IS_MAC || !updater) return
+
+  try {
+    execFileSync('/usr/bin/xattr', ['-cr', updater], { stdio: 'ignore' })
+  } catch (err) {
+    rememberLog(`[updates] macOS updater helper quarantine repair skipped: ${err.message}`)
+  }
+
+  try {
+    execFileSync('/usr/bin/codesign', ['--verify', updater], { stdio: 'ignore' })
+    return
+  } catch {
+    // Unsigned or invalid helper. Apply a local ad-hoc signature so Gatekeeper
+    // does not block the staged updater before it can run.
+  }
+
+  try {
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', updater], { stdio: 'ignore' })
+    rememberLog('[updates] repaired macOS updater helper signature')
+  } catch (err) {
+    rememberLog(`[updates] macOS updater helper signature repair skipped: ${err.message}`)
+  }
+}
+
 // Path to the venv shim whose lock decides whether `hermes update` can write
 // fresh entry points. On Windows this is the file the running backend
 // `hermes.exe` holds open; on POSIX it's never mandatory-locked.
@@ -1474,6 +1499,7 @@ async function applyUpdates(opts = {}) {
     }
 
     emitUpdateProgress({ stage: 'restart', message: 'Handing off to the Hermes updater…', percent: 100 })
+    repairMacUpdaterHelper(updater)
 
     const updateRoot = resolveUpdateRoot()
     const { branch: configuredBranch } = readDesktopUpdateConfig()

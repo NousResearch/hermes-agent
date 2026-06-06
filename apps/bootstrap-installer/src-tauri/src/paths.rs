@@ -17,6 +17,8 @@
 //! the bootstrap-complete check.
 
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use tracing_appender::non_blocking::WorkerGuard;
 
 /// Returns the canonical Hermes home directory, respecting $HERMES_HOME if set.
@@ -103,9 +105,36 @@ pub fn copy_self_to_hermes_home() -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::copy(&src, &dest)?;
+    repair_macos_installer_helper(&dest);
     tracing::info!(?src, ?dest, "copied installer to HERMES_HOME");
     Ok(())
 }
+
+#[cfg(target_os = "macos")]
+fn repair_macos_installer_helper(path: &Path) {
+    // The staged helper may inherit quarantine from the downloaded installer.
+    // Desktop later launches this exact file for in-app updates, so make it
+    // executable before the update handoff reaches LaunchServices/Gatekeeper.
+    let _ = Command::new("/usr/bin/xattr")
+        .args(["-cr"])
+        .arg(path)
+        .status();
+
+    let verify = Command::new("/usr/bin/codesign")
+        .arg("--verify")
+        .arg(path)
+        .status();
+
+    if !matches!(verify, Ok(status) if status.success()) {
+        let _ = Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(path)
+            .status();
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn repair_macos_installer_helper(_path: &Path) {}
 
 /// Where install.ps1 writes the bootstrap-complete marker (existence-only file
 /// the Electron app also checks). Per main.cjs:

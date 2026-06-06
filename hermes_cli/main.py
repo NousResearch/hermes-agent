@@ -10067,6 +10067,121 @@ def _run_pre_update_backup(args) -> None:
     print()
 
 
+def _discard_autocrlf_churn(git_cmd, repo_root):
+    """Heal CRLF line-ending churn from core.autocrlf=true on Windows.
+
+    ``core.autocrlf=true`` causes git to convert LF→CRLF on checkout,
+    dirtying every text file in the working tree. On a repo this size
+    that's 4,500+ files — enough to OOM or conflict out the autostash
+    in the update path.
+
+    Detection gate: we only act when ALL of these are true:
+      1. Platform is Windows (the only platform where core.autocrlf=true
+         is a common default from the Git for Windows installer).
+      2. ``core.autocrlf`` is ``true`` (explicit or inherited).
+      3. The working tree is dirty.
+      4. ≥95% of the dirty files vanish when line-ending diffs are
+         ignored (``git diff --ignore-cr-at-eol --name-only``).
+
+    If the gate passes, we set ``core.autocrlf=input`` (check out as-is,
+    commit as-is) and ``git reset --hard HEAD`` to restore a clean tree.
+    ``_stash_local_changes_if_needed`` then sees a clean state and skips
+    the stash entirely.
+
+    The 95% threshold is intentionally conservative: in practice the CRLF
+    churn on this repo is ~97–100% line-ending noise (4,500+ false-dirty
+    files out of 4,584).  A threshold below 95% would risk discarding
+    real content diffs that happened to overlap with a CRLF-dirty tree;
+    a threshold above ~97% would risk failing to detect the churn if the
+    user has even a handful of real edits.  95% splits the difference —
+    it catches the common case while being extremely unlikely to discard
+    meaningful work.
+
+    Best-effort; never blocks an update on failure.
+    """
+    if sys.platform != "win32":
+        return
+
+    try:
+        autocrlf = subprocess.run(
+            git_cmd + ["config", "core.autocrlf"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return
+
+    if autocrlf.stdout.strip() != "true":
+        return
+
+    # Check whether the tree is actually dirty.
+    try:
+        status = subprocess.run(
+            git_cmd + ["status", "--porcelain"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        if status.returncode != 0 or not status.stdout.strip():
+            return
+    except Exception:
+        return
+
+    # Count files with real content diffs vs. line-ending-only diffs.
+    try:
+        raw_diff = subprocess.run(
+            git_cmd + ["diff", "--name-only", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        crlf_ignored_diff = subprocess.run(
+            git_cmd + ["diff", "--ignore-cr-at-eol", "--name-only", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        raw_count = len(raw_diff.stdout.splitlines())
+        ignored_count = len(crlf_ignored_diff.stdout.splitlines())
+
+        if raw_count == 0:
+            return
+
+        # If ≥95% of dirty files are pure CRLF noise, auto-heal.
+        crlf_only_ratio = (raw_count - ignored_count) / raw_count
+        if crlf_only_ratio < 0.95:
+            return
+    except Exception:
+        return
+
+    # Heal: prevent future CRLF conversion, then reset to get a clean tree.
+    print(
+        f"→ CRLF line-ending churn detected ({raw_count} files, "
+        f"{crlf_only_ratio:.0%} line-ending-only — "
+        f"core.autocrlf=true).  Healing..."
+    )
+    try:
+        subprocess.run(
+            git_cmd + ["config", "core.autocrlf", "input"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        subprocess.run(
+            git_cmd + ["reset", "--hard", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        print("  ✓ Set core.autocrlf=input, working tree clean")
+    except Exception:
+        # Never let CRLF cleanup block an update.
+        pass
+
+
 def _discard_lockfile_churn(git_cmd, repo_root):
     """Restore tracked ``package-lock.json`` files that npm dirtied locally.
 
@@ -10319,6 +10434,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # switches fragile. Restoring them first lets the common case (only
     # lockfile churn) update with a clean tree.
     _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
+
+    # Detect CRLF line-ending churn before attempting to stash. When
+    # core.autocrlf=true on Windows, git converts LF→CRLF on checkout
+    # which dirties every text file in the working tree (4,500+ files on
+    # this repo). The subsequent autostash of that many files either OOMs
+    # or the stash-pop after pull conflicts with the freshly-checked-out
+    # files. _discard_autocrlf_churn detects this pattern and heals it
+    # (sets core.autocrlf=input + hard reset) before _stash_local_changes
+    # ever needs to fire. Windows-only; silent no-op on other platforms.
+    _discard_autocrlf_churn(git_cmd, PROJECT_ROOT)
 
     # Detect if we're updating from a fork (before any branch logic)
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)

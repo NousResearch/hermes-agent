@@ -106,9 +106,10 @@ export function KeyField({
           {info.is_set && (
             <>
               <Button
-                className="h-auto px-0 py-0 text-[0.6875rem] text-destructive hover:text-destructive"
+                className="text-[0.6875rem] text-destructive hover:text-destructive"
                 disabled={busy}
                 onClick={() => void onClear(varKey)}
+                size="inline"
                 type="button"
                 variant="text"
               >

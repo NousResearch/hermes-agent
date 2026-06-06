@@ -2,9 +2,11 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { ErrorIcon } from '@/components/ui/error-state'
+import { LogView } from '@/components/ui/log-view'
 import type { DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
-import { AlertTriangle, FileText, Loader2, LogIn, RefreshCw, Wrench } from '@/lib/icons'
+import { FileText, Loader2, LogIn, RefreshCw, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -172,11 +174,9 @@ export function BootFailureOverlay() {
 
   return (
     <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-(--ui-chat-surface-background) p-6">
-      <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-sm">
-        <div className="flex items-start gap-3 border-b border-(--ui-stroke-tertiary) px-5 py-4">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
-            <AlertTriangle className="size-5" />
-          </div>
+      <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+        <div className="flex items-start gap-3 px-5 py-4">
+          <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
             <h2 className="text-[0.9375rem] font-semibold tracking-tight">
               {remoteReauth ? copy.remoteTitle : copy.title}
@@ -206,12 +206,12 @@ export function BootFailureOverlay() {
                 </Button>
               )}
               {!remoteReauth ? (
-                <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="outline">
+                <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="secondary">
                   {busy === 'repair' ? <Loader2 className="animate-spin" /> : <Wrench />}
                   {copy.repairInstall}
                 </Button>
               ) : null}
-              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="outline">
+              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="secondary">
                 {busy === 'local' ? <Loader2 className="animate-spin" /> : null}
                 {copy.useLocalGateway}
               </Button>
@@ -236,11 +236,7 @@ export function BootFailureOverlay() {
               >
                 {showLogs ? copy.hideRecentLogs : copy.showRecentLogs}
               </Button>
-              {showLogs ? (
-                <pre className="max-h-48 overflow-auto rounded-2xl border border-border bg-secondary/30 p-3 font-mono text-[0.7rem] leading-4 text-muted-foreground">
-                  {logs.slice(-40).join('')}
-                </pre>
-              ) : null}
+              {showLogs ? <LogView className="max-h-48">{logs.slice(-40).join('')}</LogView> : null}
             </div>
           ) : null}
         </div>

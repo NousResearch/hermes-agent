@@ -38,17 +38,9 @@ export function UrlDialog({
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-md gap-5">
-        <DialogHeader className="flex-row items-center gap-3 sm:items-center">
-          <span
-            aria-hidden
-            className="grid size-9 shrink-0 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--dt-primary)_14%,transparent)] text-primary ring-1 ring-inset ring-primary/15"
-          >
-            <Globe className="size-4" />
-          </span>
-          <div className="grid gap-0.5 text-left">
-            <DialogTitle>{c.attachUrlTitle}</DialogTitle>
-            <DialogDescription>{c.attachUrlDesc}</DialogDescription>
-          </div>
+        <DialogHeader>
+          <DialogTitle icon={Globe}>{c.attachUrlTitle}</DialogTitle>
+          <DialogDescription>{c.attachUrlDesc}</DialogDescription>
         </DialogHeader>
         <form
           className="grid gap-4"

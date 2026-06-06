@@ -48,6 +48,7 @@ AUTHOR_MAP = {
     "chilltulpa@gmail.com": "TheGardenGallery",
     "al@randomsnowflake.me": "randomsnowflake",
     "zakame@zakame.net": "zakame",
+    "152110621+jiangkoumo@users.noreply.github.com": "jiangkoumo",
     "834740219@qq.com": "ViewWay",
     "harjoth.khara@gmail.com": "harjothkhara",
     "129007007+HeLLGURD@users.noreply.github.com": "HeLLGURD",

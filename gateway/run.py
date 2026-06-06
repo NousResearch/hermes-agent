@@ -16487,11 +16487,17 @@ class GatewayRunner:
         _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
 
         _cache_keys_sorted = sorted((cache_keys or {}).items())
+        _runtime_items = sorted(
+            (str(k), v)
+            for k, v in (runtime or {}).items()
+            if k != "api_key"
+        )
 
         blob = _j.dumps(
             [
                 model,
                 _api_key_fingerprint,
+                _runtime_items,
                 runtime.get("base_url", ""),
                 runtime.get("provider", ""),
                 runtime.get("api_mode", ""),

@@ -7685,6 +7685,28 @@ def _find_stale_dashboard_pids(
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
+    # If a previous `hermes dashboard --detach` left a PID file behind,
+    # prefer it.  The PID file is a precise pointer (no pgrep heuristics),
+    # and survives even if the cmdline doesn't match the patterns above
+    # (for instance, if the user re-execs under a different interpreter).
+    pid_file_pids: list[int] = []
+    try:
+        from hermes_constants import get_hermes_dir
+        _pid_path = get_hermes_dir("run") / "dashboard.pid"
+    except Exception:
+        _pid_path = None
+    if _pid_path and _pid_path.exists():
+        try:
+            _raw = _pid_path.read_text().strip()
+            if _raw:
+                pid_file_pids.append(int(_raw))
+        except (OSError, ValueError):
+            # Stale / unreadable PID file — fall through to the cmdline
+            # scan, which is the original behaviour.  Don't delete the
+            # file ourselves: a separate hermes dashboard --stop run can
+            # clean it up after the process is actually confirmed dead.
+            pass
+
     try:
         if sys.platform == "win32":
             # wmic may emit text in the system code page (for example cp936
@@ -7750,9 +7772,27 @@ def _find_stale_dashboard_pids(
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
 
-    if exclude_pids:
-        dashboard_pids = [p for p in dashboard_pids if p not in exclude_pids]
-    return dashboard_pids
+    # Merge PID file hits.  Drop self, drop already-excluded.  This is
+    # additive, not replacement: a user might have a stale PID file and
+    # a separately-launched `hermes dashboard` we still want to clean up.
+    from gateway.status import _pid_exists
+    combined: list[int] = []
+    seen: set[int] = set()
+    for p in pid_file_pids + dashboard_pids:
+        if p == self_pid:
+            continue
+        if exclude_pids and p in exclude_pids:
+            continue
+        if p in seen:
+            continue
+        if not _pid_exists(p):
+            # PID file pointed at a process that's already gone.  Skip
+            # silently — the next --stop run after the failed start will
+            # overwrite the file.
+            continue
+        seen.add(p)
+        combined.append(p)
+    return combined
 
 
 def _print_curator_first_run_notice() -> None:
@@ -12399,11 +12439,58 @@ def cmd_dashboard(args):
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
     # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.
+    detach = bool(getattr(args, "detach", False))
+    pid_file = getattr(args, "pid_file", None)
+    if detach and not pid_file:
+        # Default the PID file to ~/.hermes/run/dashboard.pid so --status
+        # and --stop can find the detached process without depending on
+        # pgrep heuristics.  Skip if HOME isn't writable; the caller
+        # already passed --pid-file in that case.
+        from hermes_constants import get_hermes_dir
+        try:
+            pid_dir = get_hermes_dir("run")
+            pid_dir.mkdir(parents=True, exist_ok=True)
+            pid_file = str(pid_dir / "dashboard.pid")
+        except OSError:
+            pid_file = None
+
+    if detach:
+        # Reject obvious misuses early with a clean error rather than
+        # letting the detach path struggle with a port we know is taken.
+        import socket as _socket
+        with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _probe:
+            _probe.settimeout(0.25)
+            if _probe.connect_ex((args.host, args.port)) == 0:
+                print(
+                    f"Port {args.port} on {args.host} is already in use. "
+                    f"Pick another with --port, or run `hermes dashboard --stop` first.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+    # When we're the detached grandchild, --detach is NOT in our argv
+    # (the launcher stripped it before re-execing us), but --pid-file IS
+    # still set.  In that case we should write the PID file but not
+    # re-enter the detach path.  `detach` already covers the launcher
+    # case; here we additionally write the file before uvicorn.run().
+    if not detach and pid_file:
+        try:
+            os.makedirs(os.path.dirname(pid_file) or ".", exist_ok=True)
+            with open(pid_file, "w") as _pf:
+                _pf.write(str(os.getpid()))
+        except OSError as _exc:
+            print(
+                f"Warning: could not write PID file {pid_file}: {_exc}",
+                file=sys.stderr,
+            )
+
     start_server(
         host=args.host,
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
+        detach=detach,
+        pid_file=pid_file,
     )
 
 
@@ -15720,6 +15807,28 @@ Examples:
             "Skip the web UI build step and serve the existing dist directly. "
             "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
             "where npm may not be available. Pre-build with: cd web && npm run build"
+        ),
+    )
+    dashboard_parser.add_argument(
+        "--detach",
+        action="store_true",
+        help=(
+            "Run the dashboard in the background, reparented to init (PID 1) "
+            "so it survives the launching terminal closing. The launching "
+            "process exits 0 once the port is reachable; the server keeps "
+            "running until you `hermes dashboard --stop` it. Default PID "
+            "file is ~/.hermes/run/dashboard.pid — use --pid-file to override. "
+            "On macOS, a more permanent option is to install a LaunchAgent "
+            "so it also survives reboots."
+        ),
+    )
+    dashboard_parser.add_argument(
+        "--pid-file",
+        default=None,
+        help=(
+            "Where to write the detached server's PID (default: "
+            "~/.hermes/run/dashboard.pid when --detach is set). Ignored "
+            "without --detach."
         ),
     )
     # Lifecycle flags — mutually exclusive with each other and with the

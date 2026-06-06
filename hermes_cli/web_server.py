@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import secrets
+import socket
 import stat
 import subprocess
 import sys
@@ -9676,13 +9677,141 @@ app.include_router(_dashboard_auth_router)
 mount_spa(app)
 
 
+def _detach_and_run(
+    host: str,
+    port: int,
+    open_browser: bool,
+    allow_public: bool,
+    pid_file: str | None,
+) -> None:
+    """Double-fork the dashboard so it survives the launching terminal.
+
+    On macOS and Linux the only way to outlive the controlling terminal
+    without a real service manager (systemd / launchd) is the classic
+    double-fork trick: the first fork detaches us from the parent's
+    process group and ``os.setsid()`` creates a new session with no
+    controlling tty, the second fork guarantees the intermediate is
+    reaped promptly so the grandchild cannot become a zombie when the
+    launcher exits.  The grandchild then ``os._exec``s this same module
+    so uvicorn picks up the inherited ``host/port/...`` arguments and
+    actually starts binding.
+
+    The original (interactive) process waits until the port is open —
+    up to 15 seconds — and then prints the URL.  If the grandchild
+    fails to bind (e.g. port already in use), the original process
+    exits non-zero and the user sees the child's stderr.
+    """
+    # Snapshot the args we need to re-exec.  Keep this list tight: any
+    # importable default the user could have passed via CLI is fine,
+    # but don't try to pickle locals — str/repr is enough.
+    argv_tail = [
+        "--host", str(host),
+        "--port", str(port),
+    ]
+    if not open_browser:
+        argv_tail.append("--no-open")
+    if allow_public:
+        argv_tail.append("--insecure")
+    if pid_file:
+        argv_tail.extend(["--pid-file", str(pid_file)])
+
+    # First fork: detach from process group + start new session.
+    pid = os.fork()
+    if pid > 0:
+        # Parent: wait for the child (which will exit after the second
+        # fork returns) so we don't race against port allocation below.
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+    else:
+        try:
+            os.setsid()
+        except OSError:
+            # setsid() can fail in some restricted environments; not
+            # fatal — the second fork + DEVNULL stdin is the load-
+            # bearing piece.
+            pass
+
+        # Second fork: ensure the leader of the new session is not
+        # this process, so we cannot reacquire a controlling tty.
+        pid2 = os.fork()
+        if pid2 > 0:
+            # Intermediate exits immediately; grandchild reparented to init.
+            os._exit(0)
+
+        # Grandchild: redirect stdio, re-exec self.
+        devnull = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(devnull, 0)
+        os.close(devnull)
+        # stderr stays inherited so uvicorn's bind errors are visible
+        # to whoever started us.  stdout can be discarded: the original
+        # launcher prints the URL once the port is reachable.
+        if pid_file:
+            log_path = os.path.join(
+                os.path.dirname(pid_file) or ".", "dashboard.log"
+            )
+            try:
+                os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+                log_fd = os.open(
+                    log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
+                )
+                os.dup2(log_fd, 1)
+                os.dup2(log_fd, 2)
+                os.close(log_fd)
+            except OSError:
+                pass
+        os.execvp(sys.executable, [sys.executable, "-m", "hermes_cli.main",
+                                   "dashboard", *argv_tail])
+
+    # Back in the original launcher.  Poll the bound port to know when
+    # the grandchild is ready.  uvicorn prints "Uvicorn running on …" to
+    # stderr once it binds — that happens after ~1s under normal load.
+    deadline = time.time() + 15.0
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.25)
+            try:
+                s.connect((host, port))
+            except OSError:
+                time.sleep(0.25)
+                continue
+            print(f"  Hermes Web UI (detached) → http://{host}:{port}")
+            if pid_file:
+                print(f"  PID file: {pid_file}")
+            return
+    print(
+        f"Dashboard did not start listening on {host}:{port} within 15s. "
+        f"Check the dashboard log for details.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
     open_browser: bool = True,
     allow_public: bool = False,
+    detach: bool = False,
+    pid_file: str | None = None,
 ):
-    """Start the web UI server."""
+    """Start the web UI server.
+
+    When ``detach`` is true, the server double-forks itself before binding so
+    the process is reparented to PID 1 (launchd on macOS, systemd on Linux).
+    This is what makes ``hermes dashboard --detach`` survive the parent
+    terminal closing — without it, SIGHUP cascades down when the controlling
+    tty goes away and the server dies.  After detaching, the original
+    process exits 0 once the bound port is reachable, leaving the long-lived
+    server to be reaped by init.  ``pid_file`` is written in the detached
+    grandchild so ``hermes dashboard --status`` / ``--stop`` can find it
+    without depending on ``pgrep`` heuristics.  See #37593.
+    """
+    if detach:
+        _detach_and_run(host, port, open_browser, allow_public, pid_file)
+        return
+
     import uvicorn
 
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token

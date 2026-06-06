@@ -1,0 +1,7 @@
+name: zalo-platform
+kind: platform
+version: 0.1.0
+description: >
+  Zalo gateway adapter for Hermes Agent. Connects to a local hzca serve REST/SSE backend.
+author: Hermes Agent
+requires_env: []

@@ -175,6 +175,16 @@ jobs:
               repo: context.repo.repo,
               pull_number: Number(prNumber),
             });
+
+            const baseRepo = `${context.repo.owner}/${context.repo.repo}`;
+            if (pr.head.repo.full_name !== baseRepo) {
+              core.setFailed(
+                `Refusing to apply lockfile fixes to fork PR #${pr.number} (${pr.head.repo.full_name}). ` +
+                'This workflow runs with repository write permissions; ask the contributor to run `nix run .#fix-lockfiles` locally.'
+              );
+              return;
+            }
+
             core.setOutput('ref', pr.head.ref);
             core.setOutput('repo', pr.head.repo.name);
             core.setOutput('owner', pr.head.repo.owner.login);
@@ -199,11 +209,15 @@ jobs:
           repository: ${{ steps.resolve.outputs.owner }}/${{ steps.resolve.outputs.repo }}
           ref: ${{ steps.resolve.outputs.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
           fetch-depth: 0
 
-      - uses: ./.github/actions/nix-setup
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25  # v22
+
+      - uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c  # v17
         with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: hermes-agent
+        continue-on-error: true
 
       - name: Apply lockfile hashes
         id: apply
@@ -212,13 +226,30 @@ jobs:
       - name: Commit & push
         if: steps.apply.outputs.changed == 'true'
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: "1"
         run: |
           set -euo pipefail
+
+          unexpected="$(git diff --name-only | grep -Ev '^nix/(tui|web)\.nix$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "::error::Unexpected modified files: $unexpected"
+            exit 1
+          fi
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add nix/tui.nix nix/web.nix
-          git commit -m "fix(nix): refresh npm lockfile hashes"
-          git push
+          git -c core.hooksPath=/dev/null commit -m "fix(nix): refresh npm lockfile hashes"
+
+          auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w 0)"
+          git -c core.hooksPath=/dev/null \
+            -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
+            push origin "HEAD:${{ steps.resolve.outputs.ref }}"
 
       - name: Update sticky (applied)
         if: steps.apply.outputs.changed == 'true' && steps.resolve.outputs.pr != ''

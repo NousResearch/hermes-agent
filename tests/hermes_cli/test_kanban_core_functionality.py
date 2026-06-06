@@ -93,8 +93,8 @@ def test_no_idempotency_key_never_collides(kanban_home):
 # Spawn-failure circuit breaker
 # ---------------------------------------------------------------------------
 
-def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawnable):
-    """N consecutive spawn failures on the same task → auto_blocked."""
+def test_spawn_failure_circuit_breaker_parks_waiting_after_limit(kanban_home, all_assignees_spawnable):
+    """N consecutive spawn failures park as scheduled/canonical waiting, not human blocked."""
     def _bad_spawn(task, ws):
         raise RuntimeError("no PATH")
 
@@ -113,7 +113,8 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawna
         res2 = kb.dispatch_once(conn, spawn_fn=_bad_spawn)
         assert tid in res2.auto_blocked
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked"
+        assert task.status == "scheduled"
+        assert kb.canonical_live_status(task.status) == "waiting"
         assert task.consecutive_failures >= 2
         assert task.last_failure_error and "no PATH" in task.last_failure_error
     finally:
@@ -230,9 +231,10 @@ def test_per_task_max_retries_overrides_dispatcher_limit(kanban_home, all_assign
             release_claim=True,
             end_run=False,
         )
-        assert tripped is True, "should auto-block on first failure"
+        assert tripped is True, "should trip on first failure"
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked"
+        assert task.status == "scheduled"
+        assert kb.canonical_live_status(task.status) == "waiting"
         assert task.consecutive_failures == 1
 
         # gave_up event should record where the threshold came from
@@ -241,6 +243,7 @@ def test_per_task_max_retries_overrides_dispatcher_limit(kanban_home, all_assign
         assert gave_up, f"expected gave_up event, got {[e.kind for e in events]}"
         assert gave_up[-1].payload.get("limit_source") == "task"
         assert gave_up[-1].payload.get("effective_limit") == 1
+        assert "coordinator should inspect" in gave_up[-1].payload.get("waiting_reason", "")
     finally:
         conn.close()
 
@@ -281,7 +284,8 @@ def test_per_task_max_retries_allows_more_than_default(kanban_home, all_assignee
         )
         assert tripped is True
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked"
+        assert task.status == "scheduled"
+        assert kb.canonical_live_status(task.status) == "waiting"
         assert task.consecutive_failures == 5
     finally:
         conn.close()
@@ -321,7 +325,8 @@ def test_max_retries_none_falls_through_to_dispatcher_limit(kanban_home, all_ass
         )
         assert tripped is True
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked"
+        assert task.status == "scheduled"
+        assert kb.canonical_live_status(task.status) == "waiting"
 
         events = kb.list_events(conn, tid)
         gave_up = [e for e in events if e.kind == "gave_up"]
@@ -352,12 +357,13 @@ def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spa
         assert task.consecutive_failures == 1
         assert task.status == "ready"
         assert task.last_failure_error and "workspace" in task.last_failure_error
-        # Run twice more → auto-blocked.
+        # Run twice more → circuit-breaker waiting.
         kb.dispatch_once(conn, failure_limit=3)
         res = kb.dispatch_once(conn, failure_limit=3)
         assert tid in res.auto_blocked
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked"
+        assert task.status == "scheduled"
+        assert kb.canonical_live_status(task.status) == "waiting"
     finally:
         conn.close()
 
@@ -991,8 +997,8 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
         _kb._pid_alive = original_alive
 
 
-def test_repeated_timeouts_auto_block_at_default_limit(kanban_home):
-    """Two timed_out outcomes on the same task/profile trip the retry guard."""
+def test_repeated_timeouts_park_waiting_at_default_limit(kanban_home):
+    """Two timed_out outcomes on the same task/profile trip the waiting retry guard."""
     import hermes_cli.kanban_db as _kb
     original_alive = _kb._pid_alive
     _kb._pid_alive = lambda pid: False
@@ -1022,7 +1028,8 @@ def test_repeated_timeouts_auto_block_at_default_limit(kanban_home):
                 task = kb.get_task(conn, tid)
                 assert task.consecutive_failures == expected_failures
             task = kb.get_task(conn, tid)
-            assert task.status == "blocked"
+            assert task.status == "scheduled"
+            assert kb.canonical_live_status(task.status) == "waiting"
             events = kb.list_events(conn, tid)
             assert [e.kind for e in events].count("timed_out") == 2
             gave_up = [e for e in events if e.kind == "gave_up"]
@@ -4243,7 +4250,7 @@ def test_enforce_max_runtime_increments_consecutive_failures(kanban_home, monkey
 
 def test_repeated_timeouts_trip_the_circuit_breaker(kanban_home, monkeypatch):
     """N consecutive timeouts with the unified counter should eventually
-    hit the failure_limit threshold and auto-block the task. This closes
+    hit the failure_limit threshold and park the task as waiting. This closes
     the Forbidden-Seeds-reported gap where timeout loops never capped.
     """
     import hermes_cli.kanban_db as _kb
@@ -4304,9 +4311,10 @@ def test_repeated_timeouts_trip_the_circuit_breaker(kanban_home, monkeypatch):
 
         final = kb.get_task(conn, tid)
         # After 3 consecutive timeouts with failure_limit=3, task should
-        # be auto-blocked, not looping forever as ``ready``.
-        assert final.status == "blocked", \
-            f"expected blocked after 3 timeouts, got {final.status}"
+        # be parked as waiting, not looping forever as ``ready`` or human blocked.
+        assert final.status == "scheduled", \
+            f"expected scheduled after 3 timeouts, got {final.status}"
+        assert kb.canonical_live_status(final.status) == "waiting"
         assert final.consecutive_failures >= 3
         # ``gave_up`` event emitted (plus 3 ``timed_out`` events).
         kinds = [
@@ -4342,7 +4350,7 @@ def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
     """A worker that exited rc=0 while its task was still ``running``
     is a protocol violation (agent answered conversationally without
     calling kanban_complete / kanban_block). Retrying will just loop,
-    so auto-block immediately instead of waiting for the breaker to
+    so trip the waiting circuit breaker immediately instead of waiting for it to
     trip at ``DEFAULT_FAILURE_LIMIT``.
 
     Regression test for the respawn-loop-after-completion bug reported
@@ -4372,10 +4380,11 @@ def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
 
         assert tid in result_crashed, "should be detected as crashed"
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked", (
-            f"protocol violation should auto-block on first occurrence, "
+        assert task.status == "scheduled", (
+            f"protocol violation should park as waiting on first occurrence, "
             f"got status={task.status}"
         )
+        assert kb.canonical_live_status(task.status) == "waiting"
         assert "kanban_complete" in (task.last_failure_error or ""), (
             f"expected protocol-violation message, got {task.last_failure_error!r}"
         )

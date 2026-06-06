@@ -2529,9 +2529,12 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Stale:        {len(res.stale)}")
     if res.stale:
         print(f"  {', '.join(res.stale)}")
-    print(f"Auto-blocked: {len(res.auto_blocked)}")
+    print(f"Circuit-breaker waiting: {len(res.auto_blocked)}")
     if res.auto_blocked:
-        print(f"  {', '.join(res.auto_blocked)}")
+        print(
+            f"  {', '.join(res.auto_blocked)} "
+            "(worker retry limit reached; inspect/re-dispatch/decompose)"
+        )
     print(f"Promoted:     {res.promoted}")
     print(f"Spawned:      {len(res.spawned)}")
     for tid, who, ws in res.spawned:

@@ -540,6 +540,95 @@ def test_review_required_block_accepts_comment_linkage_evidence(worker_env):
     assert json.loads(out)["ok"] is True
 
 
+def test_review_required_high_autonomy_routes_to_coordinator_review(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kb.write_board_metadata(kb.DEFAULT_BOARD, autonomy_level="High")
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET title = ?, body = ? WHERE id = ?",
+            (
+                "implementation: coordinator review route",
+                "Safety gate implementation.",
+                worker_env,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    comment = kt._handle_comment({
+        "task_id": worker_env,
+        "body": (
+            "review-required handoff: Matrix update sent; "
+            f"Kanban task {worker_env}; GitHub issue "
+            "https://github.com/yunuenmf/hermes-maintenance/issues/56"
+        ),
+    })
+    assert json.loads(comment)["ok"] is True
+
+    out = kt._handle_block({"reason": "review-required: implementation ready"})
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    assert payload["status"] == "coordinator_review"
+    assert payload["live_status"] == "waiting"
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "coordinator_review"
+        assert kb.canonical_live_status(task.status) == "waiting"
+        events = kb.list_events(conn, worker_env)
+        assert events[-1].kind == "coordinator_review"
+    finally:
+        conn.close()
+
+
+def test_high_autonomy_human_gated_review_still_blocks(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kb.write_board_metadata(kb.DEFAULT_BOARD, autonomy_level="High")
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET title = ?, body = ? WHERE id = ?",
+            (
+                "implementation: human blocker route",
+                "Safety gate implementation.",
+                worker_env,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    kt._handle_comment({
+        "task_id": worker_env,
+        "body": (
+            "review-required handoff: Matrix update sent; "
+            f"Kanban task {worker_env}; GitHub issue "
+            "https://github.com/yunuenmf/hermes-maintenance/issues/56"
+        ),
+    })
+    out = kt._handle_block({
+        "reason": "review-required: HUMAN BLOCKER Yunuen must approve new scope/risk"
+    })
+    assert json.loads(out)["ok"] is True
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "blocked"
+        assert kb.canonical_live_status(task.status) == "blocked"
+    finally:
+        conn.close()
+
+
 def test_complete_metadata_round_trips_through_show(worker_env):
     """Structured completion metadata should be visible to downstream agents."""
     from tools import kanban_tools as kt

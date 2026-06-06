@@ -681,10 +681,10 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["host_local"] is True
 
 
-def test_detect_crashed_workers_systemic_failure_fast_block(
+def test_detect_crashed_workers_systemic_failure_fast_waiting(
     kanban_home, monkeypatch,
 ):
-    """When many tasks crash with the same error, trip the breaker faster."""
+    """When many tasks crash with the same error, trip the waiting breaker faster."""
     import hermes_cli.kanban_db as _kb
 
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
@@ -707,9 +707,10 @@ def test_detect_crashed_workers_systemic_failure_fast_block(
 
         for tid in task_ids:
             task = kb.get_task(conn, tid)
-            assert task.status == "blocked", (
-                f"task {tid} should be blocked (systemic), got {task.status}"
+            assert task.status == "scheduled", (
+                f"task {tid} should be waiting (systemic), got {task.status}"
             )
+            assert kb.canonical_live_status(task.status) == "waiting"
 
 
 def test_detect_crashed_workers_isolated_failure_normal_retry(
@@ -1035,14 +1036,15 @@ def test_recompute_ready_skips_tasks_at_failure_limit(kanban_home):
             failure_limit=2,
         )
         task = kb.get_task(conn, child)
-        assert task.status == "blocked"
+        assert task.status == "scheduled"
+        assert kb.canonical_live_status(task.status) == "waiting"
         assert task.consecutive_failures >= 2
 
         # recompute_ready must NOT promote this task — the circuit
-        # breaker has tripped and it should stay blocked.
+        # breaker has tripped and it should stay waiting.
         promoted = kb.recompute_ready(conn)
         assert promoted == 0
-        assert kb.get_task(conn, child).status == "blocked"
+        assert kb.get_task(conn, child).status == "scheduled"
 
         # Explicit unblock should still work and reset the counter.
         assert kb.unblock_task(conn, child)

@@ -173,6 +173,29 @@ _FUNCTIONALITY_TRACKING_ACTION_PREFIXES = (
 
 _THREE_LAYER_REQUIRED_KEYS = ("matrix", "kanban", "github")
 
+_HUMAN_GATED_REVIEW_TERMS = (
+    "human blocker",
+    "yunuen",
+    "secret",
+    "credential",
+    "destructive",
+    "global",
+    "production-risk",
+    "production risk",
+    "scope/risk",
+    "new scope",
+    "risk tradeoff",
+    "risk trade-off",
+)
+
+_DEPLOYMENT_REVIEW_TERMS = (
+    "deployment",
+    "deploy",
+    "runtime activation",
+    "restart",
+    "rollout",
+)
+
 
 def _looks_like_functionality_tracking_task(title: str, body: Optional[str]) -> bool:
     """Heuristic for tasks that need Matrix/Kanban/GitHub tracking evidence.
@@ -232,6 +255,43 @@ def _extract_three_layer_tracking(metadata: Optional[dict]) -> Optional[dict]:
         if isinstance(value, dict):
             return value
     return None
+
+
+def _board_autonomy_level(kb: Any, board: Optional[str]) -> str:
+    """Return the active board autonomy level, defaulting via kanban_db."""
+    try:
+        return kb.read_board_metadata(board).get("autonomy_level", "Medium")
+    except Exception:
+        try:
+            return kb.DEFAULT_AUTONOMY_LEVEL
+        except Exception:
+            return "Medium"
+
+
+def _review_reason_is_deployment_cluster(reason: str) -> bool:
+    lowered = str(reason or "").lower()
+    return any(term in lowered for term in _DEPLOYMENT_REVIEW_TERMS) and (
+        "deployment cluster" in lowered
+        and (
+            "version" in lowered
+            or " v" in lowered
+            or "version_id" in lowered
+            or "deployment_cluster_id" in lowered
+        )
+    )
+
+
+def _review_reason_is_human_gated(reason: str) -> bool:
+    lowered = str(reason or "").lower()
+    if any(term in lowered for term in _HUMAN_GATED_REVIEW_TERMS):
+        return True
+    if any(term in lowered for term in _DEPLOYMENT_REVIEW_TERMS):
+        # Deployment approval is human-gated only when it is represented as an
+        # explicit versioned deployment-cluster blocker. Generic
+        # "review/deployment-required" wording is a coordinator review/holding
+        # wait, not a Yunuen blocker.
+        return _review_reason_is_deployment_cluster(reason)
+    return False
 
 
 def _missing_three_layer_tracking(metadata: Optional[dict]) -> list[str]:
@@ -908,11 +968,12 @@ def _handle_block(args: dict, **kw) -> str:
         kb, conn = _connect(board=board)
         try:
             task = kb.get_task(conn, tid)
-            if (
+            review_required = (
                 task is not None
                 and str(reason).strip().lower().startswith("review-required:")
                 and _looks_like_functionality_tracking_task(task.title, task.body)
-            ):
+            )
+            if review_required:
                 comments = kb.list_comments(conn, tid)
                 evidence_text = "\n".join([str(reason)] + [c.body for c in comments])
                 if not _text_has_three_layer_tracking_evidence(evidence_text):
@@ -922,6 +983,45 @@ def _handle_block(args: dict, **kw) -> str:
                         "Kanban, and GitHub linkage evidence in the block "
                         "reason or prior kanban_comment. Kanban-only tracking "
                         "is insufficient for this class of work."
+                    )
+                autonomy = _board_autonomy_level(kb, board)
+                if autonomy == "High" and not _review_reason_is_human_gated(str(reason)):
+                    ok = kb.route_task_to_coordinator_review(
+                        conn, tid,
+                        reason=reason,
+                        expected_run_id=_worker_run_id(tid),
+                    )
+                    if not ok:
+                        return tool_error(
+                            f"could not route {tid} to coordinator_review "
+                            f"(unknown id or not in running/ready)"
+                        )
+                    run = kb.latest_run(conn, tid)
+                    return _ok(
+                        task_id=tid,
+                        run_id=run.id if run else None,
+                        status="coordinator_review",
+                        live_status="waiting",
+                    )
+                if _review_reason_is_deployment_cluster(str(reason)):
+                    ok = kb.route_task_to_status(
+                        conn, tid,
+                        status="deployment_cluster",
+                        event_kind="deployment_cluster",
+                        reason=reason,
+                        expected_run_id=_worker_run_id(tid),
+                    )
+                    if not ok:
+                        return tool_error(
+                            f"could not route {tid} to deployment_cluster "
+                            f"(unknown id or not in running/ready)"
+                        )
+                    run = kb.latest_run(conn, tid)
+                    return _ok(
+                        task_id=tid,
+                        run_id=run.id if run else None,
+                        status="deployment_cluster",
+                        live_status="blocked",
                     )
             ok = kb.block_task(
                 conn, tid,

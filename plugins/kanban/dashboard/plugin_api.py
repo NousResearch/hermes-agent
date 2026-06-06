@@ -323,6 +323,17 @@ def _task_dict(
     # ``tasks.result``. ``None`` when no run has produced a summary yet.
     d["latest_summary"] = latest_summary
     d["live_status"] = kanban_db.live_status_for(task.status)
+    if task.status == "scheduled" and int(task.consecutive_failures or 0) > 0:
+        d["waiting_reason"] = (
+            "worker retry limit reached; coordinator should inspect, "
+            "re-dispatch, or decompose"
+        )
+    elif task.status == "coordinator_review":
+        d["waiting_reason"] = "coordinator-owned review required"
+    elif task.status == "holding":
+        d["waiting_reason"] = "non-human dependency/holding wait"
+    elif task.status == "deployment_cluster":
+        d["blocker_reason"] = "explicit versioned deployment cluster approval"
     # Keep body short on list endpoints; full body comes from /tasks/:id.
     return d
 

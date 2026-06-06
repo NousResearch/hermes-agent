@@ -35,6 +35,7 @@ Before substantial work in this repo, load the shared Obsidian context:
 
 - `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/session-start-contract.md`
 - `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/global-context.md`
+- `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/worktree-routing-gate.md`
 - `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/prompt-shortcut-registry.md`
 - `/Users/rattanasak/ObsidianVault/HermesAgent/99-System/context-packs/hermes-agent-dev.md`
 - `/Users/rattanasak/ObsidianVault/HermesAgent/projects/hermes-agent-dev/project-context.md`
@@ -42,6 +43,8 @@ Before substantial work in this repo, load the shared Obsidian context:
 - `/Users/rattanasak/ObsidianVault/HermesAgent/projects/hermes-agent-dev/handoff.md`
 
 On VPS, replace the local Obsidian root with `/home/linux-nat/ObsidianVault/HermesAgent`.
+
+For VPS/team work, resolve `staff id + project` to the real VPS worktree before edits. Use `scripts/hermes_worktree_route.py --staff-id <staff-id> --project <project>` when available. If the route is missing, report missing worktree and do not fall back to another person's worktree.
 
 Do not load the entire vault by default. Read the listed context first, then search only when task-specific context is missing. New or uncertain memory should go to Obsidian `review-queue/` before becoming durable knowledge.
 

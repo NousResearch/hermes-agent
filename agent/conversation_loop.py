@@ -4350,6 +4350,15 @@ def run_conversation(
                     exc_info=True,
                 )
 
+    # Final privacy scrub before persistence / plugin hooks / gateway return.
+    # This catches old leaked context already present in continuing session
+    # history as well as any model attempt to quote internal memory blocks.
+    if isinstance(final_response, str):
+        final_response = sanitize_context(final_response).strip()
+    for _msg in messages:
+        if isinstance(_msg, dict) and isinstance(_msg.get("content"), str):
+            _msg["content"] = sanitize_context(_msg["content"]).strip()
+
     # Determine if conversation completed successfully
     completed = (
         final_response is not None

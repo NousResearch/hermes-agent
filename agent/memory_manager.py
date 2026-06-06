@@ -81,6 +81,18 @@ _RAW_MEMORY_HEADING_RE = re.compile(
     r'AI Self-Representation|Recalled assistant context|AI Identity Card)\s*$',
     re.IGNORECASE | re.MULTILINE,
 )
+_COMPACT_MEMORY_CONTEXT_RE = re.compile(
+    r'(?ims)(^|\n)[ \t]*#\s*Memory context pointers\s*\n[\s\S]*?(?=\n{2,}(?![ \t]*(?:[-*]|##\s*Compact peer preferences|Knowledge Store:|Tech Stack:|Design Preference:|Model Routing:|Active Project:))|\Z)'
+)
+_COMPACT_PEER_PREFERENCES_RE = re.compile(
+    r'(?ims)(^|\n)[ \t]*##\s*Compact peer preferences\s*\n[\s\S]*?(?=\n{2,}(?![ \t]*(?:Knowledge Store:|Tech Stack:|Design Preference:|Model Routing:|Active Project:))|\Z)'
+)
+_HONCHO_CONTEXT_SUMMARY_RE = re.compile(
+    r'(?ims)(^|\n)[ \t]*(?:The current conversation context|The most relevant context to (?:our|the) current conversation)\b[\s\S]*?(?=\n{2,}|\Z)'
+)
+_HONCHO_LEAK_SUMMARY_LINE_RE = re.compile(
+    r'(?im)^.*\b(?:foundational context|observations indicate)\b.*(?:\n|$)'
+)
 _AIVS_AUTONOMOUS_LOOP_RE = re.compile(
     r'(?im)^.*Check\s+the\s+AIVS\s+Hermes\s+Kanban\s+board\s+on\s+the\s+VPS\s+'
     r'and\s+keep\s+the\s+autonomous\s+dev\s+loop\s+moving[^\n]*(?:\n(?!\s*$).*)*\n?',
@@ -126,6 +138,10 @@ def sanitize_context(text: str) -> str:
     text = _LEADING_COMPACTION_FALLBACK_RE.sub('', text)
     text = _LEADING_GATEWAY_SYSTEM_NOTE_RE.sub('', text)
     text = _SHIP_MODE_GUARD_RE.sub('', text)
+    text = _COMPACT_MEMORY_CONTEXT_RE.sub(lambda m: m.group(1), text)
+    text = _COMPACT_PEER_PREFERENCES_RE.sub(lambda m: m.group(1), text)
+    text = _HONCHO_CONTEXT_SUMMARY_RE.sub(lambda m: m.group(1), text)
+    text = _HONCHO_LEAK_SUMMARY_LINE_RE.sub('', text)
     text = _AIVS_AUTONOMOUS_LOOP_RE.sub('', text)
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _UNTERMINATED_INTERNAL_CONTEXT_RE.sub('', text)
@@ -457,28 +473,14 @@ def _extract_safe_memory_sections(raw_context: str) -> list[str]:
 
 
 def build_memory_context_block(raw_context: str) -> str:
-    """Return compact, pointer-based recall context for the current prompt.
+    """Return no automatic recall context for the active provider prompt.
 
-    The active provider prompt must not receive raw ``<memory-context>`` dumps,
-    old Explicit Observations, or AI self-representation. Long/project/runtime
-    facts are durable in the wiki/session stores and should be retrieved on
-    demand by pointer/search instead of being pasted into every turn.
+    Gateway-visible sessions proved that even previously "safe" compact
+    memory pointers can be quoted back to users. Memory remains available via
+    explicit Honcho/wiki/session tools, but no recalled context block is pasted
+    into ordinary user messages at API-call time.
     """
-    if not raw_context or not raw_context.strip():
-        return ""
-
-    sections = _extract_safe_memory_sections(raw_context)
-    pointers = [
-        "# Memory context pointers",
-        "- Compact peer/preferences: use Honcho peer-card/profile tools for a fresh view when needed.",
-        "- Project facts: use ~/wiki/projects/*.md as the durable source of truth.",
-        "- Runtime incidents/runbooks/session packets: use ~/wiki/tools, ~/wiki/outputs, ~/wiki/daily, and searchable spill/session stores.",
-        "- Raw recalled observations are intentionally not injected into this prompt; retrieve them explicitly only when relevant.",
-    ]
-    if sections:
-        pointers.append("")
-        pointers.append("\n\n".join(sections))
-    return _truncate_memory_context("\n".join(pointers), 3000)
+    return ""
 
 
 class MemoryManager:

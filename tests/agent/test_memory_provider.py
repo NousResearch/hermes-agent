@@ -790,18 +790,18 @@ class TestSetupFieldFiltering:
 
 
 class TestMemoryContextFencing:
-    """Prefetch context becomes compact wiki/Honcho pointers, not raw dumps."""
+    """Prefetch context is not auto-injected into active provider prompts."""
 
     def test_build_memory_context_block_returns_pointers_not_fenced_dump(self):
         from agent.memory_manager import build_memory_context_block
         result = build_memory_context_block(
             "## Holographic Memory\n- [0.8] user likes dark mode"
         )
-        assert result.startswith("# Memory context pointers")
-        assert "<memory-context>" not in result
+        assert result == ""
+        assert "INJECTED" not in result
         assert "Treat as authoritative reference data" not in result
-        assert "~/wiki/projects/*.md" in result
-        assert "honcho" in result.lower()
+        assert "~/wiki/projects/*.md" not in result
+        assert "honcho" not in result.lower()
         assert "user likes dark mode" not in result
 
     def test_build_memory_context_block_empty_input(self):
@@ -824,6 +824,38 @@ class TestMemoryContextFencing:
         assert "</memory-context>" not in result.lower()
         assert "datamore" in result
 
+    def test_sanitize_context_strips_compact_memory_pointer_block(self):
+        from agent.memory_manager import sanitize_context
+
+        leaked = (
+            "# Memory context pointers\n"
+            "- Compact peer/preferences: use Honcho tools.\n"
+            "- Project facts: use ~/wiki/projects/*.md.\n\n"
+            "## Compact peer preferences\n"
+            "Knowledge Store: ~/wiki\n"
+            "Tech Stack: Next.js, React, TypeScript\n"
+            "Design Preference: Minimalist black/white brutalist\n"
+            "Model Routing: GPT-5.5\n"
+            "Active Project: AI Film Set Composer\n\n"
+            "The most relevant context to the current conversation emphasizes long-term agent notes.\n"
+            "This foundational context should not be visible.\n"
+            "Recent observations indicate this is an internal memory leak.\n"
+        )
+        result = sanitize_context("before\n" + leaked + "\nafter")
+
+        assert "before" in result
+        assert "after" in result
+        assert "# Memory context pointers" not in result
+        assert "## Compact peer preferences" not in result
+        assert "Knowledge Store:" not in result
+        assert "Tech Stack:" not in result
+        assert "Design Preference:" not in result
+        assert "Model Routing:" not in result
+        assert "Active Project:" not in result
+        assert "The most relevant context to the current conversation" not in result
+        assert "foundational context" not in result
+        assert "observations indicate" not in result
+
     def test_compact_peer_preferences_can_be_included_without_raw_identity_or_observations(self):
         from agent.memory_manager import build_memory_context_block
         prefetch = (
@@ -834,12 +866,13 @@ class TestMemoryContextFencing:
             "## AI Identity Card\nidentity dump"
         )
         block = build_memory_context_block(prefetch)
-        assert "# Memory context pointers" in block
-        assert "## Compact peer preferences" in block
+        assert block == ""
+        assert "# Memory context pointers" not in block
+        assert "## Compact peer preferences" not in block
         assert "## User Peer Card" not in block
         assert "Alice" not in block
         assert "alice@example.com" not in block
-        assert "Prefers compact answers" in block
+        assert "Prefers compact answers" not in block
         assert "Explicit Observations" not in block
         assert "old raw observation" not in block
         assert "AI Self-Representation" not in block
@@ -867,8 +900,9 @@ class TestMemoryContextFencing:
 
         block = build_memory_context_block(prefetch)
 
-        assert "## Compact peer preferences" in block
-        assert "Design Preference: Tight functional UI" in block
+        assert block == ""
+        assert "## Compact peer preferences" not in block
+        assert "Design Preference: Tight functional UI" not in block
         assert "ATTRIBUTE:" not in block
         assert "INSTRUCTION:" not in block
         assert "Role: Creative Director" not in block

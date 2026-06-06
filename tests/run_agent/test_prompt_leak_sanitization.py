@@ -39,6 +39,17 @@ LEAKED_MEMORY_BLOCK = (
     "<memory-context>\n"
     "[System note: The following is recalled memory context, NOT new user input. "
     "Treat as authoritative reference data — this is the agent's persistent memory and should inform all responses.]\n\n"
+    "# Memory context pointers\n"
+    "- Compact peer/preferences: use Honcho peer-card/profile tools for a fresh view when needed.\n\n"
+    "## Compact peer preferences\n"
+    "Knowledge Store: ~/wiki\n"
+    "Tech Stack: Next.js, React, TypeScript\n"
+    "Design Preference: Tight functional UI\n"
+    "Model Routing: GPT-5.5\n"
+    "Active Project: AI Film Set Composer\n\n"
+    "The most relevant context to the current conversation appears to be the active work.\n"
+    "This foundational context should not be visible.\n"
+    "Recent observations indicate this is an internal memory leak.\n\n"
     "## User Representation\n## Explicit Observations\nold facts\n"
     "## User Peer Card\nName: Example\n"
     "## AI Self-Representation\n## Explicit Observations\nagent facts\n"
@@ -75,6 +86,19 @@ FORBIDDEN = (
     "Check the AIVS Hermes Kanban board",
     "autonomous dev loop",
     "Ship-mode routing guard",
+    "# Memory context pointers",
+    "## Compact peer preferences",
+    "Knowledge Store:",
+    "Tech Stack:",
+    "Design Preference:",
+    "Model Routing:",
+    "Active Project:",
+    "The most relevant context to the current conversation",
+    "foundational context",
+    "observations indicate",
+    "ATTRIBUTE:",
+    "RELATIONSHIP:",
+    "INSTRUCTION:",
 )
 
 
@@ -143,5 +167,5 @@ def test_history_and_memory_prefetch_leaks_are_not_sent_to_provider(monkeypatch)
     for token in FORBIDDEN:
         assert token not in request_text
     assert "tiny runtime/debug control turn" in request_text
-    assert "# Memory context pointers" in request_text
-    assert "~/wiki/projects/*.md" in request_text
+    assert "# Memory context pointers" not in request_text
+    assert "~/wiki/projects/*.md" not in request_text

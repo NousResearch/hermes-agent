@@ -761,10 +761,25 @@ async def get_status():
     try:
         from gateway.config import load_gateway_config
 
-        gateway_config = load_gateway_config()
-        configured_gateway_platforms = {
-            platform.value for platform in gateway_config.get_connected_platforms()
-        }
+        # load_gateway_config() can block for minutes if a lazy dependency
+        # triggers pip install (e.g. discord.py).  Run it in a thread with a
+        # short timeout so the dashboard /api/status endpoint stays responsive.
+        loop = asyncio.get_running_loop()
+        try:
+            gateway_config = await asyncio.wait_for(
+                loop.run_in_executor(None, load_gateway_config),
+                timeout=5.0,
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            _log.warning(
+                "load_gateway_config timed out after 5 s — "
+                "skipping configured gateway platforms"
+            )
+            gateway_config = None
+        if gateway_config is not None:
+            configured_gateway_platforms = {
+                platform.value for platform in gateway_config.get_connected_platforms()
+            }
     except Exception:
         configured_gateway_platforms = None
 

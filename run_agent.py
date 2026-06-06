@@ -195,7 +195,7 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, strip_partial_toolcall_fragments
 
 
 
@@ -3879,6 +3879,12 @@ class AIAgent:
                 self, "_current_streamed_assistant_text", ""
             ):
                 text = text.lstrip("\n")
+            # Strip leaked partial <tool_call>/<function_call> opener fragments
+            # (e.g. "ool_call>") that Qwen3-class models emit as content when
+            # they begin an XML tool-call opener as text then switch to native
+            # tool_calls.  A pure-fragment delta scrubs to "" and is suppressed
+            # by the guard below.  Live per-delta follow-up to #14251.
+            text = strip_partial_toolcall_fragments(text)
         if not text:
             return
         callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]

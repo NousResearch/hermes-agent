@@ -1177,20 +1177,6 @@ _OPENROUTER_EXPLICIT_CACHE_CONTROL_MODEL_IDS: frozenset[str] = frozenset({
 })
 
 
-# OpenRouter passes through Anthropic-style ``cache_control`` breakpoints for
-# this known set of non-Claude model slugs (Qwen / DeepSeek families) that
-# support explicit caching. Slugs are matched case-insensitively against the
-# lowercased full model id. Ported/extended from upstream PR #20945 — our
-# prod default ``deepseek/deepseek-v4-flash`` (and its dated pin) live here so
-# they get real cache hits instead of re-billing the full prompt every turn.
-_OPENROUTER_EXPLICIT_CACHE_CONTROL_MODEL_IDS = frozenset({
-    "qwen/qwen-plus", "qwen/qwen3-max", "qwen/qwen3.6-plus",
-    "qwen/qwen3-coder-plus", "qwen/qwen3-coder-flash",
-    "deepseek/deepseek-v3.2",
-    "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash-20260423",
-})
-
-
 def anthropic_prompt_cache_policy(
     agent,
     *,
@@ -1796,6 +1782,14 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 choices=function_args.get("choices"),
                 callback=agent.clarify_callback,
             )
+        )
+    elif function_name == "model_switch":
+        from tools.model_switch_tool import model_switch_tool as _model_switch_tool
+        return _model_switch_tool(
+            agent,
+            slug=function_args.get("slug", ""),
+            reason=function_args.get("reason", ""),
+            scope=function_args.get("scope", "session"),
         )
     elif function_name == "model_switch":
         from tools.model_switch_tool import model_switch_tool as _model_switch_tool

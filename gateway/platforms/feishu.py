@@ -2548,6 +2548,13 @@ class FeishuAdapter(BasePlatformAdapter):
                 loop=loop,
             )
 
+        # History card actions (page nav, reuse) — use a different key to
+        # avoid clashing with approval hermes_action routing above.
+        history_action = action_value.get("hermes_history_action") if isinstance(action_value, dict) else None
+        if history_action:
+            self._submit_on_loop(loop, self._handle_card_action_event(data))
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         if P2CardActionTriggerResponse is None:
             return None
@@ -2799,7 +2806,11 @@ class FeishuAdapter(BasePlatformAdapter):
         return False
 
     async def _handle_card_action_event(self, data: Any) -> None:
-        """Route Feishu interactive card button clicks as synthetic COMMAND events."""
+        """Route Feishu interactive card button clicks as synthetic COMMAND events.
+
+        History card actions (reuse, page nav) are handled inline since they
+        need direct access to the gateway runner's pending history state.
+        """
         event = getattr(data, "event", None)
         token = str(getattr(event, "token", "") or "")
         if token and self._is_card_action_duplicate(token):
@@ -2815,9 +2826,34 @@ class FeishuAdapter(BasePlatformAdapter):
             return
 
         action = getattr(event, "action", None)
-        action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
 
+        # ── History card: reuse ──────────────────────────────────────
+        history_action = action_value.get("hermes_history_action") if isinstance(action_value, dict) else None
+        if history_action == "reuse":
+            prompt = action_value.get("prompt", "")
+            session_key = action_value.get("session_key", "")
+            if prompt:
+                self._submit_on_loop(
+                    self._loop,
+                    self._handle_message_with_guards(
+                        self._build_history_reuse_event(prompt, chat_id, open_id, session_key, data)
+                    ),
+                )
+            return
+        if history_action == "page":
+            page_target = action_value.get("page", 1)
+            session_key = action_value.get("session_key", "")
+            self._submit_on_loop(
+                self._loop,
+                self._handle_message_with_guards(
+                    self._build_history_page_event(page_target, chat_id, open_id, session_key, data)
+                ),
+            )
+            return
+
+        # ── Generic card action routing ──
+        action_tag = str(getattr(action, "tag", "") or "button")
         synthetic_text = f"/card {action_tag}"
         if action_value:
             try:
@@ -2847,6 +2883,46 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
         await self._handle_message_with_guards(synthetic_event)
+
+    # ── History card event builders ─────────────────────────────
+
+    def _build_history_reuse_event(
+        self, prompt: str, chat_id: str, open_id: str,
+        session_key: str, raw_data: Any,
+    ) -> "MessageEvent":
+        """Build a TEXT MessageEvent from a history reuse button click."""
+        sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+        source = self.build_source(
+            chat_id=chat_id, chat_name=chat_id, chat_type="group",
+            user_id=open_id, user_name=open_id, thread_id=None, user_id_alt=open_id,
+        )
+        return MessageEvent(
+            text=prompt,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=raw_data,
+            message_id=str(uuid.uuid4()),
+            timestamp=datetime.now(),
+        )
+
+    def _build_history_page_event(
+        self, page_target: int, chat_id: str, open_id: str,
+        session_key: str, raw_data: Any,
+    ) -> "MessageEvent":
+        """Build a COMMAND MessageEvent from a history page-nav button click."""
+        sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+        source = self.build_source(
+            chat_id=chat_id, chat_name=chat_id, chat_type="group",
+            user_id=open_id, user_name=open_id, thread_id=None, user_id_alt=open_id,
+        )
+        return MessageEvent(
+            text=f"/history {page_target}",
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=raw_data,
+            message_id=str(uuid.uuid4()),
+            timestamp=datetime.now(),
+        )
 
     # =========================================================================
     # Per-chat serialization and typing indicator

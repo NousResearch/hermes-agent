@@ -1938,6 +1938,9 @@ class GatewayRunner:
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
+        self._pending_history_selection: Dict[str, dict] = {}
+        # {session_key: {prompts: [...], page: int, total_pages: int,
+        #   search_query: str|None, timestamp: float}}
         self._session_run_generation: Dict[str, int] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
         # fallback routing paths (shutdown notifications, synthetic
@@ -2433,6 +2436,36 @@ class GatewayRunner:
         # (including MagicMock instances from test fixtures that didn't
         # opt into topic mode) means topic mode is off for this chat.
         return raw is True
+
+    def _check_pending_history_selection(
+        self, session_key: str, text: str
+    ) -> str | None:
+        """Return the selected prompt if `text` is a valid numbered selection,
+        or None if it's not. Clears stale (120s+) state.
+
+        Tolerates bare ``GatewayRunner`` instances created with
+        ``object.__new__`` (common in unit-test fixtures) by returning None
+        when ``_pending_history_selection`` has not been initialized.
+        """
+        pending = getattr(self, "_pending_history_selection", None)
+        if pending is None:
+            return None
+        state = pending.get(session_key)
+        if not state:
+            return None
+        import time as _time
+        if _time.time() - state.get("timestamp", 0) > 120:
+            pending.pop(session_key, None)
+            return None
+        try:
+            idx = int(text.strip())
+        except (ValueError, TypeError):
+            return None
+        if idx < 1 or idx > len(state["prompts"]):
+            return None
+        selected = state["prompts"][idx - 1]
+        pending.pop(session_key, None)
+        return selected
 
     # Telegram's General (pinned top) topic in forum-enabled private chats.
     # Bot API behavior varies: some clients omit message_thread_id for
@@ -8287,6 +8320,9 @@ class GatewayRunner:
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
+        if canonical == "history":
+            return await self._handle_history_command(event)
+
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
@@ -8523,6 +8559,18 @@ class GatewayRunner:
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
+
+        # Pending history selection: intercept numbered replies to reuse a prompt
+        if not command and event.text and event.message_type == MessageType.TEXT:
+            session_key = self._session_key_for_source(source)
+            selected = self._check_pending_history_selection(session_key, event.text.strip())
+            if selected is not None:
+                # Rewrite the event to use the selected prompt, then fall through
+                # to _handle_message_with_agent
+                try:
+                    event.text = selected
+                except Exception:
+                    pass
 
         if self._is_telegram_topic_root_lobby(source):
             # Debounce the lobby reminder so a user who forgets about
@@ -14078,6 +14126,401 @@ class GatewayRunner:
         msg_count = len([m for m in history if m.get("role") == "user"])
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+    async def _handle_history_command(self, event: MessageEvent) -> str:
+        """Handle /history command -- show or search conversation history.
+
+        Usage:
+          /history          Show recent user prompts (page 1, 5 per page)
+          /history <page>   Show a specific page
+          /history <keyword> Search history for matching prompts
+
+        On platforms supporting interactive cards (Feishu), renders a
+        paginated card with \"Reuse\" buttons per prompt.
+        """
+        source = event.source
+        raw_args = event.get_command_args().strip()
+        page_size = 5
+
+        # Determine mode and page
+        search_query = None
+        page = 1
+        if raw_args:
+            try:
+                page = int(raw_args)
+                if page < 1:
+                    page = 1
+            except ValueError:
+                # Check for navigation keywords
+                args_lower = raw_args.lower()
+                if args_lower in ("prev", "previous", "p"):
+                    page = max(page - 1, 1)
+                elif args_lower in ("next", "n"):
+                    page = page + 1
+                else:
+                    search_query = raw_args
+
+        # Load session transcript
+        try:
+            session_entry = self.session_store.get_or_create_session(source)
+            history = self.session_store.load_transcript(session_entry.session_id)
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "history: session store unavailable: %s", exc
+            )
+            return t("gateway.shared.session_db_unavailable_prefix")
+
+        # Extract user messages, filter to the prompt content only
+        user_prompts = []
+        for msg in history:
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if content and isinstance(content, str):
+                    user_prompts.append(content.strip())
+
+        # If searching, use FTS5 if available, else substring match
+        if search_query:
+            _fts5_db = getattr(self, "_session_db", None)
+            if _fts5_db is not None:
+                try:
+                    _results = _fts5_db.search_messages(
+                        query=search_query,
+                        role_filter=["user"],
+                        limit=100,
+                    )
+                    user_prompts = []
+                    for r in _results:
+                        content = r.get("content", "")
+                        if content and isinstance(content, str):
+                            user_prompts.append(content.strip())
+                    if not user_prompts:
+                        return (
+                            f"No history items found matching \"{search_query}\"."
+                            f"\n\nTo see all recent history: /history"
+                        )
+                except Exception as _fts5_err:
+                    import logging as _logging
+                    _logging.getLogger(__name__).debug(
+                        "history: FTS5 search failed, falling back: %s", _fts5_err
+                    )
+                    # Fall through to substring matching below
+                    q = search_query.lower()
+                    user_prompts = [p for p in user_prompts if q in p.lower()]
+                    if not user_prompts:
+                        return (
+                            f"No history items found matching \"{search_query}\"."
+                            f"\n\nTo see all recent history: /history"
+                        )
+            else:
+                # Fallback: substring matching when session_db unavailable
+                q = search_query.lower()
+                user_prompts = [p for p in user_prompts if q in p.lower()]
+                if not user_prompts:
+                    return (
+                        f"No history items found matching \"{search_query}\"."
+                        f"\n\nTo see all recent history: /history"
+                    )
+
+        if not user_prompts:
+            return "(._.) No conversation history yet."
+
+        # Paginate
+        total_pages = (len(user_prompts) + page_size - 1) // page_size
+        if page > total_pages:
+            page = total_pages
+        start = (page - 1) * page_size
+        end = min(start + page_size, len(user_prompts))
+        page_items = user_prompts[start:end]
+
+        # Check if source platform supports interactive cards
+        is_feishu = source.platform == Platform.FEISHU if hasattr(source, 'platform') else False
+
+        # Build result
+        lines = []
+        header = f"📜 Session History"
+        if search_query:
+            header += f" — search \"{search_query}\""
+        lines.append(f"{header} (Page {page}/{total_pages})")
+        lines.append("")
+
+        for i, prompt in enumerate(page_items, start=start + 1):
+            preview = prompt[:200]
+            if len(prompt) > 200:
+                preview += "..."
+            lines.append(f"[{i}] {preview}")
+            lines.append("")
+
+        if total_pages > 1:
+            nav = []
+            if page > 1:
+                nav.append("/history prev")
+            else:
+                nav.append("—")
+            nav.append(f"Page {page}/{total_pages}")
+            if page < total_pages:
+                nav.append("/history next")
+            else:
+                nav.append("—")
+            lines.append("  ".join(nav))
+
+        return "\n".join(lines)
+
+    # ────────────────────────────────────────────────────────────────
+    # Feishu history card builder
+    # ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_feishu_history_card(
+        *,
+        page_items: list[str],
+        page: int,
+        total_pages: int,
+        search_query: str | None,
+        session_key: str,
+    ) -> dict | None:
+        """Build a Feishu interactive card for paginated history display.
+
+        Returns a card dict with per-prompt Reuse buttons and page nav.
+        Returns None if page_items is empty.
+        """
+        if not page_items:
+            return None
+
+        import json as _json
+
+        header_title = "📜 Session History"
+        if search_query:
+            header_title += f" (search: {search_query})"
+
+        elements: list[dict] = []
+
+        # Prompt items
+        for i, prompt in enumerate(page_items, start=1):
+            preview = prompt[:120]
+            if len(prompt) > 120:
+                preview += "…"
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**#{i}** {_json.dumps(preview, ensure_ascii=False)}"},
+            })
+            elements.append({
+                "tag": "action",
+                "actions": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": f"复用 #{i}"},
+                    "type": "primary",
+                    "value": {
+                        "hermes_history_action": "reuse",
+                        "prompt": prompt,
+                        "page": page,
+                        "session_key": session_key,
+                    },
+                }],
+            })
+
+        # Page navigation
+        nav_actions: list[dict] = []
+        if page > 1:
+            nav_actions.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "◀ 上一页"},
+                "type": "default",
+                "value": {
+                    "hermes_history_action": "page",
+                    "page": page - 1,
+                    "session_key": session_key,
+                },
+            })
+        nav_actions.append({
+            "tag": "plain_text",  # Non-interactive page indicator
+            "content": f"  {page}/{total_pages}  ",
+        })
+        if page < total_pages:
+            nav_actions.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "下一页 ▶"},
+                "type": "default",
+                "value": {
+                    "hermes_history_action": "page",
+                    "page": page + 1,
+                    "session_key": session_key,
+                },
+            })
+
+        if len(nav_actions) > 1:
+            elements.append({
+                "tag": "action",
+                "actions": nav_actions,
+            })
+
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": header_title, "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": elements,
+        }
+
+    # ────────────────────────────────────────────────────────────────
+    # /history — show, search, and reuse conversation history
+    # ────────────────────────────────────────────────────────────────
+
+    async def _handle_history_command(self, event: MessageEvent) -> str:
+        """Show or search conversation history. Saves pending selection state
+        so the next plain-number reply can reuse a prompt.
+
+        Usage:
+          /history              Show page 1 of recent user prompts
+          /history <page>       Show specific page
+          /history <keyword>    Search history with FTS5 (cross-session)
+          /history prev|next    Page navigation
+        """
+        import time as _time
+
+        source = event.source
+        raw_args = event.get_command_args().strip()
+        page_size = 5
+
+        # Determine mode and page
+        search_query = None
+        page = 1
+        if raw_args:
+            try:
+                page = int(raw_args)
+                if page < 1:
+                    page = 1
+            except ValueError:
+                args_lower = raw_args.lower()
+                if args_lower in ("prev", "previous", "p"):
+                    page = -1  # sentinel for "go back"
+                elif args_lower in ("next", "n"):
+                    page = -2  # sentinel for "go forward"
+                else:
+                    search_query = raw_args
+
+        # Resolve page from pending state for prev/next
+        session_key = self._session_key_for_source(source)
+        pending = self._pending_history_selection.get(session_key, {})
+        if page == -1:
+            page = max(pending.get("page", 1) - 1, 1)
+        elif page == -2:
+            page = pending.get("page", 0) + 1
+
+        # Load session data
+        try:
+            session_entry = self.session_store.get_or_create_session(source)
+            history = self.session_store.load_transcript(session_entry.session_id)
+        except Exception:
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "history: session store unavailable", exc_info=True
+            )
+            return t("gateway.shared.session_db_unavailable_prefix")
+
+        # Extract user messages
+        user_prompts = []
+        for msg in history:
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if content and isinstance(content, str):
+                    user_prompts.append(content.strip())
+
+        # Search: FTS5 first, substring fallback
+        if search_query:
+            _fts5 = getattr(self, "_session_db", None)
+            if _fts5 is not None:
+                try:
+                    _results = _fts5.search_messages(
+                        query=search_query, role_filter=["user"], limit=100,
+                    )
+                    user_prompts = [
+                        r["content"].strip()
+                        for r in _results
+                        if r.get("content") and isinstance(r["content"], str)
+                    ]
+                except Exception:
+                    user_prompts = [
+                        p for p in user_prompts if search_query.lower() in p.lower()
+                    ]
+            else:
+                user_prompts = [
+                    p for p in user_prompts if search_query.lower() in p.lower()
+                ]
+            if not user_prompts:
+                return (
+                    f"No history items found matching \"{search_query}\".\n"
+                    f"\nTo see all recent history: /history"
+                )
+
+        if not user_prompts:
+            return "(._.) No conversation history yet."
+
+        # Paginate
+        total_pages = (len(user_prompts) + page_size - 1) // page_size
+        if page < 1:
+            page = 1
+        if page > total_pages:
+            page = total_pages
+        start = (page - 1) * page_size
+        end = min(start + page_size, len(user_prompts))
+        page_items = user_prompts[start:end]
+
+        # Save pending selection state
+        self._pending_history_selection[session_key] = {
+            "prompts": page_items,
+            "page": page,
+            "total_pages": total_pages,
+            "search_query": search_query,
+            "timestamp": _time.time(),
+        }
+
+        # Check for Feishu and build interactive card
+        is_feishu = (
+            getattr(source, "platform", None) == Platform.FEISHU
+            if hasattr(Platform, "FEISHU")
+            else False
+        )
+        if is_feishu:
+            card = self._build_feishu_history_card(
+                page_items=page_items,
+                page=page,
+                total_pages=total_pages,
+                search_query=search_query,
+                session_key=session_key,
+            )
+            adapter = self.adapters.get(Platform.FEISHU) if hasattr(self, "adapters") else None
+            if adapter and card and hasattr(adapter, "send_interactive"):
+                chat_id = str(getattr(source, "chat_id", ""))
+                meta = {"session_key": session_key, "platform": "feishu"}
+                try:
+                    await adapter.send_interactive(chat_id, card, reply_to=event.message_id, metadata=meta)
+                    return ""  # Card sent, suppress text response
+                except Exception:
+                    pass  # Fall through to text response below
+
+        # Build text response (used as fallback or on non-Feishu platforms)
+        lines = []
+        header = "📜 Session History"
+        if search_query:
+            header += f" — search \"{search_query}\""
+        lines.append(f"{header} (Page {page}/{total_pages})")
+        lines.append("")
+        for i, prompt in enumerate(page_items, start=start + 1):
+            preview = prompt[:200]
+            if len(prompt) > 200:
+                preview += "..."
+            lines.append(f"[{i}] {preview}")
+            lines.append("")
+        if total_pages > 1:
+            nav_parts = []
+            nav_parts.append("/history prev" if page > 1 else "—")
+            nav_parts.append(f"Page {page}/{total_pages}")
+            nav_parts.append("/history next" if page < total_pages else "—")
+            lines.append("  ".join(nav_parts))
+        lines.append("")
+        lines.append("Reply with a number to reuse that prompt.")
+        return "\n".join(lines)
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the current session.

@@ -81,7 +81,6 @@ function MediaAttachment({ path }: { path: string }) {
     let objectUrl = ''
 
     setFailed(false)
-    setSrc('')
     void mediaSrc(path)
       .then(value => {
         if (value.startsWith('blob:')) {

@@ -128,7 +128,7 @@ def sanitize_session_summary_text(text: str, *, max_chars: int | None = None) ->
     kept_lines: list[str] = []
     for raw_line in cleaned.splitlines():
         line = _CANARY_RE.sub("[redacted]", raw_line).strip()
-        if not line or _INJECTION_RE.search(line):
+        if not line or _INJECTION_RE.search(line) or _looks_like_metadata_assignment(line):
             continue
         kept_lines.append(line)
     cleaned = "\n".join(kept_lines)

@@ -328,8 +328,6 @@ class TestConfig:
         assert provider._recall_max_input_chars == 800
         assert provider._session_summary_enabled is False
         assert provider._session_summary_enrich_recall_query is False
-        assert provider._session_summary_enrich_retain_context is False
-        assert provider._session_summary_inject_prompt is False
         assert provider._session_summary_update_every_n_turns is None
         assert provider._session_summary_min_update_every_n_turns == 2
         assert provider._session_summary_timeout_seconds == 20
@@ -399,8 +397,6 @@ class TestConfig:
             bank_mission="Test agent mission",
             session_summary_enabled=True,
             session_summary_enrich_recall_query=True,
-            session_summary_enrich_retain_context=True,
-            session_summary_inject_prompt=True,
             session_summary_generator_provider="openai_compatible",
             session_summary_generator_model="summary-model",
             session_summary_generator_base_url="http://localhost:11434/v1",
@@ -413,8 +409,6 @@ class TestConfig:
             session_summary_max_output_chars=432,
             session_summary_max_recall_query_chars=321,
             session_summary_recall_query_budget_ratio=0.2,
-            session_summary_max_prompt_inject_chars=222,
-            session_summary_max_retain_context_chars=333,
             session_summary_min_latest_query_reserve_chars=111,
         )
         assert p._tags == ["tag1", "tag2"]
@@ -436,8 +430,6 @@ class TestConfig:
         assert p._bank_mission == "Test agent mission"
         assert p._session_summary_enabled is True
         assert p._session_summary_enrich_recall_query is True
-        assert p._session_summary_enrich_retain_context is True
-        assert p._session_summary_inject_prompt is True
         assert p._session_summary_generator_provider == "openai_compatible"
         assert p._session_summary_generator_model == "summary-model"
         assert p._session_summary_generator_base_url == "http://localhost:11434/v1"
@@ -450,8 +442,8 @@ class TestConfig:
         assert p._session_summary_budget.max_output_chars == 432
         assert p._session_summary_budget.max_recall_query_chars == 321
         assert p._session_summary_budget.recall_query_budget_ratio == 0.2
-        assert p._session_summary_budget.max_prompt_inject_chars == 222
-        assert p._session_summary_budget.max_retain_context_chars == 333
+        assert p._session_summary_budget.max_prompt_inject_chars == 1200
+        assert p._session_summary_budget.max_retain_context_chars == 1200
         assert p._session_summary_budget.min_latest_query_reserve_chars == 111
 
     def test_config_from_env_fallback(self, tmp_path, monkeypatch):
@@ -766,8 +758,8 @@ class TestToolHandlers:
                 )
             },
         )
-        call_kwargs = provider._client.aretain.call_args.kwargs
-        assert call_kwargs["content"] == "用户喜欢紧凑界面"
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["content"] == "用户喜欢紧凑界面"
 
     def test_retain_missing_content(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -1747,12 +1739,12 @@ class TestSessionSummaryIntegration:
         assert "active-project" in query
         assert len(query) <= p._recall_max_input_chars
 
-    def test_prefetch_injects_summary_as_separate_prompt_block(
+    def test_prefetch_does_not_inject_summary_as_prompt_block(
         self, provider_with_config
     ):
         p = provider_with_config(
             session_summary_enabled=True,
-            session_summary_inject_prompt=True,
+            session_summary_enrich_recall_query=True,
         )
         self._seed_summary(p, project="prompt-project")
         p._prefetch_result = "- recalled memory"
@@ -1761,25 +1753,23 @@ class TestSessionSummaryIntegration:
 
         assert "# Hindsight Memory" in block
         assert "- recalled memory" in block
-        assert "<hindsight_session_summary>" in block
-        assert "prompt-project" in block
-        assert block.index("- recalled memory") < block.index("<hindsight_session_summary>")
+        assert "<hindsight_session_summary>" not in block
+        assert "prompt-project" not in block
 
-    def test_prefetch_can_return_summary_block_without_recall_results(
+    def test_prefetch_does_not_return_summary_without_recall_results(
         self, provider_with_config
     ):
         p = provider_with_config(
             session_summary_enabled=True,
-            session_summary_inject_prompt=True,
+            session_summary_enrich_recall_query=True,
         )
         self._seed_summary(p, project="summary-only-project")
 
         block = p.prefetch("next")
 
-        assert block.startswith("<hindsight_session_summary>")
-        assert "summary-only-project" in block
+        assert block == ""
 
-    def test_sync_turn_enriches_retain_context_and_sanitizes_summary_messages(
+    def test_sync_turn_does_not_enrich_retain_context_and_sanitizes_summary_messages(
         self, provider_with_config, monkeypatch
     ):
         monkeypatch.setattr(
@@ -1788,7 +1778,7 @@ class TestSessionSummaryIntegration:
         )
         p = provider_with_config(
             session_summary_enabled=True,
-            session_summary_enrich_retain_context=True,
+            session_summary_enrich_recall_query=True,
             session_summary_update_every_n_turns=2,
             retain_async=False,
         )
@@ -1807,8 +1797,8 @@ class TestSessionSummaryIntegration:
         p._retain_queue.join()
 
         first_item = p._client.aretain_batch.call_args_list[0].kwargs["items"][0]
-        assert "Rolling session summary for extraction context:" in first_item["context"]
-        assert "retain-project" in first_item["context"]
+        assert first_item["context"] == p._retain_context
+        assert "Rolling session summary" not in first_item["context"]
         assert raw_tool_log not in first_item["content"]
 
         record = p._get_session_summary_store().get(p._session_summary_key())
@@ -1821,6 +1811,7 @@ class TestSessionSummaryIntegration:
     ):
         p = provider_with_config(
             session_summary_enabled=True,
+            session_summary_enrich_recall_query=True,
             session_summary_update_every_n_turns=2,
             retain_every_n_turns=5,
             retain_async=False,
@@ -1851,12 +1842,12 @@ class TestSessionSummaryIntegration:
         assert item["metadata"]["turn_index"] == "5"
         assert item["metadata"]["message_count"] == "10"
 
-    def test_on_pre_compress_updates_and_returns_sanitized_summary_block(
+    def test_on_pre_compress_updates_without_returning_summary_block(
         self, provider_with_config
     ):
         p = provider_with_config(
             session_summary_enabled=True,
-            session_summary_inject_prompt=True,
+            session_summary_enrich_recall_query=True,
         )
         raw_tool_log = "RAW_TOOL_OUTPUT_SHOULD_NOT_BE_SUMMARIZED"
 
@@ -1868,11 +1859,10 @@ class TestSessionSummaryIntegration:
             ]
         )
 
-        assert block.startswith("<hindsight_session_summary>")
-        assert "compress-project" in block
-        assert raw_tool_log not in block
+        assert block == ""
         record = p._get_session_summary_store().get(p._session_summary_key())
         assert record is not None
+        assert "compress-project" in record.summary_text
         assert raw_tool_log not in record.summary_text
 
     def test_session_switch_flushes_old_summary_state(self, provider_with_config, monkeypatch):
@@ -1882,7 +1872,7 @@ class TestSessionSummaryIntegration:
         )
         p = provider_with_config(
             session_summary_enabled=True,
-            session_summary_inject_prompt=True,
+            session_summary_enrich_recall_query=True,
             retain_every_n_turns=3,
             retain_async=False,
         )

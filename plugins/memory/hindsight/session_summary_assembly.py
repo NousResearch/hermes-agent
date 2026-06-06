@@ -1,9 +1,6 @@
-"""Pure Hindsight session-summary assembly helpers."""
+"""Pure Hindsight session-summary recall-query assembly helpers."""
 
 from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Any
 
 from plugins.memory.hindsight.session_summary_generator import (
     SessionSummaryBudget,
@@ -11,18 +8,6 @@ from plugins.memory.hindsight.session_summary_generator import (
 )
 
 _RECALL_SUMMARY_HEADER = "Rolling session summary:"
-_RETAIN_SUMMARY_HEADER = "Rolling session summary for extraction context:"
-_PROMPT_SUMMARY_TITLE = "Hindsight rolling session summary"
-
-
-@dataclass(frozen=True)
-class SessionSummaryAssemblyConfig:
-    enrich_recall_query: bool = False
-    enrich_retain_context: bool = False
-    inject_prompt: bool = False
-    max_recall_query_chars: int = 800
-    max_retain_context_chars: int = 1_200
-    max_prompt_inject_chars: int = 1_200
 
 
 def compose_summary_recall_query(
@@ -55,31 +40,6 @@ def compose_summary_recall_query(
     return f"{latest}\n\n{block}"[:limit].rstrip()
 
 
-def build_summary_retain_context(base_context: str, summary_text: str, *, max_chars: int) -> str:
-    """Append a bounded summary to extraction context without changing transcript content."""
-    base = str(base_context or "")
-    summary = sanitize_session_summary_text(summary_text, max_chars=max(0, int(max_chars or 0)))
-    if not summary:
-        return base
-    block = f"{_RETAIN_SUMMARY_HEADER}\n{summary}"
-    if not base:
-        return block
-    return f"{base}\n\n{block}"
-
-
-def render_summary_prompt_block(summary_text: str, *, max_chars: int) -> str:
-    """Render a prompt-only summary block kept separate from memory blocks."""
-    summary = sanitize_session_summary_text(summary_text, max_chars=max(0, int(max_chars or 0)))
-    if not summary:
-        return ""
-    return (
-        f"<hindsight_session_summary>\n"
-        f"{_PROMPT_SUMMARY_TITLE}\n"
-        f"{summary}\n"
-        f"</hindsight_session_summary>"
-    )
-
-
 def _recall_limit(max_chars: int, budget: SessionSummaryBudget | None) -> int:
     limit = max(0, int(max_chars or 0))
     if budget is None:
@@ -104,8 +64,5 @@ def _bounded_block(header: str, body: str, max_chars: int) -> str:
 
 
 __all__ = [
-    "SessionSummaryAssemblyConfig",
-    "build_summary_retain_context",
     "compose_summary_recall_query",
-    "render_summary_prompt_block",
 ]

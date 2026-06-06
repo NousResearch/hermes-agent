@@ -64,10 +64,7 @@ from plugins.memory.hindsight.session_summary_generator import (
     should_update_session_summary,
 )
 from plugins.memory.hindsight.session_summary_assembly import (
-    SessionSummaryAssemblyConfig,
-    build_summary_retain_context,
     compose_summary_recall_query,
-    render_summary_prompt_block,
 )
 
 logger = logging.getLogger(__name__)
@@ -836,12 +833,11 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = ""
         self._recall_max_input_chars = 800
 
-        # Session summary generator controls. These are parsed and documented in
-        # S2, but not wired into recall/retain/prompt lifecycle hooks yet.
+        # Session summary generator controls. The rolling summary is only used
+        # to enrich recall queries; it is never injected as prompt context or
+        # retain extraction context.
         self._session_summary_enabled = False
         self._session_summary_enrich_recall_query = False
-        self._session_summary_enrich_retain_context = False
-        self._session_summary_inject_prompt = False
         self._session_summary_generator_provider = ""
         self._session_summary_generator_model = ""
         self._session_summary_generator_base_url = ""
@@ -1155,8 +1151,6 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "session_summary_enabled", "description": "Enable rolling session summary lifecycle integration", "default": False},
             {"key": "session_summary_enrich_recall_query", "description": "Add rolling summary context after the latest auto-recall query", "default": False},
-            {"key": "session_summary_enrich_retain_context", "description": "Add rolling summary text to retain extraction context only", "default": False},
-            {"key": "session_summary_inject_prompt", "description": "Inject a separate prompt block with rolling summary context", "default": False},
             {"key": "session_summary_generator_provider", "description": "LLM provider reserved for real summary generation", "default": ""},
             {"key": "session_summary_generator_model", "description": "LLM model reserved for real summary generation", "default": ""},
             {"key": "session_summary_generator_base_url", "description": "Optional OpenAI-compatible endpoint reserved for real summary generation", "default": ""},
@@ -1167,10 +1161,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "session_summary_timeout_seconds", "description": "Timeout for future background summary generation", "default": 20},
             {"key": "session_summary_max_input_chars", "description": "Maximum input characters for summary generation", "default": 16000},
             {"key": "session_summary_max_output_chars", "description": "Maximum rendered summary characters", "default": 2000},
-            {"key": "session_summary_max_recall_query_chars", "description": "Budget for future summary-derived recall query text", "default": 800},
-            {"key": "session_summary_recall_query_budget_ratio", "description": "Maximum fraction of summary input budget usable for future recall query text", "default": 0.25},
-            {"key": "session_summary_max_prompt_inject_chars", "description": "Budget for future prompt-injected summary context", "default": 1200},
-            {"key": "session_summary_max_retain_context_chars", "description": "Budget for future retain context summary text", "default": 1200},
+            {"key": "session_summary_max_recall_query_chars", "description": "Budget for summary-derived recall query text", "default": 800},
+            {"key": "session_summary_recall_query_budget_ratio", "description": "Maximum fraction of summary input budget usable for recall query text", "default": 0.25},
             {"key": "session_summary_min_latest_query_reserve_chars", "description": "Minimum latest-query reserve when trimming summary inputs", "default": 400},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
@@ -1522,17 +1514,13 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
         self._retain_async = self._config.get("retain_async", True)
 
-        # Session summary controls are parsed here for config/schema stability.
-        # Runtime lifecycle wiring lands in later stages, so these assignments
-        # must not change retain/recall payloads or prompt consumption.
+        # Session summary consumption is intentionally recall-only. Legacy
+        # prompt injection and retain-context enrichment config keys are ignored
+        # if present in older local configs.
         self._session_summary_enabled = self._config.get("session_summary_enabled", False) is True
         self._session_summary_enrich_recall_query = (
             self._config.get("session_summary_enrich_recall_query", False) is True
         )
-        self._session_summary_enrich_retain_context = (
-            self._config.get("session_summary_enrich_retain_context", False) is True
-        )
-        self._session_summary_inject_prompt = self._config.get("session_summary_inject_prompt", False) is True
         self._session_summary_reuse_hindsight_llm_config = (
             self._config.get("session_summary_reuse_hindsight_llm_config", True) is not False
         )
@@ -1588,14 +1576,8 @@ class HindsightMemoryProvider(MemoryProvider):
                     ),
                 ),
             ),
-            max_prompt_inject_chars=max(
-                1,
-                _parse_int_setting(self._config.get("session_summary_max_prompt_inject_chars"), 1_200),
-            ),
-            max_retain_context_chars=max(
-                1,
-                _parse_int_setting(self._config.get("session_summary_max_retain_context_chars"), 1_200),
-            ),
+            max_prompt_inject_chars=1_200,
+            max_retain_context_chars=1_200,
             min_latest_query_reserve_chars=max(
                 0,
                 _parse_int_setting(
@@ -1716,15 +1698,10 @@ class HindsightMemoryProvider(MemoryProvider):
         )
 
     def _session_summary_work_enabled(self) -> bool:
-        """Return whether any lifecycle path needs rolling-summary work."""
+        """Return whether recall-query enrichment needs rolling-summary work."""
         return bool(
             getattr(self, "_session_summary_enabled", False)
-            and (
-                getattr(self, "_session_summary_enrich_recall_query", False)
-                or getattr(self, "_session_summary_enrich_retain_context", False)
-                or getattr(self, "_session_summary_inject_prompt", False)
-                or getattr(self, "_session_summary_update_every_n_turns", None) is not None
-            )
+            and getattr(self, "_session_summary_enrich_recall_query", False)
         )
 
     def _session_summary_store_path(self):
@@ -1776,10 +1753,6 @@ class HindsightMemoryProvider(MemoryProvider):
         budgeted = build_session_summary_budgeted_text(record.summary_text, self._session_summary_budget)
         if variant == "recall":
             return budgeted.recall_query_text
-        if variant == "prompt":
-            return budgeted.prompt_inject_text
-        if variant == "retain":
-            return budgeted.retain_context_text
         return budgeted.output_text
 
     def _summary_enriched_recall_query(self, query: str) -> str:
@@ -1801,29 +1774,6 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._recall_max_input_chars and len(text) > self._recall_max_input_chars:
             return text[:self._recall_max_input_chars].rstrip()
         return text
-
-    def _summary_prompt_block(self) -> str:
-        if not (
-            self._session_summary_work_enabled()
-            and self._session_summary_inject_prompt
-        ):
-            return ""
-        return render_summary_prompt_block(
-            self._current_session_summary_text("prompt"),
-            max_chars=self._session_summary_budget.max_prompt_inject_chars,
-        )
-
-    def _summary_retain_context(self, base_context: str) -> str:
-        if not (
-            self._session_summary_work_enabled()
-            and self._session_summary_enrich_retain_context
-        ):
-            return base_context
-        return build_summary_retain_context(
-            base_context,
-            self._current_session_summary_text("retain"),
-            max_chars=self._session_summary_budget.max_retain_context_chars,
-        )
 
     def _sanitize_summary_messages(
         self,
@@ -1978,22 +1928,16 @@ class HindsightMemoryProvider(MemoryProvider):
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""
-        summary_block = self._summary_prompt_block()
-        if not result and not summary_block:
+        if not result:
             logger.debug("Prefetch: no results available")
             return ""
-        parts = []
-        if result:
-            logger.debug("Prefetch: returning %d chars of context", len(result))
-            header = self._recall_prompt_preamble or (
-                "# Hindsight Memory (persistent cross-session context)\n"
-                "Use this to answer questions about the user and prior sessions. "
-                "Do not call tools to look up information that is already present here."
-            )
-            parts.append(f"{header}\n\n{result}")
-        if summary_block:
-            parts.append(summary_block)
-        return "\n\n".join(parts)
+        logger.debug("Prefetch: returning %d chars of context", len(result))
+        header = self._recall_prompt_preamble or (
+            "# Hindsight Memory (persistent cross-session context)\n"
+            "Use this to answer questions about the user and prior sessions. "
+            "Do not call tools to look up information that is already present here."
+        )
+        return f"{header}\n\n{result}"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if self._memory_mode == "tools":
@@ -2170,7 +2114,7 @@ class HindsightMemoryProvider(MemoryProvider):
         )
         bank_id = self._bank_id
         retain_async_flag = self._retain_async
-        retain_context = self._summary_retain_context(self._retain_context)
+        retain_context = self._retain_context
         num_turns = len(content_turns)
 
         def _do_retain() -> None:
@@ -2511,12 +2455,12 @@ class HindsightMemoryProvider(MemoryProvider):
         )
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
-        """Refresh and return bounded session summary context before compression."""
+        """Refresh local session summary before compression without injection."""
         if not self._session_summary_work_enabled():
             return ""
         sanitized = self._sanitize_summary_messages(messages)
         if not sanitized:
-            return self._summary_prompt_block()
+            return ""
         prior_turn = self._turn_index
         if prior_turn <= 0:
             self._turn_index = max(1, len(sanitized) // 2)
@@ -2528,7 +2472,7 @@ class HindsightMemoryProvider(MemoryProvider):
             )
         finally:
             self._turn_index = prior_turn
-        return self._summary_prompt_block()
+        return ""
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")

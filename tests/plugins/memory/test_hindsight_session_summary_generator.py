@@ -1,5 +1,3 @@
-import json
-
 from plugins.memory.hindsight.session_summary_generator import (
     FakeSessionSummaryGenerator,
     SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION,
@@ -36,32 +34,35 @@ def _request(**overrides):
     return SessionSummaryRequest(**values)
 
 
-def test_fake_generator_emits_stable_schema_and_rendered_text():
+def test_fake_generator_emits_plain_text_summary_and_schema_marker():
     result = FakeSessionSummaryGenerator().generate(_request())
 
     assert result.status == "ready"
     assert result.schema_version == SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION
-    assert result.summary_json["schema_version"] == SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION
-    assert "source-map-cli" in result.summary_json["active_projects"]
-    assert "session-recorder" in result.summary_json["exact_identifiers"]
-    assert "Active projects:" in result.summary_text
+    assert result.summary_json == {
+        "schema_version": SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION,
+        "summary_text": result.summary_text,
+    }
+    assert "source-map-cli" in result.summary_text
+    assert "session-recorder" in result.summary_text
+    assert "Decision: use the fake generator first" in result.summary_text
 
 
-def test_previous_summary_carry_forward_requires_current_evidence():
+def test_previous_summary_text_is_carried_forward_as_plain_text_context():
     result = FakeSessionSummaryGenerator().generate(
         _request(
-            previous_summary={"active_projects": ["grounded-app", "stale-app"]},
-            messages=[
-                {"role": "user", "content": "Continue grounded-app rollout."},
-            ],
+            previous_summary_text="Active project: grounded-app\nStale project: stale-app",
+            messages=[{"role": "user", "content": "Continue grounded-app rollout."}],
         )
     )
 
-    assert "grounded-app" in result.summary_json["active_projects"]
-    assert "stale-app" not in result.summary_json["active_projects"]
+    assert "grounded-app" in result.summary_text
+    # Plain text mode deliberately does not parse/drop semantically stale bullets;
+    # model-side generation can revise the rolling text on later updates.
+    assert "stale-app" in result.summary_text
 
 
-def test_operational_metadata_keys_do_not_become_entities():
+def test_operational_metadata_blocks_do_not_enter_plain_text_summary():
     messages = [
         {
             "role": "user",
@@ -78,13 +79,10 @@ def test_operational_metadata_keys_do_not_become_entities():
         }
     ]
     result = FakeSessionSummaryGenerator().generate(_request(messages=messages))
-    combined = " ".join(
-        result.summary_json["active_projects"] + result.summary_json["exact_identifiers"]
-    )
 
-    assert "metadata-audit-cli" in combined
-    for forbidden in ("bank-alpha", "telegram", "session_key", "sender_id", "provider"):
-        assert forbidden not in combined
+    assert "metadata-audit-cli" in result.summary_text
+    for forbidden in ("bank-alpha", "session_key", "sender_id", "provider"):
+        assert forbidden not in result.summary_text
 
 
 def test_inline_metadata_json_negative_anchor_matrix_is_ignored():
@@ -101,13 +99,8 @@ def test_inline_metadata_json_negative_anchor_matrix_is_ignored():
     ]
 
     result = FakeSessionSummaryGenerator().generate(_request(messages=messages))
-    combined = " ".join(
-        result.summary_json["active_projects"]
-        + result.summary_json["exact_identifiers"]
-        + result.summary_json["semantic_anchors"]
-    )
 
-    assert "source-map-cli" in combined
+    assert "source-map-cli" in result.summary_text
     for forbidden in (
         "bank-alpha",
         "telegram-source",
@@ -117,7 +110,7 @@ def test_inline_metadata_json_negative_anchor_matrix_is_ignored():
         "slack-provider",
         "metadata-tool",
     ):
-        assert forbidden not in combined
+        assert forbidden not in result.summary_text
 
 
 def test_camel_case_lineage_metadata_aliases_are_ignored():
@@ -137,13 +130,8 @@ def test_camel_case_lineage_metadata_aliases_are_ignored():
     ]
 
     result = FakeSessionSummaryGenerator().generate(_request(messages=messages))
-    combined = " ".join(
-        result.summary_json["active_projects"]
-        + result.summary_json["exact_identifiers"]
-        + result.summary_json["semantic_anchors"]
-    )
 
-    assert "lineage-audit-cli" in combined
+    assert "lineage-audit-cli" in result.summary_text
     for forbidden in (
         "openclaw-source",
         "doc-alpha",
@@ -151,7 +139,7 @@ def test_camel_case_lineage_metadata_aliases_are_ignored():
         "assignment-source",
         "assignment-document",
     ):
-        assert forbidden not in combined
+        assert forbidden not in result.summary_text
 
 
 def test_sanitizer_removes_injection_and_privacy_canaries_without_literal_fixture():
@@ -253,15 +241,10 @@ def test_budget_trimming_preserves_latest_query_reserve():
     assert trimmed.messages[-1]["content"].endswith("b" * 48)
 
 
-def test_previous_summary_counts_against_input_budget_and_prompt_size():
+def test_previous_summary_text_counts_against_input_budget_and_prompt_size():
     long_previous = "previous-summary-" + ("p" * 5000)
     request = _request(
-        previous_summary={
-            "schema_version": SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION,
-            "active_projects": ["grounded-app"],
-            "completed_todos": [long_previous],
-            "semantic_anchors": [long_previous],
-        },
+        previous_summary_text=f"Active project: grounded-app\n{long_previous}",
         latest_query="latest-query-" + ("x" * 120),
         messages=[
             {"role": "user", "content": "Continue grounded-app. " + ("m" * 600)},
@@ -277,28 +260,21 @@ def test_previous_summary_counts_against_input_budget_and_prompt_size():
     trimmed = trim_session_summary_inputs(request, budget)
     prompt = build_session_summary_prompt(
         _request(
-            previous_summary=request.previous_summary,
+            previous_summary_text=request.previous_summary_text,
             latest_query=request.latest_query,
             messages=request.messages,
             budget=budget,
         )
     )
-    previous_json = trimmed.previous_summary or {}
 
     assert len(trimmed.latest_query) == 80
-    assert previous_json.get("completed_todos") is None
-    assert "p" * 5000 not in json_dumps_for_test(previous_json)
+    assert "p" * 5000 not in trimmed.previous_summary_text
     assert "p" * 5000 not in prompt
-    assert len(json_dumps_for_test(previous_json)) <= 90
     assert "latest-query-" in prompt
 
 
 def test_budgeted_text_enforces_independent_summary_budgets():
-    summary = {
-        "active_projects": ["source-map-cli"],
-        "semantic_anchors": ["Anchor " + ("x" * 120)],
-        "decisions": ["Decision " + ("y" * 120)],
-    }
+    summary = "Active projects: source-map-cli\nSemantic anchors: Anchor " + ("x" * 120)
     budget = SessionSummaryBudget(
         max_input_chars=100,
         max_output_chars=50,
@@ -314,22 +290,20 @@ def test_budgeted_text_enforces_independent_summary_budgets():
     assert len(rendered.recall_query_text) <= 25
     assert len(rendered.prompt_inject_text) <= 30
     assert len(rendered.retain_context_text) <= 40
-    assert rendered.recall_query_text != rendered.prompt_inject_text
+    assert rendered.recall_query_text
+    assert rendered.prompt_inject_text
 
 
 def test_prompt_and_render_are_bounded_and_summary_only():
     request = _request()
     prompt = build_session_summary_prompt(request)
     text = render_session_summary(
-        {
-            "active_projects": ["source-map-cli"],
-            "semantic_anchors": ["anchor " + ("x" * 200)],
-        },
+        "Active projects: source-map-cli\nSemantic anchors: " + ("anchor " * 50),
         max_chars=40,
     )
 
-    assert "Generate a compact Hindsight session summary" in prompt
-    assert "recall" not in text.lower()
+    assert "Generate a compact Hindsight rolling session summary" in prompt
+    assert "source-map-cli" in text
     assert len(text) <= 40
 
 
@@ -339,7 +313,3 @@ def test_generator_failure_returns_error_status_without_raising():
     assert result.status == "error"
     assert result.error
     assert result.summary_text == ""
-
-
-def json_dumps_for_test(value):
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)

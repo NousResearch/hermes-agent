@@ -103,16 +103,16 @@ Config file: `~/.hermes/hindsight/config.json`
 
 These keys configure the structured rolling session summary lifecycle. Summary
 consumption stays disabled by default and only runs when
-`session_summary_enabled` is `true` plus at least one consumer/update flag is
-enabled. Hermes currently uses the deterministic local fallback generator; real
-LLM generator fields are parsed and reserved for a future helper.
+`session_summary_enabled` and `session_summary_enrich_recall_query` are both
+`true`. Hermes uses the rolling summary only to enrich recall queries. It does
+not inject summary prompt blocks and does not add summary text to retain
+extraction context. Hermes currently uses the deterministic local fallback
+generator; real LLM generator fields are parsed and reserved for a future helper.
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `session_summary_enabled` | `false` | Enables rolling session summary integration |
 | `session_summary_enrich_recall_query` | `false` | Adds bounded rolling summary context after the latest auto-recall query |
-| `session_summary_enrich_retain_context` | `false` | Adds rolling summary text to retain extraction context, never transcript content |
-| `session_summary_inject_prompt` | `false` | Renders a separate `<hindsight_session_summary>` prompt block outside recalled memory blocks |
 | `session_summary_generator_provider` | — | Reserved LLM provider for future real summary generation |
 | `session_summary_generator_model` | — | Reserved LLM model for future real summary generation |
 | `session_summary_generator_base_url` | — | Reserved OpenAI-compatible summary model endpoint |
@@ -123,10 +123,8 @@ LLM generator fields are parsed and reserved for a future helper.
 | `session_summary_timeout_seconds` | `20` | Timeout for future background summary generation |
 | `session_summary_max_input_chars` | `16000` | Maximum characters considered by summary generation |
 | `session_summary_max_output_chars` | `2000` | Maximum rendered summary characters |
-| `session_summary_max_recall_query_chars` | `800` | Budget for future summary-derived recall query text |
-| `session_summary_recall_query_budget_ratio` | `0.25` | Maximum fraction of summary input budget usable for future recall query text |
-| `session_summary_max_prompt_inject_chars` | `1200` | Budget for future prompt-injected summary context |
-| `session_summary_max_retain_context_chars` | `1200` | Budget for future retain context summary text |
+| `session_summary_max_recall_query_chars` | `800` | Budget for summary-derived recall query text |
+| `session_summary_recall_query_budget_ratio` | `0.25` | Maximum fraction of summary input budget usable for recall query text |
 | `session_summary_min_latest_query_reserve_chars` | `400` | Latest-query reserve when trimming summary inputs |
 
 Summary inputs are sanitized to user/assistant text only. Tool role logs,

@@ -6,7 +6,7 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
-import type { CronJob, ProfileInfo } from "@/lib/api";
+import type { CronJob, CronDeliveryTarget, ProfileInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import {
   DEFAULT_SCHEDULE_STATE,
@@ -157,6 +157,9 @@ export default function CronPage() {
     onClose: closeCreateModal,
   });
   const [deliver, setDeliver] = useState("local");
+  const [deliveryTargets, setDeliveryTargets] = useState<CronDeliveryTarget[]>([
+    { id: "local", name: "Local", home_target_set: true, home_env_var: null },
+  ]);
   const [creating, setCreating] = useState(false);
   const createProfile = selectedProfile === "all" ? "default" : selectedProfile;
 
@@ -199,10 +202,74 @@ export default function CronPage() {
   }, []);
 
   useEffect(() => {
+    api
+      .getCronDeliveryTargets()
+      .then((res) => setDeliveryTargets(res.targets))
+      .catch(() =>
+        // Fall back to local-only so the modal still works if the endpoint fails.
+        setDeliveryTargets([
+          { id: "local", name: "Local", home_target_set: true, home_env_var: null },
+        ]),
+      );
+  }, []);
+
+  useEffect(() => {
     loadJobs();
   }, [loadJobs]);
 
   const scheduleString = buildScheduleString(scheduleState);
+
+  // Label for a delivery option. Configured platforms missing their cron home
+  // channel are still offered (option B), annotated so the user knows what to
+  // fix rather than wondering why delivery silently no-ops.
+  const deliverLabel = useCallback(
+    (target: CronDeliveryTarget): string => {
+      const base = target.id === "local" ? t.cron.delivery.local : target.name;
+      if (target.id !== "local" && !target.home_target_set) {
+        const hint = t.cron.delivery.needsHomeChannel ?? "set a home channel first";
+        return `${base} — ${hint}`;
+      }
+      return base;
+    },
+    [t.cron.delivery],
+  );
+
+  const renderDeliverOptions = useCallback(
+    () =>
+      deliveryTargets.map((target) => (
+        <SelectOption key={target.id} value={target.id}>
+          {deliverLabel(target)}
+        </SelectOption>
+      )),
+    [deliveryTargets, deliverLabel],
+  );
+
+  // The edit modal must always show the job's current target, even if that
+  // platform is no longer configured (e.g. job created via CLI, or the
+  // gateway was later removed) — otherwise the value would silently vanish
+  // from the dropdown and saving would drop it.
+  const renderEditDeliverOptions = useCallback(
+    (current: string) => {
+      const known = new Set(deliveryTargets.map((target) => target.id));
+      const options = deliveryTargets.map((target) => (
+        <SelectOption key={target.id} value={target.id}>
+          {deliverLabel(target)}
+        </SelectOption>
+      ));
+      if (current && !known.has(current)) {
+        options.push(
+          <SelectOption key={current} value={current}>
+            {current}
+          </SelectOption>,
+        );
+      }
+      return options;
+    },
+    [deliveryTargets, deliverLabel],
+  );
+
+  const onlyLocalAvailable =
+    deliveryTargets.filter((target) => target.id !== "local").length === 0;
 
   const handleCreate = async () => {
     if (!prompt.trim() || !scheduleString) {
@@ -447,22 +514,14 @@ export default function CronPage() {
                   value={deliver}
                   onValueChange={(v) => setDeliver(v)}
                 >
-                  <SelectOption value="local">
-                    {t.cron.delivery.local}
-                  </SelectOption>
-                  <SelectOption value="telegram">
-                    {t.cron.delivery.telegram}
-                  </SelectOption>
-                  <SelectOption value="discord">
-                    {t.cron.delivery.discord}
-                  </SelectOption>
-                  <SelectOption value="slack">
-                    {t.cron.delivery.slack}
-                  </SelectOption>
-                  <SelectOption value="email">
-                    {t.cron.delivery.email}
-                  </SelectOption>
+                  {renderDeliverOptions()}
                 </Select>
+                {onlyLocalAvailable && (
+                  <p className="text-xs text-muted-foreground">
+                    {t.cron.delivery.noneConfigured ??
+                      "No messaging platforms configured. Set one up under Channels to deliver reports."}
+                  </p>
+                )}
               </div>
 
               <div className="flex justify-end">
@@ -552,21 +611,7 @@ export default function CronPage() {
                     value={editDeliver}
                     onValueChange={(v) => setEditDeliver(v)}
                   >
-                    <SelectOption value="local">
-                      {t.cron.delivery.local}
-                    </SelectOption>
-                    <SelectOption value="telegram">
-                      {t.cron.delivery.telegram}
-                    </SelectOption>
-                    <SelectOption value="discord">
-                      {t.cron.delivery.discord}
-                    </SelectOption>
-                    <SelectOption value="slack">
-                      {t.cron.delivery.slack}
-                    </SelectOption>
-                    <SelectOption value="email">
-                      {t.cron.delivery.email}
-                    </SelectOption>
+                    {renderEditDeliverOptions(editDeliver)}
                   </Select>
                 </div>
               </div>

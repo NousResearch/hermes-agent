@@ -295,7 +295,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       const previewUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
 
       if (previewUrl) {
-        addComposerAttachment({ ...baseAttachment, previewUrl })
+        addComposerAttachment({ ...baseAttachment, previewUrl, dataUrl: previewUrl.startsWith('data:image/') ? previewUrl : undefined })
       }
 
       return true

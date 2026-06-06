@@ -553,6 +553,62 @@ def _image_meta(path: Path) -> dict:
     return meta
 
 
+_DATA_URL_IMAGE_EXTENSIONS = {
+    "image/bmp": ".bmp",
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/svg+xml": ".svg",
+    "image/tiff": ".tiff",
+    "image/webp": ".webp",
+    "image/x-icon": ".ico",
+}
+_MAX_REMOTE_IMAGE_BYTES = 50 * 1024 * 1024
+
+
+def _safe_image_name(raw: str, fallback: str = "image") -> str:
+    name = Path(str(raw or fallback).replace("\\", "/")).name.strip() or fallback
+    safe = "".join(ch if ch.isalnum() or ch in {".", "-", "_"} else "_" for ch in name)
+    return safe[:120] or fallback
+
+
+def _save_remote_image_data_url(data_url: str, *, name_hint: str = "image") -> Path:
+    """Persist image bytes sent by a remote Desktop client onto this backend host."""
+    import base64
+    import binascii
+    import re
+
+    match = re.fullmatch(r"data:([^;,]+);base64,(.*)", data_url.strip(), flags=re.DOTALL)
+    if not match:
+        raise ValueError("invalid image data URL")
+
+    mime = match.group(1).lower()
+    ext = _DATA_URL_IMAGE_EXTENSIONS.get(mime)
+    if not ext:
+        raise ValueError("unsupported image data")
+
+    try:
+        data = base64.b64decode(match.group(2), validate=True)
+    except binascii.Error as exc:
+        raise ValueError("invalid image data") from exc
+
+    if not data:
+        raise ValueError("empty image data")
+    if len(data) > _MAX_REMOTE_IMAGE_BYTES:
+        raise ValueError("image data too large")
+
+    img_dir = _hermes_home / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = _safe_image_name(name_hint, fallback="image")
+    stem = Path(safe_name).stem or "image"
+    suffix = Path(safe_name).suffix.lower()
+    if suffix not in _DATA_URL_IMAGE_EXTENSIONS.values():
+        suffix = ext
+    img_path = img_dir / f"remote_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid.uuid4().hex[:8]}_{stem}{suffix}"
+    img_path.write_bytes(data)
+    return img_path
+
+
 def _ok(rid, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "result": result}
 
@@ -4989,8 +5045,10 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     raw = str(params.get("path", "") or "").strip()
-    if not raw:
-        return _err(rid, 4015, "path required")
+    data_url = str(params.get("data_url", "") or "").strip()
+    name_hint = str(params.get("name", "") or "").strip()
+    if not raw and not data_url:
+        return _err(rid, 4015, "path or data_url required")
     try:
         from cli import (
             _IMAGE_EXTENSIONS,
@@ -4999,18 +5057,26 @@ def _(rid, params: dict) -> dict:
             _split_path_input,
         )
 
-        dropped = _detect_file_drop(raw)
-        if dropped:
-            image_path = dropped["path"]
-            remainder = dropped["remainder"]
+        if data_url:
+            try:
+                image_path = _save_remote_image_data_url(data_url, name_hint=name_hint or raw or "image")
+            except ValueError as exc:
+                return _err(rid, 4016, str(exc))
+            remainder = ""
         else:
-            path_token, remainder = _split_path_input(raw)
-            image_path = _resolve_attachment_path(path_token)
-            if image_path is None:
-                return _err(rid, 4016, f"image not found: {path_token}")
+            dropped = _detect_file_drop(raw)
+            if dropped:
+                image_path = dropped["path"]
+                remainder = dropped["remainder"]
+            else:
+                path_token, remainder = _split_path_input(raw)
+                image_path = _resolve_attachment_path(path_token)
+                if image_path is None:
+                    return _err(rid, 4016, f"image not found: {path_token}")
         if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
             return _err(rid, 4016, f"unsupported image: {image_path.name}")
         session.setdefault("attached_images", []).append(str(image_path))
+        display_name = _safe_image_name(name_hint or image_path.name, fallback=image_path.name)
         return _ok(
             rid,
             {
@@ -5018,7 +5084,7 @@ def _(rid, params: dict) -> dict:
                 "path": str(image_path),
                 "count": len(session["attached_images"]),
                 "remainder": remainder,
-                "text": remainder or f"[User attached image: {image_path.name}]",
+                "text": remainder or f"[User attached image: {display_name}]",
                 **_image_meta(image_path),
             },
         )

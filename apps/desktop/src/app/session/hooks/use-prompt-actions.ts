@@ -101,6 +101,21 @@ interface SubmitTextOptions {
   fromQueue?: boolean
 }
 
+export function buildImageAttachParams(sessionId: string, attachment: ComposerAttachment): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    session_id: sessionId,
+    path: attachment.path || '',
+    name: attachment.label || (attachment.path ? pathLabel(attachment.path) : 'image')
+  }
+  const dataUrl = attachment.dataUrl || attachment.previewUrl
+
+  if (dataUrl?.startsWith('data:image/')) {
+    payload.data_url = dataUrl
+  }
+
+  return payload
+}
+
 function renderCommandsCatalog(catalog: CommandsCatalogLike): string {
   const desktopCatalog = filterDesktopCommandsCatalog(catalog)
 
@@ -197,10 +212,7 @@ export function usePromptActions({
           continue
         }
 
-        const result = await requestGateway<ImageAttachResponse>('image.attach', {
-          session_id: sessionId,
-          path: attachment.path
-        })
+        const result = await requestGateway<ImageAttachResponse>('image.attach', buildImageAttachParams(sessionId, attachment))
 
         if (!result.attached) {
           const label = attachment.label || (attachment.path ? pathLabel(attachment.path) : 'image')

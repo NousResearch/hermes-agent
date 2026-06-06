@@ -9,6 +9,8 @@ export interface ComposerAttachment {
   detail?: string
   refText?: string
   previewUrl?: string
+  /** Original image bytes as a data URL. Required for remote backends that cannot read the Desktop client's local path. */
+  dataUrl?: string
   path?: string
   attachedSessionId?: string
 }

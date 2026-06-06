@@ -165,6 +165,28 @@ When `HERMES_NEMO_RELAY_PLUGINS_TOML` is set and initializes successfully, NeMo
 Relay owns exporter lifecycle through that config. The direct
 `HERMES_NEMO_RELAY_ATOF_*` fallback setup is skipped.
 
+To enable NeMo Relay managed execution intercepts for provider and tool calls,
+include an adaptive component in the same `plugins.toml`:
+
+```toml
+[[components]]
+kind = "adaptive"
+enabled = true
+
+[components.config]
+mode = "route"
+```
+
+When the adaptive component is enabled and the installed NeMo Relay runtime
+exposes `llm.execute(...)` / `tools.execute(...)`, Hermes routes LLM and tool
+execution through those middleware boundaries. The observer hooks still emit
+session, turn, approval, and subagent marks; the plugin skips its manual
+`llm.call` and `tools.call` spans for executions that are already managed by
+NeMo Relay.
+
+For the full generic Hermes middleware contract, see
+[`docs/middleware/README.md`](../../../docs/middleware/README.md).
+
 ## Canonical Local Examples
 
 The examples below use the official `nemo-relay==0.3` distribution and a local
@@ -366,3 +388,166 @@ subagent IDs, role/status fields when present, and derived
 `parent_trajectory_id` / `child_trajectory_id` values. This keeps the ATOF
 stream lossless for later ATIF conversion that can compact subagents into
 separate trajectories.
+
+## Adaptive Middleware Example
+
+The `observability/nemo_relay` plugin uses Hermes execution middleware to hand
+LLM and tool calls to NeMo Relay managed execution when an adaptive component is
+enabled.
+
+Minimal `plugins.toml`:
+
+```toml
+version = 1
+
+[[components]]
+kind = "adaptive"
+enabled = true
+
+[components.config]
+mode = "route"
+```
+
+Enable it for Hermes:
+
+```bash
+export HERMES_NEMO_RELAY_PLUGINS_TOML=/tmp/hermes-middleware-test/plugins.toml
+```
+
+When the adaptive component is enabled and the installed NeMo Relay runtime
+exposes `llm.execute(...)` and `tools.execute(...)`, Hermes routes execution
+through these boundaries:
+
+```text
+Hermes provider call
+  -> llm_execution middleware
+    -> nemo_relay.llm.execute(...)
+      -> Hermes provider adapter next_call(...)
+
+Hermes tool call
+  -> tool_execution middleware
+    -> nemo_relay.tools.execute(...)
+      -> Hermes tool dispatcher next_call(...)
+```
+
+The plugin still emits observer marks for sessions, turns, approvals, and
+subagents. When adaptive managed execution is active, it skips manual
+`llm.call` and `tools.call` observer spans to avoid duplicate LLM/tool events
+for the same execution.
+
+### Local Adaptive E2E
+
+This example enables both NeMo Relay observability export and adaptive execution
+middleware for a local Hermes run.
+
+```bash
+pip install "nemo-relay==0.3"
+
+export HERMES_HOME=/tmp/hermes-middleware-test/hermes-home
+mkdir -p "$HERMES_HOME" /tmp/hermes-middleware-test/nemo-relay
+
+cat > "$HERMES_HOME/config.yaml" <<'YAML'
+model:
+  provider: custom
+  default: qwen3.6:35b
+  base_url: http://127.0.0.1:11434/v1
+  api_key: ollama
+plugins:
+  enabled:
+    - observability/nemo_relay
+YAML
+
+cat > /tmp/hermes-middleware-test/nemo-relay/plugins.toml <<'TOML'
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 1
+
+[components.config.atof]
+enabled = true
+output_directory = "/tmp/hermes-middleware-test/atof"
+filename = "middleware-events.jsonl"
+mode = "overwrite"
+
+[components.config.atif]
+enabled = true
+output_directory = "/tmp/hermes-middleware-test/atif"
+filename_template = "middleware-trajectory-{session_id}.json"
+agent_name = "Hermes Middleware E2E"
+agent_version = "local"
+
+[[components]]
+kind = "adaptive"
+enabled = true
+
+[components.config]
+mode = "route"
+TOML
+
+export HERMES_NEMO_RELAY_PLUGINS_TOML=/tmp/hermes-middleware-test/nemo-relay/plugins.toml
+
+hermes chat \
+  --query 'Use the terminal tool exactly once to run printf middleware_execution_ok. Then reply with exactly the command output.' \
+  --provider custom \
+  --model qwen3.6:35b \
+  --toolsets terminal \
+  --max-turns 4 \
+  --quiet \
+  --accept-hooks
+```
+
+Expected CLI output:
+
+```text
+session_id: middleware-demo-session
+middleware_execution_ok
+```
+
+Expected ATOF shape:
+
+```jsonl
+{"kind":"scope","category":"llm","name":"custom","scope_category":"start","metadata":{"session_id":"middleware-demo-session"},"data":{"mode":"route"}}
+{"kind":"scope","category":"tool","name":"terminal","scope_category":"start","metadata":{"session_id":"middleware-demo-session","tool_call_id":"call_terminal"},"data":{"mode":"route"}}
+{"kind":"scope","category":"tool","name":"terminal","scope_category":"end","metadata":{"session_id":"middleware-demo-session","tool_call_id":"call_terminal","status":"ok"},"data":"{\"output\":\"middleware_execution_ok\",\"exit_code\":0,\"error\":null}"}
+```
+
+Expected ATIF shape:
+
+```json
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "middleware-demo-session",
+  "agent": {
+    "name": "Hermes Middleware E2E",
+    "version": "local",
+    "model_name": "qwen3.6:35b"
+  },
+  "steps": [
+    {
+      "source": "agent",
+      "tool_calls": [
+        {
+          "function_name": "terminal",
+          "arguments": {"command": "printf middleware_execution_ok"}
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_terminal",
+            "content": "{\"output\":\"middleware_execution_ok\",\"exit_code\":0,\"error\":null}"
+          }
+        ]
+      }
+    },
+    {
+      "source": "agent",
+      "message": "middleware_execution_ok"
+    }
+  ]
+}
+```

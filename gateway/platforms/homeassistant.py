@@ -13,13 +13,14 @@ Requires:
 """
 
 import asyncio
+import fnmatch
 import json
 import logging
 import os
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 try:
     import aiohttp
@@ -37,6 +38,30 @@ from gateway.platforms.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Characters that make an entity-ID filter entry an fnmatch glob pattern
+# rather than a literal.  Keeping this inline avoids importing ``glob`` just
+# for ``has_magic``.
+_GLOB_CHARS = frozenset("*?[")
+
+
+def _split_literal_and_glob(items: Iterable[str]) -> Tuple[Set[str], List[str]]:
+    """Split an iterable of entity-ID filter entries into literals and globs.
+
+    Literal IDs land in a set for O(1) lookup; glob patterns land in a list
+    that is only scanned when the literal lookup misses.  ``fnmatch.fnmatchcase``
+    is case-sensitive, which is what we want — Home Assistant entity IDs are
+    always lowercase and avoiding locale folding is both safer and faster.
+    """
+    literals: Set[str] = set()
+    patterns: List[str] = []
+    for item in items:
+        if any(c in _GLOB_CHARS for c in item):
+            patterns.append(item)
+        else:
+            literals.add(item)
+    return literals, patterns
 
 
 def check_ha_requirements() -> bool:
@@ -79,10 +104,19 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._hass_url: str = url.rstrip("/")
         self._hass_token: str = token
 
-        # Event filtering
+        # Event filtering.  ``watch_entities``/``ignore_entities`` accept
+        # both exact entity IDs (fast O(1) set lookup) and fnmatch-style
+        # glob patterns such as ``binary_sensor.*_occupancy`` (O(n) scan,
+        # only traversed when the literal lookup misses).
         self._watch_domains: Set[str] = set(extra.get("watch_domains", []))
-        self._watch_entities: Set[str] = set(extra.get("watch_entities", []))
-        self._ignore_entities: Set[str] = set(extra.get("ignore_entities", []))
+        (
+            self._watch_entity_literals,
+            self._watch_entity_patterns,
+        ) = _split_literal_and_glob(extra.get("watch_entities", []))
+        (
+            self._ignore_entity_literals,
+            self._ignore_entity_patterns,
+        ) = _split_literal_and_glob(extra.get("ignore_entities", []))
         self._watch_all: bool = bool(extra.get("watch_all", False))
         self._cooldown_seconds: int = int(extra.get("cooldown_seconds", 30))
 
@@ -119,7 +153,10 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             )
 
             # Warn if no event filters are configured
-            if not self._watch_domains and not self._watch_entities and not self._watch_all:
+            has_entity_filter = bool(
+                self._watch_entity_literals or self._watch_entity_patterns
+            )
+            if not self._watch_domains and not has_entity_filter and not self._watch_all:
                 logger.warning(
                     "[%s] No watch_domains, watch_entities, or watch_all configured. "
                     "All state_changed events will be dropped. Configure filters in "
@@ -267,16 +304,29 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         if not entity_id:
             return
 
-        # Apply ignore filter
-        if entity_id in self._ignore_entities:
+        # Apply ignore filter (literals first, then any glob patterns)
+        if entity_id in self._ignore_entity_literals:
+            return
+        if self._ignore_entity_patterns and any(
+            fnmatch.fnmatchcase(entity_id, p) for p in self._ignore_entity_patterns
+        ):
             return
 
         # Apply domain/entity watch filters (closed by default — require
         # explicit watch_domains, watch_entities, or watch_all to forward)
         domain = entity_id.split(".")[0] if "." in entity_id else ""
-        if self._watch_domains or self._watch_entities:
+        has_entity_filter = bool(
+            self._watch_entity_literals or self._watch_entity_patterns
+        )
+        if self._watch_domains or has_entity_filter:
             domain_match = domain in self._watch_domains if self._watch_domains else False
-            entity_match = entity_id in self._watch_entities if self._watch_entities else False
+            entity_match = entity_id in self._watch_entity_literals or (
+                bool(self._watch_entity_patterns)
+                and any(
+                    fnmatch.fnmatchcase(entity_id, p)
+                    for p in self._watch_entity_patterns
+                )
+            )
             if not domain_match and not entity_match:
                 return
         elif not self._watch_all:

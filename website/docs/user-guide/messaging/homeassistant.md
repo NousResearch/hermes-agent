@@ -144,23 +144,31 @@ platforms:
         - light
       watch_entities:
         - sensor.front_door_battery
+        - binary_sensor.*_occupancy   # fnmatch glob — all occupancy sensors
       ignore_entities:
         - sensor.uptime
         - sensor.cpu_usage
         - sensor.memory_usage
+        - sensor.debug_*              # fnmatch glob — suppress all debug sensors
       cooldown_seconds: 30
 ```
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `watch_domains` | *(none)* | Only watch these entity domains (e.g., `climate`, `light`, `binary_sensor`) |
-| `watch_entities` | *(none)* | Only watch these specific entity IDs |
+| `watch_entities` | *(none)* | Watch these entity IDs. Accepts literal IDs and [fnmatch-style glob patterns](https://docs.python.org/3/library/fnmatch.html) (`*`, `?`, `[seq]`) — e.g., `binary_sensor.*_occupancy` |
 | `watch_all` | `false` | Set to `true` to receive **all** state changes (not recommended for most setups) |
-| `ignore_entities` | *(none)* | Always ignore these entities (applied before domain/entity filters) |
+| `ignore_entities` | *(none)* | Always ignore these entities (applied before domain/entity filters). Also accepts fnmatch-style glob patterns |
 | `cooldown_seconds` | `30` | Minimum seconds between events for the same entity |
 
 :::tip
 Start with a focused set of domains — `climate`, `binary_sensor`, and `alarm_control_panel` cover the most useful automations. Add more as needed. Use `ignore_entities` to suppress noisy sensors like CPU temperature or uptime counters.
+
+**Glob patterns** in `watch_entities` and `ignore_entities` make it easy to match entity families without enumerating every ID. An entry containing any of `*`, `?`, or `[` is treated as an fnmatch pattern; everything else stays as a fast O(1) exact-match lookup. Common examples:
+
+- `binary_sensor.*_occupancy` — every occupancy sensor
+- `sensor.*_battery` — every battery level sensor
+- `light.kitchen_*` — every kitchen light
 :::
 
 ### Event Formatting

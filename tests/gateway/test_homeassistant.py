@@ -218,8 +218,10 @@ class TestAdapterInit:
         )
         adapter = HomeAssistantAdapter(config)
         assert adapter._watch_domains == {"climate", "binary_sensor"}
-        assert adapter._watch_entities == {"sensor.special"}
-        assert adapter._ignore_entities == {"sensor.uptime", "sensor.cpu"}
+        assert adapter._watch_entity_literals == {"sensor.special"}
+        assert adapter._watch_entity_patterns == []
+        assert adapter._ignore_entity_literals == {"sensor.uptime", "sensor.cpu"}
+        assert adapter._ignore_entity_patterns == []
         assert adapter._watch_all is False
         assert adapter._cooldown_seconds == 120
 
@@ -231,13 +233,41 @@ class TestAdapterInit:
         adapter = HomeAssistantAdapter(config)
         assert adapter._watch_all is True
 
+    def test_entity_filters_split_literal_and_glob(self):
+        """Config with both literal IDs and glob patterns splits correctly."""
+        config = PlatformConfig(
+            enabled=True, token="t",
+            extra={
+                "watch_entities": [
+                    "sensor.special",
+                    "binary_sensor.*_occupancy",
+                    "sensor.other",
+                    "light.kitchen_?",
+                ],
+                "ignore_entities": [
+                    "sensor.uptime",
+                    "sensor.debug_*",
+                ],
+            },
+        )
+        adapter = HomeAssistantAdapter(config)
+        assert adapter._watch_entity_literals == {"sensor.special", "sensor.other"}
+        assert set(adapter._watch_entity_patterns) == {
+            "binary_sensor.*_occupancy",
+            "light.kitchen_?",
+        }
+        assert adapter._ignore_entity_literals == {"sensor.uptime"}
+        assert adapter._ignore_entity_patterns == ["sensor.debug_*"]
+
     def test_defaults_when_no_extra(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "tok")
         config = PlatformConfig(enabled=True, token="***")
         adapter = HomeAssistantAdapter(config)
         assert adapter._watch_domains == set()
-        assert adapter._watch_entities == set()
-        assert adapter._ignore_entities == set()
+        assert adapter._watch_entity_literals == set()
+        assert adapter._watch_entity_patterns == []
+        assert adapter._ignore_entity_literals == set()
+        assert adapter._ignore_entity_patterns == []
         assert adapter._watch_all is False
         assert adapter._cooldown_seconds == 30
 
@@ -332,6 +362,111 @@ class TestEventFilteringPipeline:
         adapter = _make_adapter(watch_all=True)
         await adapter._handle_ha_event({"data": {"entity_id": ""}})
         adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_watched_entity_glob_forwarded(self):
+        """A fnmatch glob in watch_entities forwards matching entities."""
+        adapter = _make_adapter(
+            watch_entities=["binary_sensor.*_occupancy"], cooldown_seconds=0
+        )
+        await adapter._handle_ha_event(
+            _make_event(
+                "binary_sensor.living_occupancy", "off", "on",
+                new_attrs={"friendly_name": "Living Room Occupancy"},
+            )
+        )
+        adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_watched_entity_glob_no_match_dropped(self):
+        """A fnmatch glob rejects non-matching entities in the same domain."""
+        adapter = _make_adapter(
+            watch_entities=["binary_sensor.*_occupancy"], cooldown_seconds=0
+        )
+        await adapter._handle_ha_event(
+            _make_event(
+                "binary_sensor.kitchen_temperature", "20", "21",
+                new_attrs={"friendly_name": "Kitchen Temp"},
+            )
+        )
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_watched_entity_mixed_literal_and_glob(self):
+        """Both literal IDs and glob patterns in the same list match correctly."""
+        adapter = _make_adapter(
+            watch_entities=["sensor.special", "binary_sensor.*_motion"],
+            cooldown_seconds=0,
+        )
+
+        # Literal match
+        await adapter._handle_ha_event(
+            _make_event(
+                "sensor.special", "10", "20",
+                new_attrs={"friendly_name": "Special", "unit_of_measurement": "W"},
+            )
+        )
+        # Glob match
+        await adapter._handle_ha_event(
+            _make_event(
+                "binary_sensor.hall_motion", "off", "on",
+                new_attrs={"friendly_name": "Hall Motion"},
+            )
+        )
+        # Neither
+        await adapter._handle_ha_event(
+            _make_event(
+                "sensor.unrelated", "1", "2",
+                new_attrs={"friendly_name": "Unrelated"},
+            )
+        )
+
+        assert adapter.handle_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_ignored_entity_glob_suppresses(self):
+        """A glob in ignore_entities filters out matching events even when
+        the domain is watched."""
+        adapter = _make_adapter(
+            watch_domains=["sensor"],
+            ignore_entities=["sensor.debug_*"],
+            cooldown_seconds=0,
+        )
+
+        # Matching ignore glob — dropped
+        await adapter._handle_ha_event(
+            _make_event(
+                "sensor.debug_trace", "1", "2",
+                new_attrs={"friendly_name": "Debug Trace"},
+            )
+        )
+        # Not matching — forwarded
+        await adapter._handle_ha_event(
+            _make_event(
+                "sensor.temperature", "20", "21",
+                new_attrs={"friendly_name": "Temp", "unit_of_measurement": "C"},
+            )
+        )
+        assert adapter.handle_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_glob_only_config_counts_as_configured(self):
+        """A pattern-only watch config must forward matching events.
+
+        Regression test for the connect() warning update — the filter-config
+        check used to inspect a set attribute, and a pattern-only config would
+        have looked like "no filters" and dropped every event.
+        """
+        adapter = _make_adapter(
+            watch_entities=["binary_sensor.*_occupancy"], cooldown_seconds=0
+        )
+        await adapter._handle_ha_event(
+            _make_event(
+                "binary_sensor.office_occupancy", "off", "on",
+                new_attrs={"friendly_name": "Office Occupancy"},
+            )
+        )
+        adapter.handle_message.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_message_event_has_correct_source(self):

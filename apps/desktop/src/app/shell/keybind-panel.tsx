@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { useState } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { useI18n } from '@/i18n'
@@ -56,7 +57,7 @@ export function KeybindPanel() {
         <DialogPrimitive.Overlay className="fixed inset-0 z-[200] bg-black/25 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
-          className="fixed left-1/2 top-[9vh] z-[210] flex max-h-[82vh] w-[min(38rem,calc(100vw-2rem))] -translate-x-1/2 flex-col overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-[0_20px_48px_-24px_rgba(0,0,0,0.55)] duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95"
+          className="fixed left-1/2 top-[9vh] z-[210] flex max-h-[82vh] w-[min(38rem,calc(100vw-2rem))] -translate-x-1/2 flex-col overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95"
         >
           {/* Header */}
           <div className="flex items-center justify-between gap-3 border-b border-(--ui-stroke-tertiary) px-4 py-3">
@@ -124,14 +125,10 @@ function CategoryHeader({ label, onToggle, open }: { label: string; onToggle: ()
 
 function HeaderButton({ icon, label, onClick }: { icon: string; label: string; onClick: () => void }) {
   return (
-    <button
-      className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[0.72rem] font-medium text-muted-foreground transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-      onClick={onClick}
-      type="button"
-    >
+    <Button className="shrink-0 text-[0.72rem]" onClick={onClick} size="xs" variant="text">
       <Codicon name={icon} size="0.8125rem" />
       {label}
-    </button>
+    </Button>
   )
 }
 
@@ -152,8 +149,6 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
 
   return (
     <div className="group flex items-center gap-2.5 rounded-lg px-2.5 py-1 transition-colors hover:bg-(--chrome-action-hover)">
-      {/* Mirrors the reset button's footprint on the right so rows stay uniform. */}
-      <span aria-hidden className="size-6 shrink-0" />
       <span className="min-w-0 flex-1 truncate text-[0.82rem] text-foreground/90">{label}</span>
 
       {conflict && (
@@ -211,7 +206,6 @@ function ReadonlyRow({ shortcut }: { shortcut: KeybindReadonly }) {
 
   return (
     <div className="flex items-center gap-2.5 rounded-lg px-2.5 py-1">
-      <span aria-hidden className="size-6 shrink-0" />
       <span className="min-w-0 flex-1 truncate text-[0.82rem] text-foreground/75">{label}</span>
       <div className="flex shrink-0 items-center gap-1">
         {shortcut.keys.map(key => (

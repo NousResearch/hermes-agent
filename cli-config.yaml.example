@@ -908,6 +908,11 @@ display:
   #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
+  # Currently-active personality name (from agent.personalities above).
+  # Set at runtime with /personality <name>; "" or "none" means no overlay.
+  # The resolved prompt text is stored separately in agent.system_prompt.
+  personality: ""
+
   # Tool progress display level (CLI and gateway)
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)

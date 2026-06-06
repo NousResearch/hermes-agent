@@ -1543,12 +1543,18 @@ class SlashCommandCompleter(Completer):
         """Yield completions for /personality from configured personalities."""
         try:
             from hermes_cli.config import load_config
-            personalities = load_config().get("agent", {}).get("personalities", {})
+            cfg = load_config()
+            personalities = cfg.get("agent", {}).get("personalities", {})
+            current_name = (cfg.get("display", {}).get("personality", "") or "").strip().lower() or "none"
+
+            def _display(name: str) -> str:
+                return f"● {name}" if name == current_name else f"  {name}"
+
             if "none".startswith(sub_lower) and "none" != sub_lower:
                 yield Completion(
                     "none",
                     start_position=-len(sub_text),
-                    display="none",
+                    display=_display("none"),
                     display_meta="clear personality overlay",
                 )
             for name, prompt in personalities.items():
@@ -1560,7 +1566,7 @@ class SlashCommandCompleter(Completer):
                     yield Completion(
                         name,
                         start_position=-len(sub_text),
-                        display=name,
+                        display=_display(name),
                         display_meta=meta,
                     )
         except Exception:

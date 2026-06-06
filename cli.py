@@ -8403,6 +8403,7 @@ class HermesCLI:
             if personality_name in {"none", "default", "neutral"}:
                 self.system_prompt = ""
                 self.agent = None  # Force re-init
+                save_config_value("display.personality", "")
                 if save_config_value("agent.system_prompt", ""):
                     print("(^_^)b Personality cleared (saved to config)")
                 else:
@@ -8411,6 +8412,7 @@ class HermesCLI:
             elif personality_name in self.personalities:
                 self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
                 self.agent = None  # Force re-init
+                save_config_value("display.personality", personality_name)
                 if save_config_value("agent.system_prompt", self.system_prompt):
                     print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
                 else:
@@ -8420,19 +8422,36 @@ class HermesCLI:
                 print(f"(._.) Unknown personality: {personality_name}")
                 print(f"  Available: none, {', '.join(self.personalities.keys())}")
         else:
+            # Determine currently-active personality by matching resolved prompts
+            current_prompt = (self.system_prompt or "").strip()
+            if not current_prompt:
+                current_name = "none"
+            else:
+                current_name = "custom"
+                for name, prompt in self.personalities.items():
+                    if self._resolve_personality_prompt(prompt).strip() == current_prompt:
+                        current_name = name
+                        break
+
+            def _mark(name: str) -> str:
+                return "* " if name == current_name else "  "
+
             # Show available personalities
             print()
             print("+" + "-" * 50 + "+")
             print("|" + " " * 12 + "(^o^)/ Personalities" + " " * 15 + "|")
             print("+" + "-" * 50 + "+")
             print()
-            print(f"  {'none':<12} - (no personality overlay)")
+            print(f"{_mark('none')}{'none':<12} - (no personality overlay)")
             for name, prompt in self.personalities.items():
                 if isinstance(prompt, dict):
                     preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
                 else:
                     preview = str(prompt)[:50]
-                print(f"  {name:<12} - {preview}")
+                print(f"{_mark(name)}{name:<12} - {preview}")
+            if current_name == "custom":
+                print()
+                print("  (active prompt doesn't match any named personality)")
             print()
             print("  Usage: /personality <name>")
             print()

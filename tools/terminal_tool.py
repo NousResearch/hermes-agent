@@ -1015,19 +1015,24 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
 # Configuration from environment variables
 
 def _parse_env_var(name: str, default: str, converter=int, type_label: str = "integer"):
-    """Parse an environment variable with *converter*, raising a clear error on bad values.
+    """Parse an environment variable with *converter*, falling back to *default* on bad values.
 
     Without this wrapper, a single malformed env var (e.g. TERMINAL_TIMEOUT=5m)
     causes an unhandled ValueError that kills every terminal command.
+    Matches the graceful-fallback pattern used by _safe_parse_import_env().
     """
     raw = os.getenv(name, default)
     try:
         return converter(raw)
     except (ValueError, json.JSONDecodeError):
-        raise ValueError(
-            f"Invalid value for {name}: {raw!r} (expected {type_label}). "
-            f"Check ~/.hermes/.env or environment variables."
+        logger.warning(
+            "Invalid value for %s: %r (expected %s). Falling back to default %r.",
+            name,
+            raw,
+            type_label,
+            default,
         )
+        return converter(default)
 
 
 def _safe_getcwd() -> str:

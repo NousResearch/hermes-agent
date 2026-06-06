@@ -47,11 +47,7 @@ All providers return a dict built by :func:`success_response` /
 from __future__ import annotations
 
 import abc
-import base64
-import datetime
 import logging
-import uuid
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -199,49 +195,6 @@ class VideoGenProvider(abc.ABC):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _videos_cache_dir() -> Path:
-    """Return ``$HERMES_HOME/cache/videos/``, creating parents as needed."""
-    from hermes_constants import get_hermes_home
-
-    path = get_hermes_home() / "cache" / "videos"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def save_b64_video(
-    b64_data: str,
-    *,
-    prefix: str = "video",
-    extension: str = "mp4",
-) -> Path:
-    """Decode base64 video data and write under ``$HERMES_HOME/cache/videos/``.
-
-    Returns the absolute :class:`Path` to the saved file.
-
-    Filename format: ``<prefix>_<YYYYMMDD_HHMMSS>_<short-uuid>.<ext>``.
-    """
-    raw = base64.b64decode(b64_data)
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    short = uuid.uuid4().hex[:8]
-    path = _videos_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
-    path.write_bytes(raw)
-    return path
-
-
-def save_bytes_video(
-    raw: bytes,
-    *,
-    prefix: str = "video",
-    extension: str = "mp4",
-) -> Path:
-    """Write raw video bytes (e.g. an HTTP download body) to the cache."""
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    short = uuid.uuid4().hex[:8]
-    path = _videos_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
-    path.write_bytes(raw)
-    return path
 
 
 def success_response(

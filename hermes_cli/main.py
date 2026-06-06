@@ -13501,7 +13501,9 @@ def main():
         description="Display status of Hermes Agent components",
     )
     status_parser.add_argument(
-        "--all", action="store_true", help="Show all details (redacted for sharing)"
+        "--all",
+        action="store_true",
+        help="Show diagnostic details without printing raw API key material",
     )
     status_parser.add_argument(
         "--deep", action="store_true", help="Run deep checks (may take longer)"

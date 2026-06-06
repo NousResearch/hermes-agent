@@ -3,15 +3,34 @@ from types import SimpleNamespace
 from hermes_cli.status import show_status
 
 
-def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
+def test_show_status_reports_api_key_presence_without_key_material(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-1234567890abcdef")
+    tavily_key = "tvly-test-secret-cdef"
+    monkeypatch.setenv("TAVILY_API_KEY", tavily_key)
 
     show_status(SimpleNamespace(all=False, deep=False))
 
     output = capsys.readouterr().out
     assert "Tavily" in output
-    assert "tvly...cdef" in output
+    assert "configured" in output
+    assert tavily_key not in output
+    assert "tvly" not in output
+    assert "cdef" not in output
+
+
+def test_show_status_all_does_not_print_raw_api_key_material(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    openrouter_key = "fixture-openrouter-token-alpha-cdef"
+    monkeypatch.setenv("OPENROUTER_API_KEY", openrouter_key)
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "OpenRouter" in output
+    assert "configured" in output
+    assert "OPENROUTER_API_KEY" in output
+    assert openrouter_key not in output
+    assert "alpha-cdef" not in output
 
 
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):

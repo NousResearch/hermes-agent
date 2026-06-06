@@ -147,15 +147,28 @@ def show_status(args):
         "GitHub": "GITHUB_TOKEN",
     }
 
-    def _resolve_env(env_ref) -> str:
-        """Return first non-empty env var value from a str or tuple of names."""
+    def _resolve_env(env_ref) -> tuple[str | None, str]:
+        """Return (env var name, value) for the first non-empty env var."""
         if isinstance(env_ref, tuple):
             for candidate in env_ref:
                 v = get_env_value(candidate) or ""
                 if v:
-                    return v
-            return ""
-        return get_env_value(env_ref) or ""
+                    return candidate, v
+            return None, ""
+        return env_ref, get_env_value(env_ref) or ""
+
+    def _credential_status_label(has_key: bool, source: str | None = None) -> str:
+        """Display key presence without exposing key material.
+
+        `hermes status` is often pasted into chat or issue reports. Even redacted
+        prefixes/suffixes can leak useful credential material, so the status view
+        reports only presence. `--all` may include the env var name for diagnosis,
+        but never the credential value.
+        """
+        label = "configured" if has_key else "not configured"
+        if show_all and source:
+            label = f"{label} via {source}"
+        return label
 
     for name, env_ref in keys.items():
         # Anthropic already has a dedicated lookup below; keep that as the
@@ -163,15 +176,17 @@ def show_status(args):
         # so we don't print two "Anthropic" rows.
         if name == "Anthropic":
             continue
-        value = _resolve_env(env_ref)
+        source, value = _resolve_env(env_ref)
         has_key = bool(value)
-        display = redact_key(value) if not show_all else value
-        print(f"  {name:<12}  {check_mark(has_key)} {display}")
+        print(f"  {name:<12}  {check_mark(has_key)} {_credential_status_label(has_key, source)}")
 
     from hermes_cli.auth import get_anthropic_key
+    anthropic_source, _anthropic_env_value = _resolve_env(keys["Anthropic"])
     anthropic_value = get_anthropic_key()
-    anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
-    print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
+    print(
+        f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} "
+        f"{_credential_status_label(bool(anthropic_value), anthropic_source)}"
+    )
 
     # =========================================================================
     # Auth Providers (OAuth)

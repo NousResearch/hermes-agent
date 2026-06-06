@@ -7,7 +7,15 @@ used to treat the leading ``27`` as ESC/cancel, which dumped the setup wizard's
 provider/model picker into its numbered "Select [1-N]" fallback the instant a
 user pressed up or down.
 """
-import curses
+import sys
+
+import pytest
+
+if sys.platform.startswith("win"):
+    pytestmark = pytest.mark.skip(reason="curses module is unavailable on Windows")
+    curses = None
+else:
+    curses = pytest.importorskip("curses")
 
 from hermes_cli.curses_ui import (
     NAV_CANCEL,

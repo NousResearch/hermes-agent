@@ -133,9 +133,29 @@ def _translate_tool_result_to_gemini(message: Dict[str, Any]) -> Dict[str, Any]:
 def _build_gemini_contents(
     messages: List[Dict[str, Any]],
 ) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """Convert OpenAI messages[] to Gemini contents[] + systemInstruction."""
+    """Convert OpenAI messages[] to Gemini contents[] + systemInstruction.
+
+    Gemini's Code Assist API requires that the ``functionResponse`` parts
+    answering a model turn's ``functionCall`` parts all live in a SINGLE
+    following turn, and that their count matches the number of ``functionCall``
+    parts. OpenAI represents each parallel tool result as its own ``tool``-role
+    message, so consecutive tool/function messages MUST be merged into one
+    user turn — otherwise N parallel calls answered by N separate single-part
+    turns trip Google's 400 INVALID_ARGUMENT: "the number of function response
+    parts is equal to the number of function call parts of the function call
+    turn". (This also covers histories carried over from another provider, e.g.
+    after an in-place model switch from DeepSeek/OpenAI to Gemini.)
+    """
     system_text_parts: List[str] = []
     contents: List[Dict[str, Any]] = []
+    pending_tool_parts: List[Dict[str, Any]] = []
+
+    def _flush_tool_parts() -> None:
+        # Emit all accumulated functionResponse parts as ONE user turn so the
+        # count matches the preceding model turn's functionCall parts.
+        if pending_tool_parts:
+            contents.append({"role": "user", "parts": list(pending_tool_parts)})
+            pending_tool_parts.clear()
 
     for msg in messages:
         if not isinstance(msg, dict):
@@ -146,13 +166,15 @@ def _build_gemini_contents(
             system_text_parts.append(_coerce_content_to_text(msg.get("content")))
             continue
 
-        # Tool result message — emit a user-role turn with functionResponse
+        # Tool result message — accumulate functionResponse part(s). A run of
+        # consecutive tool results collapses into a single user turn (flushed
+        # when the next non-tool message arrives, or at end of history).
         if role == "tool" or role == "function":
-            contents.append({
-                "role": "user",
-                "parts": [_translate_tool_result_to_gemini(msg)],
-            })
+            pending_tool_parts.append(_translate_tool_result_to_gemini(msg))
             continue
+
+        # Any non-tool message ends a pending run of tool responses.
+        _flush_tool_parts()
 
         gemini_role = _ROLE_MAP_OPENAI_TO_GEMINI.get(role, "user")
         parts: List[Dict[str, Any]] = []
@@ -173,6 +195,9 @@ def _build_gemini_contents(
             continue
 
         contents.append({"role": gemini_role, "parts": parts})
+
+    # Flush any trailing tool responses (history ending on tool results).
+    _flush_tool_parts()
 
     system_instruction: Optional[Dict[str, Any]] = None
     joined_system = "\n".join(p for p in system_text_parts if p).strip()

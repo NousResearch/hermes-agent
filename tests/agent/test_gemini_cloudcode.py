@@ -633,6 +633,77 @@ class TestBuildGeminiRequest:
         assert fr_part["functionResponse"]["name"] == "get_weather"
         assert fr_part["functionResponse"]["response"] == {"temp": 72}
 
+    def test_parallel_tool_results_merge_into_one_turn(self):
+        """Regression for the Code Assist 400 INVALID_ARGUMENT.
+
+        N parallel tool calls (one model turn with N functionCall parts) are
+        answered by N separate OpenAI ``tool`` messages. These MUST collapse
+        into a single user turn with N functionResponse parts, so the count
+        matches what Gemini validates ("number of function response parts must
+        equal the number of function call parts of the function call turn").
+        Before the fix each result became its own turn → 1 response vs N calls
+        → 400.
+        """
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+
+        req = build_gemini_request(messages=[
+            {"role": "user", "content": "read three files"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "read_file", "arguments": '{"path": "a"}'}},
+                {"id": "c2", "type": "function",
+                 "function": {"name": "read_file", "arguments": '{"path": "b"}'}},
+                {"id": "c3", "type": "function",
+                 "function": {"name": "read_file", "arguments": '{"path": "c"}'}},
+            ]},
+            {"role": "tool", "name": "read_file", "tool_call_id": "c1", "content": "AAA"},
+            {"role": "tool", "name": "read_file", "tool_call_id": "c2", "content": "BBB"},
+            {"role": "tool", "name": "read_file", "tool_call_id": "c3", "content": "CCC"},
+        ])
+        contents = req["contents"]
+        # contents: [user prompt, model(3 calls), user(3 responses)]
+        assert len(contents) == 3
+        model_turn = contents[1]
+        assert model_turn["role"] == "model"
+        n_calls = sum(1 for p in model_turn["parts"] if "functionCall" in p)
+        resp_turn = contents[2]
+        assert resp_turn["role"] == "user"
+        n_resps = sum(1 for p in resp_turn["parts"] if "functionResponse" in p)
+        # The exact invariant Gemini enforces:
+        assert n_calls == 3
+        assert n_resps == 3
+        assert n_calls == n_resps
+
+    def test_consecutive_tool_results_across_two_assistant_turns(self):
+        """Two separate model turns, each with their own parallel results, must
+        produce two distinct response turns with matching counts (the merge
+        must not bleed across an intervening assistant turn)."""
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+
+        req = build_gemini_request(messages=[
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "a1", "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}},
+                {"id": "a2", "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "name": "f", "tool_call_id": "a1", "content": "1"},
+            {"role": "tool", "name": "f", "tool_call_id": "a2", "content": "2"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "b1", "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "name": "f", "tool_call_id": "b1", "content": "3"},
+        ])
+        contents = req["contents"]
+        # [user, model(2), user(2), model(1), user(1)]
+        assert [c["role"] for c in contents] == ["user", "model", "user", "model", "user"]
+        assert sum(1 for p in contents[1]["parts"] if "functionCall" in p) == 2
+        assert sum(1 for p in contents[2]["parts"] if "functionResponse" in p) == 2
+        assert sum(1 for p in contents[3]["parts"] if "functionCall" in p) == 1
+        assert sum(1 for p in contents[4]["parts"] if "functionResponse" in p) == 1
+
     def test_tools_translated_to_function_declarations(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
 

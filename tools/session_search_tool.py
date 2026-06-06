@@ -88,10 +88,14 @@ def _resolve_to_parent(db, session_id: str) -> str:
 
 def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
     """Slim a message row for the tool response. Keeps content even if empty."""
+    content = m.get("content")
+    if isinstance(content, str):
+        from tools.ansi_strip import strip_ansi
+        content = strip_ansi(content)
     entry = {
         "id": m.get("id"),
         "role": m.get("role"),
-        "content": m.get("content"),
+        "content": content,
         "timestamp": m.get("timestamp"),
     }
     if m.get("tool_name"):

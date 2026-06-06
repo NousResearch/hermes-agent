@@ -57,7 +57,7 @@ CONFIGURABLE_TOOLSETS = [
     ("terminal",        "💻 Terminal & Processes",      "terminal, process"),
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
-    ("codex_staged_implement", "🧩 Codex Staged Implementation", "guarded Codex candidate implementation"),
+    ("codex_staged_implement", "🧩 Codex Workflow", "dirty recovery + guarded Codex candidate implementation"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),

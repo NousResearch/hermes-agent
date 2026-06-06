@@ -1394,6 +1394,14 @@ def list_authenticated_providers(
             model_ids = curated.get(hermes_id, [])
             if hermes_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_id, model_ids)
+        # Inject the active model if this is the current provider but the
+        # curated list doesn't include it (e.g. an OpenRouter model not in
+        # OPENROUTER_MODELS).  This mirrors the LM Studio fallback at line
+        # 1328 but applies universally — the /model picker should always
+        # show the model the user is actually running.  Fixes #40676.
+        if current_model and (hermes_id == current_provider or mdev_id == current_provider):
+            if current_model not in model_ids:
+                model_ids = [current_model] + model_ids
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -1557,6 +1565,10 @@ def list_authenticated_providers(
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
                 if hermes_slug in _MODELS_DEV_PREFERRED:
                     model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+        # Inject active model for current provider — same rationale as Section 1.
+        if current_model and (hermes_slug == current_provider or pid == current_provider):
+            if current_model not in model_ids:
+                model_ids = [current_model] + model_ids
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -1632,6 +1644,10 @@ def list_authenticated_providers(
             _cp_model_ids = cached_provider_model_ids(_cp.slug)
             if not _cp_model_ids:
                 _cp_model_ids = curated.get(_cp.slug, [])
+        # Inject active model for current provider — same rationale as Section 1.
+        if current_model and _cp.slug == current_provider:
+            if current_model not in _cp_model_ids:
+                _cp_model_ids = [current_model] + _cp_model_ids
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models]
 
@@ -2005,6 +2021,9 @@ def list_picker_providers(
                 live_ids = [mid for mid, _ in live]
             except Exception:
                 live_ids = list(p.get("models", []))
+            # Inject active model if not in live catalog — fixes #40676.
+            if current_model and current_model not in live_ids:
+                live_ids = [current_model] + live_ids
             p = dict(p)
             p["models"] = live_ids[:max_models]
             p["total_models"] = len(live_ids)

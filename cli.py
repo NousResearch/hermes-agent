@@ -7258,8 +7258,13 @@ class HermesCLI:
             _cprint(f"  Failed to create branch session: {e}")
             return
 
-        # Copy conversation history to the new session
-        for msg in self.conversation_history:
+        # Copy conversation history to the new session.
+        # Use the full history from the DB (including ancestors) rather than
+        # self.conversation_history which may have been compressed.
+        _source_messages = self._session_db.get_messages_as_conversation(
+            parent_session_id, include_ancestors=True
+        ) or self.conversation_history
+        for msg in _source_messages:
             try:
                 self._session_db.append_message(
                     session_id=new_session_id,

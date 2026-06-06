@@ -580,6 +580,7 @@ export interface Translations {
     attachments: (count: number) => string
     editingInComposer: string
     editQueued: string
+    sendQueuedNext: string
     sendQueuedNow: string
     deleteQueued: string
     previewUnavailable: string

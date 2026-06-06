@@ -827,6 +827,7 @@ export const zh: Translations = {
     attachments: count => `${count} 个附件`,
     editingInComposer: '正在输入框中编辑',
     editQueued: '编辑排队回合',
+    sendQueuedNext: '下一个发送排队回合',
     sendQueuedNow: '立即发送排队回合',
     deleteQueued: '删除排队回合',
     previewUnavailable: '预览不可用',

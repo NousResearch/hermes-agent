@@ -9,6 +9,8 @@ import type { SessionInfo } from '@/types/hermes'
 import { usePromptActions } from './use-prompt-actions'
 
 vi.mock('@/hermes', () => ({
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
+  setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
 }))
 
@@ -39,27 +41,31 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 interface HarnessHandle {
-  submitText: (text: string) => Promise<boolean>
+  submitText: (text: string, options?: { attachments?: never[]; fromQueue?: boolean }) => Promise<boolean>
 }
 
 function Harness({
+  busyRef,
   onReady,
+  onSeedState,
   refreshSessions,
   requestGateway
 }: {
+  busyRef?: MutableRefObject<boolean>
   onReady: (handle: HarnessHandle) => void
+  onSeedState?: (state: Record<string, unknown>) => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
   const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
   const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
-  const busyRef = { current: false }
+  const localBusyRef = busyRef ?? { current: false }
 
   const actions = usePromptActions({
     activeSessionId: RUNTIME_SESSION_ID,
     activeSessionIdRef,
     branchCurrentSession: async () => true,
-    busyRef,
+    busyRef: localBusyRef,
     createBackendSessionForSend: async () => RUNTIME_SESSION_ID,
     handleSkinCommand: () => '',
     refreshSessions,
@@ -67,8 +73,18 @@ function Harness({
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
     sttEnabled: false,
-    updateSessionState: (_sessionId, updater) =>
-      updater({ messages: [], busy: false, awaitingResponse: false } as never)
+    updateSessionState: (_sessionId, updater) => {
+      // Seed with interrupted:true so we can prove a fresh submit clears it.
+      const next = updater({
+        messages: [],
+        busy: false,
+        awaitingResponse: false,
+        interrupted: true
+      } as never) as unknown as Record<string, unknown>
+      onSeedState?.(next)
+
+      return next as never
+    }
   })
 
   useEffect(() => {
@@ -162,5 +178,84 @@ describe('usePromptActions /title', () => {
     expect(requestGateway).toHaveBeenCalledWith('session.title', expect.objectContaining({ title: 'way too long title' }))
     expect(refreshSessions).not.toHaveBeenCalled()
     expect($sessions.get()[0]?.title).toBe('Old title')
+  })
+})
+
+describe('usePromptActions submit / queue drain semantics', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('clears a leftover interrupted flag on a fresh submit (so the new turn streams)', async () => {
+    const seeds: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('hello after a stop')
+
+    // The optimistic seed must reset interrupted:false even though the prior
+    // session state had interrupted:true — otherwise the message stream drops
+    // every delta of this brand-new turn.
+    expect(seeds.length).toBeGreaterThan(0)
+    expect(seeds.every(s => s.interrupted === false)).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'hello after a stop'
+    })
+  })
+
+  it('a fromQueue drain sends even when busyRef is still true on the settle edge', async () => {
+    // busyRef lags $busy by one effect tick on the busy→false settle edge, so a
+    // drained queue send would otherwise hit the busy guard and silently no-op.
+    const busyRef = { current: true }
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('queued message', { fromQueue: true })
+
+    expect(accepted).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'queued message'
+    })
+  })
+
+  it('a normal (non-queue) submit still respects the busyRef guard', async () => {
+    const busyRef = { current: true }
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('should be blocked')
+
+    expect(accepted).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
   })
 })

@@ -20,6 +20,8 @@
 - `/Users/rattanasak/ObsidianVault/HermesAgent/memory/profile/user-language-first.md`
 - `/Users/rattanasak/ObsidianVault/HermesAgent/memory/profile/knowledge-intake-review-before-write.md`
 
+ถ้ากำลังทำงานบน VPS ให้ใช้ mirror root `/home/linux-nat/ObsidianVault/HermesAgent` แทน `/Users/rattanasak/ObsidianVault/HermesAgent` สำหรับไฟล์ความจำกลางชุดเดียวกัน
+
 อย่าโหลดทั้ง vault ถ้าไม่จำเป็น อ่านไฟล์กลางข้างบนก่อน แล้วค่อยค้นเพิ่มเฉพาะเมื่อข้อมูลไม่พอ
 <!-- HERMES_OWNER_RULES_END -->
 
@@ -36,6 +38,8 @@ Before substantial work in this repo, read:
 - `/Users/rattanasak/ObsidianVault/HermesAgent/projects/hermes-agent-dev/project-context.md`
 - `/Users/rattanasak/ObsidianVault/HermesAgent/projects/hermes-agent-dev/active-memory.md`
 - `/Users/rattanasak/ObsidianVault/HermesAgent/projects/hermes-agent-dev/handoff.md`
+
+On VPS, replace the local Obsidian root with `/home/linux-nat/ObsidianVault/HermesAgent`.
 
 Use repo-local `.hermes/context.md`, `.hermes/active.md`, and `.hermes/decisions.md` when they exist.
 

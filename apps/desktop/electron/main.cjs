@@ -247,6 +247,16 @@ const DEFAULT_UPDATE_BRANCH = 'main'
 const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
 const DESKTOP_LOG_FLUSH_MS = 120
 const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
+// Cap desktop.log on disk. It is an append-only forensic log with no other
+// rotation, so a boot loop (e.g. a version-skew crash where the backend exits
+// instantly and the renderer keeps hitting Retry) appends the full bootstrap
+// transcript on every attempt and can grow without bound — we have seen this
+// file reach hundreds of GB and exhaust the disk, which then breaks update and
+// install (no room for git/venv/npm temp files). Rotate to a single .1 sibling
+// when the live file crosses the cap, so total on-disk usage stays ~2x the cap
+// while preserving the most recent transcript for diagnostics.
+const DESKTOP_LOG_MAX_BYTES = 10 * 1024 * 1024
+const DESKTOP_LOG_ROTATED_PATH = `${DESKTOP_LOG_PATH}.1`
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -534,6 +544,30 @@ let bootProgressState = {
   timestamp: Date.now()
 }
 
+function rotateDesktopLogIfNeededSync() {
+  try {
+    const { size } = fs.statSync(DESKTOP_LOG_PATH)
+    if (size < DESKTOP_LOG_MAX_BYTES) return
+    fs.rmSync(DESKTOP_LOG_ROTATED_PATH, { force: true })
+    fs.renameSync(DESKTOP_LOG_PATH, DESKTOP_LOG_ROTATED_PATH)
+  } catch {
+    // No file yet (ENOENT) or rotation failed — appending will (re)create it.
+    // Logging must never block app startup/shutdown.
+  }
+}
+
+async function rotateDesktopLogIfNeededAsync() {
+  try {
+    const { size } = await fs.promises.stat(DESKTOP_LOG_PATH)
+    if (size < DESKTOP_LOG_MAX_BYTES) return
+    await fs.promises.rm(DESKTOP_LOG_ROTATED_PATH, { force: true })
+    await fs.promises.rename(DESKTOP_LOG_PATH, DESKTOP_LOG_ROTATED_PATH)
+  } catch {
+    // No file yet (ENOENT) or rotation failed — appending will (re)create it.
+    // Logging must never crash the desktop shell.
+  }
+}
+
 function flushDesktopLogBufferSync() {
   if (!desktopLogBuffer) return
   const chunk = desktopLogBuffer
@@ -541,6 +575,7 @@ function flushDesktopLogBufferSync() {
 
   try {
     fs.mkdirSync(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
+    rotateDesktopLogIfNeededSync()
     fs.appendFileSync(DESKTOP_LOG_PATH, chunk)
   } catch {
     // Logging must never block app startup/shutdown.
@@ -555,6 +590,7 @@ function flushDesktopLogBufferAsync() {
   desktopLogFlushPromise = desktopLogFlushPromise
     .then(async () => {
       await fs.promises.mkdir(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
+      await rotateDesktopLogIfNeededAsync()
       await fs.promises.appendFile(DESKTOP_LOG_PATH, chunk)
     })
     .catch(() => {

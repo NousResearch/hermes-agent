@@ -4924,10 +4924,85 @@ def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None
             "sourceMode": source_mode,
             "builtAt": datetime.now(timezone.utc).isoformat(),
         }
+        current_commit = _git_head_commit(project_root)
+        if current_commit:
+            stamp_data["commit"] = current_commit
         stamp_file.write_text(json.dumps(stamp_data, indent=2) + "\n", encoding="utf-8")
     except Exception as exc:
         # Never let stamp-writing block or fail a build
         logger.debug("Failed to write desktop build stamp: %s", exc)
+
+
+def _git_head_commit(project_root: Path = PROJECT_ROOT) -> str | None:
+    """Return the current git HEAD commit for ``project_root`` when available."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    commit = result.stdout.strip()
+    return commit or None
+
+
+def _desktop_install_stamp_path(project_root: Path = PROJECT_ROOT) -> Path:
+    """Return the local desktop install-stamp path produced by ``desktop --build-only``."""
+    return project_root / "apps" / "desktop" / "build" / "install-stamp.json"
+
+
+def _read_desktop_install_stamp_commit(project_root: Path = PROJECT_ROOT) -> str | None:
+    """Return the desktop build/install commit stamp when present."""
+    candidates = [
+        _desktop_install_stamp_path(project_root),
+        _desktop_stamp_path(),
+    ]
+    for stamp_file in candidates:
+        try:
+            data = json.loads(stamp_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        commit = data.get("commit")
+        if isinstance(commit, str) and len(commit.strip()) >= 7:
+            return commit.strip()
+    return None
+
+
+def _desktop_backend_stamp_mismatch(project_root: Path = PROJECT_ROOT) -> tuple[str, str] | None:
+    """Return ``(desktop_commit, backend_commit)`` when desktop build is stale."""
+    backend_commit = _git_head_commit(project_root)
+    desktop_commit = _read_desktop_install_stamp_commit(project_root)
+    if not backend_commit or not desktop_commit:
+        return None
+    if backend_commit.startswith(desktop_commit) or desktop_commit.startswith(backend_commit):
+        return None
+    return desktop_commit, backend_commit
+
+
+def _print_desktop_repair_instruction(project_root: Path = PROJECT_ROOT, *, reason: str | None = None) -> None:
+    """Print the explicit command that repairs a stale Desktop/backend mismatch."""
+    mismatch = _desktop_backend_stamp_mismatch(project_root)
+    if reason:
+        print(f"  ⚠ {reason}")
+    if mismatch:
+        desktop_commit, backend_commit = mismatch
+        print("  ⚠ Hermes Desktop build is stale after the backend/source update.")
+        print(f"    Desktop build commit: {desktop_commit[:12]}")
+        print(f"    Backend/source commit: {backend_commit[:12]}")
+    print("  Repair command: hermes desktop --build-only")
+
+
+def _is_windows_application_control_error(exc: BaseException) -> bool:
+    """Detect Windows Application Control / WDAC style file-block errors."""
+    if getattr(exc, "winerror", None) == 4551:
+        return True
+    text = str(exc).lower()
+    return "winerror 4551" in text or "application control policy blocked" in text
 
 
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
@@ -8575,7 +8650,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
         # Keep managed uv current — runs `uv self update` if we already have one.
-        update_managed_uv()
+        try:
+            update_managed_uv()
+        except OSError as exc:
+            if _is_windows_application_control_error(exc):
+                _print_desktop_repair_instruction(
+                    PROJECT_ROOT,
+                    reason=(
+                        "Windows application control blocked the dependency updater after "
+                        "the Hermes source update. The backend may be newer than the Desktop build."
+                    ),
+                )
+            raise
 
         uv_bin = ensure_uv()
 
@@ -8655,7 +8741,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if build_result.returncode != 0:
                 build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
-                print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+                print("  ⚠ Desktop build failed (non-fatal).")
+                _print_desktop_repair_instruction(
+                    PROJECT_ROOT,
+                    reason="Backend/source update completed, but Desktop rebuild did not complete.",
+                )
+            else:
+                mismatch = _desktop_backend_stamp_mismatch(PROJECT_ROOT)
+                if mismatch:
+                    _print_desktop_repair_instruction(
+                        PROJECT_ROOT,
+                        reason="Post-update Desktop/backend contract check failed.",
+                    )
 
         print()
         print("✓ Code updated!")

@@ -600,6 +600,19 @@ def run_conversation(
 
     active_system_prompt = agent._cached_system_prompt
 
+    # Crash-resilience: persist the inbound user turn as soon as the session row
+    # has a valid system prompt, before any provider call or tool execution can
+    # hang/kill the process. The normal end-of-turn persist still runs later;
+    # _last_flushed_db_idx makes this idempotent and prevents duplicate rows.
+    try:
+        agent._persist_session(messages, conversation_history)
+    except Exception:
+        logger.warning(
+            "Early turn-start session persistence failed for session=%s",
+            agent.session_id or "none",
+            exc_info=True,
+        )
+
     # ── Preflight context compression ──
     # Before entering the main loop, check if the loaded conversation
     # history already exceeds the model's context threshold.  This handles

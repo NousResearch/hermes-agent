@@ -56,6 +56,15 @@ SUMMARY_PREFIX = (
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
+    "CRITICAL EVIDENCE GUARD: Items in '## Remaining Work', '## In Progress', "
+    "or '## Pending User Asks' are UNVERIFIED pending tasks — they are NOT "
+    "established facts. Do NOT promote them into concrete source-backed claims "
+    "(file paths, function names, security vulnerabilities, test results, or "
+    "merge blockers) without first re-inspecting the relevant source files or "
+    "re-running the relevant tools. If a child agent reported something as "
+    "'not inspected' or 'unverified', the parent must NOT present it as a "
+    "verified finding. When in doubt, use tools to re-ground before making "
+    "any specific claim. "
     "The current session state (files, config, etc.) may reflect work "
     "described here — avoid repeating it:"
 )
@@ -1175,7 +1184,10 @@ None recoverable from deterministic fallback.
 {_bullets(relevant_files, limit=12)}
 
 ## Remaining Work
-Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
+Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims. UNVERIFIED: Do not present any of these as established findings without re-inspecting source files first.
+
+## Evidence Provenance
+All items from the compacted turns are UNVERIFIED in this fallback summary. No tool calls were available to confirm findings. Re-inspect source files before reporting any concrete claims.
 
 ## Last Dropped Turns
 {_bullets(last_dropped_turns, limit=8)}
@@ -1331,7 +1343,24 @@ Be specific with file paths, commands, line numbers, and results.]
 [Files read, modified, or created — with brief note on each]
 
 ## Remaining Work
-[What remains to be done — framed as context, not instructions]
+[What remains to be done — framed as context, not instructions.
+CRITICAL: These are UNVERIFIED pending items. Do NOT present them as
+established findings or concrete source-backed claims. Any specific
+identifiers (file paths, function names, values) mentioned here are
+approximate and must be re-confirmed with tool calls before being
+reported as verified.]
+
+## Evidence Provenance
+[Track the verification status of key findings. For each significant
+claim or finding, note whether it was:
+- VERIFIED: Confirmed with a specific tool call (read_file, terminal,
+  search_files, etc.) — include which tool and when
+- UNVERIFIED: Mentioned in discussion but not yet confirmed with tools
+- PENDING: Listed as remaining work, not yet investigated
+- DROPPED: Was in earlier context but lost to compression — needs
+  re-inspection if relevant to current task
+This section helps prevent promoting lossy summary items into
+confident claims after compression.]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
@@ -1352,7 +1381,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved. Also update the "## Evidence Provenance" section: promote items to VERIFIED only if the new turns contain a specific tool call that confirmed the claim; mark items as UNVERIFIED or PENDING if no tool call verified them.
 
 {_template_sections}"""
         else:

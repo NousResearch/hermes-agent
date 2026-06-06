@@ -15,10 +15,20 @@ export function completionRequestForInput(
   | { method: 'complete.slash'; params: { text: string }; replaceFrom: number }
   | null {
   const isSlashCommand = looksLikeSlashCommand(input)
-  const pathWord = isSlashCommand ? null : (input.match(TAB_PATH_RE)?.[1] ?? null)
+  const pathWord = input.match(TAB_PATH_RE)?.[1] ?? null
+  const pathReplaceFrom = pathWord ? input.length - pathWord.length : 0
+  const isSlashContextRef = isSlashCommand && pathReplaceFrom > 0 && pathWord?.startsWith('@')
 
   if (!isSlashCommand && !pathWord) {
     return null
+  }
+
+  if (pathWord && (!isSlashCommand || isSlashContextRef)) {
+    return {
+      method: 'complete.path',
+      params: { word: pathWord },
+      replaceFrom: pathReplaceFrom
+    }
   }
 
   // `/model` uses the two-step ModelPicker (real curated IDs).
@@ -31,11 +41,7 @@ export function completionRequestForInput(
     return { method: 'complete.slash', params: { text: input }, replaceFrom: 1 }
   }
 
-  return {
-    method: 'complete.path',
-    params: { word: pathWord! },
-    replaceFrom: input.length - pathWord!.length
-  }
+  return null
 }
 
 export function useCompletion(input: string, blocked: boolean, gw: GatewayClient) {
@@ -65,6 +71,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     ref.current = input
 
     const request = completionRequestForInput(input)
+
     if (!request) {
       clear()
 

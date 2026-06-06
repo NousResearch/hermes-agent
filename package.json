@@ -1,0 +1,66 @@
+{
+  "name": "npn-hermes",
+  "version": "1.0.0",
+  "description": "Enterprise AI Agent with NPM integration and multi-messenger support",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "NODE_ENV=development tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest",
+    "test:coverage": "vitest --coverage",
+    "lint": "eslint src --ext .ts",
+    "type-check": "tsc --noEmit",
+    "docker:build": "docker build -t hermes-agent:latest .",
+    "docker:run": "docker run --env-file .env -p 3000:3000 hermes-agent:latest",
+    "docker:dev": "docker run --env-file .env -v $(pwd)/src:/app/src -p 3000:3000 hermes-agent:latest npm run dev"
+  },
+  "keywords": [
+    "ai-agent",
+    "npm",
+    "mcp",
+    "telegram",
+    "discord",
+    "slack",
+    "whatsapp"
+  ],
+  "author": "Hermes Team",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "telegraf": "^4.14.0",
+    "discord.js": "^14.13.0",
+    "@slack/bolt": "^3.15.0",
+    "whatsapp-web.js": "^1.25.0",
+    "pg": "^8.11.3",
+    "redis": "^4.6.12",
+    "winston": "^3.11.0",
+    "zod": "^3.22.4",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.0",
+    "tsyringe": "^4.8.0",
+    "node-schedule": "^2.1.1",
+    "axios-retry": "^3.8.0",
+    "npm-api": "^1.0.0",
+    "semver": "^7.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/express": "^4.17.21",
+    "typescript": "^5.3.3",
+    "tsx": "^4.7.0",
+    "eslint": "^8.55.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.2",
+    "@typescript-eslint/parser": "^6.13.2",
+    "vitest": "^1.0.4",
+    "@vitest/ui": "^1.0.4",
+    "ts-node": "^10.9.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}

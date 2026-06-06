@@ -1,0 +1,99 @@
+version: '3.9'
+
+services:
+  hermes-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+    container_name: hermes-agent
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: info
+      PORT: 3000
+      DATABASE_URL: postgresql://hermes:hermespass@postgres:5432/hermes
+      REDIS_URL: redis://redis:6379
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - hermes-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hermes-postgres
+    environment:
+      POSTGRES_USER: hermes
+      POSTGRES_PASSWORD: hermespass
+      POSTGRES_DB: hermes
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - hermes-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hermes"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: hermes-redis
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks:
+      - hermes-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: redis-server --appendonly yes
+
+  mcp-server:
+    image: node:18-alpine
+    container_name: hermes-mcp-server
+    working_dir: /app
+    volumes:
+      - ./mcp-server:/app
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+    networks:
+      - hermes-network
+    restart: unless-stopped
+    command: npm start
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  hermes-network:
+    driver: bridge

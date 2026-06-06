@@ -590,6 +590,7 @@ def compress_context(
     agent.context_compressor.last_prompt_tokens = -1
     agent.context_compressor.last_completion_tokens = 0
     agent.context_compressor.awaiting_real_usage_after_compression = True
+    agent.context_compressor._awaiting_suppression_count = 0
 
     # Clear the file-read dedup cache.  After compression the original
     # read content is summarised away — if the model re-reads the same

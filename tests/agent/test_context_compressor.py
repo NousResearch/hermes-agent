@@ -37,6 +37,19 @@ class TestShouldCompress:
         assert compressor.should_compress(prompt_tokens=90000) is True
         assert compressor.should_compress(prompt_tokens=50000) is False
 
+    def test_does_not_refire_while_awaiting_real_usage_after_compression(self, compressor):
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_prompt_tokens = 90_000
+        assert compressor.should_compress() is False
+
+    def test_bounded_awaiting_real_usage_suppression_window(self, compressor):
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_prompt_tokens = 90_000
+
+        assert compressor.should_compress() is False
+        assert compressor.should_compress() is False
+        assert compressor.should_compress() is True
+
 
 
 class TestUpdateFromResponse:

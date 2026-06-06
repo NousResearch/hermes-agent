@@ -3753,6 +3753,21 @@ def _(rid, params: dict) -> dict:
             removed += 1
         if removed:
             session["history_version"] = int(session.get("history_version", 0)) + 1
+            # Persist the truncated transcript, mirroring prompt.submit's
+            # truncate_before_user_ordinal path. Without this the undo lives
+            # only in memory: session.history re-reads from the DB (so a tab
+            # switch, reconnect or resume resurrects the undone turn), and the
+            # next prompt.submit appends on top of the stale rows, corrupting
+            # the persisted transcript. replace_messages names /undo as a
+            # caller for exactly this reason.
+            if (db := _get_db()) is not None and session.get("session_key"):
+                try:
+                    db.replace_messages(session["session_key"], list(history))
+                except Exception as exc:
+                    print(
+                        f"[tui_gateway] session.undo: replace_messages failed: {exc}",
+                        file=sys.stderr,
+                    )
     return _ok(rid, {"removed": removed})
 
 

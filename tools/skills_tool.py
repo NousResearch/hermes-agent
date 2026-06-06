@@ -68,18 +68,17 @@ Usage:
 
 import json
 import logging
-
-from hermes_constants import get_hermes_home, display_hermes_home
 import os
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from tools.registry import registry, tool_error
-from hermes_cli.config import cfg_get
-from utils import env_var_enabled
 from agent.skill_utils import EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS
+from hermes_cli.config import cfg_get
+from hermes_constants import display_hermes_home, get_hermes_home
+from tools.registry import registry, tool_error
+from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -518,7 +517,6 @@ def _parse_tags(tags_value) -> List[str]:
     return [t.strip().strip("\"'") for t in tags_value.split(",") if t.strip()]
 
 
-
 def _get_disabled_skill_names() -> Set[str]:
     """Load disabled skill names from config.
 
@@ -625,13 +623,17 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
 
                 category = _get_category_from_path(skill_md)
+                version = frontmatter.get("version")
 
                 seen_names.add(name)
-                skills.append({
+                entry = {
                     "name": name,
                     "description": description,
                     "category": category,
-                })
+                }
+                if version:
+                    entry["version"] = str(version)
+                skills.append(entry)
 
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
@@ -818,6 +820,7 @@ def _serve_plugin_skill(
             "name": f"{namespace}:{bare}",
             "content": f"{banner}{rendered_content}" if banner else rendered_content,
             "description": description,
+            "version": str(parsed_frontmatter["version"]) if parsed_frontmatter.get("version") else None,
             "linked_files": None,
             "readiness_status": SkillReadinessStatus.AVAILABLE.value,
         },
@@ -1361,6 +1364,7 @@ def skill_view(
             "success": True,
             "name": skill_name,
             "description": frontmatter.get("description", ""),
+            "version": str(frontmatter["version"]) if frontmatter.get("version") else None,
             "tags": tags,
             "related_skills": related_skills,
             "content": rendered_content,
@@ -1415,8 +1419,6 @@ def skill_view(
 
     except Exception as e:
         return tool_error(str(e), success=False)
-
-
 
 
 if __name__ == "__main__":
@@ -1510,6 +1512,8 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
+
+
 def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, then bump view_count on success. Best-effort: a
     telemetry failure never breaks the tool call."""

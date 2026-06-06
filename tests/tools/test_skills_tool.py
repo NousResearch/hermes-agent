@@ -8,17 +8,11 @@ from unittest.mock import patch
 import pytest
 
 import tools.skills_tool as skills_tool_module
-from tools.skills_tool import (
-    _get_required_environment_variables,
-    _parse_frontmatter,
-    _parse_tags,
-    _get_category_from_path,
-    _find_all_skills,
-    skill_matches_platform,
-    skills_list,
-    skill_view,
-    MAX_DESCRIPTION_LENGTH,
-)
+from tools.skills_tool import (MAX_DESCRIPTION_LENGTH, _find_all_skills,
+                               _get_category_from_path,
+                               _get_required_environment_variables,
+                               _parse_frontmatter, _parse_tags,
+                               skill_matches_platform, skill_view, skills_list)
 
 
 def _make_skill(
@@ -357,6 +351,24 @@ class TestSkillsList:
         assert result["categories"] == ["linked"]
         assert result["skills"][0]["name"] == "knowledge-brain"
 
+    def test_includes_version_when_present(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "alpha",
+                        frontmatter_extra="version: 1.2.3\n")
+            _make_skill(tmp_path, "beta")
+            raw = skills_list()
+        result = json.loads(raw)
+        by_name = {s["name"]: s for s in result["skills"]}
+        assert by_name["alpha"]["version"] == "1.2.3"
+        assert "version" not in by_name["beta"]
+
+    def test_version_coerced_to_string(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "intver", frontmatter_extra="version: 2\n")
+            raw = skills_list()
+        result = json.loads(raw)
+        assert result["skills"][0]["version"] == "2"
+
 
 # ---------------------------------------------------------------------------
 # skill_view
@@ -372,6 +384,21 @@ class TestSkillView:
         assert result["success"] is True
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
+
+    def test_view_returns_version_when_present(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "versioned",
+                        frontmatter_extra="version: 1.2.3\n")
+            raw = skill_view("versioned")
+        result = json.loads(raw)
+        assert result["version"] == "1.2.3"
+
+    def test_view_returns_none_version_when_absent(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "noversion")
+            raw = skill_view("noversion")
+        result = json.loads(raw)
+        assert result["version"] is None
 
     def test_skill_view_applies_template_vars(self, tmp_path):
         with (

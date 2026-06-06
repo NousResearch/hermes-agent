@@ -768,8 +768,9 @@ export function usePromptActions({
         if (result?.status === 'queued') {
           triggerHaptic('submit')
           // Inline note (not a toast) so the nudge lives in the transcript next
-          // to the turn it steered — same centered system-note style as slash output.
-          appendSessionTextMessage(sessionId, 'system', `⏩ steered · ${text}`)
+          // to the turn it steered. The `steer:` prefix is rendered as a codicon
+          // row by SystemMessage (see STEER_NOTE_RE), same style as slash output.
+          appendSessionTextMessage(sessionId, 'system', `steer:${text}`)
 
           return true
         }

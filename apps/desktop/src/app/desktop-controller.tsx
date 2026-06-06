@@ -41,6 +41,7 @@ import {
   sessionPinId,
   setAwaitingResponse,
   setBusy,
+  setCronSessions,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentModel,
@@ -100,6 +101,11 @@ const MessagingView = lazy(async () => ({ default: (await import('./messaging'))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
+
+// Latest cron-job sessions surfaced in the collapsed "Cron jobs" section. The
+// section shows the most-recent jobs, not the full history (that lives in
+// search), so this stays small and is fetched as a single bounded page.
+const CRON_SECTION_LIMIT = 50
 
 // Rows a session refresh must preserve even if the aggregator omits them:
 // in-flight first turns (message_count 0), pinned rows aged off the page, and
@@ -224,6 +230,21 @@ export function DesktopController() {
     }
   }, [])
 
+  // Cron-job sessions as their own list (latest N). Independent of the recents
+  // page so the two never compete for slots. Cheap + bounded; refreshed
+  // alongside recents.
+  const refreshCronSessions = useCallback(async () => {
+    try {
+      const { sessions } = await listAllProfileSessions(CRON_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
+        source: 'cron'
+      })
+
+      setCronSessions(sessions)
+    } catch {
+      // Non-fatal: the cron section just stays empty/stale.
+    }
+  }, [])
+
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
@@ -231,13 +252,18 @@ export function DesktopController() {
 
     try {
       const limit = $sessionsLimit.get()
+
       // Require at least one message so abandoned/empty "Untitled" drafts (one
       // was created per TUI/desktop launch before the lazy-create fix) don't
       // clutter the sidebar.
       // Unified cross-profile list (served read-only off each profile's
       // state.db; no per-profile backend is spawned). Single-profile users get
-      // the same rows tagged profile="default".
-      const result = await listAllProfileSessions(limit, 1)
+      // the same rows tagged profile="default". Cron sessions are excluded here
+      // and fetched separately (refreshCronSessions) so the scheduler's
+      // always-newest rows can't consume the recents page budget.
+      const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', 'all', {
+        excludeSources: ['cron']
+      })
 
       if (refreshSessionsRequestRef.current === requestId) {
         setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
@@ -249,7 +275,9 @@ export function DesktopController() {
         setSessionsLoading(false)
       }
     }
-  }, [])
+
+    void refreshCronSessions()
+  }, [refreshCronSessions])
 
   const loadMoreSessions = useCallback(() => {
     bumpSessionsLimit()
@@ -262,7 +290,11 @@ export function DesktopController() {
     const key = normalizeProfileKey(profile)
     const inKey = (s: SessionInfo) => normalizeProfileKey(s.profile) === key
     const loaded = $sessions.get().filter(inKey).length
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key)
+
+    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key, {
+      excludeSources: ['cron']
+    })
+
     const keep = sessionsToKeep(key)
 
     setSessions(prev => [...prev.filter(s => !inKey(s)), ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)])

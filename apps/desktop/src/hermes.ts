@@ -149,17 +149,33 @@ export async function listSessions(
 // primary backend straight off each profile's state.db — no per-profile backend
 // is spawned. Single-profile users get the same rows as listSessions(), tagged
 // profile="default".
+// Source scoping lets callers split the unified list into independent slices:
+// recents pass `excludeSources: ['cron']`, the cron-jobs section passes
+// `source: 'cron'`. Without this a burst of (always-newest) cron sessions
+// consumes the whole recents page and starves real conversations.
+export interface SessionSourceFilter {
+  source?: string
+  excludeSources?: string[]
+}
+
 export async function listAllProfileSessions(
   limit = 40,
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
-  profile: 'all' | (string & {}) = 'all'
+  profile: 'all' | (string & {}) = 'all',
+  filter: SessionSourceFilter = {}
 ): Promise<PaginatedSessions> {
+  const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
+
+  const excludeParam = filter.excludeSources?.length
+    ? `&exclude_sources=${encodeURIComponent(filter.excludeSources.join(','))}`
+    : ''
+
   const result = await window.hermesDesktop.api<PaginatedSessions>({
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
-      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}`
+      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`
   })
 
   return {

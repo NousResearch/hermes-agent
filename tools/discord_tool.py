@@ -436,14 +436,14 @@ def _create_thread(
         path = f"/channels/{channel_id}/messages/{message_id}/threads"
         body: Dict[str, Any] = {
             "name": name,
-            "auto_archive_duration": auto_archive_duration,
+            "auto_archive_duration": int(auto_archive_duration),
         }
     else:
         # Create a standalone thread
         path = f"/channels/{channel_id}/threads"
         body = {
             "name": name,
-            "auto_archive_duration": auto_archive_duration,
+            "auto_archive_duration": int(auto_archive_duration),
             "type": 11,  # PUBLIC_THREAD
         }
     thread = _discord_request("POST", path, token, body=body)
@@ -708,9 +708,9 @@ def _build_schema(
             "description": "Snowflake ID for forward pagination (fetch_messages).",
         },
         "auto_archive_duration": {
-            "type": "integer",
-            "enum": [60, 1440, 4320, 10080],
-            "description": "Thread archive duration in minutes (create_thread, default 1440).",
+            "type": "string",
+            "description": "Duration before the channel is automatically archived (minutes).",
+            "enum": ["60", "1440", "4320", "10080"],
         },
     }
 

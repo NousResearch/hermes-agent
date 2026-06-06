@@ -68,7 +68,7 @@ From now on, every `hermes` invocation pulls fresh secrets at startup. You'll se
 | Command | What it does |
 |---|---|
 | `hermes secrets bitwarden setup` | Interactive wizard (install binary, prompt for token, pick project, test fetch) |
-| `hermes secrets bitwarden status` | Show config + binary version + token presence |
+| `hermes secrets bitwarden status` | Show config + binary version + token presence/validation |
 | `hermes secrets bitwarden sync` | Dry-run: pull secrets now and show what would be applied |
 | `hermes secrets bitwarden sync --apply` | Pull and export into the current shell's environment |
 | `hermes secrets bitwarden install` | Just download the pinned `bws` binary (no auth required) |

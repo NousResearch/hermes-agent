@@ -395,7 +395,7 @@ Pull API keys from an external secret manager at process startup instead of stor
 | Subcommand | Description |
 |------------|-------------|
 | `setup` | Interactive wizard: install the pinned `bws` binary, store an access token, and pick a project. Accepts `--project-id`, `--access-token`, and `--server-url` for non-interactive use. |
-| `status` | Show current config, binary path/version, and last fetch info. |
+| `status` | Show current config, binary path/version, and token validation status. |
 | `sync` | Fetch secrets now and report what changed. Add `--apply` to actually export the secrets into the current shell's environment (default is dry-run). |
 | `install` | Download and verify the pinned `bws` binary. `--force` re-downloads even if a managed copy already exists. |
 | `disable` | Turn off the Bitwarden integration. |

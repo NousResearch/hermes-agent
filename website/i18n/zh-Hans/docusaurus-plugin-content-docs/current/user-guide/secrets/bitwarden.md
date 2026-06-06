@@ -68,7 +68,7 @@ hermes secrets bitwarden status
 | 命令 | 功能 |
 |---|---|
 | `hermes secrets bitwarden setup` | 交互式向导（安装二进制文件、提示输入令牌、选择项目、测试拉取） |
-| `hermes secrets bitwarden status` | 显示配置、二进制版本及令牌是否存在 |
+| `hermes secrets bitwarden status` | 显示配置、二进制版本，以及令牌是否存在/是否通过校验 |
 | `hermes secrets bitwarden sync` | 演习模式：立即拉取 secret 并显示将应用的内容 |
 | `hermes secrets bitwarden sync --apply` | 拉取并导出到当前 shell 的环境中 |
 | `hermes secrets bitwarden install` | 仅下载固定版本的 `bws` 二进制文件（无需认证） |

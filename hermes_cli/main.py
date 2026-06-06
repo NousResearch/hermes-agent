@@ -14740,12 +14740,36 @@ Examples:
         help="Platform to apply to (default: cli)",
     )
 
+    # hermes tools post-setup <key>
+    tools_postsetup_p = tools_sub.add_parser(
+        "post-setup",
+        help="Run a provider's post-setup install hook (npm/pip/binary)",
+        description=(
+            "Run the install/bootstrap hook a tool backend declares — the\n"
+            "same step `hermes tools` runs after you pick a provider that\n"
+            "needs extra dependencies (browser Chromium, Camofox, cua-driver,\n"
+            "KittenTTS/Piper, ddgs, Spotify, Langfuse, xAI). Stable,\n"
+            "non-interactive target the dashboard spawns to drive backend\n"
+            "setup. Keys: agent_browser, camofox, cua_driver, kittentts,\n"
+            "piper, ddgs, spotify, langfuse, xai_grok."
+        ),
+    )
+    tools_postsetup_p.add_argument(
+        "post_setup_key",
+        metavar="KEY",
+        help="Post-setup hook key (e.g. agent_browser, camofox, kittentts)",
+    )
+
     def cmd_tools(args):
         action = getattr(args, "tools_action", None)
         if action in {"list", "disable", "enable"}:
             from hermes_cli.tools_config import tools_disable_enable_command
 
             tools_disable_enable_command(args)
+        elif action == "post-setup":
+            from hermes_cli.tools_config import run_post_setup_command
+
+            sys.exit(run_post_setup_command(args))
         else:
             _require_tty("tools")
             from hermes_cli.tools_config import tools_command

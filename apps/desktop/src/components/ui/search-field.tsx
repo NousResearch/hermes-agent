@@ -2,6 +2,7 @@ import type { ReactNode, RefObject } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { useI18n } from '@/i18n'
 import { Loader2, Search } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -35,6 +36,7 @@ export function SearchField({
   trailingAction,
   'aria-label': ariaLabel
 }: SearchFieldProps) {
+  const { t } = useI18n()
   const clear = onClear ?? (() => onChange(''))
 
   return (
@@ -64,7 +66,7 @@ export function SearchField({
         <Loader2 className="pointer-events-none size-3.5 shrink-0 animate-spin text-muted-foreground/70" />
       ) : value ? (
         <Button
-          aria-label="Clear search"
+          aria-label={t.ui.search.clear}
           className="shrink-0 text-muted-foreground/85 hover:bg-accent/60 hover:text-foreground"
           onClick={clear}
           size="icon-xs"

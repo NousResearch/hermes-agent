@@ -1,6 +1,7 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
 
 import { Codicon } from '@/components/ui/codicon'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import {
@@ -60,6 +61,9 @@ export function ComposerTriggerPopover({
   onPick,
   placement = 'top'
 }: ComposerTriggerPopoverProps) {
+  const { t } = useI18n()
+  const copy = t.composer
+
   return (
     <div
       className={placement === 'bottom' ? COMPLETION_DRAWER_BELOW_CLASS : COMPLETION_DRAWER_CLASS}
@@ -69,15 +73,15 @@ export function ComposerTriggerPopover({
       role="listbox"
     >
       {items.length === 0 ? (
-        <CompletionDrawerEmpty title={loading ? 'Looking up…' : 'No matches.'}>
+        <CompletionDrawerEmpty title={loading ? copy.lookupLoading : copy.lookupNoMatches}>
           {kind === '@' ? (
             <>
-              Try <span className="font-mono text-foreground/80">@file:</span> or{' '}
+              {copy.lookupTry} <span className="font-mono text-foreground/80">@file:</span> {copy.lookupOr}{' '}
               <span className="font-mono text-foreground/80">@folder:</span>.
             </>
           ) : (
             <>
-              Try <span className="font-mono text-foreground/80">/help</span>.
+              {copy.lookupTry} <span className="font-mono text-foreground/80">/help</span>.
             </>
           )}
         </CompletionDrawerEmpty>

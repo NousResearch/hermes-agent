@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from tools.send_message_tool import (
     _send_dingtalk,
-    _send_homeassistant,
     _send_matrix,
 )
 
@@ -26,6 +25,22 @@ async def _send_mattermost(token, extra, chat_id, message):
     """
     pconfig = SimpleNamespace(token=token, extra=extra or {})
     return await _mattermost_standalone_send(pconfig, chat_id, message)
+
+
+# ``_send_homeassistant`` moved into the homeassistant plugin
+# (``plugins/platforms/homeassistant/adapter.py::_standalone_send``).  Same
+# shim pattern as ``_send_mattermost`` above.
+from plugins.platforms.homeassistant.adapter import (
+    _standalone_send as _homeassistant_standalone_send,
+)
+
+
+async def _send_homeassistant(token, extra, chat_id, message):
+    """Pre-migration ``(token, extra, chat_id, message)`` shim around the
+    plugin's ``_standalone_send(pconfig, chat_id, message)``.
+    """
+    pconfig = SimpleNamespace(token=token, extra=extra or {})
+    return await _homeassistant_standalone_send(pconfig, chat_id, message)
 
 
 # ---------------------------------------------------------------------------

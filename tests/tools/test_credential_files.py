@@ -13,6 +13,7 @@ from tools.credential_files import (
     get_skills_directory_mount,
     iter_cache_files,
     iter_skills_files,
+    map_cache_path_to_container,
     register_credential_file,
     register_credential_files,
 )
@@ -421,6 +422,48 @@ class TestCacheDirectoryMounts:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         assert get_cache_directory_mounts() == []
+
+
+class TestMapCachePathToContainer:
+    """Tests for map_cache_path_to_container() — the backend-agnostic mapper."""
+
+    def test_maps_path_under_cache_dir(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        img_dir = hermes_home / "cache" / "images"
+        img_dir.mkdir(parents=True)
+        host_path = str(img_dir / "generated.png")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert (
+            map_cache_path_to_container(host_path)
+            == "/root/.hermes/cache/images/generated.png"
+        )
+
+    def test_custom_container_base_for_remote_home(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        img_dir = hermes_home / "cache" / "images"
+        img_dir.mkdir(parents=True)
+        host_path = str(img_dir / "remote.png")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert (
+            map_cache_path_to_container(host_path, container_base="/home/agent/.hermes")
+            == "/home/agent/.hermes/cache/images/remote.png"
+        )
+
+    def test_returns_none_when_outside_cache_dirs(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "cache" / "images").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert map_cache_path_to_container(str(tmp_path / "elsewhere.png")) is None
+
+    def test_returns_none_when_no_cache_dirs_exist(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert map_cache_path_to_container(str(hermes_home / "cache" / "images" / "x.png")) is None
 
 
 class TestIterCacheFiles:

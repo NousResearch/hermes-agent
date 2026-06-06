@@ -862,6 +862,93 @@ for _k, _v in CONFIG_SCHEMA.items():
 CONFIG_SCHEMA = _ordered_schema
 
 
+def _custom_provider_options(kind: str, builtin_names: List[str]) -> List[str]:
+    """Return a merged provider option list without hard-coding vendor names.
+
+    *kind* is ``"tts"`` or ``"stt"``.  The result keeps the built-in names
+    first, then appends:
+
+    1. ``tts.providers.*`` / ``stt.providers.*`` keys declared in
+       ``config.yaml`` (these are command-type providers the user already
+       configured).
+    2. Any additional ``kind.provider`` value found on disk that is not yet
+       in the list — this covers custom names that only appear as the active
+       provider without a dedicated ``providers.<name>`` block.
+    """
+
+    names = list(builtin_names)
+    seen = {n.lower() for n in names}
+
+    def _add(name: str) -> None:
+        if isinstance(name, str):
+            normalized = name.strip().lower()
+            if normalized and normalized not in seen:
+                names.append(name.strip())
+                seen.add(normalized)
+
+    cfg = load_config()
+    cfg_provider = cfg_get(cfg, f"{kind}.provider")
+    _add(cfg_provider)
+
+    providers_map = cfg.get(kind, {}).get("providers") or {}
+    if isinstance(providers_map, dict):
+        for name in providers_map.keys():
+            _add(name)
+
+    return names
+
+
+def _installed_tts_plugin_names() -> List[str]:
+    """Return ``name`` values from user-installed TTS plugin manifests."""
+
+    plugin_dir = get_hermes_home() / "plugins"
+    names: List[str] = []
+    if not plugin_dir.is_dir():
+        return names
+
+    cfg = load_config()
+    enabled = set()
+    raw_enabled = (cfg.get("plugins") or {}).get("enabled") or []
+    if isinstance(raw_enabled, list):
+        for item in raw_enabled:
+            if isinstance(item, str):
+                enabled.add(item.strip().lower())
+
+    for child in sorted(plugin_dir.iterdir()):
+        manifest = child / "plugin.yaml"
+        if not manifest.is_file():
+            continue
+
+        if child.name.lower() not in enabled:
+            continue
+
+        try:
+            data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+
+        provides = data.get("provides") or []
+        if "tts" in provides:
+            name = str(data.get("name") or child.name).strip()
+            if name:
+                names.append(name)
+
+    return names
+
+
+# Dynamically surface user-configured / plugin-backed provider names so the
+# Desktop settings page does not silently drop custom providers.
+for _audio_kind in ("tts", "stt"):
+    _key = f"{_audio_kind}.provider"
+    _override = _SCHEMA_OVERRIDES.get(_key)
+    if isinstance(_override, dict) and isinstance(_override.get("options"), list):
+        _builtin_names = list(_override["options"])
+        _custom_names = _custom_provider_options(_audio_kind, _builtin_names)
+        if _audio_kind == "tts":
+            _custom_names.extend(_installed_tts_plugin_names())
+        _override["options"] = sorted(set(_custom_names), key=str.lower)
+
+
 class ConfigUpdate(BaseModel):
     config: dict
     profile: Optional[str] = None

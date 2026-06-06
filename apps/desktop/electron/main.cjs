@@ -247,16 +247,25 @@ const DEFAULT_UPDATE_BRANCH = 'main'
 const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
 const DESKTOP_LOG_FLUSH_MS = 120
 const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
-// Cap desktop.log on disk. It is an append-only forensic log with no other
-// rotation, so a boot loop (e.g. a version-skew crash where the backend exits
-// instantly and the renderer keeps hitting Retry) appends the full bootstrap
-// transcript on every attempt and can grow without bound — we have seen this
-// file reach hundreds of GB and exhaust the disk, which then breaks update and
-// install (no room for git/venv/npm temp files). Rotate to a single .1 sibling
-// when the live file crosses the cap, so total on-disk usage stays ~2x the cap
-// while preserving the most recent transcript for diagnostics.
+// Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
+// (version-skew crash -> backend exits instantly -> renderer keeps hitting
+// Retry) appends the full bootstrap transcript every attempt and grows without
+// bound — we have seen it reach ~326 GB and exhaust the disk, which then breaks
+// update/install (no room for git/venv/npm temp files).
+//
+// Mirror the Python logs (hermes_logging.py RotatingFileHandler, maxBytes x
+// backupCount): cascade live -> .1 -> .2 -> .3, drop the oldest. Steady-state
+// stays bounded at ~(backupCount + 1) x cap however hard the app loops.
+//
+// Bounding alone never RECLAIMS an already-huge file: a plain rotation just
+// renames the monster to .1 and strands it for a cycle a healthy app may never
+// reach. A multi-GB boot-loop transcript has no diagnostic value, so anything
+// past the discard ceiling is deleted outright — the updated app self-heals a
+// disk a stale build filled, on the next launch.
 const DESKTOP_LOG_MAX_BYTES = 10 * 1024 * 1024
-const DESKTOP_LOG_ROTATED_PATH = `${DESKTOP_LOG_PATH}.1`
+const DESKTOP_LOG_BACKUP_COUNT = 3
+const DESKTOP_LOG_DISCARD_BYTES = DESKTOP_LOG_MAX_BYTES * 4
+const desktopLogBackupPath = n => `${DESKTOP_LOG_PATH}.${n}`
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -544,27 +553,56 @@ let bootProgressState = {
   timestamp: Date.now()
 }
 
+// Pure planner: ordered fs ops to bound a live log of `size`. [] = nothing.
+// Each step is ['rm', path] or ['mv', src, dst]; executed best-effort so a
+// missing chain link never aborts the rest.
+function planDesktopLogRotation(size) {
+  if (size < DESKTOP_LOG_MAX_BYTES) return []
+  const backups = n => Array.from({ length: n }, (_, i) => desktopLogBackupPath(i + 1))
+  // Pathological boot-loop log: reclaim live + every backup outright.
+  if (size > DESKTOP_LOG_DISCARD_BYTES) {
+    return [DESKTOP_LOG_PATH, ...backups(DESKTOP_LOG_BACKUP_COUNT)].map(p => ['rm', p])
+  }
+  // Cascade: drop oldest, shift each up, live -> .1.
+  const ops = [['rm', desktopLogBackupPath(DESKTOP_LOG_BACKUP_COUNT)]]
+  for (let i = DESKTOP_LOG_BACKUP_COUNT - 1; i >= 1; i--) {
+    ops.push(['mv', desktopLogBackupPath(i), desktopLogBackupPath(i + 1)])
+  }
+  ops.push(['mv', DESKTOP_LOG_PATH, desktopLogBackupPath(1)])
+  return ops
+}
+
 function rotateDesktopLogIfNeededSync() {
+  let size
   try {
-    const { size } = fs.statSync(DESKTOP_LOG_PATH)
-    if (size < DESKTOP_LOG_MAX_BYTES) return
-    fs.rmSync(DESKTOP_LOG_ROTATED_PATH, { force: true })
-    fs.renameSync(DESKTOP_LOG_PATH, DESKTOP_LOG_ROTATED_PATH)
+    size = fs.statSync(DESKTOP_LOG_PATH).size
   } catch {
-    // No file yet (ENOENT) or rotation failed — appending will (re)create it.
-    // Logging must never block app startup/shutdown.
+    return // No live file yet — the append (re)creates it.
+  }
+  for (const [op, src, dst] of planDesktopLogRotation(size)) {
+    try {
+      if (op === 'rm') fs.rmSync(src, { force: true })
+      else fs.renameSync(src, dst)
+    } catch {
+      // Best-effort — logging must never block startup/shutdown.
+    }
   }
 }
 
 async function rotateDesktopLogIfNeededAsync() {
+  let size
   try {
-    const { size } = await fs.promises.stat(DESKTOP_LOG_PATH)
-    if (size < DESKTOP_LOG_MAX_BYTES) return
-    await fs.promises.rm(DESKTOP_LOG_ROTATED_PATH, { force: true })
-    await fs.promises.rename(DESKTOP_LOG_PATH, DESKTOP_LOG_ROTATED_PATH)
+    size = (await fs.promises.stat(DESKTOP_LOG_PATH)).size
   } catch {
-    // No file yet (ENOENT) or rotation failed — appending will (re)create it.
-    // Logging must never crash the desktop shell.
+    return // No live file yet — the append (re)creates it.
+  }
+  for (const [op, src, dst] of planDesktopLogRotation(size)) {
+    try {
+      if (op === 'rm') await fs.promises.rm(src, { force: true })
+      else await fs.promises.rename(src, dst)
+    } catch {
+      // Best-effort — logging must never crash the shell.
+    }
   }
 }
 

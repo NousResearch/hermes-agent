@@ -40,9 +40,20 @@ def run_brev_generation(request_id: str) -> dict[str, Any]:
             env=env
         )
         try:
-            return json.loads(res.stdout)
+            manifest = json.loads(res.stdout)
         except Exception:
             return {"ok": False, "error": f"Failed to parse runner output: {res.stdout}"}
+        final_status = manifest.get("final_status")
+        if manifest.get("ok") is True and final_status == "completed" and manifest.get("asset_urls"):
+            return manifest
+        return {
+            "ok": False,
+            "final_status": final_status,
+            "error": manifest.get("reason") or final_status or "generation_not_completed",
+            "manifest_path": manifest.get("manifest_path"),
+            "notification_path": manifest.get("notification_path"),
+            "asset_urls": manifest.get("asset_urls") or [],
+        }
     except subprocess.CalledProcessError as e:
         logger.error(f"Brev generation subprocess failed with code {e.returncode}: {e.stderr or e.stdout}")
         return {"ok": False, "error": f"Subprocess exit {e.returncode}: {e.stderr or e.stdout}"}

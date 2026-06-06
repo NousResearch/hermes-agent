@@ -3249,6 +3249,74 @@ class DiscordAdapter(BasePlatformAdapter):
             # so a rejected invoker can receive an ephemeral rejection.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
+
+        if os.getenv("HERMES_PRODUCERS_BREV_CARD", "true").strip().lower() not in {"0", "false", "no", "off"}:
+            class BrevTrackModal(discord.ui.Modal, title="заявка на трек"):
+                track_title = discord.ui.TextInput(
+                    label="название",
+                    placeholder="например: nocturnal pulse",
+                    required=True,
+                    max_length=120,
+                )
+                prompt = discord.ui.TextInput(
+                    label="описание",
+                    placeholder="идея, вайб, референсы, ограничения",
+                    style=discord.TextStyle.paragraph,
+                    required=True,
+                    max_length=1000,
+                )
+                style_text = discord.ui.TextInput(
+                    label="стиль",
+                    placeholder="neurodance, binaural asmr pulses, organic percussion",
+                    style=discord.TextStyle.paragraph,
+                    required=False,
+                    max_length=1000,
+                )
+                lyrics = discord.ui.TextInput(
+                    label="лирика",
+                    placeholder="оставь пустым для instrumental",
+                    style=discord.TextStyle.paragraph,
+                    required=False,
+                    max_length=5000,
+                )
+                options = discord.ui.TextInput(
+                    label="алиас и модель",
+                    placeholder="alias: /tag/neurofunk\nmodel: auto",
+                    style=discord.TextStyle.paragraph,
+                    required=False,
+                    max_length=500,
+                )
+
+                def __init__(self, adapter: "DiscordAdapter"):
+                    super().__init__()
+                    self.adapter = adapter
+
+                async def on_submit(self, interaction: discord.Interaction) -> None:
+                    if not await self.adapter._check_slash_authorization(interaction, "/brev-card"):
+                        return
+                    await interaction.response.defer(ephemeral=True)
+                    text = "\n".join([
+                        "кработ трек",
+                        f"название: {str(self.track_title.value).strip()}",
+                        f"описание: {str(self.prompt.value).strip()}",
+                        f"стиль: {str(self.style_text.value).strip()}",
+                        f"лирика: {str(self.lyrics.value).strip()}",
+                        "опции:",
+                        str(self.options.value).strip(),
+                    ]).strip()
+                    event = self.adapter._build_slash_event(interaction, text)
+                    await self.adapter.handle_message(event)
+                    try:
+                        await interaction.edit_original_response(content="карточка отправлена в генерацию")
+                    except Exception as exc:
+                        logger.debug("Discord brev modal ack failed: %s", exc)
+
+            @tree.command(name="brev-card", description="Открыть карточку заявки на трек Brev")
+            async def slash_brev_card(interaction: discord.Interaction):
+                if not await self._check_slash_authorization(interaction, "/brev-card"):
+                    return
+                await interaction.response.send_modal(BrevTrackModal(self))
+
         @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
         @discord.app_commands.describe(prompt="The prompt to queue")
         async def slash_queue(interaction: discord.Interaction, prompt: str):

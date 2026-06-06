@@ -36,8 +36,9 @@ class DummyAdapter:
 
 
 @pytest.fixture(autouse=True)
-def producers_home(monkeypatch):
+def producers_home(monkeypatch, tmp_path):
     monkeypatch.setattr(producers_triage, "_is_producers_profile", lambda: True)
+    monkeypatch.setattr(producers_triage, "BREV_REQUESTS_FILE", tmp_path / "brev_generation_requests.json")
 
 
 def make_event(text: str, author: str = "a meobius", chat_id: str = "1509389598923559053"):
@@ -234,3 +235,32 @@ async def test_queue_refresh_command_schedules_background_refresh(monkeypatch):
     assert adapter.send.await_count == 2
     assert "обновляю очередь" in adapter.send.await_args_list[0].args[1]
     assert "очередь инструментов обновлена" in adapter.send.await_args_list[1].args[1]
+
+
+def test_brev_card_fields_include_title_alias_and_friendly_reply(monkeypatch):
+    monkeypatch.setattr(producers_triage, "run_sanitizer", lambda value: value)
+    raw = """кработ трек
+название: nocturnal pulse
+описание: instrumental neurodance with binaural ASMR pulses
+стиль: neurodance, organic percussion
+лирика:
+опции:
+alias: /tag/neurofunk
+model: auto
+"""
+    request, errors = producers_triage.create_brev_generation_request(raw, "artist", "1509389598923559053")
+
+    assert errors == []
+    assert request is not None
+    assert request["title"] == "nocturnal pulse"
+    assert request["prompt"] == "instrumental neurodance with binaural ASMR pulses"
+    assert request["style"] == "neurodance, organic percussion"
+    assert request["requested_alias"] == "/tag/neurofunk"
+    assert request["instrumental"] is True
+    assert request["execution"] == "discord_auto_run"
+
+    reply = producers_triage.format_brev_request_reply(request)
+    assert "карточка трека принята" in reply
+    assert "название: nocturnal pulse" in reply
+    assert "статус: запускаю генерацию" in reply
+    assert "ручную оператором" not in reply

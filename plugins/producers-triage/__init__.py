@@ -42,6 +42,7 @@ HUMAN_QUESTIONS_FILE = PRODUCERS_DIR / "discord_human_questions.json"
 HUMAN_QUESTIONS_SCRIPT = PRODUCERS_DIR / "scripts" / "discord_human_questions.py"
 BREV_REQUESTS_FILE = PRODUCERS_DIR / "brev_generation_requests.json"
 BREV_ALIAS_HELPER_SCRIPT = PRODUCERS_DIR / "scripts" / "brev_alias_rotation_helper.py"
+BREV_MAX_TITLE_CHARS = 120
 BREV_MAX_PROMPT_CHARS = 1000
 BREV_MAX_STYLE_CHARS = 1000
 BREV_MAX_LYRICS_CHARS = 5000
@@ -479,10 +480,16 @@ def save_brev_requests(state: dict[str, Any]) -> None:
 
 
 def _extract_brev_multiline_fields(raw_text: str) -> dict[str, str]:
-    fields = {"prompt": "", "style": "", "lyrics": "", "model": "", "alias": ""}
+    fields = {"title": "", "prompt": "", "style": "", "lyrics": "", "model": "", "alias": "", "options": ""}
     aliases = {
+        "title": "title",
+        "название": "title",
+        "имя": "title",
+        "name": "title",
         "prompt": "prompt",
         "промпт": "prompt",
+        "description": "prompt",
+        "описание": "prompt",
         "idea": "prompt",
         "идея": "prompt",
         "style": "style",
@@ -497,6 +504,9 @@ def _extract_brev_multiline_fields(raw_text: str) -> dict[str, str]:
         "alias": "alias",
         "алиас": "alias",
         "tag": "alias",
+        "options": "options",
+        "опции": "options",
+        "настройки": "options",
     }
     current: str | None = None
     body_lines: list[str] = []
@@ -512,9 +522,17 @@ def _extract_brev_multiline_fields(raw_text: str) -> dict[str, str]:
             fields[current] = (fields[current] + "\n" + line.rstrip()).strip()
         else:
             pass
-    if not fields["prompt"]:
+    if fields.get("options"):
+        for opt_line in fields["options"].splitlines():
+            opt_match = re.match(r"^\s*(alias|алиас|tag|model|модель)\s*[:=]\s*(.*?)\s*$", opt_line, re.I)
+            if not opt_match:
+                continue
+            opt_key = aliases.get(opt_match.group(1).strip().lower())
+            if opt_key in {"alias", "model"} and opt_match.group(2).strip():
+                fields[opt_key] = opt_match.group(2).strip()
+    if not fields["prompt"] and not fields["title"]:
         clean = re.sub(r"(?is)^\s*кработ\s+(?:brev|брев|трек|генерация|сгенерируй)\s*[:=-]?\s*", "", raw_text).strip()
-        clean = "\n".join(line for line in clean.splitlines() if not re.match(r"^\s*(style|стиль|lyrics|лирика|model|модель|alias|алиас)\s*[:=]", line, re.I)).strip()
+        clean = "\n".join(line for line in clean.splitlines() if not re.match(r"^\s*(title|название|style|стиль|lyrics|лирика|model|модель|alias|алиас|options|опции|настройки)\s*[:=]", line, re.I)).strip()
         fields["prompt"] = clean[:BREV_MAX_PROMPT_CHARS]
     return fields
 
@@ -538,8 +556,10 @@ def _load_brev_alias_sample(seed: str, count: int = 3) -> list[str]:
 
 def _validate_brev_request(fields: dict[str, str]) -> list[str]:
     errors: list[str] = []
-    if not fields.get("prompt", "").strip():
-        errors.append("нужен prompt или промпт")
+    if not (fields.get("prompt", "").strip() or fields.get("title", "").strip()):
+        errors.append("нужно название или prompt")
+    if len(fields.get("title", "")) > BREV_MAX_TITLE_CHARS:
+        errors.append(f"название длиннее {BREV_MAX_TITLE_CHARS} символов")
     if len(fields.get("prompt", "")) > BREV_MAX_PROMPT_CHARS:
         errors.append(f"prompt длиннее {BREV_MAX_PROMPT_CHARS} символов")
     if len(fields.get("style", "")) > BREV_MAX_STYLE_CHARS:
@@ -569,6 +589,7 @@ def create_brev_generation_request(raw_text: str, author: str, channel_id: str) 
         "created_at": datetime.now(timezone.utc).isoformat(),
         "author": author,
         "channel_id": channel_id,
+        "title": fields.get("title", "").strip(),
         "prompt": fields.get("prompt", "").strip(),
         "style": fields.get("style", "").strip(),
         "lyrics": fields.get("lyrics", "").strip(),
@@ -576,7 +597,7 @@ def create_brev_generation_request(raw_text: str, author: str, channel_id: str) 
         "requested_alias": fields.get("alias", "").strip(),
         "alias_preview": alias_preview,
         "instrumental": not bool(fields.get("lyrics", "").strip()),
-        "execution": "manual_operator_required",
+        "execution": "discord_auto_run",
     }
     state.setdefault("requests", []).append(request)
     state["updated_at"] = request["created_at"]
@@ -585,20 +606,21 @@ def create_brev_generation_request(raw_text: str, author: str, channel_id: str) 
 
 
 def format_brev_request_reply(request: dict[str, Any]) -> str:
-    prompt_preview = request.get("prompt", "")[:160]
+    title = request.get("title") or "без названия"
+    prompt_preview = (request.get("prompt") or "")[:160] or "не задан"
     style_len = len(request.get("style", ""))
     lyrics_len = len(request.get("lyrics", ""))
-    aliases = request.get("alias_preview") or []
+    alias = request.get("requested_alias") or "auto"
     lines = [
-        f"заявка на генерацию сохранена: {request.get('request_id')}",
-        f"prompt: {prompt_preview}",
-        f"style: {style_len} из {BREV_MAX_STYLE_CHARS} символов",
-        f"lyrics: {lyrics_len} из {BREV_MAX_LYRICS_CHARS} символов",
+        f"карточка трека принята: {request.get('request_id')}",
+        f"название: {title}",
+        f"описание: {prompt_preview}",
+        f"стиль: {style_len} из {BREV_MAX_STYLE_CHARS} символов",
+        f"лирика: {lyrics_len} из {BREV_MAX_LYRICS_CHARS} символов",
         f"режим: {'instrumental' if request.get('instrumental') else 'lyrics'}",
+        f"маршрут: {alias}",
+        "статус: запускаю генерацию",
     ]
-    if aliases:
-        lines.append("алиасы на прогон: " + ", ".join(aliases[:3]))
-    lines.append("статус: в очереди, запуск только вручную оператором")
     return run_sanitizer("\n".join(lines))
 
 
@@ -905,14 +927,14 @@ async def pre_gateway_dispatch(
                 event,
                 active_gateway,
                 run_sanitizer(
-                    "некорректная заявка на трек:\n- " + "\n- ".join(errors)
-                    + "\nформат:\nкработ трек\nprompt: ...\nстиль: ...\nлирика: ...\nмодель: ...\n"
+                    "некорректная карточка трека:\n- " + "\n- ".join(errors)
+                    + "\nформат:\nкработ трек\nназвание: ...\nописание: ...\nстиль: ...\nлирика: ...\nалиас: /tag/neurofunk\n"
                 ),
             )
             return {"action": "skip"}
         if request is not None:
             request_id = request.get("request_id")
-            await _send_reply(event, active_gateway, run_sanitizer(f"заявка на трек {request_id} принята, запускаю генерацию через cdp-"))
+            await _send_reply(event, active_gateway, format_brev_request_reply(request))
 
             loop = asyncio.get_running_loop()
 
@@ -921,8 +943,14 @@ async def pre_gateway_dispatch(
                 res = run_brev_generation(request_id)
                 if res.get("ok"):
                     urls = res.get("asset_urls") or []
-                    url_lines = "\n".join(f"- {u}" for u in urls)
-                    msg = f"трек готов: {request_id}\n\nфайлы:\n{url_lines}"
+                    title = request.get("title") or request.get("prompt") or request_id
+                    url_lines = "\n".join(f"скачать: {u}" for u in urls) if urls else "ссылка не найдена, смотри manifest в артефактах"
+                    msg = "\n".join([
+                        f"трек готов: {title}",
+                        f"id: {request_id}",
+                        f"статус: {res.get('final_status', 'completed')}",
+                        url_lines,
+                    ])
                 else:
                     msg = f"ошибка при генерации {request_id}: {res.get('error', 'unknown error')}"
                 asyncio.run_coroutine_threadsafe(

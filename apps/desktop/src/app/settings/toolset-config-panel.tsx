@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { deleteEnvVar, getToolsetConfig, revealEnvVar, selectToolsetProvider, setEnvVar } from '@/hermes'
-import { Check, ExternalLink, Eye, EyeOff, Loader2, Save, Trash2 } from '@/lib/icons'
+import { Check, Loader2, Save } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { ToolEnvVar, ToolProvider, ToolsetConfig } from '@/types/hermes'
 
+import { EnvVarActionsMenu, EnvVarActionsTrigger } from './env-var-actions-menu'
 import { Pill } from './primitives'
 
 interface ToolsetConfigPanelProps {
@@ -107,33 +109,26 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             <p className="mt-0.5 text-[0.7rem] text-muted-foreground">{envVar.prompt}</p>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {envVar.url && (
-            <Button asChild size="xs" title="Open provider docs" variant="ghost">
-              <a href={envVar.url} rel="noreferrer" target="_blank">
-                Docs
-                <ExternalLink className="size-3" />
-              </a>
-            </Button>
-          )}
-          {isSet && (
-            <Button onClick={() => void handleReveal()} size="icon-xs" title="Reveal value" variant="ghost">
-              {revealed !== null ? <EyeOff /> : <Eye />}
-            </Button>
-          )}
-          <Button onClick={() => setEditing(e => !e)} size="xs" variant="outline">
-            {isSet ? 'Replace' : 'Set'}
-          </Button>
-          {isSet && (
-            <Button disabled={busy} onClick={() => void handleClear()} size="icon-xs" title="Clear value" variant="ghost">
-              <Trash2 />
-            </Button>
-          )}
-        </div>
+        {!editing && (
+          <EnvVarActionsMenu
+            clearDisabled={busy}
+            docsUrl={envVar.url}
+            isRevealed={revealed !== null}
+            isSet={isSet}
+            label={envVar.key}
+            onClear={() => void handleClear()}
+            onEdit={() => setEditing(true)}
+            onReveal={() => void handleReveal()}
+          >
+            <EnvVarActionsTrigger label={envVar.key} onClick={event => event.stopPropagation()} />
+          </EnvVarActionsMenu>
+        )}
       </div>
 
       {isSet && revealed !== null && (
-        <div className="rounded-md bg-background px-2.5 py-1.5 font-mono text-xs text-foreground">{revealed || '---'}</div>
+        <div className="rounded-md bg-background px-2.5 py-1.5 font-mono text-xs text-foreground">
+          {revealed || '---'}
+        </div>
       )}
 
       {editing && (
@@ -150,7 +145,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
             Save
           </Button>
-          <Button onClick={() => setEditing(false)} size="sm" variant="outline">
+          <Button onClick={() => setEditing(false)} size="sm" variant="text">
             Cancel
           </Button>
         </div>
@@ -210,6 +205,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
       (cfg?.active_provider ? providers.find(p => p.name === cfg.active_provider) : undefined) ??
       providers.find(p => providerConfigured(p, envState)) ??
       providers[0]
+
     setActiveProvider(selected.name)
   }, [activeProvider, providers, envState, cfg])
 
@@ -250,12 +246,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   }, [cfg, loading, providers.length])
 
   if (loading) {
-    return (
-      <div className="flex items-center gap-2 px-1 py-3 text-xs text-muted-foreground">
-        <Loader2 className="size-3.5 animate-spin" />
-        Loading configuration...
-      </div>
-    )
+    return <PageLoader className="min-h-32" label="Loading configuration" />
   }
 
   if (emptyMessage) {

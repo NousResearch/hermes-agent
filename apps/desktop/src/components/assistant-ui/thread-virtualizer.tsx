@@ -1,7 +1,18 @@
 import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
-import { type ComponentProps, type FC, memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import {
+  type ComponentProps,
+  type FC,
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef
+} from 'react'
 
+import { setMutableRef } from '@/lib/mutable-ref'
 import { cn } from '@/lib/utils'
 import { setThreadScrolledUp } from '@/store/thread-scroll'
 
@@ -66,6 +77,7 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
   const messageSignature = useAuiState(s =>
     s.thread.messages.map((message, index) => `${index}:${message.id}:${message.role}`).join('\n')
   )
+
   const isRunning = useAuiState(s => s.thread.isRunning)
 
   const groups = useMemo(() => buildGroups(messageSignature), [messageSignature])
@@ -93,6 +105,7 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
     // then jumps back up).
     scrollToFn: (offset, _options, instance) => {
       const el = instance.scrollElement
+
       if (!el) {
         return
       }
@@ -202,6 +215,10 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
 
 export const VirtualizedThread = memo(VirtualizedThreadInner)
 
+function scrollElementToBottom(el: HTMLDivElement) {
+  el.scrollTop = el.scrollHeight
+}
+
 interface ScrollAnchorOptions {
   enabled: boolean
   groupCount: number
@@ -250,14 +267,14 @@ function useThreadScrollAnchor({
 
     // Hold the disarm gate across the scroll event the next line will fire.
     programmaticScrollPendingRef.current += 1
-    el.scrollTop = el.scrollHeight
+    scrollElementToBottom(el)
     lastTopRef.current = el.scrollTop
     lastHeightRef.current = el.scrollHeight
     lastClientHeightRef.current = el.clientHeight
   }, [scrollerRef])
 
   const jumpToBottom = useCallback(() => {
-    stickyBottomRef.current = true
+    setMutableRef(stickyBottomRef, true)
 
     if (groupCount > 0) {
       virtualizer.scrollToIndex(groupCount - 1, { align: 'end', behavior: 'auto' })
@@ -282,7 +299,7 @@ function useThreadScrollAnchor({
     }
 
     const disarm = () => {
-      stickyBottomRef.current = false
+      setMutableRef(stickyBottomRef, false)
       programmaticScrollPendingRef.current = 0
     }
 
@@ -302,7 +319,7 @@ function useThreadScrollAnchor({
         lastHeightRef.current = el.scrollHeight
         lastClientHeightRef.current = el.clientHeight
         // Always re-arm — sticky-bottom should hold through clamp races.
-        stickyBottomRef.current = true
+        setMutableRef(stickyBottomRef, true)
         const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
         setThreadScrolledUp(!atBottom)
 
@@ -317,8 +334,9 @@ function useThreadScrollAnchor({
       // their own listeners below, so real user intent remains covered.
       const heightGrew = el.scrollHeight > lastHeightRef.current
       const clientHeightChanged = Math.abs(el.clientHeight - lastClientHeightRef.current) > 1
+
       if (!heightGrew && !clientHeightChanged && top + 1 < lastTopRef.current) {
-        stickyBottomRef.current = false
+        setMutableRef(stickyBottomRef, false)
       }
 
       lastTopRef.current = top
@@ -328,7 +346,7 @@ function useThreadScrollAnchor({
       const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
 
       if (atBottom) {
-        stickyBottomRef.current = true
+        setMutableRef(stickyBottomRef, true)
       }
 
       setThreadScrolledUp(!atBottom)
@@ -369,13 +387,16 @@ function useThreadScrollAnchor({
     }
 
     let pinRafScheduled = false
+
     const schedulePin = () => {
       if (pinRafScheduled || !stickyBottomRef.current) {
         return
       }
+
       pinRafScheduled = true
       requestAnimationFrame(() => {
         pinRafScheduled = false
+
         if (stickyBottomRef.current) {
           pinToBottom()
         }
@@ -429,14 +450,21 @@ function useThreadScrollAnchor({
     if (!enabled) {
       return
     }
+
     if (groupCount > prevGroupCountForLayoutRef.current && stickyBottomRef.current) {
-      pinToBottom()
+      // Defer to rAF so that browser scroll/wheel events from the current
+      // frame are processed first.  Without this deferral, a trackpad
+      // scroll-up during streaming can race with this effect: the wheel
+      // event hasn't fired yet so stickyBottomRef is still true, and the
+      // immediate pinToBottom() would snap the viewport back to bottom
+      // against the user's intent.
       requestAnimationFrame(() => {
         if (stickyBottomRef.current) {
           pinToBottom()
         }
       })
     }
+
     prevGroupCountForLayoutRef.current = groupCount
   }, [enabled, groupCount, pinToBottom, stickyBottomRef])
 

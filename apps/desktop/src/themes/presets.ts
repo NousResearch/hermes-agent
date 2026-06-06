@@ -269,13 +269,205 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+/** Arctic, north-bluish clean theme. Based on the Nord palette (nordtheme.com). */
+export const nordTheme: DesktopTheme = {
+  name: 'nord',
+  label: 'Nord',
+  description: 'Arctic blue — calm, clean, easy on the eyes',
+  colors: {
+    background: '#2E3440',
+    foreground: '#ECEFF4',
+    card: '#3B4252',
+    cardForeground: '#ECEFF4',
+    muted: '#434C5E',
+    mutedForeground: '#D8DEE9',
+    popover: '#3B4252',
+    popoverForeground: '#ECEFF4',
+    primary: '#88C0D0',
+    primaryForeground: '#2E3440',
+    secondary: '#434C5E',
+    secondaryForeground: '#E5E9F0',
+    accent: '#434C5E',
+    accentForeground: '#E5E9F0',
+    border: '#4C566A',
+    input: '#4C566A',
+    ring: '#88C0D0',
+    midground: '#88C0D0',
+    destructive: '#BF616A',
+    destructiveForeground: '#ECEFF4',
+    sidebarBackground: '#2E3440',
+    sidebarBorder: '#3B4252',
+    userBubble: '#3B4252',
+    userBubbleBorder: '#4C566A'
+  },
+  darkColors: {
+    background: '#2E3440',
+    foreground: '#ECEFF4',
+    card: '#3B4252',
+    cardForeground: '#ECEFF4',
+    muted: '#434C5E',
+    mutedForeground: '#D8DEE9',
+    popover: '#3B4252',
+    popoverForeground: '#ECEFF4',
+    primary: '#88C0D0',
+    primaryForeground: '#2E3440',
+    secondary: '#434C5E',
+    secondaryForeground: '#E5E9F0',
+    accent: '#434C5E',
+    accentForeground: '#E5E9F0',
+    border: '#4C566A',
+    input: '#4C566A',
+    ring: '#88C0D0',
+    midground: '#88C0D0',
+    destructive: '#BF616A',
+    destructiveForeground: '#ECEFF4',
+    sidebarBackground: '#2E3440',
+    sidebarBorder: '#3B4252',
+    userBubble: '#3B4252',
+    userBubbleBorder: '#4C566A'
+  },
+  typography: {
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap'
+  }
+}
+
+/** Eye-friendly warm/cool contrast. Based on the Solarized palette (ethanschoonover.com). */
+export const solarizedTheme: DesktopTheme = {
+  name: 'solarized',
+  label: 'Solarized',
+  description: 'Warm solarized — precision colors for machines and people',
+  colors: {
+    background: '#FDF6E3',
+    foreground: '#657B83',
+    card: '#EEE8D5',
+    cardForeground: '#657B83',
+    muted: '#EEE8D5',
+    mutedForeground: '#93A1A1',
+    popover: '#FDF6E3',
+    popoverForeground: '#657B83',
+    primary: '#268BD2',
+    primaryForeground: '#FDF6E3',
+    secondary: '#EEE8D5',
+    secondaryForeground: '#586E75',
+    accent: '#EEE8D5',
+    accentForeground: '#586E75',
+    border: '#D6CFC0',
+    input: '#D6CFC0',
+    ring: '#268BD2',
+    midground: '#268BD2',
+    destructive: '#DC322F',
+    destructiveForeground: '#FDF6E3',
+    sidebarBackground: '#EEE8D5',
+    sidebarBorder: '#D6CFC0',
+    userBubble: '#EEE8D5',
+    userBubbleBorder: '#D6CFC0'
+  },
+  darkColors: {
+    background: '#002B36',
+    foreground: '#839496',
+    card: '#073642',
+    cardForeground: '#839496',
+    muted: '#073642',
+    mutedForeground: '#586E75',
+    popover: '#073642',
+    popoverForeground: '#839496',
+    primary: '#268BD2',
+    primaryForeground: '#FDF6E3',
+    secondary: '#073642',
+    secondaryForeground: '#93A1A1',
+    accent: '#073642',
+    accentForeground: '#93A1A1',
+    border: '#0A4050',
+    input: '#0A4050',
+    ring: '#268BD2',
+    midground: '#268BD2',
+    destructive: '#DC322F',
+    destructiveForeground: '#FDF6E3',
+    sidebarBackground: '#002B36',
+    sidebarBorder: '#073642',
+    userBubble: '#073642',
+    userBubbleBorder: '#0A4050'
+  },
+  typography: {
+    fontMono: `"Source Code Pro", ${SYSTEM_MONO}`,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=Source+Code+Pro:wght@400;500;600&display=swap'
+  }
+}
+
+/** Soothing pastel dark theme. Based on the Catppuccin Mocha palette (catppuccin.com). */
+export const catppuccinTheme: DesktopTheme = {
+  name: 'catppuccin',
+  label: 'Catppuccin',
+  description: 'Soothing pastel — warm dark tones, easy on the eyes',
+  colors: {
+    background: '#1E1E2E',
+    foreground: '#CDD6F4',
+    card: '#313244',
+    cardForeground: '#CDD6F4',
+    muted: '#313244',
+    mutedForeground: '#A6ADC8',
+    popover: '#313244',
+    popoverForeground: '#CDD6F4',
+    primary: '#89B4FA',
+    primaryForeground: '#1E1E2E',
+    secondary: '#313244',
+    secondaryForeground: '#BAC2DE',
+    accent: '#313244',
+    accentForeground: '#BAC2DE',
+    border: '#45475A',
+    input: '#45475A',
+    ring: '#89B4FA',
+    midground: '#89B4FA',
+    destructive: '#F38BA8',
+    destructiveForeground: '#1E1E2E',
+    sidebarBackground: '#181825',
+    sidebarBorder: '#313244',
+    userBubble: '#313244',
+    userBubbleBorder: '#45475A'
+  },
+  darkColors: {
+    background: '#1E1E2E',
+    foreground: '#CDD6F4',
+    card: '#313244',
+    cardForeground: '#CDD6F4',
+    muted: '#313244',
+    mutedForeground: '#A6ADC8',
+    popover: '#313244',
+    popoverForeground: '#CDD6F4',
+    primary: '#89B4FA',
+    primaryForeground: '#1E1E2E',
+    secondary: '#313244',
+    secondaryForeground: '#BAC2DE',
+    accent: '#313244',
+    accentForeground: '#BAC2DE',
+    border: '#45475A',
+    input: '#45475A',
+    ring: '#89B4FA',
+    midground: '#89B4FA',
+    destructive: '#F38BA8',
+    destructiveForeground: '#1E1E2E',
+    sidebarBackground: '#181825',
+    sidebarBorder: '#313244',
+    userBubble: '#313244',
+    userBubbleBorder: '#45475A'
+  },
+  typography: {
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap'
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
-  slate: slateTheme
+  slate: slateTheme,
+  nord: nordTheme,
+  solarized: solarizedTheme,
+  catppuccin: catppuccinTheme
 }
 
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)

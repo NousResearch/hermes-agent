@@ -1,0 +1,34 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "automerge": false,
+  "dependencyDashboard": true,
+  "labels": [
+    "dependencies",
+    "needs-security-review"
+  ],
+  "packageRules": [
+    {
+      "description": "Keep source dependency updates manual because Hermes uses reviewed exact pins.",
+      "matchManagers": [
+        "pep621",
+        "pip_requirements",
+        "npm"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Allow GitHub Actions update proposals only; action SHAs still require human review.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "enabled": true,
+      "groupName": "github-actions"
+    }
+  ],
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 1,
+  "rangeStrategy": "pin"
+}

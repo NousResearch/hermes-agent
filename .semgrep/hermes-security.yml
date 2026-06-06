@@ -1,0 +1,25 @@
+rules:
+  - id: hermes-no-subprocess-shell-secret
+    languages: [python]
+    severity: WARNING
+    message: Avoid shell=True with environment or secret-like values; use argv arrays and explicit env allowlists.
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.$FUNC(..., shell=True, ...)
+          - pattern: os.system(...)
+      - pattern-either:
+          - pattern-inside: |
+              $SECRET = ...
+              ...
+          - pattern-regex: "(API_KEY|TOKEN|SECRET|PASSWORD)"
+  - id: hermes-no-direct-obsidian-promote-write
+    languages: [python]
+    severity: WARNING
+    message: Durable Obsidian knowledge writes must go through review-queue or an explicit owner-approved promotion path.
+    patterns:
+      - pattern: Path(...).write_text(...)
+      - pattern-either:
+          - pattern-inside: |
+              $VAULT = ... "ObsidianVault" ...
+              ...
+          - pattern-regex: "knowledge/|patterns/|playbooks/"

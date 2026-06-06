@@ -21658,6 +21658,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Typing resumes in _handle_approve_command/_handle_deny_command.
                 _status_adapter.pause_typing_for_chat(_status_chat_id)
 
+                # For WeCom: close any active native stream before showing the
+                # approval prompt. This prevents the approval text from being
+                # trapped inside the existing stream bubble, and ensures the user
+                # sees the prompt as an independent message.
+                # After approval, the stream consumer will create a new stream
+                # for subsequent output.
+                _sc = stream_consumer_holder[0] if stream_consumer_holder else None
+                if _sc and getattr(_sc, "_native_stream_opened", False):
+                    try:
+                        _finalize_fut = safe_schedule_threadsafe(
+                            _status_adapter.send_stream_frame(
+                                "⏸ 等待审批中...",
+                                finalize=True,
+                                chat_id=_status_chat_id,
+                                turn_id=getattr(_sc, "_turn_id", None),
+                            ),
+                            _loop_for_step,
+                            logger=logger,
+                            log_message="Approval pre-finalize stream error",
+                        )
+                        if _finalize_fut is not None:
+                            _finalize_fut.result(timeout=10)
+                        # Mark stream as closed so consumer knows to start fresh
+                        _sc._native_stream_opened = False
+                        _sc._use_native_streaming = False
+                    except Exception as _fin_e:
+                        logger.debug("Pre-approval stream finalize failed (non-critical): %s", _fin_e)
+                _status_adapter.pause_typing_for_chat(_status_chat_id)
+
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
 

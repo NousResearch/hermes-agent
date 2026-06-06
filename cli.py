@@ -9434,6 +9434,22 @@ class HermesCLI:
                         padding=(1, 4),
                         width=self._scrollback_box_width(),
                     ))
+                    # Render file-mutation verifier footer for background tasks
+                    _bg_fm = (result or {}).get("file_mutation_footer", "")
+                    if _bg_fm:
+                        try:
+                            _chat_console.print(Panel(
+                                _render_final_assistant_content(_bg_fm, mode=self.final_response_markdown),
+                                title="[dim]⚠ File-mutation verifier[/]",
+                                title_align="left",
+                                border_style="dim yellow",
+                                style="dim",
+                                box=rich_box.HORIZONTALS,
+                                padding=(1, 4),
+                                width=self._scrollback_box_width(),
+                            ))
+                        except Exception:
+                            _cprint(f"  {_DIM}{_bg_fm}{_RST}")
                 else:
                     _cprint("  (No response generated)")
 
@@ -12772,6 +12788,29 @@ class HermesCLI:
                         width=self._scrollback_box_width(),
                     ))
 
+            # Render file-mutation verifier footer as a separate advisory.
+            # Stored out-of-band so TTS and transform_llm_output plugin hook
+            # do not treat it as model output (#40772).
+            _fm_footer = (result or {}).get("file_mutation_footer", "")
+            if _fm_footer:
+                try:
+                    _chat_console = ChatConsole()
+                    _chat_console.print(
+                        Panel(
+                            _render_final_assistant_content(
+                                _fm_footer, mode=self.final_response_markdown
+                            ),
+                            title="[dim]⚠ File-mutation verifier[/]",
+                            title_align="left",
+                            border_style="dim yellow",
+                            style="dim",
+                            box=rich_box.HORIZONTALS,
+                            padding=(1, 4),
+                            width=self._scrollback_box_width(),
+                        )
+                    )
+                except Exception:
+                    _cprint(f"\n{_DIM}{_fm_footer}{_RST}")
 
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.

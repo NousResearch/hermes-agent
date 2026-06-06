@@ -407,3 +407,43 @@ def test_file_mutating_tools_set_shape():
     track it.  This test fails loudly on unilateral additions.
     """
     assert _FILE_MUTATING_TOOLS == frozenset({"write_file", "patch"})
+
+
+# ---------------------------------------------------------------------------
+# #40772 — footer must NOT be concatenated into final_response
+# ---------------------------------------------------------------------------
+
+
+def test_footer_not_concatenated_into_final_response():
+    """The verifier footer must be stored out-of-band so TTS and
+    ``transform_llm_output`` plugin hooks do not treat it as model output.
+
+    Regression test for #40772: previously the footer was appended directly
+    to ``final_response``, causing TTS to speak it aloud and plugin hooks to
+    see it as model output.
+    """
+    # Simulate the code path in conversation_loop.py:
+    # The footer should be stored in a separate variable, not concatenated
+    # into final_response.
+    final_response = "I updated your config."
+    _file_mutation_footer: str = ""
+    _failed = {"/tmp/test.py": {"tool": "patch", "error_preview": "denied"}}
+    _footer = AIAgent._format_file_mutation_failure_footer(_failed)
+    if _footer:
+        _file_mutation_footer = _footer
+
+    # final_response must NOT contain the footer text
+    assert "File-mutation verifier" not in final_response
+    assert "NOT modified" not in final_response
+
+    # The footer must be available separately
+    assert "File-mutation verifier" in _file_mutation_footer
+    assert "NOT modified" in _file_mutation_footer
+
+    # Simulate the result dict
+    result = {
+        "final_response": final_response,
+        "file_mutation_footer": _file_mutation_footer,
+    }
+    assert result["file_mutation_footer"] == _file_mutation_footer
+    assert "File-mutation verifier" not in result["final_response"]

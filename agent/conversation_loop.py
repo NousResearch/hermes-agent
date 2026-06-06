@@ -4714,13 +4714,19 @@ def run_conversation(
     # Gate: only applied when a real text response exists for this
     # turn and the user didn't interrupt.  Empty/interrupted turns
     # already have other surface text that shouldn't be augmented.
+    _file_mutation_footer: str = ""
     if final_response and not interrupted:
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
             if _failed and agent._file_mutation_verifier_enabled():
-                footer = agent._format_file_mutation_failure_footer(_failed)
-                if footer:
-                    final_response = final_response.rstrip() + "\n\n" + footer
+                _footer = agent._format_file_mutation_failure_footer(_failed)
+                if _footer:
+                    # Store the footer separately instead of concatenating
+                    # into final_response so that downstream consumers like
+                    # TTS and the transform_llm_output plugin hook treat it
+                    # as an out-of-band advisory rather than model output
+                    # (#40772).
+                    _file_mutation_footer = _footer
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
@@ -4838,6 +4844,7 @@ def run_conversation(
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,
+        "file_mutation_footer": _file_mutation_footer,
         "last_reasoning": last_reasoning,
         "messages": messages,
         "api_calls": api_call_count,

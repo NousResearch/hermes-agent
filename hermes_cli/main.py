@@ -7010,13 +7010,13 @@ def _nixos_build_env() -> dict[str, str] | None:
     Returns an env dict suitable for ``subprocess.run(env=...)`` or
     ``None`` when we are not on NixOS or python3 is already on PATH.
     """
-    if not Path("/etc/os-release").exists():
-        return None
+    import re
+
     try:
         os_release = Path("/etc/os-release").read_text(encoding="utf-8")
     except OSError:
         return None
-    if "ID=nixos" not in os_release:
+    if not re.search(r"^ID=nixos$", os_release, re.M):
         return None
 
     # python3 already on PATH — nothing to do
@@ -7027,7 +7027,7 @@ def _nixos_build_env() -> dict[str, str] | None:
     for venv_name in ("venv", ".venv"):
         venv_python = PROJECT_ROOT / venv_name / "bin" / "python3"
         if venv_python.exists():
-            return {"PYTHON": str(venv_python)}
+            return {**os.environ, "PYTHON": str(venv_python)}
 
     # Tier 2: nix-shell fallback — resolves the absolute python3 path once.
     # Slower (~2–5 s for the nix-shell eval) but always works, even without
@@ -7042,11 +7042,11 @@ def _nixos_build_env() -> dict[str, str] | None:
         if result.returncode == 0:
             python3_path = result.stdout.strip()
             if python3_path and Path(python3_path).exists():
-                return {"PYTHON": python3_path}
+                return {**os.environ, "PYTHON": python3_path}
     except Exception:
         pass  # nix-shell not available — caller will get None
 
-
+    return None
 def _run_npm_install_deterministic(
     npm: str,
     cwd: Path,

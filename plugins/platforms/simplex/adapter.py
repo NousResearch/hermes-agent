@@ -20,7 +20,11 @@ Required environment variables:
                                (default: ws://127.0.0.1:5225)
 
 Optional environment variables:
-    SIMPLEX_ALLOWED_USERS      Comma-separated contact IDs (allowlist)
+    SIMPLEX_ALLOWED_USERS      Comma-separated allowlist. Each entry may be
+                               either a numeric contactId (stable across
+                               renames; visible via `/contacts` in the CLI)
+                               or a contact display name (what the SimpleX
+                               UI shows). Both forms are accepted.
     SIMPLEX_ALLOW_ALL_USERS    Set 'true' to allow all contacts
     SIMPLEX_HOME_CHANNEL       Default contact/group ID for cron delivery
     SIMPLEX_HOME_CHANNEL_NAME  Human label for the home channel
@@ -706,7 +710,7 @@ def interactive_setup() -> None:
             save_env_value(var, value)
 
     _prompt("SIMPLEX_WS_URL", "Daemon WebSocket URL (default ws://127.0.0.1:5225)")
-    _prompt("SIMPLEX_ALLOWED_USERS", "Allowed contact IDs (comma-separated; blank=skip)")
+    _prompt("SIMPLEX_ALLOWED_USERS", "Allowed contactIds or display names (comma-separated; blank=skip)")
     _prompt("SIMPLEX_HOME_CHANNEL", "Home channel contact/group ID (or empty)")
     print("Done. Make sure the simplex-chat daemon is running before starting the gateway.")
 

@@ -1534,8 +1534,11 @@ def list_available_providers() -> list[dict[str, str]]:
     Derives the provider list from :data:`CANONICAL_PROVIDERS` (single
     source of truth shared with ``hermes model``, ``/model``, etc.).
     """
-    # Derive display order from canonical list + custom
-    provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
+    # Derive display order from canonical list + custom, preserving order while
+    # avoiding duplicate rows when custom is already in the canonical list.
+    provider_order = list(
+        dict.fromkeys([p.slug for p in CANONICAL_PROVIDERS] + ["custom"])
+    )
 
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}

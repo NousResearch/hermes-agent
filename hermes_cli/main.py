@@ -2431,8 +2431,43 @@ def cmd_postinstall(args):
         print("✓ Post-install complete.")
 
 
+def _print_model_list(args) -> None:
+    """Print provider model metadata for non-interactive consumers."""
+    from hermes_cli.models import list_available_providers, provider_model_ids
+
+    action = getattr(args, "model_action", None)
+    json_output = bool(getattr(args, "json_output", False))
+    if action == "providers":
+        providers = list_available_providers()
+        if json_output:
+            print(json.dumps(providers, ensure_ascii=False))
+            return
+        for provider in providers:
+            auth = (
+                "authenticated"
+                if provider.get("authenticated")
+                else "not-authenticated"
+            )
+            print(f"{provider.get('id', '')}\t{provider.get('label', '')}\t{auth}")
+        return
+
+    provider = str(getattr(args, "provider", "") or "").strip()
+    models = provider_model_ids(
+        provider,
+        force_refresh=bool(getattr(args, "force_refresh", False)),
+    )
+    if json_output:
+        print(json.dumps(models, ensure_ascii=False))
+        return
+    for model_id in models:
+        print(model_id)
+
+
 def cmd_model(args):
-    """Select default model — starts with provider selection, then model picker."""
+    """Select default model, or print model metadata in non-interactive mode."""
+    if getattr(args, "model_action", None) in {"list", "providers"}:
+        _print_model_list(args)
+        return
     _require_tty("model")
     if getattr(args, "refresh", False):
         try:
@@ -12908,6 +12943,41 @@ def main():
         "--insecure",
         action="store_true",
         help="Disable TLS verification for Nous login (testing only)",
+    )
+    model_subparsers = model_parser.add_subparsers(dest="model_action")
+
+    model_list_parser = model_subparsers.add_parser(
+        "list",
+        help="List known model IDs for a provider",
+        description="Print a non-interactive model list for a provider.",
+    )
+    model_list_parser.add_argument(
+        "--provider",
+        required=True,
+        help="Provider ID to list models for, e.g. openai-codex",
+    )
+    model_list_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a JSON array instead of one model ID per line",
+    )
+    model_list_parser.add_argument(
+        "--force-refresh",
+        action="store_true",
+        help="Bypass provider model cache where supported",
+    )
+
+    model_providers_parser = model_subparsers.add_parser(
+        "providers",
+        help="List providers accepted by provider:model syntax",
+        description="Print non-interactive provider metadata.",
+    )
+    model_providers_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a JSON array instead of a tab-separated table",
     )
     model_parser.set_defaults(func=cmd_model)
 

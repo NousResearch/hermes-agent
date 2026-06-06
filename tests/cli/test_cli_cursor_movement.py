@@ -18,107 +18,29 @@ from prompt_toolkit.utils import get_cwidth
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Pure-function helpers (identical logic to cli.py, inlined for fast testing)
+# Import the REAL helpers from cli.py and wrap them to supply get_cwidth.
+#
+# cli.py's helpers take get_cwidth as their final argument (it is imported
+# locally inside the handlers, not at module level). These thin wrappers pass
+# prompt_toolkit's get_cwidth so the tests exercise the actual shipping
+# functions in cli.py rather than a private copy that could silently drift.
 # ═══════════════════════════════════════════════════════════════════════════
 
+from cli import _visual_row_col as _cli_visual_row_col  # noqa: E402
+from cli import _max_visual_row as _cli_max_visual_row  # noqa: E402
+from cli import _pos_from_visual as _cli_pos_from_visual  # noqa: E402
+
+
 def _visual_row_col(text, pos, cols, prompt_width):
-    """Calculate the visual (row, col) for character position *pos* in *text*."""
-    first_row_cols = cols - prompt_width
-    if first_row_cols < 1:
-        first_row_cols = 1
-
-    vr = 0
-    dc = 0
-    available = first_row_cols
-
-    for ch in text[:pos]:
-        if ch == '\n':
-            vr += 1
-            dc = 0
-            available = cols
-            continue
-        cw = get_cwidth(ch)
-        if dc + cw > available:
-            vr += 1
-            dc = 0
-            available = cols
-        dc += cw
-
-    # Cursor at position *pos* is past the last character processed.
-    # If we filled the row exactly, the cursor sits at the start of
-    # the next visual row.  (After a \n, dc is 0 so this is a no-op.)
-    if dc >= available:
-        vr += 1
-        dc = 0
-
-    return vr, dc
+    return _cli_visual_row_col(text, pos, cols, prompt_width, get_cwidth)
 
 
 def _max_visual_row(text, cols, prompt_width):
-    """Return the last visual row index for *text* (0-indexed, -1 if empty)."""
-    if not text:
-        return -1
-
-    first_row_cols = cols - prompt_width
-    if first_row_cols < 1:
-        first_row_cols = 1
-
-    vr = 0
-    dc = 0
-    available = first_row_cols
-
-    for ch in text:
-        if ch == '\n':
-            vr += 1
-            dc = 0
-            available = cols
-            continue
-        cw = get_cwidth(ch)
-        if dc + cw > available:
-            vr += 1
-            dc = 0
-            available = cols
-        dc += cw
-
-    return vr
+    return _cli_max_visual_row(text, cols, prompt_width, get_cwidth)
 
 
 def _pos_from_visual(text, target_row, target_col, cols, prompt_width):
-    """Find the character position at the given visual (row, col)."""
-    first_row_cols = cols - prompt_width
-    if first_row_cols < 1:
-        first_row_cols = 1
-
-    vr = 0
-    dc = 0
-    available = first_row_cols
-
-    for i, ch in enumerate(text):
-        if ch == '\n':
-            if vr == target_row:
-                return i
-            vr += 1
-            dc = 0
-            available = cols
-            continue
-
-        cw = get_cwidth(ch)
-        if dc + cw > available:
-            if vr == target_row:
-                return i
-            vr += 1
-            dc = 0
-            available = cols
-
-        if vr > target_row:
-            return i
-
-        if vr == target_row and dc <= target_col < dc + cw:
-            return i
-
-        dc += cw
-
-    return len(text)
+    return _cli_pos_from_visual(text, target_row, target_col, cols, prompt_width, get_cwidth)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -14,37 +14,41 @@ class TestPerTurnStreamIsolation:
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
-        adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._send_json = AsyncMock()
-        adapter._ws = MagicMock(closed=False)
-        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+        try:
+            adapter._last_chat_req_ids["chat-1"] = "req-1"
+            adapter._send_json = AsyncMock()
+            # Mock _ws with closed=False and async close()
+            adapter._ws = AsyncMock(closed=False)
+            adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
-        # Consumer 1 starts streaming
-        await adapter.send_stream_frame("consumer1 frame1", chat_id="chat-1", turn_id="turn-1")
-        assert "chat-1:turn-1" in adapter._stream_turns
+            # Consumer 1 starts streaming
+            await adapter.send_stream_frame("consumer1 frame1", chat_id="chat-1", turn_id="turn-1")
+            assert "chat-1:turn-1" in adapter._stream_turns
 
-        # Consumer 2 starts streaming (concurrent)
-        await adapter.send_stream_frame("consumer2 frame1", chat_id="chat-1", turn_id="turn-2")
-        assert "chat-1:turn-2" in adapter._stream_turns
+            # Consumer 2 starts streaming (concurrent)
+            await adapter.send_stream_frame("consumer2 frame1", chat_id="chat-1", turn_id="turn-2")
+            assert "chat-1:turn-2" in adapter._stream_turns
 
-        # Both turns coexist
-        assert len([k for k in adapter._stream_turns if k.startswith("chat-1:")]) == 2
+            # Both turns coexist
+            assert len([k for k in adapter._stream_turns if k.startswith("chat-1:")]) == 2
 
-        # Consumer 1 finalizes
-        ok1 = await adapter.send_stream_frame(
-            "consumer1 final", chat_id="chat-1", finalize=True, turn_id="turn-1"
-        )
-        assert ok1 is True
-        assert "chat-1:turn-1" not in adapter._stream_turns
-        # Consumer 2's turn still exists
-        assert "chat-1:turn-2" in adapter._stream_turns
+            # Consumer 1 finalizes
+            ok1 = await adapter.send_stream_frame(
+                "consumer1 final", chat_id="chat-1", finalize=True, turn_id="turn-1"
+            )
+            assert ok1 is True
+            assert "chat-1:turn-1" not in adapter._stream_turns
+            # Consumer 2's turn still exists
+            assert "chat-1:turn-2" in adapter._stream_turns
 
-        # Consumer 2 finalizes
-        ok2 = await adapter.send_stream_frame(
-            "consumer2 final", chat_id="chat-1", finalize=True, turn_id="turn-2"
-        )
-        assert ok2 is True
-        assert "chat-1:turn-2" not in adapter._stream_turns
+            # Consumer 2 finalizes
+            ok2 = await adapter.send_stream_frame(
+                "consumer2 final", chat_id="chat-1", finalize=True, turn_id="turn-2"
+            )
+            assert ok2 is True
+            assert "chat-1:turn-2" not in adapter._stream_turns
+        finally:
+            await adapter.disconnect()
 
     @pytest.mark.asyncio
     async def test_one_turn_expired_other_continues(self):
@@ -52,34 +56,37 @@ class TestPerTurnStreamIsolation:
         from gateway.platforms.wecom import STREAM_EXPIRED_ERRCODE, WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
-        adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._send_json = AsyncMock()
-        adapter._ws = MagicMock(closed=False)
+        try:
+            adapter._last_chat_req_ids["chat-1"] = "req-1"
+            adapter._send_json = AsyncMock()
+            adapter._ws = AsyncMock(closed=False)
 
-        # Consumer 1 and 2 both start
-        await adapter.send_stream_frame("c1 frame", chat_id="chat-1", turn_id="turn-1")
-        await adapter.send_stream_frame("c2 frame", chat_id="chat-1", turn_id="turn-2")
-        assert "chat-1:turn-1" in adapter._stream_turns
-        assert "chat-1:turn-2" in adapter._stream_turns
+            # Consumer 1 and 2 both start
+            await adapter.send_stream_frame("c1 frame", chat_id="chat-1", turn_id="turn-1")
+            await adapter.send_stream_frame("c2 frame", chat_id="chat-1", turn_id="turn-2")
+            assert "chat-1:turn-1" in adapter._stream_turns
+            assert "chat-1:turn-2" in adapter._stream_turns
 
-        # Consumer 1 hits expired error on finalize
-        adapter._send_reply_request = AsyncMock(
-            return_value={"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "stream expired"}
-        )
-        ok1 = await adapter.send_stream_frame(
-            "c1 final", chat_id="chat-1", finalize=True, turn_id="turn-1"
-        )
-        assert ok1 is False
-        assert "chat-1" in adapter._stream_expired_chats
-        assert "chat-1:turn-1" not in adapter._stream_turns  # turn-1 cleaned up
+            # Consumer 1 hits expired error on finalize
+            adapter._send_reply_request = AsyncMock(
+                return_value={"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "stream expired"}
+            )
+            ok1 = await adapter.send_stream_frame(
+                "c1 final", chat_id="chat-1", finalize=True, turn_id="turn-1"
+            )
+            assert ok1 is False
+            assert "chat-1" in adapter._stream_expired_chats
+            assert "chat-1:turn-1" not in adapter._stream_turns  # turn-1 cleaned up
 
-        # Consumer 2's existing turn can still finalize
-        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
-        ok2 = await adapter.send_stream_frame(
-            "c2 final", chat_id="chat-1", finalize=True, turn_id="turn-2"
-        )
-        assert ok2 is True  # ✅ turn-2 not blocked by chat-level expired
-        assert "chat-1:turn-2" not in adapter._stream_turns
+            # Consumer 2's existing turn can still finalize
+            adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+            ok2 = await adapter.send_stream_frame(
+                "c2 final", chat_id="chat-1", finalize=True, turn_id="turn-2"
+            )
+            assert ok2 is True  # ✅ turn-2 not blocked by chat-level expired
+            assert "chat-1:turn-2" not in adapter._stream_turns
+        finally:
+            await adapter.disconnect()
 
     @pytest.mark.asyncio
     async def test_expired_chat_blocks_new_turn_creation(self):
@@ -87,18 +94,95 @@ class TestPerTurnStreamIsolation:
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
-        adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._stream_expired_chats.add("chat-1")
-        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+        try:
+            adapter._last_chat_req_ids["chat-1"] = "req-1"
+            adapter._stream_expired_chats.add("chat-1")
+            adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
-        # Try to create a new turn after chat is expired
-        ok = await adapter.send_stream_frame("new frame", chat_id="chat-1", turn_id="new-turn")
-        assert ok is False
-        assert "chat-1:new-turn" not in adapter._stream_turns
+            # Try to create a new turn after chat is expired
+            ok = await adapter.send_stream_frame("new frame", chat_id="chat-1", turn_id="new-turn")
+            assert ok is False
+            assert "chat-1:new-turn" not in adapter._stream_turns
+        finally:
+            await adapter.disconnect()
 
 
 class TestNativeFallbackStreamClose:
     """Verify that native streaming fallback closes open streams."""
+
+    @pytest.mark.asyncio
+    async def test_seed_success_first_frame_fails_still_finalizes(self):
+        """Seed frame opens stream bubble, first content frame fails → finalize called.
+
+        This is the critical edge case: seed frame has length 0 but opens the
+        WeCom typing bubble. If the first content frame fails, we must still
+        finalize based on _native_stream_opened, not _native_last_pushed_len.
+        """
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+        from gateway.platforms.base import BasePlatformAdapter
+
+        class MockAdapter(BasePlatformAdapter):
+            MAX_MESSAGE_LENGTH = 4096
+            SUPPORTS_MESSAGE_EDITING = False
+            SUPPORTS_NATIVE_STREAMING = True
+
+            def __init__(self):
+                self._typing_paused = set()
+                self.send_stream_frame_calls = []
+                self.send_calls = []
+                self.should_fail_first_content = True
+
+            def supports_native_streaming(self, chat_type=None, metadata=None):
+                return True
+
+            async def send_stream_frame(
+                self, text, *, finalize=False, chat_id=None, reply_to=None, **kwargs
+            ):
+                call_info = {"text_len": len(text), "finalize": finalize, "text_preview": text[:20]}
+                self.send_stream_frame_calls.append(call_info)
+
+                # Seed frame (empty) always succeeds
+                if len(text) == 0 and not finalize:
+                    return True
+
+                # First non-seed, non-finalize frame fails
+                if self.should_fail_first_content and len(text) > 0 and not finalize:
+                    self.should_fail_first_content = False
+                    raise RuntimeError("first content frame failed")
+
+                # Finalize frames and subsequent content frames succeed
+                return True
+
+            async def send(self, chat_id, content, reply_to=None, metadata=None):
+                self.send_calls.append({"content_preview": content[:20]})
+                return type("SendResult", (), {"success": True, "message_id": "msg-1"})()
+
+        MockAdapter.__abstractmethods__ = frozenset()
+        adapter = MockAdapter()
+        cfg = StreamConsumerConfig(chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        # Send short content to minimize frame count
+        consumer.on_delta("X")
+
+        import asyncio
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # Verify: seed succeeded, then finalize was attempted (not skipped)
+        assert len(adapter.send_stream_frame_calls) >= 2
+        # First call: seed (length 0)
+        assert adapter.send_stream_frame_calls[0]["text_len"] == 0
+        assert not adapter.send_stream_frame_calls[0]["finalize"]
+
+        # At least one finalize call should have been made
+        finalize_calls = [c for c in adapter.send_stream_frame_calls if c["finalize"]]
+        assert len(finalize_calls) >= 1, "Finalize should be called even though seed had length 0"
+
+        # No send() fallback (finalize succeeded)
+        assert len(adapter.send_calls) == 0
 
     @pytest.mark.asyncio
     async def test_native_fallback_closes_stream_on_success(self):

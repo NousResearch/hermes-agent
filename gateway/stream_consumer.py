@@ -318,6 +318,11 @@ class GatewayStreamConsumer:
         # finish=true). Resolved at the start of run() and disabled on
         # any failure so the consumer falls back to edit/send.
         self._use_native_streaming = False
+        # Tracks whether the native stream bubble has been opened (seed frame sent).
+        # Used in fallback logic to decide if we need to finalize the stream before
+        # falling back to send(). Set to True after seed frame succeeds, even though
+        # seed has zero visible content.
+        self._native_stream_opened = False
         # Number of visible characters last successfully pushed to the
         # native stream. Used for "send only when enough new content has
         # accumulated" throttling so we don't spam frames at WeCom's
@@ -732,6 +737,9 @@ class GatewayStreamConsumer:
                     reply_to=self._initial_reply_to_id,
                     turn_id=self._turn_id,
                 )
+                if seed_ok:
+                    # Mark stream as opened so fallback knows to finalize
+                    self._native_stream_opened = True
             except Exception:
                 logger.debug(
                     "Native streaming seed frame raised; disabling native",
@@ -2133,11 +2141,12 @@ class GatewayStreamConsumer:
             # so it doesn't keep retrying the dead stream session.
             self._use_native_streaming = False
 
-            # If we already sent frames (seed or content), the stream bubble
-            # is open on the client. Try best-effort finalize to close it
-            # before falling through to standalone send. This prevents
-            # leaving an unclosed thinking stream visible to the user.
-            if self._native_last_pushed_len > 0:
+            # If the stream bubble was opened (seed frame succeeded), try
+            # best-effort finalize to close it before falling back to send().
+            # This prevents leaving an unclosed thinking stream visible to the
+            # user. Check _native_stream_opened (not _native_last_pushed_len)
+            # because the seed frame has zero length but still opens the bubble.
+            if self._native_stream_opened:
                 try:
                     await self.adapter.send_stream_frame(
                         text,

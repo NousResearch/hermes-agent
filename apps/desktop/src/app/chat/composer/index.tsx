@@ -192,6 +192,9 @@ export function ChatBar({
   )
 
   const prevSessionIdRef = useRef(sessionId)
+  const sessionDraftsRef = useRef<Record<string, string>>({})
+  const draftRef = useRef(draft)
+  draftRef.current = draft
 
   useEffect(() => {
     const prev = prevSessionIdRef.current
@@ -207,6 +210,13 @@ export function ChatBar({
       return
     }
 
+    // Save the current draft for the session we are leaving
+    if (prev) {
+      sessionDraftsRef.current[prev] = draftRef.current
+    }
+    // Restore the draft for the session we are entering (or clear it)
+    const restoredDraft = (sessionId && sessionDraftsRef.current[sessionId]) ?? ''
+    aui.composer().setText(restoredDraft)
     resetBrowseState(prev)
     setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
   }, [followUpPlaceholders, newSessionPlaceholders, sessionId])

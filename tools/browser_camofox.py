@@ -36,7 +36,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import requests
 
-from hermes_cli.config import cfg_get, load_config
+from hermes_cli.config import cfg_get, load_config, read_raw_config
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
 
@@ -46,10 +46,38 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-_DEFAULT_TIMEOUT = 30  # seconds per HTTP request
+_DEFAULT_TIMEOUT = 30  # fallback when config is unreadable
 _SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
 _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
+
+# Cached command timeout from config (resolved lazily, like browser_tool)
+_cached_cmd_timeout: Optional[int] = None
+_cmd_timeout_resolved = False
+
+
+def _get_command_timeout() -> int:
+    """Return ``browser.command_timeout`` from config, falling back to 30s.
+
+    Mirrors :func:`tools.browser_tool._get_command_timeout` so both the
+    local browser path and the Camofox path honour the same config knob.
+    Result is cached after the first call.
+    """
+    global _cached_cmd_timeout, _cmd_timeout_resolved
+    if _cmd_timeout_resolved:
+        return _cached_cmd_timeout  # type: ignore[return-value]
+
+    _cmd_timeout_resolved = True
+    result = _DEFAULT_TIMEOUT
+    try:
+        cfg = read_raw_config()
+        val = cfg_get(cfg, "browser", "command_timeout")
+        if val is not None:
+            result = max(int(val), 5)  # floor at 5s
+    except Exception as exc:
+        logger.debug("Could not read browser.command_timeout: %s", exc)
+    _cached_cmd_timeout = result
+    return result
 
 
 def _auth_headers() -> Dict[str, str]:
@@ -356,7 +384,7 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
             "listItemId": session["session_key"],
             "url": url,
         },
-        timeout=_DEFAULT_TIMEOUT,
+        timeout=_get_command_timeout(),
         headers=_auth_headers(),
     )
     resp.raise_for_status()
@@ -393,32 +421,40 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
-def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def _post(path: str, body: dict, timeout: Optional[int] = None) -> dict:
     """POST JSON to camofox and return parsed response."""
+    if timeout is None:
+        timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
     resp = requests.post(url, json=body, timeout=timeout, headers=_auth_headers())
     resp.raise_for_status()
     return resp.json()
 
 
-def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def _get(path: str, params: dict = None, timeout: Optional[int] = None) -> dict:
     """GET from camofox and return parsed response."""
+    if timeout is None:
+        timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
     resp = requests.get(url, params=params, timeout=timeout, headers=_auth_headers())
     resp.raise_for_status()
     return resp.json()
 
 
-def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> requests.Response:
+def _get_raw(path: str, params: dict = None, timeout: Optional[int] = None) -> requests.Response:
     """GET from camofox and return raw response (for binary data)."""
+    if timeout is None:
+        timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
     resp = requests.get(url, params=params, timeout=timeout, headers=_auth_headers())
     resp.raise_for_status()
     return resp
 
 
-def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def _delete(path: str, body: dict = None, timeout: Optional[int] = None) -> dict:
     """DELETE to camofox and return parsed response."""
+    if timeout is None:
+        timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
     resp = requests.delete(url, json=body, timeout=timeout, headers=_auth_headers())
     resp.raise_for_status()

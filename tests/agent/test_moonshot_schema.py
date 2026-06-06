@@ -248,6 +248,34 @@ class TestToolListSanitizer:
         out = sanitize_moonshot_tools(tools)
         assert out == tools
 
+    def test_preserves_json_schema_union_type_lists(self):
+        """JSON Schema allows ``type`` to be a list for union types."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "convert",
+                    "description": "Convert a value",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "value": {
+                                "description": "number or string input",
+                                "type": ["number", "string"],
+                            },
+                        },
+                    },
+                },
+            },
+        ]
+
+        out = sanitize_moonshot_tools(tools)
+
+        assert out[0]["function"]["parameters"]["properties"]["value"]["type"] == [
+            "number",
+            "string",
+        ]
+
 
 class TestRealWorldMCPShape:
     """End-to-end: a realistic MCP-style schema that used to 400 on Moonshot."""

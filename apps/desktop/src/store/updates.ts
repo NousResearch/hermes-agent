@@ -398,11 +398,15 @@ export function startUpdatePoller(): void {
 
   pollerStarted = true
   void checkUpdates()
+  void checkBackendUpdates()
   void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
 
   window.addEventListener('focus', onFocus)
-  backgroundTimer = setInterval(() => void checkUpdates(), 30 * 60 * 1000)
+  backgroundTimer = setInterval(() => {
+    void checkUpdates()
+    void checkBackendUpdates()
+  }, 30 * 60 * 1000)
 }
 
 export function stopUpdatePoller(): void {
@@ -424,8 +428,6 @@ function onFocus() {
 
   lastFocusAt = now
   void checkUpdates()
-  // Cheap and safe to re-read on every (throttled) focus: the user may have
-  // updated Hermes from another window/CLI between focuses, and About should
-  // catch up without forcing a restart.
+  void checkBackendUpdates()
   void refreshDesktopVersion()
 }

@@ -3000,24 +3000,36 @@ def get_launchd_label() -> str:
 
 
 def _launchd_domain() -> str:
-    return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    # The `user/<uid>` domain (vs the older `gui/<uid>`) is reachable from
+    # non-Aqua/background sessions (SSH, headless, login items) and is the only
+    # one that supports service management on macOS 26+. `gui/<uid>` returns
+    # error 125 ("Domain does not support specified action") there. See #23387.
+    return f"user/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
-# macOS 26+ broke launchctl management of the per-user GUI domain: `bootstrap`
-# returns error 5 ("Input/output error") and `kickstart` returns error 125
-# ("Domain does not support specified action"). When launchd refuses to manage
-# the gateway we can't supervise it as a service, so we fall back to a detached
-# background process (the documented `nohup hermes gateway run` workaround).
-# See issue #23387.
+# On macOS, exit code 125 ("Domain does not support specified action") and
+# 3/113 ("Could not find service") all mean the job isn't currently loaded in
+# the target domain, so start/restart should re-bootstrap the plist and retry.
+_LAUNCHD_JOB_UNLOADED_EXIT_CODES = frozenset({3, 113, 125})
+
+# When even a fresh bootstrap can't manage the domain, launchctl returns 5
+# ("Input/output error") or a persistent 125. On those hosts launchd cannot
+# supervise the gateway at all, so we degrade to a detached background process
+# (the documented `nohup hermes gateway run` workaround). See #23387.
 _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES = frozenset({5, 125})
 
 
-def _launchctl_domain_unsupported(returncode: int) -> bool:
-    """True when launchctl rejected the action because the domain can't manage it.
+def _launchd_error_indicates_unloaded(exc: subprocess.CalledProcessError) -> bool:
+    """True when launchctl failed because the job isn't loaded (retry bootstrap)."""
+    return exc.returncode in _LAUNCHD_JOB_UNLOADED_EXIT_CODES
 
-    Codes 5 and 125 are emitted by macOS 26+ for `bootstrap`/`kickstart` against
-    the `gui/<uid>` (and `user/<uid>`) domains, which no longer support service
-    management. Treat these as "launchd unavailable" and degrade gracefully.
+
+def _launchctl_domain_unsupported(returncode: int) -> bool:
+    """True when launchctl can't manage the domain even after a fresh bootstrap.
+
+    Codes 5 and 125 persist on macOS hosts where neither `gui/<uid>` nor
+    `user/<uid>` supports service management; treat these as "launchd
+    unavailable" and degrade gracefully to a detached process.
     """
     return returncode in _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES
 
@@ -3170,6 +3182,12 @@ def generate_launchd_plist() -> str:
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
     </dict>
+
+    <key>LimitLoadToSessionType</key>
+    <array>
+        <string>Aqua</string>
+        <string>Background</string>
+    </array>
     
     <key>RunAtLoad</key>
     <true/>
@@ -3321,11 +3339,9 @@ def launchd_start():
             timeout=30,
         )
     except subprocess.CalledProcessError as e:
-        if _launchctl_domain_unsupported(e.returncode):
-            _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
-            return
-        if e.returncode not in {3, 113}:
+        if not _launchd_error_indicates_unloaded(e):
             raise
+        # Job not loaded in this domain — re-bootstrap the plist and retry.
         print("↻ launchd job was unloaded; reloading service definition")
         try:
             subprocess.run(
@@ -3339,6 +3355,8 @@ def launchd_start():
                 timeout=30,
             )
         except subprocess.CalledProcessError as e2:
+            # Even a fresh bootstrap can't manage the domain on this host —
+            # degrade to a detached background process (issue #23387).
             if not _launchctl_domain_unsupported(e2.returncode):
                 raise
             _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
@@ -3364,10 +3382,12 @@ def launchd_stop():
     try:
         subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
     except subprocess.CalledProcessError as e:
-        # 3/113: job already unloaded. 5/125: macOS 26+ can't manage the domain
-        # (issue #23387) — the gateway is a detached fallback process, so just
-        # fall through to the PID-based kill below.
-        if e.returncode in {3, 113} or _launchctl_domain_unsupported(e.returncode):
+        # Job already unloaded (3/113/125), or the domain can't be managed at
+        # all (5/125, macOS 26+ detached-fallback process, issue #23387) — in
+        # both cases just fall through to the PID-based kill below.
+        if _launchd_error_indicates_unloaded(e) or _launchctl_domain_unsupported(
+            e.returncode
+        ):
             pass
         else:
             raise
@@ -3452,13 +3472,13 @@ def launchd_restart():
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
-        if _launchctl_domain_unsupported(e.returncode):
-            # macOS 26+ can't kickstart the domain (issue #23387). The old
-            # process was already drained/terminated above, so relaunch a
-            # fresh detached gateway.
-            _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
-            return
-        if e.returncode not in {3, 113}:
+        if not _launchd_error_indicates_unloaded(e):
+            # Not a "job unloaded" code. If the domain is fundamentally
+            # unmanageable (error 5), degrade to detached; the old process was
+            # already drained/terminated above. Otherwise re-raise.
+            if _launchctl_domain_unsupported(e.returncode):
+                _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
+                return
             raise
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")

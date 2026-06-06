@@ -1,6 +1,6 @@
 ---
 name: godmode
-description: "Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN."
+description: "Red-team prompt robustness and refusal-boundary evaluation workflows."
 version: 1.0.0
 author: Hermes Agent + Teknium
 license: MIT

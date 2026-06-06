@@ -1,6 +1,6 @@
 ---
 name: obliteratus
-description: "OBLITERATUS: abliterate LLM refusals (diff-in-means)."
+description: "Model refusal-behavior analysis workflows using diff-in-means methods."
 version: 2.0.0
 author: Hermes Agent
 license: MIT

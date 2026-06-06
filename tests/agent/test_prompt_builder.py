@@ -4,6 +4,7 @@ import builtins
 import importlib
 import logging
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -29,6 +30,7 @@ from agent.prompt_builder import (
     WSL_ENVIRONMENT_HINT,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+from agent.skill_utils import extract_skill_description, parse_frontmatter
 
 
 # =========================================================================
@@ -1193,6 +1195,29 @@ class TestBuildSkillsSystemPromptConditional:
             available_toolsets=set(),
         )
         assert "nested-null" in result
+
+
+class TestBundledSkillDescriptions:
+    def test_provider_prompt_descriptions_avoid_sensitive_red_team_terms(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        skill_files = [
+            repo_root / "skills" / "red-teaming" / "godmode" / "SKILL.md",
+            repo_root / "skills" / "mlops" / "inference" / "obliteratus" / "SKILL.md",
+        ]
+        forbidden = (
+            "jailbreak",
+            "godmode",
+            "ultraplinian",
+            "parseltongue",
+            "abliterate",
+            "uncensor",
+        )
+
+        for skill_file in skill_files:
+            frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
+            description = extract_skill_description(frontmatter).lower()
+            for term in forbidden:
+                assert term not in description
 
 
 # =========================================================================

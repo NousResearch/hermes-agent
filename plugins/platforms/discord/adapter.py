@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -556,6 +557,18 @@ def _read_dm_role_auth_guild() -> Optional[int]:
     return guild_id if guild_id > 0 else None
 
 
+@dataclass
+class _DiscordEditState:
+    """Lightweight per-message state used to route meaningful edits once."""
+
+    last_seen_has_bot_mention: bool = False
+    processed_due_to_edit: bool = False
+    processed_triggers: set = field(default_factory=set)
+    attachment_hash: str = ""
+    content_hash: str = ""
+    updated_at: float = field(default_factory=time.time)
+
+
 class DiscordAdapter(BasePlatformAdapter):
     """
     Discord bot adapter.
@@ -626,6 +639,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Message edit trigger state. Discord only fires MESSAGE_CREATE on the
+        # original send; if a user later edits in @clawbot, MESSAGE_UPDATE must
+        # decide whether that edit should be treated like a fresh inbound turn.
+        self._edit_seen: Dict[str, _DiscordEditState] = {}
+        self._edit_seen_ttl_seconds = float(os.getenv("HERMES_DISCORD_EDIT_SEEN_TTL_SECONDS", "259200"))
+        self._edit_seen_max_size = int(os.getenv("HERMES_DISCORD_EDIT_SEEN_MAX_SIZE", "5000"))
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -851,7 +870,26 @@ class DiscordAdapter(BasePlatformAdapter):
                         if "*" not in _free_channels and not (_channel_ids & _free_channels):
                             return
 
+                adapter_self._record_discord_edit_state(message, processed=False)
                 await self._handle_message(message)
+
+            @self._client.event
+            async def on_message_edit(before: DiscordMessage, after: DiscordMessage):
+                # Cached MESSAGE_UPDATE path. ``before`` lets us detect the
+                # exact transition "no mention" -> "mentions us" without
+                # waiting for raw-event fallback.
+                await adapter_self._handle_message_edit(before, after, raw=False)
+
+            @self._client.event
+            async def on_raw_message_edit(payload):
+                # Raw path still fires when discord.py's message cache missed
+                # ``before`` (cold start, low cache, old message). Fetch once
+                # so attachments/content are complete before routing.
+                cached_before = getattr(payload, "cached_message", None)
+                after = await adapter_self._fetch_message_for_raw_update(payload)
+                if after is None:
+                    return
+                await adapter_self._handle_message_edit(cached_before, after, raw=True)
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
@@ -4699,6 +4737,165 @@ class DiscordAdapter(BasePlatformAdapter):
                 if resp.status != 200:
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
+
+    def _message_has_bot_mention(self, message: Any) -> bool:
+        """Return True when a Discord message mentions this bot."""
+        bot = getattr(self._client, "user", None) if self._client else None
+        bot_id = getattr(bot, "id", None)
+        if bot is not None:
+            try:
+                if bot in (getattr(message, "mentions", None) or []):
+                    return True
+            except Exception:
+                pass
+        if bot_id is None:
+            return False
+        content = getattr(message, "content", "") or ""
+        return f"<@{bot_id}>" in content or f"<@!{bot_id}>" in content
+
+    def _discord_attachment_fingerprint(self, message: Any) -> str:
+        """Stable-ish fingerprint for attachments on a Discord message."""
+        parts = []
+        for att in getattr(message, "attachments", None) or []:
+            parts.append(":".join(str(x or "") for x in (
+                getattr(att, "id", None),
+                getattr(att, "filename", None),
+                getattr(att, "size", None),
+                getattr(att, "content_type", None),
+                getattr(att, "url", None),
+            )))
+        payload = "|".join(parts)
+        return hashlib.sha256(payload.encode("utf-8", "ignore")).hexdigest()
+
+    def _discord_content_fingerprint(self, message: Any) -> str:
+        content = getattr(message, "content", "") or ""
+        return hashlib.sha256(content.encode("utf-8", "ignore")).hexdigest()
+
+    def _prune_discord_edit_seen(self) -> None:
+        now = time.time()
+        cutoff = now - self._edit_seen_ttl_seconds
+        fresh = {k: v for k, v in self._edit_seen.items() if v.updated_at >= cutoff}
+        if len(fresh) > self._edit_seen_max_size:
+            newest = sorted(fresh.items(), key=lambda item: item[1].updated_at)[-self._edit_seen_max_size:]
+            fresh = dict(newest)
+        self._edit_seen = fresh
+
+    def _record_discord_edit_state(
+        self,
+        message: Any,
+        *,
+        processed: bool = False,
+        trigger_reason: Optional[str] = None,
+    ) -> _DiscordEditState:
+        """Record the latest observed mention/content/attachment state."""
+        message_id = str(getattr(message, "id", "") or "")
+        if not message_id:
+            return _DiscordEditState()
+        self._prune_discord_edit_seen()
+        state = self._edit_seen.get(message_id) or _DiscordEditState()
+        state.last_seen_has_bot_mention = self._message_has_bot_mention(message)
+        state.attachment_hash = self._discord_attachment_fingerprint(message)
+        state.content_hash = self._discord_content_fingerprint(message)
+        state.updated_at = time.time()
+        if processed and trigger_reason:
+            state.processed_triggers.add(trigger_reason)
+            if trigger_reason.startswith("message_update"):
+                state.processed_due_to_edit = True
+        self._edit_seen[message_id] = state
+        return state
+
+    def _message_edit_trigger_reason(self, before: Any, after: Any) -> Tuple[bool, str]:
+        """Classify whether an edit should enter the inbound pipeline."""
+        message_id = str(getattr(after, "id", "") or "")
+        previous_state = self._edit_seen.get(message_id)
+        before_has_mention = self._message_has_bot_mention(before) if before is not None else False
+        if previous_state is not None:
+            before_has_mention = before_has_mention or previous_state.last_seen_has_bot_mention
+
+        after_has_mention = self._message_has_bot_mention(after)
+        empty_attachment_hash = hashlib.sha256(b"").hexdigest()
+        before_had_attachments = bool(getattr(before, "attachments", None) or [])
+        if previous_state is not None and previous_state.attachment_hash != empty_attachment_hash:
+            before_had_attachments = True
+        after_has_attachments = bool(getattr(after, "attachments", None) or [])
+        content = getattr(after, "content", "") or ""
+        redo = bool(re.search(r"(?i)(请重新处理|重新处理|重试|再试|redo|retry|reprocess|rerun)", content))
+        mention_added = (not before_has_mention) and after_has_mention
+        attachment_added = after_has_mention and (not before_had_attachments) and after_has_attachments
+
+        if not after_has_mention:
+            return False, "no_bot_mention"
+        if mention_added:
+            return True, "message_update:mention_added"
+        if attachment_added:
+            return True, "message_update:attachment_added"
+        if redo:
+            return True, "message_update:explicit_redo"
+        return False, "no_new_bot_mention"
+
+    async def _fetch_message_for_raw_update(self, payload: Any) -> Optional[Any]:
+        """Fetch full Discord message for raw MESSAGE_UPDATE when payload is partial."""
+        if not self._client:
+            return None
+        channel_id = getattr(payload, "channel_id", None)
+        message_id = getattr(payload, "message_id", None)
+        if channel_id is None or message_id is None:
+            logger.info("ignored message edit: raw update missing channel_id/message_id")
+            return None
+        try:
+            channel = self._client.get_channel(channel_id)
+            if channel is None:
+                channel = await self._client.fetch_channel(channel_id)
+            if channel is None or not hasattr(channel, "fetch_message"):
+                logger.info("ignored message edit: unable to resolve channel %s for fetch", channel_id)
+                return None
+            return await channel.fetch_message(message_id)
+        except Exception as e:
+            logger.info("ignored message edit: failed to fetch message %s/%s: %s", channel_id, message_id, e)
+            return None
+
+    async def _handle_message_edit(self, before: Any, after: Any, *, raw: bool = False) -> None:
+        """Route meaningful Discord MESSAGE_UPDATE events into the normal pipeline."""
+        if after is None:
+            return
+        if self._client and getattr(after, "author", None) == getattr(self._client, "user", None):
+            return
+        try:
+            if getattr(after, "type", None) not in {discord.MessageType.default, discord.MessageType.reply}:
+                return
+        except Exception:
+            pass
+
+        should_process, reason = self._message_edit_trigger_reason(before, after)
+        state = self._edit_seen.get(str(getattr(after, "id", "") or ""))
+        log_prefix = "inbound message edit" if should_process else "ignored message edit"
+        logger.info(
+            "%s: message_id=%s channel_id=%s mention_added=%s reason=%s raw=%s",
+            log_prefix,
+            getattr(after, "id", None),
+            getattr(getattr(after, "channel", None), "id", None),
+            reason == "message_update:mention_added",
+            reason,
+            raw,
+        )
+        if not should_process:
+            self._record_discord_edit_state(after, processed=False)
+            return
+        if state is not None and reason in state.processed_triggers:
+            logger.info("ignored message edit: already processed message_id=%s reason=%s", getattr(after, "id", None), reason)
+            self._record_discord_edit_state(after, processed=False)
+            return
+
+        if reason == "message_update:mention_added":
+            note = "[System note: the user edited this Discord message to @mention the bot after sending it; process it normally.]"
+            content = getattr(after, "content", "") or ""
+            try:
+                after.content = f"{note}\n\n{content}" if content else note
+            except Exception:
+                pass
+
+        await self._handle_message(after)
+        self._record_discord_edit_state(after, processed=True, trigger_reason=reason)
 
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""

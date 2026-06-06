@@ -40,6 +40,7 @@ import {
   Radio,
   RotateCw,
   Settings,
+  SlidersHorizontal,
   Shield,
   ShieldCheck,
   Sparkles,
@@ -74,6 +75,8 @@ import AnalyticsPage from "@/pages/AnalyticsPage";
 import ModelsPage from "@/pages/ModelsPage";
 import CronPage from "@/pages/CronPage";
 import ProfilesPage from "@/pages/ProfilesPage";
+import OrganizationChartPage from "@/pages/OrganizationChartPage";
+import CrewControlPage from "@/pages/CrewControlPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import McpPage from "@/pages/McpPage";
@@ -136,6 +139,8 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/webhooks": WebhooksPage,
   "/system": SystemPage,
   "/profiles": ProfilesPage,
+  "/organization-chart": OrganizationChartPage,
+  "/crew-control": CrewControlPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -177,6 +182,8 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/webhooks", label: "Webhooks", icon: Webhook },
   { path: "/pairing", label: "Pairing", icon: ShieldCheck },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
+  { path: "/organization-chart", label: "Organization Chart (OC)", icon: Users },
+  { path: "/crew-control", label: "Crew Control", icon: SlidersHorizontal },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   { path: "/system", label: "System", icon: Wrench },

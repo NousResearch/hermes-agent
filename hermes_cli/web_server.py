@@ -5894,6 +5894,7 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "is_default": bool(_profile_attr(info, "is_default", False)),
         "model": _profile_attr(info, "model"),
         "provider": _profile_attr(info, "provider"),
+        "gateway_running": bool(_profile_attr(info, "gateway_running", False)),
         "has_env": bool(_profile_attr(info, "has_env", False)),
         "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
     }
@@ -5916,6 +5917,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             "is_default": True,
             "model": model,
             "provider": provider,
+            "gateway_running": _safe(lambda: profiles_mod._check_gateway_running(default_home), False),
             "has_env": (default_home / ".env").exists(),
             "skill_count": _safe(lambda: profiles_mod._count_skills(default_home), 0),
         })
@@ -5932,6 +5934,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
                 "is_default": False,
                 "model": model,
                 "provider": provider,
+                "gateway_running": _safe(lambda entry=entry: profiles_mod._check_gateway_running(entry), False),
                 "has_env": (entry / ".env").exists(),
                 "skill_count": _safe(lambda entry=entry: profiles_mod._count_skills(entry), 0),
             })
@@ -5955,6 +5958,456 @@ def _profile_setup_command(name: str) -> str:
     """Return the shell command used to configure a profile in the CLI."""
     _resolve_profile_dir(name)
     return "hermes setup" if name == "default" else f"{name} setup"
+
+
+_CREW_SAFE_METADATA_KEYS = {
+    "display_name",
+    "role",
+    "level",
+    "department",
+    "manager",
+    "board",
+    "lanes",
+    "telegram_bot",
+    "telegram_topic",
+}
+_CREW_LEVEL_ORDER = {"main": 0, "manager": 1, "worker": 2, "qa": 3, "unknown": 4}
+_CREW_LEVELS = set(_CREW_LEVEL_ORDER)
+
+
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _crew_metadata_path() -> Path:
+    """Shared, non-secret organization metadata path for the whole crew."""
+    from hermes_cli import profiles as profiles_mod
+    try:
+        return profiles_mod._get_default_hermes_home() / "crew" / "organization.yaml"
+    except Exception:
+        return get_hermes_home() / "crew" / "organization.yaml"
+
+
+def _load_crew_metadata() -> tuple[Dict[str, Any], List[str]]:
+    """Load safe crew metadata, failing soft on malformed YAML."""
+    path = _crew_metadata_path()
+    if not path.exists():
+        return {"version": 1, "profiles": {}}, []
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"version": 1, "profiles": {}}, [f"crew metadata could not be parsed: {exc}"]
+    if loaded is None:
+        return {"version": 1, "profiles": {}}, []
+    if not isinstance(loaded, dict):
+        return {"version": 1, "profiles": {}}, ["crew metadata top-level value must be an object"]
+    raw_profiles = loaded.get("profiles") or {}
+    if not isinstance(raw_profiles, dict):
+        return {"version": loaded.get("version", 1), "profiles": {}}, ["crew metadata profiles value must be an object"]
+    profiles: Dict[str, Dict[str, Any]] = {}
+    warnings: List[str] = []
+    for name, raw_meta in raw_profiles.items():
+        if not isinstance(name, str):
+            continue
+        if not isinstance(raw_meta, dict):
+            warnings.append(f"crew metadata for {name} must be an object")
+            continue
+        safe_meta: Dict[str, Any] = {}
+        for key, value in raw_meta.items():
+            if key not in _CREW_SAFE_METADATA_KEYS:
+                continue
+            if key == "lanes":
+                if isinstance(value, list):
+                    safe_meta[key] = [str(v) for v in value if isinstance(v, (str, int, float))]
+                continue
+            if key == "level":
+                safe_meta[key] = str(value) if str(value) in _CREW_LEVELS else "unknown"
+                continue
+            if value is None or isinstance(value, (str, int, float, bool)):
+                safe_meta[key] = value
+        profiles[name] = safe_meta
+    return {"version": loaded.get("version", 1), "profiles": profiles}, warnings
+
+
+def _crew_profile_dicts() -> List[Dict[str, Any]]:
+    from hermes_cli import profiles as profiles_mod
+    try:
+        return [_profile_to_dict(p) for p in profiles_mod.list_profiles()]
+    except Exception:
+        _log.exception("Failed to list profiles for crew dashboard; falling back to directory scan")
+        return _fallback_profile_dicts(profiles_mod)
+
+
+def _read_profile_soul_status(profile_dir: Path) -> bool:
+    try:
+        return (profile_dir / "SOUL.md").exists()
+    except Exception:
+        return False
+
+
+def _profile_gateway_status(profile: Dict[str, Any]) -> str:
+    try:
+        return "running" if bool(profile.get("gateway_running")) else "stopped"
+    except Exception:
+        return "unknown"
+
+
+def _profile_snapshot(profile: Dict[str, Any]) -> Dict[str, Any]:
+    profile_dir = Path(str(profile.get("path") or ""))
+    return {
+        "name": str(profile.get("name") or ""),
+        "path": str(profile.get("path") or ""),
+        "is_default": bool(profile.get("is_default", False)),
+        "model": profile.get("model"),
+        "provider": profile.get("provider"),
+        "gateway_status": _profile_gateway_status(profile),
+        "has_env": bool(profile.get("has_env", False)),
+        "has_soul": _read_profile_soul_status(profile_dir),
+        "skill_count": int(profile.get("skill_count") or 0),
+        "toolsets": profile.get("toolsets") if isinstance(profile.get("toolsets"), list) else [],
+        "last_seen_at": None,
+        "current_task": None,
+        "recent_error_count": 0,
+    }
+
+
+def _title_profile_name(name: str) -> str:
+    return " ".join(part.capitalize() for part in name.replace("_", "-").split("-") if part) or name
+
+
+def _infer_profile_role(name: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    profiles = metadata.get("profiles") or {}
+    raw = profiles.get(name)
+    if isinstance(raw, dict):
+        meta = dict(raw); status = "classified"
+    elif name == "default":
+        meta = {"display_name": "Jarvis", "role": "COO / Main Agent", "level": "main", "department": "Executive", "manager": None}; status = "inferred"
+    elif name == "atlas":
+        meta = {"display_name": "Atlas", "role": "IT Team Manager", "level": "manager", "department": "IT Team", "manager": "default"}; status = "inferred"
+    elif name == "muse":
+        meta = {"display_name": "Muse", "role": "Marketing Team Manager", "level": "manager", "department": "Marketing Team", "manager": "default"}; status = "inferred"
+    elif name == "qa":
+        meta = {"display_name": "QA", "role": "Quality Assurance", "level": "qa", "department": "Unassigned / New Profiles", "manager": None}; status = "missing"
+    else:
+        meta = {"display_name": _title_profile_name(name), "role": "Unclassified profile", "level": "unknown", "department": "Unassigned / New Profiles", "manager": None}; status = "missing"
+    level = str(meta.get("level") or "unknown")
+    if level not in _CREW_LEVELS:
+        level = "unknown"
+    return {
+        "display_name": str(meta.get("display_name") or _title_profile_name(name)),
+        "role": str(meta.get("role") or "Unclassified profile"),
+        "level": level,
+        "department": str(meta.get("department") or "Unassigned / New Profiles"),
+        "manager": meta.get("manager") if meta.get("manager") not in ("", "none") else None,
+        "board": meta.get("board"),
+        "lanes": meta.get("lanes") if isinstance(meta.get("lanes"), list) else [],
+        "telegram_bot": meta.get("telegram_bot"),
+        "telegram_topic": meta.get("telegram_topic"),
+        "metadata_status": status,
+    }
+
+
+def _compute_profile_health(snapshot: Dict[str, Any], role_meta: Dict[str, Any]) -> tuple[str, List[str]]:
+    reasons: List[str] = []
+    status = str(snapshot.get("gateway_status") or "unknown")
+    if status == "failed":
+        return "red", ["Gateway reported failed"]
+    if role_meta.get("metadata_status") == "missing":
+        reasons.append("Needs classification in crew metadata")
+    if status == "stopped":
+        reasons.append("Gateway stopped")
+    elif status == "unknown":
+        reasons.append("Gateway status unknown")
+    if not snapshot.get("has_env"):
+        reasons.append(".env missing")
+    if not snapshot.get("has_soul"):
+        reasons.append("SOUL.md missing")
+    if role_meta.get("metadata_status") == "missing" and status in {"stopped", "unknown"}:
+        return "gray", reasons or ["No runtime signal"]
+    if reasons:
+        return "yellow", reasons
+    return "green", ["Profile classified and basic config present"]
+
+
+def _crew_summary(nodes: List[Dict[str, Any]]) -> Dict[str, int]:
+    summary = {"total": len(nodes), "main": 0, "managers": 0, "workers": 0, "qa": 0, "unknown": 0, "running": 0, "stopped": 0, "green": 0, "yellow": 0, "red": 0, "gray": 0, "unassigned": 0}
+    for node in nodes:
+        level = node.get("level")
+        if level == "main": summary["main"] += 1
+        elif level == "manager": summary["managers"] += 1
+        elif level == "worker": summary["workers"] += 1
+        elif level == "qa": summary["qa"] += 1
+        else: summary["unknown"] += 1
+        gateway_status = node.get("profile", {}).get("gateway_status")
+        if gateway_status == "running": summary["running"] += 1
+        elif gateway_status == "stopped": summary["stopped"] += 1
+        health = node.get("health")
+        if health in {"green", "yellow", "red", "gray"}: summary[health] += 1
+        if node.get("metadata_status") == "missing": summary["unassigned"] += 1
+    return summary
+
+
+def _crew_departments(nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for node in nodes:
+        dept = str(node.get("department") or "Unassigned / New Profiles")
+        entry = grouped.setdefault(dept, {"name": dept, "managers": [], "nodes": [], "count": 0})
+        entry["nodes"].append(node); entry["count"] += 1
+        manager_name = node.get("profile", {}).get("name")
+        if node.get("level") == "manager" and manager_name not in entry["managers"]:
+            entry["managers"].append(manager_name)
+    departments = list(grouped.values())
+    for entry in departments:
+        entry["nodes"].sort(key=lambda n: (_CREW_LEVEL_ORDER.get(str(n.get("level")), 99), str(n.get("display_name", "")).lower()))
+        entry["managers"] = sorted([m for m in entry["managers"] if m])
+    departments.sort(key=lambda d: str(d["name"]).lower())
+    return departments
+
+
+def _build_crew_nodes() -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    metadata, warnings = _load_crew_metadata(); metadata_path = _crew_metadata_path(); nodes: List[Dict[str, Any]] = []
+    for profile in _crew_profile_dicts():
+        snapshot = _profile_snapshot(profile); role_meta = _infer_profile_role(snapshot["name"], metadata); health, reasons = _compute_profile_health(snapshot, role_meta)
+        nodes.append({"profile": snapshot, "display_name": role_meta["display_name"], "role": role_meta["role"], "level": role_meta["level"], "department": role_meta["department"], "manager": role_meta["manager"], "board": role_meta.get("board"), "lanes": role_meta.get("lanes", []), "telegram_bot": role_meta.get("telegram_bot"), "telegram_topic": role_meta.get("telegram_topic"), "metadata_status": role_meta["metadata_status"], "health": health, "health_reasons": reasons})
+    nodes.sort(key=lambda n: (_CREW_LEVEL_ORDER.get(str(n.get("level")), 99), str(n.get("department", "")).lower(), str(n.get("display_name", "")).lower()))
+    source = {"profiles": "hermes_cli.profiles.list_profiles", "metadata": str(metadata_path), "metadata_exists": metadata_path.exists(), "warnings": warnings}
+    return nodes, source
+
+
+def _crew_organization_payload() -> Dict[str, Any]:
+    nodes, source = _build_crew_nodes()
+    return {"generated_at": _utc_now_iso(), "source": source, "summary": _crew_summary(nodes), "nodes": nodes, "departments": _crew_departments(nodes), "unassigned": [node for node in nodes if node.get("metadata_status") == "missing"]}
+
+
+@app.get("/api/crew/organization")
+async def get_crew_organization():
+    return _crew_organization_payload()
+
+
+@app.get("/api/crew/control")
+async def get_crew_control():
+    nodes, source = _build_crew_nodes()
+    return {"generated_at": _utc_now_iso(), "source": source, "summary": _crew_summary(nodes), "profiles": nodes}
+
+
+@app.get("/api/crew/profiles/{name}")
+async def get_crew_profile(name: str):
+    _resolve_profile_dir(name)
+    nodes, _source = _build_crew_nodes()
+    for node in nodes:
+        if node.get("profile", {}).get("name") == name:
+            return {"generated_at": _utc_now_iso(), "node": node}
+    raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
+
+
+# ---------------------------------------------------------------------------
+# Crew Usage / Token Monitor API
+# ---------------------------------------------------------------------------
+
+_SECRET_SHAPED_KEYS = {
+    "api_key", "api_key_id", "secret", "secret_key", "token", "auth_token",
+    "access_token", "refresh_token", "password", "passwd", "credential",
+    "auth", "auth_json", "cookie", "session_key", "private_key",
+    "env", "env_values", "raw_log", "system_prompt", "handoff_state",
+    "message_content", "title",
+}
+
+
+def _sanitize_profile_usage_payload(payload: dict) -> dict:
+    """Strip any secret-shaped keys from the usage payload recursively."""
+    def _walk(node):
+        if isinstance(node, dict):
+            return {k: _walk(v) for k, v in node.items()
+                    if k.lower() not in _SECRET_SHAPED_KEYS}
+        if isinstance(node, list):
+            return [_walk(v) for v in node]
+        if isinstance(node, str) and len(node) > 120:
+            return "[truncated]"
+        return node
+    return _walk(payload)
+
+
+@app.get("/api/crew/usage")
+async def get_crew_usage(days: int = 30):
+    """Per-profile aggregate token/session usage across all profiles.
+
+    Args:
+        days: Time window in days. 0=today only, -1=all time.
+    """
+    from hermes_state import SessionDB, get_hermes_home as sh_get_home
+    from pathlib import Path
+
+    cutoff: Optional[float] = None
+    if days >= 0:
+        cutoff = time.time() - (days * 86400)
+
+    # Load crew metadata for department grouping
+    metadata, _warnings = _load_crew_metadata()
+    metadata_profiles = metadata.get("profiles") or {}
+
+    # Get all profiles and their usage
+    profiles_usage: List[Dict[str, Any]] = []
+    total_aggregate = {
+        "sessions": 0, "input_tokens": 0, "output_tokens": 0,
+        "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0,
+        "total_tokens": 0, "estimated_cost_usd": 0.0,
+    }
+    departments: Dict[str, Dict[str, Any]] = {}
+
+    for profile in _crew_profile_dicts():
+        name = str(profile.get("name") or "")
+        profile_dir = Path(str(profile.get("path") or ""))
+        state_db_path = profile_dir / "state.db"
+
+        profile_usage: Dict[str, Any] = {
+            "profile_name": name,
+            "profile": _profile_snapshot(profile),
+        }
+
+        # Determine role metadata
+        profile_meta = _infer_profile_role(name, metadata)
+        profile_usage["display_name"] = profile_meta["display_name"]
+        profile_usage["department"] = profile_meta["department"]
+        profile_usage["level"] = profile_meta["level"]
+        profile_usage["manager"] = profile_meta["manager"]
+
+        # Per-profile aggregate and per-worker breakdown
+        profile_total: Dict[str, Any] = {
+            "sessions": 0, "input_tokens": 0, "output_tokens": 0,
+            "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0,
+            "total_tokens": 0, "estimated_cost_usd": 0.0,
+            "last_active": None, "model": None, "provider": None,
+        }
+        workers: List[Dict[str, Any]] = []
+
+        if state_db_path.exists():
+            try:
+                db = SessionDB(db_path=state_db_path)
+                try:
+                    where_clause = "WHERE started_at > ?" if cutoff is not None else ""
+                    # Per-worker (per-source) breakdown
+                    cur_w = db._conn.execute(f""""
+                        SELECT
+                            COALESCE(source, 'unknown') as source,
+                            COUNT(*) as sessions,
+                            SUM(COALESCE(input_tokens, 0)) as input_tokens,
+                            SUM(COALESCE(output_tokens, 0)) as output_tokens,
+                            SUM(COALESCE(cache_read_tokens, 0)) as cache_read_tokens,
+                            SUM(COALESCE(cache_write_tokens, 0)) as cache_write_tokens,
+                            SUM(COALESCE(reasoning_tokens, 0)) as reasoning_tokens,
+                            SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
+                                + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)
+                                + COALESCE(reasoning_tokens, 0)) as total_tokens,
+                            COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost_usd,
+                            MAX(started_at) as last_active
+                        FROM sessions {where_clause}
+                        GROUP BY source
+                        ORDER BY SUM(COALESCE(input_tokens, 0)) + SUM(COALESCE(output_tokens, 0)) DESC
+                    """, *([cutoff] if cutoff is not None else []))
+                    for row in cur_w.fetchall():
+                        row_dict = dict(row)
+                        worker_entry = {
+                            "source": str(row_dict.get("source", "unknown")),
+                            "sessions": int(row_dict.get("sessions", 0) or 0),
+                            "input_tokens": int(row_dict.get("input_tokens", 0) or 0),
+                            "output_tokens": int(row_dict.get("output_tokens", 0) or 0),
+                            "cache_read_tokens": int(row_dict.get("cache_read_tokens", 0) or 0),
+                            "cache_write_tokens": int(row_dict.get("cache_write_tokens", 0) or 0),
+                            "reasoning_tokens": int(row_dict.get("reasoning_tokens", 0) or 0),
+                            "total_tokens": int(row_dict.get("total_tokens", 0) or 0),
+                            "estimated_cost_usd": float(row_dict.get("estimated_cost_usd", 0) or 0),
+                            "last_active": row_dict.get("last_active"),
+                            "model": None,
+                            "provider": None,
+                        }
+                        workers.append(worker_entry)
+
+                    # Profile total row
+                    cur_t = db._conn.execute(f""""
+                        SELECT
+                            COUNT(*) as sessions,
+                            SUM(COALESCE(input_tokens, 0)) as input_tokens,
+                            SUM(COALESCE(output_tokens, 0)) as output_tokens,
+                            SUM(COALESCE(cache_read_tokens, 0)) as cache_read_tokens,
+                            SUM(COALESCE(cache_write_tokens, 0)) as cache_write_tokens,
+                            SUM(COALESCE(reasoning_tokens, 0)) as reasoning_tokens,
+                            SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
+                                + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)
+                                + COALESCE(reasoning_tokens, 0)) as total_tokens,
+                            COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost_usd,
+                            MAX(started_at) as last_active
+                        FROM sessions {where_clause}
+                    """, *([cutoff] if cutoff is not None else []))
+                    total_row = dict(cur_t.fetchone())
+
+                    # Lightweight model/provider from latest session (Step 2-alt:
+                    # avoids correlated-subquery param bugs)
+                    if cutoff is not None:
+                        latest_row = db._conn.execute(
+                            "SELECT model, billing_provider FROM sessions WHERE started_at > ? ORDER BY started_at DESC LIMIT 1",
+                            (cutoff,),
+                        ).fetchone()
+                    else:
+                        latest_row = db._conn.execute(
+                            "SELECT model, billing_provider FROM sessions ORDER BY started_at DESC LIMIT 1"
+                        ).fetchone()
+                    latest_model = latest_row["model"] if latest_row else None
+                    latest_provider = latest_row["billing_provider"] if latest_row else None
+
+                    profile_total = {
+                        "sessions": int(total_row.get("sessions", 0) or 0),
+                        "input_tokens": int(total_row.get("input_tokens", 0) or 0),
+                        "output_tokens": int(total_row.get("output_tokens", 0) or 0),
+                        "cache_read_tokens": int(total_row.get("cache_read_tokens", 0) or 0),
+                        "cache_write_tokens": int(total_row.get("cache_write_tokens", 0) or 0),
+                        "reasoning_tokens": int(total_row.get("reasoning_tokens", 0) or 0),
+                        "total_tokens": int(total_row.get("total_tokens", 0) or 0),
+                        "estimated_cost_usd": float(total_row.get("estimated_cost_usd", 0) or 0),
+                        "last_active": total_row.get("last_active"),
+                        "model": latest_model,
+                        "provider": latest_provider,
+                    }
+
+                    # Accumulate totals
+                    total_aggregate["sessions"] += profile_total["sessions"]
+                    total_aggregate["input_tokens"] += profile_total["input_tokens"]
+                    total_aggregate["output_tokens"] += profile_total["output_tokens"]
+                    total_aggregate["cache_read_tokens"] += profile_total["cache_read_tokens"]
+                    total_aggregate["cache_write_tokens"] += profile_total["cache_write_tokens"]
+                    total_aggregate["reasoning_tokens"] += profile_total["reasoning_tokens"]
+                    total_aggregate["total_tokens"] += profile_total["total_tokens"]
+                    total_aggregate["estimated_cost_usd"] += profile_total["estimated_cost_usd"]
+
+                finally:
+                    db.close()
+            except Exception as exc:
+                _log.warning("Failed to read state.db for profile '%s': %s", name, exc)
+                profile_total["error"] = str(exc)
+
+        profile_usage["total"] = profile_total
+        profile_usage["workers"] = workers
+        profiles_usage.append(profile_usage)
+
+        # Department grouping
+        dept = str(profile_meta.get("department") or "Unassigned / New Profiles")
+        entry = departments.setdefault(dept, {"department": dept, "profiles": [], "sessions": 0, "total_tokens": 0, "estimated_cost_usd": 0.0})
+        entry["profiles"].append(profile_usage)
+        entry["sessions"] += profile_total["sessions"]
+        entry["total_tokens"] += profile_total["total_tokens"]
+        entry["estimated_cost_usd"] += profile_total["estimated_cost_usd"]
+
+    dept_list = sorted(departments.values(), key=lambda d: str(d["department"]).lower())
+
+    payload = {
+        "generated_at": _utc_now_iso(),
+        "period_days": days,
+        "profiles": profiles_usage,
+        "departments": dept_list,
+        "totals": total_aggregate,
+    }
+
+    return _sanitize_profile_usage_payload(payload)
 
 
 @app.get("/api/profiles")

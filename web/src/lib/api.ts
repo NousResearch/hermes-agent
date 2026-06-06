@@ -18,6 +18,11 @@ export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
+import type {
+  CrewControlResponse,
+  CrewOrganizationResponse,
+  CrewProfileDetail,
+} from "@/types/crew";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -364,6 +369,14 @@ export const api = {
   // Profiles (minimal)
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
+  getCrewOrganization: () =>
+    fetchJSON<CrewOrganizationResponse>("/api/crew/organization"),
+  getCrewControl: () =>
+    fetchJSON<CrewControlResponse>("/api/crew/control"),
+  getCrewProfile: (name: string) =>
+    fetchJSON<CrewProfileDetail>(
+      `/api/crew/profiles/${encodeURIComponent(name)}`,
+    ),
   createProfile: (body: { name: string; clone_from_default: boolean }) =>
     fetchJSON<{ ok: boolean; name: string; path: string }>("/api/profiles", {
       method: "POST",

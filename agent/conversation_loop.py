@@ -1334,6 +1334,19 @@ def run_conversation(
                     or str(agent.base_url or "").lower().startswith("acp+tcp://")
                 ):
                     _use_streaming = False
+                elif (
+                    agent.api_mode == "anthropic_messages"
+                    and getattr(agent, "_use_prompt_caching", False)
+                    and (agent.provider or "").strip().lower()
+                        in {"minimax", "minimax-oauth", "minimax-cn"}
+                ):
+                    # MiniMax's Anthropic-compatible non-streaming endpoint
+                    # reports and bills prompt-cache reads correctly, but its
+                    # streaming SSE path returns cache_read_input_tokens=0 and
+                    # re-reports the full input on repeated cache_control
+                    # calls. Prefer cache economics over token streaming for
+                    # MiniMax prompt-cached sessions.
+                    _use_streaming = False
                 elif not agent._has_stream_consumers():
                     # No display/TTS consumer. Still prefer streaming for
                     # health checking, but skip for Mock clients in tests
@@ -3098,7 +3111,7 @@ def run_conversation(
                     _provider_lower = (getattr(agent, "provider", "") or "").lower()
                     _base_lower = (getattr(agent, "base_url", "") or "").rstrip("/").lower()
                     is_minimax_provider = (
-                        _provider_lower in {"minimax", "minimax-cn"}
+                        _provider_lower in {"minimax", "minimax-oauth", "minimax-cn"}
                         or _base_lower.startswith((
                             "https://api.minimax.io/anthropic",
                             "https://api.minimaxi.com/anthropic",

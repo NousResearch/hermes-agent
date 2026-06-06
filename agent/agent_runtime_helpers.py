@@ -1221,16 +1221,20 @@ def anthropic_prompt_cache_policy(
         return True, True
 
     # MiniMax on its Anthropic-compatible endpoint serves its own
-    # model family (MiniMax-M2.7, M2.5, M2.1, M2) with documented
+    # model family (MiniMax-M3, M2.7, M2.5, M2.1, M2) with documented
     # cache_control support (0.1× read pricing, 5-minute TTL).  The
     # blanket is_claude gate above excludes these — opt them in
     # explicitly via provider id or host match so users on
-    # provider=minimax / minimax-cn (or custom endpoints pointing at
-    # api.minimax.io/anthropic / api.minimaxi.com/anthropic) get the
-    # same cost reduction as Claude traffic.
+    # provider=minimax / minimax-oauth / minimax-cn (or custom endpoints
+    # pointing at api.minimax.io/anthropic / api.minimaxi.com/anthropic)
+    # get the same cost reduction as Claude traffic.  MiniMax OAuth is
+    # always Anthropic-wire; allow the provider id itself to opt in so a
+    # live TUI model switch cannot miss caching while base_url/api_mode
+    # are still being resolved.
     # Docs: https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache
-    if is_anthropic_wire:
-        is_minimax_provider = provider_lower in {"minimax", "minimax-cn"}
+    is_minimax_oauth_provider = provider_lower == "minimax-oauth"
+    if is_anthropic_wire or is_minimax_oauth_provider:
+        is_minimax_provider = provider_lower in {"minimax", "minimax-oauth", "minimax-cn"}
         is_minimax_host = (
             base_url_host_matches(eff_base_url, "api.minimax.io")
             or base_url_host_matches(eff_base_url, "api.minimaxi.com")

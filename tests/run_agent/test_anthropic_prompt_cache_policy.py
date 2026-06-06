@@ -120,6 +120,28 @@ class TestMiniMaxAnthropicWire:
         )
         assert agent._anthropic_prompt_cache_policy() == (True, True)
 
+    def test_minimax_oauth_m3_caches_even_before_runtime_url_is_filled(self):
+        # The TUI can switch to provider=minimax-oauth while the OAuth runtime
+        # resolver is still filling in base_url/api_mode. The provider is
+        # exclusively Anthropic-compatible, so caching must not depend on the
+        # host heuristic seeing https://api.minimax.io/anthropic yet.
+        agent = _make_agent(
+            provider="minimax-oauth",
+            base_url="",
+            api_mode="",
+            model="MiniMax-M3",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_minimax_oauth_m3_caches_with_resolved_anthropic_runtime(self):
+        agent = _make_agent(
+            provider="minimax-oauth",
+            base_url="https://api.minimax.io/anthropic",
+            api_mode="anthropic_messages",
+            model="MiniMax-M3",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
     def test_minimax_m25_on_provider_minimax_cn_caches_native_layout(self):
         agent = _make_agent(
             provider="minimax-cn",

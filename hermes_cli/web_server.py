@@ -1405,6 +1405,49 @@ async def update_hermes():
     }
 
 
+def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
+    """Commits the local checkout is behind its upstream by, newest first.
+
+    Best-effort: returns [] if not a git checkout, no upstream is configured,
+    or git is unavailable. Used only to enrich the update-check response —
+    never raises into the request path.
+    """
+    try:
+        out = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(PROJECT_ROOT),
+                "log",
+                "--format=%H%x1f%s%x1f%an%x1f%ct",
+                "HEAD..@{upstream}",
+                f"-n{int(n)}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if out.returncode != 0:
+            return []
+        rows: List[Dict[str, Any]] = []
+        for line in out.stdout.splitlines():
+            if not line.strip():
+                continue
+            parts = (line.split("\x1f") + ["", "", "", "0"])[:4]
+            sha, summary, author, at = parts
+            rows.append(
+                {
+                    "sha": sha[:7],
+                    "summary": summary,
+                    "author": author,
+                    "at": int(at or 0),
+                }
+            )
+        return rows
+    except Exception:
+        return []
+
+
 @app.get("/api/hermes/update/check")
 async def check_hermes_update(force: bool = False):
     """Report whether a Hermes update is available, without applying it.
@@ -1425,6 +1468,11 @@ async def check_hermes_update(force: bool = False):
                    user must update out-of-band
         update_command: the recommended command for this install method
         message: human-readable guidance for non-applyable methods
+        commits: for git/pip installs that are behind, a list of the commits
+                 the local checkout is behind upstream by — each
+                 {sha, summary, author, at}. Absent/empty otherwise. The
+                 desktop's remote update overlay renders this as "what's
+                 changed". Additive: existing consumers ignore it.
     """
     install_method = detect_install_method(PROJECT_ROOT)
     update_command = recommended_update_command_for_method(install_method)
@@ -1467,6 +1515,11 @@ async def check_hermes_update(force: bool = False):
         payload["message"] = "You're on the latest version."
     else:
         payload["update_available"] = True
+        # Enrich with the actual commits we're behind by, so the desktop's
+        # remote update overlay can show "what's changed". git/pip only;
+        # best-effort (empty list on any failure).
+        if install_method in ("git", "pip"):
+            payload["commits"] = await asyncio.to_thread(_recent_upstream_commits)
 
     return payload
 

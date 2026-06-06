@@ -482,3 +482,29 @@ class TestXaiToken:
     def test_prefix_visible_in_masked_output(self):
         result = redact_sensitive_text(self.KEY, force=True)
         assert result.startswith("xai-AB")
+
+
+class TestNvidiaNimToken:
+    KEY = "nvapi-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstu"
+
+    def test_bare_token_masked(self):
+        result = redact_sensitive_text(f"using key {self.KEY}", force=True)
+        assert self.KEY not in result
+        assert "nvapi-" in result
+
+    def test_env_assignment_masked(self):
+        result = redact_sensitive_text(f"NVIDIA_API_KEY={self.KEY}", force=True)
+        assert self.KEY not in result
+
+    def test_too_short_not_masked(self):
+        short = "nvapi-tooshort"
+        result = redact_sensitive_text(f"text {short} here", force=True)
+        assert short in result
+
+    def test_company_name_not_masked(self):
+        result = redact_sensitive_text("nvidia is a company", force=True)
+        assert result == "nvidia is a company"
+
+    def test_prefix_visible_in_masked_output(self):
+        result = redact_sensitive_text(self.KEY, force=True)
+        assert result.startswith("nvapi-")

@@ -1,0 +1,1374 @@
+#!/usr/bin/env python3
+"""Operate the repo-local multi-AI workflow files.
+
+This CLI is intentionally file-first. It creates and updates project-local
+Markdown state so any AI tool can continue the same work without shared chat
+memory or a central service.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import re
+import subprocess
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from typing import Any
+
+
+PROTOCOL_README = """# Multi-AI Workflow
+
+This folder contains the project-local operating protocol for coordinating
+multiple AI tools. Start with `AGENTS.md`, then read `.hermes/context.md`,
+`.hermes/active.md`, `.hermes/decisions.md`, `.hermes/issues/`, and
+`.hermes/handoff.md`.
+
+Use `scripts/multi_ai_workflow.py comply --project .` to summarize current
+issue completion.
+"""
+
+AGENTS_TEMPLATE = """# Project AI Instructions
+
+This project uses the HermesAgent multi-AI workflow.
+
+Before substantial work:
+
+1. Read this file.
+2. Read `.hermes/context.md`, `.hermes/active.md`, `.hermes/decisions.md`.
+3. Read `.hermes/issues/` and claim an issue before implementation.
+4. Update `.hermes/handoff.md` before handing work to another AI.
+5. If Opus 4.8 writes a plan, run `scripts/multi_ai_workflow.py route --project . --plan-file <plan>` to choose the next AI executor.
+
+Prompt Shortcut Registry:
+
+- `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/prompt-shortcut-registry.md`
+
+## Closeout Protocol
+
+Before saying work is complete:
+
+1. Run the listed verification commands.
+2. Check localhost and VPS only when the issue says they apply.
+3. Report the evidence, remaining risk, and one recommended next step.
+
+Do not read or copy `.env` values, secrets, runtime databases, logs, or cache
+output into workflow files.
+"""
+
+CLAUDE_TEMPLATE = """@AGENTS.md
+
+## Claude Code
+
+Use this file as the Claude adapter. Follow the shared multi-AI workflow in
+`AGENTS.md` and use `.hermes/issues/` for tracked work.
+"""
+
+QWEN_TEMPLATE = """# Qwen Adapter
+
+Read `AGENTS.md` before work. Use `.hermes/issues/` for tracked work and
+`.hermes/handoff.md` for continuation notes.
+"""
+
+GEMINI_TEMPLATE = """@AGENTS.md
+
+# Gemini Adapter
+
+Use the shared project instructions and keep handoff state in `.hermes/`.
+"""
+
+CURSOR_RULE_TEMPLATE = """---
+description: Multi-AI workflow rules.
+alwaysApply: true
+---
+
+- Read `AGENTS.md` before substantial work.
+- Use `.hermes/issues/` as the local issue registry.
+- Update `.hermes/handoff.md` before handing work to another AI.
+- Do not claim localhost or VPS success unless a real command checked it.
+"""
+
+HERMES_CONTEXT_TEMPLATE = """# Project Context
+
+This project uses the multi-AI workflow. Keep durable project facts here.
+"""
+
+HERMES_ACTIVE_TEMPLATE = """# Active State
+
+No active issue has been claimed yet.
+"""
+
+HERMES_DECISIONS_TEMPLATE = """# Decisions
+
+Record durable workflow and architecture decisions here.
+"""
+
+HERMES_HANDOFF_TEMPLATE = """# Multi-AI Handoff
+
+task:
+issue_id:
+phase:
+latest_state:
+next_agent:
+next_step:
+
+## Verification
+
+verification_run:
+localhost_result:
+vps_result:
+remaining_risk:
+"""
+
+ISSUES_README_TEMPLATE = """# Multi-AI Issues
+
+This folder is the local issue registry for AI handoffs.
+
+Rules:
+
+- One tracked issue per file.
+- Use `docs/multi-ai-workflow/templates/issue.md`.
+- Keep `done_percent` and `remaining_percent` numeric.
+- Do not store secrets or `.env` contents here.
+"""
+
+PLANS_README_TEMPLATE = """# Opus Plans
+
+Put Opus 4.8 planning output here when the plan should be routed to another AI.
+
+Recommended flow:
+
+1. Opus writes a plan file here.
+2. Run `python3 scripts/multi_ai_workflow.py route --project . --plan-file .hermes/plans/<file>.md --write`.
+3. Review `.hermes/routes/<file>.json`.
+4. Use the generated handoff prompt with Codex App, Qwen on Cursor, or Gemini on Antigravity.
+"""
+
+ROUTES_README_TEMPLATE = """# AI Route Recommendations
+
+This folder stores routing recommendations generated from Opus plan files.
+
+Each JSON file records the ranked executor choices, the primary recommendation,
+and a handoff prompt for the recommended AI tool.
+"""
+
+ISSUE_TEMPLATE = """# Multi-AI Issue Template
+
+issue_id:
+phase:
+title:
+owner_role:
+assigned_ai:
+reviewer_ai:
+worktree_path:
+branch:
+
+## Goal
+
+goal:
+
+## Scope
+
+scope:
+out_of_scope:
+
+## Boundaries
+
+files_allowed:
+files_forbidden:
+secrets_policy:
+
+## Done Criteria
+
+done_when:
+
+## Verification
+
+verify_commands:
+localhost_check:
+vps_check:
+evidence:
+
+## Status
+
+status:
+done_percent:
+remaining_percent:
+blocker:
+
+## Handoff
+
+next_agent:
+next_step:
+handoff_required:
+"""
+
+HANDOFF_TEMPLATE = """# Multi-AI Handoff Template
+
+task:
+issue_id:
+phase:
+latest_state:
+next_agent:
+next_step:
+
+## Work Context
+
+worktree_path:
+branch:
+files_changed:
+files_to_avoid:
+
+## Verification
+
+verification_run:
+localhost_result:
+vps_result:
+remaining_risk:
+
+## Decision Log
+
+decisions_made:
+decisions_needed:
+
+## Continue Prompt
+
+prompt_for_next_ai:
+"""
+
+OPUS_PLAN_TEMPLATE = """# Opus Plan Template
+
+planner_ai: Opus 4.8
+task:
+phase:
+project:
+
+## Goal
+
+Describe the planned outcome.
+
+## Work Type
+
+Choose the closest words that apply:
+
+- backend
+- frontend
+- tests
+- scripts
+- refactor
+- browser
+- UX
+- documentation
+- research
+- deployment
+
+## Recommended By Opus
+
+If Opus already has a preference, write it here. The router will still score all options.
+
+preferred_executor:
+
+## Implementation Plan
+
+Write the plan here.
+
+## Verification
+
+List required tests, localhost checks, VPS checks, or file checks.
+"""
+
+FIELD_RE = re.compile(r"^([A-Za-z0-9_]+):\s*(.*)$")
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+EXECUTOR_PROFILES = {
+    "codex_app": {
+        "tool": "Codex App",
+        "best_for": "repo changes, Python/CLI/backend work, tests, git workflows, code review, security-sensitive implementation",
+        "signals": (
+            "codex",
+            "python",
+            "pytest",
+            "cli",
+            "script",
+            "scripts",
+            "backend",
+            "api",
+            "test",
+            "tests",
+            "git",
+            "worktree",
+            "refactor",
+            "security",
+            "review",
+            "repository",
+            "code",
+            "implementation",
+        ),
+    },
+    "qwen_cursor": {
+        "tool": "Qwen on Cursor",
+        "best_for": "editor-driven coding, frontend changes, TypeScript/React components, UI polish inside Cursor",
+        "signals": (
+            "qwen",
+            "cursor",
+            "react",
+            "typescript",
+            "tsx",
+            "frontend",
+            "ui",
+            "component",
+            "components",
+            "style",
+            "styling",
+            "css",
+            "form",
+            "forms",
+            "editor",
+            "incremental",
+        ),
+    },
+    "gemini_antigravity": {
+        "tool": "Gemini on Antigravity",
+        "best_for": "large-context app exploration, browser/UX validation, multimodal review, research-heavy checks",
+        "signals": (
+            "gemini",
+            "antigravity",
+            "browser",
+            "ux",
+            "multimodal",
+            "large-context",
+            "large context",
+            "research",
+            "explore",
+            "exploration",
+            "inspect",
+            "flow",
+            "flows",
+            "compare",
+            "validation",
+            "app",
+        ),
+    },
+}
+
+
+def _project_root(project: str | Path) -> Path:
+    return Path(project).expanduser().resolve()
+
+
+def _write_if_needed(path: Path, text: str, force: bool) -> bool:
+    if path.exists() and not force:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return True
+
+
+def init_project(project: str | Path, force: bool = False) -> dict[str, Any]:
+    root = _project_root(project)
+    files = {
+        root / "AGENTS.md": AGENTS_TEMPLATE,
+        root / "CLAUDE.md": CLAUDE_TEMPLATE,
+        root / "QWEN.md": QWEN_TEMPLATE,
+        root / "GEMINI.md": GEMINI_TEMPLATE,
+        root / ".cursor" / "rules" / "multi-ai-workflow.mdc": CURSOR_RULE_TEMPLATE,
+        root / ".hermes" / "context.md": HERMES_CONTEXT_TEMPLATE,
+        root / ".hermes" / "active.md": HERMES_ACTIVE_TEMPLATE,
+        root / ".hermes" / "decisions.md": HERMES_DECISIONS_TEMPLATE,
+        root / ".hermes" / "handoff.md": HERMES_HANDOFF_TEMPLATE,
+        root / ".hermes" / "issues" / "README.md": ISSUES_README_TEMPLATE,
+        root / ".hermes" / "plans" / "README.md": PLANS_README_TEMPLATE,
+        root / ".hermes" / "routes" / "README.md": ROUTES_README_TEMPLATE,
+        root / "docs" / "multi-ai-workflow" / "README.md": PROTOCOL_README,
+        root / "docs" / "multi-ai-workflow" / "templates" / "issue.md": ISSUE_TEMPLATE,
+        root / "docs" / "multi-ai-workflow" / "templates" / "handoff.md": HANDOFF_TEMPLATE,
+        root / "docs" / "multi-ai-workflow" / "templates" / "opus-plan.md": OPUS_PLAN_TEMPLATE,
+    }
+    created: list[str] = []
+    skipped: list[str] = []
+    for path, text in files.items():
+        if _write_if_needed(path, text, force):
+            created.append(str(path))
+        else:
+            skipped.append(str(path))
+    return {
+        "project": str(root),
+        "created": created,
+        "skipped": skipped,
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+    }
+
+
+def _issue_path(project: str | Path, issue_id: str) -> Path:
+    safe_id = issue_id.strip()
+    if not safe_id or "/" in safe_id or safe_id in {".", ".."}:
+        raise ValueError("issue_id must be a non-empty filename-safe value")
+    return _project_root(project) / ".hermes" / "issues" / f"{safe_id}.md"
+
+
+def _join_commands(commands: list[str]) -> str:
+    return "; ".join(command for command in commands if command.strip())
+
+
+def _render_issue(
+    *,
+    issue_id: str,
+    phase: str,
+    title: str,
+    owner_role: str,
+    assigned_ai: str,
+    goal: str,
+    scope: str,
+    out_of_scope: str,
+    verify_commands: list[str],
+    localhost_check: str,
+    vps_check: str,
+    branch: str,
+    worktree_path: str,
+    reviewer_ai: str,
+) -> str:
+    verify = _join_commands(verify_commands)
+    return f"""# {title}
+
+issue_id: {issue_id}
+phase: {phase}
+title: {title}
+owner_role: {owner_role}
+assigned_ai: {assigned_ai}
+reviewer_ai: {reviewer_ai}
+worktree_path: {worktree_path}
+branch: {branch}
+
+## Goal
+
+goal: {goal}
+
+## Scope
+
+scope: {scope}
+out_of_scope: {out_of_scope}
+
+## Boundaries
+
+files_allowed:
+files_forbidden: .env files, runtime databases, logs, caches, unrelated dirty files
+secrets_policy: Do not read or copy secret values.
+
+## Done Criteria
+
+done_when: Verification evidence is recorded and remaining_percent is 0.
+
+## Verification
+
+verify_commands: {verify}
+localhost_check: {localhost_check}
+vps_check: {vps_check}
+evidence:
+
+## Status
+
+status: open
+done_percent: 0
+remaining_percent: 100
+blocker:
+
+## Handoff
+
+next_agent:
+next_step:
+handoff_required: yes
+"""
+
+
+def create_issue(
+    *,
+    project: str | Path,
+    issue_id: str,
+    phase: str,
+    title: str,
+    owner_role: str,
+    assigned_ai: str,
+    goal: str,
+    scope: str,
+    out_of_scope: str,
+    verify_commands: list[str],
+    localhost_check: str,
+    vps_check: str,
+    branch: str,
+    worktree_path: str,
+    reviewer_ai: str,
+    force: bool = False,
+) -> Path:
+    path = _issue_path(project, issue_id)
+    if path.exists() and not force:
+        raise FileExistsError(f"Issue already exists: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        _render_issue(
+            issue_id=issue_id,
+            phase=phase,
+            title=title,
+            owner_role=owner_role,
+            assigned_ai=assigned_ai,
+            goal=goal,
+            scope=scope,
+            out_of_scope=out_of_scope,
+            verify_commands=verify_commands,
+            localhost_check=localhost_check,
+            vps_check=vps_check,
+            branch=branch,
+            worktree_path=worktree_path,
+            reviewer_ai=reviewer_ai,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def parse_issue_fields(path: Path) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = FIELD_RE.match(line)
+        if match:
+            fields[match.group(1)] = match.group(2)
+    return fields
+
+
+def update_issue_fields(path: str | Path, updates: dict[str, str]) -> Path:
+    issue_path = Path(path)
+    lines = issue_path.read_text(encoding="utf-8").splitlines()
+    seen: set[str] = set()
+    updated_lines: list[str] = []
+    for line in lines:
+        match = FIELD_RE.match(line)
+        if match and match.group(1) in updates:
+            key = match.group(1)
+            updated_lines.append(f"{key}: {updates[key]}")
+            seen.add(key)
+        else:
+            updated_lines.append(line)
+    for key, value in updates.items():
+        if key not in seen:
+            updated_lines.append(f"{key}: {value}")
+    issue_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+    return issue_path
+
+
+def claim_issue(
+    *,
+    project: str | Path,
+    issue_id: str,
+    assigned_ai: str,
+    branch: str,
+    worktree_path: str,
+) -> Path:
+    path = _issue_path(project, issue_id)
+    if not path.exists():
+        raise FileNotFoundError(f"Issue not found: {path}")
+    return update_issue_fields(
+        path,
+        {
+            "assigned_ai": assigned_ai,
+            "branch": branch,
+            "worktree_path": worktree_path,
+            "status": "claimed",
+        },
+    )
+
+
+def update_issue_status(
+    *,
+    project: str | Path,
+    issue_id: str,
+    status: str,
+    done_percent: str,
+    remaining_percent: str,
+    evidence: str,
+) -> Path:
+    path = _issue_path(project, issue_id)
+    if not path.exists():
+        raise FileNotFoundError(f"Issue not found: {path}")
+    return update_issue_fields(
+        path,
+        {
+            "status": status,
+            "done_percent": done_percent,
+            "remaining_percent": remaining_percent,
+            "evidence": evidence,
+        },
+    )
+
+
+def _run_command(cmd: list[str], cwd: Path) -> dict[str, Any]:
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    return {
+        "command": cmd,
+        "cwd": str(cwd),
+        "returncode": proc.returncode,
+        "output": proc.stdout,
+    }
+
+
+def create_worktree(
+    *,
+    project: str | Path,
+    issue_id: str,
+    assigned_ai: str,
+    branch: str,
+    worktree_path: str | Path,
+    execute: bool = False,
+) -> dict[str, Any]:
+    root = _project_root(project)
+    target = Path(worktree_path).expanduser()
+    if not target.is_absolute():
+        target = (root / target).resolve()
+    cmd = ["git", "worktree", "add", str(target), "-b", branch]
+    result: dict[str, Any] = {
+        "project": str(root),
+        "issue_id": issue_id,
+        "assigned_ai": assigned_ai,
+        "branch": branch,
+        "worktree_path": str(target),
+        "command": cmd,
+        "executed": execute,
+        "returncode": None,
+        "output": "",
+    }
+    if execute:
+        run_result = _run_command(cmd, root)
+        result.update(run_result)
+        if run_result["returncode"] == 0:
+            claim_issue(
+                project=root,
+                issue_id=issue_id,
+                assigned_ai=assigned_ai,
+                branch=branch,
+                worktree_path=str(target),
+            )
+    return result
+
+
+def github_issue_sync(
+    *,
+    project: str | Path,
+    issue_id: str,
+    execute: bool = False,
+) -> dict[str, Any]:
+    root = _project_root(project)
+    path = _issue_path(root, issue_id)
+    if not path.exists():
+        raise FileNotFoundError(f"Issue not found: {path}")
+    fields = parse_issue_fields(path)
+    title = fields.get("title", issue_id)
+    body = path.read_text(encoding="utf-8")
+    cmd = ["gh", "issue", "create", "--title", title, "--body", body]
+    result: dict[str, Any] = {
+        "project": str(root),
+        "issue_id": issue_id,
+        "command": cmd,
+        "body": body,
+        "executed": execute,
+        "returncode": None,
+        "output": "",
+    }
+    if execute:
+        run_result = _run_command(cmd, root)
+        result.update(run_result)
+    return result
+
+
+def write_handoff(
+    *,
+    project: str | Path,
+    task: str,
+    issue_id: str,
+    phase: str,
+    latest_state: str,
+    next_agent: str,
+    next_step: str,
+    verification_run: str,
+    localhost_result: str,
+    vps_result: str,
+    remaining_risk: str,
+) -> Path:
+    root = _project_root(project)
+    path = root / ".hermes" / "handoff.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"""# Multi-AI Handoff
+
+task: {task}
+issue_id: {issue_id}
+phase: {phase}
+latest_state: {latest_state}
+next_agent: {next_agent}
+next_step: {next_step}
+
+## Verification
+
+verification_run: {verification_run}
+localhost_result: {localhost_result}
+vps_result: {vps_result}
+remaining_risk: {remaining_risk}
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _normalized_words(text: str) -> list[str]:
+    lowered = text.lower()
+    return re.findall(r"[a-z0-9.+#-]+", lowered)
+
+
+def recommend_executor(plan_text: str) -> dict[str, Any]:
+    words = _normalized_words(plan_text)
+    joined = " ".join(words)
+    ranked: list[dict[str, Any]] = []
+    preferred_hint = ""
+    for line in plan_text.splitlines():
+        if line.lower().startswith("preferred_executor:"):
+            preferred_hint = line.split(":", 1)[1].strip().lower()
+            break
+
+    for executor_id, profile in EXECUTOR_PROFILES.items():
+        matched: list[str] = []
+        score = 0
+        for signal in profile["signals"]:
+            signal_text = str(signal).lower()
+            if " " in signal_text:
+                if signal_text in joined:
+                    matched.append(signal_text)
+                    score += 2
+            elif signal_text in words:
+                matched.append(signal_text)
+                score += 2
+        if preferred_hint and (
+            preferred_hint in executor_id
+            or preferred_hint in str(profile["tool"]).lower()
+            or str(profile["tool"]).lower() in preferred_hint
+        ):
+            matched.append("preferred_executor")
+            score += 4
+        ranked.append(
+            {
+                "id": executor_id,
+                "tool": profile["tool"],
+                "score": score,
+                "suitability_percent": 0.0,
+                "best_for": profile["best_for"],
+                "matched_signals": matched,
+            }
+        )
+
+    ranked.sort(key=lambda item: (-item["score"], item["id"]))
+    top_score = ranked[0]["score"] if ranked else 0
+    for item in ranked:
+        item["suitability_percent"] = (
+            round((item["score"] / top_score) * 100, 2) if top_score else 0.0
+        )
+    primary = ranked[0]
+    return {
+        "primary": primary,
+        "alternates": ranked[1:],
+        "ranked": ranked,
+        "reason": (
+            f"เลือก {primary['tool']} เพราะสัญญาณในแผนตรงกับงาน: "
+            f"{', '.join(primary['matched_signals']) if primary['matched_signals'] else 'fallback default'}"
+        ),
+    }
+
+
+def build_handoff_prompt(plan_text: str, recommendation: dict[str, Any]) -> str:
+    primary = recommendation["primary"]
+    return (
+        f"Prompt for {primary['tool']}\n\n"
+        "คุณได้รับงานต่อจาก Opus 4.8 ซึ่งเป็น planner หลัก\n"
+        "ให้ทำตามแผนด้านล่างแบบ issue-driven และต้องรัน verification ก่อนสรุปว่างานเสร็จ\n\n"
+        f"Recommended executor: {primary['tool']}\n"
+        f"Why: {recommendation['reason']}\n\n"
+        "Opus plan:\n"
+        f"{plan_text.strip()}\n"
+    )
+
+
+def route_plan_file(
+    *,
+    project: str | Path,
+    plan_file: str | Path,
+    write: bool = False,
+) -> dict[str, Any]:
+    root = _project_root(project)
+    plan_path = Path(plan_file).expanduser()
+    if not plan_path.is_absolute():
+        plan_path = (root / plan_path).resolve()
+    plan_text = plan_path.read_text(encoding="utf-8")
+    recommendation = recommend_executor(plan_text)
+    handoff_prompt = build_handoff_prompt(plan_text, recommendation)
+    result: dict[str, Any] = {
+        "project": str(root),
+        "plan_file": str(plan_path),
+        "recommendation": recommendation,
+        "handoff_prompt": handoff_prompt,
+        "output_path": "",
+        "written": False,
+    }
+    if write:
+        routes_dir = root / ".hermes" / "routes"
+        routes_dir.mkdir(parents=True, exist_ok=True)
+        output_path = routes_dir / f"{plan_path.stem}.json"
+        output_path.write_text(json.dumps(result | {"output_path": str(output_path), "written": True}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        result["output_path"] = str(output_path)
+        result["written"] = True
+    return result
+
+
+def complete_issue_for_review(
+    *,
+    project: str | Path,
+    issue_id: str,
+    completed_by: str,
+    evidence: str,
+    review_ai: str = "Opus 4.8",
+) -> dict[str, Any]:
+    root = _project_root(project)
+    issue_path = _issue_path(root, issue_id)
+    if not issue_path.exists():
+        raise FileNotFoundError(f"Issue not found: {issue_path}")
+    fields = parse_issue_fields(issue_path)
+    update_issue_fields(
+        issue_path,
+        {
+            "status": "ready_for_opus_review",
+            "done_percent": "100",
+            "remaining_percent": "0",
+            "evidence": evidence,
+            "next_agent": review_ai,
+            "next_step": "Review implementation against the original plan and verification evidence.",
+        },
+    )
+    request_dir = root / ".hermes" / "review-requests"
+    request_dir.mkdir(parents=True, exist_ok=True)
+    request_path = request_dir / f"{issue_id}.md"
+    request_path.write_text(
+        f"""# Review Request - {issue_id}
+
+issue_id: {issue_id}
+title: {fields.get("title", issue_id)}
+completed_by: {completed_by}
+review_ai: {review_ai}
+status: pending
+created_at: {datetime.now().isoformat(timespec="seconds")}
+owner_notification: {completed_by} marked {issue_id} ready for {review_ai} review.
+
+## Evidence
+
+{evidence}
+
+## Review Checklist
+
+- Compare implementation with the Opus plan.
+- Verify the evidence commands are real and sufficient.
+- If accepted, update issue status to `verified`.
+- If changes are needed, update issue status to `changes_requested` and write concrete next steps.
+""",
+        encoding="utf-8",
+    )
+    return {
+        "issue_path": str(issue_path),
+        "review_request_path": str(request_path),
+        "owner_notification": f"{completed_by} marked {issue_id} ready for {review_ai} review.",
+    }
+
+
+def _percent(value: str) -> float:
+    try:
+        return float(value.strip() or "0")
+    except ValueError:
+        return 0.0
+
+
+def build_comply_report(project: str | Path) -> dict[str, Any]:
+    root = _project_root(project)
+    issue_dir = root / ".hermes" / "issues"
+    issues: list[dict[str, Any]] = []
+    for path in sorted(issue_dir.glob("*.md")) if issue_dir.exists() else []:
+        if path.name == "README.md":
+            continue
+        fields = parse_issue_fields(path)
+        issues.append(
+            {
+                "issue_id": fields.get("issue_id", path.stem),
+                "phase": fields.get("phase", ""),
+                "title": fields.get("title", path.stem),
+                "assigned_ai": fields.get("assigned_ai", ""),
+                "status": fields.get("status", ""),
+                "done_percent": _percent(fields.get("done_percent", "0")),
+                "remaining_percent": _percent(fields.get("remaining_percent", "100")),
+                "path": str(path),
+            }
+        )
+    count = len(issues)
+    done = round(sum(issue["done_percent"] for issue in issues) / count, 2) if count else 0.0
+    remaining = round(sum(issue["remaining_percent"] for issue in issues) / count, 2) if count else 0.0
+    return {
+        "project": str(root),
+        "summary": {
+            "issue_count": count,
+            "done_percent": done,
+            "remaining_percent": remaining,
+        },
+        "issues": issues,
+    }
+
+
+def list_review_requests(project: str | Path) -> dict[str, Any]:
+    root = _project_root(project)
+    review_dir = root / ".hermes" / "review-requests"
+    items: list[dict[str, Any]] = []
+    for path in sorted(review_dir.glob("*.md")) if review_dir.exists() else []:
+        fields = parse_issue_fields(path)
+        items.append(
+            {
+                "issue_id": fields.get("issue_id", path.stem),
+                "review_ai": fields.get("review_ai", ""),
+                "status": fields.get("status", ""),
+                "path": str(path),
+            }
+        )
+    pending = [item for item in items if item["status"] in {"", "pending"}]
+    return {
+        "pending_count": len(pending),
+        "total_count": len(items),
+        "items": items,
+    }
+
+
+def _is_completed_issue(path: Path) -> bool:
+    fields = parse_issue_fields(path)
+    return fields.get("status") in {"verified", "reviewed", "closed"} and _percent(
+        fields.get("remaining_percent", "100")
+    ) == 0
+
+
+def compact_workflow(project: str | Path, execute: bool = False) -> dict[str, Any]:
+    root = _project_root(project)
+    hermes = root / ".hermes"
+    archive_dir = hermes / "archive"
+    archive_name = f"workflow-{datetime.now().strftime('%Y-%m')}.md"
+    archive_path = archive_dir / archive_name
+    candidates: list[Path] = []
+
+    issue_dir = hermes / "issues"
+    for path in sorted(issue_dir.glob("*.md")) if issue_dir.exists() else []:
+        if path.name != "README.md" and _is_completed_issue(path):
+            candidates.append(path)
+    for folder in (hermes / "plans", hermes / "routes"):
+        for path in sorted(folder.glob("*")) if folder.exists() else []:
+            if path.is_file() and path.name != "README.md":
+                candidates.append(path)
+
+    if execute and candidates:
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        chunks = [f"# Workflow Archive {datetime.now().strftime('%Y-%m')}\n"]
+        if archive_path.exists():
+            chunks.append(archive_path.read_text(encoding="utf-8"))
+            chunks.append("\n")
+        for path in candidates:
+            rel = path.relative_to(root)
+            chunks.append(f"\n## {rel}\n\n")
+            chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+            chunks.append("\n")
+        archive_path.write_text("".join(chunks), encoding="utf-8")
+        for path in candidates:
+            path.unlink()
+
+    return {
+        "project": str(root),
+        "executed": execute,
+        "archive_path": str(archive_path),
+        "archived_count": len(candidates),
+        "candidates": [str(path) for path in candidates],
+    }
+
+
+def render_comply_report(report: dict[str, Any], fmt: str) -> str:
+    if fmt == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    lines = [
+        f"Project: {report['project']}",
+        (
+            "Summary: "
+            f"{report['summary']['issue_count']} issues, "
+            f"{report['summary']['done_percent']}% done, "
+            f"{report['summary']['remaining_percent']}% remaining"
+        ),
+        "",
+        "| Phase | Issue | Assigned AI | Status | Done % | Remaining % |",
+        "|---|---|---|---|---:|---:|",
+    ]
+    for issue in report["issues"]:
+        lines.append(
+            "| {phase} | {issue_id} | {assigned_ai} | {status} | {done:g} | {remaining:g} |".format(
+                phase=issue["phase"],
+                issue_id=issue["issue_id"],
+                assigned_ai=issue["assigned_ai"],
+                status=issue["status"],
+                done=issue["done_percent"],
+                remaining=issue["remaining_percent"],
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _load_checker_module():
+    path = SCRIPT_DIR / "multi_ai_workflow_check.py"
+    spec = importlib.util.spec_from_file_location("_multi_ai_workflow_check_runtime", path)
+    if not spec or not spec.loader:
+        raise RuntimeError(f"Cannot load checker module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def build_status_payload(project: str | Path) -> dict[str, Any]:
+    root = _project_root(project)
+    checker = _load_checker_module()
+    return {
+        "project": str(root),
+        "readiness": checker.inspect_project(root),
+        "comply": build_comply_report(root),
+        "review_requests": list_review_requests(root),
+    }
+
+
+class _StatusHandler(BaseHTTPRequestHandler):
+    project: Path
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    def _json(self, status: int, payload: dict[str, Any]) -> None:
+        data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self) -> None:
+        if self.path == "/health":
+            readiness = build_status_payload(self.project)["readiness"]
+            self._json(200 if readiness["ok"] else 503, readiness)
+            return
+        if self.path == "/comply":
+            self._json(200, build_comply_report(self.project))
+            return
+        if self.path == "/status":
+            self._json(200, build_status_payload(self.project))
+            return
+        self._json(404, {"ok": False, "error": "not found"})
+
+
+def serve_status(project: str | Path, host: str, port: int) -> None:
+    root = _project_root(project)
+    handler = type("StatusHandler", (_StatusHandler,), {"project": root})
+    server = HTTPServer((host, port), handler)
+    print(f"Serving multi-AI workflow status on http://{host}:{port}", flush=True)
+    server.serve_forever()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    init_parser = subparsers.add_parser("init", help="Bootstrap workflow files.")
+    init_parser.add_argument("--project", default=".")
+    init_parser.add_argument("--force", action="store_true")
+    init_parser.add_argument("--format", choices=("text", "json"), default="text")
+
+    issue_parser = subparsers.add_parser("issue", help="Manage workflow issues.")
+    issue_subparsers = issue_parser.add_subparsers(dest="issue_command", required=True)
+
+    create_parser = issue_subparsers.add_parser("create", help="Create an issue file.")
+    create_parser.add_argument("--project", default=".")
+    create_parser.add_argument("--issue-id", required=True)
+    create_parser.add_argument("--phase", required=True)
+    create_parser.add_argument("--title", required=True)
+    create_parser.add_argument("--owner-role", required=True)
+    create_parser.add_argument("--assigned-ai", default="unassigned")
+    create_parser.add_argument("--reviewer-ai", default="")
+    create_parser.add_argument("--goal", required=True)
+    create_parser.add_argument("--scope", required=True)
+    create_parser.add_argument("--out-of-scope", default="")
+    create_parser.add_argument("--verify-command", action="append", default=[])
+    create_parser.add_argument("--localhost-check", default="not applicable")
+    create_parser.add_argument("--vps-check", default="not applicable")
+    create_parser.add_argument("--branch", default="")
+    create_parser.add_argument("--worktree-path", default="")
+    create_parser.add_argument("--force", action="store_true")
+
+    claim_parser = issue_subparsers.add_parser("claim", help="Claim an existing issue.")
+    claim_parser.add_argument("--project", default=".")
+    claim_parser.add_argument("--issue-id", required=True)
+    claim_parser.add_argument("--assigned-ai", required=True)
+    claim_parser.add_argument("--branch", required=True)
+    claim_parser.add_argument("--worktree-path", required=True)
+
+    update_parser = issue_subparsers.add_parser("update", help="Update issue status.")
+    update_parser.add_argument("--project", default=".")
+    update_parser.add_argument("--issue-id", required=True)
+    update_parser.add_argument("--status", required=True)
+    update_parser.add_argument("--done-percent", required=True)
+    update_parser.add_argument("--remaining-percent", required=True)
+    update_parser.add_argument("--evidence", required=True)
+
+    complete_parser = issue_subparsers.add_parser("complete", help="Mark an issue ready for Opus review.")
+    complete_parser.add_argument("--project", default=".")
+    complete_parser.add_argument("--issue-id", required=True)
+    complete_parser.add_argument("--completed-by", required=True)
+    complete_parser.add_argument("--evidence", required=True)
+    complete_parser.add_argument("--review-ai", default="Opus 4.8")
+    complete_parser.add_argument("--format", choices=("text", "json"), default="text")
+
+    comply_parser = subparsers.add_parser("comply", help="Summarize issue completion.")
+    comply_parser.add_argument("--project", default=".")
+    comply_parser.add_argument("--format", choices=("text", "json"), default="text")
+
+    compact_parser = subparsers.add_parser("compact", help="Archive completed workflow files.")
+    compact_parser.add_argument("--project", default=".")
+    compact_parser.add_argument("--execute", action="store_true")
+    compact_parser.add_argument("--format", choices=("text", "json"), default="text")
+
+    worktree_parser = subparsers.add_parser("worktree", help="Manage issue worktrees.")
+    worktree_subparsers = worktree_parser.add_subparsers(dest="worktree_command", required=True)
+    worktree_create = worktree_subparsers.add_parser("create", help="Create and claim a git worktree.")
+    worktree_create.add_argument("--project", default=".")
+    worktree_create.add_argument("--issue-id", required=True)
+    worktree_create.add_argument("--assigned-ai", required=True)
+    worktree_create.add_argument("--branch", required=True)
+    worktree_create.add_argument("--worktree-path", required=True)
+    worktree_create.add_argument("--execute", action="store_true")
+    worktree_create.add_argument("--format", choices=("text", "json"), default="text")
+
+    github_parser = subparsers.add_parser("github", help="Sync workflow issues to GitHub.")
+    github_subparsers = github_parser.add_subparsers(dest="github_command", required=True)
+    github_create = github_subparsers.add_parser("issue", help="Create a GitHub issue from a local issue.")
+    github_create.add_argument("--project", default=".")
+    github_create.add_argument("--issue-id", required=True)
+    github_create.add_argument("--execute", action="store_true")
+    github_create.add_argument("--format", choices=("text", "json"), default="text")
+
+    handoff_parser = subparsers.add_parser("handoff", help="Write project handoff state.")
+    handoff_subparsers = handoff_parser.add_subparsers(dest="handoff_command", required=True)
+    handoff_write = handoff_subparsers.add_parser("write", help="Write .hermes/handoff.md.")
+    handoff_write.add_argument("--project", default=".")
+    handoff_write.add_argument("--task", required=True)
+    handoff_write.add_argument("--issue-id", required=True)
+    handoff_write.add_argument("--phase", required=True)
+    handoff_write.add_argument("--latest-state", required=True)
+    handoff_write.add_argument("--next-agent", required=True)
+    handoff_write.add_argument("--next-step", required=True)
+    handoff_write.add_argument("--verification-run", required=True)
+    handoff_write.add_argument("--localhost-result", required=True)
+    handoff_write.add_argument("--vps-result", required=True)
+    handoff_write.add_argument("--remaining-risk", required=True)
+
+    status_parser = subparsers.add_parser("status", help="Print read-only project status.")
+    status_parser.add_argument("--project", default=".")
+    status_parser.add_argument("--format", choices=("json",), default="json")
+
+    route_parser = subparsers.add_parser("route", help="Recommend the next AI executor for an Opus plan.")
+    route_parser.add_argument("--project", default=".")
+    route_parser.add_argument("--plan-file", required=True)
+    route_parser.add_argument("--write", action="store_true")
+    route_parser.add_argument("--format", choices=("text", "json"), default="text")
+
+    serve_parser = subparsers.add_parser("serve", help="Serve read-only status on localhost.")
+    serve_parser.add_argument("--project", default=".")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8765)
+
+    args = parser.parse_args(argv)
+
+    if args.command == "init":
+        result = init_project(args.project, force=args.force)
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(
+                f"Initialized {result['project']}: "
+                f"{result['created_count']} created, {result['skipped_count']} skipped"
+            )
+        return 0
+
+    if args.command == "issue" and args.issue_command == "create":
+        path = create_issue(
+            project=args.project,
+            issue_id=args.issue_id,
+            phase=args.phase,
+            title=args.title,
+            owner_role=args.owner_role,
+            assigned_ai=args.assigned_ai,
+            goal=args.goal,
+            scope=args.scope,
+            out_of_scope=args.out_of_scope,
+            verify_commands=args.verify_command,
+            localhost_check=args.localhost_check,
+            vps_check=args.vps_check,
+            branch=args.branch,
+            worktree_path=args.worktree_path,
+            reviewer_ai=args.reviewer_ai,
+            force=args.force,
+        )
+        print(str(path))
+        return 0
+
+    if args.command == "issue" and args.issue_command == "claim":
+        path = claim_issue(
+            project=args.project,
+            issue_id=args.issue_id,
+            assigned_ai=args.assigned_ai,
+            branch=args.branch,
+            worktree_path=args.worktree_path,
+        )
+        print(str(path))
+        return 0
+
+    if args.command == "issue" and args.issue_command == "update":
+        path = update_issue_status(
+            project=args.project,
+            issue_id=args.issue_id,
+            status=args.status,
+            done_percent=args.done_percent,
+            remaining_percent=args.remaining_percent,
+            evidence=args.evidence,
+        )
+        print(str(path))
+        return 0
+
+    if args.command == "issue" and args.issue_command == "complete":
+        result = complete_issue_for_review(
+            project=args.project,
+            issue_id=args.issue_id,
+            completed_by=args.completed_by,
+            evidence=args.evidence,
+            review_ai=args.review_ai,
+        )
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(result["owner_notification"])
+            print(result["review_request_path"])
+        return 0
+
+    if args.command == "comply":
+        print(render_comply_report(build_comply_report(args.project), args.format), end="")
+        return 0
+
+    if args.command == "compact":
+        result = compact_workflow(args.project, execute=args.execute)
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            mode = "executed" if result["executed"] else "dry-run"
+            print(f"{mode}: {result['archived_count']} files -> {result['archive_path']}")
+        return 0
+
+    if args.command == "worktree" and args.worktree_command == "create":
+        result = create_worktree(
+            project=args.project,
+            issue_id=args.issue_id,
+            assigned_ai=args.assigned_ai,
+            branch=args.branch,
+            worktree_path=args.worktree_path,
+            execute=args.execute,
+        )
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            mode = "executed" if result["executed"] else "dry-run"
+            print(f"{mode}: {' '.join(result['command'])}")
+            if result["returncode"] is not None:
+                print(f"returncode: {result['returncode']}")
+        return 0 if result["returncode"] in (None, 0) else int(result["returncode"])
+
+    if args.command == "github" and args.github_command == "issue":
+        result = github_issue_sync(
+            project=args.project,
+            issue_id=args.issue_id,
+            execute=args.execute,
+        )
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            mode = "executed" if result["executed"] else "dry-run"
+            print(f"{mode}: {' '.join(result['command'])}")
+            if result["returncode"] is not None:
+                print(f"returncode: {result['returncode']}")
+        return 0 if result["returncode"] in (None, 0) else int(result["returncode"])
+
+    if args.command == "handoff" and args.handoff_command == "write":
+        path = write_handoff(
+            project=args.project,
+            task=args.task,
+            issue_id=args.issue_id,
+            phase=args.phase,
+            latest_state=args.latest_state,
+            next_agent=args.next_agent,
+            next_step=args.next_step,
+            verification_run=args.verification_run,
+            localhost_result=args.localhost_result,
+            vps_result=args.vps_result,
+            remaining_risk=args.remaining_risk,
+        )
+        print(str(path))
+        return 0
+
+    if args.command == "status":
+        print(json.dumps(build_status_payload(args.project), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "route":
+        result = route_plan_file(
+            project=args.project,
+            plan_file=args.plan_file,
+            write=args.write,
+        )
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            primary = result["recommendation"]["primary"]
+            print(f"Recommended: {primary['tool']} ({primary['id']})")
+            print(f"Reason: {result['recommendation']['reason']}")
+            print("")
+            print("Ranked options:")
+            for option in result["recommendation"]["ranked"]:
+                signals = ", ".join(option["matched_signals"]) or "none"
+                print(
+                    f"- {option['tool']}: {option['suitability_percent']}% "
+                    f"(score {option['score']}; {signals})"
+                )
+            if result["written"]:
+                print(f"Written: {result['output_path']}")
+        return 0
+
+    if args.command == "serve":
+        serve_status(args.project, args.host, args.port)
+        return 0
+
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

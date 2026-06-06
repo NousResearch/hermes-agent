@@ -1,0 +1,15 @@
+---
+description: Multi-AI workflow rules for Hermes Agent.
+alwaysApply: true
+---
+
+- Read `AGENTS.md` before starting substantial work.
+- Use `.hermes/issues/` as the local issue registry for AI handoffs.
+- Update `.hermes/handoff.md` after phase-sized work so another AI can continue.
+- Do not claim localhost or VPS success unless a real command checked it in this session.
+- Use `docs/multi-ai-workflow/templates/issue.md` and `docs/multi-ai-workflow/templates/handoff.md` for new tracked AI work.
+
+## Hermes Prompt Shortcuts
+
+If the user invokes `Use Act-As`, `Use Comply`, `Use Business Plan`, `Go to Sleep`, `Review Chat`, or an alias, read `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/prompt-shortcut-registry.md` and then open the mapped prompt file before answering. Do not guess or summarize the shortcut from memory.
+

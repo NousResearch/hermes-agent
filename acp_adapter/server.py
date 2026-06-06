@@ -872,6 +872,21 @@ class HermesACPAgent(acp.Agent):
 
         if not provider or normalized_method != provider:
             return None
+
+        # ACP clients may pass a fresh OAuth bearer alongside the method_id
+        # (and re-issue authenticate later to rotate). Persist it on the
+        # session manager so `_make_agent` can install a refreshing-bearer
+        # closure for the downstream provider client. Never log the bearer
+        # itself — only its length.
+        token = kwargs.get("token")
+        if isinstance(token, str) and token.strip():
+            self.session_manager.set_auth_token(normalized_method, token)
+            logger.info(
+                "ACP authenticate accepted bearer for %s (token_len=%d)",
+                normalized_method,
+                len(token.strip()),
+            )
+
         return AuthenticateResponse()
 
     # ---- Session management -------------------------------------------------

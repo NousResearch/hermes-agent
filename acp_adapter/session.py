@@ -137,6 +137,25 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
 
 
+def _provider_runtime_uses_native_gemini(runtime: Dict[str, Any]) -> bool:
+    """Return True when ``runtime`` targets ``GeminiNativeClient``.
+
+    The native-Gemini client (``agent.gemini_native_adapter``) calls
+    ``(api_key or "").strip()`` at construction, which raises on a
+    ``Callable[[], str]``. ACP's refreshing-bearer closure can therefore
+    only attach to providers whose adapters accept a callable; this check
+    keeps it from breaking the native-Gemini path.
+    """
+    base_url = runtime.get("base_url") if isinstance(runtime.get("base_url"), str) else ""
+    if not base_url:
+        return False
+    try:
+        from agent.gemini_native_adapter import is_native_gemini_base_url
+    except Exception:
+        return False
+    return is_native_gemini_base_url(base_url)
+
+
 def _expand_acp_enabled_toolsets(
     toolsets: List[str] | None = None,
     mcp_server_names: List[str] | None = None,
@@ -204,6 +223,11 @@ class SessionManager:
         self._lock = Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
+        # ACP `authenticate(method_id, token=...)` deposits OAuth bearers here,
+        # keyed by provider name. `_make_agent` reads via a closure so a
+        # client-side re-`authenticate` rotates the token mid-session without
+        # rebuilding the AIAgent. See `_make_agent` for the SDK-callable wiring.
+        self._auth_tokens: Dict[str, str] = {}
 
     # ---- public API ---------------------------------------------------------
 
@@ -542,6 +566,30 @@ class SessionManager:
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 
+    # ---- Auth token deposit (ACP `authenticate` handler writes here) --------
+
+    def set_auth_token(self, method_id: str, token: str) -> None:
+        """Store the OAuth bearer received via ACP ``authenticate(method_id, token=...)``.
+
+        Overwrites any prior token for the same ``method_id`` so a client can
+        rotate credentials mid-session by re-issuing ``authenticate``. The
+        callable installed in :meth:`_make_agent` reads this dict on every
+        outbound request, so rotation propagates without rebuilding the agent.
+        """
+        if not isinstance(method_id, str) or not method_id.strip():
+            return
+        if not isinstance(token, str) or not token.strip():
+            return
+        with self._lock:
+            self._auth_tokens[method_id.strip().lower()] = token.strip()
+
+    def get_auth_token(self, method_id: Optional[str]) -> Optional[str]:
+        """Return the most recently deposited token for ``method_id``, or None."""
+        if not isinstance(method_id, str) or not method_id.strip():
+            return None
+        with self._lock:
+            return self._auth_tokens.get(method_id.strip().lower())
+
     def _delete_persisted(self, session_id: str) -> bool:
         """Delete a session from the database. Returns True if it existed."""
         db = self._get_db()
@@ -601,7 +649,53 @@ class SessionManager:
         }
 
         try:
-            runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
+            provider_name = requested_provider or config_provider
+            # Snapshot at resolve time so the resolver still sees a string and
+            # all its env/config fallback logic runs. The callable wrapping
+            # below only fires when the caller actually deposited a token,
+            # otherwise we leave `runtime["api_key"]` untouched.
+            current_token = self.get_auth_token(provider_name)
+            runtime = resolve_runtime_provider(
+                requested=provider_name,
+                explicit_api_key=current_token,
+            )
+            api_key = runtime.get("api_key")
+            # When a token was deposited, swap the resolved string for a
+            # closure that re-reads SessionManager._auth_tokens on every
+            # outbound request — so a client-side `authenticate` retry rotates
+            # the bearer mid-session without rebuilding the AIAgent. The
+            # downstream SDKs accept Callable[[], str]: OpenAI natively,
+            # Anthropic via build_bearer_http_client's httpx event hook, and
+            # the custom/OpenAI-compat dispatch via cli.py:4875 /
+            # auxiliary_client.py:2044. GeminiNativeClient.__init__ does
+            # `(api_key or "").strip()` and would crash on a callable, so
+            # native-Gemini base URLs fall back to the static string and
+            # surrender mid-session refresh (callers can re-`session/new`).
+            if (
+                current_token
+                and provider_name
+                and isinstance(api_key, str)
+                and not _provider_runtime_uses_native_gemini(runtime)
+            ):
+                mgr = self
+                provider_key = provider_name
+                static_fallback = api_key
+
+                def _refreshing_api_key(
+                    _mgr: "SessionManager" = mgr,
+                    _key: str = provider_key,
+                    _fallback: str = static_fallback,
+                ) -> str:
+                    return _mgr.get_auth_token(_key) or _fallback
+
+                runtime["api_key"] = _refreshing_api_key
+            elif current_token and provider_name and isinstance(api_key, str):
+                logger.warning(
+                    "ACP authenticate token will not auto-refresh: provider "
+                    "%s uses GeminiNativeClient which requires a static "
+                    "api_key string. Re-issue session/new after rotation.",
+                    provider_name,
+                )
             kwargs.update(
                 {
                     "provider": runtime.get("provider"),

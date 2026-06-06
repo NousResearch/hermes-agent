@@ -4758,7 +4758,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     r1 = _run_npm_install_deterministic(
         npm,
         npm_cwd,
-        extra_args=(*npm_workspace_args, "--silent"),
+        extra_args=(*npm_workspace_args, "--include=dev", "--silent"),
     )
     if r1.returncode != 0:
         _say(

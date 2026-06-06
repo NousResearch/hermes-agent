@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import logging
 import os
+import posixpath
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
@@ -374,6 +375,30 @@ def get_cache_directory_mounts(
     return mounts
 
 
+def map_cache_path_to_container(
+    host_path: str,
+    container_base: str = "/root/.hermes",
+) -> Optional[str]:
+    """Map a host cache path to its mounted path under *container_base*.
+
+    Returns the POSIX container path when *host_path* lives under one of the
+    auto-mounted cache directories, otherwise ``None``.  Backend-agnostic: the
+    caller decides which ``container_base`` applies (Docker ``/root/.hermes``,
+    SSH ``<remote_home>/.hermes``, etc.) and whether translation is wanted.
+    Always joins with ``posixpath`` because container/remote paths are POSIX
+    regardless of the host OS.
+    """
+    path = Path(host_path)
+    for mount in get_cache_directory_mounts(container_base=container_base):
+        host_dir = Path(mount["host_path"])
+        try:
+            rel = path.relative_to(host_dir)
+        except ValueError:
+            continue
+        return posixpath.join(mount["container_path"], rel.as_posix())
+    return None
+
+
 def to_agent_visible_cache_path(
     host_path: str,
     container_base: str = "/root/.hermes",
@@ -391,15 +416,8 @@ def to_agent_visible_cache_path(
     if os.environ.get("TERMINAL_ENV", "local") != "docker":
         return host_path
 
-    path = Path(host_path)
-    for mount in get_cache_directory_mounts(container_base=container_base):
-        host_dir = Path(mount["host_path"])
-        try:
-            rel = path.relative_to(host_dir)
-            return str(Path(mount["container_path"]) / rel)
-        except ValueError:
-            continue
-    return host_path
+    mapped = map_cache_path_to_container(host_path, container_base=container_base)
+    return mapped if mapped is not None else host_path
 
 
 def iter_cache_files(

@@ -948,6 +948,12 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert DEFAULT_AGENT_IDENTITY in prompt
 
+    def test_includes_closeout_protocol(self, agent):
+        prompt = agent._build_system_prompt()
+        assert "Closeout Protocol" in prompt
+        assert "What was changed or checked" in prompt
+        assert "recommended next step" in prompt
+
     def test_can_use_soul_identity_even_when_context_files_are_skipped(self):
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),

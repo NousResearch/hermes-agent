@@ -127,7 +127,7 @@ from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE, CLOSEOUT_PROTOCOL_GUIDANCE,
     KANBAN_GUIDANCE,
     build_nous_subscription_prompt,
 )

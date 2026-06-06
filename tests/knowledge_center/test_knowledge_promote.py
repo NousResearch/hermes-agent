@@ -99,7 +99,7 @@ def test_promote_knowledge_creates_domain_dir(tmp_path: Path) -> None:
         )
         result = json.loads(result_str)
         assert result["success"] is True
-        assert (vault / "domains" / "backend").exists()
+        assert (vault / "knowledge" / "domain" / "backend").exists()
 
 
 def test_check_requirements_missing() -> None:

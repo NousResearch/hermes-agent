@@ -67,7 +67,12 @@ def _add_backlink(vault: Path, project_slug: str, note_title: str, domain: str) 
         return
     try:
         text = project_note.read_text(encoding="utf-8")
-        backlink = f"\n- Promoted: [[{note_title}]] → [[domains/{domain}/README|{domain}]] domain"
+        domain_link = (
+            f"[[domains/{domain}/README|{domain}]]"
+            if (vault / "domains").exists()
+            else f"[[knowledge/domain/{domain}/README|{domain}]]"
+        )
+        backlink = f"\n- Promoted: [[{note_title}]] -> {domain_link} domain"
         # Check if backlink already exists
         if backlink.strip() not in text:
             # Append to the Notes section

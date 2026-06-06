@@ -276,7 +276,7 @@ class CardStore:
             "AND name IN ('memory_cards_au', 'memory_cards_ad', "
             "'knowledge_cards_au', 'knowledge_cards_ad')"
         ).fetchall()
-        legacy = any("_fts, rowid" in (row["sql"] or "") for row in rows)
+        legacy = any("VALUES ('delete'" in (row["sql"] or "") for row in rows)
         if not legacy:
             return
 

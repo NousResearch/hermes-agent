@@ -187,6 +187,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
+    # Completion discipline must be in the core prompt, not only in
+    # optional context files, so every runtime produces a useful closeout.
+    stable_parts.append(_r.CLOSEOUT_PROTOCOL_GUIDANCE)
+
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
     if "memory" in agent.valid_tool_names:

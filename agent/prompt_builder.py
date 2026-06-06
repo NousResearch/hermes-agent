@@ -147,6 +147,17 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "before answering. Docs: https://hermes-agent.nousresearch.com/docs"
 )
 
+CLOSEOUT_PROTOCOL_GUIDANCE = (
+    "Closeout Protocol: before ending any meaningful work, give a clear "
+    "closeout in the user's language. Include: 1. What was changed or "
+    "checked; 2. What verification was run and the actual result; 3. What "
+    "remains, failed, or is blocked; 4. the recommended next step. For "
+    "phase-based work, include a numeric comply table with done and remaining "
+    "percentages only. If localhost, VPS, or production status matters, "
+    "report the exact check result. Do not claim or imply that a service "
+    "works unless it was actually checked and responded."
+)
+
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "
     "tool: user preferences, environment details, tool quirks, and stable conventions. "

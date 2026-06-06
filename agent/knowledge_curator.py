@@ -1,4 +1,4 @@
-"""Curator extension for domain knowledge notes in the 3-Tier Knowledge Center.
+"""Curator extension for domain knowledge notes in the Knowledge Center.
 
 Extends the existing curator system to scan, review, and archive domain notes.
 Also manages usage tracking for review priority ordering.
@@ -27,7 +27,8 @@ class DomainNoteCurator:
         if vault_path is None:
             vault_path = Path.home() / "ObsidianVault" / "HermesAgent"
         self.vault_path = Path(vault_path)
-        self.domains_dir = self.vault_path / "domains"
+        legacy_domains = self.vault_path / "domains"
+        self.domains_dir = legacy_domains if legacy_domains.exists() else self.vault_path / "knowledge" / "domain"
         self.archive_dir = self.domains_dir / ".archive"
 
     def scan_domain_notes(self) -> List[Dict[str, Any]]:

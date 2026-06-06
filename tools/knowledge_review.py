@@ -193,7 +193,7 @@ registry.register(
             "Manage the knowledge review queue via Card Store. "
             "Actions: list, add, approve, reject, defer, delete, mark_duplicate, request_revision. "
             "Approved entries are automatically promoted to the domain KB. "
-            "Rejected entries are archived to domains/.rejected/."
+            "Rejected entries are archived to review-queue/rejected/."
         ),
         "parameters": {
             "type": "object",

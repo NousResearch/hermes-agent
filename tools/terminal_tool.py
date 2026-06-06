@@ -837,6 +837,7 @@ Do NOT use ls to list directories — use search_files(target='files') instead.
 Do NOT use sed/awk to edit files — use patch instead.
 Do NOT use echo/cat heredoc to create files — use write_file instead.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
+For broad Hermes repo pytest runs, use `./venv/bin/python scripts/hermes_safe_pytest.py ...` instead of raw `pytest` so disk/memory/temp cleanup guardrails apply; targeted node-id pytest runs are fine for TDD.
 
 Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
 Background: Set background=true to get a session_id. Almost always pair with notify_on_complete=true — bg without notify runs SILENTLY and you have no way to learn it finished short of calling process(action='poll') yourself. Two legitimate uses:
@@ -1721,6 +1722,52 @@ def _foreground_background_guidance(command: str) -> str | None:
     return None
 
 
+_RAW_PYTEST_RE = re.compile(
+    r"(?:^|[;&|()\s])(?:"
+    r"pytest|py\.test|"
+    r"python(?:3)?\s+-m\s+pytest|"
+    r"(?:\./)?(?:\.venv|venv)/bin/python(?:3)?\s+-m\s+pytest"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _foreground_pytest_resource_guidance(command: str) -> str | None:
+    """Block broad raw pytest runs that should use the Hermes-safe wrapper."""
+    if _looks_like_help_or_version_command(command):
+        return None
+
+    unquoted = _strip_quotes(command)
+    lowered = unquoted.lower()
+    if "hermes_safe_pytest.py" in lowered or "hermes-safe-pytest" in lowered:
+        return None
+    if not _RAW_PYTEST_RE.search(unquoted):
+        return None
+
+    if "::" in unquoted:
+        return None
+
+    broad_run = (
+        re.search(r"(?:^|\s)tests(?:/|\s|$)", unquoted) is not None
+        or re.search(r"(?:^|\s)-n(?:\s|=)", unquoted) is not None
+        or re.search(r"(?:^|\s)--numprocesses(?:\s|=)", unquoted) is not None
+        or re.search(r"(?:^|\s)(?:pytest|py\.test)\s*(?:[;&|]|$)", unquoted) is not None
+        or re.search(r"-m\s+pytest\s*(?:[;&|]|$)", unquoted) is not None
+    )
+    if not broad_run:
+        return None
+
+    return (
+        "Broad raw pytest runs are blocked on this Hermes host because they can "
+        "leave xdist workers and unbounded /tmp artifacts that fill disk. Use "
+        "`./venv/bin/python scripts/hermes_safe_pytest.py ...` from the repo root (or "
+        "`hermes-safe-pytest ...` if installed). It adds disk preflight, bounded "
+        "--basetemp, pytest cache disablement, worker caps, process-group timeout "
+        "kills, and post-run cleanup. Targeted node-id runs like "
+        "`pytest tests/foo.py::test_bar -q` remain allowed."
+    )
+
+
 def _resolve_notification_flag_conflict(
     *,
     notify_on_complete: bool,
@@ -1868,9 +1915,12 @@ def terminal_tool(
             }, ensure_ascii=False)
 
         # Guardrail: long-lived server/watch commands should run as managed
-        # background sessions, not foreground shell hacks.
+        # background sessions, not foreground shell hacks. Broad pytest runs
+        # should use the resource-safe wrapper on small Hermes hosts.
         if not background:
             guidance = _foreground_background_guidance(command)
+            if not guidance:
+                guidance = _foreground_pytest_resource_guidance(command)
             if guidance:
                 return json.dumps({
                     "output": "",

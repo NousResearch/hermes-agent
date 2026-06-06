@@ -13,9 +13,12 @@ import type {
   DesktopUpdateStatus,
   DesktopVersionInfo
 } from '@/global'
+import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
 import { dismissNotification, notify } from '@/store/notifications'
+import { $connection } from '@/store/session'
+import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
 export interface UpdateApplyState {
   applying: boolean
@@ -174,7 +177,69 @@ export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null
   }
 }
 
+function isRemoteMode(): boolean {
+  return $connection.get()?.mode === 'remote'
+}
+
+/** Map the backend's /api/hermes/update/check shape onto the overlay's
+ *  DesktopUpdateStatus. `can_apply` / `message` are preserved so the overlay
+ *  can show guidance (e.g. docker/nix) instead of an Install button. */
+function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
+  const behind = res.behind ?? 0
+
+  return {
+    supported: res.can_apply,
+    message: res.message ?? undefined,
+    behind: behind > 0 ? behind : 0,
+    // targetSha gates the "update available" toast in maybeNotifyUpdateAvailable;
+    // synthesize a stable marker when the backend reports it's behind.
+    targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
+    commits: res.commits,
+    fetchedAt: Date.now()
+  }
+}
+
+async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null> {
+  if ($updateChecking.get()) {
+    return $updateStatus.get()
+  }
+
+  $updateChecking.set(true)
+
+  try {
+    const res = await checkHermesUpdate(true)
+    const status = mapBackendCheck(res)
+    $updateStatus.set(status)
+    maybeNotifyUpdateAvailable(status)
+
+    return status
+  } catch (error) {
+    const previous = $updateStatus.get()
+    const fallback: DesktopUpdateStatus = {
+      supported: previous?.supported ?? true,
+      branch: previous?.branch,
+      error: 'check-failed',
+      message: error instanceof Error ? error.message : String(error),
+      fetchedAt: Date.now()
+    }
+
+    $updateStatus.set(fallback)
+
+    return fallback
+  } finally {
+    $updateChecking.set(false)
+  }
+}
+
 export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
+  // Remote thin-client mode: the version pill points at the BACKEND, not the
+  // local Electron clone. Source the overlay from the backend's own
+  // /api/hermes/update/check so behind-count + "what's changed" describe the
+  // machine the user is actually connected to.
+  if (isRemoteMode()) {
+    return checkBackendUpdates()
+  }
+
   const bridge = window.hermesDesktop?.updates
 
   if (!bridge || $updateChecking.get()) {
@@ -213,6 +278,14 @@ export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
 }
 
 export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promise<DesktopUpdateApplyResult> {
+  // Remote mode: apply the update on the BACKEND via its HTTP API (the same
+  // path the command-center "Update Hermes" button uses), then poll the action
+  // to completion. The Electron git bridge would update the local client clone,
+  // which is the wrong target when the version pill points at a remote backend.
+  if (isRemoteMode()) {
+    return applyBackendUpdate()
+  }
+
   const bridge = window.hermesDesktop?.updates
 
   if (!bridge) {
@@ -239,6 +312,73 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
     }
 
     return result
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    $updateApply.set({ ...$updateApply.get(), applying: false, stage: 'error', error: 'apply-failed', message })
+
+    return { ok: false, error: 'apply-failed', message }
+  }
+}
+
+/** Apply the update on the connected backend: POST /api/hermes/update, then
+ *  poll the spawned action to completion. Drives $updateApply so the overlay
+ *  shows progress + a terminal state, mirroring the local apply flow. */
+async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+  dismissNotification(UPDATE_TOAST_ID)
+  $updateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: 'Updating backend…' })
+
+  try {
+    const started = await updateHermes()
+
+    // updateHermes returns ok:false for non-applyable installs (e.g. docker)
+    // with guidance in the response; surface it as a manual state.
+    if (!started.ok) {
+      const message = (started as { message?: string }).message || 'Update not available for this backend.'
+      const command = (started as { update_command?: string }).update_command || 'hermes update'
+      $updateApply.set({ ...IDLE, applying: false, stage: 'manual', message, command })
+
+      return { ok: false, error: 'manual', manual: true, message, command }
+    }
+
+    $updateApply.set({ ...IDLE, applying: true, stage: 'pull', message: 'Backend updating…' })
+
+    // Poll the action until it stops running (cap the wait — the dashboard
+    // restarts mid-update, which drops this connection; that's expected).
+    let last: Awaited<ReturnType<typeof getActionStatus>> | null = null
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await new Promise(resolve => window.setTimeout(resolve, 1500))
+      try {
+        last = await getActionStatus(started.name, 200)
+      } catch {
+        // Connection dropped — most likely the backend restarted to load the
+        // new code. Treat as the (expected) restart phase, not a failure.
+        $updateApply.set({
+          ...$updateApply.get(),
+          applying: false,
+          stage: 'restart',
+          message: 'Backend restarting to load the update…'
+        })
+
+        return { ok: true, message: 'Backend update applied; backend is restarting.' }
+      }
+
+      if (last && !last.running) {
+        break
+      }
+    }
+
+    const ok = !!last && (last.exit_code ?? 1) === 0
+    $updateApply.set({
+      ...$updateApply.get(),
+      applying: false,
+      stage: ok ? 'restart' : 'error',
+      error: ok ? null : 'apply-failed',
+      message: ok ? 'Backend updated. Restart it to load the new code.' : 'Backend update failed.'
+    })
+
+    return ok
+      ? { ok: true, message: 'Backend update applied.' }
+      : { ok: false, error: 'apply-failed', message: 'Backend update failed.' }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     $updateApply.set({ ...$updateApply.get(), applying: false, stage: 'error', error: 'apply-failed', message })

@@ -172,6 +172,38 @@ async def test_on_processing_start_handles_missing_ids(monkeypatch):
     adapter._bot.set_message_reaction.assert_not_awaited()
 
 
+# ── on_response_ready ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_on_response_ready_sets_writing_reaction(monkeypatch):
+    """Response ready should set writing reaction when enabled."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    event = _make_event()
+
+    await adapter.on_response_ready(event)
+
+    adapter._bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=123,
+        message_id=456,
+        reaction="\u270d\ufe0f",
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_response_ready_skipped_when_disabled(monkeypatch):
+    """Response ready should not react when reactions are disabled."""
+    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_REACTIONS_ENABLED", raising=False)
+    adapter = _make_adapter()
+    event = _make_event()
+
+    await adapter.on_response_ready(event)
+
+    adapter._bot.set_message_reaction.assert_not_awaited()
+
+
 # ── on_processing_complete ───────────────────────────────────────────
 
 

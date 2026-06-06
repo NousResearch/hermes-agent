@@ -368,6 +368,8 @@ class TelegramAdapter(BasePlatformAdapter):
     _TEXT_BATCH_SHORT_LEN = 1024
     _TEXT_BATCH_SHORT_DELAY_S = 0.24
 
+    _UNSET = object()  # sentinel for "attribute not initialized"
+
     @staticmethod
     def _env_bool(name: str, default: bool = False) -> bool:
         """Read a boolean env var using common truthy/falsy strings."""
@@ -504,25 +506,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
-        # Optional inbound message reaction lifecycle. Enabled for Carlos's
-        # Telegram bridge via HERMES_TELEGRAM_REACTIONS_ENABLED=1. Reactions are
-        # best-effort because Telegram chats may disable specific emoji.
+        # Optional inbound message reaction lifecycle. When set via
+        # HERMES_TELEGRAM_REACTIONS_ENABLED=1, the adapter reacts at three
+        # stages: 👀 on receive, ✍️ on response ready, ✅/❌ on complete.
         self._reaction_lifecycle_enabled: bool = self._env_bool(
             "HERMES_TELEGRAM_REACTIONS_ENABLED", False
         )
-        self._reaction_stage_1_delay_seconds: float = self._env_float_clamped(
-            "HERMES_TELEGRAM_REACTION_STAGE_1_DELAY_SECONDS",
-            4.0,
-            min_value=0.5,
-            max_value=60.0,
-        )
-        self._reaction_stage_2_delay_seconds: float = self._env_float_clamped(
-            "HERMES_TELEGRAM_REACTION_STAGE_2_DELAY_SECONDS",
-            25.0,
-            min_value=self._reaction_stage_1_delay_seconds,
-            max_value=300.0,
-        )
-        self._reaction_tasks: Dict[tuple, asyncio.Task] = {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -6037,42 +6026,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self) -> bool:
         """Check if Telegram message reactions are enabled via config/env."""
-        if getattr(self, "_reaction_lifecycle_enabled", None) is not None:
-            return bool(self._reaction_lifecycle_enabled)
-        # Backward-compatible test/ops env var plus the newer namespaced one.
-        return (
-            os.getenv("TELEGRAM_REACTIONS", "").lower() not in {"false", "0", "no", ""}
-            or self._env_bool("HERMES_TELEGRAM_REACTIONS_ENABLED", False)
-        )
+        # When __init__ ran, _reaction_lifecycle_enabled is explicitly set.
+        # When it's the sentinel, __init__ didn't run — use only TELEGRAM_REACTIONS.
+        val = getattr(self, "_reaction_lifecycle_enabled", self._UNSET)
+        if val is not self._UNSET:
+            return bool(val)
+        return os.getenv("TELEGRAM_REACTIONS", "").lower() not in {"false", "0", "no", ""}
 
     def _reaction_event_ids(self, event: MessageEvent):
         """Extract chat_id and message_id from a reaction event."""
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         return chat_id, message_id
-
-    def _reaction_task_map(self) -> Dict[tuple, asyncio.Task]:
-        if not hasattr(self, "_reaction_tasks"):
-            self._reaction_tasks = {}
-        return self._reaction_tasks
-
-    def _reaction_task_key(self, chat_id: str, message_id: str) -> tuple:
-        return (str(chat_id), str(message_id))
-
-    def _cancel_reaction_task_by_ids(self, chat_id: str, message_id: str) -> None:
-        task = self._reaction_task_map().pop(self._reaction_task_key(chat_id, message_id), None)
-        if task is not None:
-            task.cancel()
-
-    async def _delayed_set_reaction(
-        self,
-        chat_id: str,
-        message_id: str,
-        delay: float,
-        emoji: str,
-    ) -> None:
-        await asyncio.sleep(delay)
-        await self._set_reaction(chat_id, message_id, emoji)
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
@@ -6111,54 +6076,28 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """React when Telegram processing begins, then split long thinking into stages."""
+        """Set eyes reaction when message is received."""
         if not self._reactions_enabled():
             return
         chat_id, message_id = self._reaction_event_ids(event)
-        if not (chat_id and message_id):
-            return
-        self._cancel_reaction_task_by_ids(chat_id, message_id)
-        await self._set_reaction(chat_id, message_id, "\U0001f440")  # saw it: 👀
-
-        stage_1 = getattr(self, "_reaction_stage_1_delay_seconds", 4.0)
-        stage_2 = getattr(self, "_reaction_stage_2_delay_seconds", 25.0)
-
-        async def _long_running_lifecycle() -> None:
-            try:
-                await self._delayed_set_reaction(chat_id, message_id, stage_1, "\U0001f914")  # 🤔
-                await self._delayed_set_reaction(
-                    chat_id,
-                    message_id,
-                    max(0.0, stage_2 - stage_1),
-                    "\U0001f9e0",  # 🧠
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug("[%s] Telegram reaction lifecycle failed", self.name, exc_info=True)
-
-        self._reaction_task_map()[self._reaction_task_key(chat_id, message_id)] = asyncio.create_task(
-            _long_running_lifecycle()
-        )
+        if chat_id and message_id:
+            await self._set_reaction(chat_id, message_id, "\U0001f440")  # 👀
 
     async def on_response_ready(self, event: MessageEvent) -> None:
-        """Swap to ready-to-send reaction after the agent finishes thinking."""
+        """Swap to writing reaction after the agent finishes thinking."""
         if not self._reactions_enabled():
             return
         chat_id, message_id = self._reaction_event_ids(event)
-        if not (chat_id and message_id):
-            return
-        self._cancel_reaction_task_by_ids(chat_id, message_id)
-        await self._set_reaction(chat_id, message_id, "\u270d\ufe0f")  # ✍️
+        if chat_id and message_id:
+            await self._set_reaction(chat_id, message_id, "\u270d\ufe0f")  # ✍️
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the ready/in-progress reaction for final success/failure."""
+        """Set final success/failure reaction."""
         if not self._reactions_enabled():
             return
         chat_id, message_id = self._reaction_event_ids(event)
         if not (chat_id and message_id):
             return
-        self._cancel_reaction_task_by_ids(chat_id, message_id)
         if outcome == ProcessingOutcome.CANCELLED:
             await self._clear_reactions(chat_id, message_id)
         else:

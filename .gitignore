@@ -5,6 +5,8 @@
 __pycache__/
 .venv/
 .vscode/
+.qwen/
+outputs/
 .env
 .env.local
 .env.development.local

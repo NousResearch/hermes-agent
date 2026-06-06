@@ -5082,11 +5082,15 @@ def _(rid, params: dict) -> dict:
 
         session_id = str(params.get("session_id", "")).strip()
         attached = _copy_to_sandbox(resolved, session_id=session_id)
+        # Use the same id scheme as _list_attached (first 8 hex chars
+        # of the stored filename stem, which is the sha16 prefix) so
+        # the attach/list/detach cycle stays consistent.
+        attach_id = attached.stored_path.stem[:8]
         return _ok(
             rid,
             {
                 "attached": True,
-                "id": attached.id,
+                "id": attach_id,
                 "name": resolved.name,
                 "stored_path": str(attached.stored_path),
                 "mime_type": attached.mime_type,

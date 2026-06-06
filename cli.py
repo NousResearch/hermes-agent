@@ -2407,14 +2407,43 @@ def _detect_mime(path: _Path) -> str:
     if python-magic is not installed (the [uploads] extra) or detection fails.
 
     Detection is done by content, not extension — the caller is expected to
-    never trust the user-supplied MIME or filename suffix."""
+    never trust the user-supplied MIME or filename suffix.
+
+    Security note: when python-magic is unavailable, we sniff the first
+    16 bytes of the file against known magic-byte signatures BEFORE
+    trusting the extension. This prevents the spoof attack
+    ``malware.exe`` renamed to ``foto.png`` being misdetected as PNG.
+    """
     try:
         import magic  # python-magic, optional [uploads] extra
         return magic.from_file(str(path), mime=True)
     except (ImportError, Exception):
-        # If the extra isn't installed, fall back to extension-based detection
-        # but tagged as octet-stream so the whitelist rejects binaries.
-        # The error message in __init__ of the handler should hint at this.
+        # No libmagic — sniff magic bytes ourselves for the dangerous
+        # cases (executables, archives, anything not text). This is
+        # strictly more conservative than trusting the extension.
+        try:
+            with open(path, "rb") as f:
+                head = f.read(16)
+        except (OSError, Exception):
+            return "application/octet-stream"
+
+        # Known executable / archive magic bytes — always reject these
+        # regardless of extension. They would never be on the whitelist,
+        # but detecting them here gives a clearer "not allowed" path
+        # than letting the whitelist silently catch them as
+        # application/octet-stream.
+        if head[:4] == b"\x7fELF":
+            return "application/x-executable"
+        if head[:2] == b"MZ":
+            return "application/x-msdownload"
+        if head[:4] == b"\x7fELF" or head[:4] == b"\xca\xfe\xba\xbe":
+            return "application/x-mach-binary"
+        if head[:4] == b"PK\x03\x04":
+            return "application/zip"
+        if head[:6] in (b"\x1f\x8b\x08", b"BZh"):
+            return "application/x-compressed"
+
+        # Otherwise, trust the extension as a last resort.
         suffix = path.suffix.lower()
         EXT_TO_MIME = {
             ".txt": "text/plain", ".md": "text/markdown",
@@ -2461,7 +2490,15 @@ def _copy_to_sandbox(path: _Path, session_id: str) -> "AttachedFile":
 
 
 def _list_attached(session_id: str) -> list:
-    """List all files in a session's sandbox, newest first."""
+    """List all files in a session's sandbox, newest first.
+
+    Note: the returned ``id`` matches the short hash used in
+    ``_copy_to_sandbox`` (the first 8 hex chars of the sha256),
+    so a follow-up ``file.detach`` with the id from
+    ``file.list`` matches the same entry. (The attach response
+    uses a uuid4 prefix, but the detach handler looks up files
+    by their stored-path stem, so both routes work.)
+    """
     d = _sandbox_dir(session_id)
     if not d.exists():
         return []
@@ -2472,8 +2509,11 @@ def _list_attached(session_id: str) -> list:
         raw = stored.read_bytes()
         sha = _hashlib.sha256(raw).hexdigest()
         mime = _detect_mime(stored)
+        # The stored filename is "<sha16>.<ext>"; the first 8 hex chars
+        # of the sha16 are a stable per-file id. Using a UUID-derived id
+        # here would break the attach/list/detach cycle.
         out.append(AttachedFile(
-            id=stored.stem[:8],
+            id=stored.stem[:8] if not stored.stem.startswith("uuid:") else stored.stem[5:13],
             session_id=session_id,
             original_path=stored,
             stored_path=stored,

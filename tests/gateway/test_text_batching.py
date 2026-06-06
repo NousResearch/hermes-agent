@@ -381,6 +381,20 @@ class TestWeComTextBatching:
         await asyncio.sleep(0.2)
         assert len(adapter._pending_text_batches) == 0
 
+    @pytest.mark.asyncio
+    async def test_active_session_bypasses_platform_batching(self):
+        from gateway.session import build_session_key
+
+        adapter = _make_wecom_adapter()
+        event = _make_event("interrupt me", Platform.WECOM)
+        session_key = build_session_key(event.source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        await adapter._dispatch_text_event(event)
+
+        adapter.handle_message.assert_called_once_with(event)
+        assert adapter._pending_text_batches == {}
+
 
 # =====================================================================
 # Telegram adaptive delay (PR #6891)

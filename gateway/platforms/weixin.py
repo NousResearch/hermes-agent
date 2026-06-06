@@ -1465,7 +1465,7 @@ class WeixinAdapter(BasePlatformAdapter):
         )
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
         if event.message_type == MessageType.TEXT:
-            self._enqueue_text_event(event)
+            await self._dispatch_text_event(event)
         else:
             await self.handle_message(event)
 

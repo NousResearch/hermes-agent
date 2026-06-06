@@ -322,23 +322,28 @@ def install_bws(*, force: bool = False) -> Path:
                 f"expected {expected}, got {actual}"
             )
 
-        with zipfile.ZipFile(zip_path) as zf:
-            member = _pick_zip_member(zf, _platform_binary_name())
-            zf.extract(member, tmp)
-            extracted = tmp / member
-
         # Move into place atomically.  We write to a sibling tempfile in
         # the final directory so the rename can't cross filesystems.
         fd, staged = tempfile.mkstemp(dir=str(bin_dir), prefix=".bws_")
-        os.close(fd)
-        shutil.copy2(extracted, staged)
-        os.chmod(
-            staged,
-            stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
-            | stat.S_IRGRP | stat.S_IXGRP
-            | stat.S_IROTH | stat.S_IXOTH,
-        )
-        os.replace(staged, target)
+        try:
+            with os.fdopen(fd, "wb") as out:
+                with zipfile.ZipFile(zip_path) as zf:
+                    member = _pick_zip_member(zf, _platform_binary_name())
+                    with zf.open(member) as src:
+                        shutil.copyfileobj(src, out)
+            os.chmod(
+                staged,
+                stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+                | stat.S_IRGRP | stat.S_IXGRP
+                | stat.S_IROTH | stat.S_IXOTH,
+            )
+            os.replace(staged, target)
+        except BaseException:
+            try:
+                os.unlink(staged)
+            except OSError:
+                pass
+            raise
 
     logger.info("Installed bws %s at %s", _BWS_VERSION, target)
     return target
@@ -384,15 +389,39 @@ def _pick_zip_member(zf: zipfile.ZipFile, binary_name: str) -> str:
     Historically the archive has been flat (``bws`` at the root) but we
     tolerate a top-level directory just in case upstream changes.
     """
-    candidates = [n for n in zf.namelist() if n.split("/")[-1] == binary_name]
+    candidates = []
+    for info in zf.infolist():
+        parts = _safe_binary_zip_member_parts(info.filename, binary_name)
+        if parts is not None and not info.is_dir():
+            candidates.append((len(parts), len(info.filename), info.filename))
     if not candidates:
         raise RuntimeError(
-            f"Could not find {binary_name} inside downloaded archive "
+            f"Could not find a safe {binary_name} inside downloaded archive "
             f"(members: {zf.namelist()[:5]}...)"
         )
     # Prefer the shortest path (i.e. root over nested) for determinism.
-    candidates.sort(key=len)
-    return candidates[0]
+    candidates.sort()
+    return candidates[0][2]
+
+
+def _safe_binary_zip_member_parts(member: str,
+                                  binary_name: str) -> Optional[Tuple[str, ...]]:
+    """Return safe path parts for a release binary member, else None."""
+    if (
+        not member
+        or member.startswith(("/", "\\"))
+        or "\\" in member
+        or "\x00" in member
+    ):
+        return None
+    parts = tuple(member.split("/"))
+    if len(parts) not in (1, 2):
+        return None
+    if parts[-1] != binary_name:
+        return None
+    if any(part in ("", ".", "..") or ":" in part for part in parts):
+        return None
+    return parts
 
 
 # ---------------------------------------------------------------------------

@@ -91,11 +91,40 @@ def test_platform_asset_name(system, machine, libc_text, expected):
 # ---------------------------------------------------------------------------
 
 
-def _make_fake_zip(binary_bytes: bytes) -> bytes:
+def _make_fake_zip(binary_bytes: bytes, member_name: str = "") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("bws", binary_bytes)
+        zf.writestr(member_name or bw._platform_binary_name(), binary_bytes)
     return buf.getvalue()
+
+
+def test_pick_zip_member_prefers_root_binary():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("release/bws", b"nested")
+        zf.writestr("bws", b"root")
+    buf.seek(0)
+
+    with zipfile.ZipFile(buf) as zf:
+        assert bw._pick_zip_member(zf, "bws") == "bws"
+
+
+def test_pick_zip_member_rejects_unsafe_paths():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../bws", b"parent")
+        zf.writestr("/bws", b"absolute")
+        zf.writestr("C:/bws", b"drive")
+        zf.writestr("release/bin/bws", b"deep")
+    buf.seek(0)
+
+    with zipfile.ZipFile(buf) as zf:
+        with pytest.raises(RuntimeError, match="safe bws"):
+            bw._pick_zip_member(zf, "bws")
+
+
+def test_safe_binary_zip_member_parts_rejects_windows_separators():
+    assert bw._safe_binary_zip_member_parts("release\\bws", "bws") is None
 
 
 def test_install_bws_happy_path(hermes_home, monkeypatch):
@@ -122,6 +151,30 @@ def test_install_bws_happy_path(hermes_home, monkeypatch):
     assert path.read_bytes() == fake_binary
     # Executable bit set
     assert path.stat().st_mode & stat.S_IXUSR
+
+
+def test_install_bws_accepts_top_level_release_dir(hermes_home, monkeypatch):
+    fake_binary = b"#!/bin/sh\necho 'bws nested 2.0.0'\n"
+    zip_bytes = _make_fake_zip(
+        fake_binary,
+        member_name=f"bws-{bw._BWS_VERSION}/{bw._platform_binary_name()}",
+    )
+    asset_name = bw._platform_asset_name()
+    checksum_text = f"{hashlib.sha256(zip_bytes).hexdigest()}  {asset_name}\n"
+
+    def fake_download(url, dest):
+        if url.endswith(".zip"):
+            Path(dest).write_bytes(zip_bytes)
+        elif url.endswith(".txt"):
+            Path(dest).write_text(checksum_text)
+        else:
+            raise AssertionError(f"unexpected download url: {url}")
+
+    monkeypatch.setattr(bw, "_http_download", fake_download)
+
+    path = bw.install_bws()
+    assert path.exists()
+    assert path.read_bytes() == fake_binary
 
 
 def test_install_bws_checksum_mismatch(hermes_home, monkeypatch):

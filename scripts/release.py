@@ -45,9 +45,14 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "834740219@qq.com": "ViewWay",
+    "harjoth.khara@gmail.com": "harjothkhara",
+    "129007007+HeLLGURD@users.noreply.github.com": "HeLLGURD",
+    "dirtyren@users.noreply.github.com": "dirtyren",
     "zhaolei.vc@bytedance.com": "zhaoleibd",
     "jeffrobodie@gmail.com": "jeffrobodie-glitch",
     "kyssta-exe@users.noreply.github.com": "kyssta-exe",
+    "ali.zakaee.1997@gmail.com": "ITheEqualizer",
     "copii.list@gmail.com": "stremtec",
     "solaiagent@gmail.com": "solaitken",
     "cryptoworlldz@gmail.com": "worlldz",
@@ -64,12 +69,15 @@ AUTHOR_MAP = {
     "david.gutowsky@gmail.com": "davidgut1982",
     "drpelagik@gmail.com": "SeaXen",
     "lengr@users.noreply.github.com": "LengR",
+    "Kewe63@users.noreply.github.com": "Kewe63",
+    "kewe.3217@gmail.com": "Kewe63",
     "17255546+CharZhou@users.noreply.github.com": "CharZhou",
     "metalclaudbot@gmail.com": "HashClawAI",
     "tonybear55665566@gmail.com": "TonyPepeBear",
     "kaspersniels@gmail.com": "nielskaspers",
     "kurobaryo@gmail.com": "kurobaryo",
     "scubamount@users.noreply.github.com": "scubamount",
+    "251514042+youngstar-eth@users.noreply.github.com": "youngstar-eth",
     "155192176+alelpoan@users.noreply.github.com": "alelpoan",
     "aman@abacus.ai": "Aman113114-IITD",
     "octavio.turra@gmail.com": "octavioturra",
@@ -1159,6 +1167,16 @@ AUTHOR_MAP = {
     "chenzeshi@live.com": "chen1749144759",
     "mor.aleksandr@yahoo.com": "MorAlekss",
     "276649498+ztexydt-cqh@users.noreply.github.com": "ztexydt-cqh",
+    # v0.16.0 additions
+    "teknium@nous.dev": "teknium1",
+    "alaamohanad169@gmail.com": "alaamohanad169-ship-it",
+    "archer@ouyangdeMac-mini.local": "Archerouyang",  # display name 欧阳
+    "batosk2@gmail.com": "Sarbai",  # git email for PR #33438 author (display: Брагарник Дмитро)
+    "info@aminvakil.com": "aminvakil",
+    "nikpolale@gmail.com": "polnikale",
+    "sarveshagl1327@gmail.com": "sarvesh1327",  # salvaged via #38655
+    "sohyuanchin@gmail.com": "wysie",
+    "bedirhan@codeway.co": "bedirhancode",
     "ash@users.noreply.github.com": "ash",
     "andrewho.sf@gmail.com": "andrewhosf",
     # April 2026 Honcho bug-fix consolidation (#15381)
@@ -1440,6 +1458,7 @@ AUTHOR_MAP = {
     "nicsequenzy@gmail.com": "polnikale",  # PR #35717 (discover Playwright headless_shell browser)
     "wasdhkzk@gmail.com": "whyhkzk",  # PR #32407 (sandbox-mirror inner-container guard; commits authored as whyhkzk + zhukun)
     "leonard@sellem.me": "leonardsellem",  # PR #37405 (desktop WS origin guard on remote/Tailscale binds)
+    "42903577+ohMyJason@users.noreply.github.com": "ohMyJason",  # PR #29810 (discover_models in custom_providers section 4)
 }
 
 

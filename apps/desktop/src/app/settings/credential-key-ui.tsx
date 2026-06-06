@@ -2,7 +2,7 @@ import { type ChangeEvent, type KeyboardEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ExternalLink, Loader2, Save } from '@/lib/icons'
+import { ChevronDown, ExternalLink, Loader2, Save } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { EnvVarInfo } from '@/types/hermes'
 
@@ -133,79 +133,196 @@ function CredentialDocsLink({ href }: { href: string }) {
   )
 }
 
-/** One credential row — same ListRow layout as Advanced config fields. */
+/** One credential row — collapsible; description and docs link expand on click. */
 export function CredentialKeyCard({
+  expanded,
   info,
   label,
+  onExpand,
+  onToggle,
   placeholder,
   rowProps,
   varKey
-}: {
-  info: EnvVarInfo
-  label: string
-  placeholder: string
-  rowProps: KeyRowProps
-  varKey: string
-}) {
+}: CredentialKeyCardProps) {
   const docsUrl = info.url?.trim()
   const description = info.description?.trim()
+  const expandable = Boolean(description || docsUrl)
 
   return (
-    <ListRow
-      action={<KeyField info={info} placeholder={placeholder} rowProps={rowProps} varKey={varKey} />}
-      below={docsUrl ? <CredentialDocsLink href={docsUrl} /> : undefined}
-      description={description}
-      title={label}
-    />
+    <div
+      className={cn(
+        'group/card rounded-[6px] px-2 py-1 transition-colors',
+        expandable && 'cursor-pointer',
+        expandable && !expanded && 'hover:bg-(--ui-row-hover-background)',
+        expanded && 'bg-(--ui-bg-quaternary) ring-1 ring-(--ui-stroke-secondary)'
+      )}
+      onClick={expandable ? onToggle : undefined}
+      onKeyDown={
+        expandable
+          ? e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onToggle()
+              }
+            }
+          : undefined
+      }
+      role={expandable ? 'button' : undefined}
+      tabIndex={expandable ? 0 : undefined}
+    >
+      <div className="grid gap-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] sm:items-center">
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            className={cn(
+              'size-2 shrink-0 rounded-full',
+              info.is_set ? 'bg-primary' : 'bg-(--ui-stroke-secondary)'
+            )}
+          />
+
+          <span className="min-w-0 truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+            {label}
+          </span>
+
+          {expandable && (
+            <ChevronDown
+              className={cn(
+                'size-3.5 shrink-0 text-muted-foreground transition',
+                expanded ? 'rotate-180 opacity-100' : 'opacity-0 group-hover/card:opacity-100'
+              )}
+            />
+          )}
+        </div>
+
+        <div
+          className="min-w-0 sm:justify-self-end"
+          onClick={e => e.stopPropagation()}
+          onFocus={() => {
+            if (expandable && !expanded) {
+              onExpand()
+            }
+          }}
+        >
+          <KeyField info={info} placeholder={placeholder} rowProps={rowProps} varKey={varKey} />
+        </div>
+      </div>
+
+      {expandable && expanded && (
+        <div className="grid gap-2.5 pb-2 pl-4" onClick={e => e.stopPropagation()}>
+          {description && (
+            <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+              {description}
+            </p>
+          )}
+
+          {docsUrl && <CredentialDocsLink href={docsUrl} />}
+        </div>
+      )}
+    </div>
   )
 }
 
-/** Provider API key group — primary + optional advanced fields as ListRows. */
-export function ProviderKeyRows({
-  group,
-  rowProps
-}: {
-  group: ProviderKeyRowGroup
-  rowProps: KeyRowProps
-}) {
+/** Provider API key group — collapsible card; description, docs link, and advanced fields expand on click. */
+export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps }: ProviderKeyRowsProps) {
   const docsUrl = group.docsUrl?.trim()
   const description = group.description?.trim()
-  const docsBelow = docsUrl ? <CredentialDocsLink href={docsUrl} /> : undefined
+  const expandable = Boolean(description || docsUrl || group.advanced.length > 0)
 
   return (
-    <>
-      <ListRow
-        action={
+    <div
+      className={cn(
+        'group/card rounded-[6px] px-2 py-1 transition-colors',
+        expandable && 'cursor-pointer',
+        expandable && !expanded && 'hover:bg-(--ui-row-hover-background)',
+        expanded && 'bg-(--ui-bg-quaternary) ring-1 ring-(--ui-stroke-secondary)'
+      )}
+      onClick={expandable ? onToggle : undefined}
+      onKeyDown={
+        expandable
+          ? e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onToggle()
+              }
+            }
+          : undefined
+      }
+      role={expandable ? 'button' : undefined}
+      tabIndex={expandable ? 0 : undefined}
+    >
+      <div className="grid gap-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] sm:items-center">
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            className={cn(
+              'size-2 shrink-0 rounded-full',
+              group.hasAnySet ? 'bg-primary' : 'bg-(--ui-stroke-secondary)'
+            )}
+          />
+
+          <span className="min-w-0 truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+            {group.name}
+          </span>
+
+          {expandable && (
+            <ChevronDown
+              className={cn(
+                'size-3.5 shrink-0 text-muted-foreground transition',
+                expanded ? 'rotate-180 opacity-100' : 'opacity-0 group-hover/card:opacity-100'
+              )}
+            />
+          )}
+        </div>
+
+        <div
+          className="min-w-0 sm:justify-self-end"
+          onClick={e => e.stopPropagation()}
+          onFocus={() => {
+            if (expandable && !expanded) {
+              onExpand()
+            }
+          }}
+        >
           <KeyField
             info={group.primary[1]}
             placeholder={`Paste ${group.name} key`}
             rowProps={rowProps}
             varKey={group.primary[0]}
           />
-        }
-        below={docsBelow}
-        description={description}
-        title={group.name}
-      />
-      {group.advanced.map(([key, info]) => {
-        const fieldLabel = isKeyVar(key, info) ? prettyName(key.replace(/(?:_API_KEY|_TOKEN|_KEY)$/i, '')) : friendlyFieldLabel(key, info)
+        </div>
+      </div>
 
-        return (
-          <ListRow
-            action={
-              <KeyField
-                info={info}
-                placeholder={credentialPlaceholder(key, info, fieldLabel)}
-                rowProps={rowProps}
-                varKey={key}
+      {expandable && expanded && (
+        <div className="grid gap-2.5 pb-2 pl-4" onClick={e => e.stopPropagation()}>
+          {description && (
+            <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+              {description}
+            </p>
+          )}
+
+          {group.advanced.map(([key, info]) => {
+            const fieldLabel = isKeyVar(key, info)
+              ? prettyName(key.replace(/(?:_API_KEY|_TOKEN|_KEY)$/i, ''))
+              : friendlyFieldLabel(key, info)
+
+            return (
+              <ListRow
+                action={
+                  <KeyField
+                    info={info}
+                    placeholder={credentialPlaceholder(key, info, fieldLabel)}
+                    rowProps={rowProps}
+                    varKey={key}
+                  />
+                }
+                key={key}
+                title={fieldLabel}
               />
-            }
-            key={key}
-            title={fieldLabel}
-          />
-        )
-      })}
-    </>
+            )
+          })}
+
+          {docsUrl && <CredentialDocsLink href={docsUrl} />}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -217,10 +334,30 @@ export function credentialRowLabel(varKey: string, info: EnvVarInfo): string {
   return prettyName(varKey)
 }
 
+interface CredentialKeyCardProps {
+  expanded: boolean
+  info: EnvVarInfo
+  label: string
+  onExpand: () => void
+  onToggle: () => void
+  placeholder: string
+  rowProps: KeyRowProps
+  varKey: string
+}
+
+interface ProviderKeyRowsProps {
+  expanded: boolean
+  group: ProviderKeyRowGroup
+  onExpand: () => void
+  onToggle: () => void
+  rowProps: KeyRowProps
+}
+
 export interface ProviderKeyRowGroup {
   advanced: [string, EnvVarInfo][]
   description?: string
   docsUrl?: string
+  hasAnySet: boolean
   name: string
   primary: [string, EnvVarInfo]
 }

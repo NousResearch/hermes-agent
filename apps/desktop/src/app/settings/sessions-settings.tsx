@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Tip } from '@/components/ui/tooltip'
 import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
@@ -56,7 +57,7 @@ export function SessionsSettings() {
     setBusyId(session.id)
 
     try {
-      await setSessionArchived(session.id, false)
+      await setSessionArchived(session.id, false, session.profile)
       setLocalSessions(prev => prev.filter(s => s.id !== session.id))
       // Surface it again in the sidebar without waiting for a full refresh.
       setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
@@ -77,7 +78,7 @@ export function SessionsSettings() {
     setBusyId(session.id)
 
     try {
-      await deleteSession(session.id)
+      await deleteSession(session.id, session.profile)
       setLocalSessions(prev => prev.filter(s => s.id !== session.id))
       triggerHaptic('warning')
     } catch (err) {
@@ -134,18 +135,19 @@ export function SessionsSettings() {
                         {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
                         <span>Unarchive</span>
                       </Button>
-                      <Button
-                        aria-label="Delete permanently"
-                        className="text-muted-foreground hover:text-destructive"
-                        disabled={busy}
-                        onClick={() => void remove(session)}
-                        size="icon"
-                        title="Delete permanently"
-                        type="button"
-                        variant="ghost"
-                      >
-                        <Trash2 className="size-3.5" />
-                      </Button>
+                      <Tip label="Delete permanently">
+                        <Button
+                          aria-label="Delete permanently"
+                          className="text-muted-foreground hover:text-destructive"
+                          disabled={busy}
+                          onClick={() => void remove(session)}
+                          size="icon"
+                          type="button"
+                          variant="ghost"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </Tip>
                     </div>
                   }
                   description={session.preview || undefined}

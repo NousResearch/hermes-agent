@@ -176,6 +176,53 @@ def test_guard_gateway_user_approves_is_one_shot(gw_session):
     assert A.is_approved(gw_session, "execute_code") is False
 
 
+def test_guard_gateway_user_approves_session_persists(gw_session):
+    """'Approve session' stores session-level approval (#39275)."""
+    _register_resolver(gw_session, "session")
+    res = A.check_execute_code_guard("import os; print(1)", "local")
+    assert res["approved"] is True
+    assert res.get("user_approved") is True
+    # Session approval should now be stored.
+    assert A.is_approved(gw_session, "execute_code") is True
+    # Subsequent calls should auto-approve without prompting.
+    res2 = A.check_execute_code_guard("import os; print(2)", "local")
+    assert res2["approved"] is True
+    # Cleanup
+    with A._lock:
+        s = A._session_approved.get(gw_session, set())
+        s.discard("execute_code")
+
+
+def test_guard_gateway_user_approves_always_persists(gw_session):
+    """'Always' stores permanent approval (#39275)."""
+    _register_resolver(gw_session, "always")
+    res = A.check_execute_code_guard("import os; print(1)", "local")
+    assert res["approved"] is True
+    assert res.get("user_approved") is True
+    # Permanent approval should now be stored.
+    assert A.is_approved(gw_session, "execute_code") is True
+    # Cleanup
+    with A._lock:
+        A._permanent_approved.discard("execute_code")
+        s = A._session_approved.get(gw_session, set())
+        s.discard("execute_code")
+
+
+def test_guard_session_approval_short_circuits_prompt(gw_session):
+    """Once session-approved, execute_code skips the approval prompt (#39275)."""
+    # Manually set session approval.
+    A.approve_session(gw_session, "execute_code")
+    try:
+        # Even with a denier registered, the is_approved check short-circuits.
+        _register_resolver(gw_session, "deny")
+        res = A.check_execute_code_guard("import os", "local")
+        assert res["approved"] is True
+    finally:
+        with A._lock:
+            s = A._session_approved.get(gw_session, set())
+            s.discard("execute_code")
+
+
 def test_guard_gateway_user_denies_blocks(gw_session):
     _register_resolver(gw_session, "deny")
     res = A.check_execute_code_guard("import os", "local")

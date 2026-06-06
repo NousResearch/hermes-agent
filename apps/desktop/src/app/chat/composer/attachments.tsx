@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { FileText, FolderOpen, ImageIcon, Link, Terminal } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import type { ComposerAttachment } from '@/store/composer'
@@ -25,6 +27,8 @@ export function AttachmentList({
 }
 
 function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachment; onRemove?: (id: string) => void }) {
+  const { t } = useI18n()
+  const c = t.composer
   const Icon = { folder: FolderOpen, url: Link, image: ImageIcon, file: FileText, terminal: Terminal }[attachment.kind]
   const cwd = useStore($currentCwd)
   const canPreview = attachment.kind !== 'folder' && attachment.kind !== 'terminal'
@@ -52,59 +56,59 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
       const preview = await normalizeOrLocalPreviewTarget(target, cwd || undefined)
 
       if (!preview) {
-        throw new Error(`Could not preview ${attachment.label}`)
+        throw new Error(c.couldNotPreview(attachment.label))
       }
 
       setCurrentSessionPreviewTarget(preview, 'manual', target)
     } catch (error) {
-      notifyError(error, 'Preview unavailable')
+      notifyError(error, c.previewUnavailable)
     }
   }
 
   return (
-    <div
-      className="group/attachment relative min-w-0 shrink-0"
-      title={attachment.path || attachment.detail || attachment.label}
-    >
-      <button
-        aria-label={canPreview ? `Preview ${attachment.label}` : attachment.label}
-        className="flex max-w-56 items-center gap-2 border border-border/60 bg-background/50 px-2 py-1.5 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] transition-colors hover:border-primary/35 hover:bg-accent/45 disabled:cursor-default"
-        disabled={!canPreview}
-        onClick={() => void openPreview()}
-        title={canPreview ? `Preview ${attachment.label}` : attachment.label}
-        type="button"
-      >
-        {attachment.previewUrl && attachment.kind === 'image' ? (
-          <img
-            alt={attachment.label}
-            className="size-8 shrink-0 border border-border/70 object-cover"
-            draggable={false}
-            src={attachment.previewUrl}
-          />
-        ) : (
-          <span className="grid size-8 shrink-0 place-items-center border border-border/55 bg-muted/35 text-muted-foreground">
-            <Icon className="size-3.5" />
-          </span>
-        )}
-        <span className="min-w-0">
-          <span className="block truncate text-[0.72rem] font-medium leading-4 text-foreground/90">
-            {attachment.label}
-          </span>
-          {detail && (
-            <span className="block truncate font-mono text-[0.6rem] leading-3 text-muted-foreground/65">{detail}</span>
-          )}
-        </span>
-      </button>
-      {onRemove && (
+    <Tip label={attachment.path || attachment.detail || attachment.label}>
+      <div className="group/attachment relative min-w-0 shrink-0">
         <button
-          aria-label={`Remove ${attachment.label}`}
-          className="absolute -right-1 -top-1 grid size-3.5 place-items-center rounded-full border border-border/70 bg-background text-muted-foreground opacity-0 shadow-xs transition hover:bg-accent hover:text-foreground group-hover/attachment:opacity-100 focus-visible:opacity-100"
-          onClick={() => onRemove(attachment.id)}
+          aria-label={canPreview ? c.previewLabel(attachment.label) : attachment.label}
+          className="flex max-w-56 items-center gap-2 border border-border/60 bg-background/50 px-2 py-1.5 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] transition-colors hover:border-primary/35 hover:bg-accent/45 disabled:cursor-default"
+          disabled={!canPreview}
+          onClick={() => void openPreview()}
           type="button"
         >
-          <Codicon name="close" size="0.625rem" />
+          {attachment.previewUrl && attachment.kind === 'image' ? (
+            <img
+              alt={attachment.label}
+              className="size-8 shrink-0 border border-border/70 object-cover"
+              draggable={false}
+              src={attachment.previewUrl}
+            />
+          ) : (
+            <span className="grid size-8 shrink-0 place-items-center border border-border/55 bg-muted/35 text-muted-foreground">
+              <Icon className="size-3.5" />
+            </span>
+          )}
+          <span className="min-w-0">
+            <span className="block truncate text-[0.72rem] font-medium leading-4 text-foreground/90">
+              {attachment.label}
+            </span>
+            {detail && (
+              <span className="block truncate font-mono text-[0.6rem] leading-3 text-muted-foreground/65">
+                {detail}
+              </span>
+            )}
+          </span>
         </button>
-      )}
-    </div>
+        {onRemove && (
+          <button
+            aria-label={c.removeAttachment(attachment.label)}
+            className="absolute -right-1 -top-1 grid size-3.5 place-items-center rounded-full border border-border/70 bg-background text-muted-foreground opacity-0 shadow-xs transition hover:bg-accent hover:text-foreground group-hover/attachment:opacity-100 focus-visible:opacity-100"
+            onClick={() => onRemove(attachment.id)}
+            type="button"
+          >
+            <Codicon name="close" size="0.625rem" />
+          </button>
+        )}
+      </div>
+    </Tip>
   )
 }

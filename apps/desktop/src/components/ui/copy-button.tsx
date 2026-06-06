@@ -2,6 +2,7 @@ import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
+import { Tip } from '@/components/ui/tooltip'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Copy, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -178,7 +179,6 @@ export function CopyButton({
         )}
         disabled={disabled}
         onClick={event => void copy(event)}
-        title={feedbackLabel}
         type="button"
       >
         {content}
@@ -188,34 +188,37 @@ export function CopyButton({
 
   if (appearance === 'tool-row') {
     return (
-      <button
-        aria-label={ariaLabel}
-        className={cn(
-          'grid size-6 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity hover:bg-accent/55 hover:text-foreground focus-visible:opacity-100 group-hover/tool-row:opacity-100 disabled:opacity-40',
-          className
-        )}
-        disabled={disabled}
-        onClick={event => void copy(event)}
-        title={feedbackLabel}
-        type="button"
-      >
-        {icon}
-      </button>
+      <Tip label={feedbackLabel}>
+        <button
+          aria-label={ariaLabel}
+          className={cn(
+            'grid size-6 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity hover:bg-accent/55 hover:text-foreground focus-visible:opacity-100 group-hover/tool-row:opacity-100 disabled:opacity-40',
+            className
+          )}
+          disabled={disabled}
+          onClick={event => void copy(event)}
+          type="button"
+        >
+          {icon}
+        </button>
+      </Tip>
     )
   }
 
-  return (
+  const button = (
     <Button
       aria-label={ariaLabel}
       className={className}
       disabled={disabled}
       onClick={event => void copy(event)}
       size={buttonSize ?? (appearance === 'icon' ? 'icon' : 'default')}
-      title={feedbackLabel}
       type="button"
       variant={buttonVariant}
     >
       {content}
     </Button>
   )
+
+  // Only icon-only buttons need a tooltip; the text variant already shows its label.
+  return appearance === 'icon' ? <Tip label={feedbackLabel}>{button}</Tip> : button
 }

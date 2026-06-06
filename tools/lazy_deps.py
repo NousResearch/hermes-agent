@@ -135,7 +135,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",
-        "Markdown==3.10.2",
         "aiosqlite==0.22.1",
         "asyncpg==0.31.0",
         "aiohttp-socks==0.11.0",

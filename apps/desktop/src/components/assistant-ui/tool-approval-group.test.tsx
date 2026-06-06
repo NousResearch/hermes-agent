@@ -2,7 +2,8 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $approvalRequest } from '@/store/prompts'
+import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
+import { $activeSessionId } from '@/store/session'
 import { $toolDisclosureStates } from '@/store/tool-view'
 
 import { Thread } from './thread'
@@ -120,13 +121,15 @@ function GroupHarness({ message }: { message: ThreadMessage }) {
 }
 
 beforeEach(() => {
-  $approvalRequest.set(null)
+  clearAllPrompts()
+  $activeSessionId.set('sess-1')
   $toolDisclosureStates.set({})
 })
 
 afterEach(() => {
   cleanup()
-  $approvalRequest.set(null)
+  clearAllPrompts()
+  $activeSessionId.set(null)
 })
 
 describe('ToolGroupSlot approval surfacing', () => {
@@ -143,7 +146,7 @@ describe('ToolGroupSlot approval surfacing', () => {
   })
 
   it('force-opens the group body so the approval surfaces without expanding', async () => {
-    $approvalRequest.set({ command: 'rm -rf /tmp/x', description: 'dangerous command', sessionId: 'sess-1' })
+    setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'dangerous command', sessionId: 'sess-1' })
 
     const { container } = render(<GroupHarness message={groupedPendingMessage()} />)
 

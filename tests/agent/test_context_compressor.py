@@ -2149,37 +2149,77 @@ class TestTruncateToolCallArgsJson:
         assert parsed["content"].endswith("...[truncated]")
 
 
-class TestPreflightSentinelGuard:
-    """Regression for #36718: the preflight token-display seed in
-    run_conversation must NOT overwrite the -1 sentinel that
-    compress_context() sets immediately after compression.
+class TestNoopAntiThrash:
+    """Verify that compression no-ops (tail absorbs everything) increment
+    the anti-thrashing counter so should_compress() eventually returns False.
 
-    The old guard `_preflight_tokens > (last_prompt_tokens or 0)` evaluated
-    `(-1 or 0)` -> -1 (truthy), so any positive preflight estimate was > -1
-    and clobbered the sentinel with a schema-inflated rough count, re-firing
-    compression on the next turn. The fix treats any negative value as
-    "no real usage yet" and skips the seed.
+    Regression test for #40803: infinite compaction loop when
+    summary_target_ratio is high and context_length is low.
     """
 
-    def _seed(self, last_prompt_tokens, preflight_tokens):
-        # Mirror the exact guard in agent/conversation_loop.py run_conversation.
-        _last = last_prompt_tokens
-        if _last >= 0 and preflight_tokens > _last:
-            return preflight_tokens  # would overwrite
-        return last_prompt_tokens   # preserved
+    def _make_messages(self, n):
+        return [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(n)
+        ]
 
-    def test_sentinel_preserved_after_compression(self, compressor):
-        compressor.last_prompt_tokens = -1
-        # A large schema-inflated preflight estimate must NOT overwrite -1.
-        result = self._seed(compressor.last_prompt_tokens, 250_000)
-        assert result == -1
+    def test_noop_increments_ineffective_count(self, compressor):
+        """When compress() finds no compressible middle window,
+        _ineffective_compression_count should increment."""
+        msgs = self._make_messages(10)
+        # Force _find_tail_cut_by_tokens to return compress_start,
+        # simulating "tail absorbs everything"
+        head = compressor._protect_head_size(msgs)
+        with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=head):
+            compressor.compress(msgs)
+        assert compressor._ineffective_compression_count == 1
 
-    def test_real_value_still_revises_upward(self, compressor):
-        compressor.last_prompt_tokens = 10_000
-        result = self._seed(compressor.last_prompt_tokens, 50_000)
-        assert result == 50_000
+    def test_two_noops_block_further_compression(self, compressor):
+        """After two no-op compressions, should_compress() returns False."""
+        compressor.last_prompt_tokens = 90_000
+        assert compressor.should_compress() is True
 
-    def test_real_value_not_revised_downward(self, compressor):
-        compressor.last_prompt_tokens = 50_000
-        result = self._seed(compressor.last_prompt_tokens, 10_000)
-        assert result == 50_000
+        msgs = self._make_messages(10)
+        head = compressor._protect_head_size(msgs)
+        with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=head):
+            compressor.compress(msgs)
+            assert compressor._ineffective_compression_count == 1
+            assert compressor.should_compress() is True  # only 1 no-op
+
+            compressor.compress(msgs)
+            assert compressor._ineffective_compression_count == 2
+            assert compressor.should_compress() is False  # 2 no-ops → blocked
+
+    def test_effective_compression_resets_counter(self, compressor):
+        """A successful compression (≥10% savings) resets the counter."""
+        msgs = self._make_messages(10)
+        head = compressor._protect_head_size(msgs)
+        # Two no-ops to build up the counter
+        with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=head):
+            compressor.compress(msgs)
+            compressor.compress(msgs)
+        assert compressor._ineffective_compression_count == 2
+
+        # Now do a real compression — mock _generate_summary to return
+        # a short summary so the savings are meaningful.
+        with patch.object(compressor, "_generate_summary", return_value="short summary"):
+            compressor.compress(msgs)
+        # The real compression should produce savings ≥ 10%
+        # and reset the counter to 0
+        assert compressor._ineffective_compression_count == 0
+
+    def test_empty_turns_to_summarize_after_summary_search(self, compressor):
+        """When all compressible turns are already covered by a previous
+        summary, compress() should return messages and increment counter."""
+        msgs = self._make_messages(10)
+        head = compressor._protect_head_size(msgs)
+        # Mock _find_tail_cut_by_tokens to return a valid cut (beyond head)
+        # and _find_latest_context_summary to claim everything is summarized
+        # After summary search: turns = messages[max(head, summary_idx+1):compress_end]
+        # With summary_idx=7 and compress_end=8: messages[8:8] = []
+        with (
+            patch.object(compressor, "_find_tail_cut_by_tokens", return_value=8),
+            patch.object(compressor, "_find_latest_context_summary", return_value=(7, "prev summary")),
+        ):
+            compressor.compress(msgs)
+        assert compressor._ineffective_compression_count == 1

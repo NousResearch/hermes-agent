@@ -1920,6 +1920,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
         if compress_start >= compress_end:
+            # Tail absorbs everything — compression would be a no-op.
+            # Record as ineffective so anti-thrashing prevents retrying
+            # on subsequent turns (fixes #40803).
+            self._ineffective_compression_count += 1
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compression no-op: tail absorbs all %d messages "
+                    "(head=%d, no compressible middle). "
+                    "Anti-thrash count: %d/2",
+                    len(messages),
+                    compress_start,
+                    self._ineffective_compression_count,
+                )
             return messages
 
         turns_to_summarize = messages[compress_start:compress_end]
@@ -1940,6 +1953,20 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if summary_body and not self._previous_summary:
                 self._previous_summary = summary_body
             turns_to_summarize = messages[max(compress_start, summary_idx + 1):compress_end]
+
+        if not turns_to_summarize:
+            # All turns already covered by a previous summary — nothing new
+            # to compress.  Record as ineffective so anti-thrashing prevents
+            # retrying on subsequent turns.
+            self._ineffective_compression_count += 1
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compression no-op: all %d compressible turns already summarized. "
+                    "Anti-thrash count: %d/2",
+                    compress_end - compress_start,
+                    self._ineffective_compression_count,
+                )
+            return messages
 
         if not self.quiet_mode:
             logger.info(

@@ -152,8 +152,9 @@ export function CredentialKeyCard({
   rowProps,
   varKey
 }: CredentialKeyCardProps) {
+  const { t } = useI18n()
   const docsUrl = info.url?.trim()
-  const description = info.description?.trim()
+  const description = t.settings.envDescriptions?.[varKey] ?? info.description?.trim()
   const expandable = Boolean(description || docsUrl)
 
   return (

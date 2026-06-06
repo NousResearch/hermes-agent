@@ -211,7 +211,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                   key={category.key}
                   onClick={() => setActiveCategory(activeCategory === category.key ? null : category.key)}
                 >
-                  {prettyName(category.key)} <TextTabMeta>{category.count}</TextTabMeta>
+                  {t.skills.skillCategoryNames?.[category.key] ?? prettyName(category.key)} <TextTabMeta>{category.count}</TextTabMeta>
                 </TextTab>
               ))}
             </div>
@@ -248,7 +248,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
               {skillGroups.map(([category, list]) => (
                 <div className="space-y-1.5" key={category}>
                   <div className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                    {prettyName(category)}
+                    {t.skills.skillCategoryNames?.[category] ?? prettyName(category)}
                   </div>
                   <div className="divide-y divide-(--ui-stroke-quaternary)">
                     {list.map(skill => (
@@ -259,7 +259,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                         <div className="min-w-0">
                           <div className="truncate text-sm font-medium">{skill.name}</div>
                           <p className="mt-0.5 text-xs text-muted-foreground">
-                            {asText(skill.description) || t.skills.noDescription}
+                            {t.skills.skillDescriptions?.[skill.name] ?? asText(skill.description) ?? t.skills.noDescription}
                           </p>
                         </div>
                         <Switch
@@ -317,7 +317,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                         </div>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {asText(toolset.description) || t.skills.noDescription}
+                        {t.skills.toolsetDescriptions?.[toolset.name] ?? asText(toolset.description) ?? t.skills.noDescription}
                       </p>
                       {tools.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1">

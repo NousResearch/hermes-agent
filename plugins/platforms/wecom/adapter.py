@@ -2066,7 +2066,16 @@ class WeComAdapter(BasePlatformAdapter):
                 self.name,
             )
             return False
-        if chat in self._stream_expired_chats:
+
+        # Extract turn_id early to decide whether to check chat-level expired
+        turn_id = kwargs.get("turn_id")
+
+        # Chat-level stream expiry only blocks NEW turn creation.
+        # Existing turns (identified by turn_id) can continue to finalize
+        # even after another turn in the same chat triggered WeComStreamExpiredError.
+        # This prevents cross-turn interference in concurrent scenarios.
+        if not turn_id and chat in self._stream_expired_chats:
+            # No turn_id provided, and chat is expired → block new turn creation
             return False
 
         if finalize:
@@ -2117,6 +2126,15 @@ class WeComAdapter(BasePlatformAdapter):
                 turn_key = f"{chat}:{turn_id}"
                 turn = self._stream_turns.get(turn_key)
                 if not turn:
+                    # First frame for this turn: need to create it.
+                    # Check if chat is expired (blocks NEW turn creation).
+                    if chat in self._stream_expired_chats:
+                        logger.debug(
+                            "[%s] send_stream_frame: chat %s is expired, cannot create new turn (turn_id=%s)",
+                            self.name, chat, turn_id,
+                        )
+                        return False
+
                     # First frame for this turn: resolve req_id and create turn
                     req_id = self._resolve_stream_req_id(chat, reply_to)
                     if not req_id:
@@ -2143,7 +2161,15 @@ class WeComAdapter(BasePlatformAdapter):
                         self.name, turn.stream_id, chat,
                     )
                 else:
-                    # No active turn, create a new one
+                    # No active turn, need to create a new one.
+                    # Check if chat is expired at the chat level (blocks NEW turn creation).
+                    if chat in self._stream_expired_chats:
+                        logger.debug(
+                            "[%s] send_stream_frame: chat %s is expired, cannot create new turn",
+                            self.name, chat,
+                        )
+                        return False
+
                     req_id = self._resolve_stream_req_id(chat, reply_to)
                     if not req_id:
                         logger.debug(

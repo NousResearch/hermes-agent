@@ -2132,6 +2132,29 @@ class GatewayStreamConsumer:
             # The adapter is responsible for marking the chat as expired
             # so it doesn't keep retrying the dead stream session.
             self._use_native_streaming = False
+
+            # If we already sent frames (seed or content), the stream bubble
+            # is open on the client. Try best-effort finalize to close it
+            # before falling through to standalone send. This prevents
+            # leaving an unclosed thinking stream visible to the user.
+            if self._native_last_pushed_len > 0:
+                try:
+                    await self.adapter.send_stream_frame(
+                        text,
+                        finalize=True,
+                        chat_id=self.chat_id,
+                        reply_to=self._initial_reply_to_id,
+                        turn_id=self._turn_id,
+                    )
+                    logger.debug("Native fallback: successfully finalized stream before send()")
+                    # Stream closed successfully, mark as delivered
+                    self._final_response_sent = True
+                    self._final_content_delivered = True
+                    return True
+                except Exception as e:
+                    logger.debug(
+                        "Native fallback: failed to finalize stream, will use send(): %s", e,
+                    )
             # Fall through to the edit/send paths so any accumulated text
             # still reaches the user as a one-shot proactive markdown send.
 

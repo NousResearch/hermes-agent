@@ -1175,17 +1175,21 @@ class TestSendStreamFrame:
         adapter._ws = MagicMock(closed=False)
         adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
-        await adapter.send_stream_frame("partial", chat_id="chat-1")
-        assert adapter._active_stream_id is not None
+        # With turn_id, creates independent turn
+        turn_id = "test-turn-1"
+        await adapter.send_stream_frame("partial", chat_id="chat-1", turn_id=turn_id)
+        turn_key = "chat-1:test-turn-1"
+        assert turn_key in adapter._stream_turns
+        turn = adapter._stream_turns[turn_key]
+        assert turn.stream_id is not None
 
         ok = await adapter.send_stream_frame(
-            "partial final", chat_id="chat-1", finalize=True,
+            "partial final", chat_id="chat-1", finalize=True, turn_id=turn_id,
         )
 
         assert ok is True
-        assert adapter._active_stream_id is None
-        assert adapter._active_stream_req_id is None
-        assert adapter._active_stream_chat_id is None
+        # After finalize, turn should be cleaned up
+        assert turn_key not in adapter._stream_turns
         # Finalize goes through _send_reply_request (with ack).
         last_call = adapter._send_reply_request.await_args_list[-1]
         assert last_call.args[1]["stream"]["finish"] is True
@@ -1240,19 +1244,21 @@ class TestSendStreamFrameFailures:
         )
 
         # First call (with seed + content) succeeds (fire-and-forget).
-        await adapter.send_stream_frame("hello", chat_id="chat-1")
+        turn_id = "test-turn-2"
+        await adapter.send_stream_frame("hello", chat_id="chat-1", turn_id=turn_id)
         # Now try to finalize — this hits _send_reply_request and gets 846608.
-        ok = await adapter.send_stream_frame("hello final", chat_id="chat-1", finalize=True)
+        ok = await adapter.send_stream_frame("hello final", chat_id="chat-1", finalize=True, turn_id=turn_id)
 
         assert ok is False
         assert "chat-1" in adapter._stream_expired_chats
-        # State must reset so the next inbound req_id can rebuild a new stream.
-        assert adapter._active_stream_id is None
+        # This specific turn should be cleaned up
+        turn_key = "chat-1:test-turn-2"
+        assert turn_key not in adapter._stream_turns
 
     @pytest.mark.asyncio
     async def test_subsequent_call_to_expired_chat_short_circuits(self):
         """Once a chat is in ``_stream_expired_chats``, send_stream_frame
-        bails immediately without touching the WS — caller must use send()."""
+        bails immediately for new turns without touching the WS."""
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -1260,8 +1266,13 @@ class TestSendStreamFrameFailures:
         adapter._last_chat_req_ids["chat-1"] = "req-1"
         adapter._send_reply_request = AsyncMock()
 
+        # Without turn_id: short-circuits immediately
         ok = await adapter.send_stream_frame("hi", chat_id="chat-1")
+        assert ok is False
+        adapter._send_reply_request.assert_not_awaited()
 
+        # With a new turn_id: also short-circuits (can't create new turn)
+        ok = await adapter.send_stream_frame("hi", chat_id="chat-1", turn_id="new-turn")
         assert ok is False
         adapter._send_reply_request.assert_not_awaited()
 
@@ -1287,12 +1298,23 @@ class TestSendStreamFrameFailures:
             side_effect=RuntimeError("ws disconnected"),
         )
 
-        ok = await adapter.send_stream_frame("hi", chat_id="chat-1")
+    @pytest.mark.asyncio
+    async def test_generic_transport_error_resets_state(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            side_effect=RuntimeError("ws disconnected"),
+        )
+
+        turn_id = "test-turn-3"
+        ok = await adapter.send_stream_frame("hi", chat_id="chat-1", turn_id=turn_id)
 
         assert ok is False
-        # Generic error resets state but does NOT mark chat as expired —
-        # next call may still try (e.g. ws reconnects).
-        assert adapter._active_stream_id is None
+        # Generic error cleans up this specific turn but does NOT mark chat as expired
+        turn_key = "chat-1:test-turn-3"
+        assert turn_key not in adapter._stream_turns
         assert "chat-1" not in adapter._stream_expired_chats
 
 # === SEND_TYPING TESTS PLACEHOLDER ===
@@ -1358,8 +1380,16 @@ class TestStreamContentTruncation:
         assert "�" not in out
 
 
+@pytest.mark.skip(reason="Obsolete: send() no longer closes streams in new per-turn architecture")
 class TestSendClosesActiveStream:
-    """``send()`` must finalize any active stream so typing doesn't linger."""
+    """OBSOLETE: These tests verify old behavior where send() closed active streams.
+
+    In the new per-turn architecture (post Round 3 fixes), send() and streaming
+    are completely independent. Streams are managed by their creators
+    (GatewayStreamConsumer) via send_stream_frame(finalize=True, turn_id=...).
+
+    See test_wecom_per_turn.py for tests of the new per-turn model.
+    """
 
     @pytest.mark.asyncio
     async def test_send_finalizes_active_stream_opened_by_consumer(self):

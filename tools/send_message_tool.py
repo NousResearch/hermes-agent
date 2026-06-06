@@ -1940,8 +1940,8 @@ async def _send_qqbot_with_media(pconfig, chat_id, message, media_files):
                             headers=headers,
                         )
                         if upload_resp.status_code not in {200, 201}:
-                            if ep_idx < len(ep_order) - 1:
-                                continue  # try next endpoint
+                            if _is_endpoint_mismatch(upload_resp.status_code) and ep_idx < len(ep_order) - 1:
+                                continue  # target-type mismatch — try next endpoint
                             return _error(f"QQBot file upload failed ({file_name}): {upload_resp.status_code} {upload_resp.text[:200]}")
 
                         upload_json = upload_resp.json()
@@ -1987,7 +1987,10 @@ async def _send_qqbot_with_media(pconfig, chat_id, message, media_files):
                         msg_body = {"msg_type": MSG_TYPE_MEDIA,
                                     "media": {"file_info": file_info},
                                     "msg_seq": idx + 1}
-                        # Attach caption to first media message
+                        # Attach caption to first media message.
+                        # For media-only sends (no text), content is intentionally
+                        # omitted — matches adapter behavior (adapter.py line 2909)
+                        # and works for both C2C and group targets in production.
                         if idx == 0 and text_chunks:
                             msg_body["content"] = text_chunks[0][:MAX_MESSAGE_LENGTH]
 
@@ -2021,13 +2024,23 @@ async def _send_qqbot_with_media(pconfig, chat_id, message, media_files):
                             "message_id": last_msg_id, "endpoint": ep}
 
                 except Exception as exc:
-                    if ep_idx < len(ep_order) - 1:
-                        continue
+                    # Exceptions (timeouts, JSON errors, network failures) are
+                    # real errors — do NOT fall back to the next endpoint.
                     return _error(f"QQBot send failed on {ep}: {exc}")
 
             return _error("QQBot media send failed: no valid endpoint")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
+
+
+def _is_endpoint_mismatch(status_code: int) -> bool:
+    """Return True if the HTTP status likely indicates a target-type mismatch.
+
+    Only 403 (forbidden on wrong target type) and 404 (target not found)
+    should trigger cross-endpoint fallback.  Authentication failures (401),
+    rate limits (429), server errors (5xx), and other codes surface immediately.
+    """
+    return status_code in {403, 404}
 
 
 def _split_text(text: str, max_length: int) -> list:

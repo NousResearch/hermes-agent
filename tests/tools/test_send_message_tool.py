@@ -3522,3 +3522,175 @@ class TestQqbotProtocolLevel:
         assert len(msg_reqs) == 1
         assert "/channels/ch1/messages" in msg_reqs[0]["url"]
         assert "guild:" not in msg_reqs[0]["url"]
+
+    @pytest.mark.asyncio
+    async def test_403_triggers_endpoint_fallback(self):
+        """B2: 403 (target-type mismatch) should fall back to next endpoint."""
+        captured = []
+
+        class FallbackClient:
+            def __init__(self, **kw):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                pass
+            async def post(self, url, **kw):
+                captured.append({"url": url, **kw})
+                resp = MagicMock()
+                if "getAppAccessToken" in url:
+                    resp.status_code = 200
+                    resp.json.return_value = {"access_token": "tok"}
+                elif "/files" in url and "/v2/users/" in url:
+                    resp.status_code = 403  # target mismatch → fallback
+                    resp.text = "forbidden"
+                elif "/files" in url and "/v2/groups/" in url:
+                    resp.status_code = 200
+                    resp.json.return_value = {"file_info": "fi"}
+                else:
+                    resp.status_code = 200
+                    resp.json.return_value = {"id": "msg_123"}
+                return resp
+
+        mock_mod = MagicMock()
+        mock_mod.AsyncClient = FallbackClient
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG")
+            img_path = f.name
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_mod}):
+                result = await _send_qqbot_with_media(
+                    self._make_pconfig(), "raw_openid", "", [(img_path, False)]
+                )
+            assert result.get("success"), f"Expected success but got: {result}"
+            # Verify both endpoints were tried
+            upload_urls = [r["url"] for r in captured if "/files" in r["url"]]
+            assert any("/v2/users/" in u for u in upload_urls), "Should try users first"
+            assert any("/v2/groups/" in u for u in upload_urls), "Should fall back to groups"
+        finally:
+            os.unlink(img_path)
+
+    @pytest.mark.asyncio
+    async def test_401_does_not_trigger_fallback(self):
+        """B2: 401 (auth failure) should NOT fall back — surface immediately."""
+        class AuthFailClient:
+            def __init__(self, **kw):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                pass
+            async def post(self, url, **kw):
+                resp = MagicMock()
+                if "getAppAccessToken" in url:
+                    resp.status_code = 200
+                    resp.json.return_value = {"access_token": "tok"}
+                elif "/files" in url:
+                    resp.status_code = 401
+                    resp.text = "unauthorized"
+                else:
+                    resp.status_code = 200
+                    resp.json.return_value = {"id": "msg_123"}
+                return resp
+
+        mock_mod = MagicMock()
+        mock_mod.AsyncClient = AuthFailClient
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG")
+            img_path = f.name
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_mod}):
+                result = await _send_qqbot_with_media(
+                    self._make_pconfig(), "raw_openid", "", [(img_path, False)]
+                )
+            assert result.get("error"), "401 should return error, not fall back"
+            assert "401" in result["error"]
+        finally:
+            os.unlink(img_path)
+
+    @pytest.mark.asyncio
+    async def test_429_does_not_trigger_fallback(self):
+        """B2: 429 (rate limit) should NOT fall back — surface immediately."""
+        class RateLimitClient:
+            def __init__(self, **kw):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                pass
+            async def post(self, url, **kw):
+                resp = MagicMock()
+                if "getAppAccessToken" in url:
+                    resp.status_code = 200
+                    resp.json.return_value = {"access_token": "tok"}
+                elif "/files" in url:
+                    resp.status_code = 429
+                    resp.text = "rate limited"
+                else:
+                    resp.status_code = 200
+                    resp.json.return_value = {"id": "msg_123"}
+                return resp
+
+        mock_mod = MagicMock()
+        mock_mod.AsyncClient = RateLimitClient
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG")
+            img_path = f.name
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_mod}):
+                result = await _send_qqbot_with_media(
+                    self._make_pconfig(), "raw_openid", "", [(img_path, False)]
+                )
+            assert result.get("error"), "429 should return error, not fall back"
+            assert "429" in result["error"]
+        finally:
+            os.unlink(img_path)
+
+    @pytest.mark.asyncio
+    async def test_group_media_only_omits_content(self):
+        """B3: group media-only send should not include content field."""
+        captured = []
+
+        class GroupClient:
+            def __init__(self, **kw):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                pass
+            async def post(self, url, **kw):
+                captured.append({"url": url, **kw})
+                resp = MagicMock()
+                if "getAppAccessToken" in url:
+                    resp.status_code = 200
+                    resp.json.return_value = {"access_token": "tok"}
+                elif "/files" in url:
+                    resp.status_code = 200
+                    resp.json.return_value = {"file_info": "fi"}
+                else:
+                    resp.status_code = 200
+                    resp.json.return_value = {"id": "msg_123"}
+                return resp
+
+        mock_mod = MagicMock()
+        mock_mod.AsyncClient = GroupClient
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG")
+            img_path = f.name
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_mod}):
+                result = await _send_qqbot_with_media(
+                    self._make_pconfig(), "group:gid123", "", [(img_path, False)]
+                )
+            assert result.get("success")
+            msg_reqs = [r for r in captured if "/messages" in r["url"] and "/files" not in r["url"]]
+            assert len(msg_reqs) == 1
+            body = msg_reqs[0].get("json", {})
+            assert "content" not in body, f"Media-only send should omit content, got: {body}"
+            assert body.get("msg_type") == 7
+        finally:
+            os.unlink(img_path)

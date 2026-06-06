@@ -285,6 +285,63 @@ class ExecuteResult:
     exit_code: int = 0
 
 
+def _split_tool_diagnostics(output: str) -> tuple[str, str]:
+    """Separate rg/grep diagnostic lines from real match output.
+
+    ``_exec`` runs commands with ``stderr=subprocess.STDOUT``, so error and
+    warning text from ``rg``/``grep`` is interleaved with match lines in a
+    single stream. Diagnostics must not be parsed as matches, and on a hard
+    failure they are the error message to surface.
+
+    Returns ``(diagnostics, payload)`` where ``payload`` contains only lines
+    that look like real search output — a match line (``file:line:content``),
+    a files-only path, a count line, or a context line/separator. Everything
+    else (tool-prefixed errors, rg's multi-line ``regex parse error`` block
+    with its indented carets, blank lines) is folded into ``diagnostics``.
+
+    Classifying by *shape* rather than by error prefix is what lets the
+    exit-2 guard distinguish a pure failure (no usable payload → surface the
+    error) from a partial failure (some files matched, one was unreadable →
+    keep the matches). It also means error text can never be mis-parsed as a
+    match, a latent bug that predates the exit-code fix.
+    """
+    diagnostics: list[str] = []
+    payload: list[str] = []
+    for line in output.split('\n'):
+        if not line.strip():
+            continue
+        # Tool diagnostics always carry the "<tool>: " prefix (e.g.
+        # "rg: <file>: Permission denied", "grep: Invalid regular
+        # expression", "rg: regex parse error:"). Check this first: a real
+        # match path can legitimately contain "-<digit>" (e.g. a tmp dir like
+        # ".../pytest-686/..."), which the shape regex would otherwise treat
+        # as a match line.
+        stripped = line.lstrip()
+        if stripped.startswith("rg: ") or stripped.startswith("grep: "):
+            diagnostics.append(line)
+            continue
+        # Otherwise classify by output shape. rg's regex-parse-error block
+        # also emits an indented caret line and a trailing "error: ..." line
+        # with no tool prefix; neither matches a search-output shape, so they
+        # fall through to diagnostics.
+        #   match / count : "<path>:<...>"   (has a colon; rg -c uses path:count)
+        #   files_only    : "<path>"         (no whitespace, no leading colon)
+        #   context line  : "<path>-<line>-" or the "--" group separator
+        if line == "--" or _SEARCH_OUTPUT_RE.match(line):
+            payload.append(line)
+        else:
+            diagnostics.append(line)
+    return '\n'.join(diagnostics), '\n'.join(payload)
+
+
+# A real rg/grep output line starts with a path token and is followed by a
+# ``:`` (match/count), a ``-`` (context), or nothing (files_only). Tool
+# diagnostics ("rg: ...", "grep: ...", "error: ...", indented carets) never
+# match because the path token forbids whitespace and a leading tool prefix
+# like "rg" is followed by ": " (space) which the negated class rejects.
+_SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|^[^\s:][^\s]*$')
+
+
 def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
     """Parse grep/rg context output in ``path-line-content`` format.
 
@@ -2038,24 +2095,40 @@ class ShellFileOperations(FileOperations):
         fetch_limit = limit + offset + 200 if context > 0 else limit + offset
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
-        cmd = " ".join(cmd_parts)
+        # `set -o pipefail` so rg's exit status propagates through `| head`.
+        # Without it the pipeline reports head's status (0), masking rg's
+        # error code (2) and making the guard below unreachable. rg handles a
+        # truncating head cleanly (exit 0 on SIGPIPE), so pipefail does not
+        # introduce false errors on a successful-but-truncated search.
+        cmd = "set -o pipefail; " + " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
-        
-        # rg exit codes: 0=matches found, 1=no matches, 2=error
-        if result.exit_code == 2 and not result.stdout.strip():
-            error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
+
+        # _exec merges stderr into stdout (stderr=subprocess.STDOUT), so rg's
+        # diagnostic lines ("rg: <file>: <error>", "rg: regex parse error:")
+        # are interleaved with match output. Split them out: diagnostics must
+        # not be parsed as matches, and on a hard error they ARE the message.
+        diagnostics, payload = _split_tool_diagnostics(result.stdout)
+
+        # rg exit codes: 0=matches found, 1=no matches, 2=error. rg returns 2
+        # even on partial errors (e.g. one unreadable file in a tree that
+        # otherwise matched), so only surface an error when exit==2 AND no
+        # usable match payload remains. Otherwise we keep the real matches.
+        if result.exit_code == 2 and not payload.strip():
+            error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
-        
+
+        # Parse the diagnostic-free payload so error text never becomes a match.
+        stdout = payload
         # Parse results based on output mode
         if output_mode == "files_only":
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            all_files = [f for f in stdout.strip().split('\n') if f]
             total = len(all_files)
             page = all_files[offset:offset + limit]
             return SearchResult(files=page, total_count=total)
         
         elif output_mode == "count":
             counts = {}
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
@@ -2074,7 +2147,7 @@ class ShellFileOperations(FileOperations):
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             matches = []
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if not line or line == "--":
                     continue
                 
@@ -2138,23 +2211,38 @@ class ShellFileOperations(FileOperations):
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
-        cmd = " ".join(cmd_parts)
+        # `set -o pipefail` so grep's exit status propagates through `| head`
+        # (without it the pipeline reports head's 0, masking grep's error 2).
+        # A truncating head makes grep exit 141 (SIGPIPE) on an otherwise
+        # successful search; the strict `== 2` guard below ignores that, so
+        # pipefail does not turn truncated results into false errors.
+        cmd = "set -o pipefail; " + " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
-        
-        # grep exit codes: 0=matches found, 1=no matches, 2=error
-        if result.exit_code == 2 and not result.stdout.strip():
-            error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
+
+        # _exec merges stderr into stdout, so grep's diagnostic lines
+        # ("grep: <file>: <error>") are interleaved with matches. Split them
+        # out so they're never parsed as matches and so a hard error has a
+        # clean message.
+        diagnostics, payload = _split_tool_diagnostics(result.stdout)
+
+        # grep exit codes: 0=matches found, 1=no matches, 2=error. grep
+        # returns 2 on partial errors (e.g. an unreadable file) even when
+        # other files matched, so only surface an error when exit==2 AND no
+        # usable match payload remains.
+        if result.exit_code == 2 and not payload.strip():
+            error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
-        
+
+        stdout = payload
         if output_mode == "files_only":
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            all_files = [f for f in stdout.strip().split('\n') if f]
             total = len(all_files)
             page = all_files[offset:offset + limit]
             return SearchResult(files=page, total_count=total)
         
         elif output_mode == "count":
             counts = {}
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
@@ -2172,7 +2260,7 @@ class ShellFileOperations(FileOperations):
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             matches = []
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if not line or line == "--":
                     continue
                 

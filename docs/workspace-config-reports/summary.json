@@ -1,0 +1,213 @@
+{
+  "root": "/Users/rattanasak/Documents/Viber Project",
+  "apply": true,
+  "summary": {
+    "projects": 40,
+    "projects_with_findings": 38,
+    "findings": 3596,
+    "planned_gitignore_writes": 2,
+    "applied_gitignore_writes": 2
+  },
+  "actions": [
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Office Project/500K Project",
+      "action": "applied-gitignore-managed-block",
+      "findings": 27
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Office Project/Jigsaw AI Team Mock 2026",
+      "action": "none",
+      "findings": 170
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Office Project/MD Assist by AI",
+      "action": "none",
+      "findings": 41
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Office Project/Master SynerryEoffice",
+      "action": "none",
+      "findings": 87
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Office Project/Master SynerryNew",
+      "action": "none",
+      "findings": 64
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Office Project/Master WebEngine",
+      "action": "none",
+      "findings": 344
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Office Project/Master WebEngine-mab-vps",
+      "action": "none",
+      "findings": 305
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Office Project/Support Center",
+      "action": "applied-gitignore-managed-block",
+      "findings": 6
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Office Project/dra-merge-worktree",
+      "action": "none",
+      "findings": 302
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Office Project/jigsaw-ai-team-website",
+      "action": "none",
+      "findings": 5
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Private Project/EA Factoring",
+      "action": "none",
+      "findings": 4
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Private Project/Idea2Logic",
+      "action": "none",
+      "findings": 66
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Private Project/MQ5 Market",
+      "action": "none",
+      "findings": 90
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/Master AdsPilot-AI",
+      "action": "none",
+      "findings": 59
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/Master Content Factory",
+      "action": "none",
+      "findings": 94
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/Master Fundamental",
+      "action": "none",
+      "findings": 59
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/Master JigsawWebChat",
+      "action": "none",
+      "findings": 77
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/Master ScanlyIQ",
+      "action": "none",
+      "findings": 117
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/Master ViberQC",
+      "action": "none",
+      "findings": 73
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/Master_GodeysDB",
+      "action": "none",
+      "findings": 215
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/SaaS Web Engine",
+      "action": "none",
+      "findings": 0
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/Venture Radar",
+      "action": "none",
+      "findings": 28
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/Venture Radar-Bak",
+      "action": "none",
+      "findings": 51
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/_ai_worktrees/Master ViberQC/claude",
+      "action": "none",
+      "findings": 22
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/_ai_worktrees/Master ViberQC/codex",
+      "action": "none",
+      "findings": 22
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/_ai_worktrees/Master ViberQC/gemini",
+      "action": "none",
+      "findings": 22
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/SaaS Project/_ai_worktrees/Master ViberQC/qwen",
+      "action": "none",
+      "findings": 22
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Tech Tools/AI In Office",
+      "action": "none",
+      "findings": 3
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Tech Tools/AI on Premis",
+      "action": "none",
+      "findings": 0
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Tech Tools/AIControlCenter",
+      "action": "none",
+      "findings": 38
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Tech Tools/Dev Ser",
+      "action": "none",
+      "findings": 26
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Tech Tools/EmailHunter",
+      "action": "none",
+      "findings": 20
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Tech Tools/Hermes Agent",
+      "action": "none",
+      "findings": 787
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Tech Tools/Index to VPS",
+      "action": "none",
+      "findings": 32
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Tech Tools/Main Server",
+      "action": "none",
+      "findings": 59
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Tech Tools/OpenClaw",
+      "action": "none",
+      "findings": 101
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Tech Tools/OpenClaw2/OpenClaw-EGP",
+      "action": "none",
+      "findings": 15
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Tech Tools/VPS Server",
+      "action": "none",
+      "findings": 86
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Tech Tools/_archived-hermes-20260524/Hermes Labs.retired-20260524",
+      "action": "none",
+      "findings": 37
+    },
+    {
+      "project": "/Users/rattanasak/Documents/Viber Project/Tech Tools/_archived-hermes-20260524/HermesNous.retired-20260524",
+      "action": "none",
+      "findings": 20
+    }
+  ]
+}

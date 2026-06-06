@@ -43,6 +43,7 @@ const DESKTOP_COMMAND_META = [
   ['/title', 'Rename the current session'],
   ['/undo', 'Remove the last user/assistant exchange'],
   ['/usage', 'Show token usage for this session'],
+  ['/version', 'Show Hermes Agent version'],
   ['/yolo', 'Toggle YOLO — auto-approve dangerous commands']
 ] as const
 

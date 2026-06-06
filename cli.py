@@ -9015,6 +9015,10 @@ class HermesCLI:
         elif canonical == "update":
             if self._handle_update_command():
                 return False
+        elif canonical == "version":
+            from hermes_cli.main import _print_version_info
+
+            _print_version_info(check_updates=True)
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":

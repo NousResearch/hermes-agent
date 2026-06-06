@@ -698,6 +698,7 @@ export const en: Translations = {
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
     editingInComposer: 'Editing in composer',
     editQueued: 'Edit queued turn',
+    sendQueuedNext: 'Send queued turn next',
     sendQueuedNow: 'Send queued turn now',
     deleteQueued: 'Delete queued turn',
     previewUnavailable: 'Preview unavailable',

@@ -6,7 +6,17 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-from utils import is_truthy_value
+_TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+
+
+def _is_truthy_value(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY_STRINGS
+    return bool(value)
 
 
 _DEFAULT_BROWSER_PROVIDER = "local"
@@ -155,7 +165,7 @@ def prefers_gateway(config_section: str) -> bool:
         from hermes_cli.config import load_config
         section = (load_config() or {}).get(config_section)
         if isinstance(section, dict):
-            return is_truthy_value(section.get("use_gateway"), default=False)
+            return _is_truthy_value(section.get("use_gateway"), default=False)
     except Exception:
         pass
     return False

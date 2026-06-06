@@ -1,8 +1,8 @@
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Command, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { type Locale, LOCALE_META, useI18n } from '@/i18n'
@@ -17,12 +17,14 @@ export interface LanguageSwitcherProps {
   dropUp?: boolean
 }
 
-interface LanguageSwitcherOptionsProps {
+interface LanguageCommandProps {
   allLocales: Array<[Locale, (typeof LOCALE_META)[Locale]]>
+  autoFocus?: boolean
   disabled?: boolean
-  label: string
   locale: Locale
+  noResults: string
   onSelect: (code: Locale) => void
+  searchPlaceholder: string
 }
 
 export function LanguageSwitcher({ className, collapsed = false, dropUp = false }: LanguageSwitcherProps) {
@@ -37,6 +39,7 @@ export function LanguageSwitcher({ className, collapsed = false, dropUp = false 
   const selectLocale = async (code: Locale) => {
     if (code === locale || isSavingLocale) {
       setOpen(false)
+
       return
     }
 
@@ -53,8 +56,8 @@ export function LanguageSwitcher({ className, collapsed = false, dropUp = false 
 
   const trigger = (
     <Button
-      aria-label={title}
       aria-expanded={open}
+      aria-label={title}
       className={cn(
         'min-w-32 justify-between gap-2 border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2.5 text-left text-muted-foreground hover:text-foreground',
         collapsed && 'min-w-0 px-2',
@@ -68,7 +71,7 @@ export function LanguageSwitcher({ className, collapsed = false, dropUp = false 
     >
       <span className="inline-flex min-w-0 items-center gap-2">
         <Globe className="size-3.5 shrink-0" />
-        {!collapsed && <span className="truncate">{locale === 'en' ? 'EN' : current.name}</span>}
+        {!collapsed && <span className="truncate">{current.name}</span>}
       </span>
       {!collapsed && <ChevronDown className="size-3 shrink-0 opacity-70" />}
     </Button>
@@ -83,15 +86,14 @@ export function LanguageSwitcher({ className, collapsed = false, dropUp = false 
             <SheetTitle>{title}</SheetTitle>
             <SheetDescription>{t.language.description}</SheetDescription>
           </SheetHeader>
-          <ScrollArea className="max-h-80 px-2 pb-3">
-            <LanguageSwitcherOptions
-              allLocales={allLocales}
-              disabled={isSavingLocale}
-              label={title}
-              locale={locale}
-              onSelect={code => void selectLocale(code)}
-            />
-          </ScrollArea>
+          <LanguageCommand
+            allLocales={allLocales}
+            disabled={isSavingLocale}
+            locale={locale}
+            noResults={t.language.noResults}
+            onSelect={code => void selectLocale(code)}
+            searchPlaceholder={t.language.searchPlaceholder}
+          />
         </SheetContent>
       </Sheet>
     )
@@ -100,46 +102,74 @@ export function LanguageSwitcher({ className, collapsed = false, dropUp = false 
   return (
     <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent align="end" className="w-48 p-1" side={dropUp ? 'top' : 'bottom'}>
-        <ScrollArea className="max-h-80">
-          <LanguageSwitcherOptions
-            allLocales={allLocales}
-            disabled={isSavingLocale}
-            label={title}
-            locale={locale}
-            onSelect={code => void selectLocale(code)}
-          />
-        </ScrollArea>
+      <PopoverContent align="end" className="w-56 p-0" side={dropUp ? 'top' : 'bottom'}>
+        <LanguageCommand
+          allLocales={allLocales}
+          autoFocus
+          disabled={isSavingLocale}
+          locale={locale}
+          noResults={t.language.noResults}
+          onSelect={code => void selectLocale(code)}
+          searchPlaceholder={t.language.searchPlaceholder}
+        />
       </PopoverContent>
     </Popover>
   )
 }
 
-function LanguageSwitcherOptions({ allLocales, disabled, label, locale, onSelect }: LanguageSwitcherOptionsProps) {
-  return (
-    <div aria-label={label} className="py-1" role="listbox">
-      {allLocales.map(([code, meta]) => {
-        const selected = code === locale
+function LanguageCommand({
+  allLocales,
+  autoFocus,
+  disabled,
+  locale,
+  noResults,
+  onSelect,
+  searchPlaceholder
+}: LanguageCommandProps) {
+  const [search, setSearch] = useState('')
 
-        return (
-          <button
-            aria-selected={selected}
-            className={cn(
-              'flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[length:var(--conversation-caption-font-size)] transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:pointer-events-none disabled:opacity-50',
-              selected ? 'font-medium text-foreground' : 'text-muted-foreground'
-            )}
-            disabled={disabled}
-            key={code}
-            onClick={() => onSelect(code)}
-            role="option"
-            type="button"
-          >
-            <span className="min-w-0 flex-1 truncate">{meta.name}</span>
-            <span className="font-mono text-[0.65rem] uppercase text-(--ui-text-tertiary)">{code}</span>
-            {selected && <Check className="size-3.5 shrink-0 text-primary" />}
-          </button>
-        )
-      })}
-    </div>
+  // Own the search term and filter manually. cmdk's built-in shouldFilter
+  // reorders items by its fuzzy-match score (≈alphabetical with an empty
+  // query), which destroys the curated en→zh→zh-hant→ja order. We disable it
+  // and do a plain substring filter that preserves array order — matching
+  // model-picker.tsx. Match against the endonym, the (hidden) English name,
+  // and the locale code so "日本"/"japanese"/"ja" all find Japanese.
+  const q = search.trim().toLowerCase()
+
+  const filtered = allLocales.filter(
+    ([code, meta]) =>
+      !q ||
+      meta.name.toLowerCase().includes(q) ||
+      meta.englishName.toLowerCase().includes(q) ||
+      code.toLowerCase().includes(q)
+  )
+
+  return (
+    <Command className="bg-transparent" shouldFilter={false}>
+      <CommandInput autoFocus={autoFocus} onValueChange={setSearch} placeholder={searchPlaceholder} value={search} />
+      <CommandList className="max-h-80 p-1">
+        {filtered.length === 0 ? (
+          <div className="py-6 text-center text-sm text-muted-foreground">{noResults}</div>
+        ) : (
+          filtered.map(([code, meta]) => {
+            const selected = code === locale
+
+            return (
+              <CommandItem
+                className={cn(selected ? 'font-medium text-foreground' : 'text-muted-foreground')}
+                disabled={disabled}
+                key={code}
+                onSelect={() => onSelect(code)}
+                value={code}
+              >
+                <Check className={cn('size-3.5 shrink-0 text-primary', !selected && 'invisible')} />
+                <span className="min-w-0 flex-1 truncate">{meta.name}</span>
+                <span className="font-mono text-[0.65rem] uppercase text-(--ui-text-tertiary)">{code}</span>
+              </CommandItem>
+            )
+          })
+        )}
+      </CommandList>
+    </Command>
   )
 }

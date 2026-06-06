@@ -337,10 +337,11 @@ class TestNativeFallbackStreamClose:
         await task
 
         # Should have: seed, frame1, frame2, (frame3 fails), finalize in fallback
-        # finalize succeeds → no send() fallback needed
+        # After fix #3: best-effort finalize closes the typing bubble but does NOT
+        # mark content_delivered. The fallback send() will deliver content reliably.
         assert len([f for f in adapter.frames if f.get("finalize")]) >= 1
-        # Verify no send() fallback happened (stream was closed successfully)
-        assert len([f for f in adapter.frames if "send" in f]) == 0
+        # Fallback send() IS expected to fire (content delivery via proactive send)
+        assert len([f for f in adapter.frames if "send" in f]) == 1
 
     @pytest.mark.asyncio
     async def test_native_fallback_falls_to_send_on_finalize_fail(self):

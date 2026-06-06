@@ -178,6 +178,7 @@ class StreamTurn:
         self.stream_id = f"stream_{uuid.uuid4().hex[:12]}"
         self.accumulated_text = ""
         self.finalized = False
+        self.seeded = False  # True after seed frame sent (prevents double seed)
         self.start_time = time.monotonic()
         self.expired = False
 
@@ -2126,6 +2127,18 @@ class WeComAdapter(BasePlatformAdapter):
                 turn_key = f"{chat}:{turn_id}"
                 turn = self._stream_turns.get(turn_key)
                 if not turn:
+                    # finalize=True should NOT create a new turn.
+                    # If the turn was already cleaned up (e.g., due to errcode 6000),
+                    # the caller should fallback to proactive send() instead of
+                    # creating a fresh turn just to finalize it (which would send
+                    # another seed + finish, potentially triggering more conflicts).
+                    if finalize:
+                        logger.debug(
+                            "[%s] send_stream_frame: cannot finalize non-existent turn (turn_id=%s, chat=%s)",
+                            self.name, turn_id, chat,
+                        )
+                        return False
+
                     # First frame for this turn: need to create it.
                     # Check if chat is expired (blocks NEW turn creation).
                     if chat in self._stream_expired_chats:
@@ -2187,12 +2200,21 @@ class WeComAdapter(BasePlatformAdapter):
             if turn.expired:
                 return False
 
-            # First frame for this turn: send seed
-            if not turn.accumulated_text and not turn.finalized:
+            # First frame for this turn: send seed ONLY if not already seeded.
+            # The GatewayStreamConsumer sends the initial empty seed frame itself
+            # (stream_consumer.py:461), so we must not duplicate it here.
+            # The seeded flag prevents double-seed which causes WeCom errcode 6000
+            # (data version conflict).
+            if not turn.seeded and not turn.finalized:
                 # Seed frame with empty content — triggers WeCom typing indicator
                 await self._send_stream_reply(
                     turn.req_id, turn.stream_id, "", finish=False,
                 )
+                turn.seeded = True
+                # If caller sent empty text (consumer's explicit seed call),
+                # we're done — don't send another empty frame below.
+                if not text and not finalize:
+                    return True
 
             # Send the frame
             if finalize:

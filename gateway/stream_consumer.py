@@ -2155,14 +2155,14 @@ class GatewayStreamConsumer:
                         reply_to=self._initial_reply_to_id,
                         turn_id=self._turn_id,
                     )
-                    logger.debug("Native fallback: successfully finalized stream before send()")
-                    # Stream closed successfully, mark as delivered
-                    self._final_response_sent = True
-                    self._final_content_delivered = True
-                    return True
+                    logger.debug("Native fallback: finalized stream (best-effort close)")
+                    # DO NOT mark _final_content_delivered here.
+                    # The finalize frame closes the typing bubble, but WeCom may
+                    # not actually render the content (e.g., errcode 6000 race).
+                    # Let the fallback send() path deliver the content reliably.
                 except Exception as e:
                     logger.debug(
-                        "Native fallback: failed to finalize stream, will use send(): %s", e,
+                        "Native fallback: failed to finalize stream: %s", e,
                     )
             # Fall through to the edit/send paths so any accumulated text
             # still reaches the user as a one-shot proactive markdown send.

@@ -22,12 +22,33 @@ from typing import Any, Dict, List, Optional
 # parsing API (fromstring) is a drop-in for the stdlib calls used below;
 # response-building XML lives in wecom_crypto.py and is not parsed here.
 try:
-    import defusedxml.ElementTree as ET
+    import defusedxml.ElementTree as _DEFUSED_ET
 
     DEFUSEDXML_AVAILABLE = True
 except ImportError:
-    ET = None  # type: ignore[assignment]
+    _DEFUSED_ET = None  # type: ignore[assignment]
     DEFUSEDXML_AVAILABLE = False
+
+
+def _parse_xml(text: str):
+    """Parse a WeCom XML payload, preferring the hardened defusedxml parser.
+
+    Why: WeCom callback bodies are attacker-influenceable, so XXE / billion-
+    laughs hardening matters. defusedxml is the production parser and is
+    enforced at adapter-creation time by ``check_wecom_callback_requirements``.
+    What: Uses ``defusedxml.ElementTree.fromstring`` when the optional dep is
+    installed; otherwise falls back to the stdlib parser (which already blocks
+    external-entity / network XXE by default) so the parse path never calls a
+    method on a ``None`` module — turning a confusing ``AttributeError`` into a
+    working code path that the gateway gate still guards in production.
+    Test: Call with a ``<xml>...</xml>`` string and assert ``findtext`` returns
+    the embedded values both with and without defusedxml present.
+    """
+    if _DEFUSED_ET is not None:
+        return _DEFUSED_ET.fromstring(text)
+    from xml.etree import ElementTree as _stdlib_ET
+
+    return _stdlib_ET.fromstring(text)
 
 try:
     from aiohttp import web
@@ -332,13 +353,13 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         self, app: Dict[str, Any], body: str,
         msg_signature: str, timestamp: str, nonce: str,
     ) -> str:
-        root = ET.fromstring(body)
+        root = _parse_xml(body)
         encrypt = root.findtext("Encrypt", default="")
         crypt = self._crypt_for_app(app)
         return crypt.decrypt(msg_signature, timestamp, nonce, encrypt).decode("utf-8")
 
     def _build_event(self, app: Dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
-        root = ET.fromstring(xml_text)
+        root = _parse_xml(xml_text)
         msg_type = (root.findtext("MsgType") or "").lower()
         # Silently acknowledge lifecycle events.
         if msg_type == "event":

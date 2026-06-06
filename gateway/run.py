@@ -16381,7 +16381,7 @@ class GatewayRunner:
         "honcho.runtime_peer_prefix",
         "honcho.user_peer_aliases",
     )
-    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
+    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None, int | None], dict[str, Any]] = {}
 
     @classmethod
     def _empty_honcho_cache_busting_config(cls) -> dict[str, Any]:
@@ -16395,10 +16395,17 @@ class GatewayRunner:
 
             path = resolve_config_path()
             try:
-                mtime_ns = path.stat().st_mtime_ns
+                stat = path.stat()
+                # Key on (mtime_ns, size): two writes within the same coarse
+                # filesystem mtime tick share an mtime_ns, so mtime alone can
+                # miss a same-tick edit and serve a stale parse. Folding in the
+                # byte size catches content changes the clock granularity hides.
+                mtime_ns: int | None = stat.st_mtime_ns
+                size: int | None = stat.st_size
             except OSError:
                 mtime_ns = None
-            memo_key = (str(path), mtime_ns)
+                size = None
+            memo_key = (str(path), mtime_ns, size)
             cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
             if cached is not None:
                 return dict(cached)

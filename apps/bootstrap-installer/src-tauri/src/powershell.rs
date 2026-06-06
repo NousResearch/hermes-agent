@@ -72,7 +72,7 @@ pub async fn run_script(
 
     let mut child: Child = cmd
         .spawn()
-        .with_context(|| format!("spawning {}", script_path.display()))?;
+        .with_context(|| format!("spawning {} via {}", script_path.display(), interpreter_label()))?;
 
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
@@ -177,8 +177,9 @@ async fn recv_cancel(rx: &mut Option<CancelRx>) {
 fn build_command(script_path: &Path, args: &[String]) -> Command {
     // We want PowerShell 5.1 / 7. install.ps1 uses 5.1-safe syntax everywhere.
     // Prefer `powershell.exe` (5.1 baseline, present on every Windows since 7)
-    // over `pwsh.exe` (7+, may not be present).
-    let mut cmd = Command::new("powershell.exe");
+    // over `pwsh.exe` (7+, may not be present). Resolve it by absolute path —
+    // see `windows_powershell_exe`.
+    let mut cmd = Command::new(windows_powershell_exe());
     cmd.arg("-NoProfile");
     cmd.arg("-ExecutionPolicy").arg("Bypass");
     cmd.arg("-File").arg(script_path);
@@ -198,6 +199,58 @@ fn build_command(script_path: &Path, args: &[String]) -> Command {
         cmd.arg(a);
     }
     cmd
+}
+
+/// Canonical PowerShell 5.1 location under a Windows root (`%SystemRoot%`).
+#[cfg(target_os = "windows")]
+fn powershell_under_root(root: &Path) -> std::path::PathBuf {
+    root.join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe")
+}
+
+/// Resolves the PowerShell interpreter to spawn.
+///
+/// `Command::new("powershell.exe")` trusts PATH to contain
+/// `%SystemRoot%\System32\WindowsPowerShell\v1.0`. On machines whose PATH was
+/// trimmed or truncated (Windows silently drops entries once the variable grows
+/// past its length limit), that lookup fails and the spawn dies with
+/// "program not found" before install.ps1 ever runs — the installer then stalls
+/// at "0 of 0 steps". Resolve by absolute path first, then fall back to PATH
+/// (powershell 5.1, then pwsh 7), then a bare name as a last resort.
+#[cfg(target_os = "windows")]
+fn windows_powershell_exe() -> std::path::PathBuf {
+    for var in ["SystemRoot", "windir"] {
+        if let Ok(root) = std::env::var(var) {
+            let candidate = powershell_under_root(Path::new(&root));
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+
+    for exe in ["powershell.exe", "pwsh.exe"] {
+        if let Ok(found) = which::which(exe) {
+            return found;
+        }
+    }
+
+    std::path::PathBuf::from("powershell.exe")
+}
+
+/// Human-readable interpreter name for spawn-failure context. On Windows this
+/// is the resolved PowerShell path so a missing/odd interpreter is obvious in
+/// the log (the old message only printed the script path, which read as if the
+/// .ps1 itself was missing).
+#[cfg(target_os = "windows")]
+fn interpreter_label() -> String {
+    windows_powershell_exe().display().to_string()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn interpreter_label() -> String {
+    "bash".to_string()
 }
 
 /// Parses the LAST line of stdout that looks like a JSON object matching

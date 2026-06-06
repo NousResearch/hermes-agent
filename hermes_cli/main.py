@@ -10593,6 +10593,67 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         input_fn=gw_input_fn,
                     )
 
+        # If we moved off the user's branch to pull ``branch`` (default: main),
+        # switch back and rebase their feature branch onto the new tip.
+        # Without this, ``hermes update`` updates ``main`` but leaves a
+        # long-lived feature branch stale — so the next TUI check still
+        # reports the same "X commits behind" and the user thinks the
+        # update was a no-op.
+        if update_succeeded and current_branch not in {branch, "HEAD"}:
+            print(
+                f"  → Returning to '{current_branch}' and rebasing onto the new {branch}..."
+            )
+            checkout_back = subprocess.run(
+                git_cmd + ["checkout", current_branch],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            if checkout_back.returncode == 0:
+                rebase_result = subprocess.run(
+                    git_cmd + ["rebase", f"origin/{branch}"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if rebase_result.returncode != 0:
+                    # Rebase conflict. Abort and warn — don't fail the
+                    # entire update, since the user already has a fresh
+                    # main checked out and the syntax guard passed.
+                    print(
+                        f"  ⚠ Rebase of '{current_branch}' onto {branch} hit conflicts."
+                    )
+                    print(
+                        f"    Resolve manually: cd {PROJECT_ROOT} && git rebase {branch}"
+                    )
+                    print(
+                        f"    Or skip the rebase: cd {PROJECT_ROOT} && git rebase --abort"
+                    )
+                    if rebase_result.stderr.strip():
+                        for line in rebase_result.stderr.strip().splitlines()[:6]:
+                            print(f"      {line}")
+                    # Best-effort: leave the user on main so the next
+                    # ``hermes update`` runs against a clean tree.
+                    subprocess.run(
+                        git_cmd + ["rebase", "--abort"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    subprocess.run(
+                        git_cmd + ["checkout", branch],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+            else:
+                print(
+                    f"  ⚠ Could not check out '{current_branch}' after update: "
+                    f"{checkout_back.stderr.strip().splitlines()[0] if checkout_back.stderr.strip() else 'unknown error'}"
+                )
+
         _invalidate_update_cache()
 
         # Clear stale .pyc bytecode cache — prevents ImportError on gateway

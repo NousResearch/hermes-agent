@@ -144,8 +144,51 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _resolve_tracking_ref(repo_dir: Path) -> Optional[str]:
+    """Return the current branch's upstream tracking ref (e.g. ``origin/feat-x``)
+    or ``None`` if there is no tracking branch / the working tree is on
+    ``main``/detached HEAD.
+
+    On ``main`` we deliberately return ``None`` so callers fall back to
+    ``origin/main`` (the standard meaning of "behind").  On any other
+    branch, we use the branch's own tracking ref so the "X commits behind"
+    count is the distance to *that* branch's upstream, not the
+    repo-wide default.
+    """
+    try:
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        ).stdout.strip()
+    except Exception:
+        return None
+    if not branch or branch == "HEAD":
+        return None
+    if branch == "main":
+        # ``main`` is the canonical reference — measuring distance to
+        # ``origin/main`` is correct here, no need to resolve @-upstream.
+        return None
+    try:
+        upstream = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        ).stdout.strip()
+    except Exception:
+        return None
+    return upstream or None
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
+    """Count commits behind upstream in a local checkout.
+
+    On ``main``, distance to ``origin/main`` (the historical behavior).
+    On any other branch with an upstream tracking ref, distance to that
+    tracking ref — so a feature branch shows "X commits behind
+    origin/feat-x" instead of "333 commits behind origin/main", which
+    is the bug that bit users on long-lived feature branches.
+    """
     try:
         subprocess.run(
             ["git", "fetch", "origin", "--quiet"],
@@ -155,9 +198,11 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
 
+    tracking = _resolve_tracking_ref(repo_dir)
+    compare_ref = tracking or "origin/main"
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            ["git", "rev-list", "--count", f"HEAD..{compare_ref}"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
         )
@@ -343,13 +388,15 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
             pass
         return None
 
-    upstream = _git_short_hash(repo_dir, "origin/main")
+    upstream_ref = _resolve_tracking_ref(repo_dir) or "origin/main"
+    upstream = _git_short_hash(repo_dir, upstream_ref)
     local = _git_short_hash(repo_dir, "HEAD")
     if not upstream or not local:
         # Live-git lookup failed (e.g. shallow clone without origin/main).
         # Fall back to the baked build SHA if available.
         try:
             from hermes_cli.build_info import get_build_sha
+
             baked = get_build_sha(short=8)
             if baked:
                 return {"upstream": baked, "local": baked, "ahead": 0}
@@ -360,7 +407,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     ahead = 0
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "origin/main..HEAD"],
+            ["git", "rev-list", "--count", f"{upstream_ref}..HEAD"],
             capture_output=True,
             text=True,
             timeout=5,

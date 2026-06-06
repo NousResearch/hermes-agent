@@ -29,7 +29,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from hermes_constants import get_hermes_dir
+from hermes_constants import get_bundled_whatsapp_bridge_dir, get_hermes_dir
 
 logger = logging.getLogger(__name__)
 
@@ -244,8 +244,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 4096
     DEFAULT_REPLY_PREFIX = "⚕ *Hermes Agent*\n────────────\n"
     
-    # Default bridge location relative to the hermes-agent install
-    _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+    # Default bridge location. Resolved via get_bundled_whatsapp_bridge_dir()
+    # so it is found in packaged (wheel/sdist) installs too — the bridge ships
+    # as setuptools data-files and does NOT land next to this module's
+    # ``parents[2]`` in a wheel. A user-set ``bridge_script`` in config.extra
+    # still overrides this default in __init__.
+    _DEFAULT_BRIDGE_DIR = get_bundled_whatsapp_bridge_dir()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)

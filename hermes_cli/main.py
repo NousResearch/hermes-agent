@@ -2287,8 +2287,10 @@ def cmd_whatsapp(args):
             print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
 
     # ── Step 4: Install bridge dependencies ──────────────────────────────
-    project_root = Path(__file__).resolve().parents[1]
-    bridge_dir = project_root / "scripts" / "whatsapp-bridge"
+    # Resolve via the shared helper so the bridge is found in packaged
+    # (wheel/sdist) installs, not only editable/git checkouts.
+    from hermes_constants import get_bundled_whatsapp_bridge_dir
+    bridge_dir = get_bundled_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"
 
     if not bridge_script.exists():

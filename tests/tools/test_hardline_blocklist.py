@@ -45,6 +45,27 @@ _HARDLINE_BLOCK = [
     "rm -rf ~/",
     "rm -rf ~/*",
     "rm -rf $HOME",
+    # Quoted path idioms — the recommended shell form for paths with special
+    # chars. These previously slipped past the floor because the surrounding
+    # quote broke both the flag group and the (\s|$) terminator (regression
+    # guard: catastrophic disk/home wipe under --yolo / approvals.mode=off).
+    'rm -rf "/"',
+    "rm -rf '/'",
+    'rm -rf "/*"',
+    'rm -rf "/etc"',
+    "rm -rf '/etc'",
+    'rm -rf "/home"',
+    'rm -rf "/usr"',
+    'rm -rf "$HOME"',
+    "rm -rf '$HOME'",
+    'rm -rf "$HOME/"',
+    'rm -rf "~"',
+    'sudo rm -rf "/"',
+    'rm -rf "/" && echo done',
+    # ${HOME} brace form (universally common, previously unmatched).
+    "rm -rf ${HOME}",
+    'rm -rf "${HOME}"',
+    "rm -fr ${HOME}",
     # Filesystem format
     "mkfs.ext4 /dev/sda1",
     "mkfs /dev/sdb",
@@ -100,6 +121,12 @@ _HARDLINE_ALLOW = [
     "rm -rf $HOME/tmp",
     "rm foo.txt",
     "rm -rf some/path",
+    # A dangerous-looking command embedded as a quoted *argument* to another
+    # command must not trip the floor: the path is immediately followed by a
+    # closing quote with no matching opening quote of its own, so the
+    # quote-tolerant matcher must still ignore it (no new false positives).
+    'git commit -m "rm -rf /"',
+    'git commit -m "wipe with rm -rf /etc"',
     # dd to regular files
     "dd if=/dev/zero of=./image.bin",
     "dd if=./data of=./backup.bin",
@@ -150,6 +177,29 @@ def test_hardline_detection_allows(command):
     assert desc is None
 
 
+# Commands written with the ordinary quoting / brace shell idioms that
+# previously slipped past the floor. Kept as an explicit regression set so
+# the intent (quoting `rm -rf "/"` must not be a disk-wipe bypass) survives
+# any future refactor of the rm patterns.
+_QUOTED_BRACE_BYPASS = [
+    'rm -rf "/"',
+    "rm -rf '/'",
+    'rm -rf "/etc"',
+    'rm -rf "/home"',
+    'rm -rf "$HOME"',
+    "rm -rf ${HOME}",
+    'rm -rf "${HOME}"',
+]
+
+
+@pytest.mark.parametrize("command", _QUOTED_BRACE_BYPASS)
+def test_quoted_and_brace_paths_are_hardline_blocked(command):
+    """Quoted paths and ${HOME} must hit the floor (was a silent bypass)."""
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"quoting/brace bypass leaked through hardline floor: {command!r}"
+    assert desc
+
+
 # -------------------------------------------------------------------------
 # Integration with the approval flow
 # -------------------------------------------------------------------------
@@ -189,7 +239,8 @@ def test_yolo_env_var_cannot_bypass_hardline(clean_session, monkeypatch):
     """HERMES_YOLO_MODE=1 must not bypass the hardline floor."""
     monkeypatch.setenv("HERMES_YOLO_MODE", "1")
 
-    for cmd in ["rm -rf /", "shutdown -h now", "mkfs.ext4 /dev/sda", "reboot"]:
+    for cmd in ['rm -rf /', 'rm -rf "/"', 'rm -rf "$HOME"', "rm -rf ${HOME}",
+                "shutdown -h now", "mkfs.ext4 /dev/sda", "reboot"]:
         r1 = check_dangerous_command(cmd, "local")
         assert r1["approved"] is False, f"yolo leaked hardline on {cmd!r} (check_dangerous_command)"
         assert r1.get("hardline") is True

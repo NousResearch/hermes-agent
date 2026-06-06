@@ -83,6 +83,13 @@ const TOOL_SECTION_SURFACE_CLASS =
 
 const TOOL_SECTION_PRE_CLASS = cn(TOOL_SECTION_SURFACE_CLASS, 'font-mono text-[0.7rem] leading-relaxed')
 
+interface ToolStatusCopy {
+  statusDone: string
+  statusError: string
+  statusRecovered: string
+  statusRunning: string
+}
+
 function rawTechnicalTrace(args: unknown, result: unknown): string {
   const parts = [args, result]
     .filter(value => value !== undefined && value !== null)
@@ -102,11 +109,11 @@ function rawTechnicalTrace(args: unknown, result: unknown): string {
   return parts.join('\n')
 }
 
-function statusGlyph(status: ToolStatus): ReactNode {
+function statusGlyph(status: ToolStatus, copy: ToolStatusCopy): ReactNode {
   if (status === 'running') {
     return (
       <BrailleSpinner
-        ariaLabel="Running"
+        ariaLabel={copy.statusRunning}
         className="size-3.5 shrink-0 text-[0.95rem] text-(--ui-text-tertiary)"
         spinner="breathe"
       />
@@ -114,22 +121,32 @@ function statusGlyph(status: ToolStatus): ReactNode {
   }
 
   if (status === 'error') {
-    return <AlertCircle aria-label="Error" className="size-3.5 shrink-0 text-destructive" />
+    return <AlertCircle aria-label={copy.statusError} className="size-3.5 shrink-0 text-destructive" />
   }
 
   if (status === 'warning') {
-    return <AlertCircle aria-label="Recovered" className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+    return (
+      <AlertCircle
+        aria-label={copy.statusRecovered}
+        className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+      />
+    )
   }
 
-  return <CheckCircle2 aria-label="Done" className="size-3.5 shrink-0 text-emerald-600/85 dark:text-emerald-400/85" />
+  return (
+    <CheckCircle2
+      aria-label={copy.statusDone}
+      className="size-3.5 shrink-0 text-emerald-600/85 dark:text-emerald-400/85"
+    />
+  )
 }
 
 // Leading glyph for any tool-row header. Status (running/error/warning)
 // takes precedence; otherwise falls back to the tool's codicon. Returns
 // null when neither applies so callers can render unconditionally.
-function ToolGlyph({ icon, status }: { icon?: string; status?: ToolStatus }) {
+function ToolGlyph({ copy, icon, status }: { copy: ToolStatusCopy; icon?: string; status?: ToolStatus }) {
   const node = status ? (
-    statusGlyph(status)
+    statusGlyph(status, copy)
   ) : icon ? (
     <Codicon className="text-(--ui-text-tertiary)" name={icon} size="0.875rem" />
   ) : null
@@ -296,7 +313,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           trailing={trailing}
         >
           <span className="flex min-w-0 items-center gap-1.5">
-            <ToolGlyph icon={view.icon} status={leadingStatus(isPending, view.status)} />
+            <ToolGlyph copy={copy} icon={view.icon} status={leadingStatus(isPending, view.status)} />
             <FadeText
               className={cn(
                 TOOL_HEADER_TITLE_CLASS,
@@ -518,7 +535,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
             }
           >
             <span className="flex min-w-0 items-center gap-1.5">
-              <ToolGlyph status={displayStatus === 'success' ? undefined : displayStatus} />
+              <ToolGlyph copy={copy} status={displayStatus === 'success' ? undefined : displayStatus} />
               <FadeText
                 className={cn(
                   TOOL_HEADER_TITLE_CLASS,

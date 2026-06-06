@@ -3468,7 +3468,7 @@ function fetchJsonViaOauthSession(url, options = {}) {
       reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
       return
     }
-    const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
+    const body = serializeJsonBody(options.body)
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     const request = electronNet.request({

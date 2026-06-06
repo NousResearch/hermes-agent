@@ -360,9 +360,11 @@ def _apply_onepassword(cfg: dict, home_path: Path) -> None:
         _sanitize_loaded_credentials()
         for name in result.applied:
             _SECRET_SOURCES[name] = "onepassword"
+        cache_tag = " (cached)" if result.cache_hit else ""
         print(
             f"  1Password: applied {len(result.applied)} "
-            f"secret{'s' if len(result.applied) != 1 else ''} "
+            f"secret{'s' if len(result.applied) != 1 else ''}"
+            f"{cache_tag} "
             f"({', '.join(sorted(result.applied))})",
             file=sys.stderr,
         )

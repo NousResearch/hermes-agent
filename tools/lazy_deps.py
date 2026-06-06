@@ -456,7 +456,7 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             "lazy installs disabled (security.allow_lazy_installs=false)"
         )
 
-    if prompt and sys.stdin.isatty() and sys.stdout.isatty():
+    if prompt and sys.stdin.isatty() and sys.stdout.isatty() and 'prompt_toolkit' not in sys.modules:
         spec_list = ", ".join(missing)
         try:
             answer = input(

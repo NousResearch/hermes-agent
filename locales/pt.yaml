@@ -14,6 +14,17 @@ approval:
   denied:          "      ✗ Negado"
   cancelled:       "      ✗ Cancelado"
   blocklist_message: "Este comando está na lista de bloqueio incondicional e não pode ser aprovado."
+  changes_prompt: "      📝 Descreva as alterações necessárias (vazio cancela): "
+  changes_empty: "      ✗ Nenhum feedback fornecido - negando o comando"
+  changes_received: "      ✓ Feedback capturado - o agente revisará o comando"
+  button_once: "✅ Permitir uma vez"
+  button_session: "✅ Sessão"
+  button_always: "✅ Sempre"
+  button_changes: "📝 Solicitar alterações"
+  button_deny: "❌ Negar"
+  changes_telegram_prompt: "📝 Responda a esta mensagem com as alterações desejadas (ou \"cancel\" para negar)."
+  changes_resolved: "📝 Alterações solicitadas por {user}"
+  changes_resolved_short: "📝 Solicitar alterações"
 
 gateway:
   approval_expired: "⚠️ A aprovação expirou (o agente já não está à espera). Peça ao agente para tentar novamente."

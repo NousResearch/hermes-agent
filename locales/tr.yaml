@@ -14,6 +14,17 @@ approval:
   denied:          "      ✗ Reddedildi"
   cancelled:       "      ✗ İptal edildi"
   blocklist_message: "Bu komut koşulsuz engelleme listesinde ve onaylanamaz."
+  changes_prompt: "      📝 Gereken değişiklikleri açıkla (boş bırakırsan iptal): "
+  changes_empty: "      ✗ Geri bildirim verilmedi - komut reddediliyor"
+  changes_received: "      ✓ Geri bildirim alındı - aracı komutu gözden geçirecek"
+  button_once: "✅ Bir kez izin ver"
+  button_session: "✅ Oturum"
+  button_always: "✅ Her zaman"
+  button_changes: "📝 Değişiklik iste"
+  button_deny: "❌ Reddet"
+  changes_telegram_prompt: "📝 İstediğin değişikliklerle bu mesajı yanıtla (veya reddetmek için \"cancel\")."
+  changes_resolved: "📝 Değişiklikleri isteyen: {user}"
+  changes_resolved_short: "📝 Değişiklik iste"
 
 gateway:
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."

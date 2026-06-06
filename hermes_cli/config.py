@@ -1406,6 +1406,8 @@ DEFAULT_CONFIG = {
         "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
+        "still_working_interval": 600,  # Seconds between long-running task heartbeats in the gateway (0/false/off disables)
+        "still_working_overrides": {},  # Per-platform interval overrides: {"signal": "off", "telegram": 300}
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
         # Auto-delete system-notice replies (e.g. "✨ New session started!",
         # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
@@ -4452,9 +4454,30 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 print(f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
             results["config_added"].append("display.platforms (migrated from tool_progress_overrides)")
 
-    # ── Version 16 → 17: remove legacy compression.summary_* keys ──
+    # ── Version 16 → 17: add still-working heartbeat display settings and remove
+    # legacy compression.summary_* keys ──
     if current_ver < 17:
         config = read_raw_config()
+        changed = False
+
+        display = config.get("display", {})
+        if not isinstance(display, dict):
+            display = {}
+        if "still_working_interval" not in display:
+            display["still_working_interval"] = 600
+            results["config_added"].append("display.still_working_interval=600 (default)")
+            changed = True
+            if not quiet:
+                print("  ✓ Added display.still_working_interval=600")
+        if "still_working_overrides" not in display:
+            display["still_working_overrides"] = {}
+            results["config_added"].append("display.still_working_overrides={} (default)")
+            changed = True
+            if not quiet:
+                print("  ✓ Added display.still_working_overrides={}")
+        if changed:
+            config["display"] = display
+
         comp = config.get("compression", {})
         if isinstance(comp, dict):
             s_model = comp.pop("summary_model", None)
@@ -4482,12 +4505,15 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     migrated_keys.append(f"base_url={s_base_url}")
             if migrated_keys or s_model is not None or s_provider is not None or s_base_url is not None:
                 config["compression"] = comp
-                save_config(config)
+                changed = True
                 if not quiet:
                     if migrated_keys:
                         print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
                     else:
                         print("  ✓ Removed unused compression.summary_* keys")
+
+        if changed:
+            save_config(config)
 
     # ── Version 20 → 21: plugins are now opt-in; grandfather existing user plugins ──
     # The loader now requires plugins to appear in ``plugins.enabled`` before

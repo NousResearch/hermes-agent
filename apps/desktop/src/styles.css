@@ -943,7 +943,6 @@ canvas {
 
 [data-slot='composer-surface'] {
   border-color: var(--ui-stroke-secondary) !important;
-  box-shadow: var(--shadow-composer) !important;
 }
 
 [data-slot='composer-fade'] {

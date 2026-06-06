@@ -1034,7 +1034,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
-        return web.json_response({"status": "ok", "platform": "hermes-agent"})
+        try:
+            from hermes_cli import __version__
+        except Exception:
+            __version__ = "unknown"
+        return web.json_response({"status": "ok", "platform": "hermes-agent", "version": __version__})
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
         """GET /health/detailed — rich status for cross-container dashboard probing.
@@ -1045,10 +1049,16 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from gateway.status import read_runtime_status
 
+        try:
+            from hermes_cli import __version__
+        except Exception:
+            __version__ = "unknown"
+
         runtime = read_runtime_status() or {}
         return web.json_response({
             "status": "ok",
             "platform": "hermes-agent",
+            "version": __version__,
             "gateway_state": runtime.get("gateway_state"),
             "platforms": runtime.get("platforms", {}),
             "active_agents": runtime.get("active_agents", 0),

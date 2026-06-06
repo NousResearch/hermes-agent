@@ -496,6 +496,7 @@ class TestHealthEndpoint:
             data = await resp.json()
             assert data["status"] == "ok"
             assert data["platform"] == "hermes-agent"
+            assert "version" in data
 
     @pytest.mark.asyncio
     async def test_v1_health_alias_returns_ok(self, adapter):
@@ -507,6 +508,18 @@ class TestHealthEndpoint:
             data = await resp.json()
             assert data["status"] == "ok"
             assert data["platform"] == "hermes-agent"
+            assert "version" in data
+
+    @pytest.mark.asyncio
+    async def test_health_returns_version(self, adapter):
+        """GET /health includes the hermes_cli version string."""
+        from hermes_cli import __version__
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["version"] == __version__
 
 
 # ---------------------------------------------------------------------------
@@ -532,11 +545,25 @@ class TestHealthDetailedEndpoint:
                 data = await resp.json()
                 assert data["status"] == "ok"
                 assert data["platform"] == "hermes-agent"
+                assert "version" in data
                 assert data["gateway_state"] == "running"
                 assert data["platforms"] == {"telegram": {"state": "connected"}}
                 assert data["active_agents"] == 2
                 assert isinstance(data["pid"], int)
                 assert "updated_at" in data
+                assert "version" in data
+
+    @pytest.mark.asyncio
+    async def test_health_detailed_returns_version(self, adapter):
+        """GET /health/detailed includes the hermes_cli version string."""
+        from hermes_cli import __version__
+        app = _create_app(adapter)
+        with patch("gateway.status.read_runtime_status", return_value=None):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health/detailed")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["version"] == __version__
 
     @pytest.mark.asyncio
     async def test_health_detailed_no_runtime_status(self, adapter):

@@ -1965,6 +1965,11 @@ class APIServerAdapter(BasePlatformAdapter):
         # Soft-partial path: we have *some* text but the run did not complete
         # (e.g. truncation with partial buffered output). Still 200 but signal
         # truncation via finish_reason="length" + Hermes-specific extras.
+        # Inject reasoning into the response when available.
+        # Mirrors how the messaging gateway (gateway/run.py) handles
+        # display.show_reasoning, but uses OpenAI's reasoning_content
+        # field so API clients (Open WebUI, etc.) can display it natively
+        # instead of as a markdown prefix. (#7556)
         response_data = {
             "id": completion_id,
             "object": "chat.completion",
@@ -1986,6 +1991,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 "total_tokens": usage.get("total_tokens", 0),
             },
         }
+        # Include reasoning_content when the model produced reasoning
+        # traces and the config permits it (display.show_reasoning).
+        _reasoning = result.get("last_reasoning") if isinstance(result, dict) else None
+        if _reasoning:
+            response_data["choices"][0]["message"]["reasoning_content"] = _reasoning
+
         if is_partial or is_failed or not completed:
             response_data["hermes"] = {
                 "completed": completed,
@@ -2103,6 +2114,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 usage = agent_usage or usage
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
+
+            # Emit reasoning if available — matches the non-streaming path
+            # and mirrors OpenAI's reasoning_content field. (#7556)
+            _reasoning = result.get("last_reasoning") if isinstance(result, dict) else None
+            if _reasoning:
+                _reasoning_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{
+                        "index": 0, "delta": {"reasoning_content": _reasoning},
+                        "finish_reason": None,
+                    }],
+                }
+                await response.write(f"data: {json.dumps(_reasoning_chunk)}\
+\n".encode())
 
             # Finish chunk
             finish_chunk = {
@@ -2673,6 +2699,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
                 }
+                # Include reasoning trace when available. (#7556)
+                _reasoning = result.get("last_reasoning") if isinstance(result, dict) else None
+                if _reasoning:
+                    completed_env["reasoning"] = {"content": _reasoning}
                 full_history = self._build_response_conversation_history(
                     conversation_history,
                     user_message,

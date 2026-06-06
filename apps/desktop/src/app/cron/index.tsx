@@ -458,8 +458,8 @@ export function CronView({
                 {c.newCron}
               </Button>
             </div>
-            <div className="grid min-h-0 flex-1 grid-cols-[minmax(12rem,17rem)_minmax(0,1fr)] gap-3 px-4 pb-3">
-              <div className="min-h-0 overflow-y-auto rounded-lg border border-border/40 bg-background/70 p-1">
+            <div className="grid min-h-0 flex-1 grid-cols-[minmax(12rem,17rem)_minmax(0,1fr)] px-4 pb-3">
+              <div className="min-h-0 overflow-y-auto border-r border-(--ui-stroke-tertiary) py-1 pr-2">
                 {visibleJobs.map(job => (
                   <CronJobListRow
                     active={selectedJob?.id === job.id}
@@ -470,7 +470,7 @@ export function CronView({
                   />
                 ))}
               </div>
-              <div className="min-h-0 overflow-y-auto rounded-lg border border-border/40 bg-background/70">
+              <div className="min-h-0 overflow-y-auto pl-3">
                 {selectedJob && (
                   <CronJobDetail
                     busy={busyJobId === selectedJob.id}
@@ -579,7 +579,7 @@ function CronJobDetail({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-col gap-3 border-b border-border/40 px-4 py-3">
+      <div className="flex flex-col gap-3 border-b border-(--ui-stroke-tertiary) px-4 py-3">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium">{jobTitle(job)}</span>
           <StatePill tone={STATE_TONE[state] ?? 'muted'}>{c.states[state] ?? state}</StatePill>
@@ -914,7 +914,7 @@ function CronEditorDialog({
               <FieldHint>{c.customHint}</FieldHint>
             </Field>
           ) : (
-            <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
+            <div className="rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                 <span className="font-medium text-foreground">{scheduleHint}</span>
                 <span className="font-mono text-muted-foreground">{schedule}</span>

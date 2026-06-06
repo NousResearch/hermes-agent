@@ -67,6 +67,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`hermes-operating-discipline`](/docs/user-guide/skills/bundled/devops/devops-hermes-operating-discipline) | Use when modifying Hermes Agent runtime state, crons, skills, plugins, memory, backups, profiles, or Mission Control. Enforces plan-act-verify discipline and protects profile boundaries. | `devops/hermes-operating-discipline` |
 | [`kanban-orchestrator`](/docs/user-guide/skills/bundled/devops/devops-kanban-orchestrator) | Decomposition playbook + anti-temptation rules for an orchestrator profile routing work through Kanban. The "don't do the work yourself" rule and the basic lifecycle are auto-injected into every kanban worker's system prompt; this skill... | `devops/kanban-orchestrator` |
 | [`kanban-worker`](/docs/user-guide/skills/bundled/devops/devops-kanban-worker) | Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper det... | `devops/kanban-worker` |
 | [`webhook-subscriptions`](/docs/user-guide/skills/bundled/devops/devops-webhook-subscriptions) | Webhook subscriptions: event-driven agent runs. | `devops/webhook-subscriptions` |
@@ -115,6 +116,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`heartmula`](/docs/user-guide/skills/bundled/media/media-heartmula) | HeartMuLa: Suno-like song generation from lyrics + tags. | `media/heartmula` |
 | [`songsee`](/docs/user-guide/skills/bundled/media/media-songsee) | Audio spectrograms/features (mel, chroma, MFCC) via CLI. | `media/songsee` |
 | [`spotify`](/docs/user-guide/skills/bundled/media/media-spotify) | Spotify: play, search, queue, manage playlists and devices. | `media/spotify` |
+| [`x-video-spanish-localization`](/docs/user-guide/skills/bundled/media/media-x-video-spanish-localization) | Use when localizing X/Twitter videos into Spanish with dubbing, subtitles, or both. Preserves original format/framing, uses the highest practical X MP4 master, verifies audio timing visually/technically, and sends Telegram-safe deliverab... | `media/x-video-spanish-localization` |
 | [`youtube-content`](/docs/user-guide/skills/bundled/media/media-youtube-content) | YouTube transcripts to summaries, threads, blogs. | `media/youtube-content` |
 
 ## mlops
@@ -142,13 +144,19 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | Skill | Description | Path |
 |-------|-------------|------|
 | [`airtable`](/docs/user-guide/skills/bundled/productivity/productivity-airtable) | Airtable REST API via curl. Records CRUD, filters, upserts. | `productivity/airtable` |
+| [`document-quality-gate`](/docs/user-guide/skills/bundled/productivity/productivity-document-quality-gate) | Use when converting, translating, editing, OCRing, or delivering PDFs, EPUBs, transcripts, subtitles, or long documents where legibility and structure matter more than a crude format dump. | `productivity/document-quality-gate` |
+| [`facops-invoice-to-autonomo-excel`](/docs/user-guide/skills/bundled/productivity/productivity-facops-invoice-to-autonomo-excel) | Use when invoices, receipts, school payments, or billing emails need extraction and handoff to Jaime's autónomo Excel/accounting workflow via the FacOps profile without mixing personal Gmail state. | `productivity/facops-invoice-to-autonomo-excel` |
+| [`gmail-triage-jaime`](/docs/user-guide/skills/bundled/productivity/productivity-gmail-triage-jaime) | Use when triaging Jaime's Gmail summaries, marking messages read, separating noise from actionable mail, and preserving account boundaries. Never deletes or trashes messages without explicit confirmation. | `productivity/gmail-triage-jaime` |
 | [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace) | Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python. | `productivity/google-workspace` |
 | [`linear`](/docs/user-guide/skills/bundled/productivity/productivity-linear) | Linear: manage issues, projects, teams via GraphQL + curl. | `productivity/linear` |
 | [`maps`](/docs/user-guide/skills/bundled/productivity/productivity-maps) | Geocode, POIs, routes, timezones via OpenStreetMap/OSRM. | `productivity/maps` |
 | [`nano-pdf`](/docs/user-guide/skills/bundled/productivity/productivity-nano-pdf) | Edit PDF text/typos/titles via nano-pdf CLI (NL prompts). | `productivity/nano-pdf` |
+| [`nicotine-taper`](/docs/user-guide/skills/bundled/productivity/productivity-nicotine-taper) | Use when helping calculate, document, or adjust vape-liquid nicotine taper batches. Computes mg/ml from nicokit strength and total volume, preserves the taper plan, and avoids medical overreach. | `productivity/nicotine-taper` |
 | [`notion`](/docs/user-guide/skills/bundled/productivity/productivity-notion) | Notion API + ntn CLI: pages, databases, markdown, Workers. | `productivity/notion` |
 | [`ocr-and-documents`](/docs/user-guide/skills/bundled/productivity/productivity-ocr-and-documents) | Extract text from PDFs/scans (pymupdf, marker-pdf). | `productivity/ocr-and-documents` |
+| [`personal-ops-daily-loop`](/docs/user-guide/skills/bundled/productivity/productivity-personal-ops-daily-loop) | Use when running Jaime's daily/weekly personal operations loop: morning briefing, evening close, calendar reminders, tasks, family logistics, and concise Telegram-ready summaries. | `productivity/personal-ops-daily-loop` |
 | [`powerpoint`](/docs/user-guide/skills/bundled/productivity/productivity-powerpoint) | Create, read, edit .pptx decks, slides, notes, templates. | `productivity/powerpoint` |
+| [`purchase-discipline`](/docs/user-guide/skills/bundled/productivity/productivity-purchase-discipline) | Use when Jaime is considering a nonessential purchase and wants disciplined friction: challenge the impulse, require use-before-buying, cooling-off, budget fit, and clear keep/skip criteria. | `productivity/purchase-discipline` |
 | [`teams-meeting-pipeline`](/docs/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline) | Operate the Teams meeting summary pipeline via Hermes CLI — summarize meetings, inspect pipeline status, replay jobs, manage Microsoft Graph subscriptions. | `productivity/teams-meeting-pipeline` |
 
 ## red-teaming
@@ -166,6 +174,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`llm-wiki`](/docs/user-guide/skills/bundled/research/research-llm-wiki) | Karpathy's LLM Wiki: build/query interlinked markdown KB. | `research/llm-wiki` |
 | [`polymarket`](/docs/user-guide/skills/bundled/research/research-polymarket) | Query Polymarket: markets, prices, orderbooks, history. | `research/polymarket` |
 | [`research-paper-writing`](/docs/user-guide/skills/bundled/research/research-research-paper-writing) | Write ML papers for NeurIPS/ICML/ICLR: design→submit. | `research/research-paper-writing` |
+| [`x-radar-builder`](/docs/user-guide/skills/bundled/research/research-x-radar-builder) | Use when creating or tuning X/Twitter radar jobs that monitor scoped topics, dedupe repeats, prefer primary sources, stay silent when there is no signal, and report concise reliability-labeled updates. | `research/x-radar-builder` |
 
 ## smart-home
 
@@ -183,6 +192,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`claude-mastery-curriculum`](/docs/user-guide/skills/bundled/software-development/software-development-claude-mastery-curriculum) | Use when building a structured learning path for Claude, Claude Code, Claude Cowork, Anthropic Academy, MCP, agent skills, subagents, and practical mastery through exercises and reusable workflows. | `software-development/claude-mastery-curriculum` |
 | [`debugging-hermes-tui-commands`](/docs/user-guide/skills/bundled/software-development/software-development-debugging-hermes-tui-commands) | Debug Hermes TUI slash commands: Python, gateway, Ink UI. | `software-development/debugging-hermes-tui-commands` |
 | [`hermes-agent-skill-authoring`](/docs/user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring) | Author in-repo SKILL.md: frontmatter, validator, structure. | `software-development/hermes-agent-skill-authoring` |
 | [`hermes-s6-container-supervision`](/docs/user-guide/skills/bundled/software-development/software-development-hermes-s6-container-supervision) | Modify, debug, or extend the s6-overlay supervision tree inside the Hermes Agent Docker image — adding new services, debugging profile gateways, understanding the Architecture B main-program pattern. | `software-development/hermes-s6-container-supervision` |

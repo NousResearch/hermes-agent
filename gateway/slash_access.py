@@ -49,8 +49,14 @@ from typing import Any, FrozenSet, Iterable, Optional, Tuple
 # additively, never restrictively).
 _ALWAYS_ALLOWED_FOR_USERS: FrozenSet[str] = frozenset({
     "help",
+    "status",
     "whoami",
 })
+
+
+def always_allowed_commands() -> tuple[str, ...]:
+    """Return the implicit read-only slash-command floor for non-admin users."""
+    return tuple(sorted(_ALWAYS_ALLOWED_FOR_USERS))
 
 
 @dataclass(frozen=True)
@@ -224,6 +230,7 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
 
 __all__ = [
     "SlashAccessPolicy",
+    "always_allowed_commands",
     "policy_from_extra",
     "policy_for_source",
 ]

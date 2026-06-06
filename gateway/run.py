@@ -10267,7 +10267,10 @@ class GatewayRunner:
         hasn't set ``allow_admin_from`` for the scope, the policy returns
         ``enabled=False`` and this method always returns None.
         """
-        from gateway.slash_access import policy_for_source as _policy_for_source
+        from gateway.slash_access import (
+            always_allowed_commands as _always_allowed_commands,
+            policy_for_source as _policy_for_source,
+        )
 
         if not canonical_cmd:
             return None
@@ -10280,7 +10283,9 @@ class GatewayRunner:
             source.platform.value if source.platform else "?",
             source.user_id,
         )
-        allowed_preview = sorted(policy.user_allowed_commands)
+        allowed_preview = sorted(
+            set(policy.user_allowed_commands).union(_always_allowed_commands())
+        )
         if allowed_preview:
             suffix = (
                 "You can run: "
@@ -10305,7 +10310,10 @@ class GatewayRunner:
         (admin / user / unrestricted), and the slash commands they can
         actually run on this scope.
         """
-        from gateway.slash_access import policy_for_source as _policy_for_source
+        from gateway.slash_access import (
+            always_allowed_commands as _always_allowed_commands,
+            policy_for_source as _policy_for_source,
+        )
 
         source = event.source
         policy = _policy_for_source(self.config, source)
@@ -10331,7 +10339,7 @@ class GatewayRunner:
             )
 
         # Non-admin user. Show what's actually reachable.
-        floor = ["help", "whoami"]  # mirrors slash_access._ALWAYS_ALLOWED_FOR_USERS
+        floor = list(_always_allowed_commands())
         configured = sorted(policy.user_allowed_commands)
         # Combine + dedupe, preserve order: floor first, then operator additions.
         seen: set[str] = set()

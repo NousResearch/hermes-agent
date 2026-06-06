@@ -12,7 +12,7 @@ Coverage targets:
   - User path: user not in admin list, but command in
     ``user_allowed_commands`` → allowed.
   - User denied: command not in either list → returns the ⛔ denial.
-  - Always-allowed floor: /help and /whoami reachable for non-admins
+  - Always-allowed floor: /help, /status, and /whoami reachable for non-admins
     even with empty user_allowed_commands.
   - DM vs group scope isolation.
 """
@@ -180,10 +180,17 @@ async def test_non_admin_with_empty_user_commands_gets_floor_only():
     # /stop denied
     result = await runner._handle_message(_make_event("/stop", _make_source(user_id="999")))
     assert "⛔" in result
-    assert "No slash commands are enabled" in result
+    assert "No slash commands are enabled" not in result
+    assert "/help" in result
+    assert "/status" in result
+    assert "/whoami" in result
+    runner._handle_status_command = AsyncMock(return_value="status-handled")
+    status_result = await runner._handle_message(_make_event("/status", _make_source(user_id="999")))
+    assert status_result == "status-handled"
     # /whoami still works (always-allowed floor)
     whoami_result = await runner._handle_message(_make_event("/whoami", _make_source(user_id="999")))
     assert "Tier: user" in whoami_result
+    assert "/status" in whoami_result
 
 
 # ---------------------------------------------------------------------------

@@ -28,12 +28,17 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
+const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  connectionScopeKey,
   cookiesHaveSession,
+  cookiesHaveLiveSession,
+  normAuthMode,
   normalizeRemoteBaseUrl,
+  profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
   tokenPreview
@@ -1309,6 +1314,136 @@ function resolveUpdaterBinary() {
   return fileExists(candidate) ? candidate : null
 }
 
+function repairMacUpdaterHelper(updater) {
+  if (!IS_MAC || !updater) return
+
+  try {
+    execFileSync('/usr/bin/xattr', ['-cr', updater], { stdio: 'ignore' })
+  } catch (err) {
+    rememberLog(`[updates] macOS updater helper quarantine repair skipped: ${err.message}`)
+  }
+
+  try {
+    execFileSync('/usr/bin/codesign', ['--verify', updater], { stdio: 'ignore' })
+    return
+  } catch {
+    // Unsigned or invalid helper. Apply a local ad-hoc signature so Gatekeeper
+    // does not block the staged updater before it can run.
+  }
+
+  try {
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', updater], { stdio: 'ignore' })
+    rememberLog('[updates] repaired macOS updater helper signature')
+  } catch (err) {
+    rememberLog(`[updates] macOS updater helper signature repair skipped: ${err.message}`)
+  }
+}
+
+// Path to the venv shim whose lock decides whether `hermes update` can write
+// fresh entry points. On Windows this is the file the running backend
+// `hermes.exe` holds open; on POSIX it's never mandatory-locked.
+function venvHermesShimPath(updateRoot) {
+  return IS_WINDOWS
+    ? path.join(updateRoot, 'venv', 'Scripts', 'hermes.exe')
+    : path.join(updateRoot, 'venv', 'bin', 'hermes')
+}
+
+// Best-effort lock probe mirroring the Rust updater's is_locked(): a running
+// .exe on Windows refuses an O_RDWR open with a sharing violation. On POSIX
+// this practically always succeeds (no mandatory locking), so it returns false
+// — correct, since the shim-contention brick is Windows-only.
+function isShimLocked(shimPath) {
+  if (!IS_WINDOWS) return false
+  let fd
+  try {
+    fd = fs.openSync(shimPath, 'r+')
+    return false
+  } catch (err) {
+    // ENOENT ⇒ not there ⇒ nothing locking it. Anything else (EBUSY/EPERM/
+    // EACCES) on Windows means a live handle holds it.
+    return err && err.code !== 'ENOENT'
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        void 0
+      }
+    }
+  }
+}
+
+// Force-kill the entire process TREE rooted at each PID. Node's child.kill()
+// only signals the direct child, so on Windows a backend `hermes.exe` that
+// spawned its own grandchildren (a `hermes` REPL, a pty terminal session, the
+// gateway) would survive and keep the venv shim locked. taskkill /T /F reaps
+// the whole tree synchronously. Windows-only: this is called solely from the
+// Windows shim-unlock path, and the backend is NOT spawned detached (so it's
+// not a process-group leader — a POSIX negative-pgid kill would be meaningless
+// here anyway). POSIX teardown stays with the existing before-quit SIGTERM.
+function forceKillProcessTree(pid) {
+  if (!IS_WINDOWS) return
+  if (!Number.isInteger(pid) || pid <= 0) return
+  try {
+    execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
+  } catch {
+    // Already gone, or no permission — best effort; the unlock wait below is
+    // the real gate.
+  }
+}
+
+// Before handing off the update on Windows, the desktop MUST stop every backend
+// it spawned and WAIT for the venv shim to actually unlock. The old code did
+// `hermesProcess.kill('SIGTERM')` + `app.quit()` fire-and-forget: SIGTERM on
+// Windows doesn't reap the backend's grandchildren, and quit didn't wait for
+// teardown, so the updater raced a still-locked `hermes.exe`, the quarantine
+// rename failed, uv's `pip install` hit "Access is denied", and the git path
+// bailed into a full ZIP re-download that ALSO couldn't write the locked shim —
+// a half-applied install (ryanc's update.log). Here we tree-kill the primary +
+// pool backends and poll the shim until it's writable (or a bounded timeout),
+// so by the time we spawn the updater the lock is genuinely gone.
+//
+// Windows-only: the venv-shim mandatory lock is a Windows phenomenon. On
+// macOS/Linux there's no REPLACE-on-running-exe block, the existing before-quit
+// SIGTERM + app.quit() teardown already works (the macOS path is flawless), and
+// aggressively SIGKILL-ing the backend here would be an untested behavior change
+// for no benefit. So we no-op off Windows and leave that path exactly as it was.
+async function releaseBackendLockForUpdate(updateRoot) {
+  if (!IS_WINDOWS) return { unlocked: true }
+
+  // Collect every backend PID the desktop owns: primary window backend + pool.
+  const pids = []
+  if (hermesProcess && Number.isInteger(hermesProcess.pid)) pids.push(hermesProcess.pid)
+  for (const entry of backendPool.values()) {
+    if (entry.process && Number.isInteger(entry.process.pid)) pids.push(entry.process.pid)
+  }
+
+  // Graceful first (lets Python flush), then tree-kill to catch grandchildren.
+  if (hermesProcess && !hermesProcess.killed) {
+    try {
+      hermesProcess.kill('SIGTERM')
+    } catch {
+      void 0
+    }
+  }
+  stopAllPoolBackends()
+  for (const pid of pids) forceKillProcessTree(pid)
+
+  const shim = venvHermesShimPath(updateRoot)
+  const deadlineMs = Date.now() + 15000
+  while (Date.now() < deadlineMs) {
+    if (!isShimLocked(shim)) {
+      rememberLog('[updates] venv shim unlocked; safe to hand off the update')
+      return { unlocked: true }
+    }
+    await new Promise(r => setTimeout(r, 300))
+  }
+  // Timed out: the updater's own wait_for_venv_free + force-kill is the second
+  // line of defense, and we pass --force so the guard won't dead-end. Log it.
+  rememberLog('[updates] venv shim still locked after 15s; handing off anyway (updater will force)')
+  return { unlocked: false }
+}
+
 // applyUpdates — hand off to the installer's --update flow, then exit.
 //
 // The desktop is a pure consumer: it does NOT git pull / pip install / rebuild
@@ -1364,6 +1499,7 @@ async function applyUpdates(opts = {}) {
     }
 
     emitUpdateProgress({ stage: 'restart', message: 'Handing off to the Hermes updater…', percent: 100 })
+    repairMacUpdaterHelper(updater)
 
     const updateRoot = resolveUpdateRoot()
     const { branch: configuredBranch } = readDesktopUpdateConfig()
@@ -1374,6 +1510,12 @@ async function applyUpdates(opts = {}) {
       updaterArgs.push('--target-app', targetApp)
     }
     const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
+
+    // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
+    // spawn the updater. Without this the updater races a still-locked
+    // hermes.exe (held by the backend child / its grandchildren) and the update
+    // bricks. See releaseBackendLockForUpdate for the full failure analysis.
+    await releaseBackendLockForUpdate(updateRoot)
 
     // Detached so the updater outlives this process — it needs us GONE before
     // `hermes update` will run (the venv shim is locked while we live).
@@ -3167,8 +3309,16 @@ function installMediaPermissions() {
 //   * WebSocket upgrades require a single-use ``?ticket=`` minted at
 //     ``POST /api/auth/ws-ticket`` (cookie-authed). The legacy ``?token=``
 //     path is unconditionally rejected by gated gateways.
-//   * Nous Portal contract v1 issues NO refresh token; the access cookie has
-//     a ~15-min TTL. On 401 we must re-run the login round trip.
+//   * Nous Portal now issues a 24h ROTATING, reuse-detected refresh token
+//     alongside the ~15-min access token (Portal NAS #293 / hermes #37247).
+//     Both are set as HttpOnly cookies (``hermes_session_at`` ~15 min,
+//     ``hermes_session_rt`` 24h). When the AT cookie lapses but the RT cookie
+//     is still alive, the gateway middleware transparently rotates a fresh AT
+//     on the next authenticated request — so connectivity must NOT be gated on
+//     the AT cookie alone. We probe liveness by actually minting a ws-ticket
+//     (which triggers that server-side refresh) and treat a real 401 as
+//     "needs re-login"; the AT-or-RT cookie presence check is only a cheap
+//     "is the user signed in at all?" gate / display signal.
 // ---------------------------------------------------------------------------
 
 const OAUTH_SESSION_PARTITION = 'persist:hermes-remote-oauth'
@@ -3179,8 +3329,9 @@ function getOauthSession() {
   return oauthSession
 }
 
-// Bare + prefixed variants of the access-token cookie live in
-// connection-config.cjs (cookiesHaveSession). See that module for details.
+// Bare + prefixed variants of the session cookies live in
+// connection-config.cjs (cookiesHaveSession / cookiesHaveLiveSession). See
+// that module for details.
 
 async function hasOauthSessionCookie(baseUrl) {
   const sess = getOauthSession()
@@ -3195,6 +3346,30 @@ async function hasOauthSessionCookie(baseUrl) {
     try {
       const cookies = await sess.cookies.get({ domain: parsed.hostname })
       return cookiesHaveSession(cookies)
+    } catch {
+      return false
+    }
+  }
+}
+
+// Like hasOauthSessionCookie, but returns true when EITHER a live access-token
+// cookie OR a (longer-lived) refresh-token cookie is present. This is the right
+// "is the user signed in at all?" check: an expired AT with a live RT is still
+// a connectable session because the gateway rotates a fresh AT server-side on
+// the next authenticated request. Gating on the AT alone forces a needless full
+// re-login every ~15 min. Used for the Settings "connected" indicator and as a
+// cheap early-out before attempting a network round-trip in resolveRemoteBackend.
+async function hasLiveOauthSession(baseUrl) {
+  const sess = getOauthSession()
+  if (!sess) return false
+  const parsed = new URL(baseUrl)
+  try {
+    const cookies = await sess.cookies.get({ url: baseUrl })
+    return cookiesHaveLiveSession(cookies)
+  } catch {
+    try {
+      const cookies = await sess.cookies.get({ domain: parsed.hostname })
+      return cookiesHaveLiveSession(cookies)
     } catch {
       return false
     }
@@ -3319,7 +3494,7 @@ function fetchJsonViaOauthSession(url, options = {}) {
       reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
       return
     }
-    const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
+    const body = serializeJsonBody(options.body)
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     const request = electronNet.request({
@@ -3329,8 +3504,7 @@ function fetchJsonViaOauthSession(url, options = {}) {
       useSessionCookies: true,
       redirect: 'follow'
     })
-    request.setHeader('Content-Type', 'application/json')
-    if (body) request.setHeader('Content-Length', String(body.length))
+    setJsonRequestHeaders(request)
 
     let timedOut = false
     const timer = setTimeout(() => {
@@ -3447,6 +3621,38 @@ function decryptDesktopSecret(secret) {
   return value
 }
 
+// Validate + normalize the per-profile remote overrides map read from disk.
+// Drops malformed names/entries and keeps only the recognized fields so a
+// hand-edited or stale connection.json can't inject junk into resolution.
+function sanitizeConnectionProfiles(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return {}
+  }
+
+  const out = {}
+  for (const [name, entry] of Object.entries(raw)) {
+    if (!entry || typeof entry !== 'object') {
+      continue
+    }
+    if (name !== 'default' && !PROFILE_NAME_RE.test(name)) {
+      continue
+    }
+
+    const cleaned = { mode: entry.mode === 'remote' ? 'remote' : 'local' }
+    const url = String(entry.url || '').trim()
+    if (url) {
+      cleaned.url = url
+    }
+    cleaned.authMode = normAuthMode(entry.authMode)
+    if (entry.token && typeof entry.token === 'object') {
+      cleaned.token = entry.token
+    }
+    out[name] = cleaned
+  }
+
+  return out
+}
+
 function readDesktopConnectionConfig() {
   // Check if file changed on disk since last read (e.g. modified by another
   // process or an external tool).  Our own writes update the cache inline
@@ -3462,7 +3668,7 @@ function readDesktopConnectionConfig() {
     return connectionConfigCache
   }
 
-  let config = { mode: 'local', remote: {} }
+  let config = { mode: 'local', remote: {}, profiles: {} }
 
   try {
     const raw = fs.readFileSync(DESKTOP_CONNECTION_CONFIG_PATH, 'utf8')
@@ -3476,7 +3682,11 @@ function readDesktopConnectionConfig() {
       remote.authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
       config = {
         mode: parsed.mode === 'remote' ? 'remote' : 'local',
-        remote
+        remote,
+        // Per-profile remote overrides: each profile may point at its own
+        // backend (local spawn or its own remote URL). Preserved verbatim so
+        // profileRemoteOverride() can resolve them; normalized lazily on save.
+        profiles: sanitizeConnectionProfiles(parsed.profiles)
       }
     }
   } catch {
@@ -3528,104 +3738,114 @@ function writeActiveDesktopProfile(name) {
   return value || null
 }
 
-async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig()) {
-  const remoteToken = decryptDesktopSecret(config.remote?.token)
-  const authMode = config.remote?.authMode === 'oauth' ? 'oauth' : 'token'
-  const remoteUrl = String(config.remote?.url || '')
+// Sanitize a connection config into the renderer-facing shape. With no
+// `profile` this describes the global/default connection (the existing
+// behavior); with a `profile` it describes that profile's per-profile remote
+// override (or an empty "local/inherit" view when the profile has none).
+async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig(), profile = null) {
+  const key = connectionScopeKey(profile)
+  const scoped = key ? config.profiles?.[key] || null : null
+  const block = key ? scoped || {} : config.remote || {}
+
+  const remoteToken = decryptDesktopSecret(block.token)
+  const authMode = normAuthMode(block.authMode)
+  const remoteUrl = String(block.url || '')
+  const mode = (key ? scoped?.mode : config.mode) === 'remote' ? 'remote' : 'local'
 
   let remoteOauthConnected = false
   if (authMode === 'oauth' && remoteUrl) {
     try {
-      remoteOauthConnected = await hasOauthSessionCookie(remoteUrl)
+      // Display signal: treat a live RT cookie as "connected" even if the AT
+      // cookie has lapsed — the gateway refreshes the AT on the next request,
+      // so the session is still usable. The authoritative liveness check is
+      // the ws-ticket mint in resolveRemoteBackend at actual connect time.
+      remoteOauthConnected = await hasLiveOauthSession(remoteUrl)
     } catch {
       remoteOauthConnected = false
     }
   }
 
   return {
-    mode: config.mode === 'remote' ? 'remote' : 'local',
+    mode,
+    // Echo the scope back so the UI knows which profile (if any) this reflects.
+    profile: key,
     remoteAuthMode: authMode,
     remoteOauthConnected,
     remoteUrl,
     remoteTokenPreview: tokenPreview(remoteToken),
     remoteTokenSet: Boolean(remoteToken),
-    envOverride: Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+    // The env override only forces the global/primary connection; a per-profile
+    // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
+    envOverride: key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
   }
+}
+
+// Build + validate a `{ url, authMode, token }` remote block. OAuth gateways
+// authenticate via the login-window session cookie (verified at connect time in
+// resolveRemoteBackend), so only token-auth remotes require a saved token.
+function buildRemoteBlock(remoteUrl, authMode, token) {
+  if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
+    throw new Error('Remote gateway session token is required.')
+  }
+  return { url: normalizeRemoteBaseUrl(remoteUrl), authMode, token }
 }
 
 function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnectionConfig(), options = {}) {
   const persistToken = options.persistToken !== false
+  const key = connectionScopeKey(input.profile)
   const mode = input.mode === 'remote' ? 'remote' : 'local'
-  const remoteUrl = String(input.remoteUrl ?? existing.remote?.url ?? '').trim()
+
+  // The block being edited: a per-profile entry or the global remote block.
+  const existingBlock = key ? existing.profiles?.[key] || {} : existing.remote || {}
+  const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
-  const authMode = resolveAuthMode(input.remoteAuthMode, existing.remote?.authMode)
+  const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
-  const existingToken = existing.remote?.token
-  const nextRemote = {
-    url: remoteUrl,
-    authMode,
-    token: incomingToken
-      ? persistToken
-        ? encryptDesktopSecret(incomingToken)
-        : { encoding: 'plain', value: incomingToken }
-      : existingToken
-  }
+  const nextToken = incomingToken
+    ? persistToken
+      ? encryptDesktopSecret(incomingToken)
+      : { encoding: 'plain', value: incomingToken }
+    : existingBlock.token
 
-  if (mode === 'remote') {
-    nextRemote.url = normalizeRemoteBaseUrl(remoteUrl)
-
-    // OAuth gateways authenticate via the session cookie established by the
-    // login window, NOT a static token — so no token is required here. The
-    // cookie presence is verified at connect time (resolveRemoteBackend).
-    if (authMode !== 'oauth' && !decryptDesktopSecret(nextRemote.token)) {
-      throw new Error('Remote gateway session token is required.')
+  if (key) {
+    // Per-profile scope: a remote entry pins this profile to its own backend; a
+    // local entry clears the override so the profile inherits the default.
+    const profiles = { ...(existing.profiles || {}) }
+    if (mode === 'remote') {
+      profiles[key] = { mode: 'remote', ...buildRemoteBlock(remoteUrl, authMode, nextToken) }
+    } else {
+      delete profiles[key]
     }
-  } else if (remoteUrl) {
-    nextRemote.url = normalizeRemoteBaseUrl(remoteUrl)
+    return { mode: existing.mode === 'remote' ? 'remote' : 'local', remote: existing.remote || {}, profiles }
   }
 
-  return { mode, remote: nextRemote }
+  const nextRemote =
+    mode === 'remote'
+      ? buildRemoteBlock(remoteUrl, authMode, nextToken)
+      : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
+
+  // Preserve per-profile overrides when saving the global connection.
+  return { mode, remote: nextRemote, profiles: existing.profiles || {} }
 }
 
-async function resolveRemoteBackend() {
-  const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
-  const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
-
-  if (rawEnvUrl) {
-    if (!rawEnvToken) {
-      throw new Error(
-        'HERMES_DESKTOP_REMOTE_URL is set but HERMES_DESKTOP_REMOTE_TOKEN is not. ' +
-          'Both must be provided to connect to a remote Hermes backend.'
-      )
-    }
-
-    const baseUrl = normalizeRemoteBaseUrl(rawEnvUrl)
-
-    return {
-      baseUrl,
-      mode: 'remote',
-      source: 'env',
-      authMode: 'token',
-      token: rawEnvToken,
-      wsUrl: buildGatewayWsUrl(baseUrl, rawEnvToken)
-    }
-  }
-
-  const config = readDesktopConnectionConfig()
-
-  if (config.mode !== 'remote') {
-    return null
-  }
-
-  const baseUrl = normalizeRemoteBaseUrl(config.remote?.url)
-  const authMode = config.remote?.authMode === 'oauth' ? 'oauth' : 'token'
+// Build a remote backend connection descriptor from an already-resolved remote
+// config. Handles both auth models (OAuth ws-ticket vs static session token)
+// and is shared by the per-profile, env, and global resolution paths. `token`
+// is the DECRYPTED static token (or null in OAuth mode). `source` is a label
+// for diagnostics ('profile' | 'env' | 'settings').
+async function buildRemoteConnection(rawUrl, authMode, token, source) {
+  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
 
   if (authMode === 'oauth') {
-    // OAuth gateway: auth comes from the session cookie in the OAuth partition.
-    // Verify the cookie is present, then mint a single-use WS ticket (the
-    // gateway rejects ?token= in gated mode). A missing cookie / 401 means the
-    // user needs to (re-)log in via Settings → Gateway.
-    if (!(await hasOauthSessionCookie(baseUrl))) {
+    // OAuth gateway: auth comes from the session cookies in the OAuth
+    // partition. Liveness is NOT "is the access-token cookie present?" —
+    // Portal issues a 24h rotating refresh token (hermes #37247), and the
+    // gateway middleware transparently rotates a fresh ~15-min access token
+    // from it on the next authenticated request. So a session with an expired
+    // AT cookie but a live RT cookie is still perfectly connectable. We
+    // early-out only when neither cookie is present, then mint a ws-ticket as
+    // the authoritative liveness check.
+    if (!(await hasLiveOauthSession(baseUrl))) {
       const err = new Error(
         'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
           'Open Settings → Gateway and click "Sign in", or switch back to Local.'
@@ -3649,15 +3869,13 @@ async function resolveRemoteBackend() {
     return {
       baseUrl,
       mode: 'remote',
-      source: 'settings',
+      source,
       authMode: 'oauth',
       // No static token in OAuth mode; REST is cookie-authed via the partition.
       token: null,
       wsUrl: buildGatewayWsUrlWithTicket(baseUrl, ticket)
     }
   }
-
-  const token = decryptDesktopSecret(config.remote?.token)
 
   if (!token) {
     throw new Error(
@@ -3669,11 +3887,90 @@ async function resolveRemoteBackend() {
   return {
     baseUrl,
     mode: 'remote',
-    source: 'settings',
+    source,
     authMode: 'token',
     token,
     wsUrl: buildGatewayWsUrl(baseUrl, token)
   }
+}
+
+// Resolve the remote backend for a given profile, or null when that profile
+// should run a LOCAL backend. Precedence:
+//   1. explicit per-profile remote override (connection.json `profiles[name]`)
+//   2. env override (HERMES_DESKTOP_REMOTE_URL/_TOKEN) — applies app-wide
+//   3. global remote (connection.json `mode: 'remote'`)
+// A null/empty profile resolves the env/global remote, so legacy callers and
+// the connection test (which pass no profile) are unchanged.
+async function resolveRemoteBackend(profile) {
+  const config = readDesktopConnectionConfig()
+
+  // 1. Per-profile override — "a profile with its own remote host". Wins even
+  //    over the env override so an explicitly-configured profile always
+  //    reaches its intended backend.
+  const override = profileRemoteOverride(config, profile)
+  if (override) {
+    const token = override.authMode === 'oauth' ? null : decryptDesktopSecret(override.token)
+    return buildRemoteConnection(override.url, override.authMode, token, 'profile')
+  }
+
+  // 2. Env override (global, token-auth only).
+  const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
+  const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
+  if (rawEnvUrl) {
+    if (!rawEnvToken) {
+      throw new Error(
+        'HERMES_DESKTOP_REMOTE_URL is set but HERMES_DESKTOP_REMOTE_TOKEN is not. ' +
+          'Both must be provided to connect to a remote Hermes backend.'
+      )
+    }
+    return buildRemoteConnection(rawEnvUrl, 'token', rawEnvToken, 'env')
+  }
+
+  // 3. Global remote.
+  if (config.mode !== 'remote') {
+    return null
+  }
+  const authMode = normAuthMode(config.remote?.authMode)
+  const token = authMode === 'oauth' ? null : decryptDesktopSecret(config.remote?.token)
+  return buildRemoteConnection(config.remote?.url, authMode, token, 'settings')
+}
+
+// A remote profile's sessions live on its remote host's state.db, not on a local
+// file the primary can open — so reads for it must route to the remote backend,
+// not the local-disk fast path. These three helpers drive that (see
+// interceptSessionReadForRemote).
+function profileHasRemoteOverride(profile) {
+  return Boolean(profileRemoteOverride(readDesktopConnectionConfig(), profile))
+}
+
+function configuredRemoteProfileNames() {
+  const config = readDesktopConnectionConfig()
+  return Object.keys(config.profiles || {}).filter(name => profileRemoteOverride(config, name))
+}
+
+// True when the app is in app-global remote mode (Settings → "All profiles" →
+// Remote, or the env override): a SINGLE remote backend serves every profile via
+// ?profile=. Distinct from per-profile overrides — here there's one host for all.
+function globalRemoteActive() {
+  if (process.env.HERMES_DESKTOP_REMOTE_URL) {
+    return true
+  }
+  return readDesktopConnectionConfig().mode === 'remote'
+}
+
+// GET a profile's resolved backend (remote pool or local primary), parsed JSON.
+async function fetchJsonForProfile(profile, path) {
+  return requestJsonForProfile(profile, path, 'GET')
+}
+
+// Issue an arbitrary method against a profile's resolved backend, parsed JSON.
+async function requestJsonForProfile(profile, path, method, body) {
+  const conn = await ensureBackend(profile)
+  const url = `${conn.baseUrl}${path}`
+  const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
+  return conn.authMode === 'oauth'
+    ? fetchJsonViaOauthSession(url, opts)
+    : fetchJson(url, conn.token, opts)
 }
 
 async function probeRemoteAuthMode(rawUrl) {
@@ -3743,6 +4040,11 @@ async function probeRemoteAuthMode(rawUrl) {
 
 async function testDesktopConnectionConfig(input = {}) {
   const config = coerceDesktopConnectionConfig(input, readDesktopConnectionConfig(), { persistToken: false })
+  const key = connectionScopeKey(input.profile)
+  // The block under test: a per-profile entry or the global remote. Coerce has
+  // already normalized the URL and resolved token inheritance for the scope.
+  const block = key ? config.profiles?.[key] || null : config.remote
+  const wantRemote = block?.mode === 'remote' || (!key && config.mode === 'remote') || (input.mode === 'remote' && block)
   // ``/api/status`` is public on every gateway (no creds needed), so a
   // reachability test works for local, token, and oauth modes alike — we only
   // need a base URL. For a remote config we normalize the URL from the input;
@@ -3750,17 +4052,17 @@ async function testDesktopConnectionConfig(input = {}) {
   let baseUrl
   let token = null
   let authMode = 'token'
-  if (config.mode === 'remote') {
-    baseUrl = normalizeRemoteBaseUrl(config.remote.url)
-    authMode = config.remote.authMode === 'oauth' ? 'oauth' : 'token'
+  if (wantRemote && block?.url) {
+    baseUrl = normalizeRemoteBaseUrl(block.url)
+    authMode = normAuthMode(block.authMode)
     if (authMode !== 'oauth') {
-      token = decryptDesktopSecret(config.remote.token)
+      token = decryptDesktopSecret(block.token)
     }
   } else {
-    const remote = (await resolveRemoteBackend()) || (await startHermes())
+    const remote = (await resolveRemoteBackend(key)) || (await startHermes())
     baseUrl = remote.baseUrl
     token = remote.token
-    authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
+    authMode = normAuthMode(remote.authMode)
   }
   const status = await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 })
 
@@ -3932,10 +4234,21 @@ function startPoolIdleReaper() {
 // local-spawn portion of startHermes() but without the boot-progress UI,
 // bootstrap, or remote handling (those belong to the primary backend only).
 async function spawnPoolBackend(profile, entry) {
-  // Remote deployments are single-tenant; profiles only apply to local backends.
-  const remote = await resolveRemoteBackend()
+  // A profile may point at its OWN remote backend (connection.json
+  // `profiles[name]`), or inherit the app-wide remote (env / global settings).
+  // In either case there is no local child to spawn — we just verify the
+  // remote is reachable and hand back its connection descriptor. The pool
+  // entry keeps `entry.process === null`, which stopPoolBackend/evict already
+  // tolerate.
+  const remote = await resolveRemoteBackend(profile)
   if (remote) {
-    throw new Error('Profiles are unavailable when connected to a remote Hermes backend.')
+    await waitForHermes(remote.baseUrl, remote.token)
+    return {
+      ...remote,
+      profile,
+      logs: hermesLog.slice(-80),
+      ...getWindowState()
+    }
   }
 
   const port = await pickPort()
@@ -4036,7 +4349,9 @@ async function startHermes() {
 
   connectionPromise = (async () => {
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
-    const remote = await resolveRemoteBackend()
+    // Resolve for the desktop's primary profile so a per-profile remote
+    // override on the active profile is honored (falls back to env / global).
+    const remote = await resolveRemoteBackend(primaryProfileKey())
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
       await waitForHermes(remote.baseUrl, remote.token)
@@ -4373,7 +4688,9 @@ ipcMain.handle('hermes:bootstrap:cancel', async () => {
 })
 ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
 ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
-ipcMain.handle('hermes:connection-config:get', async () => sanitizeDesktopConnectionConfig())
+ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
+  sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
+)
 ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
@@ -4388,22 +4705,36 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''
   await clearOauthSession(baseUrl || undefined)
-  return { ok: true, connected: baseUrl ? await hasOauthSessionCookie(baseUrl) : false }
+  // Report against the SAME liveness notion the Settings indicator uses
+  // (AT-or-RT) so a logout that left any session cookie behind is reflected
+  // as still-connected rather than silently signed-out.
+  return { ok: true, connected: baseUrl ? await hasLiveOauthSession(baseUrl) : false }
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
 
-  return sanitizeDesktopConnectionConfig(config)
+  return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
 
-  await teardownPrimaryBackendAndWait()
+  const key = connectionScopeKey(payload?.profile)
 
-  mainWindow?.reload()
-  return sanitizeDesktopConnectionConfig(config)
+  if (key && key !== primaryProfileKey()) {
+    // Editing a NON-primary profile's connection: don't disturb the window's
+    // primary backend. Drop the profile's pooled backend so the next switch
+    // re-resolves against the new remote/local target.
+    stopPoolBackend(key)
+  } else {
+    // Global connection, or the primary profile's connection: re-home the
+    // window backend by tearing it down and reloading the renderer.
+    await teardownPrimaryBackendAndWait()
+    mainWindow?.reload()
+  }
+
+  return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
@@ -4431,7 +4762,145 @@ ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
   return systemPreferences.askForMediaAccess('microphone')
 })
 
+// Re-route remote-profile session requests to the owning remote backend. Returns
+// `undefined` when not interceptable (caller takes the normal local path), else
+// the response. Reads tag the profile as ?profile=<name>; mutations carry it in
+// request.profile. Either way, a remote profile's session lives only on its
+// remote host, so the request must go there (where it serves its own state.db).
+//   GET    /api/profiles/sessions        → splice each remote profile's rows in
+//   GET    /api/sessions/{id}[/messages] → read from remote
+//   DELETE /api/sessions/{id}            → delete on remote
+//   PATCH  /api/sessions/{id}            → rename/archive on remote
+async function interceptSessionRequestForRemote(request) {
+  if (typeof request?.path !== 'string') {
+    return undefined
+  }
+  const method = (request.method || 'GET').toUpperCase()
+
+  let parsed
+  try {
+    parsed = new URL(request.path, 'http://x')
+  } catch {
+    return undefined
+  }
+  const { pathname, searchParams } = parsed
+
+  if (method === 'GET' && pathname === '/api/profiles/sessions') {
+    const remoteProfiles = configuredRemoteProfileNames()
+    if (remoteProfiles.length === 0) {
+      return undefined // no remote profiles → local fast path
+    }
+    const requested = (searchParams.get('profile') || 'all').trim() || 'all'
+    if (requested !== 'all') {
+      return profileHasRemoteOverride(requested) ? remoteSessionList(requested, searchParams) : undefined
+    }
+    return mergeRemoteProfileSessions(searchParams, remoteProfiles)
+  }
+
+  // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile
+  // (mutations). Two remote shapes:
+  //  - per-profile override: route to that profile's own remote, sans profile
+  //    param (it serves its own state.db natively).
+  //  - global remote mode: ONE backend serves every profile via ?profile=, so
+  //    route there and KEEP the profile param so it opens the right state.db.
+  if (/^\/api\/sessions\/[^/]+(\/messages)?$/.test(pathname)) {
+    const profile = (searchParams.get('profile') || request.profile || '').trim()
+    if (!profile) {
+      return undefined
+    }
+    if (profileHasRemoteOverride(profile)) {
+      if (method === 'GET') {
+        return fetchJsonForProfile(profile, pathname)
+      }
+      const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
+      if (body) delete body.profile
+      return requestJsonForProfile(profile, pathname, method, body)
+    }
+    if (globalRemoteActive()) {
+      // Single global backend: keep ?profile= so it opens the right state.db.
+      const sep = pathname.includes('?') ? '&' : '?'
+      const path = `${pathname}${sep}profile=${encodeURIComponent(profile)}`
+      if (method === 'GET') {
+        return fetchJsonForProfile(null, path)
+      }
+      const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
+      return requestJsonForProfile(null, path, method, body)
+    }
+    return undefined
+  }
+
+  return undefined
+}
+
+const rowsOf = data => (Array.isArray(data?.sessions) ? data.sessions : [])
+
+// A remote profile's session list, read from its remote host and tagged with the
+// desktop-facing profile name (the remote's /api/sessions doesn't know it).
+async function remoteSessionList(profile, searchParams) {
+  const qs = new URLSearchParams(searchParams)
+  qs.delete('profile') // remote serves its own db; no cross-profile read there
+  const data = await fetchJsonForProfile(profile, `/api/sessions?${qs}`)
+  for (const s of rowsOf(data)) {
+    s.profile = profile
+    s.is_default_profile = false
+  }
+  return { ...data, sessions: rowsOf(data) }
+}
+
+// Unified list: primary's local aggregate, with each remote profile's stale local
+// rows/totals swapped for the remote's real ones, re-sorted by recency and
+// re-windowed to the requested page. A dead remote contributes nothing rather
+// than breaking the sidebar.
+async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
+  const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
+  const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
+  const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
+
+  const primary = await ensureBackend(null)
+  const base = await fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
+    method: 'GET',
+    timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
+  }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))
+
+  // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
+  // is correct for this page — mirrors the primary's per-profile over-fetch.
+  const remoteParams = new URLSearchParams(searchParams)
+  remoteParams.set('limit', String(limit + offset))
+  remoteParams.set('offset', '0')
+
+  const remoteSet = new Set(remoteProfiles)
+  const merged = rowsOf(base).filter(s => !remoteSet.has(s?.profile))
+  const profileTotals = { ...(base.profile_totals || {}) }
+  let total = (Number(base.total) || 0) - remoteProfiles.reduce((n, p) => n + (profileTotals[p] || 0), 0)
+
+  // Swap each remote profile's stale local rows/total for the remote's real ones.
+  await Promise.all(remoteProfiles.map(async name => {
+    const list = await remoteSessionList(name, remoteParams).catch(() => null)
+    if (!list) {
+      delete profileTotals[name] // dead remote → drop its stale local total too
+      return
+    }
+    const rows = rowsOf(list)
+    merged.push(...rows)
+    profileTotals[name] = Number(list.total) || rows.length
+    total += profileTotals[name]
+  }))
+
+  const recency = s => s?.[order] ?? s?.started_at ?? 0
+  merged.sort((a, b) => recency(b) - recency(a))
+  return { ...base, sessions: merged.slice(offset, offset + limit), total, profile_totals: profileTotals }
+}
+
 ipcMain.handle('hermes:api', async (_event, request) => {
+  // Remote-profile session requests would otherwise hit the local primary off
+  // each profile's on-disk state.db — fine for local profiles, but a remote
+  // profile's sessions live on its remote host, so the UI's IDs 404 (or mutations
+  // no-op) the moment they run there. Route reads + mutations to the remote.
+  const rerouted = await interceptSessionRequestForRemote(request)
+  if (rerouted !== undefined) {
+    return rerouted
+  }
+
   const connection = await ensureBackend(request?.profile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   const url = `${connection.baseUrl}${request.path}`

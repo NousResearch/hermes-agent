@@ -1063,6 +1063,7 @@ function Install-Repository {
             # EAP=Stop.  We rely on $LASTEXITCODE for actual failures.
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
+            $autostashRef = ""
             try {
                 # This is a MANAGED checkout, not a repo the user edits. Git for
                 # Windows defaults to core.autocrlf=true, which renormalizes the
@@ -1071,12 +1072,23 @@ function Install-Repository {
                 # show as locally modified even though nobody touched them. A
                 # bare `git checkout` then aborts with "Your local changes would
                 # be overwritten by checkout", which is exactly the failure GUI
-                # users hit on update. Two-part fix: (1) stop creating the dirt
-                # by pinning autocrlf=false on this clone, (2) discard any
-                # pre-existing dirt with a hard reset before the checkout. Safe
-                # because nothing here is user-authored.
+                # users hit on update. Pin autocrlf=false so the dirt is never
+                # created in the first place.
                 git -c windows.appendAtomically=false config core.autocrlf false 2>$null
-                git -c windows.appendAtomically=false reset --hard HEAD 2>$null
+                # Preserve any real local changes before the checkout instead of
+                # discarding them with `reset --hard HEAD`. The old hard reset
+                # silently destroyed agent-edited source on managed clones (the
+                # #38542 data-loss class). Stash + restore mirrors install.sh:
+                # nothing is lost, and a failed restore leaves the work in a
+                # git stash for manual recovery. Untracked files are included so
+                # agent-created dirs (e.g. tinker-atropos/) survive too.
+                $statusOut = git -c windows.appendAtomically=false status --porcelain 2>$null
+                if (-not [string]::IsNullOrWhiteSpace(($statusOut -join "`n"))) {
+                    $stashName = "hermes-install-autostash-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+                    Write-Info "Local changes detected, stashing before update..."
+                    git -c windows.appendAtomically=false stash push --include-untracked -m "$stashName"
+                    if ($LASTEXITCODE -eq 0) { $autostashRef = "stash@{0}" }
+                }
                 git -c windows.appendAtomically=false fetch origin
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
                 # Precedence: Commit > Tag > Branch.  Commit and Tag check
@@ -1095,10 +1107,62 @@ function Install-Repository {
                 } else {
                     git -c windows.appendAtomically=false checkout $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
-                    git -c windows.appendAtomically=false pull origin $Branch
+                    git -c windows.appendAtomically=false pull --ff-only origin $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
                 }
+
+                if ($autostashRef) {
+                    # Default to restoring so work is never silently dropped.
+                    # Only prompt when we're certain a human can answer: an
+                    # interactive session AND a real, non-redirected console on
+                    # both stdin and stdout. The desktop "Update" button and
+                    # bootstrap run the installer without a usable console -- in
+                    # those cases Read-Host would hang or return empty, so we
+                    # skip the prompt and just restore (the safe default).
+                    $restoreNow = $true
+                    $hasConsole = $false
+                    try {
+                        $hasConsole = (
+                            [Environment]::UserInteractive `
+                            -and (-not [Console]::IsInputRedirected) `
+                            -and (-not [Console]::IsOutputRedirected) `
+                            -and ($Host.Name -eq "ConsoleHost")
+                        )
+                    } catch { $hasConsole = $false }
+                    if ($hasConsole) {
+                        Write-Warn "Local changes were stashed before updating."
+                        Write-Warn "Restoring them may reapply local customizations onto the updated codebase."
+                        $restoreAnswer = Read-Host "Restore local changes now? [Y/n]"
+                        if ($restoreAnswer -match '^(n|no)$') { $restoreNow = $false }
+                    }
+
+                    if ($restoreNow) {
+                        Write-Info "Restoring local changes..."
+                        git -c windows.appendAtomically=false stash apply $autostashRef
+                        if ($LASTEXITCODE -eq 0) {
+                            git -c windows.appendAtomically=false stash drop $autostashRef 2>$null
+                            Write-Warn "Local changes were restored on top of the updated codebase."
+                            Write-Warn "Review git diff / git status if Hermes behaves unexpectedly."
+                        } else {
+                            Write-Err "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
+                            Write-Info "Resolve manually with: git stash apply $autostashRef"
+                            throw "git stash apply failed after update"
+                        }
+                    } else {
+                        Write-Info "Skipped restoring local changes."
+                        Write-Info "Your changes are still preserved in git stash."
+                        Write-Info "Restore manually with: git stash apply $autostashRef"
+                    }
+                    $autostashRef = ""
+                }
             } finally {
+                if ($autostashRef) {
+                    # We stashed but never reached the restore block (a fetch/
+                    # checkout/pull failure threw). Leave the stash in place and
+                    # tell the user how to recover it -- never silently drop it.
+                    Write-Warn "Update did not complete. Your local changes are preserved in git stash."
+                    Write-Info "Restore manually with: git stash apply $autostashRef"
+                }
                 $ErrorActionPreference = $prevEAP
                 Pop-Location
             }

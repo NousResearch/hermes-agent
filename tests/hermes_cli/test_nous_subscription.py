@@ -257,6 +257,114 @@ def test_get_gateway_eligible_tools_ignores_quoted_false_opt_in(monkeypatch):
     assert set(unconfigured) == {"image_gen", "video_gen", "tts", "browser"}
 
 
+def _stub_browser_probes(monkeypatch, *, has_agent_browser, chromium, lightpanda=False):
+    """Common monkeypatches for local-browser readiness scenarios.
+
+    ``chromium`` / ``lightpanda`` drive the runtime probes that
+    ``_local_browser_runnable`` reuses from ``tools.browser_tool`` (lazy import,
+    so patching the module attributes is enough).
+    """
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: has_agent_browser)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
+    monkeypatch.setattr("tools.browser_tool._chromium_installed", lambda: chromium)
+    monkeypatch.setattr(
+        "tools.browser_tool._using_lightpanda_engine", lambda: lightpanda
+    )
+
+
+def test_local_browser_unavailable_without_chromium(monkeypatch):
+    """agent-browser present but Chromium absent must NOT advertise local browser.
+
+    The runtime (``check_browser_requirements``) refuses local mode without a
+    Chromium build, so the setup/status surface must report unavailable too —
+    otherwise the user sees "Browser Automation available" and the first real
+    call fails. Regression for the false-positive setup bug.
+    """
+    _stub_browser_probes(monkeypatch, has_agent_browser=True, chromium=False)
+
+    features = ns.get_nous_subscription_features(
+        {"browser": {"cloud_provider": "local"}}
+    )
+
+    assert features.browser.available is False
+    assert features.browser.active is False
+    assert features.browser.managed_by_nous is False
+    assert features.browser.current_provider == "Local browser"
+
+
+def test_local_browser_available_with_chromium(monkeypatch):
+    _stub_browser_probes(monkeypatch, has_agent_browser=True, chromium=True)
+
+    features = ns.get_nous_subscription_features(
+        {"browser": {"cloud_provider": "local"}}
+    )
+
+    assert features.browser.available is True
+    assert features.browser.active is True
+    assert features.browser.current_provider == "Local browser"
+
+
+def test_local_browser_available_with_lightpanda_without_chromium(monkeypatch):
+    """Lightpanda is text-only and needs no Chromium, so it stays available.
+
+    Guards against the fix over-correcting into a false-negative for the
+    legitimate Lightpanda-without-Chromium configuration.
+    """
+    _stub_browser_probes(
+        monkeypatch, has_agent_browser=True, chromium=False, lightpanda=True
+    )
+
+    features = ns.get_nous_subscription_features(
+        {"browser": {"cloud_provider": "local"}}
+    )
+
+    assert features.browser.available is True
+    assert features.browser.active is True
+
+
+def test_default_local_browser_unavailable_without_chromium(monkeypatch):
+    """The implicit (no cloud_provider) local fallthrough is gated on Chromium too."""
+    _stub_browser_probes(monkeypatch, has_agent_browser=True, chromium=False)
+
+    features = ns.get_nous_subscription_features({})
+
+    assert features.browser.available is False
+    assert features.browser.current_provider == "Local browser"
+
+
+def test_cloud_browserbase_available_without_local_chromium(monkeypatch):
+    """Cloud providers host their own Chromium, so the new local gate must not
+    regress them: agent-browser binary present + Browserbase creds is enough."""
+    env = {"BROWSERBASE_API_KEY": "bb-key", "BROWSERBASE_PROJECT_ID": "bb-project"}
+    monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: True)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
+    # Chromium absent locally — must not matter for a cloud provider.
+    monkeypatch.setattr("tools.browser_tool._chromium_installed", lambda: False)
+    monkeypatch.setattr("tools.browser_tool._using_lightpanda_engine", lambda: False)
+
+    features = ns.get_nous_subscription_features(
+        {"browser": {"cloud_provider": "browserbase"}}
+    )
+
+    assert features.browser.available is True
+    assert features.browser.active is True
+    assert features.browser.current_provider == "Browserbase"
+
+
 def test_get_gateway_eligible_tools_pool_excludes_video(monkeypatch):
     """A free-tool-pool user is offered the covered tools but NOT video gen."""
     monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _pool_account())

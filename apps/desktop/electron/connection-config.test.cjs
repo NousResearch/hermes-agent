@@ -15,15 +15,80 @@ const assert = require('node:assert/strict')
 
 const {
   AT_COOKIE_VARIANTS,
+  RT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  connectionScopeKey,
   cookiesHaveSession,
+  cookiesHaveLiveSession,
+  normAuthMode,
   normalizeRemoteBaseUrl,
+  profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
   tokenPreview
 } = require('./connection-config.cjs')
+
+// --- connectionScopeKey / normAuthMode ---
+
+test('connectionScopeKey trims to a name or null for the global scope', () => {
+  assert.equal(connectionScopeKey('  coder '), 'coder')
+  assert.equal(connectionScopeKey(''), null)
+  assert.equal(connectionScopeKey(null), null)
+  assert.equal(connectionScopeKey(undefined), null)
+})
+
+test('normAuthMode coerces to token unless explicitly oauth', () => {
+  assert.equal(normAuthMode('oauth'), 'oauth')
+  assert.equal(normAuthMode('token'), 'token')
+  assert.equal(normAuthMode(undefined), 'token')
+  assert.equal(normAuthMode('weird'), 'token')
+})
+
+// --- profileRemoteOverride ---
+
+test('profileRemoteOverride returns null when no profile is given', () => {
+  const config = { profiles: { coder: { mode: 'remote', url: 'https://x' } } }
+  assert.equal(profileRemoteOverride(config, ''), null)
+  assert.equal(profileRemoteOverride(config, null), null)
+  assert.equal(profileRemoteOverride(config, undefined), null)
+})
+
+test('profileRemoteOverride returns null when the profile has no entry', () => {
+  const config = { profiles: { coder: { mode: 'remote', url: 'https://x' } } }
+  assert.equal(profileRemoteOverride(config, 'writer'), null)
+})
+
+test('profileRemoteOverride ignores local or url-less profile entries', () => {
+  assert.equal(profileRemoteOverride({ profiles: { p: { mode: 'local', url: 'https://x' } } }, 'p'), null)
+  assert.equal(profileRemoteOverride({ profiles: { p: { mode: 'remote', url: '' } } }, 'p'), null)
+  assert.equal(profileRemoteOverride({ profiles: { p: { mode: 'remote' } } }, 'p'), null)
+})
+
+test('profileRemoteOverride returns the per-profile remote with defaulted auth mode', () => {
+  const config = {
+    profiles: {
+      coder: { mode: 'remote', url: '  https://coder.example.com/hermes  ', token: { value: 'sek' } }
+    }
+  }
+  assert.deepEqual(profileRemoteOverride(config, 'coder'), {
+    url: 'https://coder.example.com/hermes',
+    authMode: 'token',
+    token: { value: 'sek' }
+  })
+})
+
+test('profileRemoteOverride preserves an explicit oauth auth mode', () => {
+  const config = { profiles: { coder: { mode: 'remote', url: 'https://x', authMode: 'oauth' } } }
+  assert.equal(profileRemoteOverride(config, 'coder').authMode, 'oauth')
+})
+
+test('profileRemoteOverride tolerates a missing/!object profiles map', () => {
+  assert.equal(profileRemoteOverride({}, 'coder'), null)
+  assert.equal(profileRemoteOverride({ profiles: null }, 'coder'), null)
+  assert.equal(profileRemoteOverride(null, 'coder'), null)
+})
 
 // --- normalizeRemoteBaseUrl ---
 
@@ -131,7 +196,10 @@ test('cookiesHaveSession is false for an empty value', () => {
   assert.equal(cookiesHaveSession([{ name: 'hermes_session_at', value: '' }]), false)
 })
 
-test('cookiesHaveSession ignores unrelated cookies', () => {
+test('cookiesHaveSession ignores unrelated cookies (AT-only by design)', () => {
+  // cookiesHaveSession is deliberately access-token-only — a lone RT cookie
+  // is NOT an access token, so this returns false. Connectivity callers must
+  // use cookiesHaveLiveSession instead (see below).
   assert.equal(cookiesHaveSession([{ name: 'hermes_session_rt', value: 'x' }]), false)
   assert.equal(cookiesHaveSession([{ name: 'other', value: 'x' }]), false)
 })
@@ -144,6 +212,56 @@ test('cookiesHaveSession handles non-arrays', () => {
 
 test('AT_COOKIE_VARIANTS covers all three deploy shapes', () => {
   assert.deepEqual(AT_COOKIE_VARIANTS, ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at'])
+})
+
+test('RT_COOKIE_VARIANTS covers all three deploy shapes', () => {
+  assert.deepEqual(RT_COOKIE_VARIANTS, ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt'])
+})
+
+// --- cookiesHaveLiveSession (AT or RT — the connectivity check) ---
+
+test('cookiesHaveLiveSession is true for a live access-token cookie', () => {
+  assert.equal(cookiesHaveLiveSession([{ name: 'hermes_session_at', value: 'x' }]), true)
+  assert.equal(cookiesHaveLiveSession([{ name: '__Host-hermes_session_at', value: 'x' }]), true)
+  assert.equal(cookiesHaveLiveSession([{ name: '__Secure-hermes_session_at', value: 'x' }]), true)
+})
+
+test('cookiesHaveLiveSession is true for an RT cookie even with NO access-token cookie', () => {
+  // This is the bug-fix case: the AT cookie has lapsed (dropped from the jar)
+  // but the 24h RT cookie is still alive. The session is still connectable —
+  // the gateway rotates a fresh AT from the RT on the next request.
+  assert.equal(cookiesHaveLiveSession([{ name: 'hermes_session_rt', value: 'x' }]), true)
+  assert.equal(cookiesHaveLiveSession([{ name: '__Host-hermes_session_rt', value: 'x' }]), true)
+  assert.equal(cookiesHaveLiveSession([{ name: '__Secure-hermes_session_rt', value: 'x' }]), true)
+})
+
+test('cookiesHaveLiveSession is true when both AT and RT are present', () => {
+  assert.equal(
+    cookiesHaveLiveSession([
+      { name: 'hermes_session_at', value: 'a' },
+      { name: 'hermes_session_rt', value: 'r' }
+    ]),
+    true
+  )
+})
+
+test('cookiesHaveLiveSession is false for empty values', () => {
+  assert.equal(cookiesHaveLiveSession([{ name: 'hermes_session_at', value: '' }]), false)
+  assert.equal(cookiesHaveLiveSession([{ name: 'hermes_session_rt', value: '' }]), false)
+  assert.equal(
+    cookiesHaveLiveSession([
+      { name: 'hermes_session_at', value: '' },
+      { name: 'hermes_session_rt', value: '' }
+    ]),
+    false
+  )
+})
+
+test('cookiesHaveLiveSession is false for unrelated cookies and non-arrays', () => {
+  assert.equal(cookiesHaveLiveSession([{ name: 'other', value: 'x' }]), false)
+  assert.equal(cookiesHaveLiveSession(null), false)
+  assert.equal(cookiesHaveLiveSession(undefined), false)
+  assert.equal(cookiesHaveLiveSession([]), false)
 })
 
 // --- tokenPreview ---

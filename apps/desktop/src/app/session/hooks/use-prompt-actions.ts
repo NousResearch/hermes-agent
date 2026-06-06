@@ -2,10 +2,9 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { getProfiles, transcribeAudio } from '@/hermes'
-import { appendTextPart, branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
   attachmentDisplayText,
-  INTERRUPTED_MARKER,
   parseCommandDispatch,
   parseSlashCommand,
   pathLabel,
@@ -42,7 +41,13 @@ import {
   setYoloActive
 } from '@/store/session'
 
-import type { ClientSessionState, ImageAttachResponse, SessionTitleResponse, SlashExecResponse } from '../../types'
+import type {
+  ClientSessionState,
+  ImageAttachResponse,
+  SessionSteerResponse,
+  SessionTitleResponse,
+  SlashExecResponse
+} from '../../types'
 
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -237,7 +242,11 @@ export function usePromptActions({
         [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
         (hasImage ? 'What do you see in this image?' : '')
 
-      if (!text || busyRef.current) {
+      // Queue drains fire on the busy→false settle edge, where busyRef (synced
+      // from $busy by a separate effect) may still read true — honoring it would
+      // bounce the drained send. The drain lock serializes them; the user path
+      // keeps the guard so a stray Enter mid-turn can't double-submit.
+      if (!text || (!options?.fromQueue && busyRef.current)) {
         return false
       }
 
@@ -270,7 +279,10 @@ export function usePromptActions({
             awaitingResponse: true,
             pendingBranchGroup: null,
             sawAssistantPayload: false,
-            interrupted: state.interrupted
+            // Fresh submit = new turn — clear any leftover interrupt flag, else
+            // mutateStream/completeAssistantMessage drop every delta of this turn
+            // (what made drained-after-interrupt sends go silent).
+            interrupted: false
           }),
           selectedStoredSessionIdRef.current
         )
@@ -689,24 +701,24 @@ export function usePromptActions({
   const cancelRun = useCallback(async () => {
     const sessionId = activeSessionId || activeSessionIdRef.current
 
-    setMutableRef(busyRef, false)
-    setBusy(false)
     setAwaitingResponse(false)
 
-    const finalizeMessages = (messages: ChatMessage[]) =>
-      messages.map(message =>
-        message.pending
-          ? {
-              ...message,
-              parts: chatMessageText(message).trim()
-                ? appendTextPart(message.parts, INTERRUPTED_MARKER)
-                : [...message.parts, textPart(INTERRUPTED_MARKER.trim())],
-              pending: false
-            }
-          : message
-      )
+    // Interrupting keeps whatever was already generated and just
+    // stops — no "[interrupted]" marker. A pending/streaming message with no
+    // body text is dropped entirely so we never leave an empty bubble behind.
+    const finalizeMessages = (messages: ChatMessage[], streamId?: string | null) =>
+      messages
+        .filter(
+          message =>
+            !((message.pending || message.id === streamId) && !chatMessageText(message).trim())
+        )
+        .map(message =>
+          message.pending || message.id === streamId ? { ...message, pending: false } : message
+        )
 
     if (!sessionId) {
+      setMutableRef(busyRef, false)
+      setBusy(false)
       setMessages(finalizeMessages($messages.get()))
 
       return
@@ -715,24 +727,12 @@ export function usePromptActions({
     updateSessionState(sessionId, state => {
       const streamId = state.streamId
 
-      const messages = streamId
-        ? state.messages.map(message =>
-            message.id === streamId
-              ? {
-                  ...message,
-                  parts: chatMessageText(message).trim()
-                    ? appendTextPart(message.parts, INTERRUPTED_MARKER)
-                    : [...message.parts, textPart(INTERRUPTED_MARKER.trim())],
-                  pending: false
-                }
-              : message
-          )
-        : finalizeMessages(state.messages)
+      const messages = finalizeMessages(state.messages, streamId)
 
       return {
         ...state,
         messages,
-        busy: false,
+        busy: true,
         awaitingResponse: false,
         streamId: null,
         pendingBranchGroup: null,
@@ -743,9 +743,45 @@ export function usePromptActions({
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })
     } catch (err) {
+      setMutableRef(busyRef, false)
+      setBusy(false)
       notifyError(err, 'Stop failed')
     }
   }, [activeSessionId, activeSessionIdRef, busyRef, requestGateway, updateSessionState])
+
+  // Steer = nudge the live turn without interrupting: the gateway appends the
+  // text to the next tool result so the model reads it on its next iteration
+  // (desktop parity with `/steer`). Returns false on reject (no live tool
+  // window) so the caller can fall back to queueing the words for the next turn.
+  const steerPrompt = useCallback(
+    async (rawText: string): Promise<boolean> => {
+      const text = rawText.trim()
+      const sessionId = activeSessionId || activeSessionIdRef.current
+
+      if (!text || !sessionId) {
+        return false
+      }
+
+      try {
+        const result = await requestGateway<SessionSteerResponse>('session.steer', { session_id: sessionId, text })
+
+        if (result?.status === 'queued') {
+          triggerHaptic('submit')
+          // Inline note (not a toast) so the nudge lives in the transcript next
+          // to the turn it steered. The `steer:` prefix is rendered as a codicon
+          // row by SystemMessage (see STEER_NOTE_RE), same style as slash output.
+          appendSessionTextMessage(sessionId, 'system', `steer:${text}`)
+
+          return true
+        }
+      } catch {
+        // Swallow — caller queues the text so nothing is lost.
+      }
+
+      return false
+    },
+    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway]
+  )
 
   const reloadFromMessage = useCallback(
     async (parentId: string | null) => {
@@ -930,5 +966,13 @@ export function usePromptActions({
     [activeSessionIdRef, updateSessionState]
   )
 
-  return { cancelRun, editMessage, handleThreadMessagesChange, reloadFromMessage, submitText, transcribeVoiceAudio }
+  return {
+    cancelRun,
+    editMessage,
+    handleThreadMessagesChange,
+    reloadFromMessage,
+    steerPrompt,
+    submitText,
+    transcribeVoiceAudio
+  }
 }

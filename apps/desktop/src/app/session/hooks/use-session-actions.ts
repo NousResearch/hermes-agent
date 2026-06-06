@@ -331,7 +331,14 @@ export function useSessionActions({
         // so single-profile users are unaffected).
         await ensureGatewayProfile($newChatProfile.get())
         const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
-        const created = await requestGateway<SessionCreateResponse>('session.create', { cols: 96, ...(cwd && { cwd }) })
+        // Pass the owning profile so a new chat under a non-launch profile (global
+        // remote mode) builds its agent + persists against THAT profile's home/db.
+        const newChatProfile = $newChatProfile.get()
+        const created = await requestGateway<SessionCreateResponse>('session.create', {
+          cols: 96,
+          ...(cwd && { cwd }),
+          ...(newChatProfile ? { profile: newChatProfile } : {})
+        })
         const stored = created.stored_session_id ?? null
 
         if (
@@ -453,15 +460,31 @@ export function useSessionActions({
         clearComposerDraft()
         clearComposerAttachments()
 
-        void requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
-          .then(usage => {
-            if (isCurrentResume() && usage) {
-              setCurrentUsage(current => ({ ...current, ...usage }))
-            }
-          })
-          .catch(() => undefined)
+        try {
+          const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
 
-        return
+          if (!isCurrentResume()) {
+            return
+          }
+
+          if (usage) {
+            setCurrentUsage(current => ({ ...current, ...usage }))
+          }
+
+          return
+        } catch {
+          // The cached runtime id was minted by a prior backend instance. A
+          // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
+          // and respawned across a profile swap mints fresh ids, so this mapping
+          // now 404s ("session not found"). Drop it and fall through to a full
+          // resume that rebinds a live runtime id.
+          if (!isCurrentResume()) {
+            return
+          }
+
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+        }
       }
 
       setFreshDraftReady(false)
@@ -513,7 +536,11 @@ export function useSessionActions({
 
         const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
-          cols: 96
+          cols: 96,
+          // Owning profile: in app-global remote mode one backend serves every
+          // profile, so the gateway opens this profile's state.db + home to
+          // resume + persist the right session (no-op for single/launch profile).
+          ...(sessionProfile ? { profile: sessionProfile } : {})
         })
 
         if (!isCurrentResume()) {
@@ -747,7 +774,7 @@ export function useSessionActions({
           await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
         }
 
-        await deleteSession(storedSessionId)
+        await deleteSession(storedSessionId, removed?.profile)
         clearQueuedPrompts(storedSessionId)
 
         if (closingRuntimeId) {
@@ -823,7 +850,7 @@ export function useSessionActions({
       }
 
       try {
-        await setSessionArchived(storedSessionId, true)
+        await setSessionArchived(storedSessionId, true, archived?.profile)
         notify({ durationMs: 2_000, kind: 'success', message: 'Archived' })
       } catch (err) {
         if (archived) {

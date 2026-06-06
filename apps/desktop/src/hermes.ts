@@ -29,6 +29,7 @@ import type {
   OAuthSubmitResponse,
   PaginatedSessions,
   ProfileCreatePayload,
+  ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
   SessionMessagesResponse,
@@ -80,6 +81,7 @@ export type {
   PaginatedSessions,
   ProfileCreatePayload,
   ProfileInfo,
+  ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
   RpcEvent,
@@ -166,8 +168,13 @@ export async function listAllProfileSessions(
   }
 }
 
-export function setSessionArchived(id: string, archived: boolean): Promise<{ ok: boolean }> {
+// Mutations take the owning `profile` so Electron routes them to that profile's
+// backend (remote pool or local primary) via request.profile — matching the
+// read path. A remote session's row lives only on its remote host, so a mutation
+// that hit the local primary would no-op or 404. Omit for the current/default.
+export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
     body: { archived }
@@ -180,8 +187,10 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
   })
 }
 
-// `profile` reads another profile's transcript straight off its state.db via the
-// primary backend (no spawn). Omit for the current/default profile.
+// Reads another profile's transcript. For a remote profile Electron reroutes
+// this GET to the remote backend (which serves its own state.db); for a local
+// profile the primary opens that profile's state.db via ?profile=. Omit for
+// the current/default profile.
 export function getSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
   const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
 
@@ -190,8 +199,9 @@ export function getSessionMessages(id: string, profile?: string | null): Promise
   })
 }
 
-export function deleteSession(id: string): Promise<{ ok: boolean }> {
+export function deleteSession(id: string, profile?: string | null): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'DELETE'
   })
@@ -203,6 +213,7 @@ export function renameSession(
   profile?: string | null
 ): Promise<{ ok: boolean; title: string }> {
   return window.hermesDesktop.api<{ ok: boolean; title: string }>({
+    ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
     body: { title, ...(profile ? { profile } : {}) }
@@ -551,6 +562,12 @@ export function updateProfileSoul(name: string, content: string): Promise<{ ok: 
     path: `/api/profiles/${encodeURIComponent(name)}/soul`,
     method: 'PUT',
     body: { content }
+  })
+}
+
+export function getProfileSetupCommand(name: string): Promise<ProfileSetupCommand> {
+  return window.hermesDesktop.api<ProfileSetupCommand>({
+    path: `/api/profiles/${encodeURIComponent(name)}/setup-command`
   })
 }
 

@@ -571,7 +571,28 @@ class ChatCompletionsTransport(ProviderTransport):
                     api_kwargs[k] = v
 
         if extra_body:
-            api_kwargs["extra_body"] = extra_body
+            # Native Gemini (generativelanguage.googleapis.com, non-/openai)
+            # speaks Google's REST schema, not OpenAI's. OpenAI-style extra_body
+            # keys (tags, reasoning, provider, plugins, …) are unknown fields
+            # there and Gemini rejects the whole request with a non-retryable
+            # HTTP 400 ("Invalid JSON payload received. Unknown name 'tags'").
+            # This happens when a profile that emits extra_body (e.g. the Nous
+            # profile's portal `tags`) is active but the resolved endpoint is a
+            # Gemini base_url — typical when only Google credentials are set and
+            # a fallback/aux call lands on Gemini. The native client only reads
+            # thinking_config from extra_body, so drop everything else here.
+            try:
+                from agent.gemini_native_adapter import is_native_gemini_base_url
+                _native_gemini = is_native_gemini_base_url(params.get("base_url"))
+            except Exception:
+                _native_gemini = False
+            if _native_gemini:
+                extra_body = {
+                    k: v for k, v in extra_body.items()
+                    if k in ("thinking_config", "thinkingConfig")
+                }
+            if extra_body:
+                api_kwargs["extra_body"] = extra_body
 
         return api_kwargs
 

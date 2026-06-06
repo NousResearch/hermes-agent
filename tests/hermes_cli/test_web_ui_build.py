@@ -164,6 +164,50 @@ class TestBuildWebUISkipsWhenFresh:
         assert args[0] == ["/usr/bin/npm", "run", "build"]
         assert kwargs["cwd"] == web_dir
 
+    def test_termux_web_install_is_workspace_scoped(self, tmp_path, monkeypatch):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("TERMUX_VERSION", "1")
+
+        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        args, kwargs = mock_run.call_args
+        assert args[0] == [
+            "/usr/bin/npm",
+            "ci",
+            "--workspace",
+            "web",
+            "--include-workspace-root=false",
+            "--silent",
+        ]
+        assert kwargs["cwd"] == tmp_path
+
+    def test_desktop_web_install_uses_existing_workspace_root(
+        self, tmp_path, monkeypatch
+    ):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        monkeypatch.setenv("PREFIX", "/usr")
+
+        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        args, kwargs = mock_run.call_args
+        assert args[0] == ["/usr/bin/npm", "ci", "--silent"]
+        assert kwargs["cwd"] == tmp_path
+
 
 class TestBuildWebUIRetryAndStaleFallback:
     """Coverage for the retry + stale-dist fallback added in #23824 / issue #23817."""

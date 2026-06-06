@@ -1228,7 +1228,13 @@ export function ChatBar({
         clearDraft()
         void onSubmit(submitted)
       } else if (hasComposerPayload) {
-        queueCurrentDraft()
+        // Try steering the live run first (same as Cmd/Ctrl+Enter),
+        // fall back to queuing if steering is unavailable.
+        if (canSteer) {
+          steerDraft()
+        } else {
+          queueCurrentDraft()
+        }
       } else {
         // Stop button (the only way to reach here while busy with an empty
         // composer — empty Enter is short-circuited in the keydown handler).

@@ -1948,6 +1948,27 @@ def _manage_thinking_signatures(
             # Demote ALL thinking blocks on this turn to text so the turn replays
             # cleanly and the model can re-plan from the surviving tool results.
             signature_dead = bool(m.get("_thinking_signature_invalidated"))
+            if not signature_dead:
+                # Extended-thinking tool turns can arrive interleaved:
+                # thinking, tool_use, thinking, tool_use, ...
+                #
+                # Hermes persists thinking blocks separately from tool_calls and
+                # reconstructs the turn as all thinking blocks followed by text
+                # and all tool_use blocks. With 2+ thinking blocks this changes
+                # the signed Anthropic content order, and there is no position
+                # anchor in old stored messages that lets us re-interleave them.
+                # Treat those signatures as dead instead of replaying a payload
+                # Anthropic will reject as modified.
+                thinking_count = sum(
+                    1
+                    for b in m["content"]
+                    if isinstance(b, dict) and b.get("type") in _THINKING_TYPES
+                )
+                has_tool_use = any(
+                    isinstance(b, dict) and b.get("type") == "tool_use"
+                    for b in m["content"]
+                )
+                signature_dead = thinking_count >= 2 and has_tool_use
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:

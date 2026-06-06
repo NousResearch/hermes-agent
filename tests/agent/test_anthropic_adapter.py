@@ -1900,6 +1900,75 @@ class TestThinkingBlockSignatureManagement:
         assert thinking[0]["signature"] == "sig_live"
         assert "_thinking_signature_invalidated" not in assistant
 
+    def test_multiple_signed_thinking_blocks_with_tool_use_are_demoted(self):
+        """Regression for #35975: do not replay reordered signed thinking.
+
+        Anthropic signs the exact content-block order. Hermes stores thinking
+        blocks and tool calls separately, so an interleaved response like
+        thinking/tool_use/thinking/tool_use is reconstructed as
+        thinking/thinking/tool_use/tool_use. Without original position anchors,
+        those signatures are no longer trustworthy.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
+                    {"id": "tc_2", "function": {"name": "tool_b", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "First tool decision.",
+                        "signature": "sig_1",
+                    },
+                    {
+                        "type": "thinking",
+                        "thinking": "Second tool decision.",
+                        "signature": "sig_2",
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result A"},
+            {"role": "tool", "tool_call_id": "tc_2", "content": "result B"},
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        assistant = next(m for m in result if m["role"] == "assistant")
+        blocks = assistant["content"]
+        assert not any(
+            isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
+            for b in blocks
+        )
+        text_contents = [b.get("text", "") for b in blocks if b.get("type") == "text"]
+        assert "First tool decision." in text_contents
+        assert "Second tool decision." in text_contents
+        assert [
+            b.get("id") for b in blocks
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        ] == ["tc_1", "tc_2"]
+
+    def test_multiple_signed_thinking_blocks_without_tool_use_are_preserved(self):
+        """Multiple signed thinking blocks alone are not ambiguous."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Final answer.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "First thought.", "signature": "sig_1"},
+                    {"type": "thinking", "thinking": "Second thought.", "signature": "sig_2"},
+                ],
+            },
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        blocks = result[0]["content"]
+        thinking = [b for b in blocks if b.get("type") == "thinking"]
+        assert [b["signature"] for b in thinking] == ["sig_1", "sig_2"]
+
 
 # ---------------------------------------------------------------------------
 # Tool choice

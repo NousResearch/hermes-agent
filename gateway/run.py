@@ -3234,14 +3234,27 @@ class GatewayRunner:
 
     @staticmethod
     def _load_busy_text_mode() -> str:
-        """Load normal busy TEXT follow-up behavior from config/env."""
-        mode = os.getenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "").strip().lower()
-        if not mode:
+        """Resolve normal busy TEXT follow-up behavior.
+
+        ``busy_input_mode`` is the single source of truth (default
+        ``interrupt``). The legacy ``busy_text_mode`` knob is honored only
+        when a user explicitly set it, so existing queue setups keep
+        working; new installs follow ``busy_input_mode``. Returns one of
+        ``interrupt`` | ``queue`` (``steer`` is handled upstream by
+        ``busy_input_mode`` and maps to non-queue text handling here).
+        """
+        # Legacy explicit override wins for backward compat.
+        legacy = os.getenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "").strip().lower()
+        if not legacy:
             cfg = _load_gateway_runtime_config()
-            mode = str(cfg_get(cfg, "display", "busy_text_mode", default="") or "").strip().lower()
-        if mode == "interrupt":
+            legacy = str(cfg_get(cfg, "display", "busy_text_mode", default="") or "").strip().lower()
+        if legacy == "interrupt":
             return "interrupt"
-        return "queue"
+        if legacy == "queue":
+            return "queue"
+        # No explicit legacy knob → follow busy_input_mode.
+        input_mode = GatewayRunner._load_busy_input_mode()
+        return "queue" if input_mode == "queue" else "interrupt"
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -3429,7 +3442,7 @@ class GatewayRunner:
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode
-        busy_text_mode = getattr(self, "_busy_text_mode", "queue")
+        busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"

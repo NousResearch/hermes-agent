@@ -52,6 +52,9 @@ class TestToolKindMap:
     def test_tool_kind_execute_code(self):
         assert get_tool_kind("execute_code") == "execute"
 
+    def test_tool_kind_image_edit(self):
+        assert get_tool_kind("image_edit") == "execute"
+
     def test_tool_kind_todo(self):
         assert get_tool_kind("todo") == "other"
 
@@ -134,6 +137,10 @@ class TestBuildToolTitle:
             {"action": "patch", "name": "hermes-agent-operations", "file_path": "references/acp.md"},
         )
         assert title == "skill patch: hermes-agent-operations/references/acp.md"
+
+    def test_image_edit_title_includes_prompt(self):
+        title = build_tool_title("image_edit", {"prompt": "make the product blue", "image": "/tmp/source.png"})
+        assert title == "edit image: make the product blue"
 
     def test_unknown_tool_uses_name(self):
         title = build_tool_title("some_new_tool", {"foo": "bar"})

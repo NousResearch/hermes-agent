@@ -50,6 +50,7 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "delegate_task": "execute",
     "vision_analyze": "read",
     "image_generate": "execute",
+    "image_edit": "execute",
     "text_to_speech": "execute",
     # Thinking / meta
     "_thinking": "think",
@@ -65,7 +66,7 @@ _POLISHED_TOOLS = {
     "skill_view", "skills_list", "skill_manage", "web_search", "web_extract",
     "browser_navigate", "browser_click", "browser_type", "browser_press", "browser_scroll",
     "browser_back", "browser_snapshot", "browser_console", "browser_get_images", "browser_vision",
-    "vision_analyze", "image_generate", "text_to_speech",
+    "vision_analyze", "image_generate", "image_edit", "text_to_speech",
     # Schedulers / platform integrations
     "cronjob", "send_message", "clarify", "discord", "discord_admin",
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
@@ -173,6 +174,11 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     if tool_name == "image_generate":
         prompt = str(args.get("prompt") or args.get("description") or "").strip()
         return f"generate image: {prompt[:50]}" if prompt else "generate image"
+    if tool_name == "image_edit":
+        prompt = str(args.get("prompt") or "").strip()
+        image = str(args.get("image") or args.get("image_path") or args.get("image_url") or "").strip()
+        target = prompt or image
+        return f"edit image: {target[:50]}" if target else "edit image"
     if tool_name == "cronjob":
         action = str(args.get("action") or "manage").strip() or "manage"
         job_id = str(args.get("job_id") or args.get("id") or "").strip()
@@ -720,7 +726,7 @@ def _format_media_or_cron_result(tool_name: str, result: Optional[str]) -> Optio
     if data.get("success") is False or data.get("error"):
         return f"{tool_name} failed: {data.get('error', 'unknown error')}"
     lines = [f"✅ {tool_name} completed"]
-    for key in ("file_path", "path", "url", "image_url", "job_id", "id", "status", "message", "next_run"):
+    for key in ("file_path", "path", "url", "image", "image_url", "job_id", "id", "status", "message", "next_run"):
         if data.get(key):
             lines.append(f"- **{key}:** {data.get(key)}")
     return "\n".join(lines)
@@ -894,6 +900,7 @@ def _build_polished_completion_content(
         "browser_get_images": lambda: _format_browser_result(tool_name, result, function_args),
         "vision_analyze": lambda: _format_media_or_cron_result(tool_name, result),
         "image_generate": lambda: _format_media_or_cron_result(tool_name, result),
+        "image_edit": lambda: _format_media_or_cron_result(tool_name, result),
         "cronjob": lambda: _format_media_or_cron_result(tool_name, result),
     }.get(tool_name)
     if formatter is None and tool_name in _POLISHED_TOOLS:

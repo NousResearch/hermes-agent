@@ -20,8 +20,6 @@ import os
 import subprocess
 import sys
 
-import pytest
-
 REPO_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)
 )

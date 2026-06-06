@@ -12,8 +12,22 @@ asserting the expected env var outcomes.
 import os
 import json
 
+from hermes_constants import windows_path_to_wsl
 
-def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
+
+def _translate_for_wsl(path: str, wsl: bool) -> str:
+    if not wsl:
+        return path
+    translated = windows_path_to_wsl(path)
+    return translated if translated is not None else path
+
+
+def _simulate_config_bridge(
+    cfg: dict,
+    initial_env: dict | None = None,
+    *,
+    wsl: bool = False,
+):
     """Simulate the gateway config bridge logic from gateway/run.py.
 
     Returns the resulting env dict (only TERMINAL_* and MESSAGING_CWD keys).
@@ -48,6 +62,7 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
                 # "~/" which the kernel rejects.
                 if cfg_key == "cwd" and isinstance(val, str):
                     val = os.path.expanduser(val)
+                    val = _translate_for_wsl(val, wsl)
                 if isinstance(val, list):
                     env[env_var] = json.dumps(val)
                 else:
@@ -64,13 +79,14 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             if isinstance(alias_val, str) and alias_val.strip():
                 if alias_key == "cwd":
                     alias_val = os.path.expanduser(alias_val)
+                    alias_val = _translate_for_wsl(alias_val, wsl)
                 env[alias_env] = alias_val.strip()
 
     # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
     configured_cwd = env.get("TERMINAL_CWD", "")
     if not configured_cwd or configured_cwd in {".", "auto", "cwd"}:
         messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
-        env["TERMINAL_CWD"] = messaging_cwd
+        env["TERMINAL_CWD"] = _translate_for_wsl(str(messaging_cwd), wsl)
 
     return env
 
@@ -243,3 +259,26 @@ class TestTildeExpansion:
         }
         result = _simulate_config_bridge(cfg)
         assert result["TERMINAL_CWD"] == os.path.expanduser("~/nested")
+
+
+class TestWslCwdTranslation:
+    """Windows cwd values should become WSL mount paths in WSL gateways."""
+
+    def test_nested_terminal_cwd_translates_windows_drive_path(self):
+        cfg = {"terminal": {"cwd": r"C:\Users\Don\repo"}}
+        result = _simulate_config_bridge(cfg, wsl=True)
+        assert result["TERMINAL_CWD"] == "/mnt/c/Users/Don/repo"
+
+    def test_messaging_cwd_fallback_translates_windows_drive_path(self):
+        cfg = {"terminal": {"cwd": "."}}
+        result = _simulate_config_bridge(
+            cfg,
+            {"MESSAGING_CWD": r"E:\Projects\AI"},
+            wsl=True,
+        )
+        assert result["TERMINAL_CWD"] == "/mnt/e/Projects/AI"
+
+    def test_posix_cwd_stays_unchanged_in_wsl(self):
+        cfg = {"terminal": {"cwd": "/home/don/repo"}}
+        result = _simulate_config_bridge(cfg, wsl=True)
+        assert result["TERMINAL_CWD"] == "/home/don/repo"

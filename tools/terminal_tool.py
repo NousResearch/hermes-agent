@@ -45,6 +45,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+from hermes_constants import translate_windows_path_for_wsl
 from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
@@ -959,7 +960,12 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         task_id: The rollout's unique task identifier
         overrides: Dict of config keys to override
     """
-    _task_env_overrides[task_id] = overrides
+    normalized_overrides = dict(overrides)
+    new_cwd = normalized_overrides.get("cwd")
+    if isinstance(new_cwd, str) and new_cwd.strip():
+        normalized_overrides["cwd"] = translate_windows_path_for_wsl(new_cwd)
+
+    _task_env_overrides[task_id] = normalized_overrides
 
     # If a live environment already exists for this task, a freshly registered
     # ``cwd`` override (e.g. the ACP client switching the editor's project root
@@ -970,7 +976,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     # below the (already-set) ``env.cwd`` and be silently ignored once any
     # command has run. Pushing it onto the live env keeps ``cd`` tracking intact
     # while letting an explicit ACP cwd change win, as the client expects.
-    new_cwd = overrides.get("cwd")
+    new_cwd = normalized_overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
         container_id = _resolve_container_task_id(task_id)
         with _env_lock:
@@ -1069,6 +1075,7 @@ def _get_env_config() -> Dict[str, Any]:
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
     if cwd:
         cwd = os.path.expanduser(cwd)
+        cwd = translate_windows_path_for_wsl(cwd)
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:

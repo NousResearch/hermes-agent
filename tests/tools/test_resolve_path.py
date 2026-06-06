@@ -82,3 +82,21 @@ class TestResolvePath:
                     file_tools._file_ops_cache[task_id] = previous
 
         assert result == live_dir / "nested" / "file.txt"
+
+    def test_relative_path_translates_windows_terminal_cwd_under_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        monkeypatch.setenv("TERMINAL_CWD", r"C:\Users\Don\repo")
+        from tools.file_tools import _resolve_path
+
+        result = _resolve_path("src/app.py")
+
+        assert result == Path("/mnt/c/Users/Don/repo/src/app.py")
+
+    def test_absolute_windows_input_translates_under_wsl(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        from tools.file_tools import _resolve_path
+
+        result = _resolve_path(r"D:\work\project\README.md")
+
+        assert result == Path("/mnt/d/work/project/README.md")

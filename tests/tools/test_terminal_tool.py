@@ -168,3 +168,25 @@ def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")
     assert terminal_tool._validate_workdir("C:\\Users\\Alice\\project\nwhoami")
+
+
+def test_get_env_config_translates_windows_terminal_cwd_when_wsl(monkeypatch):
+    monkeypatch.setattr("hermes_constants._wsl_detected", True)
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", r"C:\Users\Don\repo")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == "/mnt/c/Users/Don/repo"
+
+
+def test_task_cwd_override_translates_windows_path_when_wsl(monkeypatch):
+    task_id = "wsl-cwd-override"
+    monkeypatch.setattr("hermes_constants._wsl_detected", True)
+
+    try:
+        terminal_tool.register_task_env_overrides(task_id, {"cwd": r"D:\work\project"})
+
+        assert terminal_tool._task_env_overrides[task_id]["cwd"] == "/mnt/d/work/project"
+    finally:
+        terminal_tool.clear_task_env_overrides(task_id)

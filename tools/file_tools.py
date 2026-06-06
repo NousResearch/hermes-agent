@@ -8,6 +8,7 @@ import os
 import threading
 from pathlib import Path
 
+from hermes_constants import translate_windows_path_for_wsl
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
@@ -136,10 +137,12 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     """
     live = _get_live_tracking_cwd(task_id)
     if live:
-        base = Path(live).expanduser()
+        base_text = live
     else:
         raw = os.environ.get("TERMINAL_CWD")
-        base = Path(raw).expanduser() if raw else Path(os.getcwd())
+        base_text = raw or os.getcwd()
+    base_text = translate_windows_path_for_wsl(os.path.expanduser(base_text))
+    base = Path(base_text)
     if not base.is_absolute():
         # A relative base (".", "./sub", "..") is anchored to the process cwd
         # once, here, so the result no longer depends on cwd at resolve() time.
@@ -153,6 +156,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
+    filepath = translate_windows_path_for_wsl(str(filepath))
     p = Path(filepath).expanduser()
     if p.is_absolute():
         return p.resolve()

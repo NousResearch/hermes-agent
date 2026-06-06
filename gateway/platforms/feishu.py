@@ -2774,6 +2774,7 @@ class FeishuAdapter(BasePlatformAdapter):
             user_name=sender_profile["user_name"],
             thread_id=None,
             user_id_alt=sender_profile["user_id_alt"],
+            open_id=sender_profile["open_id"],
         )
         synthetic_event = MessageEvent(
             text=synthetic_text,
@@ -2836,6 +2837,7 @@ class FeishuAdapter(BasePlatformAdapter):
             user_name=sender_profile["user_name"],
             thread_id=None,
             user_id_alt=sender_profile["user_id_alt"],
+            open_id=sender_profile["open_id"],
         )
         synthetic_event = MessageEvent(
             text=synthetic_text,
@@ -3110,6 +3112,7 @@ class FeishuAdapter(BasePlatformAdapter):
             user_name=sender_profile["user_name"],
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
+            open_id=sender_profile["open_id"],
             is_bot=is_bot,
         )
         normalized = MessageEvent(
@@ -3873,6 +3876,7 @@ class FeishuAdapter(BasePlatformAdapter):
             "user_id": primary_id,
             "user_name": display_name,
             "user_id_alt": union_id,
+            "open_id": open_id,
         }
 
     def _get_cached_sender_name(self, sender_id: Optional[str]) -> Optional[str]:

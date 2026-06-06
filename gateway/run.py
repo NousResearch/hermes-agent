@@ -7286,6 +7286,10 @@ class GatewayRunner:
             return True
 
         check_ids = {user_id}
+        if source.user_id_alt:
+            check_ids.add(source.user_id_alt)
+        if source.open_id:
+            check_ids.add(source.open_id)
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
 

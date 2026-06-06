@@ -6588,6 +6588,14 @@ def cmd_hooks(args):
 
 def cmd_doctor(args):
     """Check configuration and dependencies."""
+    if getattr(args, "doctor_target", None):
+        from hermes_cli.reliability_doctor import doctor_command
+
+        code = doctor_command(args)
+        if code:
+            sys.exit(code)
+        return
+
     from hermes_cli.doctor import run_doctor
 
     run_doctor(args)
@@ -13630,6 +13638,16 @@ def main():
         "--profile",
         help="Hermes profile name to run the job under. Use 'default' for the root profile. Named profiles must already exist. Omit to preserve the scheduler's existing profile.",
     )
+    cron_create.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Skip warn-only dependency preflight after creating the job",
+    )
+    cron_create.add_argument(
+        "--strict-preflight",
+        action="store_true",
+        help="Exit non-zero after create if dependency preflight has hard failures",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -13697,6 +13715,16 @@ def main():
     cron_edit.add_argument(
         "--profile",
         help="Hermes profile name to run the job under. Use 'default' for the root profile. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Skip warn-only dependency preflight after editing the job",
+    )
+    cron_edit.add_argument(
+        "--strict-preflight",
+        action="store_true",
+        help="Exit non-zero after edit if dependency preflight has hard failures",
     )
 
     # lifecycle actions
@@ -13892,6 +13920,30 @@ def main():
             "doctor` first to see active advisories and their IDs."
         ),
     )
+
+    doctor_subparsers = doctor_parser.add_subparsers(dest="doctor_target")
+
+    doctor_skill_parser = doctor_subparsers.add_parser(
+        "skill",
+        help="Validate one installed skill's declared dependencies",
+    )
+    doctor_skill_parser.add_argument("doctor_name", nargs="?", help="Skill name to validate")
+    doctor_skill_parser.add_argument("--all", action="store_true", help="Validate all installed skills")
+    doctor_skill_parser.add_argument("--smoke", action="store_true", help="Run declared safe smoke probes")
+    doctor_skill_parser.add_argument("--json", action="store_true", help="Emit JSON result")
+    doctor_skill_parser.add_argument("--strict", action="store_true", help="Reserved for strict policy checks")
+    doctor_skill_parser.add_argument("--timeout", type=int, default=None, help="Reserved smoke timeout override")
+
+    doctor_cron_parser = doctor_subparsers.add_parser(
+        "cron",
+        help="Validate one cron job's dependency chain",
+    )
+    doctor_cron_parser.add_argument("doctor_name", nargs="?", help="Cron job id or name to validate")
+    doctor_cron_parser.add_argument("--all", action="store_true", help="Validate all cron jobs")
+    doctor_cron_parser.add_argument("--smoke", action="store_true", help="Run declared safe smoke probes")
+    doctor_cron_parser.add_argument("--json", action="store_true", help="Emit JSON result")
+    doctor_cron_parser.add_argument("--strict", action="store_true", help="Reserved for strict policy checks")
+    doctor_cron_parser.add_argument("--timeout", type=int, default=None, help="Reserved smoke timeout override")
     doctor_parser.set_defaults(func=cmd_doctor)
 
     # =========================================================================

@@ -11,14 +11,17 @@ Key features from the research:
 - Designed to be called from HITLHarness and future GOAL.md skill
 """
 
+
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol
 
 from agent.hitl_harness.deepeval_adapter import DeepevalAdapter, default_adapter
 from agent.hitl_harness.fitness_wizard import FitnessFunctionWizard, FitnessGoal
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -104,16 +107,14 @@ class FitnessEngine:
             if total_weight > 0:
                 primary_score = weighted_sum / total_weight
 
+
         # 3. Instrument trust = average of deepeval/agentic metrics
         agentic_names = {"TaskCompletion", "ToolCorrectness", "StepEfficiency", "PlanAdherence", "GoalAccuracy"}
         agentic_scores = [v for k, v in metric_scores.items() if k in agentic_names]
         instrument_trust = sum(agentic_scores) / len(agentic_scores) if agentic_scores else 0.75
 
-        # 4. Combined dual score
-        combined = round(primary_score * 0.7 + instrument_trust * 0.3, 4)
-
-        # 5. SWE-bench resolution rate (if adapter available)
-        if self.swe_bench and context and context.get("swe_bench_issues"):
+        # 4. SWE-bench resolution rate (if adapter available)
+        if self.swe_bench and context.get("swe_bench_issues"):
             try:
                 corpus_result = self.swe_bench.evaluate_corpus(
                     context["swe_bench_issues"],
@@ -122,6 +123,22 @@ class FitnessEngine:
                 metric_scores["swe_bench_resolution_rate"] = corpus_result["resolution_rate"]
             except Exception as e:
                 logger.debug("SWE-bench evaluation failed: %s", e)
+
+        # 5. If late metrics were added (e.g. SWE-bench), recompute primary score from goal weights
+        if self.goal and self.goal.composite_weights:
+            total_weight = 0.0
+            weighted_sum = 0.0
+            for prop in self.goal.properties:
+                name = prop.get("name")
+                weight = self.goal.composite_weights.get(name, 0.1)
+                if name in metric_scores:
+                    weighted_sum += metric_scores[name] * weight
+                    total_weight += weight
+            if total_weight > 0:
+                primary_score = weighted_sum / total_weight
+
+        # 6. Combined dual score
+        combined = round(primary_score * 0.7 + instrument_trust * 0.3, 4)
 
         # 6. Action catalog from goal
         action_catalog = []

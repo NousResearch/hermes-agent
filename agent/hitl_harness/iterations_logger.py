@@ -82,7 +82,8 @@ class IterationsLogger:
             metadata=metadata or {},
         )
         self._buffer.append(entry)
-
+        if len(self._buffer) > self.max_entries_in_memory:
+            self._buffer = self._buffer[-self.max_entries_in_memory:]
         # Write immediately (atomic append)
         with self.log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")

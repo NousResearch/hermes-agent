@@ -31,7 +31,7 @@ import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
-from pathlib import Path
+from pathlib import Path, PurePath
 from tools.binary_extensions import BINARY_EXTENSIONS
 
 from agent.file_safety import (
@@ -1926,11 +1926,14 @@ class ShellFileOperations(FileOperations):
     
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
-        # Auto-prepend **/ for recursive search if not already present
-        if not pattern.startswith('**/') and '/' not in pattern:
+        # Auto-prepend **/ for recursive search if not already present.
+        # Treat ``\\`` like ``/`` so Windows-style ``dir\\*.py`` yields ``*.py``
+        # for ``find -name`` / ``rg -g`` (Linux shells do not treat ``\\`` as a separator).
+        has_path_sep = ("/" in pattern) or ("\\" in pattern)
+        if not pattern.startswith("**/") and not has_path_sep:
             search_pattern = pattern
         else:
-            search_pattern = pattern.split('/')[-1]
+            search_pattern = PurePath(pattern).name
 
         search_root = Path(path)
         has_hidden_path_ancestor = any(

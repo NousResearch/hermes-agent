@@ -8,7 +8,11 @@ Covers:
 import pytest
 from unittest.mock import MagicMock, patch
 
-from tools.file_operations import ShellFileOperations, _parse_search_context_line
+from tools.file_operations import (
+    ShellFileOperations,
+    SearchResult,
+    _parse_search_context_line,
+)
 
 
 # =========================================================================
@@ -261,6 +265,48 @@ class TestCheckLintDelta:
         assert r.success is False
         assert "pre-existing" in (r.message or "").lower()
 
+
+# =========================================================================
+# _search_files path separator normalization
+# =========================================================================
+
+
+class TestSearchFilesPatternBasename:
+    """Windows-style ``\\`` in name patterns must normalize to a basename glob."""
+
+    @pytest.fixture()
+    def ops(self):
+        obj = ShellFileOperations.__new__(ShellFileOperations)
+        obj._command_cache = {}
+        return obj
+
+    def test_backslash_separators_yield_basename_glob(self, ops):
+        """``src\\*.py`` must search as ``*.py``, not a literal backslash path."""
+        with patch.object(ops, "_has_command", side_effect=lambda c: c == "rg"), patch.object(
+            ops, "_search_files_rg"
+        ) as mock_rg:
+            mock_rg.return_value = SearchResult(files=[], total_count=0)
+            ops._search_files(r"src\*.py", ".", 10, 0)
+        mock_rg.assert_called_once()
+        assert mock_rg.call_args[0][0] == "*.py"
+
+    def test_forward_slash_nested_still_basename(self, ops):
+        """POSIX-style nested paths still reduce to the final segment."""
+        with patch.object(ops, "_has_command", side_effect=lambda c: c == "rg"), patch.object(
+            ops, "_search_files_rg"
+        ) as mock_rg:
+            mock_rg.return_value = SearchResult(files=[], total_count=0)
+            ops._search_files("pkg/sub/foo.py", ".", 10, 0)
+        assert mock_rg.call_args[0][0] == "foo.py"
+
+    def test_bare_glob_unchanged(self, ops):
+        """Simple globs without directory separators pass through unchanged."""
+        with patch.object(ops, "_has_command", side_effect=lambda c: c == "rg"), patch.object(
+            ops, "_search_files_rg"
+        ) as mock_rg:
+            mock_rg.return_value = SearchResult(files=[], total_count=0)
+            ops._search_files("*.md", ".", 10, 0)
+        assert mock_rg.call_args[0][0] == "*.md"
 
 # =========================================================================
 # Pagination bounds

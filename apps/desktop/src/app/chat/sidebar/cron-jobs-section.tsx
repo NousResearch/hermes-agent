@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
-import { jobState, STATE_DOT } from '../../cron/job-state'
+import { jobState, jobTitle, STATE_DOT } from '../../cron/job-state'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
 const INACTIVE_STATES = new Set(['completed', 'disabled', 'error', 'paused'])
@@ -23,18 +23,6 @@ const PEEK_RUN_LIMIT = 5
 // Runs are written by the background scheduler tick (no UI signal), so poll the
 // open peek so a freshly-fired run shows up within a few seconds.
 const PEEK_POLL_INTERVAL_MS = 8000
-
-function jobLabel(job: CronJob): string {
-  const name = (job.name ?? '').trim()
-
-  if (name) {return name}
-
-  const prompt = (job.prompt ?? '').trim()
-
-  if (prompt) {return prompt.length > 60 ? `${prompt.slice(0, 60)}…` : prompt}
-
-  return job.id
-}
 
 const relativeFmt = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
 
@@ -126,7 +114,7 @@ export function SidebarCronJobsSection({
 
       if (an !== null && bn === null) {return -1}
 
-      return jobLabel(a).localeCompare(jobLabel(b))
+      return jobTitle(a).localeCompare(jobTitle(b))
     })
   }, [jobs])
 
@@ -191,7 +179,7 @@ function CronJobSidebarRow({
   const c = t.cron
   const state = jobState(job)
   const next = nextRunMs(job)
-  const label = jobLabel(job)
+  const label = jobTitle(job)
 
   const meta = INACTIVE_STATES.has(state)
     ? (c.states[state] ?? state)

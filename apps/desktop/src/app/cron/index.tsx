@@ -39,7 +39,7 @@ import { OverlayView } from '../overlays/overlay-view'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import { jobState, STATE_DOT } from './job-state'
+import { jobState, jobTitle, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -82,28 +82,6 @@ function jobName(job: CronJob): string {
 
 function jobPrompt(job: CronJob): string {
   return asText(job.prompt)
-}
-
-function jobTitle(job: CronJob): string {
-  const name = jobName(job)
-
-  if (name) {
-    return name
-  }
-
-  const prompt = jobPrompt(job)
-
-  if (prompt) {
-    return truncate(prompt, 60)
-  }
-
-  const script = asText(job.script)
-
-  if (script) {
-    return truncate(script, 60)
-  }
-
-  return job.id || 'Cron job'
 }
 
 function jobScheduleDisplay(job: CronJob): string {

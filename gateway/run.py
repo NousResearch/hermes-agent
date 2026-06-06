@@ -67,24 +67,7 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
-_TELEGRAM_NOISY_STATUS_RE = re.compile(
-    r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
-    r"auxiliary\s+.+\s+failed"
-    r"|compression\s+summary\s+failed"
-    r"|fallback\s+context\s+marker"
-    r"|configured\s+compression\s+model\s+.+\s+failed"
-    r"|no\s+auxiliary\s+llm\s+provider\s+configured"
-    r"|auto-lowered\s+compression\s+threshold"
-    r"|preflight\s+compression"
-    r"|rate\s+limited\.\s+waiting\s+\d"
-    r"|retrying\s+in\s+\d"
-    r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
-    r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
-    r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
-    r")",
-    re.IGNORECASE | re.DOTALL,
-)
-
+from gateway.runtime import status_message_filter as _status_message_filter
 from gateway.runtime.delivery_redaction import redact_gateway_user_facing_secrets
 from gateway.runtime.provider_error_sanitizer import (
     GATEWAY_AUTH_ERROR_RE as _GATEWAY_AUTH_ERROR_RE,
@@ -97,6 +80,9 @@ from gateway.runtime.provider_error_sanitizer import (
     looks_like_gateway_provider_error,
     sanitize_gateway_final_response,
 )
+
+_TELEGRAM_NOISY_STATUS_RE = _status_message_filter.TELEGRAM_NOISY_STATUS_RE
+prepare_gateway_status_message = _status_message_filter.prepare_gateway_status_message
 
 def _gateway_platform_value(platform: Any) -> str:
     """Backward-compatible facade for the extracted provider-error seam."""
@@ -124,19 +110,8 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
-    """Filter/sanitize agent status callbacks before platform delivery."""
-    text = str(message or "").strip()
-    if not text:
-        return None
-    if _gateway_platform_value(platform) != "telegram":
-        return text
-
-    text = _redact_gateway_user_facing_secrets(text)
-    if _TELEGRAM_NOISY_STATUS_RE.search(text):
-        return None
-    if _looks_like_gateway_provider_error(text):
-        return _gateway_provider_error_reply(text)
-    return text
+    """Backward-compatible facade for status callback filtering."""
+    return prepare_gateway_status_message(platform, event_type, message)
 
 
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):

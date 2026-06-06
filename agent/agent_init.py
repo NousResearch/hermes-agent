@@ -748,9 +748,13 @@ def init_agent(
                 client_kwargs["command"] = agent.acp_command
                 client_kwargs["args"] = agent.acp_args
             elif agent.provider == "claude-code-acp":
-                # Inject sandbox/session context so the ACP client can
-                # build per-session sandboxes with the agent's persona,
-                # memory, platform, and available tools.
+                # Inject transport overrides, sandbox/session context so
+                # the ACP client honours user-supplied acp_command/acp_args
+                # (e.g. /custom/npx, --debug, --model opus) and can build
+                # per-session sandboxes with the agent's persona, memory,
+                # platform, and available tools.
+                client_kwargs["acp_command"] = agent.acp_command
+                client_kwargs["acp_args"] = agent.acp_args
                 client_kwargs["agent"] = agent
                 client_kwargs["hermes_home"] = get_hermes_home()
                 client_kwargs["hermes_session_id"] = getattr(agent, "session_id", None)

@@ -19,6 +19,7 @@ Covers:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -277,3 +278,55 @@ def test_fuzzy_paths_relative_to_cwd_inside_subdir(tmp_path, monkeypatch):
     readme_texts = [t for t, _, _ in _items("@README")]
 
     assert not any("README.md" in t for t in readme_texts), readme_texts
+
+
+# ── Absolute-path preservation ────────────────────────────────────────────
+# When the user types an absolute path (e.g. `/proc` on Unix, `C:\Users\...`
+# on Windows), pressing enter on a completion should NOT rewrite it as a
+# relative path.  We use `os.path.isabs()` here (matching the CLI-side
+# `_path_completions`) so that Unix (`/foo`), Windows drive-letter
+# (`C:\...`), and UNC (`\\server\share\...`) absolute paths are all
+# preserved.  Prior to the fix, the gateway handler only had branches for
+# `~` and `./` — everything else fell through to relative.
+
+
+def test_absolute_paths_are_absolute(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "proc").mkdir()
+    (tmp_path / "proc" / "11").touch()
+
+    # Typing an absolute path should give back absolute completions
+    texts = [t for t, _, _ in _items(str(tmp_path / "pr"))]
+
+    for t in texts:
+        assert t.startswith("/"), f"absolute completion was relativized: {t!r}"
+
+
+def test_absolute_path_with_trailing_slash(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "proc").mkdir()
+    (tmp_path / "proc" / "11").touch()
+
+    texts = [t for t, _, _ in _items(str(tmp_path / "proc") + "/")]
+
+    for t in texts:
+        assert t.startswith("/"), f"absolute completion was relativized: {t!r}"
+
+
+def test_relative_paths_stay_relative(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").touch()
+
+    texts = [t for t, _, _ in _items("./sr")]
+
+    for t in texts:
+        assert t.startswith("./"), f"relative completion lost ./: {t!r}"
+
+
+def test_home_paths_preserve_tilde(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    texts = [t for t, _, _ in _items("~/Documents")]
+
+    for t in texts:
+        assert t.startswith("~/"), f"home-relative completion lost ~/: {t!r}"

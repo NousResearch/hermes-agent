@@ -9359,7 +9359,12 @@ class GatewayRunner:
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
-            if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
+            # Use new_messages (this turn only) for dedup — not agent_messages
+            # (full history).  Prevents a text_to_speech call in a prior turn
+            # from blocking auto-TTS in the current turn.
+            _history_len = agent_result.get("history_offset", len(history)) if isinstance(agent_result, dict) else 0
+            _new_msgs_for_dedup = agent_messages[_history_len:] if len(agent_messages) > _history_len else []
+            if self._should_send_voice_reply(event, response, _new_msgs_for_dedup, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
             # If streaming already delivered the response, extract and
@@ -11678,10 +11683,12 @@ class GatewayRunner:
           runner must handle it.
         """
         if not response or response.startswith("Error:"):
+            logger.info("_should_send_voice_reply: False — response empty or Error: %r", response[:80] if response else None)
             return False
 
         chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
+        voice_key = self._voice_key(event.source.platform, chat_id)
+        voice_mode = self._voice_mode.get(voice_key, "off")
         is_voice_input = (event.message_type == MessageType.VOICE)
 
         should = (
@@ -11689,16 +11696,28 @@ class GatewayRunner:
             or (voice_mode == "voice_only" and is_voice_input)
         )
         if not should:
+            logger.info(
+                "_should_send_voice_reply: False — voice_mode=%r is_voice_input=%r key=%r",
+                voice_mode, is_voice_input, voice_key,
+            )
             return False
 
-        # Dedup: agent already called TTS tool
+        # Dedup: agent already called TTS tool in the *current turn*.
+        # Scanning ALL history is too aggressive — a text_to_speech call
+        # from 100 turns ago shouldn't block auto-TTS forever.
+        # Only check messages after the last user message (turn boundary).
+        _current_turn_start = 0
+        for _i in range(len(agent_messages) - 1, -1, -1):
+            if agent_messages[_i].get("role") == "user":
+                _current_turn_start = _i
+                break
         has_agent_tts = any(
             msg.get("role") == "assistant"
             and any(
                 tc.get("function", {}).get("name") == "text_to_speech"
                 for tc in (msg.get("tool_calls") or [])
             )
-            for msg in agent_messages
+            for msg in agent_messages[_current_turn_start:]
         )
         if has_agent_tts:
             return False
@@ -11709,8 +11728,10 @@ class GatewayRunner:
         # the base adapter will receive None and can't run auto-TTS,
         # so the runner must take over.
         if is_voice_input and not already_sent:
+            logger.info("_should_send_voice_reply: False — voice input and already_sent=%s", already_sent)
             return False
 
+        logger.info("_should_send_voice_reply: True — mode=%r key=%r is_voice=%r already_sent=%s", voice_mode, voice_key, is_voice_input, already_sent)
         return True
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:

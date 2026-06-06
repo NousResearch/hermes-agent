@@ -2049,15 +2049,61 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send audio to Feishu as a file attachment plus optional caption."""
-        return await self._send_uploaded_file_message(
-            chat_id=chat_id,
-            file_path=audio_path,
-            reply_to=reply_to,
-            metadata=metadata,
-            caption=caption,
-            outbound_message_type="audio",
-        )
+        """Send audio to Feishu as a native voice bubble.
+
+        Converts non-Opus/Ogg audio to Opus (16 kHz mono) so Feishu renders
+        it as a voice bubble rather than a file attachment.  Files that are
+        already Opus/Ogg are sent as-is.
+        """
+        if not os.path.exists(audio_path):
+            return SendResult(success=False, error=f"Audio file not found: {audio_path}")
+
+        ext = Path(audio_path).suffix.lower()
+        _temp_files: List[str] = []
+
+        try:
+            if ext not in _FEISHU_OPUS_UPLOAD_EXTENSIONS:
+                import subprocess as _subprocess
+                import tempfile as _tempfile
+                import uuid as _uuid
+
+                opus_path = os.path.join(
+                    _tempfile.gettempdir(), "hermes_voice",
+                    f"voice_{_uuid.uuid4().hex[:12]}.opus",
+                )
+                os.makedirs(os.path.dirname(opus_path), exist_ok=True)
+
+                _result = _subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-i", audio_path,
+                        "-ar", "16000", "-ac", "1",
+                        "-c:a", "libopus", "-b:a", "24k",
+                        opus_path,
+                    ],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if _result.returncode != 0:
+                    return SendResult(
+                        success=False,
+                        error=f"ffmpeg opus conversion failed: {_result.stderr}",
+                    )
+                _temp_files.append(opus_path)
+                audio_path = opus_path
+
+            return await self._send_uploaded_file_message(
+                chat_id=chat_id,
+                file_path=audio_path,
+                reply_to=reply_to,
+                metadata=metadata,
+                caption=caption,
+                outbound_message_type="audio",
+            )
+        finally:
+            for _p in _temp_files:
+                try:
+                    os.unlink(_p)
+                except OSError:
+                    pass
 
     async def send_document(
         self,
@@ -3620,7 +3666,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if preferred == "photo":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.PHOTO)
         if preferred == "audio":
-            return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.AUDIO)
+            # Feishu "audio" messages are real-time voice messages (Opus/OGG),
+            # not file attachments — map to VOICE so gateway/run.py sends
+            # them through the STT pipeline instead of treating them as
+            # audio file attachments (which would skip transcription).
+            return MessageType.VOICE
         if preferred == "document":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.DOCUMENT)
         return MessageType.TEXT
@@ -4372,10 +4422,24 @@ class FeishuAdapter(BasePlatformAdapter):
                     metadata=metadata,
                 )
             else:
+                payload_dict: Dict[str, Any] = {"file_key": file_key}
+                if resolved_message_type == "audio":
+                    try:
+                        import subprocess as _subprocess
+                        _result = _subprocess.run(
+                            ["ffprobe", "-v", "error", "-show_entries",
+                             "format=duration", "-of",
+                             "default=noprint_wrappers=1:nokey=1", file_path],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        _dur_s = float(_result.stdout.strip())
+                        payload_dict["duration"] = int(_dur_s * 1000)
+                    except Exception:
+                        pass
                 message_response = await self._feishu_send_with_retry(
                     chat_id=chat_id,
                     msg_type=resolved_message_type,
-                    payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
+                    payload=json.dumps(payload_dict, ensure_ascii=False),
                     reply_to=reply_to,
                     metadata=metadata,
                 )

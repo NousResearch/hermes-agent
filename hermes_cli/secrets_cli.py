@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -98,6 +99,13 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _stdin_is_tty() -> bool:
+    try:
+        return bool(sys.stdin.isatty())
+    except Exception:
+        return False
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     console = Console()
     console.print(
@@ -139,6 +147,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     token = (args.access_token or "").strip()
     if not token:
+        if not _stdin_is_tty():
+            console.print(
+                f"  [red]No TTY detected and no --access-token was provided.[/red] "
+                f"Re-run with [cyan]--access-token[/cyan] or use an interactive terminal."
+            )
+            return 1
         token = masked_secret_prompt(f"  Paste access token ({token_env}): ").strip()
     if not token:
         console.print("  [red]Empty token, aborting.[/red]")
@@ -156,6 +170,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
     # ------------------------------------------------------------------ region
     console.print()
     console.print("[bold]Step 3[/bold]  Pick a Bitwarden region")
+    if not _stdin_is_tty() and not (args.server_url and args.server_url.strip()):
+        console.print(
+            "  [red]No TTY detected and no --server-url was provided.[/red] "
+            "Re-run with [cyan]--server-url[/cyan] or use an interactive terminal."
+        )
+        return 1
     server_url = _resolve_server_url(args, secrets_cfg, console)
     if server_url is None:
         return 1
@@ -171,6 +191,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
     if args.project_id and args.project_id.strip():
         project_id = args.project_id.strip()
     else:
+        if not _stdin_is_tty():
+            console.print(
+                "  [red]No TTY detected and no --project-id was provided.[/red] "
+                "Re-run with [cyan]--project-id[/cyan] or use an interactive terminal."
+            )
+            return 1
         console.print()
         console.print("[bold]Step 4[/bold]  Pick a project")
         project_id = ""

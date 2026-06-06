@@ -1,11 +1,11 @@
 // Desktop i18n type contract.
 //
 // `Translations` is the single source of truth for every translatable string
-// surface. Each locale file (`en.ts`, `zh.ts`, …) must satisfy this interface,
+// surface. Each locale file (`en.ts`, `zh.ts`, `fr.ts`, …) must satisfy this interface,
 // so a missing key is a compile error — that's the completeness guard for
 // "full" coverage as more surfaces are migrated off hardcoded English.
 
-export type Locale = 'en' | 'zh'
+export type Locale = 'en' | 'zh' | 'fr'
 
 interface ModeOptionCopy {
   label: string

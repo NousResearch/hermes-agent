@@ -1063,7 +1063,7 @@ In a chat session, `/bundles` lists installed bundles and `/<bundle-name>` loads
 hermes curator <subcommand>
 ```
 
-The curator is an auxiliary-model background task that periodically reviews agent-created skills, prunes stale ones, consolidates overlaps, and archives obsolete skills. Bundled and hub-installed skills are never touched. Archives are recoverable; auto-deletion never happens.
+The curator is an auxiliary-model background task that periodically reviews agent-created skills, prunes stale ones, consolidates overlaps, and archives obsolete skills. Hub-installed skills are never touched. By default, bundled skills are also eligible for pruning after prolonged inactivity (`prune_builtins: true`). Archives are recoverable; auto-deletion never happens.
 
 | Subcommand | Description |
 |------------|-------------|

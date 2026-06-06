@@ -35,6 +35,8 @@ from typing import Dict, Any, List, Optional
 
 from utils import atomic_replace
 
+from agent.i18n import t
+
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
 try:
@@ -319,7 +321,7 @@ class MemoryStore:
 
             # Reject exact duplicates
             if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                return self._success_response(target, t("tools.memory.entry_duplicate"))
 
             # Calculate what the new total would be
             new_entries = entries + [content]
@@ -342,7 +344,7 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry added.")
+        return self._success_response(target, t("tools.memory.entry_added"))
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
@@ -402,7 +404,7 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry replaced.")
+        return self._success_response(target, t("tools.memory.entry_replaced"))
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
@@ -438,7 +440,7 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry removed.")
+        return self._success_response(target, t("tools.memory.entry_removed"))
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """

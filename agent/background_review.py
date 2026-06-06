@@ -24,6 +24,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from agent.i18n import t
+
 logger = logging.getLogger(__name__)
 
 
@@ -286,14 +288,14 @@ def summarize_background_review_actions(
         elif "updated" in message.lower():
             actions.append(message)
         elif "added" in message.lower() or (target and "add" in message.lower()):
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-            actions.append(f"{label} updated")
+            label = t("background_review.memory_label") if target == "memory" else t("background_review.user_profile_label") if target == "user" else target
+            actions.append(t("background_review.memory_updated") if target == "memory" else t("background_review.user_profile_updated"))
         elif "Entry added" in message:
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-            actions.append(f"{label} updated")
+            label = t("background_review.memory_label") if target == "memory" else t("background_review.user_profile_label") if target == "user" else target
+            actions.append(t("background_review.memory_updated") if target == "memory" else t("background_review.user_profile_updated"))
         elif "removed" in message.lower() or "replaced" in message.lower():
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-            actions.append(f"{label} updated")
+            label = t("background_review.memory_label") if target == "memory" else t("background_review.user_profile_label") if target == "user" else target
+            actions.append(t("background_review.memory_updated") if target == "memory" else t("background_review.user_profile_updated"))
     return actions
 
 
@@ -516,13 +518,13 @@ def _run_review_in_thread(
         if actions:
             summary = " · ".join(dict.fromkeys(actions))
             agent._safe_print(
-                f"  💾 Self-improvement review: {summary}"
+                f"  {t('background_review.self_improvement', summary=summary)}"
             )
             _bg_cb = agent.background_review_callback
             if _bg_cb:
                 try:
                     _bg_cb(
-                        f"💾 Self-improvement review: {summary}"
+                        t("background_review.self_improvement", summary=summary)
                     )
                 except Exception:
                     pass

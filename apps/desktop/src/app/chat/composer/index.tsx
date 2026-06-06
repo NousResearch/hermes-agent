@@ -588,6 +588,21 @@ export function ChatBar({
     flushEditorToDraft(event.currentTarget)
   }
 
+  // Sync the live editor content to the AUI composer state on mount and
+  // when the session changes.  The AUI store (`useAuiState → draft` on
+  // line 131) initialises as empty on first render, so `hasComposerPayload`
+  // (line 170) is `false` and the send button stays hidden — even when the
+  // editor already has text from a restored draft or session switch.
+  // Flushing here closes the gap so the button visibility reflects the
+  // actual editor content from the very first paint (#40556).
+  useEffect(() => {
+    const editor = editorRef.current
+
+    if (editor) {
+      flushEditorToDraft(editor)
+    }
+  }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const triggerAdapter: Unstable_TriggerAdapter | null =
     trigger?.kind === '@' ? at.adapter : trigger?.kind === '/' ? slash.adapter : null
 

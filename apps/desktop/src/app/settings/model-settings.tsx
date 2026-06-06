@@ -3,8 +3,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getAuxiliaryModels, getGlobalModelInfo, getGlobalModelOptions, setModelAssignment } from '@/hermes'
-import type { AuxiliaryModelsResponse, ModelOptionProvider } from '@/hermes'
-import { Cpu, Loader2 } from '@/lib/icons'
+import type { AuxiliaryModelsResponse, ModelOptionProvider, StaleAuxAssignment } from '@/hermes'
+import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { CONTROL_TEXT } from './constants'
@@ -32,6 +32,47 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
 
+const AUX_TASK_LABELS: Record<string, string> = Object.fromEntries(
+  AUX_TASKS.map(meta => [meta.key, meta.label])
+)
+
+function taskLabel(key: string): string {
+  return AUX_TASK_LABELS[key] ?? key
+}
+
+interface StaleAuxWarningProps {
+  applying: boolean
+  onReset: () => void
+  slots: readonly StaleAuxAssignment[]
+}
+
+// Shared notice: auxiliary tasks still pinned to a provider that isn't the
+// current main. Surfaces the silent credit-burn path (e.g. aux pinned to a
+// $0-balance provider after switching main away from it) and offers the
+// existing one-click reset rather than auto-clearing legitimate pins.
+function StaleAuxWarning({ applying, onReset, slots }: StaleAuxWarningProps) {
+  if (!slots.length) {
+    return null
+  }
+
+  const provider = slots[0].provider
+  const allSameProvider = slots.every(slot => slot.provider === provider)
+  const names = slots.map(slot => taskLabel(slot.task)).join(', ')
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+      <AlertTriangle className="size-3.5 shrink-0" />
+      <span className="grow">
+        {slots.length} auxiliary task{slots.length === 1 ? '' : 's'} ({names}) still run on{' '}
+        <span className="font-mono">{allSameProvider ? provider : 'other providers'}</span>, not your main model.
+      </span>
+      <Button disabled={applying} onClick={onReset} size="sm" variant="textStrong">
+        Reset all to main
+      </Button>
+    </div>
+  )
+}
+
 interface ModelSettingsProps {
   /** Notified after the main model is applied, so live UI stores can sync. */
   onMainModelChanged?: (provider: string, model: string) => void
@@ -48,6 +89,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const [applying, setApplying] = useState(false)
   const [editingAuxTask, setEditingAuxTask] = useState<null | string>(null)
   const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string }>({ model: '', provider: '' })
+  // Aux slots reported stale by the backend immediately after a main-model
+  // switch (provider differs from the new main). Cleared on next switch/reset.
+  const [switchStaleAux, setSwitchStaleAux] = useState<StaleAuxAssignment[]>([])
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -88,6 +132,22 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     [auxDraft.provider, providers]
   )
 
+  // Persistent mismatch: any aux slot pinned to a provider different from the
+  // current main, regardless of whether the user just switched. Catches the
+  // "I pinned aux months ago and forgot, now it bills a dead provider" case.
+  const persistentStaleAux = useMemo<StaleAuxAssignment[]>(() => {
+    const mainProvider = (mainModel?.provider ?? '').toLowerCase()
+    if (!mainProvider || !auxiliary) {
+      return []
+    }
+    return auxiliary.tasks
+      .filter(entry => {
+        const p = (entry.provider ?? '').toLowerCase()
+        return p && p !== 'auto' && p !== mainProvider
+      })
+      .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
+  }, [auxiliary, mainModel])
+
   const applyMainModel = useCallback(async () => {
     if (!selectedProvider || !selectedModel) {
       return
@@ -101,6 +161,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       const provider = result.provider || selectedProvider
       const model = result.model || selectedModel
       setMainModel({ provider, model })
+      setSwitchStaleAux(result.stale_aux ?? [])
       onMainModelChanged?.(provider, model)
       await refresh()
     } catch (err) {
@@ -182,6 +243,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         scope: 'auxiliary',
         task: '__reset__'
       })
+      setSwitchStaleAux([])
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -235,6 +297,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           </Button>
         </div>
         {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
+        {switchStaleAux.length > 0 && (
+          <div className="mt-2">
+            <StaleAuxWarning applying={applying} onReset={() => void resetAuxiliaryModels()} slots={switchStaleAux} />
+          </div>
+        )}
       </section>
 
       <section>
@@ -252,6 +319,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         <p className="mb-2 text-xs text-muted-foreground">
           Helper tasks run on the main model by default. Assign a dedicated model to any task to override.
         </p>
+        {switchStaleAux.length === 0 && persistentStaleAux.length > 0 && (
+          <div className="mb-2.5">
+            <StaleAuxWarning applying={applying} onReset={() => void resetAuxiliaryModels()} slots={persistentStaleAux} />
+          </div>
+        )}
         <div className="grid gap-1">
           {AUX_TASKS.map(meta => {
             const current = auxiliary?.tasks.find(entry => entry.task === meta.key)

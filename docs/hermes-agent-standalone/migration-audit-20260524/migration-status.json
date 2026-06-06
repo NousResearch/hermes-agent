@@ -1,0 +1,27 @@
+{
+  "generated_at": "2026-05-24T10:22:07Z",
+  "manifest_records": 27176,
+  "knowledge_candidates": 449,
+  "knowledge_imported": 449,
+  "secret_review_items": 100,
+  "security_triaged": 100,
+  "runtime_candidates": 513,
+  "runtime_dispositioned": 513,
+  "domains_populated": {
+    "backend": 134,
+    "business": 387,
+    "data": 46,
+    "devops": 209,
+    "finance": 3,
+    "frontend": 135,
+    "infrastructure": 30,
+    "marketing": 4,
+    "mobile": 2,
+    "operations": 66,
+    "people": 38,
+    "sales": 4,
+    "security": 62,
+    "testing": 68
+  },
+  "destructive_deletion_performed": false
+}

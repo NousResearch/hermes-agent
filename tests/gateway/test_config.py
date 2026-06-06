@@ -702,6 +702,95 @@ class TestLoadGatewayConfig:
             "bot_username": "HermesBot",
         }
 
+    def test_nested_gateway_ai_beast_orientation_in_config_yaml_is_loaded(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  command_hook_commands:\n"
+            "    whereami:\n"
+            "      description: Show local orientation context\n"
+            "    projects:\n"
+            "      description: Show local project context\n"
+            "  ai_beast_orientation:\n"
+            "    enabled: true\n"
+            "    project_root: /tmp/ai-beast\n"
+            "    registry_root: docs/interaction-layer/registry\n"
+            "    bot_username: HermesBot\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.command_hook_commands == {
+            "whereami": {"description": "Show local orientation context"},
+            "projects": {"description": "Show local project context"},
+        }
+        assert config.ai_beast_orientation == {
+            "enabled": True,
+            "project_root": "/tmp/ai-beast",
+            "registry_root": "docs/interaction-layer/registry",
+            "bot_username": "HermesBot",
+        }
+
+    def test_top_level_ai_beast_orientation_overrides_nested_gateway_config_yaml(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  command_hook_commands:\n"
+            "    whereami:\n"
+            "      description: Nested orientation context\n"
+            "  ai_beast_orientation:\n"
+            "    enabled: false\n"
+            "    project_root: /tmp/nested-ai-beast\n"
+            "command_hook_commands:\n"
+            "  projects:\n"
+            "    description: Top-level project context\n"
+            "ai_beast_orientation:\n"
+            "  enabled: true\n"
+            "  project_root: /tmp/top-ai-beast\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.command_hook_commands == {
+            "projects": {"description": "Top-level project context"},
+        }
+        assert config.ai_beast_orientation == {
+            "enabled": True,
+            "project_root": "/tmp/top-ai-beast",
+        }
+
+    def test_invalid_nested_gateway_command_hook_commands_are_ignored(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  command_hook_commands: not-a-mapping\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.command_hook_commands == {}
+
     def test_invalid_ai_beast_orientation_in_config_yaml_is_ignored(
         self, tmp_path, monkeypatch
     ):
@@ -709,6 +798,24 @@ class TestLoadGatewayConfig:
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
         config_path.write_text("ai_beast_orientation: not-a-mapping\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.ai_beast_orientation == {}
+
+    def test_invalid_nested_gateway_ai_beast_orientation_is_ignored(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  ai_beast_orientation: not-a-mapping\n",
+            encoding="utf-8",
+        )
 
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 

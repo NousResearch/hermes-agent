@@ -751,6 +751,7 @@ def load_gateway_config() -> GatewayConfig:
 
             # Map config.yaml keys → GatewayConfig.from_dict() schema.
             # Each key overwrites whatever gateway.json may have set.
+            gateway_cfg = yaml_cfg.get("gateway")
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
                 gw_data["default_reset_policy"] = sr
@@ -767,6 +768,8 @@ def load_gateway_config() -> GatewayConfig:
                     )
 
             chc = yaml_cfg.get("command_hook_commands")
+            if chc is None and isinstance(gateway_cfg, dict):
+                chc = gateway_cfg.get("command_hook_commands")
             if chc is not None:
                 if isinstance(chc, dict):
                     gw_data["command_hook_commands"] = chc
@@ -778,6 +781,8 @@ def load_gateway_config() -> GatewayConfig:
                     )
 
             abo = yaml_cfg.get("ai_beast_orientation")
+            if abo is None and isinstance(gateway_cfg, dict):
+                abo = gateway_cfg.get("ai_beast_orientation")
             if abo is not None:
                 if isinstance(abo, dict):
                     gw_data["ai_beast_orientation"] = abo
@@ -827,7 +832,6 @@ def load_gateway_config() -> GatewayConfig:
             # ``gateway.platforms`` are loaded the same way as top-level
             # ``platforms``. Merge nested first so top-level config keeps
             # precedence, matching the existing gateway.streaming fallback.
-            gateway_cfg = yaml_cfg.get("gateway")
             gateway_platforms = gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
             platforms_data = gw_data.setdefault("platforms", {})
             if not isinstance(platforms_data, dict):

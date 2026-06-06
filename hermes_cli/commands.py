@@ -504,12 +504,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
             result.append((tg_name, cmd.description))
-    for name, description, args_hint in _iter_plugin_command_entries():
-        if _requires_argument(args_hint):
-            continue
-        tg_name = _sanitize_telegram_name(name)
-        if tg_name:
-            result.append((tg_name, description))
+    result.extend(_telegram_plugin_menu_commands({n for n, _ in result}))
     return result
 
 
@@ -550,6 +545,32 @@ need to survive the visible menu cap ahead of lower-priority built-ins.
 """
 
 
+def _telegram_plugin_menu_commands(reserved_names: set[str]) -> list[tuple[str, str]]:
+    """Return sanitized/clamped no-argument plugin commands for Telegram menus."""
+    plugin_pairs: list[tuple[str, str]] = []
+    for name, description, args_hint in _iter_plugin_command_entries():
+        if _requires_argument(args_hint):
+            continue
+        tg_name = _sanitize_telegram_name(name)
+        if tg_name:
+            plugin_pairs.append((tg_name, description))
+    clamped = _clamp_command_names(plugin_pairs, set(reserved_names))
+    return [(entry[0], entry[1]) for entry in clamped]
+
+
+def _telegram_plugin_menu_names() -> set[str]:
+    """Return sanitized no-argument plugin commands eligible for Telegram menus."""
+    reserved_names: set[str] = set()
+    overrides = _resolve_config_gates()
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        tg_name = _sanitize_telegram_name(cmd.name)
+        if tg_name:
+            reserved_names.add(tg_name)
+    return {n for n, _ in _telegram_plugin_menu_commands(reserved_names)}
+
+
 def _prioritize_telegram_menu_commands(
     commands: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
@@ -557,22 +578,17 @@ def _prioritize_telegram_menu_commands(
         _sanitize_telegram_name(name): index
         for index, name in enumerate(_TELEGRAM_MENU_PRIORITY)
     }
-    return [
-        command
-        for _index, command in sorted(
-            enumerate(commands),
-            key=lambda item: (
-                0,
-                priority[item[1][0]],
-                item[0],
-            )
-            if item[1][0] in priority
-            else (
-                1,
-                item[0],
-            ),
-        )
-    ]
+    plugin_names = _telegram_plugin_menu_names()
+
+    def sort_key(item: tuple[int, tuple[str, str]]) -> tuple[int, int, int]:
+        index, (name, _description) = item
+        if name in priority:
+            return (0, priority[name], index)
+        if name in plugin_names:
+            return (1, index, index)
+        return (2, index, index)
+
+    return [command for _index, command in sorted(enumerate(commands), key=sort_key)]
 
 
 _CMD_NAME_LIMIT = 32

@@ -59,6 +59,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
     collapseAll,
     collapseNonce,
     data,
+    deleteNode,
     loadChildren,
     openState,
     refreshRoot,
@@ -127,6 +128,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
           onActivateFolder={onActivateFolder}
           onChangeFolder={chooseFolder}
           onCollapseAll={collapseAll}
+          onDelete={deleteNode}
           onLoadChildren={loadChildren}
           onNodeOpenChange={setNodeOpen}
           onPreviewFile={previewFile}
@@ -218,6 +220,7 @@ function FilesystemTab({
   onActivateFolder,
   onChangeFolder,
   onCollapseAll,
+  onDelete,
   onLoadChildren,
   onNodeOpenChange,
   onPreviewFile,
@@ -277,6 +280,7 @@ function FilesystemTab({
         loading={loading}
         onActivateFile={onActivateFile}
         onActivateFolder={onActivateFolder}
+        onDelete={onDelete}
         onLoadChildren={onLoadChildren}
         onNodeOpenChange={onNodeOpenChange}
         onPreviewFile={onPreviewFile}
@@ -298,6 +302,7 @@ interface FileTreeBodyProps {
   loading: boolean
   onActivateFile: (path: string) => void
   onActivateFolder: (path: string) => void
+  onDelete?: (path: string) => Promise<void>
   onLoadChildren: (id: string) => void | Promise<void>
   onNodeOpenChange: (id: string, open: boolean) => void
   onPreviewFile?: (path: string) => void
@@ -312,6 +317,7 @@ function FileTreeBody({
   loading,
   onActivateFile,
   onActivateFolder,
+  onDelete,
   onLoadChildren,
   onNodeOpenChange,
   onPreviewFile,
@@ -359,6 +365,7 @@ function FileTreeBody({
         data={data}
         onActivateFile={onActivateFile}
         onActivateFolder={onActivateFolder}
+        onDelete={onDelete}
         onLoadChildren={onLoadChildren}
         onNodeOpenChange={onNodeOpenChange}
         onPreviewFile={onPreviewFile}

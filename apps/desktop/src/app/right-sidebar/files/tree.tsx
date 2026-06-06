@@ -3,8 +3,15 @@ import { type NodeApi, type NodeRendererProps, Tree, type TreeApi } from 'react-
 
 import { PageLoader } from '@/components/page-loader'
 import { Codicon } from '@/components/ui/codicon'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger
+} from '@/components/ui/context-menu'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import type { TreeNode } from './use-project-tree'
@@ -18,6 +25,7 @@ interface ProjectTreeProps {
   data: TreeNode[]
   onActivateFile: (path: string) => void
   onActivateFolder: (path: string) => void
+  onDelete?: (path: string) => Promise<void>
   onLoadChildren: (id: string) => void | Promise<void>
   onNodeOpenChange: (id: string, open: boolean) => void
   onPreviewFile?: (path: string) => void
@@ -30,6 +38,7 @@ export function ProjectTree({
   data,
   onActivateFile,
   onActivateFolder,
+  onDelete,
   onLoadChildren,
   onNodeOpenChange,
   onPreviewFile,
@@ -38,6 +47,7 @@ export function ProjectTree({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
   const [size, setSize] = useState({ height: 0, width: 0 })
+  const [deleteTarget, setDeleteTarget] = useState<{ isDirectory: boolean; name: string; path: string } | null>(null)
 
   const syncTreeSize = useCallback(() => {
     const el = containerRef.current
@@ -85,47 +95,91 @@ export function ProjectTree({
     [onPreviewFile]
   )
 
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (!onDelete || (event.key !== 'Delete' && event.key !== 'Backspace')) {
+        return
+      }
+
+      const focused = treeRef.current?.focusedNode
+
+      if (!focused?.data || focused.data.id.endsWith('::__loading__')) {
+        return
+      }
+
+      event.preventDefault()
+      setDeleteTarget({
+        isDirectory: focused.data.isDirectory,
+        name: focused.data.name,
+        path: focused.data.id
+      })
+    },
+    [onDelete]
+  )
+
   return (
-    <div className="min-h-0 flex-1 overflow-hidden" ref={containerRef}>
-      {size.height > 0 && size.width > 0 ? (
-        <Tree<TreeNode>
-          childrenAccessor={node => (node?.isDirectory ? (node.children ?? []) : null)}
-          data={data}
-          disableDrag
-          disableDrop
-          disableEdit
-          height={size.height}
-          indent={INDENT}
-          initialOpenState={openState}
-          key={`${cwd}:${collapseNonce}`}
-          onActivate={handleActivate}
-          onToggle={handleToggle}
-          openByDefault={false}
-          padding={0}
-          ref={treeRef}
-          rowHeight={ROW_HEIGHT}
-          width={size.width}
-        >
-          {props => (
-            <ProjectTreeRow
-              {...props}
-              onAttachFile={onActivateFile}
-              onAttachFolder={onActivateFolder}
-              onPreviewFile={onPreviewFile}
-            />
-          )}
-        </Tree>
-      ) : (
-        <TreeSizingState />
+    <>
+      <div className="min-h-0 flex-1 overflow-hidden" onKeyDown={handleKeyDown} ref={containerRef}>
+        {size.height > 0 && size.width > 0 ? (
+          <Tree<TreeNode>
+            childrenAccessor={node => (node?.isDirectory ? (node.children ?? []) : null)}
+            data={data}
+            disableDrag
+            disableDrop
+            disableEdit
+            height={size.height}
+            indent={INDENT}
+            initialOpenState={openState}
+            key={`${cwd}:${collapseNonce}`}
+            onActivate={handleActivate}
+            onToggle={handleToggle}
+            openByDefault={false}
+            padding={0}
+            ref={treeRef}
+            rowHeight={ROW_HEIGHT}
+            width={size.width}
+          >
+            {props => (
+              <ProjectTreeRow
+                {...props}
+                onAttachFile={onActivateFile}
+                onAttachFolder={onActivateFolder}
+                onDelete={onDelete}
+                onDeleteRequest={(path, name, isDirectory) => setDeleteTarget({ isDirectory, name, path })}
+                onPreviewFile={onPreviewFile}
+              />
+            )}
+          </Tree>
+        ) : (
+          <TreeSizingState />
+        )}
+      </div>
+      {deleteTarget && onDelete && (
+        <ConfirmDialog
+          confirmLabel="Delete"
+          destructive
+          description={
+            <>
+              This will move{' '}
+              <span className="font-mono text-xs">{deleteTarget.name}</span>{' '}
+              to the trash{deleteTarget.isDirectory ? ' and all its contents' : ''}.
+            </>
+          }
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={async () => {
+            await onDelete(deleteTarget.path)
+            setDeleteTarget(null)
+          }}
+          open
+          title={deleteTarget.isDirectory ? 'Delete folder?' : 'Delete file?'}
+        />
       )}
-    </div>
+    </>
   )
 }
 
 function TreeSizingState() {
-  const { t } = useI18n()
-
-  return <PageLoader aria-label={t.rightSidebar.loadingFiles} className="min-h-24 px-3" />
+  return <PageLoader aria-label="Loading files" className="min-h-24 px-3" />
 }
 
 function ProjectTreeRow({
@@ -133,11 +187,15 @@ function ProjectTreeRow({
   node,
   onAttachFile,
   onAttachFolder,
+  onDelete,
+  onDeleteRequest,
   onPreviewFile,
   style
 }: NodeRendererProps<TreeNode> & {
   onAttachFile: (path: string) => void
   onAttachFolder: (path: string) => void
+  onDelete?: (path: string) => Promise<void>
+  onDeleteRequest?: (path: string, name: string, isDirectory: boolean) => void
   onPreviewFile?: (path: string) => void
 }) {
   if (!node.data) {
@@ -147,7 +205,7 @@ function ProjectTreeRow({
   const isFolder = node.data.isDirectory
   const isPlaceholder = node.data.id.endsWith('::__loading__')
 
-  return (
+  const row = (
     <div
       aria-expanded={isFolder ? node.isOpen : undefined}
       aria-selected={node.isSelected}
@@ -220,5 +278,49 @@ function ProjectTreeRow({
       </span>
       <span className="min-w-0 flex-1 truncate">{node.data.name}</span>
     </div>
+  )
+
+  if (!onDelete || isPlaceholder) {
+    return row
+  }
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+      <ContextMenuContent>
+        {!isFolder && (
+          <ContextMenuItem
+            onSelect={() => {
+              onPreviewFile?.(node.data!.id)
+            }}
+          >
+            <Codicon name="eye" size="0.75rem" />
+            Open Preview
+          </ContextMenuItem>
+        )}
+        <ContextMenuItem
+          onSelect={() => {
+            ;(isFolder ? onAttachFolder : onAttachFile)(node.data!.id)
+          }}
+        >
+          <Codicon name="attach" size="0.75rem" />
+          Attach to Chat
+        </ContextMenuItem>
+        {onDeleteRequest && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              variant="destructive"
+              onSelect={() => {
+                onDeleteRequest(node.data!.id, node.data!.name, node.data!.isDirectory)
+              }}
+            >
+              <Codicon name="trash" size="0.75rem" />
+              Delete
+            </ContextMenuItem>
+          </>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }

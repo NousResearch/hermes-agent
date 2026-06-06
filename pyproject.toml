@@ -82,14 +82,12 @@ dependencies = [
   # matrix extra's `mautrix`/`python-olm` it's safe to ship everywhere — keeps
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2",
-  # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]==2.13.0",  # PYSEC-2026-175/177/178/179
+  # HMAC JWT support is pure Python and safe on every supported platform.
+  # Asymmetric GitHub App JWT support lives in the optional [crypto] profile.
+  "PyJWT==2.13.0",  # PYSEC-2026-175/177/178/179
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
   "urllib3>=2.7.0,<3",
-  # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
-  # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
-  "cryptography==46.0.7",  # CVE-2026-39892, CVE-2026-34073
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -108,7 +106,9 @@ dependencies = [
   # .gitignore-aware file matching for desktop build stamp.
   "pathspec==1.1.1",
   "fastapi>=0.104.0,<1",
-  "uvicorn[standard]>=0.24.0,<1",
+  # Keep the core server path pure Python. The normal [all] profile adds
+  # uvicorn[standard]; the explicit [linux-i686] profile intentionally does not.
+  "uvicorn>=0.24.0,<1",
   # Streaming multipart uploads for the dashboard file manager (NS-501).
   # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
   # by fastapi itself, so the dashboard's multipart upload endpoint would 500
@@ -158,6 +158,11 @@ modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 hindsight = ["hindsight-client==0.6.1"]
 dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
+# Optional native crypto. Exact pins keep GitHub App JWT and WeCom/Weixin
+# encryption paths on the audited versions used by normal [all] installs.
+crypto = ["PyJWT[crypto]==2.13.0", "cryptography==46.0.7"]  # cryptography: CVE-2026-39892, CVE-2026-34073
+# Native server accelerators have no Linux i686 wheels.
+uvicorn-standard = ["uvicorn[standard]==0.41.0"]
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.1: CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.1"]
@@ -269,7 +274,12 @@ youtube = [
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 # starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1", "python-multipart==0.0.27"]
+web = [
+  "fastapi==0.133.1",
+  "uvicorn==0.41.0",
+  "starlette==1.0.1",
+  "python-multipart==0.0.27",
+]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
@@ -295,11 +305,32 @@ all = [
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[pty]",
-  "hermes-agent[mcp]",
+  # Native crypto and uvicorn accelerators are part of normal full installs,
+  # but are omitted by the explicit linux-i686 installer profile below.
+  "hermes-agent[crypto]; sys_platform != 'linux' or (platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686')",
+  "hermes-agent[uvicorn-standard]; sys_platform != 'linux' or (platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686')",
+  # MCP and Google authentication paths may resolve cryptography. Keep the
+  # default all-profile installable on Linux i686; explicit opt-in remains
+  # possible when the distribution supplies a compatible crypto build.
+  "hermes-agent[mcp]; sys_platform != 'linux' or (platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686')",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
-  "hermes-agent[google]",
+  "hermes-agent[google]; sys_platform != 'linux' or (platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686')",
+  "hermes-agent[web]",
+  "hermes-agent[youtube]",
+]
+# Explicit installer profile for any detected 32-bit x86 userspace. Unlike PEP
+# 508 platform_machine markers, shell detection can identify an i686 userspace
+# under an x86_64 kernel via getconf LONG_BIT. Keep this list intentionally
+# free of cryptography, uvloop, httptools, watchfiles, MCP, and Google auth.
+linux-i686 = [
+  "hermes-agent[cron]",
+  "hermes-agent[cli]",
+  "hermes-agent[pty]",
+  "hermes-agent[homeassistant]",
+  "hermes-agent[sms]",
+  "hermes-agent[acp]",
   "hermes-agent[web]",
   "hermes-agent[youtube]",
 ]

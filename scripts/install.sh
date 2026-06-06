@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================================
 # Hermes Agent Installer
 # ============================================================================
@@ -80,6 +80,7 @@ STAGE_NAME=""
 JSON_OUTPUT=false
 NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
+LINUX_I686_SYSTEM_PYTHON=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -390,14 +391,28 @@ is_termux() {
 
 is_linux_i686() {
     [ "${OS:-}" = "linux" ] || return 1
-    case "$(uname -m 2>/dev/null || true)" in
-        i386|i486|i586|i686) ;;
+
+    local machine bits
+    machine="$(uname -m 2>/dev/null || true)"
+    bits="$(getconf LONG_BIT 2>/dev/null || true)"
+
+    case "${machine,,}" in
+        i386|i486|i586|i686) return 0 ;;
+        x86|x86_64|amd64)
+            # A 32-bit userspace may run under a 64-bit x86 kernel, in which
+            # case uname reports x86_64 while Python/wheels are still i686.
+            [ "$bits" = "32" ]
+            ;;
         *) return 1 ;;
     esac
+}
 
-    local bits
-    bits="$(getconf LONG_BIT 2>/dev/null || true)"
-    [ -z "$bits" ] || [ "$bits" = "32" ]
+dependency_profile() {
+    if is_linux_i686; then
+        printf '%s\n' 'linux-i686'
+    else
+        printf '%s\n' 'all'
+    fi
 }
 
 configure_linux_i686_tempdir() {
@@ -411,6 +426,20 @@ configure_linux_i686_tempdir() {
     export TMPDIR="$HERMES_HOME/tmp"
     mkdir -p "$TMPDIR"
     log_info "Linux i686 detected — using $TMPDIR for installer temp files"
+}
+
+configure_linux_i686_uv_python_dirs() {
+    if ! is_linux_i686 || [ "$ROOT_FHS_LAYOUT" = true ]; then
+        return 0
+    fi
+
+    # uv has Linux i686 builds and can provision compatible CPython releases,
+    # but keep those interpreter downloads under Hermes' data dir on small
+    # 32-bit systems instead of defaulting to a possibly tmpfs-backed home.
+    export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$HERMES_HOME/uv/python}"
+    export UV_PYTHON_BIN_DIR="${UV_PYTHON_BIN_DIR:-$HERMES_HOME/uv/bin}"
+    mkdir -p "$UV_PYTHON_INSTALL_DIR" "$UV_PYTHON_BIN_DIR"
+    log_info "Linux i686 detected — using $UV_PYTHON_INSTALL_DIR for uv-managed Python"
 }
 
 find_compatible_python() {
@@ -448,12 +477,14 @@ find_compatible_python() {
 resolve_install_layout() {
     if [ "$INSTALL_DIR_EXPLICIT" = true ]; then
         log_info "Install directory: $INSTALL_DIR (explicit)"
+        configure_linux_i686_uv_python_dirs
         return 0
     fi
 
     # Termux: package manager manages /data/data/..., keep code in HERMES_HOME.
     if is_termux; then
         INSTALL_DIR="$HERMES_HOME/hermes-agent"
+        configure_linux_i686_uv_python_dirs
         return 0
     fi
 
@@ -486,6 +517,7 @@ resolve_install_layout() {
 
     # Default: non-root, non-Termux → legacy user-scoped layout.
     INSTALL_DIR="$HERMES_HOME/hermes-agent"
+    configure_linux_i686_uv_python_dirs
 }
 
 get_command_link_dir() {
@@ -671,18 +703,17 @@ check_python() {
         return 0
     fi
 
-    if is_linux_i686; then
-        log_info "Linux i686 detected — using system Python instead of uv-managed Python"
-        log_info "uv-managed CPython does not publish Linux i686 builds; need Python >=3.11,<3.14."
+    if [ -n "${HERMES_PYTHON:-}" ]; then
         if PYTHON_PATH="$(find_compatible_python)"; then
             PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
             log_success "Python found: $PYTHON_FOUND_VERSION ($PYTHON_PATH)"
+            if is_linux_i686; then
+                LINUX_I686_SYSTEM_PYTHON=true
+            fi
             return 0
         fi
 
-        log_error "No compatible Python found for Linux i686"
-        log_info "Install Python 3.11, 3.12, or 3.13 with your distro/package manager,"
-        log_info "or set HERMES_PYTHON=/path/to/python before rerunning this installer."
+        log_error "HERMES_PYTHON does not point to Python >=3.11,<3.14: $HERMES_PYTHON"
         exit 1
     fi
 
@@ -702,9 +733,17 @@ check_python() {
         PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION")"
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python installed: $PYTHON_FOUND_VERSION"
+    elif is_linux_i686 && PYTHON_PATH="$(find_compatible_python)"; then
+        LINUX_I686_SYSTEM_PYTHON=true
+        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+        log_warn "uv Python install failed on Linux i686; using system Python: $PYTHON_FOUND_VERSION ($PYTHON_PATH)"
     else
         log_error "Failed to install Python $PYTHON_VERSION"
-        log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
+        if is_linux_i686; then
+            log_info "Install Python 3.11, 3.12, or 3.13, or set HERMES_PYTHON=/path/to/python."
+        else
+            log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
+        fi
         exit 1
     fi
 }
@@ -1378,7 +1417,7 @@ setup_venv() {
         return 0
     fi
 
-    if is_linux_i686; then
+    if [ "$LINUX_I686_SYSTEM_PYTHON" = true ]; then
         log_info "Creating virtual environment with Linux i686 system Python..."
 
         if [ -d "venv" ]; then
@@ -1523,7 +1562,12 @@ install_deps() {
         fi
     fi
 
-    # Install the main package in editable mode with all extras.
+    # Install the main package in editable mode with the platform profile.
+    local _INSTALL_PROFILE
+    _INSTALL_PROFILE="$(dependency_profile)"
+    if [ "$_INSTALL_PROFILE" = "linux-i686" ]; then
+        log_info "Linux i686 userspace detected - using the wheel-safe [linux-i686] dependency profile"
+    fi
     #
     # Hash-verified install (Tier 0) — when uv.lock is present, prefer
     # `uv sync --locked`. The lockfile records SHA256 hashes for every
@@ -1560,7 +1604,7 @@ install_deps() {
         #                  This respects the curation in pyproject.toml.
         # uv's own progress UI handles TTY detection and downgrades
         # gracefully when stdout/stderr aren't terminals.
-        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
+        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra "$_INSTALL_PROFILE" --locked; then
             log_success "Main package installed (hash-verified via uv.lock)"
             log_success "All dependencies installed"
             return 0
@@ -1591,17 +1635,18 @@ install_deps() {
     #         a separate PyPI-only tier had no remaining content.
     local _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
 
-    # Parse [project.optional-dependencies].all from pyproject.toml.
+    # Parse the selected profile from pyproject.toml.
     # tomllib is stdlib on Python 3.11+ which uv's bootstrap guarantees.
     # Falls back to a hand list if parse fails — defensive only.
     local _ALL_EXTRAS_CSV
     _ALL_EXTRAS_CSV="$(
-        "$PYTHON_PATH" - <<'PY' 2>/dev/null
-import re, sys, tomllib
+        HERMES_INSTALL_PROFILE="$_INSTALL_PROFILE" "$PYTHON_PATH" - <<'PY' 2>/dev/null
+import os, re, sys, tomllib
 try:
     with open("pyproject.toml", "rb") as fh:
         data = tomllib.load(fh)
-    specs = data["project"]["optional-dependencies"]["all"]
+    profile = os.environ["HERMES_INSTALL_PROFILE"]
+    specs = data["project"]["optional-dependencies"][profile]
     extras = []
     for s in specs:
         m = re.search(r"hermes-agent\[([\w-]+)\]", s)
@@ -1614,12 +1659,12 @@ except Exception as e:
 PY
     )"
     if [ -z "$_ALL_EXTRAS_CSV" ]; then
-        log_warn "Could not parse [all] from pyproject.toml; falling back to .[all] only."
+        log_warn "Could not parse [$_INSTALL_PROFILE] from pyproject.toml; using that profile directly."
         _ALL_EXTRAS_CSV=""
     fi
 
     # Build "[all] minus broken" spec by filtering the parsed list.
-    local _SAFE_SPEC=".[all]"
+    local _SAFE_SPEC=".[$_INSTALL_PROFILE]"
     if [ -n "$_ALL_EXTRAS_CSV" ] && [ "${#_BROKEN_EXTRAS[@]}" -gt 0 ]; then
         local _SAFE_EXTRAS=()
         local _e _b _skip
@@ -1652,8 +1697,8 @@ PY
         return 1
     }
 
-    install_tier "all" ".[all]" \
-        || install_tier "all minus known-broken (${_BROKEN_EXTRAS[*]:-none})" "$_SAFE_SPEC" \
+    install_tier "$_INSTALL_PROFILE" ".[${_INSTALL_PROFILE}]" \
+        || install_tier "$_INSTALL_PROFILE minus known-broken (${_BROKEN_EXTRAS[*]:-none})" "$_SAFE_SPEC" \
         || install_tier "core only (no extras)" "."
 
     rm -f "$ALL_INSTALL_LOG"

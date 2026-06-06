@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================================
 # Hermes Agent Setup Script
 # ============================================================================
@@ -34,6 +34,7 @@ cd "$SCRIPT_DIR"
 export UV_NO_CONFIG=1
 
 PYTHON_VERSION="3.11"
+LINUX_I686_SYSTEM_PYTHON=false
 
 is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
@@ -41,14 +42,26 @@ is_termux() {
 
 is_linux_i686() {
     [ "$(uname -s 2>/dev/null || true)" = "Linux" ] || return 1
-    case "$(uname -m 2>/dev/null || true)" in
-        i386|i486|i586|i686) ;;
+
+    local machine bits
+    machine="$(uname -m 2>/dev/null || true)"
+    bits="$(getconf LONG_BIT 2>/dev/null || true)"
+
+    case "${machine,,}" in
+        i386|i486|i586|i686) return 0 ;;
+        x86|x86_64|amd64)
+            [ "$bits" = "32" ]
+            ;;
         *) return 1 ;;
     esac
+}
 
-    local bits
-    bits="$(getconf LONG_BIT 2>/dev/null || true)"
-    [ -z "$bits" ] || [ "$bits" = "32" ]
+dependency_profile() {
+    if is_linux_i686; then
+        printf '%s\n' 'linux-i686'
+    else
+        printf '%s\n' 'all'
+    fi
 }
 
 configure_linux_i686_tempdir() {
@@ -59,6 +72,17 @@ configure_linux_i686_tempdir() {
     export TMPDIR="$SCRIPT_DIR/.tmp"
     mkdir -p "$TMPDIR"
     echo -e "${CYAN}→${NC} Linux i686 detected — using $TMPDIR for setup temp files"
+}
+
+configure_linux_i686_uv_python_dirs() {
+    if ! is_linux_i686; then
+        return 0
+    fi
+
+    export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$SCRIPT_DIR/.uv/python}"
+    export UV_PYTHON_BIN_DIR="${UV_PYTHON_BIN_DIR:-$SCRIPT_DIR/.uv/bin}"
+    mkdir -p "$UV_PYTHON_INSTALL_DIR" "$UV_PYTHON_BIN_DIR"
+    echo -e "${CYAN}→${NC} Linux i686 detected — using $UV_PYTHON_INSTALL_DIR for uv-managed Python"
 }
 
 find_compatible_python() {
@@ -99,6 +123,7 @@ echo ""
 echo -e "${CYAN}⚕ Hermes Agent Setup${NC}"
 echo ""
 configure_linux_i686_tempdir
+configure_linux_i686_uv_python_dirs
 
 # ============================================================================
 # Install / locate uv
@@ -189,28 +214,41 @@ if is_termux; then
         echo "    Run: pkg install python"
         exit 1
     fi
-elif is_linux_i686; then
-    echo -e "${CYAN}→${NC} Linux i686 detected — using system Python instead of uv-managed Python"
-    echo -e "${CYAN}→${NC} uv-managed CPython does not publish Linux i686 builds; need Python >=3.11,<3.14."
-    if PYTHON_PATH="$(find_compatible_python)"; then
-        PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
-        echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION found ($PYTHON_PATH)"
-    else
-        echo -e "${RED}✗${NC} No compatible Python found for Linux i686"
-        echo "    Install Python 3.11, 3.12, or 3.13, or set HERMES_PYTHON=/path/to/python"
-        exit 1
-    fi
 else
-    if $UV_CMD python find "$PYTHON_VERSION" &> /dev/null; then
+    if [ -n "${HERMES_PYTHON:-}" ]; then
+        if PYTHON_PATH="$(find_compatible_python)"; then
+            PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+            echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION found ($PYTHON_PATH)"
+            if is_linux_i686; then
+                LINUX_I686_SYSTEM_PYTHON=true
+            fi
+        else
+            echo -e "${RED}✗${NC} HERMES_PYTHON does not point to Python >=3.11,<3.14: $HERMES_PYTHON"
+            exit 1
+        fi
+    elif $UV_CMD python find "$PYTHON_VERSION" &> /dev/null; then
         PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
         PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
         echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION found"
     else
         echo -e "${CYAN}→${NC} Python $PYTHON_VERSION not found, installing via uv..."
-        $UV_CMD python install "$PYTHON_VERSION"
-        PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
-        PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
-        echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION installed"
+        if $UV_CMD python install "$PYTHON_VERSION"; then
+            PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
+            PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+            echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION installed"
+        elif is_linux_i686 && PYTHON_PATH="$(find_compatible_python)"; then
+            LINUX_I686_SYSTEM_PYTHON=true
+            PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+            echo -e "${YELLOW}⚠${NC} uv Python install failed on Linux i686; using system Python: $PYTHON_FOUND_VERSION ($PYTHON_PATH)"
+        else
+            echo -e "${RED}✗${NC} Failed to install Python $PYTHON_VERSION"
+            if is_linux_i686; then
+                echo "    Install Python 3.11, 3.12, or 3.13, or set HERMES_PYTHON=/path/to/python"
+            else
+                echo "    Install Python $PYTHON_VERSION manually, then re-run this script"
+            fi
+            exit 1
+        fi
     fi
 fi
 
@@ -228,7 +266,7 @@ fi
 if is_termux; then
     "$PYTHON_PATH" -m venv venv
     echo -e "${GREEN}✓${NC} venv created with stdlib venv"
-elif is_linux_i686; then
+elif [ "$LINUX_I686_SYSTEM_PYTHON" = true ]; then
     if ! "$PYTHON_PATH" -m venv venv; then
         echo -e "${RED}✗${NC} Failed to create venv with $PYTHON_PATH"
         echo "    Install the venv/ensurepip package for your Python 3.11-3.13 build, then rerun."
@@ -272,6 +310,7 @@ else
     # breaks; users keep voice / honcho / google / slack / matrix etc. even
     # if mistral can't resolve.
     _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
+    _INSTALL_PROFILE="$(dependency_profile)"
     _ALL_EXTRAS=(
         modal daytona messaging matrix cron cli dev tts-premium slack
         pty honcho mcp homeassistant sms acp voice dingtalk feishu google
@@ -285,9 +324,14 @@ else
         done
         [ "$_skip" = false ] && _SAFE_EXTRAS+=("$_e")
     done
-    _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
+    if [ "$_INSTALL_PROFILE" = "linux-i686" ]; then
+        _SAFE_SPEC=".[linux-i686]"
+        echo -e "${CYAN}→${NC} Linux i686 userspace detected - using the wheel-safe [linux-i686] dependency profile"
+    else
+        _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
+    fi
     _try_install() {
-        $UV_CMD pip install -e ".[all]" \
+        $UV_CMD pip install -e ".[${_INSTALL_PROFILE}]" \
             || $UV_CMD pip install -e "$_SAFE_SPEC" \
             || $UV_CMD pip install -e "."
     }
@@ -310,7 +354,7 @@ else
         # at first use.
         # Also: stream stderr through directly so the user sees uv's
         # progress UI instead of staring at a frozen prompt.
-        if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --extra all --locked; then
+        if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --extra "$_INSTALL_PROFILE" --locked; then
             echo -e "${GREEN}✓${NC} Dependencies installed (hash-verified via uv.lock)"
         else
             echo -e "${YELLOW}⚠${NC} Lockfile sync failed (see uv output above)."

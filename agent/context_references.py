@@ -341,12 +341,23 @@ def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -
 
 def _ensure_reference_path_allowed(path: Path) -> None:
     from hermes_constants import get_hermes_home
-    home = Path(os.path.expanduser("~")).resolve()
+
+    home_candidates: list[Path] = []
+    for raw_home in (os.environ.get("HOME"), os.path.expanduser("~")):
+        if not raw_home:
+            continue
+        try:
+            candidate = Path(raw_home).resolve()
+        except (OSError, RuntimeError):
+            continue
+        if candidate not in home_candidates:
+            home_candidates.append(candidate)
+
     hermes_home = get_hermes_home().resolve()
 
-    blocked_exact = {home / rel for rel in _SENSITIVE_HOME_FILES}
+    blocked_exact = {home / rel for home in home_candidates for rel in _SENSITIVE_HOME_FILES}
     blocked_exact.add(hermes_home / ".env")
-    blocked_dirs = [home / rel for rel in _SENSITIVE_HOME_DIRS]
+    blocked_dirs = [home / rel for home in home_candidates for rel in _SENSITIVE_HOME_DIRS]
     blocked_dirs.extend(hermes_home / rel for rel in _SENSITIVE_HERMES_DIRS)
 
     if path in blocked_exact:

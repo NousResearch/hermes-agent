@@ -692,9 +692,7 @@ class TestPlatformSlashCommand:
     """Test the /platform list|pause|resume slash command handler."""
 
     def _make_event(self, content: str):
-        ev = MagicMock()
-        ev.content = content
-        return ev
+        return MessageEvent(text=content)
 
     @pytest.mark.asyncio
     async def test_list_shows_connected_and_paused(self):

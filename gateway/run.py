@@ -10710,7 +10710,11 @@ class GatewayRunner:
             ``/platform pause whatsapp`` — stop the reconnect watcher hammering whatsapp
             ``/platform resume whatsapp`` — re-queue a paused platform for retry
         """
-        text = (getattr(event, "content", "") or "").strip()
+        text = (
+            getattr(event, "text", None)
+            or getattr(event, "content", "")
+            or ""
+        ).strip()
         # Strip the leading "/platform" (or "/PLATFORM") token if present
         parts = text.split(maxsplit=2)
         if parts and parts[0].lower().lstrip("/").startswith("platform"):

@@ -64,16 +64,21 @@ class OpenCodeGoProfile(ProviderProfile):
                 return extra_body, top_level
 
             enabled = reasoning_config.get("enabled") is not False
-            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
-
             if not enabled:
+                extra_body["thinking"] = {"type": "disabled"}
                 return extra_body, top_level
 
+            # To avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400 error,
+            # we only set reasoning_effort when enabled, and do not set extra_body["thinking"]
+            # unless reasoning_effort is omitted.
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if effort in {"xhigh", "max"}:
                 top_level["reasoning_effort"] = "high"
             elif effort in {"low", "medium", "high"}:
                 top_level["reasoning_effort"] = effort
+
+            if "reasoning_effort" not in top_level:
+                extra_body["thinking"] = {"type": "enabled"}
             return extra_body, top_level
 
         if not _is_deepseek_thinking_model(model):
@@ -82,17 +87,23 @@ class OpenCodeGoProfile(ProviderProfile):
         enabled = True
         if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
             enabled = False
-        extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
 
         if not enabled:
+            extra_body["thinking"] = {"type": "disabled"}
             return extra_body, top_level
 
+        # Enabled path
         if isinstance(reasoning_config, dict):
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if effort in {"xhigh", "max"}:
                 top_level["reasoning_effort"] = "max"
             elif effort in {"low", "medium", "high"}:
                 top_level["reasoning_effort"] = effort
+
+        # To avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400 error,
+        # we only set extra_body["thinking"] = "enabled" if we didn't specify a reasoning_effort.
+        if "reasoning_effort" not in top_level:
+            extra_body["thinking"] = {"type": "enabled"}
 
         return extra_body, top_level
 

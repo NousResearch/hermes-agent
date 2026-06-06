@@ -2176,7 +2176,7 @@ def _get_provider_chain() -> List[tuple]:
 # process won't inherit the unhealthy mark — that's intentional, since
 # the user might be running two profiles with different OpenRouter keys.
 
-_AUX_UNHEALTHY_TTL_SECONDS = 600  # 10 minutes
+_AUX_UNHEALTHY_TTL_SECONDS = 120  # 2 minutes (was 600 — transient billing issues don't warrant 10 min blacklist)
 _aux_unhealthy_until: Dict[str, float] = {}
 _aux_unhealthy_logged_at: Dict[str, float] = {}
 

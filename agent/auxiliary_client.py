@@ -1428,7 +1428,12 @@ def _resolve_openrouter_aux_model() -> str:
     that specifies a model (especially :free variants), use that model for
     auxiliary tasks instead of the hardcoded paid default.  This prevents
     unexpected billing for free-tier users.
+
+    Skip meta-router models (openrouter/auto, openrouter/free) as they are not
+    concrete models and would route through the router non-deterministically.
     """
+    META_ROUTER_MODELS = {"openrouter/auto", "openrouter/free"}
+    selected_model = None
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -1438,11 +1443,17 @@ def _resolve_openrouter_aux_model() -> str:
                 if isinstance(entry, dict):
                     prov = (entry.get("provider") or "").strip().lower()
                     model = (entry.get("model") or "").strip()
-                    if prov == "openrouter" and model:
-                        return model
+                    if prov == "openrouter" and model and model not in META_ROUTER_MODELS:
+                        selected_model = model
+                        break
     except Exception:
         pass
-    return _OPENROUTER_MODEL
+    if selected_model is None:
+        selected_model = _OPENROUTER_MODEL
+    logger.info(f"Using OpenRouter auxiliary model: {selected_model}")
+    return selected_model
+
+
 
 
 def _describe_openrouter_unavailable() -> str:

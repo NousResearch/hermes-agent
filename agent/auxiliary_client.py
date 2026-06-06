@@ -265,9 +265,6 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "stepfun": "step-3.5-flash",
     "kimi-coding-cn": "kimi-k2-turbo-preview",
     "gmi": "google/gemini-3.1-flash-lite-preview",
-    "minimax": "MiniMax-M2.7",
-    "minimax-oauth": "MiniMax-M2.7-highspeed",
-    "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
@@ -1621,6 +1618,47 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     )
 
 
+def _refresh_nous_recommended_model(
+    *, vision: bool, stale_model: Optional[str]
+) -> Optional[str]:
+    """Re-fetch the Nous Portal's recommended model after a stale-model 404.
+
+    Long-lived processes (gateway, watchers) cache the Portal's
+    ``recommended-models`` payload for 10 minutes and, in practice, can pin a
+    model for the whole process lifetime. When that model is later dropped from
+    the Nous → OpenRouter catalog, every auxiliary call 404s with
+    "model does not exist". This forces a fresh Portal fetch and returns a
+    model name to retry with:
+
+      * the Portal's current recommendation for the task, if it differs from
+        the model that just failed; otherwise
+      * ``_NOUS_MODEL`` (google/gemini-3-flash-preview), the known-good default,
+        if it too differs from the failed model.
+
+    Returns ``None`` when no usable alternative is available (e.g. the Portal
+    still recommends the exact model that just 404'd and the default also
+    matches it) — callers should then let the original error propagate.
+    """
+    stale = (stale_model or "").strip().lower()
+    fresh: Optional[str] = None
+    try:
+        from hermes_cli.models import get_nous_recommended_aux_model
+
+        fresh = get_nous_recommended_aux_model(vision=vision, force_refresh=True)
+    except Exception as exc:
+        logger.debug(
+            "Nous recommended-model refresh failed (%s); using default %s",
+            exc, _NOUS_MODEL,
+        )
+    if fresh and fresh.strip().lower() != stale:
+        return fresh
+    # Portal recommendation unchanged or unavailable — fall back to the
+    # hardcoded known-good default, but only if it's actually different.
+    if _NOUS_MODEL.strip().lower() != stale:
+        return _NOUS_MODEL
+    return None
+
+
 def _read_main_model() -> str:
     """Read the user's configured main model from config.yaml.
 
@@ -2449,6 +2487,46 @@ def _is_unsupported_temperature_error(exc: Exception) -> bool:
     public symbol because existing tests and call sites import it by name.
     """
     return _is_unsupported_parameter_error(exc, "temperature")
+
+
+def _is_model_not_found_error(exc: Exception) -> bool:
+    """Detect "the requested model doesn't exist" errors (404 / invalid model).
+
+    This fires when a resolved model name is no longer served by the endpoint
+    — most commonly when a long-lived process pinned a Portal-recommended model
+    that has since been dropped from the Nous → OpenRouter catalog. The Nous
+    proxy returns 404 with a body like::
+
+        Model 'gpt-5.4-mini' not found. The requested model does not exist
+        in our configuration or OpenRouter catalog.
+
+    Distinct from :func:`_is_payment_error` (which also matches some 404s for
+    free-tier/credit language) — this one keys on "does not exist / not found /
+    not a valid model" phrasing, and explicitly excludes the billing keywords
+    that the payment path already owns so the two predicates don't overlap.
+    """
+    status = getattr(exc, "status_code", None)
+    err_lower = str(exc).lower()
+    # Billing/quota 404s belong to _is_payment_error — don't claim them here.
+    if any(kw in err_lower for kw in (
+        "credits", "insufficient funds", "billing", "out of funds",
+        "balance_depleted", "no usable credits", "free tier", "free-tier",
+        "not available on the free tier",
+    )):
+        return False
+    if status not in {404, 400, None}:
+        return False
+    return any(kw in err_lower for kw in (
+        "model does not exist",
+        "does not exist in our configuration",
+        "openrouter catalog",
+        "is not a valid model",
+        "no such model",
+        "model not found",
+        "the model `",            # OpenAI-style: "The model `X` does not exist"
+        "model_not_found",
+        "unknown model",
+    ))
 
 
 def _evict_cached_clients(provider: str) -> None:
@@ -4675,10 +4753,14 @@ def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
 
 
 def _convert_openai_images_to_anthropic(messages: list) -> list:
-    """Convert OpenAI ``image_url`` content blocks to Anthropic ``image`` blocks.
+    """Convert OpenAI ``image_url``/``video_url`` blocks to Anthropic format.
 
-    Only touches messages that have list-type content with ``image_url`` blocks;
-    plain text messages pass through unchanged.
+    Converts:
+    - ``image_url`` blocks to Anthropic ``image`` blocks
+    - ``video_url`` blocks to Anthropic ``video`` blocks (MiniMax M3 compat)
+
+    Only touches messages that have list-type content with ``image_url`` or
+    ``video_url`` blocks; plain text messages pass through unchanged.
     """
     converted = []
     for msg in messages:
@@ -4712,6 +4794,39 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
                         "source": {
                             "type": "url",
                             "url": image_url_val,
+                        },
+                    })
+                changed = True
+            elif block.get("type") == "video_url":
+                # MiniMax's Anthropic-compatible endpoint expects a "video"
+                # block (not OpenAI's "video_url", and not "input_video").
+                # See https://platform.minimax.io/docs/api-reference/text-anthropic-api
+                # — the Messages-field table lists type="video" (M3 only,
+                # URL/base64/mm_file://). The source shape mirrors the "image"
+                # block: base64 → {type:"base64", media_type, data}, URL →
+                # {type:"url", url}.
+                video_url_val = (block.get("video_url") or {}).get("url", "")
+                if video_url_val.startswith("data:"):
+                    # Parse data URI: data:<media_type>;base64,<data>
+                    header, _, b64data = video_url_val.partition(",")
+                    media_type = "video/mp4"
+                    if ":" in header and ";" in header:
+                        media_type = header.split(":", 1)[1].split(";", 1)[0]
+                    new_content.append({
+                        "type": "video",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": b64data,
+                        },
+                    })
+                else:
+                    # URL-based video
+                    new_content.append({
+                        "type": "video",
+                        "source": {
+                            "type": "url",
+                            "url": video_url_val,
                         },
                     })
                 changed = True
@@ -5026,6 +5141,32 @@ def call_llm(
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
                     raise
                 first_err = retry_err
+
+        # ── Stale-model self-heal (Nous Portal recommendation drift) ───
+        # A long-lived process can pin a Portal-recommended model that has
+        # since been dropped from the Nous → OpenRouter catalog, so every
+        # auxiliary call 404s with "model does not exist". Force a fresh
+        # Portal fetch and retry once with the current recommendation (or the
+        # known-good default). Only applies to Nous-routed calls.
+        _heal_is_nous = (
+            resolved_provider == "nous"
+            or base_url_host_matches(_base_info, "inference-api.nousresearch.com")
+        )
+        if _is_model_not_found_error(first_err) and _heal_is_nous:
+            healed_model = _refresh_nous_recommended_model(
+                vision=(task == "vision"), stale_model=kwargs.get("model"))
+            if healed_model and healed_model != kwargs.get("model"):
+                logger.warning(
+                    "Auxiliary %s: model %r no longer in Nous catalog; "
+                    "retrying with refreshed recommendation %r",
+                    task or "call", kwargs.get("model"), healed_model,
+                )
+                kwargs["model"] = healed_model
+                try:
+                    return _validate_llm_response(
+                        client.chat.completions.create(**kwargs), task)
+                except Exception as retry_err:
+                    first_err = retry_err
 
         # ── Nous auth refresh parity with main agent ──────────────────
         client_is_nous = (
@@ -5463,6 +5604,31 @@ async def async_call_llm(
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
                     raise
                 first_err = retry_err
+
+        # ── Stale-model self-heal (Nous Portal recommendation drift) ───
+        # See the sync call_llm() path for the rationale: a long-lived process
+        # can pin a Portal-recommended model that has since been dropped from
+        # the Nous → OpenRouter catalog, 404'ing every auxiliary call. Force a
+        # fresh Portal fetch and retry once with the current recommendation.
+        _heal_is_nous = (
+            resolved_provider == "nous"
+            or base_url_host_matches(_client_base, "inference-api.nousresearch.com")
+        )
+        if _is_model_not_found_error(first_err) and _heal_is_nous:
+            healed_model = _refresh_nous_recommended_model(
+                vision=(task == "vision"), stale_model=kwargs.get("model"))
+            if healed_model and healed_model != kwargs.get("model"):
+                logger.warning(
+                    "Auxiliary %s (async): model %r no longer in Nous catalog; "
+                    "retrying with refreshed recommendation %r",
+                    task or "call", kwargs.get("model"), healed_model,
+                )
+                kwargs["model"] = healed_model
+                try:
+                    return _validate_llm_response(
+                        await client.chat.completions.create(**kwargs), task)
+                except Exception as retry_err:
+                    first_err = retry_err
 
         # ── Nous auth refresh parity with main agent ──────────────────
         client_is_nous = (

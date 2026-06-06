@@ -290,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "Nada para anular."
-    removed:               "↩️ {count} mensagem(ns) anulada(s).\nRemovido: \"{preview}\""
+    removed:               "↩️ {turns} turno(s) anulado(s) ({count} mensagem(ns)).\nGuardado em: \"{preview}\"\nCopia/edita o texto acima e envia-o para voltar a perguntar a partir daqui."
+    invalid_count:         "Contagem inválida \"{arg}\" — usa /undo ou /undo N."
 
   update:
     platform_not_messaging:  "✗ /update só está disponível em plataformas de mensagens. Executa `hermes update` a partir do terminal."
@@ -342,6 +343,8 @@ gateway:
     label_off:             "Desativado (apenas texto)"
     label_voice_only:      "Ativado (resposta de voz a mensagens de voz)"
     label_all:             "TTS (resposta de voz a todas as mensagens)"
+    help:                  "{toggle}\n\n**Como funciona o /voice**\n• `/voice on` — resposta por voz quando envias uma mensagem de voz\n• `/voice tts` — resposta por voz a *todas* as mensagens\n• `/voice off` — voltar às respostas apenas em texto\n• `/voice status` — mostrar o modo atual\n• `/voice` (sem argumento) — alternar rapidamente entre ligado e desligado{channels}"
+    help_channels:         "\n\n**Canais de voz ao vivo (Discord)**\n• Entra primeiro num canal de voz, depois `/voice channel` — eu entro, ouço e falo as minhas respostas\n• `/voice leave` — desligar do canal de voz"
 
   yolo:
     disabled:                   "⚠️ Modo YOLO **DESATIVADO** nesta sessão — comandos perigosos exigirão aprovação."

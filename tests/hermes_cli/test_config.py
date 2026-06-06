@@ -9,6 +9,7 @@ import yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
+    check_config_version,
     get_hermes_home,
     ensure_hermes_home,
     get_compatible_custom_providers,
@@ -155,6 +156,70 @@ class TestLoadConfigParseFailure:
             load_config()
             after_edit = capsys.readouterr().err
             assert "hermes config:" in after_edit, "edited file should re-warn"
+
+    def test_corrupt_config_is_backed_up(self, tmp_path, capsys):
+        """A broken config.yaml is snapshotted to a timestamped .bak so the
+        user's recoverable overrides survive a later wizard/config-set rewrite.
+
+        Ported from google-gemini/gemini-cli#21541 (policy-file TOML recovery),
+        adapted: we back up but deliberately do NOT reset config.yaml.
+        """
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            broken = "\tmodel: test/custom\nbroken indent:\n"
+            (tmp_path / "config.yaml").write_text(broken)
+
+            load_config()
+            err = capsys.readouterr().err
+
+            baks = list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+            assert len(baks) == 1, f"expected one backup, got {baks}"
+            # Backup preserves the original broken content verbatim
+            assert baks[0].read_text() == broken
+            # Original config.yaml is left untouched (not reset to clean state)
+            assert (tmp_path / "config.yaml").read_text() == broken
+            # User is told where the backup landed
+            assert str(baks[0]) in err
+
+    def test_backup_skips_when_same_size_bak_exists(self, tmp_path, capsys):
+        """Don't churn backups: if a corrupt backup of the same size already
+        exists (same corruption already preserved), skip making another."""
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            broken = "\tbroken:\n"
+            cfg = tmp_path / "config.yaml"
+            cfg.write_text(broken)
+
+            # Pre-existing backup of identical size simulates an earlier snapshot.
+            (tmp_path / "config.yaml.corrupt.20260101-000000.bak").write_text(broken)
+
+            load_config()
+
+            baks = list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+            assert len(baks) == 1, f"should not add a second same-size backup, got {baks}"
+
+    def test_corrupt_symlink_config_not_backed_up(self, tmp_path):
+        """Symlinked config.yaml is not copied (mirrors Gemini #21541 lstat
+        guard) — avoids clobbering whatever the symlink points at."""
+        import sys as _sys
+        if _sys.platform == "win32":
+            pytest.skip("symlink creation requires privileges on Windows")
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            real = tmp_path / "real_config.yaml"
+            real.write_text("\tbroken:\n")
+            link = tmp_path / "config.yaml"
+            link.symlink_to(real)
+
+            load_config()
+
+            assert not list(tmp_path.glob("config.yaml.corrupt.*.bak"))
 
 
 class TestSaveAndLoadRoundtrip:
@@ -486,6 +551,18 @@ class TestOptionalEnvVarsRegistry:
             all_vars.extend(vars_list)
         assert "TAVILY_API_KEY" in all_vars
 
+    def test_max_iterations_not_offered_as_env_var(self):
+        """HERMES_MAX_ITERATIONS must NOT be in OPTIONAL_ENV_VARS (issue #17534).
+
+        Offering it as an editable env var (dashboard, `hermes setup`) lets a
+        user write it to .env, recreating the stale ghost that shadows
+        config.yaml's agent.max_turns. The iteration budget is configured ONLY
+        via config.yaml; HERMES_MAX_ITERATIONS remains a read-only backward-compat
+        fallback in the gateway/CLI, never a promoted write target.
+        """
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert "HERMES_MAX_ITERATIONS" not in OPTIONAL_ENV_VARS
+
 
 class TestConfigMigrationSecretPrompts:
     def test_required_secret_env_prompt_uses_masked_prompt(self, tmp_path, monkeypatch):
@@ -528,6 +605,28 @@ class TestConfigMigrationSecretPrompts:
         assert saved["prompt"] == "  Test API key: "
         assert saved["TEST_API_KEY"] == "secret"
         assert results["env_added"] == ["TEST_API_KEY"]
+
+
+class TestConfigVersionDetection:
+    def test_check_config_version_uses_raw_on_disk_version(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("model: {}\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            assert load_config()["_config_version"] == DEFAULT_CONFIG["_config_version"]
+            assert check_config_version() == (0, DEFAULT_CONFIG["_config_version"])
+
+    def test_check_config_version_treats_missing_file_as_current(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            latest = DEFAULT_CONFIG["_config_version"]
+            assert check_config_version() == (latest, latest)
+
+    def test_check_config_version_does_not_migrate_invalid_yaml(self, tmp_path):
+        (tmp_path / "config.yaml").write_text("model: [unterminated\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            latest = DEFAULT_CONFIG["_config_version"]
+            assert check_config_version() == (latest, latest)
 
 
 class TestAnthropicTokenMigration:
@@ -892,4 +991,3 @@ class TestEnvWriteDenylist:
         # But the write path still refuses to update it
         with pytest.raises(ValueError, match="denylist"):
             save_env_value("LD_PRELOAD", "/tmp/evil.so")
-

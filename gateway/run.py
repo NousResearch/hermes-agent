@@ -669,6 +669,88 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     return None
 
 
+# Tool results can contain literal MEDIA: examples in docs, logs, or other
+# ordinary outputs. Only tools that intentionally create deliverable media
+# artifacts should be eligible for automatic append when the model omits them
+# from the final gateway reply.
+_AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool"}
+
+
+# Extension-anchored MEDIA: matcher for tool results. Mirrors the dispatch-site
+# pattern so a bare ``MEDIA:`` token in prose (no deliverable extension) is never
+# auto-appended. Kept local to the auto-append path; the producer-tool allowlist
+# below is the primary guard, this is the secondary precision guard.
+_TOOL_MEDIA_RE = re.compile(
+    r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+    r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
+    r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
+    r'txt|csv|apk|ipa))',
+    re.IGNORECASE,
+)
+
+
+def _collect_auto_append_media_tags(
+    messages: List[Dict[str, Any]],
+    history_offset: int = 0,
+    history_media_paths: Optional[set] = None,
+) -> tuple[List[str], bool]:
+    """Collect real media tags from current-turn producer-tool results only.
+
+    Two layered guards keep stale/example MEDIA: strings out of the reply:
+
+    1. Producer-tool allowlist: only tools that intentionally emit deliverable
+       artifacts (TTS) are eligible. Documentation, logs, and search results can
+       contain example strings such as MEDIA:/absolute/path/to/file, which must
+       never be delivered as attachments. (Fixes the original report behind #16721.)
+    2. Current-turn isolation: only messages produced this turn are scanned, so a
+       tool result from an earlier turn (still present in the full message list)
+       cannot leak onto a later text-only reply (#34608).
+
+    Mid-run context compression can rewrite/shrink the message list below the
+    original history length. When that happens the slice boundary is no longer
+    trustworthy, so fall back to scanning every message and rely on
+    ``history_media_paths`` for dedup, preserving the compression-safe behaviour
+    of #160. The producer-tool allowlist still applies on the fallback path.
+    """
+    history_media_paths = history_media_paths or set()
+    # Only trust the slice boundary when the message list still contains the
+    # full history prefix. Otherwise scan everything (compression-safe fallback).
+    if history_offset and len(messages) >= history_offset:
+        new_messages = messages[history_offset:]
+    else:
+        new_messages = messages
+
+    tool_name_by_call_id: Dict[str, str] = {}
+    for msg in new_messages:
+        if msg.get("role") != "assistant":
+            continue
+        for call in msg.get("tool_calls") or []:
+            call_id = call.get("id") or call.get("call_id")
+            fn = call.get("function") or {}
+            name = str(fn.get("name") or call.get("name") or "")
+            if call_id and name:
+                tool_name_by_call_id[str(call_id)] = name
+
+    media_tags: List[str] = []
+    has_voice_directive = False
+    for msg in new_messages:
+        if msg.get("role") not in ("tool", "function"):
+            continue
+        call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+        if tool_name_by_call_id.get(call_id) not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
+            continue
+        content = str(msg.get("content") or "")
+        if "MEDIA:" not in content:
+            continue
+        for match in _TOOL_MEDIA_RE.finditer(content):
+            path = match.group(1).strip().rstrip('\",}')
+            if path and path not in history_media_paths:
+                media_tags.append(f"MEDIA:{path}")
+        if "[[audio_as_voice]]" in content:
+            has_voice_directive = True
+
+    return media_tags, has_voice_directive
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -1097,6 +1179,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
+        _get_model_config,
     )
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
 
@@ -1118,6 +1201,26 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
+    model_cfg = _get_model_config()
+    max_tokens = None
+    _env_mt = os.environ.get("HERMES_MAX_TOKENS")
+    if _env_mt:
+        try:
+            max_tokens = int(_env_mt)
+        except (ValueError, TypeError):
+            max_tokens = None
+    elif isinstance(model_cfg, dict):
+        mt = model_cfg.get("max_tokens")
+        if isinstance(mt, int):
+            max_tokens = mt
+    # Fall back to a per-provider output cap (custom_providers max_output_tokens)
+    # only when the documented global model.max_tokens isn't set, so the global
+    # key always wins.
+    if max_tokens is None:
+        _runtime_mot = runtime.get("max_output_tokens")
+        if isinstance(_runtime_mot, int) and _runtime_mot > 0:
+            max_tokens = _runtime_mot
+
     return {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
@@ -1126,6 +1229,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "max_tokens": max_tokens,
     }
 
 
@@ -1671,6 +1775,60 @@ def _preserve_queued_followup_history_offset(
     merged = dict(followup_result)
     merged["history_offset"] = current_offset
     return merged
+
+
+async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None:
+    """Best-effort dispose for an adapter that never made it onto ``self.adapters``.
+
+    The reconnect watcher in ``GatewayRunner._platform_reconnect_watcher``
+    constructs a fresh adapter on every retry attempt. When the connect
+    call fails — for any of the three reasons (non-retryable error,
+    retryable error, exception during connect) — the adapter is dropped
+    without ever being installed, so nothing else will call its
+    ``disconnect()``. Any resources the adapter opened in ``__init__``
+    (e.g. ``APIServerAdapter`` opens a SQLite ``ResponseStore`` that
+    holds 2 fds — the db file and its WAL sidecar) stay open until
+    garbage collection sweeps the unreachable object, which Python's
+    cyclic GC does not do promptly for asyncio-bound objects with
+    native handles. The cumulative leak is 2 fds × every retry at the
+    300s backoff cap ≈ 12 fds/hour, and the default 2560-fd ulimit
+    is exhausted in ~12h of continuous failure, after which every
+    open() call on the gateway raises ``OSError: [Errno 24] Too many
+    open files`` and the gateway becomes a zombie (#37011).
+
+    This helper centralises the dispose-with-suppression so the three
+    failure paths in the reconnect watcher can all call it without
+    each one having to know that ``disconnect()`` may itself raise
+    on a half-constructed adapter.
+
+    ``adapter`` may be ``None``: the reconnect watcher initialises
+    ``adapter = None`` before the ``try`` so the ``except Exception``
+    arm can dispose a half-constructed object, and also early-returns
+    here when ``_create_adapter()`` returned ``None``.
+    """
+    if adapter is None:
+        return
+    try:
+        await adapter.disconnect()
+    except Exception:
+        # Half-constructed adapters (e.g. APIServerAdapter that
+        # crashed during aiohttp app setup) can raise from
+        # disconnect() on objects that never finished initializing.
+        # We must not let that escape and abort the watcher loop.
+        #
+        # On Python 3.8+, ``asyncio.CancelledError`` inherits from
+        # ``BaseException`` (not ``Exception``), so this ``except
+        # Exception`` does not swallow task cancellation. We don't
+        # re-raise explicitly because the watcher loop intentionally
+        # treats dispose failures as best-effort: a failed ``disconnect``
+        # call should not take down the reconnect watcher that
+        # itself is what's keeping the gateway alive during a partial
+        # outage.
+        logger.debug(
+            "Adapter dispose raised on unowned adapter %r",
+            getattr(adapter, "name", type(adapter).__name__),
+            exc_info=True,
+        )
 
 
 class GatewayRunner:
@@ -2460,6 +2618,7 @@ class GatewayRunner:
                 "api_key": override.get("api_key"),
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
+                "max_tokens": override.get("max_tokens"),
             }
             if override_runtime.get("api_key"):
                 logger.debug(
@@ -2557,6 +2716,7 @@ class GatewayRunner:
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
+            "max_tokens": runtime_kwargs.get("max_tokens"),
         }
         route = {
             "model": model,
@@ -2898,13 +3058,16 @@ class GatewayRunner:
         """Load ephemeral prefill messages from config or env var.
         
         Checks HERMES_PREFILL_MESSAGES_FILE env var first, then falls back to
-        the prefill_messages_file key in ~/.hermes/config.yaml.
+        the top-level prefill_messages_file key in ~/.hermes/config.yaml.
+        agent.prefill_messages_file is accepted as a legacy fallback.
         Relative paths are resolved from ~/.hermes/.
         """
         file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
         if not file_path:
             cfg = _load_gateway_runtime_config()
             file_path = str(cfg.get("prefill_messages_file", "") or "")
+            if not file_path:
+                file_path = str(cfg_get(cfg, "agent", "prefill_messages_file", default="") or "")
         if not file_path:
             return []
         path = Path(file_path).expanduser()
@@ -3668,6 +3831,7 @@ class GatewayRunner:
                     "on_session_finalize",
                     session_id=getattr(agent, "session_id", None),
                     platform="gateway",
+                    reason="shutdown",
                 )
             except Exception:
                 pass
@@ -4016,7 +4180,7 @@ class GatewayRunner:
         {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
     )
 
-    def _schedule_resume_pending_sessions(self) -> int:
+    def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
         ``resume_pending`` already preserves the transcript AND the existing
@@ -4029,7 +4193,15 @@ class GatewayRunner:
         Adapters that are not yet ready (adapter missing from
         ``self.adapters``) are skipped silently; their sessions stay
         ``resume_pending`` and will auto-resume on the next real user
-        message, or on the next gateway startup.
+        message, or when the platform reconnects — the reconnect watcher
+        calls this again scoped to that ``platform``.
+
+        ``platform`` (a ``Platform``) restricts the pass to sessions that
+        originated on that platform.  The reconnect path passes it so a
+        platform coming back online retries only its own sessions and never
+        re-touches another platform's in-flight recoveries.  Sessions whose
+        agent is already running are skipped regardless, so a session
+        scheduled at startup is never resumed a second time.
         """
         window = _auto_continue_freshness_window()
         try:
@@ -4041,6 +4213,7 @@ class GatewayRunner:
                     and not entry.suspended
                     and entry.origin is not None
                     and entry.resume_reason in self._AUTO_RESUME_REASONS
+                    and (platform is None or entry.origin.platform == platform)
                 ]
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
@@ -4051,6 +4224,11 @@ class GatewayRunner:
         for entry in candidates:
             marker = entry.last_resume_marked_at or entry.updated_at
             if marker is not None and (now - marker).total_seconds() > window:
+                continue
+
+            # Already being resumed (e.g. scheduled at startup and still
+            # in-flight) — don't synthesize a second continuation turn.
+            if entry.session_key in self._running_agents:
                 continue
 
             source = entry.origin
@@ -4900,6 +5078,7 @@ class GatewayRunner:
                                 "on_session_finalize",
                                 session_id=entry.session_id,
                                 platform=_platform,
+                                reason="session_expired",
                             )
                         except Exception:
                             pass
@@ -5039,6 +5218,30 @@ class GatewayRunner:
         cross boards, so delivery semantics are unchanged — this is
         purely a fan-out of the single-DB poll.
         """
+        # Gate: only the dispatch-owning gateway opens kanban DBs for notifier polling.
+        # Non-dispatch gateways have no subscriptions to deliver — all kanban state lives
+        # in the dispatch owner's per-board DBs. This prevents N-gateway -shm contention.
+        # TODO: gate per-board when per-board dispatcher_owner tracking lands.
+        try:
+            from hermes_cli.config import load_config as _load_config
+        except Exception:
+            logger.warning("kanban notifier: config loader unavailable; disabled")
+            return
+        env_override = os.environ.get("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "").strip().lower()
+        if env_override in {"0", "false", "no", "off"}:
+            logger.info("kanban notifier: disabled via HERMES_KANBAN_DISPATCH_IN_GATEWAY env")
+            return
+        try:
+            cfg = _load_config()
+        except Exception as exc:
+            logger.warning("kanban notifier: cannot load config (%s); disabled", exc)
+            return
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        if not kanban_cfg.get("dispatch_in_gateway", True):
+            logger.info(
+                "kanban notifier: disabled via config kanban.dispatch_in_gateway=false"
+            )
+            return
         from gateway.config import Platform as _Platform
         try:
             from hermes_cli import kanban_db as _kb
@@ -5223,10 +5426,12 @@ class GatewayRunner:
                             if ev.payload and ev.payload.get("summary"):
                                 payload_summary = str(ev.payload["summary"])
                             if payload_summary:
-                                h = payload_summary.strip().splitlines()[0][:200]
+                                lines = payload_summary.strip().splitlines()
+                                h = lines[0][:200] if lines else payload_summary[:200]
                                 handoff = f"\n{h}"
                             elif task and task.result:
-                                r = task.result.strip().splitlines()[0][:160]
+                                lines = task.result.strip().splitlines()
+                                r = lines[0][:160] if lines else task.result[:160]
                                 handoff = f"\n{r}"
                             msg = (
                                 f"✔ {tag}Kanban {sub['task_id']} done"
@@ -5574,7 +5779,14 @@ class GatewayRunner:
             logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
             return
 
-        interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
+        try:
+            interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
+        except (ValueError, TypeError):
+            logger.warning(
+                "kanban dispatcher: invalid dispatch_interval_seconds=%r, using default 60",
+                kanban_cfg.get("dispatch_interval_seconds"),
+            )
+            interval = 60.0
         interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
         # Read max_spawn config to limit concurrent kanban tasks
@@ -6069,6 +6281,7 @@ class GatewayRunner:
                     platform.value, attempt,
                 )
 
+                adapter = None
                 try:
                     adapter = self._create_adapter(platform, platform_config)
                     if not adapter:
@@ -6106,6 +6319,21 @@ class GatewayRunner:
                             await build_channel_directory(self.adapters)
                         except Exception:
                             pass
+
+                        # A platform that was offline at gateway startup never
+                        # got its restart-interrupted sessions auto-resumed —
+                        # the startup pass skips sessions whose adapter isn't
+                        # connected yet. Now that it's back, retry the
+                        # auto-resume scoped to this platform so recovery
+                        # doesn't silently wait for a manual user message.
+                        try:
+                            self._schedule_resume_pending_sessions(platform=platform)
+                        except Exception:
+                            logger.debug(
+                                "resume-pending reschedule after %s reconnect failed",
+                                platform.value,
+                                exc_info=True,
+                            )
                     # Check if the failure is non-retryable
                     elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
                         self._update_platform_runtime_status(
@@ -6118,6 +6346,15 @@ class GatewayRunner:
                             "Reconnect %s: non-retryable error (%s), removing from retry queue",
                             platform.value, adapter.fatal_error_message,
                         )
+                        # The adapter is about to be dropped from the queue
+                        # without ever being installed on self.adapters, so
+                        # nothing else will call disconnect() on it. We must
+                        # dispose it here, otherwise the resource owners it
+                        # constructed in __init__ (ResponseStore for
+                        # APIServerAdapter, etc.) leak 2 fds each. The
+                        # gateway hits the 2560-fd limit after ~12h of
+                        # failed reconnects at the 300s backoff cap (#37011).
+                        await _dispose_unused_adapter(adapter)
                         del self._failed_platforms[platform]
                     else:
                         self._update_platform_runtime_status(
@@ -6133,6 +6370,14 @@ class GatewayRunner:
                             "Reconnect %s failed, next retry in %ds",
                             platform.value, backoff,
                         )
+                        # Same fd-leak concern as the non-retryable branch
+                        # above: the adapter failed to connect and is being
+                        # thrown away. Without an explicit dispose call, the
+                        # resources it opened in __init__ stay open until
+                        # the next GC pass — and aiohttp/SQLite handles
+                        # don't get GC'd promptly, so 2 fds/retry leak at
+                        # 300s backoff cap = ~12 fds/hour (#37011).
+                        await _dispose_unused_adapter(adapter)
                         # Retryable failures (network/DNS blips) keep retrying
                         # at the backoff cap indefinitely — they self-heal once
                         # connectivity returns. We do NOT auto-pause them: a
@@ -6142,6 +6387,14 @@ class GatewayRunner:
                         # `not fatal_error_retryable` branch above, so anything
                         # reaching here is by definition retryable.
                 except Exception as e:
+                    if adapter is not None:
+                        # An exception escaping the connect call path
+                        # (DNS timeout, aiohttp server.start() crash, etc.)
+                        # leaves the adapter in the same unowned state as
+                        # the two branches above. Dispose so __init__
+                        # resources don't accumulate while the watcher
+                        # keeps retrying.
+                        await _dispose_unused_adapter(adapter)
                     self._update_platform_runtime_status(
                         platform.value,
                         platform_state="retrying",
@@ -6738,8 +6991,8 @@ class GatewayRunner:
         """Whether the adapter for *platform* gates access at intake itself.
 
         Mirrors ``BasePlatformAdapter.enforces_own_access_policy``. Adapters
-        such as WeCom, Weixin, Yuanbao, and QQBot evaluate their documented
-        ``dm_policy`` / ``group_policy`` / ``allow_from`` config before a
+        such as WeCom, Weixin, Yuanbao, QQBot, and WhatsApp evaluate their
+        documented ``dm_policy`` / ``group_policy`` / ``allow_from`` config before a
         message is dispatched to the gateway, so a message that reaches
         ``_is_user_authorized`` has already been authorized by the adapter.
         Defaults to ``False`` when the adapter is unknown or doesn't expose
@@ -6757,6 +7010,38 @@ class GatewayRunner:
         if adapter is None:
             return False
         return bool(getattr(adapter, "enforces_own_access_policy", False))
+
+    def _adapter_dm_policy(self, platform: Optional[Platform]) -> str:
+        """Best-effort read of an own-policy adapter's effective DM policy.
+
+        Returns the lowercased ``dm_policy`` (``"open"`` / ``"allowlist"`` /
+        ``"disabled"`` / ``"pairing"``) for *platform*, or ``""`` when unknown.
+        Prefers the live adapter's resolved ``_dm_policy`` — which already folds
+        in both ``config.extra`` and the ``<PLATFORM>_DM_POLICY`` env var (the
+        env var is not always bridged back into ``config.extra``) — and falls
+        back to ``config.extra`` for bare runners built without a live adapter.
+
+        Used by ``_is_user_authorized`` to carve ``dm_policy: pairing`` out of
+        the adapter-trust shortcut: in pairing mode the adapter forwards the DM
+        so the gateway can run its pairing handshake, so "reached the gateway"
+        must not be read as "authorized".
+        """
+        if not platform:
+            return ""
+        adapters = getattr(self, "adapters", None) or {}
+        adapter = adapters.get(platform)
+        policy = getattr(adapter, "_dm_policy", None) if adapter is not None else None
+        if policy is None:
+            config = getattr(self, "config", None)
+            platform_cfg = (
+                config.platforms.get(platform)
+                if config is not None and hasattr(config, "platforms")
+                else None
+            )
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                policy = extra.get("dm_policy")
+        return str(policy or "").strip().lower()
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
@@ -6905,7 +7190,20 @@ class GatewayRunner:
             # env-only default-deny below, which would silently break
             # `dm_policy: open` and config-only allowlists. (#34515)
             if self._adapter_enforces_own_access_policy(source.platform):
-                return True
+                # Exception: `dm_policy: pairing` does NOT authorize at intake.
+                # The adapter forwards the DM precisely so the gateway can run
+                # its pairing handshake (issue a code, consult the pairing
+                # store). The pairing-store approval check above already ran and
+                # returned False for this sender, so blanket-trusting the
+                # adapter here would silently turn pairing mode into open
+                # access. Fall through to default-deny so the unpaired sender is
+                # offered a pairing code instead. (Pairing is DM-only; group
+                # traffic keeps the adapter-trust path.)
+                if not (
+                    source.chat_type == "dm"
+                    and self._adapter_dm_policy(source.platform) == "pairing"
+                ):
+                    return True
             # No allowlists configured -- check global allow-all flag
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 
@@ -7634,6 +7932,8 @@ class GatewayRunner:
                     return await self._handle_profile_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
+                if _cmd_def_inner.name == "version":
+                    return await self._handle_version_command(event)
 
             # Catch-all: any other recognized slash command reached the
             # running-agent guard. Reject gracefully rather than falling
@@ -7940,11 +8240,23 @@ class GatewayRunner:
         if canonical == "undo":
             async def _do_undo():
                 return await self._handle_undo_command(event)
+            _undo_n = 1
+            _undo_raw = event.get_command_args().strip()
+            if _undo_raw:
+                try:
+                    _undo_n = max(1, int(_undo_raw.split()[0]))
+                except (ValueError, IndexError):
+                    _undo_n = 1
+            _undo_detail = (
+                "This removes the last user/assistant exchange from history."
+                if _undo_n == 1
+                else f"This removes the last {_undo_n} user turns from history."
+            )
             return await self._maybe_confirm_destructive_slash(
                 event=event,
                 command="undo",
                 title="/undo",
-                detail="This removes the last user/assistant exchange from history.",
+                detail=_undo_detail,
                 execute=_do_undo,
             )
         
@@ -7977,6 +8289,9 @@ class GatewayRunner:
 
         if canonical == "update":
             return await self._handle_update_command(event)
+
+        if canonical == "version":
+            return await self._handle_version_command(event)
 
         if canonical == "debug":
             return await self._handle_debug_command(event)
@@ -8238,18 +8553,14 @@ class GatewayRunner:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
             return _agent_result
         finally:
-            # If _run_agent replaced the sentinel with a real agent and
-            # then cleaned it up, this is a no-op.  If we exited early
-            # (exception, command fallthrough, etc.) the sentinel must
-            # not linger or the session would be permanently locked out.
-            if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
-                self._release_running_agent_state(_quick_key)
-            else:
-                # Agent path already cleaned _running_agents; make sure
-                # the paired metadata dicts are gone too.
-                self._running_agents_ts.pop(_quick_key, None)
-                if hasattr(self, "_busy_ack_ts"):
-                    self._busy_ack_ts.pop(_quick_key, None)
+            # Unconditional release covers every exit path. _release_running_agent_state
+            # is idempotent (pop-on-absent is harmless) and, called without a
+            # run_generation guard, always clears the slot regardless of which
+            # generation it holds. This evicts the zombie left when session_reset
+            # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
+            # inside _run_agent returns False, and the old sentinel-only check here
+            # missed the leftover real agent — locking the session out forever (#28686).
+            self._release_running_agent_state(_quick_key)
 
     async def _prepare_inbound_message_text(
         self,
@@ -9746,6 +10057,12 @@ class GatewayRunner:
         # Get existing session key
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
+        # Evict the running-agent slot now that the generation is bumped. The
+        # in-flight run's own guarded release (run_generation=old) will return
+        # False and leave its dead agent behind; clearing here keeps the slot
+        # from becoming a zombie that silently drops all later messages (#28686).
+        # Idempotent, so the run's finally calling it again is harmless.
+        self._release_running_agent_state(session_key)
 
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
@@ -9797,12 +10114,19 @@ class GatewayRunner:
         # previous conversation must not survive the reset.
         self._clear_session_boundary_security_state(session_key)
 
+        _old_sid = old_entry.session_id if old_entry else None
+
         # Fire plugin on_session_finalize hook (session boundary)
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _old_sid = old_entry.session_id if old_entry else None
-            _invoke_hook("on_session_finalize", session_id=_old_sid,
-                         platform=source.platform.value if source.platform else "")
+            _invoke_hook(
+                "on_session_finalize",
+                session_id=_old_sid,
+                platform=source.platform.value if source.platform else "",
+                reason="new_session",
+                old_session_id=_old_sid,
+                new_session_id=new_entry.session_id if new_entry else None,
+            )
         except Exception:
             pass
 
@@ -9871,8 +10195,14 @@ class GatewayRunner:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _new_sid = new_entry.session_id if new_entry else None
-            _invoke_hook("on_session_reset", session_id=_new_sid,
-                         platform=source.platform.value if source.platform else "")
+            _invoke_hook(
+                "on_session_reset",
+                session_id=_new_sid,
+                platform=source.platform.value if source.platform else "",
+                reason="new_session",
+                old_session_id=_old_sid,
+                new_session_id=_new_sid,
+            )
         except Exception:
             pass
 
@@ -10587,6 +10917,12 @@ class GatewayRunner:
                 return False
         return event.platform_update_id <= recorded_uid
 
+
+    async def _handle_version_command(self, event: MessageEvent) -> str:
+        """Handle /version — show the running Hermes Agent version."""
+        from hermes_cli.banner import format_banner_version_label
+
+        return format_banner_version_label()
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
@@ -11536,29 +11872,53 @@ class GatewayRunner:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 
     async def _handle_undo_command(self, event: MessageEvent) -> str:
-        """Handle /undo command - remove the last user/assistant exchange."""
+        """Handle /undo [N] — back up N user turns (default 1), soft-deleting
+        the truncated rows on disk and echoing the backed-up message text so
+        the user can copy/edit and resend.
+
+        Mirrors the CLI/TUI /undo: rewound rows stay in state.db (active=0)
+        for audit and are hidden from re-prompts and search. The cached agent
+        is evicted so the next message rebuilds context from the truncated
+        (active-only) transcript — the gateway's equivalent of the CLI's
+        in-place history surgery + memory-cache invalidation.
+        """
         source = event.source
+
+        # Parse optional turn count: "/undo" → 1, "/undo 3" → 3.
+        n = 1
+        raw_args = event.get_command_args().strip()
+        if raw_args:
+            try:
+                n = int(raw_args.split()[0])
+            except (ValueError, IndexError):
+                return t("gateway.undo.invalid_count", arg=raw_args.split()[0])
+            if n < 1:
+                n = 1
+
         session_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(session_entry.session_id)
-        
-        # Find the last user message and remove everything from it onward
-        last_user_idx = None
-        for i in range(len(history) - 1, -1, -1):
-            if history[i].get("role") == "user":
-                last_user_idx = i
-                break
-        
-        if last_user_idx is None:
+        result = self.session_store.rewind_session(session_entry.session_id, n)
+
+        if result is None:
             return t("gateway.undo.nothing")
-        
-        removed_msg = history[last_user_idx].get("content", "")
-        removed_count = len(history) - last_user_idx
-        self.session_store.rewrite_transcript(session_entry.session_id, history[:last_user_idx])
-        # Reset stored token count — transcript was truncated
+
+        # Reset stored token count — transcript was truncated.
         session_entry.last_prompt_tokens = 0
-        
-        preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
-        return t("gateway.undo.removed", count=removed_count, preview=preview)
+        # Evict the cached agent so the next turn rebuilds from the active-only
+        # transcript and memory providers refresh their per-session caches.
+        try:
+            session_key = build_session_key(source)
+            self._evict_cached_agent(session_key)
+        except Exception as e:
+            logger.debug("undo: cached-agent eviction skipped: %s", e)
+
+        target_text = result["target_text"]
+        preview = target_text[:200] + "..." if len(target_text) > 200 else target_text
+        return t(
+            "gateway.undo.removed",
+            turns=result["turns_undone"],
+            count=result["rewound_count"],
+            preview=preview,
+        )
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
@@ -11673,13 +12033,24 @@ class GatewayRunner:
                 self._save_voice_modes()
                 if adapter:
                     self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
-                return t("gateway.voice.enabled_short")
+                toggle_line = t("gateway.voice.enabled_short")
             else:
                 self._voice_mode[voice_key] = "off"
                 self._save_voice_modes()
                 if adapter:
                     self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
-                return t("gateway.voice.disabled_short")
+                toggle_line = t("gateway.voice.disabled_short")
+            # Bare /voice still toggles, but append an explainer so users
+            # discover the on/off/tts/status subcommands (and, on Discord,
+            # live voice-channel join/leave). The toggle result is shown
+            # first via the {toggle} placeholder.
+            supports_voice_channels = adapter is not None and hasattr(
+                adapter, "join_voice_channel"
+            )
+            channels = (
+                t("gateway.voice.help_channels") if supports_voice_channels else ""
+            )
+            return t("gateway.voice.help", toggle=toggle_line, channels=channels)
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
@@ -12366,14 +12737,41 @@ class GatewayRunner:
                     except Exception:
                         pass
 
-                # Send media files
+                # Send media files, routing each by type so a TTS clip
+                # arrives as a voice bubble / a clip as a video rather than
+                # a generic document. Mirrors the streaming + kanban paths.
+                from gateway.platforms.base import (
+                    should_send_media_as_audio as _should_send_media_as_audio,
+                )
+                _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+                _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
                 for media_path, _is_voice in (media_files or []):
+                    _ext = os.path.splitext(media_path)[1].lower()
                     try:
-                        await adapter.send_document(
-                            chat_id=source.chat_id,
-                            file_path=media_path,
-                            metadata=_thread_metadata,
-                        )
+                        if _should_send_media_as_audio(source.platform, _ext, _is_voice):
+                            await adapter.send_voice(
+                                chat_id=source.chat_id,
+                                audio_path=media_path,
+                                metadata=_thread_metadata,
+                            )
+                        elif _ext in _VIDEO_EXTS:
+                            await adapter.send_video(
+                                chat_id=source.chat_id,
+                                video_path=media_path,
+                                metadata=_thread_metadata,
+                            )
+                        elif _ext in _IMAGE_EXTS:
+                            await adapter.send_image_file(
+                                chat_id=source.chat_id,
+                                image_path=media_path,
+                                metadata=_thread_metadata,
+                            )
+                        else:
+                            await adapter.send_document(
+                                chat_id=source.chat_id,
+                                file_path=media_path,
+                                metadata=_thread_metadata,
+                            )
                     except Exception:
                         pass
             else:
@@ -13604,12 +14002,17 @@ class GatewayRunner:
 
         parent_session_id = current_entry.session_id
 
-        # Create the new session with parent link
+        # Create the new session with parent link.
+        # Persist a stable ``_branched_from`` marker in model_config so
+        # list_sessions_rich() keeps the branch visible in /resume and
+        # /sessions even after the parent is reopened and re-ended with a
+        # different end_reason (e.g. tui_shutdown overwriting 'branched').
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
+                model_config={"_branched_from": parent_session_id},
                 parent_session_id=parent_session_id,
             )
         except Exception as e:
@@ -14792,10 +15195,15 @@ class GatewayRunner:
 
         if not adapter or not chat_id:
             logger.warning("Update watcher: cannot resolve adapter/chat_id, falling back to completion-only")
-            # Fall back to old behavior: wait for exit code and send final notification
+            # Fall back to completion-only: wait for the exit code and send the
+            # final notification. _send_update_notification re-resolves the
+            # adapter on every call, so when the target platform is still
+            # reconnecting it returns False and keeps the markers. Keep polling
+            # until it actually delivers (returns True) instead of giving up
+            # after the first completion check — otherwise a platform that
+            # reconnects a few seconds after completion never gets notified.
             while (pending_path.exists() or claimed_path.exists()) and loop.time() < deadline:
-                if exit_code_path.exists():
-                    await self._send_update_notification()
+                if exit_code_path.exists() and await self._send_update_notification():
                     return
                 await asyncio.sleep(poll_interval)
             if (pending_path.exists() or claimed_path.exists()) and not exit_code_path.exists():
@@ -15008,6 +15416,24 @@ class GatewayRunner:
             # Resolve adapter
             platform = Platform(platform_str)
             adapter = self.adapters.get(platform)
+
+            if not adapter and chat_id:
+                # The update finished, but the target platform has not
+                # reconnected yet (common right after the restart that
+                # `hermes update` triggers). Treating "adapter missing" as a
+                # definitive skip would delete the markers and silently lose the
+                # completion notification — the user never learns whether the
+                # update succeeded or timed out. Preserve the markers instead so
+                # a later retry (the watcher poll loop, or the next gateway
+                # startup) can deliver the result once the adapter is back.
+                logger.info(
+                    "Update notification deferred: %s adapter not connected yet",
+                    platform_str,
+                )
+                cleanup = False
+                active_pending_path = pending_path
+                claimed_path.replace(pending_path)
+                return False
 
             if adapter and chat_id:
                 metadata = self._thread_metadata_for_target(
@@ -16644,6 +17070,47 @@ class GatewayRunner:
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
 
+        # ── Discord voice "verbal ack before tool calls" ────────────────
+        # When the bot is in a voice channel with the continuous mixer
+        # installed (discord.voice_fx.enabled), speak a short phrase ("let me
+        # look into that") over the ambient idle bed on the FIRST tool call of
+        # the turn.  Fires from tool_start_callback (independent of the
+        # tool-progress text gate), at most once per turn.  No-op on every
+        # other platform / when not in a voice channel.
+        _voice_ack_fired = [False]
+        _voice_ack_guild: List[Optional[int]] = [None]
+        if source.platform == Platform.DISCORD:
+            _va = self.adapters.get(Platform.DISCORD)
+            # source.chat_id is the linked text channel; resolve the guild whose
+            # voice connection is bound to it (mirrors DiscordAdapter.play_tts).
+            _vtc = getattr(_va, "_voice_text_channels", None)
+            if isinstance(_vtc, dict) and hasattr(_va, "voice_mixer_active"):
+                for _gid, _tc in _vtc.items():
+                    if str(_tc) == str(source.chat_id) and _va.voice_mixer_active(_gid):
+                        _voice_ack_guild[0] = _gid
+                        break
+        _voice_ack_loop = asyncio.get_running_loop()
+
+        def voice_ack_callback(call_id, tool_name, args):
+            """tool_start_callback: speak a one-time ack in the voice channel."""
+            if _voice_ack_fired[0] or _voice_ack_guild[0] is None:
+                return
+            if not _run_still_current():
+                return
+            _voice_ack_fired[0] = True
+            _adapter = self.adapters.get(Platform.DISCORD)
+            if _adapter is None or not hasattr(_adapter, "play_ack_in_voice"):
+                return
+            try:
+                safe_schedule_threadsafe(
+                    _adapter.play_ack_in_voice(_voice_ack_guild[0]),
+                    _voice_ack_loop,
+                    logger=logger,
+                    log_message="voice ack scheduling error",
+                )
+            except Exception as _ack_err:
+                logger.debug("voice ack schedule failed: %s", _ack_err)
+
         # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
         # that implements ``delete_message``). When enabled via
         # ``display.platforms.<platform>.cleanup_progress: true``, message IDs
@@ -17454,6 +17921,11 @@ class GatewayRunner:
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
+            # Discord voice verbal-ack hook (fires once per turn on first tool
+            # call; armed only when in a voice channel with the mixer running).
+            agent.tool_start_callback = (
+                voice_ack_callback if _voice_ack_guild[0] is not None else None
+            )
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
@@ -17931,36 +18403,12 @@ class GatewayRunner:
             # context compression shrinks the message list below the original
             # history length, preserving the compression-safe behaviour of #160.
             if "MEDIA:" not in final_response:
-                media_tags = []
-                has_voice_directive = False
-                _all_msgs = result.get("messages", [])
-                _history_len = len(agent_history)
-                # Only trust the slice boundary when the message list still
-                # contains the full history prefix. Mid-run compression can
-                # rewrite/shrink the list; in that case fall back to scanning
-                # everything and rely on _history_media_paths for dedup.
-                if _history_len and len(_all_msgs) >= _history_len:
-                    _scan_msgs = _all_msgs[_history_len:]
-                else:
-                    _scan_msgs = _all_msgs
-                for msg in _scan_msgs:
-                    if msg.get("role") in {"tool", "function"}:
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            _TOOL_MEDIA_RE = re.compile(
-                                r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                                r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                                r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                                r'txt|csv|apk|ipa))',
-                                re.IGNORECASE
-                            )
-                            for match in _TOOL_MEDIA_RE.finditer(content):
-                                path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
-                
+                media_tags, has_voice_directive = _collect_auto_append_media_tags(
+                    result.get("messages", []),
+                    history_offset=len(agent_history),
+                    history_media_paths=_history_media_paths,
+                )
+
                 if media_tags:
                     seen = set()
                     unique_tags = []
@@ -18972,7 +19420,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     tick_count = 0
     while not stop_event.is_set():
         try:
-            cron_tick(verbose=False, adapters=adapters, loop=loop)
+            cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
 

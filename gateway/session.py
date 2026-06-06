@@ -1309,6 +1309,58 @@ class SessionStore:
             logger.debug("Could not load messages from DB: %s", e)
             return []
 
+    def rewind_session(self, session_id: str, n: int = 1) -> Optional[Dict[str, Any]]:
+        """Back up ``n`` user turns via soft-delete, keeping rows for audit.
+
+        Unlike :meth:`rewrite_transcript` (a hard replace used by /retry),
+        this flips the truncated rows to ``active=0`` in state.db so they
+        survive for audit and stay hidden from re-prompts and search. Mirrors
+        the CLI/TUI ``/undo [N]`` behavior via ``SessionDB.rewind_to_message``.
+
+        Returns a dict ``{"rewound_count", "turns_undone", "target_text"}`` on
+        success, or ``None`` if there's no DB or no user message to back up to.
+        ``n`` clamps to the oldest user turn when it exceeds the turn count.
+        """
+        if not self._db:
+            return None
+        if n < 1:
+            n = 1
+        try:
+            recents = self._db.list_recent_user_messages(session_id, limit=max(n, 10))
+        except Exception as e:
+            logger.debug("rewind_session: failed to list user messages: %s", e)
+            return None
+        if not recents:
+            return None
+        target_idx = min(n - 1, len(recents) - 1)
+        target_id = recents[target_idx]["id"]
+        try:
+            result = self._db.rewind_to_message(session_id, target_id)
+        except ValueError as e:
+            logger.debug("rewind_session: %s", e)
+            return None
+        except Exception as e:
+            logger.debug("rewind_session: rewind_to_message failed: %s", e)
+            return None
+        target_msg = result.get("target_message") or {}
+        content = target_msg.get("content") or ""
+        if isinstance(content, list):
+            parts = [
+                p.get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            ]
+            target_text = "\n".join(t for t in parts if t)
+        elif isinstance(content, str):
+            target_text = content
+        else:
+            target_text = ""
+        return {
+            "rewound_count": result.get("rewound_count", 0),
+            "turns_undone": target_idx + 1,
+            "target_text": target_text,
+        }
+
 
 def build_session_context(
     source: SessionSource,

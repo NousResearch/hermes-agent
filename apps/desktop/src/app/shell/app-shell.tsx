@@ -2,10 +2,12 @@ import { useStore } from '@nanostores/react'
 import type { CSSProperties, ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 
+import { NotificationStack } from '@/components/notifications'
 import { PaneShell } from '@/components/pane-shell'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import {
   $fileBrowserOpen,
+  $panesFlipped,
   $sidebarOpen,
   FILE_BROWSER_DEFAULT_WIDTH,
   FILE_BROWSER_PANE_ID,
@@ -20,11 +22,9 @@ import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 
 interface AppShellProps {
   children: ReactNode
-  commandCenterOpen?: boolean
   leftStatusbarItems?: readonly StatusbarItem[]
   leftTitlebarTools?: readonly TitlebarTool[]
   onOpenSettings: () => void
-  onOpenSearch: () => void
   overlays?: ReactNode
   statusbarItems?: readonly StatusbarItem[]
   titlebarTools?: readonly TitlebarTool[]
@@ -47,17 +47,16 @@ const viewportIsFullscreen = () =>
 
 export function AppShell({
   children,
-  commandCenterOpen = false,
   leftStatusbarItems,
   leftTitlebarTools,
   onOpenSettings,
-  onOpenSearch,
   overlays,
   statusbarItems,
   titlebarTools
 }: AppShellProps) {
   const sidebarOpen = useStore($sidebarOpen)
   const fileBrowserOpen = useStore($fileBrowserOpen)
+  const panesFlipped = useStore($panesFlipped)
   const fileBrowserWidthOverride = useStore($paneWidthOverride(FILE_BROWSER_PANE_ID))
   const connection = useStore($connection)
   const viewportFullscreen = useSyncExternalStore(subscribeWindowSize, viewportIsFullscreen, () => false)
@@ -69,7 +68,12 @@ export function AppShell({
   const nativeOverlayWidth = connection?.nativeOverlayWidth ?? 0
   const titlebarToolsRight = nativeOverlayWidth > 0 ? `${nativeOverlayWidth}px` : '0.75rem'
 
-  const titlebarContentInset = sidebarOpen
+  // The inset clears the top-left titlebar buttons when nothing covers the
+  // window's left edge. Default layout: the sessions sidebar sits there.
+  // Flipped layout: the file browser does instead.
+  const leftEdgePaneOpen = panesFlipped ? fileBrowserOpen : sidebarOpen
+
+  const titlebarContentInset = leftEdgePaneOpen
     ? 0
     : titlebarControls.left + TITLEBAR_HEIGHT + Math.round(TITLEBAR_HEIGHT / 2)
 
@@ -130,13 +134,7 @@ export function AppShell({
         } as CSSProperties
       }
     >
-      <TitlebarControls
-        commandCenterOpen={commandCenterOpen}
-        leftTools={leftTitlebarTools}
-        onOpenSearch={onOpenSearch}
-        onOpenSettings={onOpenSettings}
-        tools={titlebarTools}
-      />
+      <TitlebarControls leftTools={leftTitlebarTools} onOpenSettings={onOpenSettings} tools={titlebarTools} />
 
       <main className="relative z-3 flex min-h-0 w-full flex-1 flex-col overflow-hidden transition-none">
         <PaneShell className="min-h-0 flex-1">
@@ -156,6 +154,10 @@ export function AppShell({
       </main>
 
       {overlays}
+
+      {/* Mounted at the shell root (after overlays) so success/error toasts
+          surface above every route and overlay — not just the chat view. */}
+      <NotificationStack />
     </SidebarProvider>
   )
 }

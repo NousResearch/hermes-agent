@@ -290,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "Niks om ongedaan te maak nie."
-    removed:               "↩️ {count} boodskap(pe) ongedaan gemaak.\nVerwyder: \"{preview}\""
+    removed:               "↩️ {turns} beurt(e) ongedaan gemaak ({count} boodskap(pe)).\nGerugsteun na: \"{preview}\"\nKopieer/wysig die teks hierbo en stuur dit om van hier af weer te vra."
+    invalid_count:         "Ongeldige getal \"{arg}\" — gebruik /undo of /undo N."
 
   update:
     platform_not_messaging:  "✗ /update is slegs beskikbaar vanaf boodskapplatforms. Voer `hermes update` vanaf die terminale uit."
@@ -342,6 +343,8 @@ gateway:
     label_off:             "Af (slegs teks)"
     label_voice_only:      "Aan (stemantwoord op stemboodskappe)"
     label_all:             "TTS (stemantwoord op alle boodskappe)"
+    help:                  "{toggle}\n\n**Hoe /voice werk**\n• `/voice on` — stemantwoord wanneer jy 'n stemboodskap stuur\n• `/voice tts` — stemantwoord op *elke* boodskap\n• `/voice off` — terug na slegs-teks antwoorde\n• `/voice status` — wys die huidige modus\n• `/voice` (geen argument) — wissel vinnig tussen aan en af{channels}"
+    help_channels:         "\n\n**Lewendige stemkanale (Discord)**\n• Sluit eers by 'n stemkanaal aan, dan `/voice channel` — ek sluit aan, luister en praat my antwoorde\n• `/voice leave` — ontkoppel van die stemkanaal"
 
   yolo:
     disabled:                   "⚠️ YOLO-modus **AF** vir hierdie sessie — gevaarlike opdragte sal goedkeuring vereis."

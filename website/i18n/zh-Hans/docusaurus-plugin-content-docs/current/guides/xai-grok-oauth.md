@@ -180,7 +180,8 @@ hermes tools
 | 对话 | `grok-4.20-multi-agent-0309` | 多 agent 变体 |
 | 图像 | `grok-imagine-image` | 默认；约 5–10 秒 |
 | 图像 | `grok-imagine-image-quality` | 更高保真度；约 10–20 秒 |
-| 视频 | `grok-imagine-video` | 文本转视频和图像转视频；最多 7 张参考图像 |
+| 视频 | `grok-imagine-video` | 文本转视频 |
+| 视频 | `grok-imagine-video-1.5-preview` | 图像转视频；日期别名 `grok-imagine-video-1.5-2026-05-30` |
 | TTS | （默认音色） | xAI `/v1/tts` 端点 |
 
 对话模型目录从磁盘上的 `models.dev` 缓存实时获取；缓存刷新后，新的 xAI 模型会自动出现。`grok-4.3` 始终固定在列表顶部。

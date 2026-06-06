@@ -891,6 +891,63 @@ def run_doctor(args):
         except Exception:
             pass
 
+        # Detect stale HERMES_MAX_ITERATIONS ghost in .env shadowing
+        # agent.max_turns in config.yaml (issue #17534). The setup wizard
+        # used to dual-write the iteration budget to both stores; users who
+        # later edit only config.yaml are left with a .env ghost. The gateway
+        # bridge normally derives HERMES_MAX_ITERATIONS from agent.max_turns
+        # at startup, but if that bridge bails (any earlier config-parse
+        # error), the stale .env value silently wins and the agent runs at the
+        # wrong budget — e.g. config says 400 but the activity line reads N/90.
+        # Read the .env FILE directly (load_env), not get_env_value/os.environ,
+        # which the startup bridge may already have overridden.
+        try:
+            import yaml
+            from hermes_cli.config import load_env, remove_env_value
+            with open(config_path, encoding="utf-8") as f:
+                raw_config = yaml.safe_load(f) or {}
+            agent_cfg = raw_config.get("agent")
+            cfg_max_turns = (
+                agent_cfg.get("max_turns")
+                if isinstance(agent_cfg, dict)
+                else None
+            )
+            # Legacy root-level key counts too.
+            if cfg_max_turns is None:
+                cfg_max_turns = raw_config.get("max_turns")
+            env_ghost = load_env().get("HERMES_MAX_ITERATIONS")
+            drift = (
+                cfg_max_turns is not None
+                and env_ghost is not None
+                and str(cfg_max_turns).strip() != str(env_ghost).strip()
+            )
+            if drift:
+                check_warn(
+                    f"HERMES_MAX_ITERATIONS={env_ghost} in .env shadows "
+                    f"agent.max_turns={cfg_max_turns} in config.yaml",
+                    "(stale ghost from an earlier `hermes setup` run)",
+                )
+                if should_fix:
+                    if remove_env_value("HERMES_MAX_ITERATIONS"):
+                        check_ok(
+                            "Removed stale HERMES_MAX_ITERATIONS from .env "
+                            f"(config.yaml agent.max_turns={cfg_max_turns} is now authoritative)"
+                        )
+                        fixed_count += 1
+                    else:
+                        check_warn("Could not remove HERMES_MAX_ITERATIONS from .env")
+                        manual_issues.append(
+                            "Manually delete the HERMES_MAX_ITERATIONS line from "
+                            f"{_DHH}/.env — config.yaml agent.max_turns is authoritative."
+                        )
+                else:
+                    issues.append(
+                        "Stale HERMES_MAX_ITERATIONS in .env shadows config.yaml — "
+                        "run 'hermes doctor --fix'"
+                    )
+        except Exception:
+            pass
+
         # Validate config structure (catches malformed custom_providers, etc.)
         try:
             from hermes_cli.config import validate_config_structure

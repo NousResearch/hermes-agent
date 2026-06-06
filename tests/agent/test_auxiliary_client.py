@@ -863,6 +863,111 @@ class TestExplicitProviderRouting:
             for record in caplog.records
         )
 
+    def test_explicit_google_gemini_cli_uses_oauth_subscription_not_api_key(self, tmp_path, monkeypatch):
+        """google-gemini-cli is OAuth-backed; auxiliary routing must use the subscription pool, not env keys."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "credential_pool": {
+                "google-gemini-cli": [{
+                    "label": "Subscription",
+                    "auth_type": "oauth",
+                    "access_token": "google-access-token",
+                    "refresh_token": "",
+                    "source": "manual:google_pkce",
+                }]
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        profile_home = tmp_path / "home"
+        profile_home.mkdir()
+        monkeypatch.setenv("HOME", str(profile_home))
+
+        from agent.google_oauth import load_credentials
+        creds = load_credentials()
+        assert creds is not None
+        assert not creds.access_token_expired()
+
+        client, model = resolve_provider_client("google-gemini-cli", model="gemini-3-flash")
+
+        assert client is not None
+        assert client.__class__.__name__ == "GeminiCloudCodeClient"
+        assert model == "gemini-3-flash-preview"
+
+    def test_cached_google_gemini_cli_normalizes_model_alias(self, monkeypatch):
+        """Cache hits must not reintroduce retired Code Assist aliases."""
+        import agent.auxiliary_client as aux
+
+        fake_client = SimpleNamespace(base_url="")
+        aux.shutdown_cached_clients()
+        monkeypatch.setattr(
+            aux,
+            "resolve_provider_client",
+            lambda provider, model=None, async_mode=False, **kwargs: (
+                fake_client,
+                "gemini-3-flash-preview",
+            ),
+        )
+
+        try:
+            first_client, first_model = aux._get_cached_client(
+                "google-gemini-cli", "gemini-3-flash"
+            )
+            second_client, second_model = aux._get_cached_client(
+                "google-gemini-cli", "gemini-3-flash"
+            )
+        finally:
+            aux.shutdown_cached_clients()
+
+        assert first_client is fake_client
+        assert second_client is fake_client
+        assert first_model == "gemini-3-flash-preview"
+        assert second_model == "gemini-3-flash-preview"
+
+class TestCodexCompletionsAdapter:
+    def test_converts_tool_messages_to_supported_responses_roles(self):
+        """Responses API rejects chat-completions role='tool'.
+
+        The Codex auxiliary adapter should preserve tool output as user-context
+        text instead of forwarding an unsupported role.
+        """
+        captured = {}
+
+        class _FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(output=[], usage=None)
+
+        class _FakeResponses:
+            def stream(self, **kwargs):
+                captured.update(kwargs)
+                return _FakeStream()
+
+        fake_client = SimpleNamespace(responses=_FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.2-codex")
+
+        adapter.create(messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "I will inspect files."},
+            {"role": "tool", "tool_call_id": "call_1", "name": "read_file", "content": "file contents"},
+            {"role": "user", "content": "continue"},
+        ])
+
+        roles = [msg["role"] for msg in captured["input"]]
+        assert roles == ["assistant", "user", "user"]
+        assert all(role in {"assistant", "user", "system", "developer"} for role in roles)
+        assert captured["input"][1]["content"] == "[Tool result: read_file]\nfile contents"
+
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 
@@ -1941,6 +2046,42 @@ class TestKimiTemperatureOmitted:
             model=model,
             messages=[{"role": "user", "content": "hello"}],
             temperature=0.3,
+        )
+
+        assert kwargs["temperature"] == 0.3
+
+    @pytest.mark.parametrize(
+        "model,base_url",
+        [
+            ("gpt-5.5", "https://chatgpt.com/backend-api/codex"),
+            ("gpt-5.2-codex", "https://chatgpt.com/backend-api/codex"),
+            ("openai/gpt-5.5", "https://api.openai.com/v1"),
+        ],
+    )
+    def test_direct_openai_gpt5_omits_temperature(self, model, base_url):
+        """GPT-5-family direct OpenAI/Codex endpoints reject temperature."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="openai-codex",
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+            base_url=base_url,
+        )
+
+        assert "temperature" not in kwargs
+
+    def test_openrouter_gpt5_preserves_temperature(self):
+        """OpenRouter handles sampling params; only direct OpenAI/Codex strips them."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="openrouter",
+            model="openai/gpt-5.5",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+            base_url="https://openrouter.ai/api/v1",
         )
 
         assert kwargs["temperature"] == 0.3

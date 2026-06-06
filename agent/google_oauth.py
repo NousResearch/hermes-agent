@@ -465,23 +465,125 @@ class GoogleCredentials:
 # Credential I/O (atomic + locked)
 # =============================================================================
 
+def _load_credentials_from_auth_pool() -> Optional[GoogleCredentials]:
+    """Load google-gemini-cli OAuth creds from the unified auth.json credential pool."""
+    auth_path = get_hermes_home() / "auth.json"
+    if not auth_path.exists():
+        return None
+    try:
+        data = json.loads(auth_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, IOError) as exc:
+        logger.warning("Failed to read Hermes auth store at %s: %s", auth_path, exc)
+        return None
+    pool = data.get("credential_pool", {}) if isinstance(data, dict) else {}
+    entries = pool.get("google-gemini-cli", []) if isinstance(pool, dict) else []
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        access_token = str(entry.get("access_token", "") or "")
+        refresh_token = str(entry.get("refresh_token", "") or "")
+        if not access_token and not refresh_token:
+            continue
+        expires_ms = 0
+        for key in ("expires_ms", "expires_at_ms"):
+            try:
+                expires_ms = int(entry.get(key, 0) or 0)
+                if expires_ms:
+                    break
+            except (TypeError, ValueError):
+                pass
+        if access_token and not refresh_token and not expires_ms:
+            # Some credential-pool migrations stored a live subscription access
+            # token without refresh metadata. Treat it as short-lived instead of
+            # forcing an immediate refresh that cannot succeed.
+            expires_ms = int((time.time() + 3600) * 1000)
+        return GoogleCredentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_ms=expires_ms,
+            email=str(entry.get("email", "") or ""),
+            project_id=str(entry.get("project_id", "") or ""),
+            managed_project_id=str(entry.get("managed_project_id", "") or ""),
+        )
+    return None
+
+
+def _candidate_gemini_cli_dirs() -> List[Path]:
+    """Candidate .gemini dirs, including profile HOME and the real user home outside profiles."""
+    candidates = [Path.home() / ".gemini"]
+    hermes_home = get_hermes_home()
+    parts = hermes_home.parts
+    if ".hermes" in parts:
+        idx = parts.index(".hermes")
+        if idx > 0:
+            candidates.append(Path(*parts[:idx]) / ".gemini")
+    seen: set[Path] = set()
+    ordered: List[Path] = []
+    for path in candidates:
+        if path not in seen:
+            seen.add(path)
+            ordered.append(path)
+    return ordered
+
+
+def _load_credentials_from_gemini_cli() -> Optional[GoogleCredentials]:
+    """Load OAuth credentials written by the upstream Gemini CLI subscription flow."""
+    for gemini_dir in _candidate_gemini_cli_dirs():
+        path = gemini_dir / "oauth_creds.json"
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, IOError) as exc:
+            logger.warning("Failed to read Gemini CLI OAuth credentials at %s: %s", path, exc)
+            continue
+        if not isinstance(data, dict):
+            continue
+        access_token = str(data.get("access_token", "") or "")
+        refresh_token = str(data.get("refresh_token", "") or "")
+        if not access_token and not refresh_token:
+            continue
+        try:
+            expires_ms = int(data.get("expiry_date", 0) or 0)
+        except (TypeError, ValueError):
+            expires_ms = 0
+        email = ""
+        accounts_path = gemini_dir / "google_accounts.json"
+        if accounts_path.exists():
+            try:
+                accounts = json.loads(accounts_path.read_text(encoding="utf-8"))
+                if isinstance(accounts, dict):
+                    email = str(accounts.get("active", "") or "")
+            except (json.JSONDecodeError, OSError, IOError):
+                pass
+        return GoogleCredentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_ms=expires_ms,
+            email=email,
+        )
+    return None
+
+
 def load_credentials() -> Optional[GoogleCredentials]:
-    """Load credentials from disk. Returns None if missing or corrupt."""
+    """Load credentials from disk, auth pool, or Gemini CLI. Returns None if missing/corrupt."""
     path = _credentials_path()
     if not path.exists():
-        return None
+        return _load_credentials_from_gemini_cli() or _load_credentials_from_auth_pool()
     try:
         with _credentials_lock():
             raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
     except (json.JSONDecodeError, OSError, IOError) as exc:
         logger.warning("Failed to read Google OAuth credentials at %s: %s", path, exc)
-        return None
+        return _load_credentials_from_auth_pool() or _load_credentials_from_gemini_cli()
     if not isinstance(data, dict):
-        return None
+        return _load_credentials_from_auth_pool() or _load_credentials_from_gemini_cli()
     creds = GoogleCredentials.from_dict(data)
     if not creds.access_token:
-        return None
+        return _load_credentials_from_auth_pool() or _load_credentials_from_gemini_cli()
     return creds
 
 

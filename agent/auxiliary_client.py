@@ -221,6 +221,17 @@ def _fixed_temperature_for_model(
         return OMIT_TEMPERATURE
     if _is_arcee_trinity_thinking(model):
         return 0.5
+
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    host = base_url_hostname(base_url or "")
+    if bare.startswith("gpt-5") and (
+        host == "api.openai.com"
+        or host == "chatgpt.com"
+        or host.endswith("chatgpt.com")
+    ):
+        logger.debug("Omitting temperature for GPT-5-family model %r", model)
+        return OMIT_TEMPERATURE
+
     return None
 
 
@@ -636,6 +647,15 @@ class _CodexCompletionsAdapter:
             if role == "system":
                 instructions = content if isinstance(content, str) else str(content)
             else:
+                if role == "tool":
+                    tool_name = msg.get("name") or msg.get("tool_call_id") or "tool"
+                    role = "user"
+                    if isinstance(content, str):
+                        content = f"[Tool result: {tool_name}]\n{content}"
+                    else:
+                        content = f"[Tool result: {tool_name}]\n{content!s}"
+                elif role not in {"assistant", "user", "developer"}:
+                    role = "user"
                 input_msgs.append({
                     "role": role,
                     "content": _convert_content_for_responses(content),
@@ -3258,8 +3278,24 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
     try:
         from hermes_cli.model_normalize import normalize_model_for_provider
 
-        return normalize_model_for_provider(model_name, provider)
+        normalized = normalize_model_for_provider(model_name, provider)
+        if provider == "google-gemini-cli":
+            cloudcode_aliases = {
+                "gemini-3-flash": "gemini-3-flash-preview",
+                "google/gemini-3-flash": "gemini-3-flash-preview",
+                "gemini-3-pro": "gemini-3.1-pro-preview",
+                "google/gemini-3-pro": "gemini-3.1-pro-preview",
+            }
+            return cloudcode_aliases.get(normalized, cloudcode_aliases.get(model_name, normalized))
+        return normalized
     except Exception:
+        if provider == "google-gemini-cli":
+            return {
+                "gemini-3-flash": "gemini-3-flash-preview",
+                "google/gemini-3-flash": "gemini-3-flash-preview",
+                "gemini-3-pro": "gemini-3.1-pro-preview",
+                "google/gemini-3-pro": "gemini-3.1-pro-preview",
+            }.get(model_name, model_name)
         return model_name
 
 
@@ -3893,6 +3929,28 @@ def resolve_provider_client(
             return resolve_provider_client("openai-codex", model, async_mode)
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
+        if provider == "google-gemini-cli":
+            try:
+                from agent import google_oauth
+                from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+            except ImportError as exc:
+                logger.warning(
+                    "resolve_provider_client: google-gemini-cli requested but "
+                    "Gemini Cloud Code adapter is unavailable: %s", exc)
+                return None, None
+            if google_oauth.load_credentials() is None:
+                logger.warning(
+                    "resolve_provider_client: google-gemini-cli requested but "
+                    "Google OAuth credentials were not found (run: hermes login --provider google-gemini-cli)")
+                return None, None
+            final_model = _normalize_resolved_model(
+                model or _get_aux_model_for_provider(provider) or "gemini-3-flash",
+                provider,
+            )
+            client = GeminiCloudCodeClient()
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)
@@ -4447,14 +4505,27 @@ def _cached_client_accepts_slash_models(client: Any, cached_default: Optional[st
     return bool(cached_default and "/" in cached_default)
 
 
-def _compat_model(client: Any, model: Optional[str], cached_default: Optional[str]) -> Optional[str]:
-    """Keep slash-bearing model IDs only for cached clients that support them.
+def _compat_model(
+    client: Any,
+    model: Optional[str],
+    cached_default: Optional[str],
+    provider: Optional[str] = None,
+) -> Optional[str]:
+    """Return a provider-compatible model for cached clients.
 
-    Mirrors the guard in resolve_provider_client() which is skipped on cache hits.
+    Mirrors the guard in resolve_provider_client() which is skipped on cache
+    hits.  Also re-applies provider-specific model normalization on cache hits
+    and first-store returns: _get_cached_client() intentionally keys the cache by
+    provider credentials, not model, so a requested alias such as
+    ``gemini-3-flash`` must still be normalized to the Code Assist-available
+    ``gemini-3-flash-preview`` before the request is sent.
     """
-    if model and "/" in model and not _cached_client_accepts_slash_models(client, cached_default):
+    effective = model
+    if effective and provider:
+        effective = _normalize_resolved_model(effective, provider)
+    if effective and "/" in effective and not _cached_client_accepts_slash_models(client, cached_default):
         return cached_default
-    return model or cached_default
+    return effective or cached_default
 
 
 def _get_cached_client(
@@ -4517,13 +4588,13 @@ def _get_cached_client(
                     and not cached_loop.is_closed()
                 )
                 if loop_ok:
-                    effective = _compat_model(cached_client, model, cached_default)
+                    effective = _compat_model(cached_client, model, cached_default, provider)
                     return cached_client, effective
                 # Stale — evict and fall through to create a new client.
                 _force_close_async_httpx(cached_client)
                 del _client_cache[cache_key]
             else:
-                effective = _compat_model(cached_client, model, cached_default)
+                effective = _compat_model(cached_client, model, cached_default, provider)
                 return cached_client, effective
     # Build outside the lock.
     # For pool-backed api_key providers, derive the active API key from the
@@ -4563,7 +4634,7 @@ def _get_cached_client(
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
                 client, default_model, _ = _client_cache[cache_key]
-    return client, model or default_model
+    return client, _compat_model(client, model, default_model, provider)
 
 
 # Aliases that target direct REST APIs not modeled as first-class providers

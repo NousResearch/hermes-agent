@@ -23,11 +23,9 @@ update when it's noticed.
 import json
 import logging
 import os
-import posixpath
 import datetime
 import threading
 import uuid
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 # fal_client is imported lazily — see _load_fal_client(). Pulling it
@@ -631,6 +629,10 @@ def _active_terminal_env(task_id: str | None):
 
 def _agent_cache_base_for_env(env: Any) -> str | None:
     if env is not None:
+        # Forward-looking optional override: an environment may expose its own
+        # agent-visible cache root via this callable. No backend defines it yet
+        # — it's an extension hook, not a typo. The getattr/callable guards make
+        # it a safe no-op until a producer exists.
         explicit = getattr(env, "agent_visible_cache_base", None)
         if callable(explicit):
             try:
@@ -669,16 +671,9 @@ def _agent_visible_cache_path(host_path: str, env: Any) -> str | None:
         return None
 
     try:
-        from tools.credential_files import get_cache_directory_mounts
+        from tools.credential_files import map_cache_path_to_container
 
-        path = Path(host_path)
-        for mount in get_cache_directory_mounts(container_base=cache_base):
-            host_dir = Path(mount["host_path"])
-            try:
-                rel = path.relative_to(host_dir)
-            except ValueError:
-                continue
-            return posixpath.join(mount["container_path"], rel.as_posix())
+        return map_cache_path_to_container(host_path, container_base=cache_base)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Could not translate image cache path for backend: %s", exc)
     return None

@@ -49,6 +49,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
 from hermes_cli.config import cfg_get
+OBSERVER_SCHEMA_VERSION = "hermes.observer.v1"
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -137,10 +138,12 @@ VALID_HOOKS: Set[str] = {
     "post_llm_call",
     "pre_api_request",
     "post_api_request",
+    "api_request_error",
     "on_session_start",
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    "subagent_start",
     "subagent_stop",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
@@ -1551,6 +1554,7 @@ class PluginManager:
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
         """
+        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
         for cb in callbacks:
@@ -1566,6 +1570,10 @@ class PluginManager:
                     exc,
                 )
         return results
+
+    def has_hook(self, hook_name: str) -> bool:
+        """Return True when at least one callback is registered for a hook."""
+        return bool(self._hooks.get(hook_name))
 
     # -----------------------------------------------------------------------
     # Introspection
@@ -1647,6 +1655,10 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
 
+def has_hook(hook_name: str) -> bool:
+    """Return True when a hook has registered callbacks."""
+    return get_plugin_manager().has_hook(hook_name)
+
 
 _thread_tool_whitelist = threading.local()
 
@@ -1669,6 +1681,8 @@ def get_pre_tool_call_block_message(
     task_id: str = "",
     session_id: str = "",
     tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
 ) -> Optional[str]:
     """Check ``pre_tool_call`` hooks for a blocking directive.
 
@@ -1693,6 +1707,8 @@ def get_pre_tool_call_block_message(
         task_id=task_id,
         session_id=session_id,
         tool_call_id=tool_call_id,
+        turn_id=turn_id,
+        api_request_id=api_request_id,
     )
 
     for result in hook_results:

@@ -227,9 +227,8 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
 
     SIGUSR1 is wired in gateway/run.py to ``request_restart(via_service=True)``
     which drains in-flight agent runs (up to ``agent.restart_drain_timeout``
-    seconds), then exits.  systemd relaunches clean exits via
-    ``Restart=always``; launchd still uses a non-zero planned-restart exit
-    because its plist has ``KeepAlive.SuccessfulExit = false``.
+    seconds), then exits.  Both systemd (``Restart=always``) and launchd
+    (unconditional ``<key>KeepAlive</key><true/>``) restart on any exit.
 
     This is the drain-aware alternative to ``systemctl restart`` / ``SIGTERM``,
     which SIGKILL in-flight agents after a short timeout.
@@ -453,11 +452,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                         if pid == my_pid or pid in exclude_pids:
                             continue
                         try:
-                            cmdline = (
-                                open(f"/proc/{pid}/cmdline", "rb")
-                                .read()
-                                .decode("utf-8", errors="replace")
-                            )
+                            with open(f"/proc/{pid}/cmdline", "rb") as _f:
+                                cmdline = _f.read().decode("utf-8", errors="replace")
                             cmdline = cmdline.replace("\x00", " ")
                             cmdline_lc = cmdline.lower()
                             if any(p in cmdline_lc for p in patterns) and (
@@ -3086,10 +3082,7 @@ def generate_launchd_plist() -> str:
     <true/>
     
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
@@ -3252,7 +3245,7 @@ def launchd_stop():
         pass
     # bootout unloads the service definition so KeepAlive doesn't respawn
     # the process.  A plain `kill SIGTERM` only signals the process — launchd
-    # immediately restarts it because KeepAlive.SuccessfulExit = false.
+    # immediately restarts it because KeepAlive is unconditionally true.
     # `hermes gateway start` re-bootstraps when it detects the job is unloaded.
     try:
         subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
@@ -4389,6 +4382,35 @@ def _setup_standard_platform(platform: dict):
         if not prompt_yes_no(f"  Reconfigure {label}?", False):
             return
 
+    auto_token_saved = False
+    auto_owner_user_id = None
+    if platform.get("key") == "telegram":
+        print()
+        print_info("  Telegram can be configured automatically with a managed bot:")
+        print_info("  [1] Automatic (scan QR → confirm in Telegram → done)")
+        print_info("  [2] Manual BotFather token")
+        choice = prompt("  Choice [1/2]", default="1")
+        if choice.strip() == "1":
+            try:
+                from hermes_cli.telegram_managed_bot import (
+                    auto_setup_telegram_bot_result,
+                    is_valid_telegram_bot_token,
+                )
+            except ImportError:
+                print_warning("  Automatic setup is unavailable in this install.")
+            else:
+                result = auto_setup_telegram_bot_result()
+                if result and is_valid_telegram_bot_token(result.token):
+                    save_env_value(token_var, result.token)
+                    print_success("  Saved TELEGRAM_BOT_TOKEN")
+                    auto_token_saved = True
+                    auto_owner_user_id = result.owner_user_id
+                else:
+                    if result:
+                        print_warning("  Automatic setup returned an invalid Telegram token.")
+                    print()
+                    print_info("  Falling back to manual setup...")
+
     allowed_val_set = None  # Track if user set an allowlist (for home channel offer)
 
     for var in platform["vars"]:
@@ -4398,8 +4420,30 @@ def _setup_standard_platform(platform: dict):
         if existing and var["name"] != token_var:
             print_info(f"  Current: {existing}")
 
+        if auto_token_saved and var["name"] == token_var:
+            print_info("  Token saved by automatic setup.")
+            continue
+
         # Allowlist fields get special handling for the deny-by-default security model
         if var.get("is_allowlist"):
+            if "TELEGRAM" in var["name"] and auto_owner_user_id:
+                detected_id = str(auto_owner_user_id)
+                print_success(f"  Detected your Telegram user ID: {detected_id}")
+                if prompt_yes_no("  Allow this Telegram account to use the bot?", True):
+                    extra = prompt(
+                        "  Additional allowed user IDs (comma-separated, optional)",
+                        password=False,
+                    )
+                    ids = [detected_id]
+                    for uid in extra.replace(" ", "").split(","):
+                        if uid and uid not in ids:
+                            ids.append(uid)
+                    cleaned = ",".join(ids)
+                    save_env_value(var["name"], cleaned)
+                    print_success("  Saved — only these users can interact with the bot.")
+                    allowed_val_set = cleaned
+                    continue
+
             print_info("  The gateway DENIES all users by default for security.")
             print_info("  Enter user IDs to create an allowlist, or leave empty")
             print_info("  and you'll be asked about open access next.")
@@ -5877,15 +5921,60 @@ def _maybe_redirect_run_to_s6_supervision(args) -> bool:
         file=sys.stderr,
         flush=True,
     )
-    # Block until the container is signalled. The supervised gateway's
-    # lifetime is independent of this process — s6-supervise restarts
-    # it on crash, and we don't want the container to exit when the
-    # gateway flaps. `sleep infinity` matches the static main-hermes
-    # service's pattern (see docker/s6-rc.d/main-hermes/run): the CMD
-    # process is a no-op heartbeat that keeps /init alive until
+    # Keep the CMD process alive as a no-op heartbeat. The supervised
+    # gateway's lifetime is independent of this process — s6-supervise
+    # restarts it on crash, and we don't want the container to exit when
+    # the gateway flaps. The CMD process keeps /init alive until
     # `docker stop` sends SIGTERM, at which point /init runs stage 3
     # shutdown (which tears down the supervised gateway cleanly).
-    os.execvp("sleep", ["sleep", "infinity"])
+    #
+    # Prefer `sleep infinity` (matches the static main-hermes service's
+    # pattern in docker/s6-rc.d/main-hermes/run, and frees the Python
+    # interpreter — the heartbeat is a tiny `sleep` process, not a
+    # resident interpreter). But `os.execvp` does a PATH lookup for the
+    # `sleep` binary and historically crashed the whole container with
+    # FileNotFoundError when PATH was empty/truncated/clobbered at this
+    # point — e.g. after user customizations rewrote PATH, or on minimal
+    # images without `sleep` on PATH (issue #36208). Fall back to an
+    # in-process block (no external binary, can't fail on PATH) so the
+    # container keeps running instead of dying during boot.
+    try:
+        os.execvp("sleep", ["sleep", "infinity"])
+    except OSError:
+        # execvp only returns by raising; on success it replaces this
+        # process. ENOENT (no `sleep` on PATH) and any other exec error
+        # land here.
+        print(
+            "→ `sleep` is unavailable; keeping the s6 CMD process alive "
+            "in-process until the container is stopped.",
+            file=sys.stderr,
+            flush=True,
+        )
+        _block_until_terminated()
+    return True  # unreachable on the execvp success path
+
+
+def _block_until_terminated() -> None:
+    """Keep the s6 CMD process alive until the container is stopped.
+
+    Fallback heartbeat for when ``os.execvp("sleep", ...)`` can't run
+    (``sleep`` missing from PATH — issue #36208). Installs a SIGTERM
+    handler that exits with the conventional 128+signum code so
+    ``docker stop`` produces a clean, expected exit, then blocks on
+    ``signal.pause()``. Falls back to ``threading.Event().wait()`` on
+    platforms without ``signal.pause()`` (e.g. Windows) — although this
+    path only runs inside the s6 Linux container image, the fallback
+    keeps the helper safe to import and unit-test anywhere.
+    """
+    signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
+    pause = getattr(signal, "pause", None)
+    if pause is not None:
+        while True:
+            pause()
+    else:  # pragma: no cover - non-Unix fallback, not exercised in the s6 image
+        import threading
+
+        threading.Event().wait()
 
 
 def _gateway_command_inner(args):

@@ -24,6 +24,14 @@ describe('virtual height estimates', () => {
     expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
   })
 
+  it('adds one row for a group-boundary lead gap', () => {
+    const msg: Msg = { role: 'assistant', text: 'reply' }
+
+    expect(estimatedMsgHeight(msg, 80, { compact: false, details: false, leadGap: true })).toBe(
+      estimatedMsgHeight(msg, 80, { compact: false, details: false, leadGap: false }) + 1
+    )
+  })
+
   it('includes detail sections when visible', () => {
     const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'line 1\nline 2', tools: ['Tool A', 'Tool B'] }
 

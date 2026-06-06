@@ -1631,6 +1631,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 "drive.notice.comment_add_v1",
                 self._on_drive_comment_event,
             )
+            .register_p2_customized_event(
+                "vc.bot.meeting_invited_v1",
+                self._on_meeting_invited_event,
+            )
             .build()
         )
 
@@ -2473,6 +2477,16 @@ class FeishuAdapter(BasePlatformAdapter):
             loop,
             handle_drive_comment_event(self._client, data, self_open_id=self._bot_open_id),
         )
+
+    def _on_meeting_invited_event(self, data: Any) -> None:
+        """Handle VC bot meeting invitation notification (vc.bot.meeting_invited_v1)."""
+        from gateway.platforms.feishu_meeting_invite import handle_meeting_invited_event
+
+        loop = self._loop
+        if not self._loop_accepts_callbacks(loop):
+            logger.warning("[Feishu] Dropping meeting invite event before adapter loop is ready")
+            return
+        self._submit_on_loop(loop, handle_meeting_invited_event(self, data))
 
     def _on_reaction_event(self, event_type: str, data: Any) -> None:
         """Route user reactions on bot messages as synthetic text events."""
@@ -3355,6 +3369,8 @@ class FeishuAdapter(BasePlatformAdapter):
             self._on_card_action_trigger(data)
         elif event_type == "drive.notice.comment_add_v1":
             self._on_drive_comment_event(data)
+        elif event_type == "vc.bot.meeting_invited_v1":
+            self._on_meeting_invited_event(data)
         else:
             logger.debug("[Feishu] Ignoring webhook event type: %s", event_type or "unknown")
         return web.json_response({"code": 0, "msg": "ok"})
@@ -4419,17 +4435,20 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             request = self._build_create_message_request("thread_id", body)
         else:
+            receive_id = chat_id
+            receive_id_type = "chat_id"
+            if chat_id.startswith("feishu_user_id:"):
+                receive_id = chat_id.split(":", 1)[1]
+                receive_id_type = "user_id"
+            elif chat_id.startswith("ou_"):
+                receive_id_type = "open_id"
+
             body = self._build_create_message_body(
-                receive_id=chat_id,
+                receive_id=receive_id,
                 msg_type=msg_type,
                 content=payload,
                 uuid_value=str(uuid.uuid4()),
             )
-            # Detect whether chat_id is a user open_id (DM) or a chat_id (group).
-            if chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
-            else:
-                receive_id_type = "chat_id"
             request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 

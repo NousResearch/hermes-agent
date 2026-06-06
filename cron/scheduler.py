@@ -9,6 +9,7 @@ runs at a time if multiple processes overlap.
 """
 
 import asyncio
+import atexit
 import concurrent.futures
 import contextvars
 import json
@@ -17,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
@@ -153,6 +155,69 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+
+# ---------------------------------------------------------------------------
+# Persistent thread pool for parallel cron jobs.
+# The tick function submits jobs here and returns immediately so the ticker
+# thread is never blocked by long-running jobs (e.g. the fixer running 15+ min).
+# ---------------------------------------------------------------------------
+_parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_parallel_pool_max_workers: Optional[int] = None
+_running_job_ids: set = set()
+_running_lock = threading.Lock()
+
+# Sequential (env/context-mutating) cron jobs — workdir/profile jobs that touch
+# process-global runtime state — must run one at a time, but must NOT block the
+# ticker thread.  A persistent single-thread executor preserves ordering across
+# ticks while keeping dispatch fire-and-forget, the same as the parallel pool.
+_sequential_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
+
+
+def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
+    """Return (or create) the persistent parallel pool."""
+    global _parallel_pool, _parallel_pool_max_workers
+    if _parallel_pool is None or _parallel_pool_max_workers != max_workers:
+        if _parallel_pool is not None:
+            _parallel_pool.shutdown(wait=False, cancel_futures=False)
+        _parallel_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="cron-parallel",
+        )
+        _parallel_pool_max_workers = max_workers
+    return _parallel_pool
+
+
+def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
+    """Return (or create) the persistent single-thread sequential pool.
+
+    A single worker guarantees env/context-mutating jobs never overlap, even
+    across ticks: a job queued by a newer tick waits for the previous tick's
+    sequential jobs to finish rather than corrupting their os.environ /
+    profile state.
+    """
+    global _sequential_pool
+    if _sequential_pool is None:
+        _sequential_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="cron-seq",
+        )
+    return _sequential_pool
+
+
+def _shutdown_parallel_pool() -> None:
+    """Shut down the persistent pools on process exit."""
+    global _parallel_pool, _parallel_pool_max_workers, _sequential_pool
+    if _parallel_pool is not None:
+        _parallel_pool.shutdown(wait=True, cancel_futures=False)
+        _parallel_pool = None
+        _parallel_pool_max_workers = None
+    if _sequential_pool is not None:
+        _sequential_pool.shutdown(wait=True, cancel_futures=False)
+        _sequential_pool = None
+
+
+atexit.register(_shutdown_parallel_pool)
+
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
@@ -381,6 +446,47 @@ def _iter_home_target_platforms():
                 yield entry.name
     except Exception:
         pass
+
+
+def cron_delivery_targets() -> list[dict]:
+    """Return the platforms a cron job can auto-deliver to.
+
+    Single source of truth for any UI (dashboard dropdown, etc.) that lets a
+    user pick a cron delivery target. A platform is included when it is a valid
+    cron delivery platform AND its gateway is configured (enabled + credentials
+    present). Each entry reports whether the platform's home target (the
+    room/channel cron posts to) is set — a platform can be configured for
+    interactive use but still lack the home target an unattended cron job needs.
+
+    Returns a list of dicts: ``{"id", "name", "home_target_set", "home_env_var"}``
+    ordered by the gateway's canonical platform order. Callers should always
+    prepend the implicit ``local`` option themselves — it needs no config.
+    """
+    targets: list[dict] = []
+    try:
+        from gateway.config import load_gateway_config
+
+        gateway_config = load_gateway_config()
+        connected = {p.value for p in gateway_config.get_connected_platforms()}
+    except Exception:
+        logger.debug("cron_delivery_targets: gateway config unavailable", exc_info=True)
+        connected = set()
+
+    for name in _iter_home_target_platforms():
+        if name not in connected:
+            continue
+        if not _is_known_delivery_platform(name):
+            continue
+        env_var = _resolve_home_env_var(name)
+        targets.append(
+            {
+                "id": name,
+                "name": name.replace("_", " ").title(),
+                "home_target_set": bool(_get_home_target_chat_id(name)),
+                "home_env_var": env_var or None,
+            }
+        )
+    return targets
 
 
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
@@ -1115,10 +1221,36 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
+    from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
 
     parts = []
     skipped: list[str] = []
     for skill_name in skill_names:
+        # Cron jobs historically accepted only skill names here, but the CLI/gateway
+        # slash-command path lets bundles shadow skills with the same slug. Mirror
+        # that behavior so `skills: ["my-bundle"]` expands bundle members instead
+        # of being treated as a missing skill.
+        bundle_key = resolve_bundle_command_key(skill_name.lstrip("/"))
+        if bundle_key:
+            bundle_payload = build_bundle_invocation_message(
+                bundle_key,
+                user_instruction="",
+                task_id=str(job.get("id") or "") or None,
+            )
+            if bundle_payload:
+                bundle_message, _loaded_bundle_skills, _missing_bundle_skills = bundle_payload
+                if parts:
+                    parts.append("")
+                parts.append(bundle_message)
+                continue
+            logger.warning(
+                "Cron job '%s': bundle '%s' could not load any skills, skipping",
+                job.get("name", job.get("id")),
+                skill_name,
+            )
+            skipped.append(skill_name)
+            continue
+
         try:
             loaded = json.loads(skill_view(skill_name))
         except (json.JSONDecodeError, TypeError):
@@ -1182,14 +1314,22 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
       markdown — often security docs / runbooks that *describe* attack
       commands in prose. The LOOSER ``_scan_cron_skill_assembled``
       pattern set is used: only unambiguous prompt-injection directives
-      and invisible unicode block, command-shape patterns are dropped
-      to avoid false-positives. Skill bodies are vetted at install time
-      by ``skills_guard.py``.
+      block; command-shape patterns are dropped and invisible unicode is
+      sanitized (stripped + logged) rather than blocked, to avoid
+      false-positives that permanently kill a job. Skill bodies are
+      vetted at install time by ``skills_guard.py``.
     """
     from tools.cronjob_tools import _scan_cron_prompt, _scan_cron_skill_assembled
 
-    scanner = _scan_cron_skill_assembled if has_skills else _scan_cron_prompt
-    scan_error = scanner(assembled)
+    if has_skills:
+        # Skill content is install-time vetted by skills_guard.py. Invisible
+        # unicode is sanitized (not blocked) so a stray zero-width space in a
+        # skill code example can't permanently kill the job; the cleaned
+        # prompt is what actually runs.
+        cleaned, scan_error = _scan_cron_skill_assembled(assembled)
+        assembled = cleaned
+    else:
+        scan_error = _scan_cron_prompt(assembled)
     if scan_error:
         job_label = job.get("name") or job.get("id") or "<unknown>"
         logger.warning(
@@ -1517,9 +1657,16 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
         reasoning_config = parse_reasoning_effort(effort)
 
-        # Prefill messages from env or config.yaml
+        # Prefill messages from env or config.yaml. The top-level
+        # prefill_messages_file key is canonical; agent.prefill_messages_file is
+        # retained as a legacy fallback for older CLI/godmode configs.
         prefill_messages = None
-        prefill_file = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "") or _cfg.get("prefill_messages_file", "")
+        agent_cfg = _cfg.get("agent", {}) if isinstance(_cfg.get("agent", {}), dict) else {}
+        prefill_file = (
+            os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
+            or _cfg.get("prefill_messages_file", "")
+            or agent_cfg.get("prefill_messages_file", "")
+        )
         if prefill_file:
             pfpath = Path(prefill_file).expanduser()
             if not pfpath.is_absolute():
@@ -1854,7 +2001,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def tick(verbose: bool = True, adapters=None, loop=None) -> int:
+def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
     """
     Check and run all due jobs.
     
@@ -1898,6 +2045,9 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         # Advance next_run_at for all recurring jobs FIRST, under the file lock,
         # before any execution begins.  This preserves at-most-once semantics.
+        # For parallel jobs that are already running, advance_next_run keeps
+        # bumping next_run_at forward so the grace window never expires.
+        # mark_job_run() overwrites next_run_at on completion.
         for job in due_jobs:
             advance_next_run(job["id"])
 
@@ -1989,36 +2139,103 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         ]
 
         _results: list = []
+        _all_futures: list = []
 
-        # Sequential pass for env/context-mutating jobs.
-        for job in sequential_jobs:
+        def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor):
+            """Submit a job fire-and-forget with the in-flight dedup guard.
+
+            Returns the future, or None if the job was skipped because a prior
+            tick's run of the same job is still in flight.  The running-set
+            membership is released in the worker's finally block.
+            """
+            job_id = job["id"]
+            with _running_lock:
+                if job_id in _running_job_ids:
+                    logger.info("Job '%s' already running — skipping", job.get("name", job_id))
+                    return None
+                _running_job_ids.add(job_id)
             _ctx = contextvars.copy_context()
-            _results.append(_ctx.run(_process_job, job))
 
-        # Parallel pass for the rest — same behaviour as before.
+            def _run_and_release(j=job, ctx=_ctx):
+                try:
+                    return ctx.run(_process_job, j)
+                finally:
+                    with _running_lock:
+                        _running_job_ids.discard(j["id"])
+
+            return pool.submit(_run_and_release)
+
+        # Sequential pass for env/context-mutating (workdir/profile) jobs.
+        # Queued to a persistent single-thread pool so they run one at a time
+        # WITHOUT blocking the ticker thread — a long workdir/profile job no
+        # longer starves the rest of the schedule (same fix as the parallel
+        # pass, just serialized).  The in-flight guard prevents a still-running
+        # job from being re-queued on the next tick.
+        if sequential_jobs:
+            seq_pool = _get_sequential_pool()
+            for job in sequential_jobs:
+                fut = _submit_with_guard(job, seq_pool)
+                if fut is None:
+                    continue
+                _all_futures.append(fut)
+                if not sync:
+                    _results.append(True)  # optimistically counted
+
+        # Parallel pass — persistent pool, non-blocking dispatch.
+        # Jobs that are already running (from a previous tick) are skipped.
+        # mark_job_run() updates next_run_at on completion, so the next tick
+        # after completion finds the job due again naturally.  No catch-up
+        # queue needed.
         if parallel_jobs:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers) as _tick_pool:
-                _futures = []
-                for job in parallel_jobs:
-                    _ctx = contextvars.copy_context()
-                    _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
-                for f in concurrent.futures.as_completed(_futures, timeout=600):
-                    try:
-                        _results.append(f.result())
-                    except Exception as exc:
-                        logger.error("Parallel cron job future failed: %s", exc)
-                        _results.append(False)
+            pool = _get_parallel_pool(_max_workers)
+            for job in parallel_jobs:
+                fut = _submit_with_guard(job, pool)
+                if fut is None:
+                    continue
+                _all_futures.append(fut)
+                if not sync:
+                    _results.append(True)  # optimistically counted
 
         # Best-effort sweep of MCP stdio subprocesses that survived their
-        # session teardown during this tick.  Runs AFTER every job has
-        # finished so active sessions (including live user chats) are
-        # never touched — only PIDs explicitly detected as orphans in
-        # tools.mcp_tool._run_stdio's finally block are reaped.
-        try:
-            from tools.mcp_tool import _kill_orphaned_mcp_children
-            _kill_orphaned_mcp_children()
-        except Exception as _e:
-            logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
+        # session teardown.  Must run AFTER jobs finish so active sessions
+        # (including live user chats) are never touched — only PIDs explicitly
+        # detected as orphans in tools.mcp_tool._run_stdio's finally block are
+        # reaped.
+        def _sweep_mcp_orphans() -> None:
+            try:
+                from tools.mcp_tool import _kill_orphaned_mcp_children
+                _kill_orphaned_mcp_children()
+            except Exception as _e:
+                logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
+
+        if sync:
+            # Sync mode (tests / manual ticks): wait for all dispatched jobs,
+            # collect results, then sweep once.
+            for f in concurrent.futures.as_completed(_all_futures):
+                try:
+                    _results.append(f.result())
+                except Exception as exc:
+                    logger.error("Cron job future failed: %s", exc)
+                    _results.append(False)
+            _sweep_mcp_orphans()
+            return sum(_results)
+
+        # Async (gateway ticker) mode: don't block.  Sweep orphans via a
+        # done-callback fired after the LAST dispatched job completes, so the
+        # sweep still happens after jobs finish without stalling the tick.
+        if _all_futures:
+            _remaining = [len(_all_futures)]
+
+            def _on_done(_f: concurrent.futures.Future) -> None:
+                _remaining[0] -= 1
+                if _remaining[0] <= 0:
+                    _sweep_mcp_orphans()
+
+            for _f in _all_futures:
+                _f.add_done_callback(_on_done)
+        else:
+            # Nothing dispatched (all skipped / no due jobs) — sweep inline.
+            _sweep_mcp_orphans()
 
         return sum(_results)
     finally:

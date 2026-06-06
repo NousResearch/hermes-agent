@@ -15,10 +15,14 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/branch')).toBe(true)
     expect(isDesktopSlashSuggestion('/skin')).toBe(true)
     expect(isDesktopSlashSuggestion('/usage')).toBe(true)
+    expect(isDesktopSlashSuggestion('/version')).toBe(true)
+    expect(isDesktopSlashSuggestion('/yolo')).toBe(true)
+    expect(isDesktopSlashCommand('/yolo')).toBe(true)
   })
 
-  it('lets explicitly typed extension commands run without suggesting them', () => {
-    expect(isDesktopSlashSuggestion('/my-skill')).toBe(false)
+  it('surfaces skill and quick commands (extensions) in suggestions and lets them run', () => {
+    expect(isDesktopSlashSuggestion('/my-skill')).toBe(true)
+    expect(isDesktopSlashSuggestion('/gif-search')).toBe(true)
     expect(isDesktopSlashCommand('/my-skill')).toBe(true)
   })
 
@@ -38,7 +42,7 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashCommand('/reset')).toBe(true)
   })
 
-  it('filters command catalogs down to core desktop commands', () => {
+  it('filters built-in catalog noise but keeps skill / quick-command extensions', () => {
     const filtered = filterDesktopCommandsCatalog({
       categories: [
         {
@@ -61,8 +65,14 @@ describe('desktop slash command curation', () => {
       skill_count: 2
     })
 
-    expect(filtered.categories).toEqual([{ name: 'Session', pairs: [['/new', 'Start a new desktop chat']] }])
-    expect(filtered.pairs).toEqual([['/new', 'Start a new desktop chat']])
+    expect(filtered.categories).toEqual([
+      { name: 'Session', pairs: [['/new', 'Start a new desktop chat']] },
+      { name: 'User commands', pairs: [['/ship-it', 'Run release checklist']] }
+    ])
+    expect(filtered.pairs).toEqual([
+      ['/new', 'Start a new desktop chat'],
+      ['/ship-it', 'Run release checklist']
+    ])
     expect(filtered.skill_count).toBe(2)
   })
 

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 pwd = pytest.importorskip("pwd")
+grp = pytest.importorskip("grp")
 
 import hermes_cli.gateway as gateway_cli
 from gateway import status
@@ -1331,7 +1332,6 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_explicit_root_is_allowed(self, monkeypatch):
         """When root is explicitly passed via --run-as-user root, allow it."""
-        import grp
 
         root_info = pwd.getpwnam("root")
         root_group = grp.getgrgid(root_info.pw_gid).gr_name
@@ -2579,3 +2579,24 @@ class TestServiceWorkingDirIsStable:
         assert m, "plist has no WorkingDirectory entry"
         assert Path(m.group(1)).resolve() == home.resolve()
         assert "/.worktrees/" not in m.group(1)
+
+    def test_launchd_plist_keepalive_unconditional(self, tmp_path, monkeypatch):
+        """KeepAlive must be unconditional <true/> so the gateway restarts on clean exits.
+
+        Bug #37388: the old ``KeepAlive.SuccessfulExit = false`` dict form meant
+        launchd would NOT restart after a zero-exit (e.g. ``gateway run --replace``
+        causes the old instance to exit cleanly).  Switching to the scalar
+        ``<key>KeepAlive</key><true/>`` makes launchd restart regardless of exit code.
+        """
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        plist = gateway_cli.generate_launchd_plist()
+
+        # Scalar <true/> must be present immediately after the KeepAlive key
+        assert "<key>KeepAlive</key>" in plist
+        # The unconditional form
+        assert "<key>KeepAlive</key>\n    <true/>" in plist
+        # The old conditional dict form must NOT appear
+        assert "SuccessfulExit" not in plist
+        assert "<key>KeepAlive</key>\n    <dict>" not in plist

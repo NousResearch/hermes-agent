@@ -1780,6 +1780,63 @@ class TestDockerAwareGateway:
         out = capsys.readouterr().out
         assert "docker" in out.lower()
 
+    def test_managed_snap_gateway_install_prints_snap_guidance(self, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_MANAGED", "snap")
+
+        args = SimpleNamespace(gateway_command="install", force=False, system=False, run_as_user=None)
+        gateway_cli.gateway_command(args)
+
+        captured = capsys.readouterr()
+        assert "declared by the Hermes Snap package" in captured.out
+        assert "snap start hermes-agent.gateway" in captured.out
+        assert "snap services hermes-agent.gateway" in captured.out
+
+    def test_managed_snap_gateway_uninstall_prints_snap_guidance(self, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_MANAGED", "snap")
+
+        args = SimpleNamespace(gateway_command="uninstall", system=False)
+        gateway_cli.gateway_command(args)
+
+        captured = capsys.readouterr()
+        assert "declared by the Hermes Snap package" in captured.out
+        assert "snap stop hermes-agent.gateway" in captured.out
+        assert "snap remove hermes-agent" in captured.out
+
+    def test_managed_snap_gateway_start_prints_snap_service_guidance(self, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_MANAGED", "snap")
+
+        args = SimpleNamespace(gateway_command="start", system=False)
+        gateway_cli.gateway_command(args)
+
+        captured = capsys.readouterr()
+        assert "managed by Snap" in captured.out
+        assert "snap start hermes-agent.gateway" in captured.out
+
+    def test_managed_snap_gateway_status_prints_snap_service_guidance(self, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_MANAGED", "snap")
+
+        args = SimpleNamespace(gateway_command="status", deep=False, system=False, full=False)
+        gateway_cli.gateway_command(args)
+
+        captured = capsys.readouterr()
+        assert "managed by Snap" in captured.out
+        assert "snap services hermes-agent.gateway" in captured.out
+
+    def test_managed_snap_gateway_setup_is_not_blocked(self, monkeypatch):
+        monkeypatch.setenv("HERMES_MANAGED", "snap")
+        called = False
+
+        def fake_setup():
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(gateway_cli, "gateway_setup", fake_setup)
+
+        args = SimpleNamespace(gateway_command="setup")
+        gateway_cli.gateway_command(args)
+
+        assert called is True
+
     def test_start_in_container_prints_docker_guidance(self, monkeypatch, capsys):
         """'hermes gateway start' inside Docker exits 0 with container guidance."""
         import pytest

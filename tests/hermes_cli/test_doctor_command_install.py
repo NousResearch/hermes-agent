@@ -190,6 +190,47 @@ class TestDoctorCommandInstallation:
         assert "Venv entry point not found" in out
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_managed_install_skips_venv_entry_point_check(self, monkeypatch, tmp_path):
+        """Package-managed installs (e.g. Snap) own the command and a read-only
+        tree, so doctor must not emit the pip/venv reinstall warning."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+        # No venv entry point — on an unmanaged install this would warn.
+
+        monkeypatch.setenv("HERMES_MANAGED", "snap")
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        except Exception:
+            pass
+        try:
+            import httpx
+            monkeypatch.setattr(httpx, "get", lambda *a, **kw: types.SimpleNamespace(status_code=200))
+        except Exception:
+            pass
+
+        out = _run_doctor(fix=False)
+        assert "Command Installation" in out
+        assert "Managed by Snap" in out
+        assert "Venv entry point not found" not in out
+        assert "pip install -e" not in out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
     def test_dot_venv_dir_is_found(self, monkeypatch, tmp_path):
         """The check finds entry points in .venv/ as well as venv/."""
         home, project, _ = _setup_doctor_env(monkeypatch, tmp_path, venv_name=".venv")

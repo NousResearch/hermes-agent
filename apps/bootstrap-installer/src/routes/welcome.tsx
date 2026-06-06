@@ -37,8 +37,7 @@ export default function Welcome() {
         </p>
 
         <p className="m-0 text-center text-base leading-normal tracking-tight text-muted-foreground">
-          The agent that grows with you. We&rsquo;ll set things up in the
-          background &mdash; takes a few minutes.
+          당신과 함께 성장하는 에이전트. 백그라운드에서 설정을 진행합니다 &mdash; 몇 분 정도 소요됩니다.
         </p>
       </div>
 
@@ -47,7 +46,7 @@ export default function Welcome() {
         size="lg"
         className="group inline-flex items-center gap-2 px-6"
       >
-        Install Hermes
+        Hermes 설치
         <ArrowRight
           size={18}
           className="transition-transform group-hover:translate-x-0.5"

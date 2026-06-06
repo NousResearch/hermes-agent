@@ -41,16 +41,16 @@ export default function Failure({ bootstrap }: FailureProps) {
           }
         >
           <span>
-            <span>{isUpdate ? 'Update didn\u2019t finish' : 'Install didn\u2019t finish'}</span>
+            <span>{isUpdate ? '업데이트를 완료하지 못했습니다' : '설치를 완료하지 못했습니다'}</span>
           </span>
-          <span aria-hidden="true">{isUpdate ? 'Update didn\u2019t finish' : 'Install didn\u2019t finish'}</span>
+          <span aria-hidden="true">{isUpdate ? '업데이트를 완료하지 못했습니다' : '설치를 완료하지 못했습니다'}</span>
         </p>
 
         <p className="m-0 mx-auto max-w-xl text-center text-sm leading-normal tracking-tight text-muted-foreground">
           {bootstrap.error ??
             (isUpdate
-              ? 'Something went wrong during the update.'
-              : 'Something went wrong during installation.')}
+              ? '업데이트 중 오류가 발생했습니다.'
+              : '설치 중 오류가 발생했습니다.')}
         </p>
       </div>
 
@@ -61,7 +61,7 @@ export default function Failure({ bootstrap }: FailureProps) {
           className="inline-flex items-center gap-2 px-6"
         >
           <RefreshCw size={16} />
-          {isUpdate ? 'Retry update' : 'Retry install'}
+          {isUpdate ? '업데이트 재시도' : '설치 재시도'}
         </Button>
         <Button
           variant="outline"
@@ -70,13 +70,13 @@ export default function Failure({ bootstrap }: FailureProps) {
           className="inline-flex items-center gap-2"
         >
           <FileText size={16} />
-          Open log folder
+          로그 폴더 열기
         </Button>
       </div>
 
       {logPath && (
         <p className="max-w-lg text-center text-xs text-muted-foreground/70">
-          Log: <code className="font-mono">{logPath}</code>
+          로그: <code className="font-mono">{logPath}</code>
         </p>
       )}
     </div>

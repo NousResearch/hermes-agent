@@ -43,6 +43,9 @@ export const ko: Translations = {
     expand: "펼치기",
     general: "일반",
     messaging: "메시징",
+    gateway: "게이트웨이",
+    gatewayHint:
+      "메시징 플랫폼, API 서버 및 웹훅은 채널 페이지에서 구성됩니다. 이는 게이트웨이 전반의 설정(프록시/릴레이 모드 및 글로벌 허용 목록)입니다.",
     pluginLoadFailed:
       "이 플러그인의 스크립트를 로드할 수 없습니다. Network 탭(dashboard-plugins/…)과 서버의 플러그인 경로를 확인하세요.",
     pluginNotRegistered:
@@ -75,7 +78,7 @@ export const ko: Translations = {
       keys: "키",
       logs: "로그",
       models: "모델",
-      profiles: "프로필: 멀티 에이전트",
+      profiles: "프로필",
       plugins: "플러그인",
       sessions: "세션",
       skills: "스킬",
@@ -275,6 +278,9 @@ export const ko: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      needsHomeChannel: "먼저 홈 채널을 설정하세요",
+      noneConfigured:
+        "구성된 메시징 플랫폼이 없습니다. 보고서를 전달하려면 채널에서 설정하세요.",
     },
   },
 
@@ -308,6 +314,38 @@ export const ko: Translations = {
     created: "생성됨",
     deleted: "삭제됨",
     renamed: "이름 변경됨",
+    activeProfile: "활성 프로필",
+    activeBadge: "활성",
+    setActive: "활성으로 설정",
+    activeSet: "활성 프로필로 설정됨",
+    gatewayRunning: "게이트웨이 실행 중",
+    gatewayStopped: "게이트웨이 중지됨",
+    gatewayRunningWarning:
+      "이 프로필의 게이트웨이가 실행 중입니다 — 중지됩니다.",
+    aliasBadge: "별칭",
+    description: "설명",
+    descriptionPlaceholder:
+      "이 프로필은 어떤 작업에 능숙한가요? 역할별로 Kanban 작업을 할당할 때 사용됩니다.",
+    noDescription: "설명 없음",
+    editDescription: "설명 편집",
+    descriptionSaved: "설명이 저장되었습니다",
+    reviewBadge: "검토",
+    autoGenerate: "자동 생성",
+    generating: "생성 중…",
+    describeFailed: "설명을 생성할 수 없습니다",
+    distribution: "배포",
+    advancedOptions: "고급 옵션",
+    cloneAll: "모든 항목 복제 (메모리, 세션, 스킬, 상태)",
+    noSkillsOption: "번들 스킬을 초기화하지 않음",
+    descriptionOptional: "설명 (선택 사항)",
+    modelOptional: "모델 (선택 사항)",
+    modelInherit: "복제본 / 기본에서 상속",
+    modelLoading: "모델 로드 중…",
+    modelNone: "인증된 제공자가 없습니다 — 먼저 키를 설정하세요",
+    editModel: "모델 변경",
+    modelSaved: "모델이 업데이트되었습니다",
+    modelSelect: "모델 선택",
+    actions: "작업",
   },
 
   pluginsPage: {
@@ -627,6 +665,9 @@ export const ko: Translations = {
     createTask: "이 열에 작업 만들기",
     noTasks: "— 작업 없음 —",
     unassigned: "미지정",
+    needsAssignee: "담당자 지정 필요",
+    needsAssigneeHint:
+      "종속성은 해결되었으나, 담당자 프로필이 지정될 때까지 디스패처가 이 작업을 건너뜁니다.",
     untitled: "(제목 없음)",
     loadingDetail: "불러오는 중…",
     addComment: "댓글 추가… (Enter로 전송)",
@@ -731,6 +772,8 @@ export const ko: Translations = {
       "이 작업을 보관하시겠습니까? 기본 보드 보기에서 사라집니다.",
     confirmBlocked:
       "이 작업을 차단됨으로 표시하시겠습니까? 워커의 점유가 해제됩니다.",
+    confirmScheduled:
+      "이 작업을 예약됨으로 이동하시겠습니까? 사람에 의한 차단 요인이 아닌 알려진 시간 지연에 이 옵션을 사용하십시오.",
     completionSummary:
       "{label}의 완료 요약입니다. 이는 작업 결과로 저장됩니다.",
     completionSummaryRequired:

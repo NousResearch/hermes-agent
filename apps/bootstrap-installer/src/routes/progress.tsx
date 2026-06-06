@@ -47,14 +47,14 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
               {bootstrap.status === 'running'
                 ? currentStage
                   ? currentStage.info.title
-                  : 'Preparing\u2026'
+                  : '준비 중\u2026'
                 : bootstrap.status === 'completed'
-                  ? 'Done'
-                  : 'Installing'}
+                  ? '완료'
+                  : '설치 중'}
             </span>
           </div>
           <div className="text-muted-foreground">
-            {progress.done} of {progress.total} steps
+            총 {progress.total}단계 중 {progress.done}단계
           </div>
         </div>
         {/* Top progress bar — plain HTML, derived from --primary so it
@@ -103,10 +103,10 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
           <div className="flex w-1/2 flex-col border-l border-border bg-card/40">
             <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
               <div className="text-xs font-medium text-foreground/80">
-                Live output
+                실시간 출력
               </div>
               <div className="text-xs text-muted-foreground">
-                {bootstrap.logs.length} lines
+                {bootstrap.logs.length} 줄
               </div>
             </div>
             <div className="flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px] leading-relaxed">
@@ -134,7 +134,7 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
           className="inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
           <FileText size={14} />
-          {showLogs ? 'Hide details' : 'Show details'}
+          {showLogs ? '상세정보 숨기기' : '상세정보 보기'}
           <ChevronRight
             size={12}
             className={clsx(
@@ -150,7 +150,7 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
             size="sm"
             onClick={() => void cancelInstall()}
           >
-            Cancel
+            취소
           </Button>
         )}
       </div>

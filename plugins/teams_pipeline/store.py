@@ -9,10 +9,10 @@ import threading
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 
 
 DEFAULT_TEAMS_PIPELINE_STORE_FILENAME = "teams_pipeline_store.json"
@@ -64,17 +64,13 @@ class TeamsPipelineStore:
             self._state["sink_records"] = dict(data.get("sink_records") or {})
 
     def _persist(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(self.path.parent),
-            delete=False,
-        ) as tmp:
-            json.dump(self._state, tmp, indent=2, sort_keys=True)
-            tmp.flush()
-            tmp_path = Path(tmp.name)
-        tmp_path.replace(self.path)
+        # Durability: delegate to the shared atomic writer, which does
+        # temp-file + flush + os.fsync + os.replace. The previous hand-rolled
+        # path flushed the temp file but never fsync'd it, so a crash or power
+        # loss right after the rename could expose a truncated or zero-length
+        # state file -- silently losing every subscription / receipt / job
+        # record. fsync closes that durability gap.
+        atomic_json_write(self.path, self._state, indent=2, sort_keys=True)
 
     def list_subscriptions(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:

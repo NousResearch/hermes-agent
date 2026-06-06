@@ -59,6 +59,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -380,13 +381,18 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         "error": None,
     }
     try:
-        argv = shlex.split(os.path.expanduser(spec.command))
+        argv = shlex.split(os.path.expanduser(spec.command), posix=os.name != "nt")
     except ValueError as exc:
         result["error"] = f"command {spec.command!r} cannot be parsed: {exc}"
         return result
     if not argv:
         result["error"] = "empty command"
         return result
+
+    if os.name == "nt" and argv[0].lower().endswith((".sh", ".bash")):
+        bash = shutil.which("bash")
+        if bash:
+            argv = [bash, Path(argv[0]).as_posix(), *argv[1:]]
 
     t0 = time.monotonic()
     try:
@@ -732,7 +738,7 @@ def _command_script_path(command: str) -> str:
     common bare-path form.
     """
     try:
-        parts = shlex.split(command)
+        parts = shlex.split(command, posix=os.name != "nt")
     except ValueError:
         return command
     if not parts:
@@ -819,7 +825,7 @@ def script_is_executable(command: str) -> bool:
     if not os.path.isfile(expanded):
         return False
     try:
-        argv = shlex.split(command)
+        argv = shlex.split(command, posix=os.name != "nt")
     except ValueError:
         return False
     is_bare_invocation = bool(argv) and argv[0] == path

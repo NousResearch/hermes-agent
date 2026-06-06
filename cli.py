@@ -4899,8 +4899,19 @@ class HermesCLI:
                     _fb_model = (_fb.get("model") or "").strip()
                     if not _fb_provider or not _fb_model:
                         continue
+                    _fb_base_url = (_fb.get("base_url") or "").strip() or None
+                    _fb_api_key = (_fb.get("api_key") or "").strip() or None
+                    if not _fb_api_key:
+                        _fb_key_env = (_fb.get("key_env") or _fb.get("api_key_env") or "").strip()
+                        if _fb_key_env:
+                            _fb_api_key = os.getenv(_fb_key_env, "").strip() or None
                     try:
-                        runtime = resolve_runtime_provider(requested=_fb_provider)
+                        runtime = resolve_runtime_provider(
+                            requested=_fb_provider,
+                            explicit_api_key=_fb_api_key,
+                            explicit_base_url=_fb_base_url,
+                            target_model=_fb_model,
+                        )
                         logger.warning(
                             "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
                             _primary_exc, _fb_provider, _fb_model,

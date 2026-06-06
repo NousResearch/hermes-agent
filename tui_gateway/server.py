@@ -142,6 +142,27 @@ except (ValueError, TypeError):
     _slash_timeout = 45.0
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 
+# Track sessions with active agent turns so atexit can clean up abandoned
+# turns when the gateway exits abnormally (e.g. macOS screen sleep causing
+# PTY disconnect → daemon thread killed without running its finally block).
+# Fixes #40342.
+_inflight_turn_sessions: dict[str, dict] = {}
+
+
+def _cleanup_abandoned_turns() -> None:
+    """atexit handler: clear session["running"] for any abandoned turns."""
+    for sid, session in list(_inflight_turn_sessions.items()):
+        try:
+            with session["history_lock"]:
+                if session.get("running"):
+                    session["running"] = False
+                    session["inflight_turn"] = None
+        except Exception:
+            pass
+
+
+atexit.register(_cleanup_abandoned_turns)
+
 # When a WebSocket client (the dashboard's embedded-chat tab / desktop app)
 # disconnects, ``tui_gateway.ws`` detaches the transport but intentionally
 # leaves the session parked so a quick reconnect can reattach it (see ws.py).
@@ -4601,6 +4622,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
     agent = session["agent"]
+    _inflight_turn_sessions[sid] = session
     _emit("message.start", sid)
 
     def run():
@@ -4955,6 +4977,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
             _emit("session.info", sid, _session_info(agent, session))
+            _inflight_turn_sessions.pop(sid, None)
 
         # Chain a goal-continuation turn if the judge said so. We do
         # this AFTER the finally releases session["running"], so the

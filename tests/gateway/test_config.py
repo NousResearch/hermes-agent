@@ -70,6 +70,19 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    def test_from_dict_ignores_malformed_nested_sections(self):
+        restored = PlatformConfig.from_dict(
+            {
+                "enabled": True,
+                "home_channel": "telegram:123",
+                "extra": "oops",
+            }
+        )
+
+        assert restored.enabled is True
+        assert restored.home_channel is None
+        assert restored.extra == {}
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
@@ -162,6 +175,12 @@ class TestSessionResetPolicy:
         restored = SessionResetPolicy.from_dict({"notify": "false"})
         assert restored.notify is False
 
+    def test_from_dict_malformed_section_falls_back_to_defaults(self):
+        restored = SessionResetPolicy.from_dict("oops")
+        assert restored.mode == "both"
+        assert restored.at_hour == 4
+        assert restored.idle_minutes == 1440
+
 
 class TestStreamingConfig:
     def test_defaults_to_auto_transport(self):
@@ -186,6 +205,11 @@ class TestStreamingConfig:
         assert restored.edit_interval == 0.8
         assert restored.buffer_threshold == 24
         assert restored.fresh_final_after_seconds == 60.0
+
+    def test_from_dict_malformed_section_falls_back_to_defaults(self):
+        restored = StreamingConfig.from_dict("enabled")
+        assert restored.enabled is False
+        assert restored.transport == "auto"
 
 
 class TestGatewayConfigRoundtrip:
@@ -232,6 +256,27 @@ class TestGatewayConfigRoundtrip:
     def test_from_dict_coerces_quoted_false_always_log_local(self):
         restored = GatewayConfig.from_dict({"always_log_local": "false"})
         assert restored.always_log_local is False
+
+    def test_from_dict_ignores_malformed_nested_sections(self):
+        restored = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "telegram": "enabled",
+                    "discord": {"enabled": True, "token": "tok"},
+                },
+                "default_reset_policy": "daily",
+                "reset_by_type": ["oops"],
+                "reset_by_platform": "oops",
+                "streaming": "enabled",
+            }
+        )
+
+        assert Platform.TELEGRAM not in restored.platforms
+        assert restored.platforms[Platform.DISCORD].enabled is True
+        assert restored.default_reset_policy.mode == "both"
+        assert restored.reset_by_type == {}
+        assert restored.reset_by_platform == {}
+        assert restored.streaming.transport == "auto"
 
     def test_get_notice_delivery_defaults_to_public(self):
         config = GatewayConfig(

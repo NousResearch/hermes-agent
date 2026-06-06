@@ -3746,3 +3746,56 @@ def unified_search(query: str, sources: List[SkillSource],
     deduped = list(seen.values())
 
     return deduped[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Skill executor bridge — functions imported by tools/skill_executor.py
+# for the POST /v1/agent/execute_skill endpoint.
+# ---------------------------------------------------------------------------
+
+
+def skill_exists(skill_id: str) -> bool:
+    from tools.skills_tool import _find_all_skills
+
+    skills = _find_all_skills()
+    return any(s["name"] == skill_id for s in skills)
+
+
+def _get_skill_schema(skill_id: str, schema_key: str):
+    from tools.skills_tool import _find_all_skills
+
+    skills = _find_all_skills()
+    for s in skills:
+        if s.get("name") != skill_id:
+            continue
+        fm = s.get("frontmatter")
+        if isinstance(fm, dict) and schema_key in fm:
+            return fm[schema_key]
+
+    from tools.skills_tool import SKILLS_DIR, _parse_frontmatter
+    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+
+    dirs_to_scan = []
+    if SKILLS_DIR.exists():
+        dirs_to_scan.append(SKILLS_DIR)
+    dirs_to_scan.extend(get_external_skills_dirs())
+
+    for scan_dir in dirs_to_scan:
+        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+            if skill_md.parent.name != skill_id:
+                continue
+            try:
+                content = skill_md.read_text(encoding="utf-8")[:8000]
+                frontmatter, _ = _parse_frontmatter(content)
+                return frontmatter.get(schema_key)
+            except Exception:
+                continue
+    return None
+
+
+def get_skill_input_schema(skill_id: str):
+    return _get_skill_schema(skill_id, "inputs_schema")
+
+
+def get_skill_output_schema(skill_id: str):
+    return _get_skill_schema(skill_id, "outputs_schema")

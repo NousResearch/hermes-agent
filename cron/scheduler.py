@@ -1495,6 +1495,35 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     agent = None
 
+    # ── Workflow dispatch short-circuit ──────────────────────────
+    from cron.workflow_dispatch import (
+        dispatch_workflow_runs,
+        extract_workflow_ids,
+        resolve_dispatch_url as _resolve_wf_dispatch_url,
+    )
+
+    wf_ids = extract_workflow_ids(job)
+    if wf_ids:
+        wf_dispatch_url = _resolve_wf_dispatch_url()
+        if wf_dispatch_url:
+            wf_success, wf_doc, wf_err = dispatch_workflow_runs(
+                job, wf_ids,
+            )
+            if wf_success:
+                wf_msg = (
+                    f"Workflow run(s) started: "
+                    + ", ".join(wf_ids)
+                )
+            else:
+                wf_msg = f"Workflow dispatch failed — {wf_err}"
+            return wf_success, wf_doc, wf_msg, wf_err if not wf_success else None
+        else:
+            logger.warning(
+                "Cron job '%s': workflow_ids set (%s) but no dispatch URL configured; "
+                "falling back to legacy LLM path",
+                job_name, ", ".join(wf_ids),
+            )
+
     # Mark this as a cron session so the approval system can apply cron_mode.
     # This env var is process-wide and persists for the lifetime of the
     # scheduler process — every job this process runs is a cron job.

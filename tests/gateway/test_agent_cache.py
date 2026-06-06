@@ -375,7 +375,18 @@ class TestExtractCacheBustingConfig:
         assert first["honcho.user_peer_aliases"] == [("123", "eri")]
         assert parse_calls == [config_path]
 
+        mtime_before = config_path.stat().st_mtime_ns
         config_path.write_text("{\n  \"changed\": true\n}")
+        # Some filesystems can preserve mtime_ns for rapid rewrites inside
+        # the same test. Force a new timestamp so this exercises the memo
+        # invalidation path rather than filesystem timestamp granularity.
+        config_path.touch()
+        try:
+            import os
+
+            os.utime(config_path, ns=(mtime_before + 1_000_000_000, mtime_before + 1_000_000_000))
+        except (OSError, ValueError):
+            pass
         third = GatewayRunner._extract_honcho_cache_busting_config()
 
         assert third == first

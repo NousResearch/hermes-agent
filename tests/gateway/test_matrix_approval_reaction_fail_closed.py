@@ -21,20 +21,52 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def _stub_mautrix():
+    try:
+        import mautrix.types  # noqa: F401
+        return
+    except ImportError:
+        pass
+
     stub = types.ModuleType("mautrix")
     for sub in ("mautrix.types", "mautrix.client", "mautrix.client.api",
                 "mautrix.errors", "mautrix.crypto", "mautrix.util",
                 "mautrix.util.config"):
-        sys.modules.setdefault(sub, types.ModuleType(sub))
-    sys.modules.setdefault("mautrix", stub)
+        sys.modules[sub] = types.ModuleType(sub)
+    sys.modules["mautrix"] = stub
     m = sys.modules["mautrix.types"]
-    for attr in (
-        "ContentURI", "EventID", "EventType", "PaginationDirection",
-        "PresenceState", "RoomCreatePreset", "RoomID", "SyncToken",
-        "TrustState", "UserID",
-    ):
-        if not hasattr(m, attr):
-            setattr(m, attr, str)
+
+    class EventType:
+        ROOM_MESSAGE = "m.room.message"
+        REACTION = "m.reaction"
+        ROOM_ENCRYPTED = "m.room.encrypted"
+        ROOM_NAME = "m.room.name"
+
+    class PaginationDirection:
+        BACKWARD = "b"
+        FORWARD = "f"
+
+    class PresenceState:
+        ONLINE = "online"
+        OFFLINE = "offline"
+        UNAVAILABLE = "unavailable"
+
+    class RoomCreatePreset:
+        PRIVATE = "private_chat"
+        PUBLIC = "public_chat"
+        TRUSTED_PRIVATE = "trusted_private_chat"
+
+    class TrustState:
+        UNVERIFIED = 0
+        VERIFIED = 1
+
+    for attr in ("ContentURI", "EventID", "RoomID", "SyncToken", "UserID"):
+        setattr(m, attr, str)
+    setattr(m, "EventType", EventType)
+    setattr(m, "PaginationDirection", PaginationDirection)
+    setattr(m, "PresenceState", PresenceState)
+    setattr(m, "RoomCreatePreset", RoomCreatePreset)
+    setattr(m, "TrustState", TrustState)
+    setattr(stub, "types", m)
 
 
 _stub_mautrix()

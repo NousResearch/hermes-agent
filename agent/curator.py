@@ -31,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from tools import skill_usage
 
 logger = logging.getLogger(__name__)
@@ -1436,6 +1436,7 @@ def run_curator_review(
     can read what the curator WOULD have done.
     """
     start = datetime.now(timezone.utc)
+    run_home = get_hermes_home()
     if dry_run:
         # Count candidates without mutating state.
         try:
@@ -1603,10 +1604,17 @@ def run_curator_review(
             except Exception:
                 pass
 
+    def _llm_pass_in_run_home():
+        token = set_hermes_home_override(run_home)
+        try:
+            _llm_pass()
+        finally:
+            reset_hermes_home_override(token)
+
     if synchronous:
-        _llm_pass()
+        _llm_pass_in_run_home()
     else:
-        t = threading.Thread(target=_llm_pass, daemon=True, name="curator-review")
+        t = threading.Thread(target=_llm_pass_in_run_home, daemon=True, name="curator-review")
         t.start()
 
     return {

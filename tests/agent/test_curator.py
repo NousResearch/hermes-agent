@@ -7,6 +7,7 @@ tests run fully offline and the curator module doesn't need real credentials.
 from __future__ import annotations
 
 import importlib
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -21,23 +22,29 @@ def curator_env(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    import tools.skill_usage as usage
-    importlib.reload(usage)
-    import agent.curator as curator
-    importlib.reload(curator)
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    # Neutralize the real LLM pass by default — tests opt in per-case.
-    monkeypatch.setattr(curator, "_run_llm_review", lambda prompt: "llm-stub")
+    token = set_hermes_home_override(home)
+    try:
+        import tools.skill_usage as usage
+        importlib.reload(usage)
+        import agent.curator as curator
+        importlib.reload(curator)
 
-    # Default: no config file → curator defaults. Tests can override.
-    monkeypatch.setattr(curator, "_load_config", lambda: {})
-    # Pin prune_builtins OFF by default so transition tests don't pick up
-    # built-ins unless they explicitly enable it. Both config-reading paths
-    # are pinned (curator reads via _load_config; skill_usage reads config
-    # directly). Tests opt in with _enable_prune_builtins(...).
-    monkeypatch.setattr(usage, "_prune_builtins_enabled", lambda: False)
+        # Neutralize the real LLM pass by default — tests opt in per-case.
+        monkeypatch.setattr(curator, "_run_llm_review", lambda prompt: "llm-stub")
 
-    return {"home": home, "curator": curator, "usage": usage}
+        # Default: no config file → curator defaults. Tests can override.
+        monkeypatch.setattr(curator, "_load_config", lambda: {})
+        # Pin prune_builtins OFF by default so transition tests don't pick up
+        # built-ins unless they explicitly enable it. Both config-reading paths
+        # are pinned (curator reads via _load_config; skill_usage reads config
+        # directly). Tests opt in with _enable_prune_builtins(...).
+        monkeypatch.setattr(usage, "_prune_builtins_enabled", lambda: False)
+
+        yield {"home": home, "curator": curator, "usage": usage}
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _write_skill(skills_dir: Path, name: str):
@@ -427,6 +434,53 @@ def test_run_review_records_state(curator_env):
     assert state["last_run_at"] is not None
     assert state["run_count"] >= 1
     assert state["last_run_summary"] is not None
+
+
+def test_run_review_background_binds_home(curator_env, monkeypatch, tmp_path):
+    """The daemon LLM pass must keep writing to the Hermes home that started
+    it, even if process-global HERMES_HOME changes before the thread finishes.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
+
+    llm_started = threading.Event()
+    allow_finish = threading.Event()
+    summary_done = threading.Event()
+
+    def _on_summary(summary: str) -> None:
+        if "background-finished" in summary:
+            summary_done.set()
+
+    def _blocking_stub(_prompt):
+        llm_started.set()
+        assert allow_finish.wait(5), "background review did not receive release signal"
+        return {
+            "final": "", "summary": "background-finished", "model": "stub", "provider": "stub",
+            "tool_calls": [], "error": None,
+        }
+
+    monkeypatch.setattr(c, "_run_llm_review", _blocking_stub)
+    c.run_curator_review(
+        on_summary=_on_summary,
+        synchronous=False,
+    )
+    assert llm_started.wait(5), "background review never reached LLM stub"
+
+    other_home = tmp_path / "other-hermes"
+    (other_home / "skills").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(other_home))
+
+    allow_finish.set()
+    assert summary_done.wait(5), "background review did not finish"
+
+    original_state = c._state_file()
+    other_state = other_home / "skills" / ".curator_state"
+    assert original_state.exists()
+    assert "background-finished" in original_state.read_text(encoding="utf-8")
+    assert not other_state.exists(), "background curator leaked state into the later HERMES_HOME"
 
 
 def test_dry_run_does_not_advance_state(curator_env, monkeypatch):

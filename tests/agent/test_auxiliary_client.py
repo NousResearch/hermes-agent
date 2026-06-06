@@ -2800,10 +2800,11 @@ class TestVisionAutoSkipsKimiCoding:
         assert client is fake_kimi_client
         gcc_mock.assert_called_once()
 
-    def test_skip_set_covers_exactly_known_entries(self):
-        """Guard against accidental widening of the skip list."""
+    def test_skip_set_covers_known_text_only_providers(self):
+        """Guard the explicit text-only provider list used by vision auto."""
         from agent.auxiliary_client import _PROVIDERS_WITHOUT_VISION
         assert _PROVIDERS_WITHOUT_VISION == frozenset({
+            "deepseek",
             "kimi-coding",
             "kimi-coding-cn",
         })

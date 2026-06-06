@@ -637,11 +637,12 @@ class _FakeThreadChannel(_discord_mod.Thread):
 
     def __init__(self, channel_id=200, name="existing-thread", guild_name="TestGuild", parent_id=100):
         # Don't call super().__init__ — mock Thread is just an empty type
+        parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name, id=1)
+        self.guild = SimpleNamespace(name=guild_name, id=1, get_channel=lambda cid: parent if cid == parent_id else None)
         self.topic = None
-        self.parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
+        self.parent_id = parent_id
 
     def history(self, *args, **kwargs):
         async def _empty():

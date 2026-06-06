@@ -6,6 +6,19 @@ import { type I18nConfigClient, I18nProvider } from '@/i18n'
 
 import { LanguageSwitcher } from './language-switcher'
 
+// cmdk (the searchable list) wires a ResizeObserver and scrolls the active
+// item into view — neither exists in jsdom. Stub them, matching the polyfill
+// idiom in tool-approval-group.test.tsx.
+class TestResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+vi.stubGlobal('ResizeObserver', TestResizeObserver)
+
+Element.prototype.scrollIntoView = function scrollIntoView() {}
+
 describe('LanguageSwitcher', () => {
   afterEach(() => {
     cleanup()
@@ -15,6 +28,7 @@ describe('LanguageSwitcher', () => {
   it('persists language changes through display.language config', async () => {
     const saveConfig = vi.fn().mockResolvedValue({ ok: true })
     const latestConfig: HermesConfigRecord = { display: { language: 'en', skin: 'slate' } }
+
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockResolvedValue(latestConfig),
       saveConfig

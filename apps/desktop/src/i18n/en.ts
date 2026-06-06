@@ -132,7 +132,9 @@ export const en: Translations = {
     description: 'Choose the language for the desktop interface.',
     saving: 'Saving language…',
     saveError: 'Language update failed',
-    switchTo: 'Switch language'
+    switchTo: 'Switch language',
+    searchPlaceholder: 'Search languages…',
+    noResults: 'No languages found'
   },
 
   settings: {

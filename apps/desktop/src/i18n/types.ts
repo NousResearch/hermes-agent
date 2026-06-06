@@ -144,6 +144,8 @@ export interface Translations {
     saving: string
     saveError: string
     switchTo: string
+    searchPlaceholder: string
+    noResults: string
   }
 
   settings: {

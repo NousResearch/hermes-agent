@@ -130,6 +130,29 @@ class TestHandleVoiceCommand:
         assert "voice reply" in result.lower()
 
     @pytest.mark.asyncio
+    async def test_voice_smoke_runs_without_toggling_mode(self, runner):
+        runner._run_voice_smoke = AsyncMock(return_value="Voice smoke PASS\ntotal=100.0ms")
+        event = _make_event("/voice smoke")
+        result = await runner._handle_voice_command(event)
+        assert "voice smoke pass" in result.lower()
+        assert runner._voice_mode == {}
+        runner._run_voice_smoke.assert_awaited_once()
+
+    def test_voice_smoke_formatter_reports_core_metrics(self, runner):
+        result = runner._format_voice_smoke_result({
+            "passed": True,
+            "latency_ms": {"total": 7092.8, "stt": 231.0, "brain": 123.2, "tts": 3257.1},
+            "brain": {"first_content_ms": 76.2, "done_ms": 123.0},
+            "transcript": "Buna Pafi, acesta este un test Hermes Voice.",
+            "brain_response": "Salut! Totul pare in ordine.",
+            "artifacts": {"output_wav": "/home/pafi/.hermes-voice/output/run/response.wav"},
+        })
+        assert "Voice smoke PASS" in result
+        assert "total=7092.8ms" in result
+        assert "brain_stream=76.2ms first, 123.0ms done" in result
+        assert "Output: /home/pafi/.hermes-voice/output/run/response.wav" in result
+
+    @pytest.mark.asyncio
     async def test_toggle_off_to_on(self, runner):
         event = _make_event("/voice")
         result = await runner._handle_voice_command(event)

@@ -25,6 +25,7 @@ except ModuleNotFoundError:
     pass
 
 import asyncio
+import contextlib
 import dataclasses
 import inspect
 import json
@@ -11981,7 +11982,7 @@ class GatewayRunner:
         return None
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|channel|leave|status] command."""
+        """Handle /voice [on|off|tts|smoke|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
         platform = event.source.platform
@@ -11989,7 +11990,9 @@ class GatewayRunner:
 
         adapter = self.adapters.get(platform)
 
-        if args in {"on", "enable"}:
+        if args == "smoke":
+            return await self._run_voice_smoke()
+        elif args in {"on", "enable"}:
             self._voice_mode[voice_key] = "voice_only"
             self._save_voice_modes()
             if adapter:
@@ -12060,6 +12063,99 @@ class GatewayRunner:
                 t("gateway.voice.help_channels") if supports_voice_channels else ""
             )
             return t("gateway.voice.help", toggle=toggle_line, channels=channels)
+
+    @staticmethod
+    def _format_voice_smoke_result(metrics: dict[str, Any]) -> str:
+        """Render a concise operator summary from voice_io_smoke metrics."""
+        passed = bool(metrics.get("passed"))
+        latency = metrics.get("latency_ms") if isinstance(metrics.get("latency_ms"), dict) else {}
+        brain = metrics.get("brain") if isinstance(metrics.get("brain"), dict) else {}
+        artifacts = metrics.get("artifacts") if isinstance(metrics.get("artifacts"), dict) else {}
+        lines = [f"Voice smoke {'PASS' if passed else 'FAIL'}"]
+        if metrics.get("error"):
+            lines.append(f"Error: {str(metrics.get('error'))[:180]}")
+        if latency:
+            parts = []
+            for label, key in (
+                ("total", "total"),
+                ("stt", "stt"),
+                ("brain", "brain"),
+                ("tts", "tts"),
+            ):
+                value = latency.get(key)
+                if isinstance(value, (int, float)):
+                    parts.append(f"{label}={value:.1f}ms")
+            if parts:
+                lines.append(", ".join(parts))
+        first_content = brain.get("first_content_ms")
+        done = brain.get("done_ms")
+        if isinstance(first_content, (int, float)) or isinstance(done, (int, float)):
+            lines.append(
+                "brain_stream="
+                f"{first_content:.1f}ms first"
+                if isinstance(first_content, (int, float))
+                else "brain_stream=unknown first"
+            )
+            if isinstance(done, (int, float)):
+                lines[-1] += f", {done:.1f}ms done"
+        transcript = str(metrics.get("transcript") or "").strip()
+        if transcript:
+            lines.append(f"Transcript: {transcript[:160]}")
+        response = str(metrics.get("brain_response") or "").strip()
+        if response:
+            lines.append(f"Brain: {response[:160]}")
+        output_wav = artifacts.get("output_wav")
+        if output_wav:
+            lines.append(f"Output: {output_wav}")
+        return "\n".join(lines)
+
+    async def _run_voice_smoke(self) -> str:
+        """Run the isolated Hermes-main voice I/O smoke and report metrics."""
+        smoke_script = Path.home() / ".hermes-voice" / "bin" / "voice_io_smoke.py"
+        output_root = Path.home() / ".hermes-voice" / "output"
+        if not smoke_script.is_file():
+            return f"Voice smoke FAIL\nMissing smoke script: {smoke_script}"
+
+        try:
+            timeout = float(os.environ.get("HERMES_VOICE_SMOKE_COMMAND_TIMEOUT", "75"))
+        except ValueError:
+            timeout = 75.0
+        timeout = max(10.0, min(timeout, 180.0))
+
+        out_dir = output_root / f"voice-io-smoke-command-{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+        cmd = [sys.executable, str(smoke_script), "--out-dir", str(out_dir)]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(Exception):
+                proc.kill()  # type: ignore[name-defined]
+                await proc.wait()  # type: ignore[name-defined]
+            return f"Voice smoke FAIL\nTimed out after {timeout:.0f}s"
+        except Exception as exc:
+            logger.warning("voice smoke command failed to start: %s", exc)
+            return f"Voice smoke FAIL\nCould not start smoke: {type(exc).__name__}"
+
+        metrics_path = out_dir / "metrics.json"
+        try:
+            payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except Exception:
+            stdout_preview = stdout.decode("utf-8", errors="replace")[:240] if stdout else ""
+            stderr_preview = stderr.decode("utf-8", errors="replace")[:240] if stderr else ""
+            detail = _redact_gateway_user_facing_secrets(
+                stdout_preview or stderr_preview or f"exit={proc.returncode}"
+            )
+            return f"Voice smoke FAIL\nMetrics missing or invalid: {detail}"
+
+        summary = self._format_voice_smoke_result(payload)
+        summary += f"\nMetrics: {metrics_path}"
+        if proc.returncode not in (0, None) and payload.get("passed"):
+            summary += f"\nWarning: smoke exited {proc.returncode}"
+        return summary
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""

@@ -4393,10 +4393,28 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         try:
             with open(file_path, "rb") as file_obj:
+                # For audio files, extract duration before upload so Feishu can
+                # register it properly during file creation.
+                upload_duration = None
+                if resolved_message_type == "audio":
+                    try:
+                        import subprocess as _subprocess
+                        _result = _subprocess.run(
+                            ["ffprobe", "-v", "error", "-show_entries",
+                             "format=duration", "-of",
+                             "default=noprint_wrappers=1:nokey=1", file_path],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        _dur_s = float(_result.stdout.strip())
+                        upload_duration = int(_dur_s * 1000)
+                    except Exception:
+                        pass
+
                 body = self._build_file_upload_body(
                     file_type=upload_file_type,
                     file_name=display_name,
                     file=file_obj,
+                    duration=upload_duration,
                 )
                 request = self._build_file_upload_request(body)
                 upload_response = await asyncio.to_thread(self._client.im.v1.file.create, request)
@@ -4832,16 +4850,24 @@ class FeishuAdapter(BasePlatformAdapter):
         return SimpleNamespace(request_body=request_body)
 
     @staticmethod
-    def _build_file_upload_body(*, file_type: str, file_name: str, file: Any) -> Any:
+    def _build_file_upload_body(*, file_type: str, file_name: str, file: Any, duration: Optional[int] = None) -> Any:
         if "CreateFileRequestBody" in globals():
-            return (
+            builder = (
                 CreateFileRequestBody.builder()
                 .file_type(file_type)
                 .file_name(file_name)
                 .file(file)
-                .build()
             )
-        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file)
+            if duration is not None:
+                try:
+                    builder = builder.duration(duration)
+                except AttributeError:
+                    pass
+            return builder.build()
+        body = SimpleNamespace(file_type=file_type, file_name=file_name, file=file)
+        if duration is not None:
+            body.duration = duration
+        return body
 
     @staticmethod
     def _build_file_upload_request(request_body: Any) -> Any:

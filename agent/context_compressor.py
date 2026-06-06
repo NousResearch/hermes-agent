@@ -552,6 +552,7 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        self._awaiting_suppression_count = 0
 
     def update_model(
         self,
@@ -653,6 +654,7 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        self._awaiting_suppression_count = 0
 
         self.summary_model = summary_model_override or ""
 
@@ -694,6 +696,7 @@ class ContextCompressor(ContextEngine):
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        self._awaiting_suppression_count = 0
 
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """Return True when a high rough preflight estimate is known-noisy.
@@ -728,10 +731,47 @@ class ContextCompressor(ContextEngine):
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
 
+        Why: single choke-point for all compression-trigger paths (preflight,
+        post-API-response, post-tool).  Guards against the re-fire bug (#36718)
+        where a schema-heavy rough estimate immediately after compression can
+        exceed the threshold before any real API usage data has arrived.
+        What: returns False when awaiting the first API response after a fresh
+        compression (for at most 2 consecutive evaluations), or when token count
+        is below threshold, or when anti-thrash protection kicks in.
+        Test: set awaiting_real_usage_after_compression=True, call with a token
+        count above threshold — must return False for the first 2 calls, then
+        True on the 3rd (self-healing bounded window).  Set it False via
+        update_from_response — subsequent calls work normally.
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
         """
+        # Guard: do not re-trigger compression while we are still waiting for the
+        # first API response after a fresh compression.  The rough post-compression
+        # estimate is schema-inflated and can appear above the threshold even though
+        # the actual provider prompt_tokens will be well below it.  last_prompt_tokens
+        # is set to -1 as a sentinel by compress_context(); update_from_response()
+        # clears awaiting_real_usage_after_compression when real data arrives.
+        # This check catches both the preflight path (which may overwrite -1 with a
+        # rough estimate before this runs) and the post-tool path.  (#36718)
+        #
+        # Bounded suppression window: if usage=None (partial-stream stub) or an
+        # exception prevents update_from_response() from ever running, the flag
+        # could stay True indefinitely and silence legitimate compression.  We
+        # count consecutive evaluations under the flag and self-heal after
+        # _AWAITING_SUPPRESSION_LIMIT turns so a stuck flag can never block
+        # more than that many preflight compression checks.  The normal case
+        # (real usage arrives in the very next turn) is unaffected — the flag
+        # clears via update_from_response() before the limit is reached.
+        _AWAITING_SUPPRESSION_LIMIT = 2
+        if self.awaiting_real_usage_after_compression:
+            self._awaiting_suppression_count += 1
+            if self._awaiting_suppression_count <= _AWAITING_SUPPRESSION_LIMIT:
+                return False
+            # Limit exceeded — self-heal: clear the stale flag so the normal
+            # token-count logic below applies on this and subsequent evaluations.
+            self.awaiting_real_usage_after_compression = False
+            self._awaiting_suppression_count = 0
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False

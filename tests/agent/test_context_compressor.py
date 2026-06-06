@@ -59,6 +59,165 @@ class TestUpdateFromResponse:
         assert compressor.last_prompt_tokens == 0
 
 
+class TestCompressionRefireBug:
+    """Regression tests for #36718: compression re-fires immediately after a
+    fresh compression because the -1 sentinel was overwritten by the preflight
+    path before should_compress() ran.
+
+    Root cause: compress_context() sets last_prompt_tokens=-1 and
+    awaiting_real_usage_after_compression=True.  should_compress() did not
+    guard on the awaiting flag, so a schema-heavy rough estimate above the
+    threshold could re-trigger compression on the very next turn.
+
+    Fix: should_compress() returns False when awaiting_real_usage_after_compression
+    is True, preventing any compression until update_from_response() clears the flag.
+    """
+
+    def test_should_compress_blocked_while_awaiting_real_usage(self, compressor):
+        """Why: the single-choke-point guard in should_compress() must prevent
+        any call path from triggering compression before real API data arrives.
+        What: awaiting_real_usage_after_compression=True forces False regardless
+        of token count.
+        Test: set flag, call with count above threshold — must return False.
+        """
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_prompt_tokens = -1
+        # A schema-heavy rough estimate that exceeds the threshold should NOT
+        # trigger compression while awaiting real API usage.
+        assert compressor.should_compress(120_000) is False
+
+    def test_should_compress_resumes_after_update_from_response(self, compressor):
+        """Why: once real API data arrives via update_from_response(), legitimate
+        compression must be possible again.
+        What: update_from_response() clears awaiting_real_usage_after_compression,
+        so a subsequent above-threshold call returns True.
+        Test: simulate compression state, call update_from_response with large
+        prompt_tokens, then assert should_compress fires for those tokens.
+        """
+        # Simulate post-compression state
+        compressor.last_prompt_tokens = -1
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_compression_rough_tokens = 90_000
+
+        # Real API response confirms context is still large (legitimately over threshold)
+        compressor.update_from_response({
+            "prompt_tokens": 110_000,  # genuinely above threshold (100_000)
+            "completion_tokens": 500,
+        })
+        assert compressor.awaiting_real_usage_after_compression is False
+        assert compressor.should_compress(110_000) is True
+
+    def test_should_compress_resumes_after_real_usage_below_threshold(self, compressor):
+        """Why: the normal post-compress path where context was actually reduced.
+        What: after update_from_response with prompt_tokens below threshold,
+        the flag is cleared and normal compression logic applies.
+        Test: simulate compression followed by real usage below threshold,
+        assert no re-compression.
+        """
+        compressor.last_prompt_tokens = -1
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_compression_rough_tokens = 90_000
+
+        compressor.update_from_response({
+            "prompt_tokens": 50_000,  # well below threshold
+            "completion_tokens": 500,
+        })
+        assert compressor.awaiting_real_usage_after_compression is False
+        # Normal token count below threshold — should not compress
+        assert compressor.should_compress(50_000) is False
+
+
+class TestBoundedSuppressionWindow:
+    """Regression tests for the bounded suppression window hardening.
+
+    If usage=None or an exception prevents update_from_response() from running,
+    the awaiting_real_usage_after_compression flag stays True indefinitely.
+    The bounded window ensures should_compress() self-heals after at most 2
+    consecutive suppressed evaluations, so a stuck flag cannot silence
+    legitimate compression beyond those 2 turns.
+
+    This is the adversarial-review finding for #36718 (HIGH severity).
+    """
+
+    def test_suppression_bounded_to_two_turns_without_update_from_response(self, compressor):
+        """Why: a stuck awaiting flag (usage=None / exception path) must not
+        permanently suppress compression — bounded to at most 2 turns.
+        What: should_compress returns False for calls 1 and 2 (suppressed),
+        then True on call 3 (self-healed), all WITHOUT update_from_response.
+        Test: verify False×2 then True; removing the limit (increasing
+        _AWAITING_SUPPRESSION_LIMIT beyond 2) would make the 3rd call return
+        False and break the 'is True' assertion below.
+        """
+        compressor.awaiting_real_usage_after_compression = True
+        compressor._awaiting_suppression_count = 0
+
+        # Call 1: suppressed (count goes to 1, ≤ 2)
+        assert compressor.should_compress(120_000) is False
+        assert compressor.awaiting_real_usage_after_compression is True
+        assert compressor._awaiting_suppression_count == 1
+
+        # Call 2: suppressed (count goes to 2, ≤ 2)
+        assert compressor.should_compress(120_000) is False
+        assert compressor.awaiting_real_usage_after_compression is True
+        assert compressor._awaiting_suppression_count == 2
+
+        # Call 3: self-heal — limit exceeded, flag cleared, normal logic runs
+        assert compressor.should_compress(120_000) is True
+        assert compressor.awaiting_real_usage_after_compression is False
+        assert compressor._awaiting_suppression_count == 0
+
+    def test_normal_path_unaffected_flag_clears_before_limit(self, compressor):
+        """Why: normal case (usage arrives next turn) must be unchanged.
+        What: update_from_response resets the counter so the next compression
+        cycle's suppression window starts fresh from 0.
+        Test: set flag, call once (count=1), then update_from_response →
+        counter resets to 0, flag clears, subsequent should_compress works.
+        """
+        compressor.awaiting_real_usage_after_compression = True
+        compressor._awaiting_suppression_count = 0
+        compressor.last_compression_rough_tokens = 90_000
+
+        # First preflight after compression: suppressed (count=1)
+        assert compressor.should_compress(120_000) is False
+        assert compressor._awaiting_suppression_count == 1
+
+        # Real usage arrives — normal case
+        compressor.update_from_response({"prompt_tokens": 50_000, "completion_tokens": 500})
+
+        # Flag and counter both cleared
+        assert compressor.awaiting_real_usage_after_compression is False
+        assert compressor._awaiting_suppression_count == 0
+
+        # Normal compression logic now applies
+        assert compressor.should_compress(50_000) is False   # below threshold
+        assert compressor.should_compress(120_000) is True   # above threshold
+
+    def test_fresh_compression_resets_suppression_count(self, compressor):
+        """Why: each new compression cycle must start with a fresh suppression
+        window — a partially-consumed window from a previous cycle must not
+        bleed into the next one and reduce its effective suppression count.
+        What: simulate two back-to-back compression cycles; second cycle must
+        again suppress for exactly 2 evaluations.
+        Test: cycle 1 — use 1 suppression then clear via update_from_response;
+        cycle 2 — set flag again (count resets to 0) then verify 2 suppressions.
+        """
+        # Cycle 1: use one suppression, then normal clearance
+        compressor.awaiting_real_usage_after_compression = True
+        compressor._awaiting_suppression_count = 0
+        assert compressor.should_compress(120_000) is False  # count=1
+        compressor.update_from_response({"prompt_tokens": 50_000, "completion_tokens": 0})
+        assert compressor._awaiting_suppression_count == 0
+
+        # Cycle 2: flag set True again (simulates next compress_context call),
+        # counter must be reset to 0 (done by conversation_compression.py)
+        compressor.awaiting_real_usage_after_compression = True
+        compressor._awaiting_suppression_count = 0  # mirrors what conversation_compression does
+
+        assert compressor.should_compress(120_000) is False  # count=1
+        assert compressor.should_compress(120_000) is False  # count=2
+        assert compressor.should_compress(120_000) is True   # self-healed
+
+
 class TestPreflightDeferral:
     def test_defers_when_recent_real_usage_fit_and_rough_growth_is_small(self, compressor):
         compressor.threshold_tokens = 85_000

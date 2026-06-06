@@ -9056,6 +9056,8 @@ class HermesCLI:
             self._handle_footer_command(cmd_original)
         elif canonical == "yolo":
             self._toggle_yolo()
+        elif canonical == "approvals":
+            self._handle_approvals_command(cmd_original)
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
@@ -10230,6 +10232,77 @@ class HermesCLI:
                 f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
                 " — all commands auto-approved. Use with caution."
             )
+
+    def _handle_approvals_command(self, cmd: str):
+        """Handle /approvals — show or set the approval mode.
+
+        Usage:
+            /approvals              Show current approval mode
+            /approvals manual       Prompt for every dangerous command
+            /approvals smart        Auto-approve low-risk, prompt on high-risk
+            /approvals off          Skip all approvals (equivalent to /yolo)
+        """
+        from hermes_cli.colors import Colors as _Colors
+
+        parts = cmd.strip().split(maxsplit=1)
+
+        if len(parts) < 2:
+            # Show current state
+            try:
+                from tools.approval import _get_approval_mode
+                mode = _get_approval_mode()
+            except Exception:
+                mode = "manual"
+
+            mode_display = {
+                "manual": f"{_Colors.BOLD}manual{_Colors.RESET} — prompt for every dangerous command",
+                "smart": f"{_Colors.BOLD}{_Colors.GREEN}smart{_Colors.RESET} — auto-approve low-risk, prompt on high-risk",
+                "off": f"{_Colors.BOLD}{_Colors.RED}off{_Colors.RESET} — all commands auto-approved (YOLO)",
+            }
+            _cprint(f"  Approval mode: {mode_display.get(mode, mode)}")
+            _cprint(f"  {_Colors.DIM}Usage: /approvals [manual|smart|off]{_Colors.RESET}")
+            return
+
+        arg = parts[1].strip().lower()
+
+        if arg not in {"manual", "smart", "off"}:
+            _cprint(f"  {_Colors.RED}Unknown mode: {arg}{_Colors.RESET}")
+            _cprint(f"  {_Colors.DIM}Valid modes: manual | smart | off{_Colors.RESET}")
+            return
+
+        # Save to config
+        saved = save_config_value("approvals.mode", arg)
+        if not saved:
+            _cprint(f"  {_Colors.RED}Failed to save approval mode to config.{_Colors.RESET}")
+            return
+
+        # Handle session yolo state
+        from tools.approval import (
+            disable_session_yolo,
+            enable_session_yolo,
+            is_session_yolo_enabled,
+        )
+        session_key = self.session_id or "default"
+
+        if arg == "off":
+            enable_session_yolo(session_key)
+            _cprint(
+                f"  ⚡ Approval mode: {_Colors.BOLD}{_Colors.GREEN}off{_Colors.RESET}"
+                " — all commands auto-approved. Use with caution."
+            )
+        else:
+            if is_session_yolo_enabled(session_key):
+                disable_session_yolo(session_key)
+            if arg == "smart":
+                _cprint(
+                    f"  🧠 Approval mode: {_Colors.BOLD}{_Colors.GREEN}smart{_Colors.RESET}"
+                    " — auto-approve low-risk, prompt on high-risk."
+                )
+            else:
+                _cprint(
+                    f"  🔒 Approval mode: {_Colors.BOLD}manual{_Colors.RESET}"
+                    " — prompt for every dangerous command."
+                )
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.

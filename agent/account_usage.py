@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -120,9 +121,12 @@ def _fmt_usd(d: float) -> str:
 def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
     """Map a NousPortalAccountInfo into an AccountUsageSnapshot for /usage.
 
-    Magnitudes-only (v1): dollar buckets + renewal date + portal CTA. NO percentages
-    (the account endpoint has no monthlyCredits denominator). Returns None when there's
-    no usable account info to show (fail-open: caller just shows nothing).
+    Shows dollar magnitudes (subscription / top-up / total) + renewal date + a
+    portal CTA. When the portal supplies a subscription denominator
+    (``monthly_credits``), also emits a subscription-usage window so the renderer
+    shows a real ``% used`` gauge; when it's absent (older portals) the view
+    gracefully degrades to magnitudes-only. Returns None when there's no usable
+    account info to show (fail-open: caller just shows nothing).
     """
     try:
         from hermes_cli.nous_account import nous_portal_billing_url
@@ -133,22 +137,58 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
         access = getattr(account_info, "paid_service_access_info", None)
         sub = getattr(account_info, "subscription", None)
 
+        windows: list[AccountUsageWindow] = []
         details: list[str] = []
+
+        # Subscription usage gauge — only when the portal supplies a positive
+        # monthly_credits denominator AND a finite remaining balance that does
+        # not exceed the cap. Money math is on float dollars (allowed: numeric
+        # account fields, NOT a server-provided *_usd string). used = cap -
+        # remaining; clamp [0,100] so a debt balance (remaining < 0) reads 100%.
+        # Excluded on purpose:
+        #   - non-finite values (NaN/Infinity slip past isinstance and json.loads
+        #     parses bare NaN/Infinity by default) → would render "$nan"/"$inf"
+        #     and a falsely-confident gauge;
+        #   - remaining > cap (rollover balance spanning the period) → monthly_credits
+        #     is no longer a meaningful denominator, and "$X of $Y left" with X>Y
+        #     reads as a contradiction. Both fall back to the magnitudes lines.
+        if sub is not None:
+            monthly_credits = getattr(sub, "monthly_credits", None)
+            sub_remaining = getattr(sub, "credits_remaining", None)
+            if (
+                isinstance(monthly_credits, (int, float))
+                and not isinstance(monthly_credits, bool)
+                and math.isfinite(monthly_credits)
+                and monthly_credits > 0
+                and isinstance(sub_remaining, (int, float))
+                and not isinstance(sub_remaining, bool)
+                and math.isfinite(sub_remaining)
+                and sub_remaining <= monthly_credits
+            ):
+                used = monthly_credits - sub_remaining
+                used_pct = max(0.0, min(100.0, used / monthly_credits * 100.0))
+                windows.append(
+                    AccountUsageWindow(
+                        label="Subscription",
+                        used_percent=used_pct,
+                        detail=f"{_fmt_usd(sub_remaining)} of {_fmt_usd(monthly_credits)} left",
+                    )
+                )
 
         if access is not None:
             sub_credits = getattr(access, "subscription_credits_remaining", None)
-            if isinstance(sub_credits, (int, float)):
+            if isinstance(sub_credits, (int, float)) and not isinstance(sub_credits, bool):
                 details.append(f"Subscription credits: {_fmt_usd(sub_credits)}")
             purchased = getattr(access, "purchased_credits_remaining", None)
-            if isinstance(purchased, (int, float)):
+            if isinstance(purchased, (int, float)) and not isinstance(purchased, bool):
                 details.append(f"Top-up credits: {_fmt_usd(purchased)}")
             total_usable = getattr(access, "total_usable_credits", None)
-            if isinstance(total_usable, (int, float)):
+            if isinstance(total_usable, (int, float)) and not isinstance(total_usable, bool):
                 details.append(f"Total usable: {_fmt_usd(total_usable)}")
 
         if sub is not None:
             rollover = getattr(sub, "rollover_credits", None)
-            if isinstance(rollover, (int, float)) and rollover > 0:
+            if isinstance(rollover, (int, float)) and not isinstance(rollover, bool) and rollover > 0:
                 details.append(f"Rollover: {_fmt_usd(rollover)}")
             period_end = getattr(sub, "current_period_end", None)
             if period_end:
@@ -158,7 +198,7 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
         if paid is False:
             details.append("Status: access depleted — top up to restore")
 
-        if not details:
+        if not windows and not details:
             return None
 
         details.append(f"Manage / top up: {nous_portal_billing_url(account_info)}")
@@ -170,7 +210,7 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
             fetched_at=_utc_now(),
             title="Nous credits",
             plan=plan,
-            windows=(),
+            windows=tuple(windows),
             details=tuple(details),
         )
     except (AttributeError, TypeError):

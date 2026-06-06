@@ -305,8 +305,10 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # header yet, so prime credits state from the authoritative /api/oauth/account
     # snapshot. This lets a session that opens already depleted warn IMMEDIATELY (it
     # runs the shared notice policy below), rather than only after the first turn.
-    # Magnitudes only: the endpoint carries no monthlyCredits, so no % gauge until a
-    # header lands (subscription_limit_* stays unset → used_fraction None → no warn90).
+    # Magnitudes only at seed time: the cold-start seed does not map monthly_credits
+    # into subscription_limit_*, so used_fraction stays None until a real inference
+    # header lands (→ no warn90 from the seed alone). The /usage view DOES surface a
+    # subscription % from monthly_credits independently (see build_nous_credits_snapshot).
     # Fail-open: any error leaves _credits_state untouched (None) — never blocks startup.
     if getattr(agent, "provider", "") == "nous":
         try:

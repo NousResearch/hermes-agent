@@ -121,6 +121,36 @@ def _read_suppressed_names() -> set:
         return names
 
 
+def _remove_suppressed_name(name: str) -> None:
+    """Clear a curator suppression entry so an explicit restore can re-seed."""
+    if not name:
+        return
+    try:
+        from tools.skill_usage import remove_suppressed_name
+
+        remove_suppressed_name(name)
+    except Exception:
+        # Fallback for packaged/update contexts where importing skill_usage is
+        # not safe. This mirrors the direct-file fallback in
+        # _read_suppressed_names().
+        path = SKILLS_DIR / ".curator_suppressed"
+        if not path.exists():
+            return
+        try:
+            names = {
+                line.strip()
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            }
+            if name not in names:
+                return
+            names.discard(name)
+            data = "\n".join(sorted(names)) + ("\n" if names else "")
+            path.write_text(data, encoding="utf-8")
+        except OSError:
+            logger.debug("Failed to clear curator suppression for %s", name, exc_info=True)
+
+
 def _write_manifest(entries: Dict[str, str]):
     """Write the manifest file atomically in v2 format (name:hash).
 
@@ -758,7 +788,14 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
         del manifest[name]
         _write_manifest(manifest)
 
-    # Step 3: run sync to re-baseline (or re-copy if we deleted)
+    # Step 3: an explicit restore is also an explicit opt-back-in for a
+    # curator-pruned bundled skill. Clear the suppression marker before sync;
+    # otherwise sync_skills() will skip the very skill this command says it
+    # restored.
+    if restore:
+        _remove_suppressed_name(name)
+
+    # Step 4: run sync to re-baseline (or re-copy if we deleted)
     synced = sync_skills(quiet=True)
 
     if restore and deleted_user_copy:

@@ -831,6 +831,32 @@ class TestResetBundledSkill:
         # SKILL.md should be the bundled content
         assert "GW v2 (upstream)" in (dest / "SKILL.md").read_text()
 
+    def test_reset_restore_clears_curator_suppression_before_sync(self, tmp_path):
+        """--restore is an explicit opt-back-in for a curator-pruned built-in.
+
+        Regression: a suppressed bundled skill with no active copy caused
+        reset_bundled_skill(..., restore=True) to report success while
+        sync_skills() skipped the skill, leaving slash commands such as /plan
+        missing.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        skills_dir.mkdir(parents=True)
+        manifest_file.write_text("google-workspace:STALEHASH000000000000000000000000\n")
+        suppressed = {"google-workspace"}
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._read_suppressed_names", side_effect=lambda: set(suppressed)), \
+                patch("tools.skills_sync._remove_suppressed_name", side_effect=suppressed.discard):
+            result = reset_bundled_skill("google-workspace", restore=True)
+
+        assert result["ok"] is True
+        assert result["action"] == "restored"
+        assert suppressed == set()
+        assert "google-workspace" in result["synced"]["copied"]
+        assert (skills_dir / "productivity" / "google-workspace" / "SKILL.md").exists()
+
     def test_reset_nonexistent_skill_errors_gracefully(self, tmp_path):
         """Resetting a skill that's neither bundled nor in the manifest returns a clear error."""
         bundled = self._setup_bundled(tmp_path)

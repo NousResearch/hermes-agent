@@ -19,6 +19,7 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setClarifyRequest } from '@/store/clarify'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   setCurrentBranch,
   setCurrentCwd,
@@ -29,7 +30,8 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
-  setTurnStartedAt
+  setTurnStartedAt,
+  setYoloActive
 } from '@/store/session'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { recordToolDiff } from '@/store/tool-diffs'
@@ -311,6 +313,7 @@ export function useMessageStream({
     // commit and the synthetic harness shows longtask counts drop from ~5/5s
     // to ~1/5s on big sessions (see scripts/profile-typing-lag.md).
     const sinceLast = performance.now() - lastFlushAtRef.current
+
     const runFlush = () => {
       flushHandleRef.current = null
       lastFlushAtRef.current = performance.now()
@@ -323,10 +326,7 @@ export function useMessageStream({
       return
     }
 
-    flushHandleRef.current = window.setTimeout(
-      runFlush,
-      Math.max(0, STREAM_DELTA_FLUSH_MS - sinceLast)
-    )
+    flushHandleRef.current = window.setTimeout(runFlush, Math.max(0, STREAM_DELTA_FLUSH_MS - sinceLast))
   }, [flushQueuedDeltas])
 
   const queueDelta = useCallback(
@@ -437,11 +437,18 @@ export function useMessageStream({
 
       const completedState = updateSessionState(sessionId, state => {
         // Late completion from an already-cancelled turn: cancelRun has
-        // already finalized the bubble and added the [interrupted] marker;
-        // re-running the dedupe below would erase that marker and replace
-        // the partial with the (just-cancelled) full text.
+        // already finalized the bubble (kept the partial text, dropped it if
+        // empty). Re-running the dedupe below would replace the partial with
+        // the just-cancelled full text, so we settle and bail instead.
         if (state.interrupted) {
-          return state
+          return {
+            ...state,
+            awaitingResponse: false,
+            busy: false,
+            needsInput: false,
+            pendingBranchGroup: null,
+            streamId: null
+          }
         }
 
         const streamId = state.streamId
@@ -529,7 +536,8 @@ export function useMessageStream({
           streamId: null,
           pendingBranchGroup: null,
           awaitingResponse: false,
-          busy: false
+          busy: false,
+          needsInput: false
         }
       })
 
@@ -586,7 +594,8 @@ export function useMessageStream({
           pendingBranchGroup: null,
           sawAssistantPayload: true,
           awaitingResponse: false,
-          busy: false
+          busy: false,
+          needsInput: false
         }
       })
     },
@@ -653,6 +662,10 @@ export function useMessageStream({
 
           if (typeof payload?.fast === 'boolean') {
             setCurrentFastMode(payload.fast)
+          }
+
+          if (typeof payload?.yolo === 'boolean') {
+            setYoloActive(payload.yolo)
           }
 
           if (runningChanged && sessionId) {
@@ -746,6 +759,12 @@ export function useMessageStream({
           return
         }
 
+        // Turn ended — drop any blocking prompt still open for THIS session
+        // (e.g. interrupted, or the approval already resolved). Scoped to the
+        // session so a background turn finishing can't wipe the active chat's
+        // prompt, and vice versa.
+        clearAllPrompts(sessionId)
+
         flushQueuedDeltas(sessionId)
 
         if (isActiveEvent) {
@@ -773,6 +792,11 @@ export function useMessageStream({
         if (sessionId) {
           flushQueuedDeltas(sessionId)
           upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
+          // A pending clarify blocks the turn, so the first tool.complete after
+          // one is the clarify resolving — drop the "needs input" flag here so
+          // the sidebar indicator clears as soon as it's answered, not only at
+          // message.complete.
+          updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
         }
 
         if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {
@@ -793,13 +817,16 @@ export function useMessageStream({
           )
         }
       } else if (event.type === 'clarify.request') {
-        if (!isActiveEvent) {
-          return
-        }
-
         // Surface the clarify tool's overlay. The Python side is blocked on
         // `clarify.respond`, so without this handler the agent would hang
         // forever (see tools/clarify_tool.py + tui_gateway/server.py:_block).
+        //
+        // Store the request for whichever session raised it — even a background
+        // one. clarify.request is a one-shot event; if we dropped it for an
+        // unfocused session, that session would block on `clarify.respond`
+        // indefinitely and re-focusing it could never recover (the event is
+        // gone). Parking it per-session lets the user answer once they switch
+        // over; the inline ClarifyTool reads the active session's entry.
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
         const question = typeof payload?.question === 'string' ? payload.question : ''
 
@@ -810,10 +837,71 @@ export function useMessageStream({
             choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,
             sessionId: sessionId ?? null
           })
+
+          // The transcript only renders the active session, so a background
+          // clarify is otherwise invisible (the row just keeps spinning like
+          // it's working). Flag the session so the sidebar shows a persistent
+          // "needs input" indicator on its row — works for the active session
+          // too, and survives alt-tab / window blur (unlike a toast).
+          if (sessionId) {
+            updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+          }
+        }
+      } else if (event.type === 'approval.request') {
+        // Dangerous-command / execute_code approval. The Python side is blocked
+        // in _await_gateway_decision() until approval.respond lands; without
+        // this the agent stalls until its 5-min timeout and the tool is BLOCKED.
+        // Park it per-session (like clarify) so a *background* profile's turn can
+        // raise it and wait — the sidebar flags "needs input" and the inline bar
+        // surfaces once the user focuses that chat.
+        setApprovalRequest({
+          command: typeof payload?.command === 'string' ? payload.command : '',
+          description: typeof payload?.description === 'string' ? payload.description : 'dangerous command',
+          sessionId: sessionId ?? null
+        })
+
+        if (sessionId) {
+          updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+        }
+      } else if (event.type === 'sudo.request') {
+        // Sudo password capture (tools/terminal_tool.py). Blocked on
+        // sudo.respond {request_id, password}.
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          setSudoRequest({ requestId, sessionId: sessionId ?? null })
+
+          if (sessionId) {
+            updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+          }
+        }
+      } else if (event.type === 'secret.request') {
+        // Skill credential capture (tools/skills_tool.py). Blocked on
+        // secret.respond {request_id, value}.
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          setSecretRequest({
+            requestId,
+            envVar: typeof payload?.env_var === 'string' ? payload.env_var : '',
+            prompt: typeof payload?.prompt === 'string' ? payload.prompt : '',
+            sessionId: sessionId ?? null
+          })
+
+          if (sessionId) {
+            updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+          }
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
+
+        // A turn that errors out has also ended — drop any open blocking prompt
+        // for this session so an approval/sudo/secret overlay can't linger past
+        // the failed turn (same intent as the message.complete clear).
+        if (sessionId) {
+          clearAllPrompts(sessionId)
+        }
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)

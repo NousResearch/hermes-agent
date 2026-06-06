@@ -343,6 +343,8 @@ gateway:
     label_off:             "オフ (テキストのみ)"
     label_voice_only:      "オン (音声メッセージにのみ音声で返信)"
     label_all:             "TTS (すべてのメッセージに音声で返信)"
+    help:                  "{toggle}\n\n**/voice の使い方**\n• `/voice on` — 音声メッセージを送ると音声で返信\n• `/voice tts` — *すべての*メッセージに音声で返信\n• `/voice off` — テキストのみの返信に戻す\n• `/voice status` — 現在のモードを表示\n• `/voice`（引数なし）— オンとオフをすばやく切り替え{channels}"
+    help_channels:         "\n\n**ライブ音声チャンネル (Discord)**\n• 先に音声チャンネルに参加してから `/voice channel` — 参加して聞き取り、音声で返信します\n• `/voice leave` — 音声チャンネルから切断"
 
   yolo:
     disabled:                   "⚠️ このセッションの YOLO モードは **OFF** — 危険なコマンドには承認が必要です。"

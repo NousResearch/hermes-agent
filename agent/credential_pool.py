@@ -1891,6 +1891,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # via `hermes auth openai-codex`.
         if isinstance(tokens, dict) and tokens.get("access_token"):
             active_sources.add("device_code")
+            custom_label = str(state.get("label") or "").strip()
             changed |= _upsert_entry(
                 entries,
                 provider,
@@ -1902,7 +1903,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "refresh_token": tokens.get("refresh_token"),
                     "base_url": "https://chatgpt.com/backend-api/codex",
                     "last_refresh": state.get("last_refresh"),
-                    "label": label_from_token(tokens.get("access_token", ""), "device_code"),
+                    "label": custom_label or label_from_token(tokens.get("access_token", ""), "device_code"),
                 },
             )
 

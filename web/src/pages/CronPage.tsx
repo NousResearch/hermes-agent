@@ -6,8 +6,19 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
-import type { CronJob, ProfileInfo } from "@/lib/api";
+import type { CronJob, CronDeliveryTarget, ProfileInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import {
+  DEFAULT_SCHEDULE_STATE,
+  ScheduleBuilder,
+} from "@/components/ScheduleBuilder";
+import {
+  buildScheduleString,
+  describeSchedule,
+  englishOrdinal,
+  type ScheduleBuilderState,
+  type ScheduleDescribeStrings,
+} from "@/lib/schedule";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
@@ -57,12 +68,20 @@ function getJobTitle(job: CronJob): string {
   return job.id || "Cron job";
 }
 
-function getJobScheduleDisplay(job: CronJob): string {
-  return (
-    asText(job.schedule_display) ||
-    asText(job.schedule?.display) ||
-    asText(job.schedule?.expr) ||
-    "—"
+function getJobScheduleDisplay(
+  job: CronJob,
+  strings: ScheduleDescribeStrings,
+): string {
+  // Prefer a structured render so cron expressions like
+  // ``30 14 * * 1,3,5`` surface as "Weekly on Mon, Wed, Fri at 14:30"
+  // in the list instead of the raw five-field gibberish. Falls back
+  // through the existing chain (``schedule_display`` from the backend,
+  // then the structured ``display`` field, then the raw ``expr``) so
+  // legacy job rows still render *something* meaningful.
+  return describeSchedule(
+    job.schedule,
+    asText(job.schedule_display) || asText(job.schedule?.display),
+    strings,
   );
 }
 
@@ -102,13 +121,35 @@ export default function CronPage() {
   const [selectedProfile, setSelectedProfile] = useState("all");
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { setEnd } = usePageHeader();
+
+  // Translation surface for the human-readable schedule describer.
+  // English ordinals are a special case ("1st", "2nd", "23rd"); every
+  // other locale falls back to the plain numeric form, which avoids
+  // shipping incorrect grammar (e.g. naive "1th"/"2th" suffixes that
+  // don't exist in most languages).
+  //
+  // Built inline (not memoized) — the cron page renders a small job
+  // list, this is single-digit microseconds, and a useMemo here would
+  // just add boilerplate.
+  const scheduleDescribeStrings: ScheduleDescribeStrings = {
+    ...t.cron.scheduleDescribe,
+    weekdaysShort: t.cron.scheduleModes.weekdaysShort,
+    ordinal: locale === "en" ? englishOrdinal : (n: number) => String(n),
+  };
 
   // New job modal state
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
-  const [schedule, setSchedule] = useState("");
+  // The schedule is now constructed via the ScheduleBuilder; we keep
+  // the full builder state so flipping between modes during edit
+  // doesn't erase the user's intermediate inputs. The actual string
+  // sent to the backend is derived via ``buildScheduleString`` at
+  // submit time.
+  const [scheduleState, setScheduleState] = useState<ScheduleBuilderState>(
+    DEFAULT_SCHEDULE_STATE,
+  );
   const [name, setName] = useState("");
   const closeCreateModal = useCallback(() => setCreateModalOpen(false), []);
   const createModalRef = useModalBehavior({
@@ -116,6 +157,9 @@ export default function CronPage() {
     onClose: closeCreateModal,
   });
   const [deliver, setDeliver] = useState("local");
+  const [deliveryTargets, setDeliveryTargets] = useState<CronDeliveryTarget[]>([
+    { id: "local", name: "Local", home_target_set: true, home_env_var: null },
+  ]);
   const [creating, setCreating] = useState(false);
   const createProfile = selectedProfile === "all" ? "default" : selectedProfile;
 
@@ -158,11 +202,77 @@ export default function CronPage() {
   }, []);
 
   useEffect(() => {
+    api
+      .getCronDeliveryTargets()
+      .then((res) => setDeliveryTargets(res.targets))
+      .catch(() =>
+        // Fall back to local-only so the modal still works if the endpoint fails.
+        setDeliveryTargets([
+          { id: "local", name: "Local", home_target_set: true, home_env_var: null },
+        ]),
+      );
+  }, []);
+
+  useEffect(() => {
     loadJobs();
   }, [loadJobs]);
 
+  const scheduleString = buildScheduleString(scheduleState);
+
+  // Label for a delivery option. Configured platforms missing their cron home
+  // channel are still offered (option B), annotated so the user knows what to
+  // fix rather than wondering why delivery silently no-ops.
+  const deliverLabel = useCallback(
+    (target: CronDeliveryTarget): string => {
+      const base = target.id === "local" ? t.cron.delivery.local : target.name;
+      if (target.id !== "local" && !target.home_target_set) {
+        const hint = t.cron.delivery.needsHomeChannel ?? "set a home channel first";
+        return `${base} — ${hint}`;
+      }
+      return base;
+    },
+    [t.cron.delivery],
+  );
+
+  const renderDeliverOptions = useCallback(
+    () =>
+      deliveryTargets.map((target) => (
+        <SelectOption key={target.id} value={target.id}>
+          {deliverLabel(target)}
+        </SelectOption>
+      )),
+    [deliveryTargets, deliverLabel],
+  );
+
+  // The edit modal must always show the job's current target, even if that
+  // platform is no longer configured (e.g. job created via CLI, or the
+  // gateway was later removed) — otherwise the value would silently vanish
+  // from the dropdown and saving would drop it.
+  const renderEditDeliverOptions = useCallback(
+    (current: string) => {
+      const known = new Set(deliveryTargets.map((target) => target.id));
+      const options = deliveryTargets.map((target) => (
+        <SelectOption key={target.id} value={target.id}>
+          {deliverLabel(target)}
+        </SelectOption>
+      ));
+      if (current && !known.has(current)) {
+        options.push(
+          <SelectOption key={current} value={current}>
+            {current}
+          </SelectOption>,
+        );
+      }
+      return options;
+    },
+    [deliveryTargets, deliverLabel],
+  );
+
+  const onlyLocalAvailable =
+    deliveryTargets.filter((target) => target.id !== "local").length === 0;
+
   const handleCreate = async () => {
-    if (!prompt.trim() || !schedule.trim()) {
+    if (!prompt.trim() || !scheduleString) {
       showToast(`${t.cron.prompt} & ${t.cron.schedule} required`, "error");
       return;
     }
@@ -171,7 +281,7 @@ export default function CronPage() {
       await api.createCronJob(
         {
           prompt: prompt.trim(),
-          schedule: schedule.trim(),
+          schedule: scheduleString,
           name: name.trim() || undefined,
           deliver,
         },
@@ -179,7 +289,7 @@ export default function CronPage() {
       );
       showToast(t.common.create + " ✓", "success");
       setPrompt("");
-      setSchedule("");
+      setScheduleState(DEFAULT_SCHEDULE_STATE);
       setName("");
       setDeliver("local");
       setCreateModalOpen(false);
@@ -392,41 +502,26 @@ export default function CronPage() {
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="grid gap-2">
-                  <Label htmlFor="cron-schedule">{t.cron.schedule}</Label>
-                  <Input
-                    id="cron-schedule"
-                    placeholder={t.cron.schedulePlaceholder}
-                    value={schedule}
-                    onChange={(e) => setSchedule(e.target.value)}
-                  />
-                </div>
+              <ScheduleBuilder
+                value={scheduleState}
+                onChange={setScheduleState}
+              />
 
-                <div className="grid gap-2">
-                  <Label htmlFor="cron-deliver">{t.cron.deliverTo}</Label>
-                  <Select
-                    id="cron-deliver"
-                    value={deliver}
-                    onValueChange={(v) => setDeliver(v)}
-                  >
-                    <SelectOption value="local">
-                      {t.cron.delivery.local}
-                    </SelectOption>
-                    <SelectOption value="telegram">
-                      {t.cron.delivery.telegram}
-                    </SelectOption>
-                    <SelectOption value="discord">
-                      {t.cron.delivery.discord}
-                    </SelectOption>
-                    <SelectOption value="slack">
-                      {t.cron.delivery.slack}
-                    </SelectOption>
-                    <SelectOption value="email">
-                      {t.cron.delivery.email}
-                    </SelectOption>
-                  </Select>
-                </div>
+              <div className="grid gap-2">
+                <Label htmlFor="cron-deliver">{t.cron.deliverTo}</Label>
+                <Select
+                  id="cron-deliver"
+                  value={deliver}
+                  onValueChange={(v) => setDeliver(v)}
+                >
+                  {renderDeliverOptions()}
+                </Select>
+                {onlyLocalAvailable && (
+                  <p className="text-xs text-muted-foreground">
+                    {t.cron.delivery.noneConfigured ??
+                      "No messaging platforms configured. Set one up under Channels to deliver reports."}
+                  </p>
+                )}
               </div>
 
               <div className="flex justify-end">
@@ -516,21 +611,7 @@ export default function CronPage() {
                     value={editDeliver}
                     onValueChange={(v) => setEditDeliver(v)}
                   >
-                    <SelectOption value="local">
-                      {t.cron.delivery.local}
-                    </SelectOption>
-                    <SelectOption value="telegram">
-                      {t.cron.delivery.telegram}
-                    </SelectOption>
-                    <SelectOption value="discord">
-                      {t.cron.delivery.discord}
-                    </SelectOption>
-                    <SelectOption value="slack">
-                      {t.cron.delivery.slack}
-                    </SelectOption>
-                    <SelectOption value="email">
-                      {t.cron.delivery.email}
-                    </SelectOption>
+                    {renderEditDeliverOptions(editDeliver)}
                   </Select>
                 </div>
               </div>
@@ -617,7 +698,9 @@ export default function CronPage() {
                     </p>
                   )}
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    <span className="font-mono">{getJobScheduleDisplay(job)}</span>
+                    <span className="font-mono-ui">
+                      {getJobScheduleDisplay(job, scheduleDescribeStrings)}
+                    </span>
                     <span>
                       {t.cron.last}: {formatTime(job.last_run_at)}
                     </span>

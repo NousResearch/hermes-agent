@@ -227,9 +227,8 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
 
     SIGUSR1 is wired in gateway/run.py to ``request_restart(via_service=True)``
     which drains in-flight agent runs (up to ``agent.restart_drain_timeout``
-    seconds), then exits.  systemd relaunches clean exits via
-    ``Restart=always``; launchd still uses a non-zero planned-restart exit
-    because its plist has ``KeepAlive.SuccessfulExit = false``.
+    seconds), then exits.  Both systemd (``Restart=always``) and launchd
+    (unconditional ``<key>KeepAlive</key><true/>``) restart on any exit.
 
     This is the drain-aware alternative to ``systemctl restart`` / ``SIGTERM``,
     which SIGKILL in-flight agents after a short timeout.
@@ -3083,10 +3082,7 @@ def generate_launchd_plist() -> str:
     <true/>
     
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
@@ -3249,7 +3245,7 @@ def launchd_stop():
         pass
     # bootout unloads the service definition so KeepAlive doesn't respawn
     # the process.  A plain `kill SIGTERM` only signals the process — launchd
-    # immediately restarts it because KeepAlive.SuccessfulExit = false.
+    # immediately restarts it because KeepAlive is unconditionally true.
     # `hermes gateway start` re-bootstraps when it detects the job is unloaded.
     try:
         subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
@@ -4386,6 +4382,35 @@ def _setup_standard_platform(platform: dict):
         if not prompt_yes_no(f"  Reconfigure {label}?", False):
             return
 
+    auto_token_saved = False
+    auto_owner_user_id = None
+    if platform.get("key") == "telegram":
+        print()
+        print_info("  Telegram can be configured automatically with a managed bot:")
+        print_info("  [1] Automatic (scan QR → confirm in Telegram → done)")
+        print_info("  [2] Manual BotFather token")
+        choice = prompt("  Choice [1/2]", default="1")
+        if choice.strip() == "1":
+            try:
+                from hermes_cli.telegram_managed_bot import (
+                    auto_setup_telegram_bot_result,
+                    is_valid_telegram_bot_token,
+                )
+            except ImportError:
+                print_warning("  Automatic setup is unavailable in this install.")
+            else:
+                result = auto_setup_telegram_bot_result()
+                if result and is_valid_telegram_bot_token(result.token):
+                    save_env_value(token_var, result.token)
+                    print_success("  Saved TELEGRAM_BOT_TOKEN")
+                    auto_token_saved = True
+                    auto_owner_user_id = result.owner_user_id
+                else:
+                    if result:
+                        print_warning("  Automatic setup returned an invalid Telegram token.")
+                    print()
+                    print_info("  Falling back to manual setup...")
+
     allowed_val_set = None  # Track if user set an allowlist (for home channel offer)
 
     for var in platform["vars"]:
@@ -4395,8 +4420,30 @@ def _setup_standard_platform(platform: dict):
         if existing and var["name"] != token_var:
             print_info(f"  Current: {existing}")
 
+        if auto_token_saved and var["name"] == token_var:
+            print_info("  Token saved by automatic setup.")
+            continue
+
         # Allowlist fields get special handling for the deny-by-default security model
         if var.get("is_allowlist"):
+            if "TELEGRAM" in var["name"] and auto_owner_user_id:
+                detected_id = str(auto_owner_user_id)
+                print_success(f"  Detected your Telegram user ID: {detected_id}")
+                if prompt_yes_no("  Allow this Telegram account to use the bot?", True):
+                    extra = prompt(
+                        "  Additional allowed user IDs (comma-separated, optional)",
+                        password=False,
+                    )
+                    ids = [detected_id]
+                    for uid in extra.replace(" ", "").split(","):
+                        if uid and uid not in ids:
+                            ids.append(uid)
+                    cleaned = ",".join(ids)
+                    save_env_value(var["name"], cleaned)
+                    print_success("  Saved — only these users can interact with the bot.")
+                    allowed_val_set = cleaned
+                    continue
+
             print_info("  The gateway DENIES all users by default for security.")
             print_info("  Enter user IDs to create an allowlist, or leave empty")
             print_info("  and you'll be asked about open access next.")

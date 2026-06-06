@@ -939,3 +939,161 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Locked-skill guard — skill_manage refuses ALL write actions on skills whose
+# SKILL.md frontmatter sets `metadata.hermes.locked: true`. Lock is the
+# edit-side counterpart to pin: pin guards delete, lock guards everything.
+# Read actions (skill_view, skills_list) are unaffected — locked skills are
+# still discoverable and loadable, just not writable.
+# ---------------------------------------------------------------------------
+
+LOCKED_SKILL_CONTENT = """\
+---
+name: locked-skill
+description: A skill that opts out of agent modification via the locked flag.
+metadata:
+  hermes:
+    locked: true
+---
+
+# Locked Skill
+
+This skill gates a real-world side effect; agents must not edit it.
+"""
+
+
+class TestLockedGuard:
+    """All write actions refuse on locked skills; create is exempt (no target yet)."""
+
+    def test_edit_refuses_locked(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("locked-skill", LOCKED_SKILL_CONTENT)
+            result = json.loads(skill_manage("edit", "locked-skill", content=VALID_SKILL_CONTENT_2))
+        assert result["success"] is False
+        assert "locked" in result["error"].lower()
+        assert "metadata.hermes.locked" in result["error"]
+        # Content unchanged
+        content = (tmp_path / "locked-skill" / "SKILL.md").read_text()
+        assert "Updated description" not in content
+        assert "locked: true" in content
+
+    def test_patch_refuses_locked(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("locked-skill", LOCKED_SKILL_CONTENT)
+            result = json.loads(skill_manage(
+                "patch", "locked-skill",
+                old_string="gates a real-world",
+                new_string="patched",
+            ))
+        assert result["success"] is False
+        assert "locked" in result["error"].lower()
+        content = (tmp_path / "locked-skill" / "SKILL.md").read_text()
+        assert "patched" not in content
+
+    def test_delete_refuses_locked(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("locked-skill", LOCKED_SKILL_CONTENT)
+            result = json.loads(skill_manage("delete", "locked-skill"))
+        assert result["success"] is False
+        assert "locked" in result["error"].lower()
+        assert (tmp_path / "locked-skill" / "SKILL.md").exists()
+
+    def test_write_file_refuses_locked(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("locked-skill", LOCKED_SKILL_CONTENT)
+            result = json.loads(skill_manage(
+                "write_file", "locked-skill",
+                file_path="references/api.md",
+                file_content="content",
+            ))
+        assert result["success"] is False
+        assert "locked" in result["error"].lower()
+        assert not (tmp_path / "locked-skill" / "references" / "api.md").exists()
+
+    def test_remove_file_refuses_locked(self, tmp_path):
+        """Lock blocks remove_file too — even supporting files of a locked skill
+        require the user to lift the lock before they can be deleted."""
+        with _skill_dir(tmp_path):
+            # Create unlocked first so write_file goes through, then upgrade
+            # to locked by editing the frontmatter directly on disk.
+            _create_skill("locked-skill", VALID_SKILL_CONTENT)
+            _write_file("locked-skill", "references/api.md", "content")
+            (tmp_path / "locked-skill" / "SKILL.md").write_text(LOCKED_SKILL_CONTENT)
+            result = json.loads(skill_manage(
+                "remove_file", "locked-skill",
+                file_path="references/api.md",
+            ))
+        assert result["success"] is False
+        assert "locked" in result["error"].lower()
+        assert (tmp_path / "locked-skill" / "references" / "api.md").exists()
+
+    def test_unlocked_skills_still_editable(self, tmp_path):
+        """Sanity check: only the explicitly-locked skill is refused; siblings work."""
+        with _skill_dir(tmp_path):
+            _create_skill("locked-one", LOCKED_SKILL_CONTENT)
+            _create_skill("free-one", VALID_SKILL_CONTENT)
+            blocked = json.loads(skill_manage("edit", "locked-one", content=VALID_SKILL_CONTENT_2))
+            allowed = json.loads(skill_manage("edit", "free-one", content=VALID_SKILL_CONTENT_2))
+        assert blocked["success"] is False
+        assert allowed["success"] is True
+
+    def test_locked_false_does_not_block(self, tmp_path):
+        """Explicit `locked: false` behaves the same as omitting the flag."""
+        content = """\
+---
+name: unlocked-skill
+description: Locked flag explicitly set to false.
+metadata:
+  hermes:
+    locked: false
+---
+
+# Unlocked Skill
+
+Step 1: Do the thing.
+"""
+        with _skill_dir(tmp_path):
+            _create_skill("unlocked-skill", content)
+            result = json.loads(skill_manage(
+                "patch", "unlocked-skill",
+                old_string="Do the thing.",
+                new_string="Do the new thing.",
+            ))
+        assert result["success"] is True, result
+
+    def test_create_is_exempt_but_subsequent_edits_blocked(self, tmp_path):
+        """`create` is bypassed by the lock guard — it cannot target an existing
+        skill so there is nothing to protect at create-time. But the newly-created
+        skill IS locked, so any subsequent edit fails."""
+        with _skill_dir(tmp_path):
+            result = json.loads(skill_manage("create", "new-skill", content=LOCKED_SKILL_CONTENT))
+            assert result["success"] is True, result
+            edit_result = json.loads(skill_manage("edit", "new-skill", content=VALID_SKILL_CONTENT_2))
+        assert edit_result["success"] is False
+        assert "locked" in edit_result["error"].lower()
+
+    def test_broken_frontmatter_fails_open(self, tmp_path):
+        """If SKILL.md is unparseable, the lock guard does not fire.
+
+        Rationale (matches `_pinned_guard`'s broken-sidecar behaviour): a
+        malformed file shouldn't lock the agent out of fixing it. The lock
+        is opt-in for *valid* skills; corruption is a separate concern.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            # Corrupt the frontmatter so YAML parsing finds no `locked` flag.
+            (tmp_path / "my-skill" / "SKILL.md").write_text(
+                "---\nname: my-skill\n: : : invalid yaml\n---\n\nbody\n"
+            )
+            result = json.loads(skill_manage(
+                "patch", "my-skill",
+                old_string="body",
+                new_string="patched",
+            ))
+        # The lock guard MUST NOT block on missing/unparseable frontmatter.
+        # (The patch itself may fail for an unrelated reason — e.g. the
+        # frontmatter validator — but not because of locked.)
+        if not result["success"]:
+            assert "locked" not in result["error"].lower(), result

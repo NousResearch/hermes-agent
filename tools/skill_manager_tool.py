@@ -161,6 +161,61 @@ def _pinned_guard(name: str) -> Optional[str]:
     return None
 
 
+def _locked_guard(name: str) -> Optional[str]:
+    """Return a refusal message if *name* is locked, else None.
+
+    Lock protects a skill from **modification** by ``skill_manage`` — its
+    SKILL.md and supporting files cannot be edited, patched, deleted, or
+    overwritten while the lock is in effect.
+
+    A skill opts in by setting ``metadata.hermes.locked: true`` in its
+    SKILL.md frontmatter. The default (no flag, or ``locked: false``)
+    preserves existing behaviour — agents can freely edit user skills.
+
+    Lock is the edit-side counterpart to ``_pinned_guard`` (which guards
+    delete only):
+
+        ``_pinned_guard``  blocks: delete
+                           opt-in:  ``hermes curator pin <name>``
+        ``_locked_guard``  blocks: edit, patch, delete, write_file, remove_file
+                           opt-in:  ``metadata.hermes.locked: true`` in SKILL.md
+
+    Use case: skills that gate real-world side effects (financial transfers,
+    device control, message dispatch) where silent drift via the background
+    self-improvement loop or an in-conversation patch is unacceptable. The
+    skill author sets the flag once; subsequent ``skill_manage`` writes are
+    refused with a message instructing the user (not the agent) to lift the
+    lock by hand.
+
+    Best-effort: if SKILL.md is missing or its frontmatter is unparseable
+    the write is allowed through, mirroring the resilient fallback in
+    ``_pinned_guard``. The lock should fail open rather than break the
+    agent on a malformed file.
+    """
+    try:
+        existing = _find_skill(name)
+        if not existing:
+            return None
+        skill_md = existing["path"] / "SKILL.md"
+        if not skill_md.exists():
+            return None
+        from agent.skill_utils import parse_frontmatter
+        fm, _body = parse_frontmatter(skill_md.read_text(encoding="utf-8"))
+        hermes_meta = (fm.get("metadata") or {}).get("hermes") or {}
+        if hermes_meta.get("locked") is True:
+            return (
+                f"Skill '{name}' is locked (metadata.hermes.locked: true) "
+                f"and cannot be modified by skill_manage. The lock prevents "
+                f"silent drift in skills that gate real-world side effects. "
+                f"To change it, ask the user to edit SKILL.md directly, or "
+                f"to set `metadata.hermes.locked: false` in its frontmatter "
+                f"first."
+            )
+    except Exception:
+        logger.debug("locked-guard lookup failed for %s", name, exc_info=True)
+    return None
+
+
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
@@ -830,6 +885,14 @@ def skill_manage(
 
     Returns JSON string with results.
     """
+    # Lock guard — any write action against a locked skill is refused.
+    # `create` is exempt because it cannot target an existing skill (it
+    # would error in _create_skill anyway if the name was already taken).
+    if action in ("edit", "patch", "delete", "write_file", "remove_file"):
+        locked_err = _locked_guard(name)
+        if locked_err:
+            return tool_error(locked_err, success=False)
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
@@ -927,7 +990,14 @@ SKILL_MANAGE_SCHEMA = {
         "Pinned skills are protected from deletion only — skill_manage(action='delete') "
         "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
         "Patches and edits go through on pinned skills so you can still improve them as "
-        "pitfalls come up; pin only guards against irrecoverable loss."
+        "pitfalls come up; pin only guards against irrecoverable loss.\n\n"
+        "Locked skills (frontmatter `metadata.hermes.locked: true`) are protected from "
+        "all modification — edit, patch, delete, write_file, and remove_file all refuse. "
+        "Lock is the edit-side counterpart to pin: pin guards against accidental deletion, "
+        "lock guards against drift. Use locks for skills that gate real-world side effects "
+        "(financial transfers, device control, message dispatch) where silent agent edits "
+        "are unsafe. To modify a locked skill, the user must edit SKILL.md by hand or "
+        "remove the flag from the frontmatter first — never attempt to bypass it."
     ),
     "parameters": {
         "type": "object",

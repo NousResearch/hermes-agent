@@ -1188,6 +1188,9 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
     try:
         subprocess.run(command, check=True, capture_output=True, text=True, timeout=300)
         return converted_path, None
+    except subprocess.TimeoutExpired:
+        logger.error("ffmpeg conversion timed out for %s", file_path)
+        return None, "Audio conversion for local STT timed out"
     except subprocess.CalledProcessError as e:
         details = e.stderr.strip() or e.stdout.strip() or str(e)
         logger.error("ffmpeg conversion failed for %s: %s", file_path, details)

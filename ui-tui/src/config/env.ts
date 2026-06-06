@@ -49,6 +49,10 @@ export const MOUSE_TRACKING: MouseTrackingMode = resolvedBootMouseEnabled ? 'all
 
 export const NO_CONFIRM_DESTRUCTIVE = truthy(process.env.HERMES_TUI_NO_CONFIRM)
 
+// HERMES_DEV_CREDITS — dev-only live-spend readout (Δ status segment + "(dev credits)"
+// banner). Throwaway dev scaffolding; the whole readout gates on this one flag.
+export const DEV_CREDITS_MODE = truthy(process.env.HERMES_DEV_CREDITS)
+
 const inlineOverride = parseToggle(process.env.HERMES_TUI_INLINE)
 
 // Skip AlternateScreen — TUI renders into the primary buffer so the host

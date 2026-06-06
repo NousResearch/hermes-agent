@@ -118,6 +118,7 @@ from gateway.platforms.qqbot.constants import (
 from gateway.platforms.qqbot.utils import (
     coerce_list as _coerce_list_impl,
     build_user_agent,
+    is_private_chat_type,
 )
 from gateway.platforms.qqbot.chunked_upload import (
     ChunkedUploader,
@@ -1086,7 +1087,7 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        if is_private_chat_type(chat_type):
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:
@@ -2466,7 +2467,7 @@ class QQAdapter(BasePlatformAdapter):
 
         for attempt in range(3):
             try:
-                if chat_type == "c2c":
+                if is_private_chat_type(chat_type):
                     return await self._send_c2c_text(chat_id, content, reply_to)
                 elif chat_type == "group":
                     return await self._send_group_text(chat_id, content, reply_to)
@@ -2593,7 +2594,7 @@ class QQAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         truncated = formatted[: self.MAX_MESSAGE_LENGTH]
         try:
-            if chat_type == "c2c":
+            if is_private_chat_type(chat_type):
                 return await self._send_c2c_text(
                     chat_id, truncated, reply_to, keyboard=keyboard,
                 )
@@ -2915,7 +2916,7 @@ class QQAdapter(BasePlatformAdapter):
                 "POST",
                 (
                     f"/v2/users/{chat_id}/messages"
-                    if chat_type == "c2c"
+                    if is_private_chat_type(chat_type)
                     else f"/v2/groups/{chat_id}/messages"
                 ),
                 body,

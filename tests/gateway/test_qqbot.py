@@ -817,6 +817,46 @@ class TestChunkedUploaderFlow:
         assert api_calls[3][2] == {"upload_id": "uid-xyz"}
 
     @pytest.mark.asyncio
+    async def test_dm_paths_use_user_endpoints(self, tmp_path):
+        """The 'dm' spelling must use the same user upload endpoints as c2c."""
+        from gateway.platforms.qqbot.chunked_upload import ChunkedUploader
+
+        f = tmp_path / "a.bin"
+        f.write_bytes(b"x" * 100)
+        seen_paths = []
+
+        async def fake_api_request(method, path, *, body=None, timeout=None):
+            seen_paths.append(path)
+            if path.endswith("/upload_prepare"):
+                return {
+                    "upload_id": "dm-1",
+                    "block_size": 100,
+                    "parts": [{"part_index": 1, "presigned_url": "https://cos/dm1"}],
+                }
+            if path.endswith("/upload_part_finish"):
+                return {}
+            return {"file_info": "DMFILE"}
+
+        class _R:
+            status_code = 200
+            text = ""
+
+        async def fake_put(url, data=None, headers=None):
+            return _R()
+
+        u = ChunkedUploader(fake_api_request, fake_put, "QQBot:T")
+        await u.upload(
+            chat_type="dm",
+            target_id="user-openid-1",
+            file_path=str(f),
+            file_type=4,
+            file_name="a.bin",
+        )
+        assert all("/v2/users/" in p for p in seen_paths)
+        assert any(p.endswith("/upload_prepare") for p in seen_paths)
+        assert any(p.endswith("/files") for p in seen_paths)
+
+    @pytest.mark.asyncio
     async def test_group_paths(self, tmp_path):
         """Group uploads hit /v2/groups/... instead of /v2/users/..."""
         from gateway.platforms.qqbot.chunked_upload import ChunkedUploader
@@ -2196,3 +2236,177 @@ class TestCloseCodeClassification:
         assert 4014 in fatal_codes
         assert 4001 in fatal_codes
         assert 4915 in fatal_codes
+
+
+# ---------------------------------------------------------------------------
+# Regression: chat_type "dm" treated as "c2c" for auth/routing (#40655)
+# ---------------------------------------------------------------------------
+
+class TestChatTypeDmAuthAndRouting:
+    """C2C sessions use chat_type="dm" in session keys but auth and routing
+    checks must accept both "dm" and "c2c" as equivalent.
+
+    See issue #40655: approval button clicks were rejected because the
+    authorization check only matched "c2c" while session keys contained "dm".
+    """
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    # --- Layer 1: Authorization check ---
+
+    def test_auth_accepts_dm_session_key_for_c2c(self):
+        """_is_authorized_interaction_for_session must accept "dm" chat_type."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+
+        # Simulate a C2C interaction — session key uses "dm" (the actual format).
+        event = parse_interaction_event({
+            "id": "i",
+            "chat_type": 2,  # C2C in QQ's numeric enum
+            "user_openid": "user-abc",
+            "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:user-abc:allow-once"}},
+        })
+
+        assert adapter._is_authorized_interaction_for_session(
+            event, "agent:main:qqbot:dm:user-abc"
+        ), "dm chat_type must be authorized like c2c"
+
+    def test_auth_accepts_c2c_session_key(self):
+        """Existing c2c session keys must still work after the fix."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+
+        event = parse_interaction_event({
+            "id": "i",
+            "chat_type": 2,
+            "user_openid": "user-abc",
+            "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:user-abc:allow-once"}},
+        })
+
+        assert adapter._is_authorized_interaction_for_session(
+            event, "agent:main:qqbot:c2c:user-abc"
+        ), "c2c chat_type must still be authorized"
+
+    def test_auth_rejects_dm_wrong_operator(self):
+        """Authorization with dm chat_type must still verify the operator."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+
+        event = parse_interaction_event({
+            "id": "i",
+            "chat_type": 2,
+            "user_openid": "attacker-id",
+            "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:user-abc:allow-once"}},
+        })
+
+        assert not adapter._is_authorized_interaction_for_session(
+            event, "agent:main:qqbot:dm:user-abc"
+        ), "dm with wrong operator must be rejected"
+
+    # --- Layer 2: _guess_chat_type routing ---
+
+    def test_guess_chat_type_returns_c2c_for_c2c(self):
+        """C2C chats stored in _chat_type_map must resolve to 'c2c'."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._chat_type_map["user-1"] = "c2c"
+        assert adapter._guess_chat_type("user-1") == "c2c"
+
+    def test_guess_chat_type_returns_dm_for_guild_dm(self):
+        """Guild DMs store 'dm' in _chat_type_map."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._chat_type_map["guild-1"] = "dm"
+        assert adapter._guess_chat_type("guild-1") == "dm"
+
+    def test_guess_chat_type_defaults_to_c2c(self):
+        """Unknown chat_id defaults to 'c2c'."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        assert adapter._guess_chat_type("unknown-id") == "c2c"
+
+    # --- Layer 2: _send_chunk routing via _guess_chat_type ---
+
+    @pytest.mark.asyncio
+    async def test_send_chunk_routes_dm_to_c2c_path(self):
+        """_send_chunk must route 'dm' chat_type to the C2C send method."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._chat_type_map["user-dm"] = "dm"
+
+        from gateway.platforms.base import SendResult
+
+        async def fake_send_c2c(openid, content, reply_to=None, keyboard=None):
+            return SendResult(success=True, message_id="msg-1")
+
+        adapter._send_c2c_text = fake_send_c2c
+
+        result = await adapter._send_chunk("user-dm", "hello")
+        assert result.success, "dm chat_type must route to _send_c2c_text"
+
+    @pytest.mark.asyncio
+    async def test_send_chunk_routes_c2c_normally(self):
+        """_send_chunk must still route 'c2c' chat_type correctly."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._chat_type_map["user-c2c"] = "c2c"
+
+        from gateway.platforms.base import SendResult
+
+        async def fake_send_c2c(openid, content, reply_to=None, keyboard=None):
+            return SendResult(success=True, message_id="msg-2")
+
+        adapter._send_c2c_text = fake_send_c2c
+
+        result = await adapter._send_chunk("user-c2c", "hello")
+        assert result.success
+
+    # --- Layer 3: send_with_keyboard routing ---
+
+    @pytest.mark.asyncio
+    async def test_send_with_keyboard_routes_dm_to_c2c_path(self):
+        """send_with_keyboard must route 'dm' chat_type to the C2C send."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._chat_type_map["user-dm"] = "dm"
+
+        from gateway.platforms.base import SendResult
+        from gateway.platforms.qqbot.keyboards import InlineKeyboard
+
+        async def fake_send_c2c(openid, content, reply_to=None, keyboard=None):
+            return SendResult(success=True, message_id="msg-3")
+
+        adapter._send_c2c_text = fake_send_c2c
+        # Mock connection check — send_with_keyboard waits for reconnection
+        adapter._running = True
+        adapter._ws = type("FakeWS", (), {"closed": False})()
+
+        keyboard = InlineKeyboard()
+        result = await adapter.send_with_keyboard("user-dm", "approve?", keyboard)
+        assert result.success, "dm chat_type must route keyboard to _send_c2c_text"
+
+    # --- Full integration: approval click with dm session key ---
+
+    @pytest.mark.asyncio
+    async def test_approval_click_with_dm_session_key_resolves(self):
+        """End-to-end: approval click with dm session key must resolve."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i",
+                "chat_type": 2,
+                "user_openid": "u-dm",
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-dm:allow-once"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == [("agent:main:qqbot:dm:u-dm", "once", False)], \
+            "dm session key approval click must resolve"

@@ -39,6 +39,17 @@ def build_user_agent() -> str:
     return f"QQBotAdapter/{QQBOT_VERSION} (Python/{py_version}; {os_name}; Hermes/{hermes_version})"
 
 
+def is_private_chat_type(chat_type: str) -> bool:
+    """Return True for QQ private-message chat type spellings.
+
+    QQ gateway events and Hermes session keys have historically used both
+    ``"c2c"`` and ``"dm"`` for user-directed/private chats. They use the
+    same QQ v2 user endpoints, so routing and authorization must treat them
+    equivalently.
+    """
+    return chat_type in {"c2c", "dm"}
+
+
 def get_api_headers() -> Dict[str, str]:
     """Return standard HTTP headers for QQBot API requests.
 

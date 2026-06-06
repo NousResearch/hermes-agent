@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from gateway.platforms.qqbot.constants import FILE_UPLOAD_TIMEOUT
+from gateway.platforms.qqbot.utils import is_private_chat_type
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +229,7 @@ class ChunkedUploader:
     ) -> Dict[str, Any]:
         """Run the full chunked upload and return the ``complete_upload`` response.
 
-        :param chat_type: ``'c2c'`` or ``'group'``.
+        :param chat_type: ``'c2c'``, ``'dm'``, or ``'group'``.
         :param target_id: User or group openid.
         :param file_path: Absolute path to a local file.
         :param file_type: ``MEDIA_TYPE_*`` constant.
@@ -239,7 +240,7 @@ class ChunkedUploader:
         :raises UploadFileTooLargeError: When the file exceeds the platform limit.
         :raises RuntimeError: On other API or I/O failures.
         """
-        if chat_type not in {"c2c", "group"}:
+        if not (is_private_chat_type(chat_type) or chat_type == "group"):
             raise ValueError(
                 f"ChunkedUploader: unsupported chat_type {chat_type!r}"
             )
@@ -316,7 +317,7 @@ class ChunkedUploader:
         file_size: int,
         hashes: Dict[str, str],
     ) -> _PrepareResult:
-        base = "/v2/users" if chat_type == "c2c" else "/v2/groups"
+        base = "/v2/users" if is_private_chat_type(chat_type) else "/v2/groups"
         path = f"{base}/{target_id}/upload_prepare"
         body = {
             "file_type": file_type,
@@ -451,7 +452,7 @@ class ChunkedUploader:
         retry_timeout: float,
     ) -> None:
         """Call ``upload_part_finish``, retrying on biz_code 40093001."""
-        base = "/v2/users" if chat_type == "c2c" else "/v2/groups"
+        base = "/v2/users" if is_private_chat_type(chat_type) else "/v2/groups"
         path = f"{base}/{target_id}/upload_part_finish"
         body = {
             "upload_id": upload_id,
@@ -502,7 +503,7 @@ class ChunkedUploader:
         This reuses the ``/files`` endpoint (same as the simple URL-based upload)
         but signals the chunked-completion path by sending only ``upload_id``.
         """
-        base = "/v2/users" if chat_type == "c2c" else "/v2/groups"
+        base = "/v2/users" if is_private_chat_type(chat_type) else "/v2/groups"
         path = f"{base}/{target_id}/files"
         body = {"upload_id": upload_id}
 

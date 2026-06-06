@@ -392,6 +392,18 @@ def _resolve_current_turn_user_idx(
         ):
             return idx
 
+    if isinstance(current_turn_user_content, str) and current_turn_user_content:
+        for idx in range(len(messages) - 1, -1, -1):
+            candidate = messages[idx]
+            candidate_content = candidate.get("content") if isinstance(candidate, dict) else None
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("role") == "user"
+                and isinstance(candidate_content, str)
+                and current_turn_user_content in candidate_content
+            ):
+                return idx
+
     return None
 
 

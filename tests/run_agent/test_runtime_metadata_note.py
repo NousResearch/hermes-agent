@@ -199,3 +199,36 @@ def test_runtime_metadata_note_survives_preflight_compression_rewrite():
     assert current_user_message.startswith(user_message)
     assert "Conversation started:" in current_user_message
     assert "Session ID: session-1234" in current_user_message
+
+
+def test_runtime_metadata_note_survives_user_message_repair_merge():
+    agent = _make_agent()
+    user_message = "Continue with the fix"
+    history = [{"role": "user", "content": "Earlier redirect"}]
+    agent.client.chat.completions.create.return_value = _mock_response("Done")
+    captured = {}
+
+    def _fake_build_api_kwargs(api_messages):
+        captured["messages"] = api_messages
+        return {"model": agent.model, "messages": api_messages, "timeout": 1800.0}
+
+    with (
+        patch.object(agent, "_build_api_kwargs", side_effect=_fake_build_api_kwargs),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation(user_message, conversation_history=history)
+
+    assert result["completed"] is True
+
+    current_user_message = next(
+        m["content"]
+        for m in captured["messages"]
+        if m["role"] == "user"
+        and isinstance(m["content"], str)
+        and user_message in m["content"]
+    )
+    assert current_user_message.startswith("Earlier redirect\n\nContinue with the fix")
+    assert "Conversation started:" in current_user_message
+    assert "Session ID: session-1234" in current_user_message

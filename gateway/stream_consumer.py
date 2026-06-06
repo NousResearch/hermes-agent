@@ -16,6 +16,7 @@ Credit: jobless0x (#774, #1312), OutThisLife (#798), clicksingh (#697).
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
 import logging
 import queue
@@ -53,6 +54,11 @@ _COMMENTARY = object()
 # sending a blocking interactive prompt (clarify poll) so the prompt is the
 # last thing on screen, not racing ahead of buffered prose.
 _FLUSH = object()
+
+# Sentinel to signal an approval boundary — close current native stream,
+# reset turn state, generate new turn_id for post-approval output.
+# Used by WeCom to prevent typing bubbles from spanning approval waits.
+_APPROVAL_BOUNDARY = object()
 
 
 def escape_code_fences_for_display(text: str) -> str:
@@ -437,6 +443,41 @@ class GatewayStreamConsumer:
         """Finalize the current stream segment and start a fresh message."""
         self._queue.put(_NEW_SEGMENT)
 
+    def close_for_approval_prompt(self) -> asyncio.Future:
+        """Close current native stream for approval prompt.
+
+        Queues an approval boundary signal that the consumer processes
+        serially: flush accumulated text → finalize stream → reset state →
+        generate new turn_id. Returns a Future that resolves when the
+        boundary has been processed.
+
+        For platforms without native streaming this is a no-op (returns
+        an immediately-resolved Future).
+
+        Called from sync context (agent/approval thread). The boundary
+        is processed by the consumer's async run() task, ensuring no
+        race conditions with pending deltas or other queue items.
+        """
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
+        if not self._use_native_streaming:
+            # No native stream to close — return resolved future
+            f = asyncio.Future() if loop else concurrent.futures.Future()
+            f.set_result(True)
+            return f
+
+        # Create a future that run() will resolve after processing
+        if loop:
+            boundary_future = loop.create_future()
+        else:
+            boundary_future = concurrent.futures.Future()
+        self._queue.put((_APPROVAL_BOUNDARY, boundary_future))
+        return boundary_future
+
     def on_commentary(self, text: str) -> None:
         """Queue a completed interim assistant commentary message."""
         if text:
@@ -526,6 +567,83 @@ class GatewayStreamConsumer:
         if self._use_draft_streaming:
             type(self)._draft_id_counter += 1
             self._draft_id = type(self)._draft_id_counter
+
+    async def _handle_approval_boundary(self, boundary_future) -> None:
+        """Process an approval boundary: close current native stream, prepare for new one.
+
+        This method is called serially from run() when _APPROVAL_BOUNDARY is dequeued.
+        It ensures no race conditions with pending deltas or other queue items.
+
+        Steps:
+          1. Flush accumulated text (if any) as a mid-stream update
+          2. Finalize current stream with placeholder message
+          3. Reset native stream state
+          4. Generate new turn_id for post-approval output
+          5. Resolve the boundary future so caller knows it's safe to send approval prompt
+
+        After this, _use_native_streaming remains True so the next on_delta will
+        trigger a new seed frame with the fresh turn_id.
+        """
+        import uuid
+
+        try:
+            if self._native_stream_opened:
+                # Step 1: Flush accumulated content as mid-stream update
+                if self._accumulated:
+                    try:
+                        await self.adapter.send_stream_frame(
+                            self._accumulated,
+                            chat_id=self.chat_id,
+                            reply_to=self._initial_reply_to_id,
+                            turn_id=self._turn_id,
+                        )
+                    except Exception as e:
+                        logger.debug("Approval boundary: flush failed (non-critical): %s", e)
+
+                # Step 2: Finalize current stream with placeholder
+                try:
+                    await self.adapter.send_stream_frame(
+                        self._accumulated or "⏸ 等待审批中...",
+                        finalize=True,
+                        chat_id=self.chat_id,
+                        reply_to=self._initial_reply_to_id,
+                        turn_id=self._turn_id,
+                    )
+                    logger.debug(
+                        "Approval boundary: finalized stream (chat=%s, turn=%s)",
+                        self.chat_id, self._turn_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Approval boundary: finalize failed: %s", e
+                    )
+
+            # Step 3: Reset native stream state
+            self._native_stream_opened = False
+            self._native_last_pushed_len = 0
+
+            # Step 4: Generate new turn_id for post-approval output
+            self._turn_id = str(uuid.uuid4())
+            logger.debug(
+                "Approval boundary: new turn_id=%s for post-approval stream",
+                self._turn_id,
+            )
+
+            # Step 5: Reset segment state (accumulated text, message_id, etc.)
+            self._reset_segment_state()
+
+        finally:
+            # Resolve future so approval callback knows it's safe to proceed
+            if boundary_future is not None:
+                try:
+                    if isinstance(boundary_future, asyncio.Future):
+                        if not boundary_future.done():
+                            boundary_future.set_result(True)
+                    elif isinstance(boundary_future, concurrent.futures.Future):
+                        if not boundary_future.done():
+                            boundary_future.set_result(True)
+                except Exception:
+                    pass
 
     def on_delta(self, text: str) -> None:
         """Thread-safe callback — called from the agent's worker thread.
@@ -776,6 +894,8 @@ class GatewayStreamConsumer:
                 got_segment_break = False
                 got_flush = False
                 flush_event = None
+                got_approval_boundary = False
+                approval_boundary_future = None
                 commentary_text = None
                 while True:
                     try:
@@ -785,6 +905,10 @@ class GatewayStreamConsumer:
                             break
                         if item is _NEW_SEGMENT:
                             got_segment_break = True
+                            break
+                        if isinstance(item, tuple) and len(item) == 2 and item[0] is _APPROVAL_BOUNDARY:
+                            got_approval_boundary = True
+                            approval_boundary_future = item[1]
                             break
                         if isinstance(item, tuple) and len(item) == 2 and item[0] is _COMMENTARY:
                             commentary_text = item[1]
@@ -800,6 +924,13 @@ class GatewayStreamConsumer:
                         self._filter_and_accumulate(item)
                     except queue.Empty:
                         break
+
+                # Handle approval boundary: close current stream, reset for new turn.
+                # Must happen before got_done/segment_break processing since it
+                # produces its own finalize and resets state.
+                if got_approval_boundary:
+                    await self._handle_approval_boundary(approval_boundary_future)
+                    continue
 
                 # Flush any held-back partial-tag buffer on stream end
                 # so trailing text that was waiting for a potential open
@@ -2101,6 +2232,29 @@ class GatewayStreamConsumer:
         # With 15 concurrent users, we need ≤2 frames per turn on average
         # to stay under the limit. 60 chars ≈ one short sentence, which
         # produces 3-5 frames per turn — close to OpenClaw's block-level cadence.
+        if self._use_native_streaming:
+            # Re-seed if stream was closed (e.g., by approval boundary)
+            # and we have new content to send.
+            if not self._native_stream_opened and text:
+                try:
+                    seed_ok = await self.adapter.send_stream_frame(
+                        "",
+                        chat_id=self.chat_id,
+                        reply_to=self._initial_reply_to_id,
+                        turn_id=self._turn_id,
+                    )
+                    if seed_ok:
+                        self._native_stream_opened = True
+                        logger.debug(
+                            "Re-opened native stream after boundary (turn=%s)",
+                            self._turn_id,
+                        )
+                    else:
+                        self._use_native_streaming = False
+                except Exception as e:
+                    logger.debug("Re-seed failed, disabling native streaming: %s", e)
+                    self._use_native_streaming = False
+
         if self._use_native_streaming:
             _MIN_NEW_VISIBLE_CHARS = 60
             new_visible_chars = len(text) - self._native_last_pushed_len

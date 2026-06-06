@@ -118,6 +118,39 @@ class TestSlackExecApproval:
         assert kwargs.get("thread_ts") == "9999.0000"
 
     @pytest.mark.asyncio
+    async def test_mentions_allowed_operator_for_attention(self, monkeypatch):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1234.5678"})
+        monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_APPROVER")
+
+        await adapter.send_exec_approval(
+            chat_id="C1",
+            command="git push --force-with-lease origin ws-57",
+            session_key="test-session",
+            metadata={"thread_id": "9999.0000"},
+        )
+
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        assert "<@U_APPROVER>" in kwargs["text"]
+        assert "<@U_APPROVER>" in kwargs["blocks"][0]["text"]["text"]
+
+    @pytest.mark.asyncio
+    async def test_missing_slack_message_timestamp_is_send_failure(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ok": False, "error": "not_in_channel"})
+
+        result = await adapter.send_exec_approval(
+            chat_id="C1",
+            command="rm -rf /important",
+            session_key="test-session",
+        )
+
+        assert result.success is False
+        assert "not_in_channel" in (result.error or "")
+
+    @pytest.mark.asyncio
     async def test_not_connected(self):
         adapter = _make_adapter()
         adapter._app = None

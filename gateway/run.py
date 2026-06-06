@@ -18158,8 +18158,16 @@ class GatewayRunner:
 
                 # Fallback: plain text approval prompt
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                attention = ""
+                try:
+                    mention_getter = getattr(_status_adapter, "_approval_attention_mentions", None)
+                    if callable(mention_getter):
+                        attention = mention_getter()
+                except Exception:
+                    attention = ""
+                attention_prefix = f"{attention}\n" if attention else ""
                 msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
+                    f"{attention_prefix}⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
                     f"Reply `/approve` to execute, `/approve session` to approve this pattern "

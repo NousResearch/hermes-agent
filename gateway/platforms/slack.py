@@ -2643,6 +2643,33 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Approval button support (Block Kit) -----
 
+    @staticmethod
+    def _approval_attention_mentions() -> str:
+        """Return Slack user mentions for approval prompts.
+
+        Approval requests are safety-critical and may be posted as thread
+        replies; explicitly mentioning configured approvers makes the request
+        visible/actionable instead of relying on thread notification heuristics.
+        Prefer ``SLACK_APPROVAL_MENTION_USER_IDS`` when set, otherwise reuse the
+        existing approval allowlist so installations do not need a second env
+        var for the common single-operator case.
+        """
+        raw = (
+            os.getenv("SLACK_APPROVAL_MENTION_USER_IDS", "").strip()
+            or os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        )
+        if not raw:
+            return ""
+        mentions = []
+        seen = set()
+        for part in raw.split(","):
+            user_id = part.strip()
+            if not user_id or user_id == "*" or user_id in seen:
+                continue
+            seen.add(user_id)
+            mentions.append(user_id if user_id.startswith("<@") else f"<@{user_id}>")
+        return " ".join(mentions)
+
     async def send_exec_approval(
         self,
         chat_id: str,
@@ -2662,6 +2689,8 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             cmd_preview = command[:2900] + "..." if len(command) > 2900 else command
             thread_ts = self._resolve_thread_ts(None, metadata)
+            attention = self._approval_attention_mentions()
+            attention_prefix = f"{attention}\n" if attention else ""
 
             blocks = [
                 {
@@ -2669,7 +2698,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "text": {
                         "type": "mrkdwn",
                         "text": (
-                            f":warning: *Command Approval Required*\n"
+                            f"{attention_prefix}:warning: *Command Approval Required*\n"
                             f"```{cmd_preview}```\n"
                             f"Reason: {description}"
                         ),
@@ -2710,7 +2739,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             kwargs: Dict[str, Any] = {
                 "channel": chat_id,
-                "text": f"⚠️ Command approval required: {cmd_preview[:100]}",
+                "text": f"{attention + ' ' if attention else ''}⚠️ Command approval required: {cmd_preview[:100]}",
                 "blocks": blocks,
             }
             if thread_ts:
@@ -2718,9 +2747,28 @@ class SlackAdapter(BasePlatformAdapter):
 
             result = await self._get_client(chat_id).chat_postMessage(**kwargs)
             msg_ts = result.get("ts", "")
-            if msg_ts:
-                self._approval_resolved[msg_ts] = False
+            if not msg_ts:
+                error = str(result.get("error", "missing Slack message timestamp") or "missing Slack message timestamp")
+                logger.warning(
+                    "[Slack] command approval prompt send did not return a message timestamp channel=%s thread_ts=%s session_key=%s error=%s response=%s",
+                    chat_id,
+                    thread_ts or "",
+                    session_key,
+                    error,
+                    result,
+                )
+                return SendResult(success=False, error=error, raw_response=result)
 
+            self._approval_resolved[msg_ts] = False
+
+            logger.info(
+                "[Slack] Sent command approval prompt channel=%s thread_ts=%s message_ts=%s session_key=%s mentions=%s",
+                chat_id,
+                thread_ts or "",
+                msg_ts or "",
+                session_key,
+                bool(attention),
+            )
             return SendResult(success=True, message_id=msg_ts, raw_response=result)
         except Exception as e:
             logger.error("[Slack] send_exec_approval failed: %s", e, exc_info=True)

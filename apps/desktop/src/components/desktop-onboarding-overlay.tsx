@@ -116,6 +116,7 @@ export const sortProviders = (providers: OAuthProvider[]) =>
   [...providers].sort((a, b) => orderOf(a) - orderOf(b) || a.name.localeCompare(b.name))
 
 export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway }: DesktopOnboardingOverlayProps) {
+  const { t } = useI18n()
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
   const ctxRef = useRef<OnboardingContext>({ requestGateway, onCompleted })
@@ -196,7 +197,7 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
         <Header />
         {onboarding.manual ? (
           <Button
-            aria-label="Close"
+            aria-label={t.common.close}
             className="absolute right-3 top-3 z-10 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
             onClick={() => closeManualOnboarding()}
             size="icon-sm"

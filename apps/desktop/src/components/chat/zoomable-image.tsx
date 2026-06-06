@@ -51,6 +51,11 @@ export interface ZoomableImageProps extends ComponentProps<'img'> {
   slot?: string
 }
 
+interface ImageActionCopy {
+  downloadImage: string
+  savingImage: string
+}
+
 export function ZoomableImage({ className, containerClassName, src, alt, slot, ...props }: ZoomableImageProps) {
   const { t } = useI18n()
   const copy = t.desktop
@@ -112,7 +117,7 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
             onClick={() => setLightboxOpen(false)}
             src={src}
           />
-          <ImageActionButton onClick={handleDownload} saving={saving} variant="lightbox" />
+          <ImageActionButton copy={copy} onClick={handleDownload} saving={saving} variant="lightbox" />
         </div>
       </DialogContent>
     </Dialog>
@@ -128,12 +133,12 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
           className="contents"
           disabled={!canOpen}
           onClick={() => canOpen && setLightboxOpen(true)}
-          title={canOpen ? 'Open image' : undefined}
+          title={canOpen ? copy.openImage : undefined}
           type="button"
         >
           <img alt={alt ?? ''} className={className} src={src} {...props} />
         </button>
-        {src && <ImageActionButton onClick={handleDownload} saving={saving} variant="inline" />}
+        {src && <ImageActionButton copy={copy} onClick={handleDownload} saving={saving} variant="inline" />}
       </span>
       {lightbox}
     </>
@@ -141,17 +146,19 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
 }
 
 function ImageActionButton({
+  copy,
   onClick,
   saving,
   variant
 }: {
+  copy: ImageActionCopy
   onClick: () => void
   saving: boolean
   variant: 'inline' | 'lightbox'
 }) {
   return (
     <button
-      aria-label={saving ? 'Saving image' : 'Download image'}
+      aria-label={saving ? copy.savingImage : copy.downloadImage}
       className={cn(
         'absolute right-2 top-2 grid size-8 place-items-center rounded-full border border-border/70 bg-background/80 text-muted-foreground opacity-0 shadow-sm backdrop-blur transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 disabled:opacity-50',
         variant === 'inline' ? 'group-hover/image:opacity-100' : 'group-hover/lightbox:opacity-100'
@@ -161,7 +168,7 @@ function ImageActionButton({
         event.stopPropagation()
         void onClick()
       }}
-      title={saving ? 'Saving image' : 'Download image'}
+      title={saving ? copy.savingImage : copy.downloadImage}
       type="button"
     >
       <Download className={cn('size-4', saving && 'animate-pulse')} />

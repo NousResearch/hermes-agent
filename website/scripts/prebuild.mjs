@@ -23,12 +23,30 @@
 // deploys get real data.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const websiteDir = resolve(scriptDir, "..");
+
+// Patch lunr.ko.js to fix Unicode-aware RegExp bug
+try {
+  const koFilePath = join(websiteDir, "node_modules", "lunr-languages", "lunr.ko.js");
+  if (existsSync(koFilePath)) {
+    let content = readFileSync(koFilePath, "utf8");
+    if (content.includes('lunr.ko.wordCharacters = "[" +')) {
+      content = content.replace(
+        'lunr.ko.wordCharacters = "[" +\n      "A-Za-z" +\n      "\\uac00-\\ud7a3" +\n      "]";',
+        'lunr.ko.wordCharacters = "A-Za-z\\uac00-\\ud7a3";'
+      );
+      writeFileSync(koFilePath, content, "utf8");
+      console.log("[prebuild] Successfully patched lunr.ko.js on disk.");
+    }
+  }
+} catch (e) {
+  console.warn("[prebuild] Failed to patch lunr.ko.js on disk:", e);
+}
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
 const outputFile = join(websiteDir, "static", "api", "skills.json");

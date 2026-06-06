@@ -1452,6 +1452,22 @@ PATCH_SCHEMA = {
             },
         },
         "required": ["mode"],
+        # The handler enforces mode-conditional requirements (see _handle_patch:
+        # mode=replace needs path+old_string+new_string; mode=patch needs patch).
+        # Express that in the schema so tool-using LLMs that honor JSON Schema
+        # literally (e.g. grok-4.3) emit the required fields up-front instead
+        # of looping on python validator errors. 1Team-Engineering/hermes-agent
+        # patch: grok-tool-call-tolerance.
+        "oneOf": [
+            {
+                "properties": {"mode": {"const": "replace"}},
+                "required": ["mode", "path", "old_string", "new_string"],
+            },
+            {
+                "properties": {"mode": {"const": "patch"}},
+                "required": ["mode", "patch"],
+            },
+        ],
     },
 }
 

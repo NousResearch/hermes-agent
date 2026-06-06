@@ -1066,6 +1066,15 @@ KANBAN_COMPLETE_SCHEMA = {
             "board": _board_schema_prop(),
         },
         "required": [],
+        # The handler enforces "summary or result" (line ~543). Express that
+        # constraint in the schema itself so tool-using LLMs that read JSON
+        # Schema literally (e.g. grok-4.3) emit the field instead of silently
+        # omitting both and then looping on the python validator error.
+        # 1Team-Engineering/hermes-agent patch: grok-tool-call-tolerance.
+        "anyOf": [
+            {"required": ["summary"]},
+            {"required": ["result"]},
+        ],
     },
 }
 

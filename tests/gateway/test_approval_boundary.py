@@ -82,9 +82,10 @@ async def test_approval_boundary_cancelled_sends_invisible_finalize(mock_adapter
 
     # Should NOT be the visible placeholder
     assert finalize_text != "⏸ 等待审批中...", "Cancelled boundary should not send visible placeholder"
-    # Should be invisible (zero-width space or empty)
-    assert finalize_text in ("​", "", "✅") or len(finalize_text.strip()) == 0, \
-        f"Cancelled boundary should use invisible finalize, got: {repr(finalize_text)}"
+    assert finalize_text != "✅", "Cancelled boundary should not send visible checkmark"
+    # Should be invisible (zero-width space or truly empty)
+    assert finalize_text in ("​", ""), \
+        f"Cancelled boundary should use invisible finalize (zero-width space or empty), got: {repr(finalize_text)}"
 
 
 @pytest.mark.asyncio

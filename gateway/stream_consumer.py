@@ -581,11 +581,15 @@ class GatewayStreamConsumer:
         If cancelled_flag["cancelled"] is True (caller timed out and continued),
         we still reset state but skip sending visible finalize text to avoid
         the finalize message appearing after the approval prompt.
+
+        If finalize fails, we still reset state to prevent trapped typing on
+        post-approval output.
         """
         import uuid
         is_cancelled = cancelled_flag and cancelled_flag.get("cancelled", False)
 
         boundary_ok = False
+        finalize_succeeded = False
         try:
             if self._native_stream_opened:
                 # Step 1: Flush accumulated content as mid-stream update
@@ -617,15 +621,19 @@ class GatewayStreamConsumer:
                         reply_to=self._initial_reply_to_id,
                         turn_id=self._turn_id,
                     )
+                    finalize_succeeded = True
                     logger.debug(
                         "Approval boundary: finalized stream (chat=%s, turn=%s, cancelled=%s)",
                         self.chat_id, self._turn_id, is_cancelled,
                     )
                 except Exception as e:
                     logger.warning("Approval boundary: finalize failed: %s", e)
-                    raise  # Propagate so boundary_ok stays False
+                    # Don't raise — we still need to reset state below to prevent
+                    # post-approval output from being trapped in old stream
 
             # Step 3: Reset native stream state
+            # Do this even if finalize failed to prevent post-approval output
+            # from continuing to use the old stream with stale req_id
             self._native_stream_opened = False
             self._native_last_pushed_len = 0
 
@@ -637,16 +645,24 @@ class GatewayStreamConsumer:
             # the original user message's req_id which may be stale after /approve.
             self._initial_reply_to_id = None
 
+            # Step 6: If finalize failed, disable native streaming to force
+            # fallback to reliable send() path for post-approval output
+            if not finalize_succeeded:
+                self._use_native_streaming = False
+                logger.debug(
+                    "Approval boundary: disabled native streaming after finalize failure"
+                )
+
             logger.debug(
                 "Approval boundary: new turn_id=%s, cleared reply_to for fresh req_id",
                 self._turn_id,
             )
 
-            # Step 6: Reset segment state (accumulated text, message_id, etc.)
+            # Step 7: Reset segment state (accumulated text, message_id, etc.)
             self._reset_segment_state()
 
-            # Only set boundary_ok = True if we got here without exceptions
-            boundary_ok = True
+            # Only set boundary_ok = True if finalize succeeded
+            boundary_ok = finalize_succeeded
 
         except Exception as e:
             logger.warning("Approval boundary processing failed: %s", e)

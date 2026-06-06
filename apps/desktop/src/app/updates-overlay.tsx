@@ -13,22 +13,23 @@ import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, CheckCircle2, Copy, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
-import { $connection } from '@/store/session'
 import {
+  $backendUpdateApply,
+  $backendUpdateChecking,
+  $backendUpdateStatus,
   $updateApply,
   $updateChecking,
   $updateOverlayOpen,
+  $updateOverlayTarget,
   $updateStatus,
+  applyBackendUpdate,
   applyUpdates,
+  checkBackendUpdates,
   checkUpdates,
   resetUpdateApplyState,
   setUpdateOverlayOpen,
   type UpdateApplyState
 } from '@/store/updates'
-
-/** What the overlay is acting on. In remote thin-client mode the overlay
- *  targets the connected BACKEND; otherwise the local desktop client.
- *  (Type re-exported from the copy helper.) */
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
@@ -36,17 +37,27 @@ function totalItems(groups: readonly CommitGroup[]) {
 
 export function UpdatesOverlay() {
   const open = useStore($updateOverlayOpen)
-  const status = useStore($updateStatus)
-  const checking = useStore($updateChecking)
-  const apply = useStore($updateApply)
-  const connection = useStore($connection)
-  const target: UpdateTarget = connection?.mode === 'remote' ? 'backend' : 'client'
+  const target = useStore($updateOverlayTarget)
+
+  const clientStatus = useStore($updateStatus)
+  const clientChecking = useStore($updateChecking)
+  const clientApply = useStore($updateApply)
+  const backendStatus = useStore($backendUpdateStatus)
+  const backendChecking = useStore($backendUpdateChecking)
+  const backendApply = useStore($backendUpdateApply)
+
+  const isBackend = target === 'backend'
+  const status = isBackend ? backendStatus : clientStatus
+  const checking = isBackend ? backendChecking : clientChecking
+  const apply = isBackend ? backendApply : clientApply
+  const check = isBackend ? checkBackendUpdates : checkUpdates
+  const install = isBackend ? applyBackendUpdate : applyUpdates
 
   useEffect(() => {
     if (open && !status && !checking) {
-      void checkUpdates()
+      void check()
     }
-  }, [checking, open, status])
+  }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
 
@@ -72,7 +83,7 @@ export function UpdatesOverlay() {
   }
 
   const handleInstall = () => {
-    void applyUpdates()
+    void install()
   }
 
   return (
@@ -98,7 +109,7 @@ export function UpdatesOverlay() {
             commits={status?.commits ?? []}
             onInstall={handleInstall}
             onLater={() => handleClose(false)}
-            onRetryCheck={() => void checkUpdates()}
+            onRetryCheck={() => void check()}
             status={status}
             target={target}
           />

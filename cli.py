@@ -15510,6 +15510,57 @@ class HermesCLI:
 # Main Entry Point
 # ============================================================================
 
+
+def _install_hard_timeout_watchdog(env_value):
+    """Install an opt-in wall-clock backstop that force-terminates the process.
+
+    When ``HERMES_HARD_TIMEOUT_SEC`` is set to a positive number, spawn a
+    daemon thread that sleeps for that many seconds and then calls
+    ``os._exit(124)``. ``os._exit`` is a direct syscall needing no GIL or
+    cleanup, so it force-terminates even a fully wedged main thread.
+
+    Motivation: when Hermes runs as a child process of a parent agent
+    harness, a parent-side timeout lives in a separate process whose event
+    loop can itself be starved under memory pressure, delaying the kill by
+    many minutes. An in-process backstop is immune to that.
+
+    Opt-in only: with no env var set (or set to 0 / non-numeric / negative),
+    no watchdog thread is created. Interactive sessions are completely
+    unaffected.
+
+    Returns the started daemon thread (so callers/tests can inspect it), or
+    ``None`` if no watchdog was installed.
+    """
+    if not env_value:
+        return None
+    try:
+        timeout_sec = float(env_value)
+    except (TypeError, ValueError):
+        return None
+    if timeout_sec <= 0:
+        return None
+
+    import threading as _wd_threading
+
+    def _hard_timeout_watchdog():
+        import time as _wd_time
+        _wd_time.sleep(timeout_sec)
+        sys.stderr.write(
+            f"[hermes] Hard timeout ({timeout_sec:.0f}s) exceeded; "
+            f"force-terminating process.\n"
+        )
+        sys.stderr.flush()
+        os._exit(124)
+
+    thread = _wd_threading.Thread(
+        target=_hard_timeout_watchdog,
+        name="hermes-hard-timeout",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     """Drive a kanban goal_mode worker through the Ralph-style goal loop.
 
@@ -15672,7 +15723,13 @@ def main(
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
     os.environ["HERMES_INTERACTIVE"] = "1"
-    
+
+    # Opt-in hard wall-clock backstop. When HERMES_HARD_TIMEOUT_SEC is set
+    # to a positive number, an in-process daemon thread force-terminates the
+    # process after that many seconds via os._exit(124). With no env var
+    # set, no watchdog is created and interactive sessions are unaffected.
+    _install_hard_timeout_watchdog(os.environ.get("HERMES_HARD_TIMEOUT_SEC", "").strip())
+
     # Handle gateway mode (messaging + cron)
     if gateway:
         import asyncio

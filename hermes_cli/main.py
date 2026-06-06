@@ -8154,8 +8154,14 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
-    _update_node_dependencies()
+    npm_ok = _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
+
+    if not npm_ok:
+        print()
+        print("  ⚠ Node.js dependencies may be incomplete.")
+        print("  Some features (TUI, browser tools) may not work until you run:")
+        print(f"    cd {PROJECT_ROOT} && npm install")
 
     # Sync skills
     try:
@@ -9547,13 +9553,53 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     return resolve_uv() or shutil.which("uv")
 
 
-def _update_node_dependencies() -> None:
+def _verify_npm_integrity(npm: str, cwd: Path) -> bool:
+    """Run ``npm ls --depth=0`` to verify node_modules integrity.
+
+    After an interrupted ``npm install`` (SIGINT, network failure, etc.),
+    npm may exit 0 but leave ``node_modules`` in a broken state — empty
+    package directories, missing binaries, broken symlinks.  A quick
+    ``npm ls`` catches these because it resolves the dependency tree and
+    reports UNMET / MISSING / invalid packages.
+
+    Returns True if the tree is healthy (or npm is too old to support the
+    check), False if integrity issues were detected.
+    """
+    try:
+        ls_result = subprocess.run(
+            [npm, "ls", "--depth=0"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if ls_result.returncode != 0:
+            stderr = (ls_result.stderr or "").strip()
+            if "ELSPROBLEMS" in stderr or "missing" in stderr.lower() or "invalid" in stderr.lower():
+                return False
+    except (subprocess.TimeoutExpired, OSError):
+        # npm not reachable or timed out — don't block the update.
+        pass
+    return True
+
+
+def _update_node_dependencies() -> bool:
+    """Install / update Node.js dependencies for the CLI, TUI, and web UI.
+
+    Returns ``True`` if all installs succeeded **and** the dependency tree
+    passed an integrity check, ``False`` otherwise.  Callers should warn the
+    user when ``False`` is returned so they know to run ``npm install``
+    manually before using Node.js-dependent features.
+    """
     npm = shutil.which("npm")
     if not npm:
-        return
+        return True  # Nothing to do — Node.js is optional.
 
     if not (PROJECT_ROOT / "package.json").exists():
-        return
+        return True
+
+    all_ok = True
 
     # With a single workspace lockfile the root install would cover ALL
     # workspaces — but apps/desktop pulls in Electron as a devDependency,
@@ -9578,7 +9624,14 @@ def _update_node_dependencies() -> None:
         stderr = (root_result.stderr or "").strip() if root_result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
-        return
+        return False
+
+    # Post-install integrity check: catch partial installs left behind by
+    # interrupted npm (SIGINT, network failure, SSH disconnect).
+    if not _verify_npm_integrity(npm, PROJECT_ROOT):
+        print("  ⚠ npm integrity check failed after root install")
+        print(f"    Run manually: cd {PROJECT_ROOT} && npm install")
+        all_ok = False
 
     # Step 2: install only the workspaces update needs (ui-tui, web).
     # --workspace selects specific workspaces; the rest (desktop) are skipped.
@@ -9596,6 +9649,9 @@ def _update_node_dependencies() -> None:
         stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
+        all_ok = False
+
+    return all_ok
 
 
 class _UpdateOutputStream:
@@ -10699,7 +10755,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         _refresh_active_lazy_features()
 
-        _update_node_dependencies()
+        npm_ok = _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")
 
         # Rebuild the desktop app if the source tree changed since the last
@@ -10723,6 +10779,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+
+        if not npm_ok:
+            print()
+            print("  ⚠ Node.js dependencies may be incomplete.")
+            print("  Some features (TUI, browser tools) may not work until you run:")
+            print(f"    cd {PROJECT_ROOT} && npm install")
 
         print()
         print("✓ Code updated!")

@@ -253,6 +253,7 @@ class TestCmdUpdateBranchFallback:
             "--progress=false",
             "--workspaces=false",
         ]
+        integrity_flags = ["/usr/bin/npm", "ls", "--depth=0"]
         ws_flags = [
             "/usr/bin/npm",
             "ci",
@@ -264,14 +265,15 @@ class TestCmdUpdateBranchFallback:
             "--workspace",
             "web",
         ]
-        assert npm_calls[:2] == [
+        assert npm_calls[:3] == [
             (root_flags, PROJECT_ROOT),
+            (integrity_flags, PROJECT_ROOT),
             (ws_flags, PROJECT_ROOT),
         ]
-        if len(npm_calls) > 2:
+        if len(npm_calls) > 3:
             # The web/ install runs from the workspace root when the root
             # lockfile exists (npm workspaces hoist node_modules upward).
-            assert npm_calls[2:] == [
+            assert npm_calls[3:] == [
                 (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT),
             ]
 
@@ -825,3 +827,85 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+# ---------------------------------------------------------------------------
+# _verify_npm_integrity — post-install integrity check
+# ---------------------------------------------------------------------------
+
+class TestVerifyNpmIntegrity:
+    """Tests for _verify_npm_integrity()."""
+
+    def test_healthy_tree_returns_true(self, tmp_path):
+        """npm ls --depth=0 exits 0 → integrity is fine."""
+        import hermes_cli.main as hm
+
+        def fake_run(cmd, **kwargs):
+            assert "ls" in cmd and "--depth=0" in cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
+            assert hm._verify_npm_integrity("/usr/bin/npm", tmp_path) is True
+
+    def test_unmet_deps_returns_false(self, tmp_path):
+        """npm ls exits non-zero with ELSPROBLEMS → broken integrity."""
+        import hermes_cli.main as hm
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                cmd, 1,
+                stdout="",
+                stderr="npm ERR! ELSPROBLEMS: invalid",
+            )
+
+        with patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
+            assert hm._verify_npm_integrity("/usr/bin/npm", tmp_path) is False
+
+    def test_missing_deps_returns_false(self, tmp_path):
+        """npm ls exits non-zero with 'missing' → broken integrity."""
+        import hermes_cli.main as hm
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                cmd, 1,
+                stdout="",
+                stderr="npm ERR! missing: foo@1.0.0",
+            )
+
+        with patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
+            assert hm._verify_npm_integrity("/usr/bin/npm", tmp_path) is False
+
+    def test_timeout_returns_true(self, tmp_path):
+        """npm ls times out → don't block the update."""
+        import hermes_cli.main as hm
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, 30)
+
+        with patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
+            assert hm._verify_npm_integrity("/usr/bin/npm", tmp_path) is True
+
+    def test_npm_not_found_returns_true(self, tmp_path):
+        """npm binary missing → don't block the update."""
+        import hermes_cli.main as hm
+
+        def fake_run(cmd, **kwargs):
+            raise OSError("No such file or directory")
+
+        with patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
+            assert hm._verify_npm_integrity("/usr/bin/npm", tmp_path) is True
+
+    def test_other_exit_code_returns_true(self, tmp_path):
+        """npm ls exits non-zero but without UNMET/MISSING → assume OK."""
+        import hermes_cli.main as hm
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                cmd, 1,
+                stdout="",
+                stderr="npm WARN deprecated package@1.0.0",
+            )
+
+        with patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
+            assert hm._verify_npm_integrity("/usr/bin/npm", tmp_path) is True
+

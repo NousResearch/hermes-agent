@@ -1299,6 +1299,72 @@ jq -c '{ts: now, parent: .session_id, extra: .extra}' < /dev/stdin >> "$log"
 printf '{}\n'
 ```
 
+#### 5. Play a local sound when a turn completes
+
+Use `on_session_end` when you want a local notification after a CLI or gateway
+turn finishes. This keeps notification behavior in user configuration instead
+of adding a global Hermes sound setting.
+
+```yaml
+# ~/.hermes/config.yaml
+hooks:
+  on_session_end:
+    - command: "~/.hermes/agent-hooks/play-completion-sound.py"
+      timeout: 5
+```
+
+```python
+#!/usr/bin/env python3
+# ~/.hermes/agent-hooks/play-completion-sound.py
+import json
+import subprocess
+import sys
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return 0
+
+    if payload.get("hook_event_name") != "on_session_end":
+        return 0
+
+    # macOS example. On Linux or Windows, replace this with your preferred
+    # local sound or desktop-notification command.
+    subprocess.run(
+        ["/usr/bin/afplay", "/System/Library/Sounds/Glass.aiff"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+Create the hook directory if needed, then make the script executable:
+
+```bash
+mkdir -p ~/.hermes/agent-hooks
+chmod +x ~/.hermes/agent-hooks/play-completion-sound.py
+```
+
+Then inspect and test the hook:
+
+```bash
+hermes hooks list
+hermes hooks test on_session_end
+hermes hooks doctor
+```
+
+The first live run prompts you to approve this exact `(event, command)` pair.
+Approve the hook through the normal allowlist prompt after reviewing the script.
+For ordinary local setup, prefer that one-time approval path over blanket
+`hooks_auto_accept: true`.
+
 ### Consent model
 
 Each unique `(event, command)` pair prompts the user for approval the first time Hermes sees it, then persists the decision to `~/.hermes/shell-hooks-allowlist.json`. Subsequent runs (CLI or gateway) skip the prompt.

@@ -934,6 +934,27 @@ class TestFTS5Search:
         assert isinstance(results2, list)
         assert len(results2) >= 1
 
+    def test_search_colon_query_still_finds_content(self, db):
+        """Queries containing ':' must not silently return empty.
+
+        ':' is FTS5's column-filter operator. With a single-column FTS table an
+        unquoted query like 'TODO: fix' parses as 'column:term', raises
+        "no such column: TODO", and the swallowed error turns into zero results
+        even though the content is present. Regression for that silent-empty bug.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="TODO fix the deployment script")
+
+        # Control: the same content is found without the colon.
+        assert len(db.search_messages("deployment")) >= 1
+
+        # The colon query must find the message, not silently return [].
+        results = db.search_messages("TODO: fix")
+        assert isinstance(results, list)
+        assert len(results) >= 1
+        assert any("deployment" in (r.get("snippet") or r.get("content", "")).lower()
+                   for r in results)
+
     def test_search_quoted_phrase_preserved(self, db):
         """User-provided quoted phrases should be preserved for exact matching."""
         db.create_session(session_id="s1", source="cli")
@@ -963,6 +984,10 @@ class TestFTS5Search:
         assert s('***') == ''
         # Valid prefix kept
         assert s('deploy*') == 'deploy*'
+        # Colon (FTS5 column-filter operator) stripped, both terms preserved
+        assert ':' not in s('TODO: fix')
+        assert s('TODO: fix').split() == ['TODO', 'fix']
+        assert ':' not in s('error:timeout')
 
     def test_sanitize_fts5_preserves_quoted_phrases(self):
         """Properly paired double-quoted phrases should be preserved."""

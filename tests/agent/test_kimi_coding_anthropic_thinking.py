@@ -31,7 +31,6 @@ class TestKimiCodingSkipsAnthropicThinking:
         "base_url",
         [
             "https://api.kimi.com/coding",
-            "https://api.kimi.com/coding/v1",
             "https://api.kimi.com/coding/anthropic",
             "https://api.kimi.com/coding/",
         ],
@@ -210,3 +209,22 @@ class TestKimiCodingSkipsAnthropicThinking:
         ]
         assert len(thinking_blocks) == 1
         assert thinking_blocks[0]["thinking"] == "planning the tool call"
+
+
+class TestKimiCodingV1NotAnthropicWire:
+    """/coding/v1 is the OpenAI-compatible endpoint — not Anthropic wire."""
+
+    def test_coding_v1_is_not_anthropic_wire(self):
+        from agent.auxiliary_client import _endpoint_speaks_anthropic_messages
+
+        assert _endpoint_speaks_anthropic_messages("https://api.kimi.com/coding/v1") is False
+
+    def test_coding_bare_still_is_anthropic_wire(self):
+        from agent.auxiliary_client import _endpoint_speaks_anthropic_messages
+
+        assert _endpoint_speaks_anthropic_messages("https://api.kimi.com/coding") is True
+
+    def test_coding_slash_still_is_anthropic_wire(self):
+        from agent.auxiliary_client import _endpoint_speaks_anthropic_messages
+
+        assert _endpoint_speaks_anthropic_messages("https://api.kimi.com/coding/") is True

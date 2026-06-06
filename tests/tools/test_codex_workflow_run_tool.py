@@ -388,3 +388,91 @@ def test_checkpoint_touched_files_outside_allowlist_blocks(tmp_path, monkeypatch
     assert result["checkpoint"]["reason"] == "touched_files_outside_allowlist"
     assert "README.md" in _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
     assert "other.txt" in _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
+
+
+def test_dry_run_clean_repo_does_not_call_staged_or_checkpoint(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    calls = []
+
+    def fake_staged(args):
+        calls.append(args)
+        raise AssertionError("dry_run must not call staged implementation")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        mode="dry_run",
+        standing_authorization=True,
+        checkpoint_verified_diff=True,
+        verification_evidence={"stage_id": "phase-4"},
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["would_call_staged"] is True
+    assert result["codex_staged_result"] is None
+    assert "checkpoint" not in result
+    assert calls == []
+    assert _git(repo, "status", "--porcelain=v1", "--untracked-files=all") == ""
+
+
+def test_dry_run_cache_dirty_does_not_clean_cache_or_call_staged(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    cache_path = repo / ".pytest_cache" / "v" / "cache" / "nodeids"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("cached\n", encoding="utf-8")
+    calls = []
+
+    def fake_staged(args):
+        calls.append(args)
+        raise AssertionError("dry_run must not call staged implementation")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        mode="dry_run",
+        standing_authorization=True,
+        auto_clean_cache=True,
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["would_call_staged"] is False
+    assert cache_path.exists()
+    assert result["dirty_recovery"]["initial_dirty_check"]["dirty_path_classes"]["cache"] == [
+        ".pytest_cache/v/cache/nodeids"
+    ]
+    assert calls == []
+
+
+def test_dry_run_source_dirty_does_not_create_isolated_worktree(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    source_path = repo / "tools" / "dirty_tool.py"
+    source_path.parent.mkdir()
+    source_path.write_text("dirty\n", encoding="utf-8")
+    staged_calls = []
+    worktree_calls = []
+
+    def fake_staged(args):
+        staged_calls.append(args)
+        raise AssertionError("dry_run must not call staged implementation")
+
+    def fake_create(*args, **kwargs):
+        worktree_calls.append((args, kwargs))
+        raise AssertionError("dry_run must not create isolated worktrees")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_create_isolated_worktree", fake_create)
+
+    result = _call(
+        workdir=str(repo),
+        mode="dry_run",
+        standing_authorization=True,
+        allow_isolated_worktree=True,
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["would_call_staged"] is False
+    assert source_path.exists()
+    assert staged_calls == []
+    assert worktree_calls == []

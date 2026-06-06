@@ -90,7 +90,7 @@ def _validate_common(args: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[
         "verify_cmd_ids": verify_ids,
         "continue_policy": continue_policy,
         "dirty_baseline_policy": dirty_policy,
-        "mode": "execute",
+        "mode": mode,
     }
     return {
         "repo": repo,

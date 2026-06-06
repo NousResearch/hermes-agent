@@ -327,7 +327,6 @@ def test_dirty_worktree_returns_actionable_fail_closed_resolver(tmp_path, monkey
     assert result["authorization_required"] is True
     assert {option["id"] for option in result["dirty_resolution_options"]} == {
         "commit_or_checkpoint_current_changes",
-        "stash_current_changes",
         "create_isolated_worktree",
         "manually_clean_worktree",
     }

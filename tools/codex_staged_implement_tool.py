@@ -622,11 +622,6 @@ def _dirty_resolution_metadata(dirty: dict[str, Any]) -> dict[str, Any]:
                 "authorization_required": True,
             },
             {
-                "id": "stash_current_changes",
-                "description": "Stash current work, then rerun after confirming the baseline is clean.",
-                "authorization_required": True,
-            },
-            {
                 "id": "create_isolated_worktree",
                 "description": "Create a separate clean worktree and run the staged implementation there.",
                 "authorization_required": True,

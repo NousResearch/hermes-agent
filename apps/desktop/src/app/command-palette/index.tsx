@@ -51,6 +51,7 @@ import {
   SKILLS_ROUTE
 } from '../routes'
 import { FIELD_LABELS, SECTIONS } from '../settings/constants'
+import { fieldCopyForSchemaKey } from '../settings/field-copy'
 import { prettyName } from '../settings/helpers'
 
 interface PaletteItem {
@@ -198,7 +199,10 @@ export function CommandPalette() {
     [t.settings.sections]
   )
   const configFieldLabel = useCallback(
-    (key: string) => t.settings.fieldLabels[key] ?? FIELD_LABELS[key] ?? prettyName(key.split('.').pop() ?? key),
+    (key: string) =>
+      fieldCopyForSchemaKey(t.settings.fieldLabels, key) ??
+      fieldCopyForSchemaKey(FIELD_LABELS, key) ??
+      prettyName(key.split('.').pop() ?? key),
     [t.settings.fieldLabels]
   )
 

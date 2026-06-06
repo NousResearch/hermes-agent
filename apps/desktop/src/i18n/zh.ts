@@ -213,59 +213,59 @@ export const zh: Translations = {
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
-      model_context_length: '上下文窗口',
-      fallback_providers: '备用模型',
+      modelContextLength: '上下文窗口',
+      fallbackProviders: '备用模型',
       toolsets: '启用的工具集',
       timezone: '时区',
       display: {
         personality: '人格',
-        show_reasoning: '推理过程块'
+        showReasoning: '推理过程块'
       },
       agent: {
-        max_turns: '最大智能体步数',
-        image_input_mode: '图片附件',
-        api_max_retries: 'API 重试次数',
-        service_tier: '服务等级',
-        tool_use_enforcement: '工具调用强制'
+        maxTurns: '最大智能体步数',
+        imageInputMode: '图片附件',
+        apiMaxRetries: 'API 重试次数',
+        serviceTier: '服务等级',
+        toolUseEnforcement: '工具调用强制'
       },
       terminal: {
         cwd: '工作目录',
         backend: '执行后端',
         timeout: '命令超时',
-        persistent_shell: '持久化 Shell',
-        env_passthrough: '环境变量透传'
+        persistentShell: '持久化 Shell',
+        envPassthrough: '环境变量透传'
       },
-      file_read_max_chars: '文件读取上限',
-      tool_output: {
-        max_bytes: '终端输出上限',
-        max_lines: '文件分页上限',
-        max_line_length: '行长度上限'
+      fileReadMaxChars: '文件读取上限',
+      toolOutput: {
+        maxBytes: '终端输出上限',
+        maxLines: '文件分页上限',
+        maxLineLength: '行长度上限'
       },
-      code_execution: {
+      codeExecution: {
         mode: '代码执行模式'
       },
       approvals: {
         mode: '审批模式',
         timeout: '审批超时',
-        mcp_reload_confirm: '确认 MCP 重载'
+        mcpReloadConfirm: '确认 MCP 重载'
       },
-      command_allowlist: '命令白名单',
+      commandAllowlist: '命令白名单',
       security: {
-        redact_secrets: '隐去密钥',
-        allow_private_urls: '允许私有 URL'
+        redactSecrets: '隐去密钥',
+        allowPrivateUrls: '允许私有 URL'
       },
       browser: {
-        allow_private_urls: '浏览器私有 URL',
-        auto_local_for_private_urls: '私有 URL 使用本地浏览器'
+        allowPrivateUrls: '浏览器私有 URL',
+        autoLocalForPrivateUrls: '私有 URL 使用本地浏览器'
       },
       checkpoints: {
         enabled: '文件检查点',
-        max_snapshots: '检查点上限'
+        maxSnapshots: '检查点上限'
       },
       voice: {
-        record_key: '语音快捷键',
-        max_recording_seconds: '最长录音时长',
-        auto_tts: '朗读回复'
+        recordKey: '语音快捷键',
+        maxRecordingSeconds: '最长录音时长',
+        autoTts: '朗读回复'
       },
       stt: {
         enabled: '语音转文字',
@@ -275,9 +275,9 @@ export const zh: Translations = {
           language: '转写语言'
         },
         elevenlabs: {
-          model_id: 'ElevenLabs STT 模型',
-          language_code: 'ElevenLabs 语言',
-          tag_audio_events: '标记音频事件',
+          modelId: 'ElevenLabs STT 模型',
+          languageCode: 'ElevenLabs 语言',
+          tagAudioEvents: '标记音频事件',
           diarize: '说话人区分'
         }
       },
@@ -291,15 +291,15 @@ export const zh: Translations = {
           voice: 'OpenAI 语音'
         },
         elevenlabs: {
-          voice_id: 'ElevenLabs 语音',
-          model_id: 'ElevenLabs 模型'
+          voiceId: 'ElevenLabs 语音',
+          modelId: 'ElevenLabs 模型'
         }
       },
       memory: {
-        memory_enabled: '持久记忆',
-        user_profile_enabled: '用户画像',
-        memory_char_limit: '记忆预算',
-        user_char_limit: '画像预算',
+        memoryEnabled: '持久记忆',
+        userProfileEnabled: '用户画像',
+        memoryCharLimit: '记忆预算',
+        userCharLimit: '画像预算',
         provider: '记忆提供方'
       },
       context: {
@@ -308,56 +308,56 @@ export const zh: Translations = {
       compression: {
         enabled: '自动压缩',
         threshold: '压缩阈值',
-        target_ratio: '压缩目标',
-        protect_last_n: '保护最近消息'
+        targetRatio: '压缩目标',
+        protectLastN: '保护最近消息'
       },
       delegation: {
         model: '子智能体模型',
         provider: '子智能体提供方',
-        max_iterations: '子智能体轮次上限',
-        max_concurrent_children: '并行子智能体',
-        child_timeout_seconds: '子智能体超时',
-        reasoning_effort: '子智能体推理强度'
+        maxIterations: '子智能体轮次上限',
+        maxConcurrentChildren: '并行子智能体',
+        childTimeoutSeconds: '子智能体超时',
+        reasoningEffort: '子智能体推理强度'
       },
       updates: {
-        non_interactive_local_changes: '应用内更新本地更改'
+        nonInteractiveLocalChanges: '应用内更新本地更改'
       }
     }),
     fieldDescriptions: defineFieldCopy({
       model: '用于新对话，除非你在输入框中选择其他模型。',
-      model_context_length: '保持为 0 则使用所选模型检测到的上下文窗口。',
-      fallback_providers: '默认模型失败时尝试的备用 provider:model 条目。',
+      modelContextLength: '保持为 0 则使用所选模型检测到的上下文窗口。',
+      fallbackProviders: '默认模型失败时尝试的备用 provider:model 条目。',
       display: {
         personality: '新会话的默认助手风格。',
-        show_reasoning: '当后端提供推理内容时予以显示。'
+        showReasoning: '当后端提供推理内容时予以显示。'
       },
       timezone: '当 Hermes 需要本地时间上下文时使用。留空则使用系统时区。',
       agent: {
-        image_input_mode: '控制图片附件如何发送给模型。',
-        max_turns: 'Hermes 停止一次运行前工具调用轮次的上限。'
+        imageInputMode: '控制图片附件如何发送给模型。',
+        maxTurns: 'Hermes 停止一次运行前工具调用轮次的上限。'
       },
       terminal: {
         cwd: '工具与终端操作的默认项目目录。',
-        persistent_shell: '当后端支持时，在命令之间保留 Shell 状态。',
-        env_passthrough: '传入工具执行的环境变量。'
+        persistentShell: '当后端支持时，在命令之间保留 Shell 状态。',
+        envPassthrough: '传入工具执行的环境变量。'
       },
-      code_execution: {
+      codeExecution: {
         mode: '代码执行被限定到当前项目的严格程度。'
       },
-      file_read_max_chars: 'Hermes 单次文件读取可读取的最大字符数。',
+      fileReadMaxChars: 'Hermes 单次文件读取可读取的最大字符数。',
       approvals: {
         mode: 'Hermes 如何处理需要显式审批的命令。',
         timeout: '审批提示在超时前等待的时长。'
       },
       security: {
-        redact_secrets: '尽可能从模型可见内容中隐藏检测到的密钥。'
+        redactSecrets: '尽可能从模型可见内容中隐藏检测到的密钥。'
       },
       checkpoints: {
         enabled: '在文件编辑前创建可回滚的快照。'
       },
       memory: {
-        memory_enabled: '保存有助于未来会话的持久记忆。',
-        user_profile_enabled: '维护一份精简的用户偏好画像。'
+        memoryEnabled: '保存有助于未来会话的持久记忆。',
+        userProfileEnabled: '维护一份精简的用户偏好画像。'
       },
       context: {
         engine: '在接近上下文上限时管理长对话的策略。'
@@ -366,16 +366,16 @@ export const zh: Translations = {
         enabled: '当对话变大时对较早的上下文进行摘要。'
       },
       voice: {
-        auto_tts: '自动朗读助手回复。'
+        autoTts: '自动朗读助手回复。'
       },
       stt: {
         enabled: '启用本地或提供方支持的语音转写。',
         elevenlabs: {
-          language_code: '可选的 ISO-639-3 语言代码。留空让 ElevenLabs 自动检测。'
+          languageCode: '可选的 ISO-639-3 语言代码。留空让 ElevenLabs 自动检测。'
         }
       },
       updates: {
-        non_interactive_local_changes:
+        nonInteractiveLocalChanges:
           'Hermes 从应用内更新时（无终端提示），保留本地源码修改（暂存）或丢弃（放弃）。通过终端更新时始终会询问。'
       }
     }),
@@ -1338,7 +1338,7 @@ export const zh: Translations = {
       '某个安装步骤失败。在 Windows 上，如果另一个 Hermes CLI 或桌面实例正在运行，可能会出现这种情况。请停止正在运行的 Hermes 实例后重试。可查看下面的详情或 desktop 日志中的完整记录。',
     activeDesc: '这是一次性设置。Hermes 安装器正在下载依赖并配置你的机器。之后启动会跳过此步骤。',
     progress: (completed, total) => `${completed}/${total} 个步骤已完成`,
-    currentStage: stage => ` -- 当前: ${stage}`,
+    currentStage: stage => ` -- 当前：${stage}`,
     fetchingManifest: '正在获取安装器 manifest...',
     error: '错误',
     hideOutput: '隐藏安装器输出',
@@ -1374,7 +1374,7 @@ export const zh: Translations = {
       xai: { short: 'Grok 模型', description: '直接访问 xAI Grok 模型。' },
       local: {
         short: '自托管',
-        description: '将 Hermes 指向本地或自托管的 OpenAI 兼容端点(vLLM、llama.cpp、Ollama 等)。'
+        description: '将 Hermes 指向本地或自托管的 OpenAI 兼容端点 (vLLM、llama.cpp、Ollama 等)。'
       }
     },
     backToSignIn: '返回登录',
@@ -1422,11 +1422,11 @@ export const zh: Translations = {
 
   modelPicker: {
     title: '切换模型',
-    current: '当前:',
+    current: '当前：',
     unknown: '(未知)',
     search: '筛选提供方和模型...',
     noModels: '未找到模型。',
-    persistGlobalSession: '全局保存(否则仅当前会话)',
+    persistGlobalSession: '全局保存 (否则仅当前会话)',
     persistGlobal: '全局保存',
     addProvider: '添加提供方',
     loadFailed: '无法加载模型',
@@ -1480,7 +1480,7 @@ export const zh: Translations = {
       checkingInference: '正在检查推理',
       disconnected: '已断开',
       openSystem: '打开系统面板',
-      connection: label => `连接: ${label}`,
+      connection: label => `连接：${label}`,
       recentActivity: '最近活动',
       viewAllLogs: '查看全部日志 →',
       messagingPlatforms: '消息平台'
@@ -1543,7 +1543,7 @@ export const zh: Translations = {
     noProjectTitle: '没有项目',
     noProjectBody: '从状态栏设置工作目录后即可浏览文件。',
     unreadableTitle: '无法读取',
-    unreadableBody: error => `无法读取此文件夹(${error})。`,
+    unreadableBody: error => `无法读取此文件夹 (${error})。`,
     emptyTitle: '空文件夹',
     emptyBody: '此文件夹为空。',
     treeErrorTitle: '文件树错误',
@@ -1593,7 +1593,7 @@ export const zh: Translations = {
       copy: '复制',
       clear: '清除',
       empty: '暂无控制台消息。',
-      promptHeader: '预览控制台:',
+      promptHeader: '预览控制台：',
       sentTitle: '已发送到对话',
       sentMessage: count => `已将 ${count} 条日志添加到输入框`
     },
@@ -1607,14 +1607,14 @@ export const zh: Translations = {
       lookingRestart: taskId => `Hermes 正在查找要重启的预览服务器 (${taskId})`,
       restartingTitle: '正在重启预览服务器',
       restartingMessage: 'Hermes 正在后台工作。可在预览控制台查看进度。',
-      startRestartFailed: message => `无法启动服务器重启: ${message}`,
+      startRestartFailed: message => `无法启动服务器重启：${message}`,
       restartFailed: '服务器重启失败',
       hideConsole: '隐藏预览控制台',
       showConsole: '显示预览控制台',
       hideDevTools: '隐藏预览 DevTools',
       openDevTools: '打开预览 DevTools',
       finishedRestarting: message => `Hermes 已完成预览服务器重启${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `服务器重启失败: ${message}`,
+      failedRestarting: message => `服务器重启失败：${message}`,
       unknownError: '未知错误',
       restartedTitle: '预览服务器已重启',
       reloadingNow: '正在重新加载预览。',
@@ -1622,9 +1622,9 @@ export const zh: Translations = {
       restartFailedMessage: 'Hermes 无法重启服务器。',
       stillWorking: 'Hermes 仍在工作，但还没有收到重启结果。服务器命令可能正在前台运行。',
       workspaceReloading: '工作区已变更，正在重新加载预览',
-      fileChanged: url => `文件已变更，正在重新加载预览: ${url}`,
-      filesChanged: (count, url) => `${count} 个文件变更，正在重新加载预览: ${url}`,
-      watchFailed: message => `无法监听预览文件: ${message}`,
+      fileChanged: url => `文件已变更，正在重新加载预览：${url}`,
+      filesChanged: (count, url) => `${count} 个文件变更，正在重新加载预览：${url}`,
+      watchFailed: message => `无法监听预览文件：${message}`,
       moduleMimeDescription:
         '模块脚本使用了错误的 MIME 类型。这通常表示静态文件服务器正在服务 Vite/React 应用，而不是项目开发服务器。',
       loadFailedConsole: (code, message) => `加载失败${code ? ` (${code})` : ''}: ${message}`,
@@ -1668,7 +1668,7 @@ export const zh: Translations = {
       reject: '拒绝',
       alwaysTitle: '始终允许此命令？',
       alwaysDescription: pattern =>
-        `这会将 “${pattern}” 模式加入永久允许列表(~/.hermes/config.yaml)。Hermes 对类似命令将不再询问，包括当前会话和未来会话。`,
+        `这会将“${pattern}”模式加入永久允许列表 (~/.hermes/config.yaml)。Hermes 对类似命令将不再询问，包括当前会话和未来会话。`,
       alwaysAllow: '始终允许'
     },
     clarify: {
@@ -1676,7 +1676,7 @@ export const zh: Translations = {
       gatewayDisconnected: 'Hermes 网关未连接',
       sendFailed: '无法发送澄清响应',
       loadingQuestion: '正在加载问题…',
-      other: '其他(输入你的答案)',
+      other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',
       shortcut: '⌘/Ctrl + Enter 发送',
       back: '返回',
@@ -1730,7 +1730,7 @@ export const zh: Translations = {
     emptySlashCommand: '空 slash 命令',
     desktopCommands: '桌面端命令',
     skillCommandsAvailable: count => `${count} 个技能命令可用。`,
-    warningLine: message => `警告: ${message}`,
+    warningLine: message => `警告：${message}`,
     yoloArmed: '此对话已启用 YOLO',
     yoloOff: 'YOLO 已关闭',
     yoloSystem: active => `此会话 YOLO ${active ? '已开启' : '已关闭'}`,

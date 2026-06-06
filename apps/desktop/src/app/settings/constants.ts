@@ -248,59 +248,59 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   model: 'Default Model',
-  model_context_length: 'Context Window',
-  fallback_providers: 'Fallback Models',
+  modelContextLength: 'Context Window',
+  fallbackProviders: 'Fallback Models',
   toolsets: 'Enabled Toolsets',
   timezone: 'Timezone',
   display: {
     personality: 'Personality',
-    show_reasoning: 'Reasoning Blocks'
+    showReasoning: 'Reasoning Blocks'
   },
   agent: {
-    max_turns: 'Max Agent Steps',
-    image_input_mode: 'Image Attachments',
-    api_max_retries: 'API Retries',
-    service_tier: 'Service Tier',
-    tool_use_enforcement: 'Tool-Use Enforcement'
+    maxTurns: 'Max Agent Steps',
+    imageInputMode: 'Image Attachments',
+    apiMaxRetries: 'API Retries',
+    serviceTier: 'Service Tier',
+    toolUseEnforcement: 'Tool-Use Enforcement'
   },
   terminal: {
     cwd: 'Working Directory',
     backend: 'Execution Backend',
     timeout: 'Command Timeout',
-    persistent_shell: 'Persistent Shell',
-    env_passthrough: 'Environment Passthrough'
+    persistentShell: 'Persistent Shell',
+    envPassthrough: 'Environment Passthrough'
   },
-  file_read_max_chars: 'File Read Limit',
-  tool_output: {
-    max_bytes: 'Terminal Output Limit',
-    max_lines: 'File Page Limit',
-    max_line_length: 'Line Length Limit'
+  fileReadMaxChars: 'File Read Limit',
+  toolOutput: {
+    maxBytes: 'Terminal Output Limit',
+    maxLines: 'File Page Limit',
+    maxLineLength: 'Line Length Limit'
   },
-  code_execution: {
+  codeExecution: {
     mode: 'Code Execution Mode'
   },
   approvals: {
     mode: 'Approval Mode',
     timeout: 'Approval Timeout',
-    mcp_reload_confirm: 'Confirm MCP Reloads'
+    mcpReloadConfirm: 'Confirm MCP Reloads'
   },
-  command_allowlist: 'Command Allowlist',
+  commandAllowlist: 'Command Allowlist',
   security: {
-    redact_secrets: 'Redact Secrets',
-    allow_private_urls: 'Allow Private URLs'
+    redactSecrets: 'Redact Secrets',
+    allowPrivateUrls: 'Allow Private URLs'
   },
   browser: {
-    allow_private_urls: 'Browser Private URLs',
-    auto_local_for_private_urls: 'Local Browser For Private URLs'
+    allowPrivateUrls: 'Browser Private URLs',
+    autoLocalForPrivateUrls: 'Local Browser For Private URLs'
   },
   checkpoints: {
     enabled: 'File Checkpoints',
-    max_snapshots: 'Checkpoint Limit'
+    maxSnapshots: 'Checkpoint Limit'
   },
   voice: {
-    record_key: 'Voice Shortcut',
-    max_recording_seconds: 'Max Recording Length',
-    auto_tts: 'Read Responses Aloud'
+    recordKey: 'Voice Shortcut',
+    maxRecordingSeconds: 'Max Recording Length',
+    autoTts: 'Read Responses Aloud'
   },
   stt: {
     enabled: 'Speech To Text',
@@ -310,9 +310,9 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
       language: 'Transcription Language'
     },
     elevenlabs: {
-      model_id: 'ElevenLabs STT Model',
-      language_code: 'ElevenLabs Language',
-      tag_audio_events: 'Tag Audio Events',
+      modelId: 'ElevenLabs STT Model',
+      languageCode: 'ElevenLabs Language',
+      tagAudioEvents: 'Tag Audio Events',
       diarize: 'Speaker Diarization'
     }
   },
@@ -326,15 +326,15 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
       voice: 'OpenAI Voice'
     },
     elevenlabs: {
-      voice_id: 'ElevenLabs Voice',
-      model_id: 'ElevenLabs Model'
+      voiceId: 'ElevenLabs Voice',
+      modelId: 'ElevenLabs Model'
     }
   },
   memory: {
-    memory_enabled: 'Persistent Memory',
-    user_profile_enabled: 'User Profile',
-    memory_char_limit: 'Memory Budget',
-    user_char_limit: 'Profile Budget',
+    memoryEnabled: 'Persistent Memory',
+    userProfileEnabled: 'User Profile',
+    memoryCharLimit: 'Memory Budget',
+    userCharLimit: 'Profile Budget',
     provider: 'Memory Provider'
   },
   context: {
@@ -343,57 +343,57 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   compression: {
     enabled: 'Auto-Compression',
     threshold: 'Compression Threshold',
-    target_ratio: 'Compression Target',
-    protect_last_n: 'Protected Recent Messages'
+    targetRatio: 'Compression Target',
+    protectLastN: 'Protected Recent Messages'
   },
   delegation: {
     model: 'Subagent Model',
     provider: 'Subagent Provider',
-    max_iterations: 'Subagent Turn Limit',
-    max_concurrent_children: 'Parallel Subagents',
-    child_timeout_seconds: 'Subagent Timeout',
-    reasoning_effort: 'Subagent Reasoning Effort'
+    maxIterations: 'Subagent Turn Limit',
+    maxConcurrentChildren: 'Parallel Subagents',
+    childTimeoutSeconds: 'Subagent Timeout',
+    reasoningEffort: 'Subagent Reasoning Effort'
   },
   updates: {
-    non_interactive_local_changes: 'In-App Update Local Changes'
+    nonInteractiveLocalChanges: 'In-App Update Local Changes'
   }
 })
 
 export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   model: 'Used for new chats unless you pick a different model in the composer.',
-  model_context_length: "Leave at 0 to use the selected model's detected context window.",
-  fallback_providers: 'Backup provider:model entries to try if the default model fails.',
+  modelContextLength: "Leave at 0 to use the selected model's detected context window.",
+  fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
   display: {
     personality: 'Default assistant style for new sessions.',
-    show_reasoning: 'Show reasoning sections when the backend provides them.'
+    showReasoning: 'Show reasoning sections when the backend provides them.'
   },
   timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
   agent: {
-    image_input_mode: 'Controls how image attachments are sent to the model.',
-    max_turns: 'Upper bound for tool-calling turns before Hermes stops a run.'
+    imageInputMode: 'Controls how image attachments are sent to the model.',
+    maxTurns: 'Upper bound for tool-calling turns before Hermes stops a run.'
   },
   terminal: {
     cwd: 'Default project folder for tool and terminal work.',
-    persistent_shell: 'Keep shell state between commands when the backend supports it.',
-    env_passthrough: 'Environment variables to pass into tool execution.'
+    persistentShell: 'Keep shell state between commands when the backend supports it.',
+    envPassthrough: 'Environment variables to pass into tool execution.'
   },
-  code_execution: {
+  codeExecution: {
     mode: 'How strictly code execution is scoped to the current project.'
   },
-  file_read_max_chars: 'Maximum characters Hermes can read from one file request.',
+  fileReadMaxChars: 'Maximum characters Hermes can read from one file request.',
   approvals: {
     mode: 'How Hermes handles commands that need explicit approval.',
     timeout: 'How long approval prompts wait before timing out.'
   },
   security: {
-    redact_secrets: 'Hide detected secrets from model-visible content when possible.'
+    redactSecrets: 'Hide detected secrets from model-visible content when possible.'
   },
   checkpoints: {
     enabled: 'Create rollback snapshots before file edits.'
   },
   memory: {
-    memory_enabled: 'Save durable memories that can help future sessions.',
-    user_profile_enabled: 'Maintain a compact profile of user preferences.'
+    memoryEnabled: 'Save durable memories that can help future sessions.',
+    userProfileEnabled: 'Maintain a compact profile of user preferences.'
   },
   context: {
     engine: 'Strategy for managing long conversations near the context limit.'
@@ -402,16 +402,16 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     enabled: 'Summarize older context when conversations get large.'
   },
   voice: {
-    auto_tts: 'Automatically speak assistant responses.'
+    autoTts: 'Automatically speak assistant responses.'
   },
   stt: {
     enabled: 'Enable local or provider-backed speech transcription.',
     elevenlabs: {
-      language_code: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
+      languageCode: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
     }
   },
   updates: {
-    non_interactive_local_changes:
+    nonInteractiveLocalChanges:
       'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.'
   }
 })

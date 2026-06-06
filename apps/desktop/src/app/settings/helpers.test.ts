@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { defineFieldCopy } from './field-copy'
+import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import { getNested, providerGroup, setNested, stripToolsetLabel, toolsetDisplayLabel } from './helpers'
 
 describe('settings helpers', () => {
@@ -33,6 +33,33 @@ describe('settings helpers', () => {
         model_context_length: 'Context Window',
         file_read_max_chars: 'File Read Limit'
       })
+    })
+
+    it('maps schema keys to camelCase translation keys', () => {
+      expect(schemaKeyToFieldCopyKey('model_context_length')).toBe('modelContextLength')
+      expect(schemaKeyToFieldCopyKey('display.show_reasoning')).toBe('display.showReasoning')
+      expect(schemaKeyToFieldCopyKey('tool_output.max_line_length')).toBe('toolOutput.maxLineLength')
+      expect(schemaKeyToFieldCopyKey('updates.non_interactive_local_changes')).toBe(
+        'updates.nonInteractiveLocalChanges'
+      )
+    })
+
+    it('looks up camelCase field copy by schema key with legacy fallback', () => {
+      const copy = defineFieldCopy({
+        display: {
+          showReasoning: 'Reasoning Blocks'
+        },
+        file_read_max_chars: 'Legacy File Read Limit',
+        modelContextLength: 'Context Window',
+        toolOutput: {
+          maxLineLength: 'Line Length Limit'
+        }
+      })
+
+      expect(fieldCopyForSchemaKey(copy, 'model_context_length')).toBe('Context Window')
+      expect(fieldCopyForSchemaKey(copy, 'display.show_reasoning')).toBe('Reasoning Blocks')
+      expect(fieldCopyForSchemaKey(copy, 'tool_output.max_line_length')).toBe('Line Length Limit')
+      expect(fieldCopyForSchemaKey(copy, 'file_read_max_chars')).toBe('Legacy File Read Limit')
     })
 
     it('rejects duplicate flattened paths', () => {

@@ -219,59 +219,59 @@ export const ja = defineLocale({
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',
-      model_context_length: 'コンテキストウィンドウ',
-      fallback_providers: 'フォールバックモデル',
+      modelContextLength: 'コンテキストウィンドウ',
+      fallbackProviders: 'フォールバックモデル',
       toolsets: '有効なツールセット',
       timezone: 'タイムゾーン',
       display: {
         personality: '人格',
-        show_reasoning: '推論ブロック'
+        showReasoning: '推論ブロック'
       },
       agent: {
-        max_turns: '最大エージェントステップ',
-        image_input_mode: '画像添付',
-        api_max_retries: 'API 再試行回数',
-        service_tier: 'サービス階層',
-        tool_use_enforcement: 'ツール使用の強制'
+        maxTurns: '最大エージェントステップ',
+        imageInputMode: '画像添付',
+        apiMaxRetries: 'API 再試行回数',
+        serviceTier: 'サービス階層',
+        toolUseEnforcement: 'ツール使用の強制'
       },
       terminal: {
         cwd: '作業ディレクトリ',
         backend: '実行バックエンド',
         timeout: 'コマンドタイムアウト',
-        persistent_shell: '永続シェル',
-        env_passthrough: '環境変数の引き継ぎ'
+        persistentShell: '永続シェル',
+        envPassthrough: '環境変数の引き継ぎ'
       },
-      file_read_max_chars: 'ファイル読み取り上限',
-      tool_output: {
-        max_bytes: 'ターミナル出力上限',
-        max_lines: 'ファイルページ上限',
-        max_line_length: '行長上限'
+      fileReadMaxChars: 'ファイル読み取り上限',
+      toolOutput: {
+        maxBytes: 'ターミナル出力上限',
+        maxLines: 'ファイルページ上限',
+        maxLineLength: '行長上限'
       },
-      code_execution: {
+      codeExecution: {
         mode: 'コード実行モード'
       },
       approvals: {
         mode: '承認モード',
         timeout: '承認タイムアウト',
-        mcp_reload_confirm: 'MCP 再読み込みの確認'
+        mcpReloadConfirm: 'MCP 再読み込みの確認'
       },
-      command_allowlist: 'コマンド許可リスト',
+      commandAllowlist: 'コマンド許可リスト',
       security: {
-        redact_secrets: 'シークレットを伏せる',
-        allow_private_urls: 'プライベート URL を許可'
+        redactSecrets: 'シークレットを伏せる',
+        allowPrivateUrls: 'プライベート URL を許可'
       },
       browser: {
-        allow_private_urls: 'ブラウザーのプライベート URL',
-        auto_local_for_private_urls: 'プライベート URL にはローカルブラウザーを使用'
+        allowPrivateUrls: 'ブラウザーのプライベート URL',
+        autoLocalForPrivateUrls: 'プライベート URL にはローカルブラウザーを使用'
       },
       checkpoints: {
         enabled: 'ファイルチェックポイント',
-        max_snapshots: 'チェックポイント上限'
+        maxSnapshots: 'チェックポイント上限'
       },
       voice: {
-        record_key: '音声ショートカット',
-        max_recording_seconds: '最大録音時間',
-        auto_tts: '応答を読み上げる'
+        recordKey: '音声ショートカット',
+        maxRecordingSeconds: '最大録音時間',
+        autoTts: '応答を読み上げる'
       },
       stt: {
         enabled: '音声認識',
@@ -281,9 +281,9 @@ export const ja = defineLocale({
           language: '文字起こし言語'
         },
         elevenlabs: {
-          model_id: 'ElevenLabs STT モデル',
-          language_code: 'ElevenLabs 言語',
-          tag_audio_events: '音声イベントをタグ付け',
+          modelId: 'ElevenLabs STT モデル',
+          languageCode: 'ElevenLabs 言語',
+          tagAudioEvents: '音声イベントをタグ付け',
           diarize: '話者分離'
         }
       },
@@ -297,15 +297,15 @@ export const ja = defineLocale({
           voice: 'OpenAI 音声'
         },
         elevenlabs: {
-          voice_id: 'ElevenLabs 音声',
-          model_id: 'ElevenLabs モデル'
+          voiceId: 'ElevenLabs 音声',
+          modelId: 'ElevenLabs モデル'
         }
       },
       memory: {
-        memory_enabled: '永続メモリ',
-        user_profile_enabled: 'ユーザープロファイル',
-        memory_char_limit: 'メモリ予算',
-        user_char_limit: 'プロファイル予算',
+        memoryEnabled: '永続メモリ',
+        userProfileEnabled: 'ユーザープロファイル',
+        memoryCharLimit: 'メモリ予算',
+        userCharLimit: 'プロファイル予算',
         provider: 'メモリプロバイダー'
       },
       context: {
@@ -314,56 +314,56 @@ export const ja = defineLocale({
       compression: {
         enabled: '自動圧縮',
         threshold: '圧縮しきい値',
-        target_ratio: '圧縮目標',
-        protect_last_n: '保護する直近メッセージ'
+        targetRatio: '圧縮目標',
+        protectLastN: '保護する直近メッセージ'
       },
       delegation: {
         model: 'サブエージェントモデル',
         provider: 'サブエージェントプロバイダー',
-        max_iterations: 'サブエージェントターン上限',
-        max_concurrent_children: '並列サブエージェント',
-        child_timeout_seconds: 'サブエージェントタイムアウト',
-        reasoning_effort: 'サブエージェント推論強度'
+        maxIterations: 'サブエージェントターン上限',
+        maxConcurrentChildren: '並列サブエージェント',
+        childTimeoutSeconds: 'サブエージェントタイムアウト',
+        reasoningEffort: 'サブエージェント推論強度'
       },
       updates: {
-        non_interactive_local_changes: 'アプリ内更新時のローカル変更'
+        nonInteractiveLocalChanges: 'アプリ内更新時のローカル変更'
       }
     }),
     fieldDescriptions: defineFieldCopy({
       model: 'コンポーザーで別のモデルを選ばない限り、新しいチャットで使用されます。',
-      model_context_length: '0 のままにすると、選択したモデルから検出されたコンテキストウィンドウを使用します。',
-      fallback_providers: 'デフォルトモデルが失敗したときに試す provider:model 形式のバックアップです。',
+      modelContextLength: '0 のままにすると、選択したモデルから検出されたコンテキストウィンドウを使用します。',
+      fallbackProviders: 'デフォルトモデルが失敗したときに試す provider:model 形式のバックアップです。',
       display: {
         personality: '新しいセッションのデフォルトのアシスタントスタイルです。',
-        show_reasoning: 'バックエンドが推論内容を提供したときに表示します。'
+        showReasoning: 'バックエンドが推論内容を提供したときに表示します。'
       },
       timezone: 'Hermes がローカル時刻のコンテキストを必要とするときに使用します。空欄ならシステムのタイムゾーンを使います。',
       agent: {
-        image_input_mode: '画像添付をモデルへ送る方法を制御します。',
-        max_turns: 'Hermes が 1 回の実行を停止するまでのツール呼び出しターン上限です。'
+        imageInputMode: '画像添付をモデルへ送る方法を制御します。',
+        maxTurns: 'Hermes が 1 回の実行を停止するまでのツール呼び出しターン上限です。'
       },
       terminal: {
         cwd: 'ツールとターミナル作業のデフォルトプロジェクトフォルダーです。',
-        persistent_shell: 'バックエンドが対応している場合、コマンド間でシェル状態を保持します。',
-        env_passthrough: 'ツール実行へ渡す環境変数です。'
+        persistentShell: 'バックエンドが対応している場合、コマンド間でシェル状態を保持します。',
+        envPassthrough: 'ツール実行へ渡す環境変数です。'
       },
-      code_execution: {
+      codeExecution: {
         mode: 'コード実行を現在のプロジェクトにどれだけ厳密に制限するかを設定します。'
       },
-      file_read_max_chars: 'Hermes が 1 回のファイル読み取りで取得できる最大文字数です。',
+      fileReadMaxChars: 'Hermes が 1 回のファイル読み取りで取得できる最大文字数です。',
       approvals: {
         mode: '明示的な承認が必要なコマンドを Hermes がどう扱うかを設定します。',
         timeout: '承認プロンプトがタイムアウトするまで待つ時間です。'
       },
       security: {
-        redact_secrets: '検出したシークレットを、可能な限りモデルから見える内容から隠します。'
+        redactSecrets: '検出したシークレットを、可能な限りモデルから見える内容から隠します。'
       },
       checkpoints: {
         enabled: 'ファイル編集前にロールバック用スナップショットを作成します。'
       },
       memory: {
-        memory_enabled: '将来のセッションに役立つ永続メモリを保存します。',
-        user_profile_enabled: 'ユーザーの好みをまとめた簡潔なプロファイルを維持します。'
+        memoryEnabled: '将来のセッションに役立つ永続メモリを保存します。',
+        userProfileEnabled: 'ユーザーの好みをまとめた簡潔なプロファイルを維持します。'
       },
       context: {
         engine: '長い会話がコンテキスト上限に近づいたときの管理戦略です。'
@@ -372,16 +372,16 @@ export const ja = defineLocale({
         enabled: '会話が大きくなったとき、古いコンテキストを要約します。'
       },
       voice: {
-        auto_tts: 'アシスタントの応答を自動で読み上げます。'
+        autoTts: 'アシスタントの応答を自動で読み上げます。'
       },
       stt: {
         enabled: 'ローカルまたはプロバイダーによる音声文字起こしを有効にします。',
         elevenlabs: {
-          language_code: '任意の ISO-639-3 言語コードです。空欄なら ElevenLabs が自動検出します。'
+          languageCode: '任意の ISO-639-3 言語コードです。空欄なら ElevenLabs が自動検出します。'
         }
       },
       updates: {
-        non_interactive_local_changes:
+        nonInteractiveLocalChanges:
           'アプリから Hermes 自身を更新するとき、ローカルのソース変更を保持するか破棄するかを選びます。ターミナル更新では常に確認されます。'
       }
     }),

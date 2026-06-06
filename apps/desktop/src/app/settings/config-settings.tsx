@@ -19,6 +19,7 @@ import { notify, notifyError } from '@/store/notifications'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
+import { fieldCopyForSchemaKey } from './field-copy'
 import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
 import { ModelSettings } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
@@ -42,13 +43,15 @@ function ConfigField({
   const c = t.settings.config
 
   const label =
-    t.settings.fieldLabels[schemaKey] ?? FIELD_LABELS[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey)
+    fieldCopyForSchemaKey(t.settings.fieldLabels, schemaKey) ??
+    fieldCopyForSchemaKey(FIELD_LABELS, schemaKey) ??
+    prettyName(schemaKey.split('.').pop() ?? schemaKey)
 
   const normalize = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '')
 
   const rawDescription = (
-    t.settings.fieldDescriptions[schemaKey] ??
-    FIELD_DESCRIPTIONS[schemaKey] ??
+    fieldCopyForSchemaKey(t.settings.fieldDescriptions, schemaKey) ??
+    fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, schemaKey) ??
     schema.description ??
     ''
   ).trim()

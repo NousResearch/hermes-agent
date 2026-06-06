@@ -150,7 +150,8 @@ class SSHEnvironment(BaseEnvironment):
             scp_cmd.extend(["-P", str(self.port)])
         if self.key_path:
             scp_cmd.extend(["-i", self.key_path])
-        scp_cmd.extend([host_path, f"{self.user}@{self.host}:{remote_path}"])
+        scp_host = f"[{self.host}]" if ":" in self.host else self.host
+        scp_cmd.extend([host_path, f"{self.user}@{scp_host}:{remote_path}"])
         result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             raise RuntimeError(f"scp failed: {result.stderr.strip()}")

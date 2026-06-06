@@ -21,6 +21,7 @@ from typing import Iterable
 
 RISK_ORDER = ["R0", "R1", "R2", "R3", "R4", "R5"]
 COMPLEXITY_ORDER = ["C0", "C1", "C2", "C3", "C4", "C5"]
+MODEL_TIER_ORDER = [0, 1, 2, 3, 4]
 SCHEMA_VERSION = "ci-classification.v1"
 SELF_CHANGE_PATHS = {
     "scripts/ci_risk_classifier.py",
@@ -109,6 +110,8 @@ SURFACE_TO_CI = {
     "conductor_dispatch": {"backend_runtime", "conductor_tests", "executive_gate_tests", "governance_required"},
     "hermes_sidecar": {"hermes_sidecar_tests", "sidecar_authority_policy_tests", "no_merge_evidence_guard"},
     "ci_workflow": {"workflow_lint", "pr_impact_classifier_tests", "governance_required"},
+    "classifier_change": {"workflow_lint", "pr_impact_classifier_tests", "governance_required", "review_policy_guard"},
+    "governance_review_policy": {"docs_impact", "governance_required", "review_policy_guard"},
     "security_permissions": {"security_required", "permissions_tests", "protected_human_review"},
     "auth_identity": {"auth_tests", "session_isolation_tests", "security_required"},
     "secrets_tokens": {"secret_scan", "token_storage_tests", "encryption_tests", "protected_human_review"},
@@ -138,6 +141,27 @@ PROTECTED_SURFACES = {
     "tax_accounting",
     "money_movement",
     "launch_production",
+}
+
+GOVERNANCE_OR_MERGE_AUTHORITY_SURFACES = {
+    "conductor_dispatch",
+    "roadmap_os",
+    "accepted_event",
+    "classifier_change",
+    "governance_review_policy",
+}
+
+CUSTOMER_DATA_OR_FINANCE_SURFACES = {
+    "pii_customer_data",
+    "finance_interpretation",
+    "tax_accounting",
+    "money_movement",
+}
+
+RUNTIME_AUTHORITY_SURFACES = {
+    "conductor_dispatch",
+    "hermes_sidecar",
+    "accepted_event",
 }
 
 RUNTIME_SURFACES = {
@@ -234,6 +258,18 @@ def parse_yes_no(body: str, label: str) -> str | None:
     return value
 
 
+def parse_boolish(body: str, label: str) -> str | None:
+    value = parse_declared_field(body, label)
+    if value is None:
+        return None
+    lowered = value.lower()
+    if lowered.startswith(("yes", "true")):
+        return "yes"
+    if lowered.startswith(("no", "false")):
+        return "no"
+    return value
+
+
 def split_lanes(value: str | None) -> set[str]:
     if not value:
         return set()
@@ -283,6 +319,9 @@ def infer_surfaces(files: list[str], body: str) -> set[str]:
             surfaces.add("ci_workflow")
         if file in SELF_CHANGE_PATHS:
             surfaces.add("ci_workflow")
+            surfaces.add("classifier_change")
+        if any(term in file.lower() for term in ("doctrine", "governance", "merge", "review-routing", "review_policy", "review-policy")):
+            surfaces.add("governance_review_policy")
         if file.startswith("gateway/") or "dispatch" in file or "conductor" in file:
             surfaces.add("conductor_dispatch")
         if file.startswith(("agent/", "tools/", "hermes_cli/", "cron/", "tui_gateway/", "plugins/", "gateway/")):
@@ -402,7 +441,7 @@ def required_reviews(risk: str, complexity: str, surfaces: set[str]) -> set[str]
         reviews.add("secondary_review_required")
     if risk in {"R3", "R4", "R5"} or complexity in {"C3", "C4", "C5"} or surfaces & RUNTIME_SURFACES:
         reviews.add("adversarial_review_required")
-    if risk in {"R4", "R5"} or complexity in {"C3", "C4", "C5"}:
+    if risk in {"R4", "R5"}:
         reviews.add("opposite_provider_adversarial_required")
     if risk in {"R4", "R5"} or surfaces & PROTECTED_SURFACES:
         reviews.add("protected_human_review_required")
@@ -427,6 +466,83 @@ def token_class(risk: str, complexity: str) -> str:
     return "S"
 
 
+def parse_declared_model_tier(body: str) -> int | None:
+    value = parse_declared_field(body, "model_tier_required") or parse_declared_field(body, "Model tier required")
+    if value is None:
+        return None
+    match = re.search(r"\b([0-4])\b", value)
+    return int(match.group(1)) if match else None
+
+
+def infer_model_tier(
+    risk: str,
+    complexity: str,
+    surfaces: set[str],
+    protected_surface: bool,
+    runtime_authority_change: bool,
+    customer_data_or_finance_impact: bool,
+    governance_or_merge_authority_change: bool,
+) -> int:
+    """Route cc-review by blast radius and engineering complexity."""
+    if (
+        risk in {"R4", "R5"}
+        or complexity in {"C4", "C5"}
+        or protected_surface
+        or runtime_authority_change
+        or customer_data_or_finance_impact
+        or governance_or_merge_authority_change
+    ):
+        return 4
+    if risk == "R3" or complexity == "C3":
+        return 3
+    if risk == "R2" or complexity == "C2" or surfaces & RUNTIME_SURFACES:
+        return 2
+    if risk == "R1" or complexity == "C1" or surfaces & {"test_only", "candidate_event"}:
+        return 1
+    return 0
+
+
+def reviewer_for_tier(tier: int) -> str:
+    return {
+        0: "ci_only",
+        1: "cheap_semantic_review",
+        2: "mid_tier_engineering_review",
+        3: "codex_engineering_review",
+        4: "opposite_frontier_cc_review",
+    }[tier]
+
+
+def escalation_reason_for_tier(
+    tier: int,
+    risk: str,
+    complexity: str,
+    protected_surface: bool,
+    runtime_authority_change: bool,
+    customer_data_or_finance_impact: bool,
+    governance_or_merge_authority_change: bool,
+) -> str:
+    if tier == 4:
+        reasons = []
+        if risk in {"R4", "R5"}:
+            reasons.append(f"risk={risk}")
+        if protected_surface:
+            reasons.append("protected_surface")
+        if runtime_authority_change:
+            reasons.append("runtime_authority_change")
+        if customer_data_or_finance_impact:
+            reasons.append("customer_data_or_finance_impact")
+        if governance_or_merge_authority_change:
+            reasons.append("governance_or_merge_authority_change")
+        return ", ".join(reasons)
+    if tier == 3:
+        return f"bounded_complex_engineering:risk={risk},complexity={complexity}"
+    if tier == 2:
+        return "standard_bounded_engineering"
+    if tier == 1:
+        return "cheap_semantic_review"
+    return "mechanical_no_semantic_risk"
+
+
 @dataclass
 class Classification:
     pr_number: str = "unknown"
@@ -436,6 +552,15 @@ class Classification:
     complexity_class: str = "C0"
     impacted_surfaces: list[str] = field(default_factory=list)
     protected_flags: list[str] = field(default_factory=list)
+    protected_surface: bool = False
+    runtime_authority_change: bool = False
+    customer_data_or_finance_impact: bool = False
+    governance_or_merge_authority_change: bool = False
+    model_tier_required: int = 0
+    model_reviewer: str = "ci_only"
+    cc_review_required: bool = False
+    opposite_frontier_required: bool = False
+    escalation_reason: str = "mechanical_no_semantic_risk"
     runtime_payload_contract_present: bool = False
     blocker_exemption_present: bool = False
     required_ci_lanes: list[str] = field(default_factory=list)
@@ -475,7 +600,6 @@ def classify(files: list[str], body: str, additions: int = 0, pr_number: str = "
     lanes.add("pr_body_contract")
     lanes.add("diff_check")
 
-    reviews = required_reviews(risk, complexity, surfaces)
     runtime_contract_fields = parse_runtime_payload_contract(body)
     missing_contract_fields = missing_runtime_payload_contract_fields(runtime_contract_fields)
     runtime_contract_present = (
@@ -485,6 +609,39 @@ def classify(files: list[str], body: str, additions: int = 0, pr_number: str = "
     )
     blocker_exemption = parse_declared_field(body, "Blocker exemption, if any") is not None
 
+    protected_surface = bool(surfaces & PROTECTED_SURFACES)
+    runtime_authority_change = bool(surfaces & RUNTIME_AUTHORITY_SURFACES)
+    customer_data_or_finance_impact = bool(surfaces & CUSTOMER_DATA_OR_FINANCE_SURFACES)
+    governance_or_merge_authority_change = bool(surfaces & GOVERNANCE_OR_MERGE_AUTHORITY_SURFACES)
+    model_tier_required = infer_model_tier(
+        risk,
+        complexity,
+        surfaces,
+        protected_surface,
+        runtime_authority_change,
+        customer_data_or_finance_impact,
+        governance_or_merge_authority_change,
+    )
+    cc_review_required = model_tier_required >= 3
+    opposite_frontier_required = model_tier_required == 4
+    escalation_reason = escalation_reason_for_tier(
+        model_tier_required,
+        risk,
+        complexity,
+        protected_surface,
+        runtime_authority_change,
+        customer_data_or_finance_impact,
+        governance_or_merge_authority_change,
+    )
+
+    reviews = required_reviews(risk, complexity, surfaces)
+    if model_tier_required == 3:
+        reviews.add("codex_engineering_review_required")
+        reviews.discard("opposite_provider_adversarial_required")
+    if model_tier_required == 4:
+        reviews.add("opposite_frontier_cc_review_required")
+        reviews.add("opposite_provider_adversarial_required")
+
     blocking: list[str] = []
     if CLASSIFICATION_HEADER.lower() not in body.lower():
         blocking.append("missing_required_pr_body_classification_section")
@@ -492,6 +649,46 @@ def classify(files: list[str], body: str, additions: int = 0, pr_number: str = "
         blocking.append("missing_or_invalid_declared_risk_class")
     if declared_complexity not in COMPLEXITY_ORDER:
         blocking.append("missing_or_invalid_declared_complexity_class")
+    declared_protected_surface = parse_boolish(body, "protected_surface")
+    declared_runtime_authority_change = parse_boolish(body, "runtime_authority_change")
+    declared_customer_data_or_finance_impact = parse_boolish(body, "customer_data_or_finance_impact")
+    declared_governance_or_merge_authority_change = parse_boolish(body, "governance_or_merge_authority_change")
+    declared_model_tier = parse_declared_model_tier(body)
+    declared_cc_review_required = parse_boolish(body, "cc_review_required")
+    declared_opposite_frontier_required = parse_boolish(body, "opposite_frontier_required")
+    declared_escalation_reason = parse_declared_field(body, "escalation_reason")
+    if declared_protected_surface not in {"yes", "no"}:
+        blocking.append("missing_or_invalid_declared_protected_surface")
+    elif protected_surface and declared_protected_surface != "yes":
+        blocking.append("declared_protected_surface_weaker_than_classifier")
+    if declared_runtime_authority_change not in {"yes", "no"}:
+        blocking.append("missing_or_invalid_declared_runtime_authority_change")
+    elif runtime_authority_change and declared_runtime_authority_change != "yes":
+        blocking.append("declared_runtime_authority_change_weaker_than_classifier")
+    if declared_customer_data_or_finance_impact not in {"yes", "no"}:
+        blocking.append("missing_or_invalid_declared_customer_data_or_finance_impact")
+    elif customer_data_or_finance_impact and declared_customer_data_or_finance_impact != "yes":
+        blocking.append("declared_customer_data_or_finance_impact_weaker_than_classifier")
+    if declared_governance_or_merge_authority_change not in {"yes", "no"}:
+        blocking.append("missing_or_invalid_declared_governance_or_merge_authority_change")
+    elif governance_or_merge_authority_change and declared_governance_or_merge_authority_change != "yes":
+        blocking.append("declared_governance_or_merge_authority_change_weaker_than_classifier")
+    if declared_model_tier not in MODEL_TIER_ORDER:
+        blocking.append("missing_or_invalid_declared_model_tier_required")
+    elif declared_model_tier < model_tier_required:
+        blocking.append("declared_model_tier_weaker_than_classifier")
+    if declared_cc_review_required not in {"yes", "no"}:
+        blocking.append("missing_or_invalid_declared_cc_review_required")
+    elif cc_review_required and declared_cc_review_required != "yes":
+        blocking.append("declared_cc_review_required_weaker_than_classifier")
+    if declared_opposite_frontier_required not in {"yes", "no"}:
+        blocking.append("missing_or_invalid_declared_opposite_frontier_required")
+    elif opposite_frontier_required and declared_opposite_frontier_required != "yes":
+        blocking.append("declared_opposite_frontier_required_weaker_than_classifier")
+    if declared_escalation_reason is None:
+        blocking.append("missing_declared_escalation_reason")
+    elif model_tier_required >= 3 and declared_escalation_reason.strip().lower() in {"none", "n/a", "na", "mechanical", "mechanical_no_semantic_risk"}:
+        blocking.append("declared_escalation_reason_weaker_than_classifier")
     if surfaces & RUNTIME_SURFACES and not runtime_contract_present:
         blocking.append("runtime_surface_without_runtimePayloadContract")
         if runtime_contract_fields is not None and missing_contract_fields:
@@ -529,6 +726,15 @@ def classify(files: list[str], body: str, additions: int = 0, pr_number: str = "
         complexity_class=complexity,
         impacted_surfaces=sorted(surfaces),
         protected_flags=sorted(surfaces & PROTECTED_SURFACES),
+        protected_surface=protected_surface,
+        runtime_authority_change=runtime_authority_change,
+        customer_data_or_finance_impact=customer_data_or_finance_impact,
+        governance_or_merge_authority_change=governance_or_merge_authority_change,
+        model_tier_required=model_tier_required,
+        model_reviewer=reviewer_for_tier(model_tier_required),
+        cc_review_required=cc_review_required,
+        opposite_frontier_required=opposite_frontier_required,
+        escalation_reason=escalation_reason,
         runtime_payload_contract_present=runtime_contract_present,
         blocker_exemption_present=blocker_exemption,
         required_ci_lanes=sorted(lanes),
@@ -603,6 +809,14 @@ def _bool_value(data: dict[str, object], key: str) -> bool:
     return bool(data.get(key, False))
 
 
+def _int_value(data: dict[str, object], key: str, default: int = 0) -> int:
+    value = data.get(key, default)
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def detect_head_classifier_weakenings(base: dict[str, object], head: dict[str, object] | None) -> list[str]:
     if not head:
         return []
@@ -617,6 +831,11 @@ def detect_head_classifier_weakenings(base: dict[str, object], head: dict[str, o
     head_complexity = str(head.get("complexity_class", "C0"))
     if base_complexity in COMPLEXITY_ORDER and head_complexity in COMPLEXITY_ORDER and COMPLEXITY_ORDER.index(head_complexity) < COMPLEXITY_ORDER.index(base_complexity):
         weakenings.append("lower_complexity_class")
+
+    base_model_tier = _int_value(base, "model_tier_required")
+    head_model_tier = _int_value(head, "model_tier_required")
+    if head_model_tier < base_model_tier:
+        weakenings.append("lower_model_tier_required")
 
     for key, label in (
         ("required_ci_lanes", "fewer_required_ci_lanes"),
@@ -633,6 +852,12 @@ def detect_head_classifier_weakenings(base: dict[str, object], head: dict[str, o
         ("opposite_provider_required", "missing_opposite_provider_required"),
         ("human_gate_required", "missing_human_gate_required"),
         ("founder_review_required", "missing_founder_review_required"),
+        ("protected_surface", "missing_protected_surface"),
+        ("runtime_authority_change", "missing_runtime_authority_change"),
+        ("customer_data_or_finance_impact", "missing_customer_data_or_finance_impact"),
+        ("governance_or_merge_authority_change", "missing_governance_or_merge_authority_change"),
+        ("cc_review_required", "missing_cc_review_required"),
+        ("opposite_frontier_required", "missing_opposite_frontier_required"),
     ):
         if _bool_value(base, key) and not _bool_value(head, key):
             weakenings.append(label)

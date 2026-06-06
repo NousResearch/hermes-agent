@@ -38,10 +38,28 @@ Fixes #
 
 ## Risk, Complexity, Review, and CI Classification
 
+<!--
+Codex is the default high-capability engineering reviewer for complex code changes.
+Opposite-frontier cc-review is reserved for protected authority, governance,
+security, finance, customer-data, model-tier, and merge-control changes.
+
+No PR may route directly to high-frontier cc-review merely because it is important,
+large, or agent-authored. It must satisfy a Tier 4 trigger or include a written
+escalation reason.
+-->
+
 - Risk class: R0/R1/R2/R3/R4/R5
 - Complexity class: C0/C1/C2/C3/C4/C5
 - Impacted surfaces:
 - RuntimePayloadContract present: yes/no
+- protected_surface: true/false
+- runtime_authority_change: true/false
+- customer_data_or_finance_impact: true/false
+- governance_or_merge_authority_change: true/false
+- model_tier_required: 0/1/2/3/4 <!-- 0=CI only, 1=cheap semantic, 2=mid-tier engineering, 3=Codex engineering review, 4=opposite-frontier cc-review -->
+- cc_review_required: true/false
+- opposite_frontier_required: true/false
+- escalation_reason: <!-- none/mechanical, bounded_complex_engineering, or protected/authority/customer-data/governance reason -->
 - Blocker exemption, if any:
 - Secondary review required: yes/no
 - Adversarial review required: yes/no

@@ -33,6 +33,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -45,6 +46,11 @@ try:
 except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
+
+try:
+    import httpx
+except ImportError:  # pragma: no cover - httpx is a Hermes dependency
+    httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -245,6 +251,9 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
+        if deliver_type == "linear_comment":
+            return await self._deliver_linear_comment(content, delivery)
+
         # Cross-platform delivery — any platform with a gateway adapter.
         # Check both built-in names and plugin-registered platforms.
         _is_known_platform = deliver_type in _BUILTIN_DELIVER_PLATFORMS
@@ -411,6 +420,15 @@ class WebhookAdapter(BasePlatformAdapter):
                     {"error": "Invalid signature"}, status=401
                 )
 
+        is_linear_webhook = bool(
+            request.headers.get("Linear-Signature")
+            or request.headers.get("linear-signature")
+            or request.headers.get("Linear-Event")
+            or request.headers.get("linear-event")
+            or request.headers.get("Linear-Delivery")
+            or request.headers.get("linear-delivery")
+        )
+
         # ── Rate limiting (after auth) ───────────────────────────
         now = time.time()
         window = self._rate_counts.setdefault(route_name, [])
@@ -439,7 +457,10 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Check event type filter
         event_type = (
-            request.headers.get("X-GitHub-Event", "")
+            request.headers.get("Linear-Event", "")
+            or request.headers.get("linear-event", "")
+            or request.headers.get("X-Linear-Event", "")
+            or request.headers.get("X-GitHub-Event", "")
             or request.headers.get("X-GitLab-Event", "")
             or payload.get("event_type", "")
             or payload.get("type", "")
@@ -462,6 +483,17 @@ class WebhookAdapter(BasePlatformAdapter):
         prompt = self._render_prompt(
             prompt_template, payload, event_type, route_name
         )
+
+        if self._should_ignore_by_trigger(route_config, prompt):
+            logger.debug(
+                "[webhook] Ignoring event %s for route %s due to trigger filter",
+                event_type,
+                route_name,
+            )
+            return web.json_response(
+                {"status": "ignored", "event": event_type},
+                status=200,
+            )
 
         # Inject skill content if configured.
         # We call build_skill_invocation_message() directly rather than
@@ -494,10 +526,16 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Build a unique delivery ID
         delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
+            "Linear-Delivery",
             request.headers.get(
-                "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+                "linear-delivery",
+                request.headers.get(
+                    "X-GitHub-Delivery",
+                    request.headers.get(
+                        "svix-id",
+                        request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+                    ),
+                ),
             ),
         )
 
@@ -578,9 +616,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 status=502,
             )
 
-        # Use delivery_id in session key so concurrent webhooks on the
-        # same route get independent agent runs (not queued/interrupted).
-        session_chat_id = f"webhook:{route_name}:{delivery_id}"
+        session_chat_id = self._build_session_chat_id(
+            route_name, route_config, payload, delivery_id
+        )
 
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),
@@ -621,7 +659,7 @@ class WebhookAdapter(BasePlatformAdapter):
             delivery_id,
         )
 
-        # Non-blocking — return 202 Accepted immediately
+        # Non-blocking — return 202 Accepted immediately (Linear expects 200 OK)
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -633,7 +671,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 "event": event_type,
                 "delivery_id": delivery_id,
             },
-            status=202,
+            status=200 if is_linear_webhook else 202,
         )
 
     # ------------------------------------------------------------------
@@ -689,6 +727,14 @@ class WebhookAdapter(BasePlatformAdapter):
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
             return hmac.compare_digest(generic_sig, expected)
+
+        # Linear: Linear-Signature = <hex HMAC-SHA256 over raw body>
+        linear_sig = request.headers.get("Linear-Signature", "") or request.headers.get("linear-signature", "")
+        if linear_sig:
+            expected = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(linear_sig, expected)
 
         # No recognised signature header but secret is configured → reject
         logger.debug(
@@ -790,6 +836,79 @@ class WebhookAdapter(BasePlatformAdapter):
 
         return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
 
+    def _should_ignore_by_trigger(self, route_config: dict, rendered_body: str) -> bool:
+        """Return True when a route-level trigger filter does not match."""
+        body_contains = route_config.get("body_contains")
+        if body_contains is not None:
+            needles = body_contains if isinstance(body_contains, list) else [body_contains]
+            if not any(str(needle) in rendered_body for needle in needles):
+                return True
+
+        trigger_regex = route_config.get("trigger_regex")
+        if trigger_regex:
+            try:
+                if not re.search(str(trigger_regex), rendered_body, flags=re.IGNORECASE | re.MULTILINE):
+                    return True
+            except re.error:
+                logger.warning("[webhook] Invalid trigger_regex: %s", trigger_regex)
+                return True
+        return False
+
+    def _build_session_chat_id(
+        self,
+        route_name: str,
+        route_config: dict,
+        payload: dict,
+        delivery_id: str,
+    ) -> str:
+        """Build the webhook chat id, optionally scoped by route config."""
+        template = route_config.get("session_key_template")
+        if template:
+            rendered = self._render_prompt(str(template), payload, "", route_name).strip()
+            safe_rendered = self._safe_session_key(rendered)
+            if safe_rendered:
+                return f"webhook:{route_name}:{safe_rendered}"
+
+        if route_config.get("session_scope") == "issue":
+            issue_id = self._extract_issue_id(payload)
+            if issue_id:
+                return f"webhook:{route_name}:{issue_id}"
+
+        return f"webhook:{route_name}:{delivery_id}"
+
+    def _safe_session_key(self, rendered: str, max_len: int = 160) -> str:
+        """Return a bounded, single-line session key or empty if unsafe."""
+        if not rendered or re.search(r"\{[^{}]+\}", rendered):
+            return ""
+        normalized = re.sub(r"\s+", "-", rendered.strip())
+        normalized = re.sub(r"-+", "-", normalized).strip("-")
+        if not normalized:
+            return ""
+        if len(normalized) <= max_len:
+            return normalized
+        digest = hashlib.sha256(normalized.encode()).hexdigest()[:16]
+        prefix_len = max_len - len(digest) - 1
+        return f"{normalized[:prefix_len].rstrip('-')}-{digest}"
+
+    def _extract_issue_id(self, payload: dict) -> str:
+        """Best-effort extraction of Linear issue IDs from common payload shapes."""
+        for path in (
+            ("issue", "id"),
+            ("data", "issue", "id"),
+            ("data", "issueId"),
+            ("data", "id"),
+            ("issueId",),
+        ):
+            value: Any = payload
+            for part in path:
+                if not isinstance(value, dict):
+                    value = None
+                    break
+                value = value.get(part)
+            if value:
+                return str(value)
+        return ""
+
     def _render_delivery_extra(
         self, extra: dict, payload: dict
     ) -> dict:
@@ -828,11 +947,68 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
+        if deliver_type == "linear_comment":
+            return await self._deliver_linear_comment(content, delivery)
+
         # Fall through to the cross-platform dispatcher, which validates the
         # target name and routes via the gateway runner.
         return await self._deliver_cross_platform(
             deliver_type, content, delivery
         )
+
+    async def _deliver_linear_comment(
+        self, content: str, delivery: dict
+    ) -> SendResult:
+        """Post agent response as a Linear issue comment via GraphQL."""
+        if httpx is None:
+            return SendResult(success=False, error="httpx not installed")
+        token = (os.getenv("LINEAR_ACCESS_TOKEN") or os.getenv("LINEAR_API_KEY") or "").strip()
+        if not token:
+            return SendResult(success=False, error="LINEAR_ACCESS_TOKEN or LINEAR_API_KEY is not configured")
+
+        extra = delivery.get("deliver_extra", {}) or {}
+        issue_id = extra.get("issue_id") or extra.get("issueId")
+        parent_id = extra.get("parent_id") or extra.get("parentId")
+        if not issue_id:
+            return SendResult(success=False, error="Missing Linear issue_id")
+
+        comment_input = {"issueId": str(issue_id), "body": content}
+        if parent_id:
+            comment_input["parentId"] = str(parent_id)
+
+        mutation = """
+        mutation HermesCommentCreate($input: CommentCreateInput!) {
+          commentCreate(input: $input) {
+            success
+            comment { id }
+          }
+        }
+        """
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    "https://api.linear.app/graphql",
+                    headers={
+                        "Authorization": token,
+                        "Content-Type": "application/json",
+                    },
+                    json={"query": mutation, "variables": {"input": comment_input}},
+                )
+            if resp.status_code >= 300:
+                logger.warning("[webhook] Linear commentCreate HTTP %s", resp.status_code)
+                return SendResult(success=False, error=f"Linear HTTP {resp.status_code}")
+            data = resp.json()
+            if data.get("errors"):
+                logger.warning("[webhook] Linear commentCreate GraphQL error")
+                return SendResult(success=False, error="Linear GraphQL error")
+            result = (data.get("data") or {}).get("commentCreate") or {}
+            if not result.get("success"):
+                return SendResult(success=False, error="Linear commentCreate failed")
+            comment_id = (result.get("comment") or {}).get("id")
+            return SendResult(success=True, message_id=comment_id)
+        except Exception as e:
+            logger.error("[webhook] Linear comment delivery error: %s", e)
+            return SendResult(success=False, error="Linear delivery failed")
 
     async def _deliver_github_comment(
         self, content: str, delivery: dict

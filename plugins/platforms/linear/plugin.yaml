@@ -1,0 +1,30 @@
+name: linear-platform
+label: Linear Agent Sessions
+kind: platform
+version: 0.1.0
+description: >
+  Linear AgentSession platform adapter for Hermes Agent. Receives Linear
+  AgentSessionEvent webhooks, maps each AgentSession to a Hermes DM session,
+  and sends responses back as Linear Agent Activities.
+requires_env:
+  - name: LINEAR_WEBHOOK_SECRET
+    description: "Linear webhook signing secret"
+    prompt: "Linear webhook secret"
+    password: true
+optional_env:
+  - name: LINEAR_ACCESS_TOKEN
+    description: "Linear OAuth/access token for creating Agent Activities (preferred; LINEAR_API_KEY also works)"
+    prompt: "Linear access token"
+    password: true
+  - name: LINEAR_API_KEY
+    description: "Linear API key fallback for GraphQL calls"
+    prompt: "Linear API key"
+    password: true
+  - name: LINEAR_HOST
+    description: "Host for the Linear webhook receiver (default: 0.0.0.0)"
+    prompt: "Linear webhook host"
+    password: false
+  - name: LINEAR_PORT
+    description: "Port for the Linear webhook receiver (default: 8655)"
+    prompt: "Linear webhook port"
+    password: false

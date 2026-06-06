@@ -2611,12 +2611,22 @@ class APIServerAdapter(BasePlatformAdapter):
             # Trim large content from tool call arguments to keep the
             # response.completed event under ~100KB.  Clients already
             # received full details via incremental events.
+            def _output_size(item: Dict[str, Any]) -> int:
+                out = item.get("output", "")
+                if isinstance(out, list):
+                    return sum(len(p.get("text", "")) for p in out if isinstance(p, dict))
+                if isinstance(out, str):
+                    return len(out)
+                return 0
+
             for _item in final_items:
                 if _item.get("type") == "function_call":
                     try:
                         _args = json.loads(_item.get("arguments", "{}")) if isinstance(_item.get("arguments"), str) else _item.get("arguments", {})
                         if isinstance(_args, dict):
-                            for _k in ("content", "query", "pattern", "old_string", "new_string"):
+                            for _k in ("content", "query", "pattern", "old_string", "new_string",
+                                       "code", "input", "statement", "command", "url", "file_path",
+                                       "prompt", "text", "data"):
                                 if isinstance(_args.get(_k), str) and len(_args[_k]) > 500:
                                     _args[_k] = "[" + str(len(_args[_k])) + " chars — truncated for response.completed]"
                             _item["arguments"] = json.dumps(_args)
@@ -2625,12 +2635,33 @@ class APIServerAdapter(BasePlatformAdapter):
                 elif _item.get("type") == "function_call_output":
                     _output = _item.get("output", [])
                     if isinstance(_output, list) and _output:
-                        _first = _output[0]
-                        if isinstance(_first, dict) and _first.get("type") == "input_text":
-                            _text = _first.get("text", "")
-                            if len(_text) > 1000:
-                                _first["text"] = _text[:500] + "...[" + str(len(_text) - 500) + " more chars]"
-                                _item["output"] = [_first]
+                        for _oi, _part in enumerate(_output):
+                            if isinstance(_part, dict) and _part.get("type") == "input_text":
+                                _text = _part.get("text", "")
+                                if len(_text) > 500:
+                                    _part["text"] = _text[:500] + "...[" + str(len(_text) - 500) + " more chars]"
+
+            _MAX_SERIALIZED_BYTES = 90 * 1024
+
+            _serialized = json.dumps(final_items)
+            if len(_serialized) > _MAX_SERIALIZED_BYTES:
+                fco_indices = [i for i, it in enumerate(final_items)
+                               if it.get("type") == "function_call_output"]
+                fco_indices.sort(
+                    key=lambda i: _output_size(final_items[i]), reverse=True
+                )
+                for idx in fco_indices:
+                    if len(json.dumps(final_items)) <= _MAX_SERIALIZED_BYTES:
+                        break
+                    item = final_items[idx]
+                    _item_output = item.get("output", "")
+                    if isinstance(_item_output, list):
+                        item["output"] = [
+                            {"type": "input_text",
+                             "text": "[... tool output truncated for response.completed]"}
+                        ]
+                    elif isinstance(_item_output, str):
+                        item["output"] = "[... tool output truncated for response.completed]"
 
             final_items.append({
                 "type": "message",

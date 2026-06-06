@@ -1178,7 +1178,10 @@ _cleanup_done = False
 # Session inactivity timeout (seconds) - cleanup if no activity for this long
 # Default: 5 minutes. Needs headroom for LLM reasoning between browser commands,
 # especially when subagents are doing multi-step browser tasks.
-BROWSER_SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "300"))
+try:
+    BROWSER_SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "300"))
+except (ValueError, TypeError):
+    BROWSER_SESSION_INACTIVITY_TIMEOUT = 300
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}

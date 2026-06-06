@@ -40,9 +40,17 @@ from typing import Optional
 
 from hermes_cli import kanban_db as kb
 
+
+def _safe_int_env(var: str, default: int) -> int:
+    """Read env var as int, returning *default* if missing or non-numeric."""
+    try:
+        return int(os.getenv(var, str(default)))
+    except (ValueError, TypeError):
+        return default
+
 HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(
     1500,
-    int(os.getenv("HERMES_KANBAN_SPECIFY_MAX_TOKENS", "6000")),
+    _safe_int_env("HERMES_KANBAN_SPECIFY_MAX_TOKENS", 6000),
 )
 
 logger = logging.getLogger(__name__)

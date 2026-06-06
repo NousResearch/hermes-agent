@@ -287,7 +287,7 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 /tools               Manage tools (CLI)
 /toolsets            List toolsets (CLI)
 /skills              Search/install skills (CLI)
-/skill <name>        Load a skill into session
+/<skill-name>        Load a skill into session
 /reload-skills       Re-scan ~/.hermes/skills/ for added/removed skills
 /reload              Reload .env variables into the running session (CLI)
 /reload-mcp          Reload MCP servers

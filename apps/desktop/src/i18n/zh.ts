@@ -1470,7 +1470,7 @@ export const zh: Translations = {
     },
     startingSignIn: provider => `正在为 ${provider} 启动登录...`,
     verifyingCode: provider => `正在通过 ${provider} 验证你的代码...`,
-    connectedProvider: provider => `${provider} 已连接。`,
+    connectedProvider: provider => `${provider} 已连接`,
     connectedPicking: provider => `${provider} 已连接。正在选择默认模型...`,
     signInFailed: '登录失败，请重试。',
     pickDifferentProvider: '选择其他提供方',
@@ -1494,7 +1494,7 @@ export const zh: Translations = {
     free: '免费',
     price: (input, output) => `${input} 输入 / ${output} 输出每 Mtok`,
     change: '更改',
-    startChatting: '开始对话',
+    startChatting: '开始',
     docs: provider => `${provider} 文档`
   },
 

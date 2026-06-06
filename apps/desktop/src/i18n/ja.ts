@@ -1430,7 +1430,7 @@ export const ja = defineLocale({
     },
     startingSignIn: provider => `${provider} のサインインを開始中...`,
     verifyingCode: provider => `${provider} でコードを確認中...`,
-    connectedProvider: provider => `${provider} が接続されました。`,
+    connectedProvider: provider => `${provider} が接続されました`,
     connectedPicking: provider => `${provider} が接続されました。デフォルトモデルを選択中...`,
     signInFailed: 'サインインに失敗しました。再試行してください。',
     pickDifferentProvider: '別のプロバイダーを選択',
@@ -1456,7 +1456,7 @@ export const ja = defineLocale({
     free: '無料',
     price: (input, output) => `${input} 入力 / ${output} 出力 per Mtok`,
     change: '変更',
-    startChatting: 'チャットを始める',
+    startChatting: '始める',
     docs: provider => `${provider} ドキュメント`
   },
 

@@ -19,6 +19,7 @@ from agent.skill_utils import (
     extract_skill_conditions,
     extract_skill_description,
     get_all_skills_dirs,
+    get_allowed_skills,
     get_disabled_skill_names,
     iter_skill_index_files,
     parse_frontmatter,
@@ -1255,6 +1256,38 @@ def build_skills_system_prompt(
                 category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
+
+    # ── Allowlist filter (per-profile skills.allow in config.yaml) ────
+    # When skills.allow is set in the active profile's config.yaml, restrict
+    # the prompt index to that subset of "category/name" identifiers.  This
+    # keeps the skills-prompt index small on profiles that have grown a large
+    # local skill catalog, without hiding any files from on-disk discovery.
+    allowed = get_allowed_skills()
+    if allowed is not None:
+        # Each entry in `allowed` is "category/skill-name". Nested categories
+        # like "mlops/training/peft" use the leaf as the frontmatter_name.
+        keep_pairs = set()
+        for entry in allowed:
+            entry = entry.strip()
+            if not entry or "/" not in entry:
+                continue
+            cat, _, name = entry.rpartition("/")
+            keep_pairs.add((cat, name))
+        filtered: dict[str, list[tuple[str, str]]] = {}
+        seen_entries = set()
+        for category, items in skills_by_category.items():
+            kept = [(n, d) for (n, d) in items if (category, n) in keep_pairs]
+            if kept:
+                filtered[category] = kept
+            for (n, _d) in kept:
+                seen_entries.add((category, n))
+        missing = [f"{c}/{n}" for (c, n) in keep_pairs if (c, n) not in seen_entries]
+        if missing:
+            logger.warning(
+                "skills.allow references %d skill(s) not found on disk; skipping: %s",
+                len(missing), ", ".join(sorted(missing)[:10]),
+            )
+        skills_by_category = filtered
 
     if not skills_by_category:
         result = ""

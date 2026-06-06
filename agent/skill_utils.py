@@ -664,3 +664,41 @@ def is_valid_namespace(candidate: Optional[str]) -> bool:
     if not candidate:
         return False
     return bool(_NAMESPACE_RE.match(candidate))
+
+
+def get_allowed_skills() -> Optional[Set[str]]:
+    """Return the per-profile skills allowlist from config.yaml, if set.
+
+    Reads ``skills.allow`` from config.yaml.  Each entry is a
+    ``"category/name"`` identifier matching the on-disk skill layout
+    (e.g. ``"github/github-pr-workflow"``).  When the allowlist is set,
+    only those skills will be included in the prompt skills index.
+
+    Returns:
+        ``None`` if the key is unset/missing/malformed (current behavior —
+        all skills load).  Otherwise a ``set`` of ``"category/name"``
+        strings.  An empty set is allowed and means "no skills."
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return None
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return None
+    if "allow" not in skills_cfg:
+        return None
+    raw = skills_cfg.get("allow")
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return None
+    return {str(v).strip() for v in raw if str(v).strip()}
+

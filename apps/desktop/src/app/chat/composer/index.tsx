@@ -123,6 +123,7 @@ export function ChatBar({
   onPickFolders,
   onPickImages,
   onRemoveAttachment,
+  onSteer,
   onSubmit,
   onTranscribeAudio
 }: ChatBarProps) {
@@ -169,6 +170,10 @@ export function ChatBar({
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+  // Steer only makes sense mid-turn, text-only (the gateway can't carry images
+  // into a tool result) and never for a slash command (those execute inline).
+  const canSteer =
+    busy && !!onSteer && attachments.length === 0 && draft.trim().length > 0 && !SLASH_COMMAND_RE.test(draft.trim())
   const showHelpHint = draft === '?'
 
   const { t } = useI18n()
@@ -792,6 +797,15 @@ export function ChatBar({
       return
     }
 
+    // Cmd/Ctrl+Enter steers the draft into the live run (nudge, no interrupt);
+    // plain Enter still queues while busy.
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey && canSteer) {
+      event.preventDefault()
+      steerDraft()
+
+      return
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
 
@@ -1070,6 +1084,26 @@ export function ChatBar({
     return true
   }, [activeQueueSessionKey, attachments, clearDraft, draft])
 
+  // Steer the live turn (nudge without interrupting). Clears the draft up front
+  // for snappy feedback; if the gateway rejects (no live tool window) the words
+  // are re-queued so nothing is lost — same safety net as a plain queue.
+  const steerDraft = useCallback(() => {
+    if (!onSteer || !canSteer) {
+      return
+    }
+
+    const text = draftRef.current.trim()
+
+    triggerHaptic('submit')
+    clearDraft()
+
+    void Promise.resolve(onSteer(text)).then(accepted => {
+      if (!accepted && activeQueueSessionKey) {
+        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+      }
+    })
+  }, [activeQueueSessionKey, canSteer, clearDraft, onSteer])
+
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.
   const runDrain = useCallback(
@@ -1305,6 +1339,7 @@ export function ChatBar({
     <ComposerControls
       busy={busy}
       busyAction={busyAction}
+      canSteer={canSteer}
       canSubmit={canSubmit}
       conversation={{
         active: voiceConversationActive,
@@ -1322,6 +1357,7 @@ export function ChatBar({
       disabled={disabled}
       hasComposerPayload={hasComposerPayload}
       onDictate={dictate}
+      onSteer={steerDraft}
       state={state}
       voiceStatus={voiceStatus}
     />

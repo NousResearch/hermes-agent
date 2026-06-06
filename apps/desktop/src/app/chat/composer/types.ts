@@ -47,6 +47,7 @@ export interface ChatBarProps {
   onPickFolders?: () => void
   onPickImages?: () => void
   onRemoveAttachment?: (id: string) => void
+  onSteer?: (text: string) => Promise<boolean> | boolean
   onSubmit: (
     value: string,
     options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }

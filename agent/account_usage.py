@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
+
+if TYPE_CHECKING:
+    from typing import TypeGuard
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -118,6 +124,16 @@ def _fmt_usd(d: float) -> str:
     return f"${d:,.2f}"
 
 
+def _is_finite_num(v: Any) -> TypeGuard[float]:
+    """True iff v is a real numeric value (int or float, not bool, not NaN/Inf).
+
+    Typed as a ``TypeGuard[float]`` so the type checker narrows ``v`` to a real
+    number in the positive branch — callers can then do arithmetic / pass it to
+    ``_fmt_usd`` without a None-operand warning.
+    """
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
 def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
     """Map a NousPortalAccountInfo into an AccountUsageSnapshot for /usage.
 
@@ -156,13 +172,9 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
             monthly_credits = getattr(sub, "monthly_credits", None)
             sub_remaining = getattr(sub, "credits_remaining", None)
             if (
-                isinstance(monthly_credits, (int, float))
-                and not isinstance(monthly_credits, bool)
-                and math.isfinite(monthly_credits)
+                _is_finite_num(monthly_credits)
                 and monthly_credits > 0
-                and isinstance(sub_remaining, (int, float))
-                and not isinstance(sub_remaining, bool)
-                and math.isfinite(sub_remaining)
+                and _is_finite_num(sub_remaining)
                 and sub_remaining <= monthly_credits
             ):
                 used = monthly_credits - sub_remaining
@@ -177,18 +189,18 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
 
         if access is not None:
             sub_credits = getattr(access, "subscription_credits_remaining", None)
-            if isinstance(sub_credits, (int, float)) and not isinstance(sub_credits, bool):
+            if _is_finite_num(sub_credits):
                 details.append(f"Subscription credits: {_fmt_usd(sub_credits)}")
             purchased = getattr(access, "purchased_credits_remaining", None)
-            if isinstance(purchased, (int, float)) and not isinstance(purchased, bool):
+            if _is_finite_num(purchased):
                 details.append(f"Top-up credits: {_fmt_usd(purchased)}")
             total_usable = getattr(access, "total_usable_credits", None)
-            if isinstance(total_usable, (int, float)) and not isinstance(total_usable, bool):
+            if _is_finite_num(total_usable):
                 details.append(f"Total usable: {_fmt_usd(total_usable)}")
 
         if sub is not None:
             rollover = getattr(sub, "rollover_credits", None)
-            if isinstance(rollover, (int, float)) and not isinstance(rollover, bool) and rollover > 0:
+            if _is_finite_num(rollover) and rollover > 0:
                 details.append(f"Rollover: {_fmt_usd(rollover)}")
             period_end = getattr(sub, "current_period_end", None)
             if period_end:
@@ -261,6 +273,9 @@ def nous_credits_lines(*, markdown: bool = False, timeout: float = 10.0) -> list
         snapshot = build_nous_credits_snapshot(account)
         return render_account_usage_lines(snapshot, markdown=markdown)
     except Exception:
+        # Fail-open (caller shows nothing), but leave a breadcrumb so a dead
+        # /usage credits block is diagnosable in agent.log without a dev flag.
+        logger.debug("credits ▸ /usage portal fetch/render failed (fail-open)", exc_info=True)
         return []
 
 

@@ -13989,6 +13989,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
+        ("memory", "auto_inject_recall"),
     )
 
     _HONCHO_CACHE_BUSTING_KEYS = (
@@ -14056,6 +14057,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 out[f"{section}.{key}"] = section_val.get(key)
             else:
                 out[f"{section}.{key}"] = None
+        platforms_cfg = cfg.get("platforms")
+        gateway_cfg = cfg.get("gateway")
+        gateway_platforms_cfg = (
+            gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
+        )
+        platform_keys = set()
+        if isinstance(gateway_platforms_cfg, dict):
+            platform_keys.update(str(key) for key in gateway_platforms_cfg)
+        if isinstance(platforms_cfg, dict):
+            platform_keys.update(str(key) for key in platforms_cfg)
+        for platform_key in sorted(platform_keys):
+            out[f"gateway.platforms.{platform_key}.memory.auto_inject_recall"] = cfg_get(
+                cfg,
+                "gateway",
+                "platforms",
+                platform_key,
+                "memory",
+                "auto_inject_recall",
+            )
+            out[f"platforms.{platform_key}.memory.auto_inject_recall"] = cfg_get(
+                cfg,
+                "platforms",
+                platform_key,
+                "memory",
+                "auto_inject_recall",
+            )
         try:
             from tools.registry import registry
 

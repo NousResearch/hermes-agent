@@ -340,6 +340,74 @@ class TestExtractCacheBustingConfig:
         assert sig_mem0["memory.provider"] == "mem0"
         assert sig_honcho != sig_mem0
 
+    def test_memory_auto_recall_change_busts_signature(self):
+        """Automatic recall is cached on AIAgent init, so config edits must rebuild."""
+        from gateway.run import GatewayRunner
+
+        sig_on = GatewayRunner._extract_cache_busting_config(
+            {"memory": {"auto_inject_recall": True}}
+        )
+        sig_off = GatewayRunner._extract_cache_busting_config(
+            {"memory": {"auto_inject_recall": False}}
+        )
+
+        assert sig_on["memory.auto_inject_recall"] is True
+        assert sig_off["memory.auto_inject_recall"] is False
+        assert sig_on != sig_off
+
+    def test_platform_memory_auto_recall_change_busts_signature(self):
+        """Per-platform recall overrides must evict stale gateway agents."""
+        from gateway.run import GatewayRunner
+
+        cfg_before = {
+            "memory": {"auto_inject_recall": True},
+            "gateway": {
+                "platforms": {
+                    "whatsapp": {"memory": {"auto_inject_recall": True}},
+                }
+            },
+        }
+        cfg_after = {
+            "memory": {"auto_inject_recall": True},
+            "gateway": {
+                "platforms": {
+                    "whatsapp": {"memory": {"auto_inject_recall": False}},
+                }
+            },
+        }
+
+        sig_before = GatewayRunner._extract_cache_busting_config(cfg_before)
+        sig_after = GatewayRunner._extract_cache_busting_config(cfg_after)
+
+        key = "gateway.platforms.whatsapp.memory.auto_inject_recall"
+        assert sig_before[key] is True
+        assert sig_after[key] is False
+        assert sig_before != sig_after
+
+    def test_flat_platform_memory_auto_recall_change_busts_signature(self):
+        """The flattened platforms alias must also participate in cache busting."""
+        from gateway.run import GatewayRunner
+
+        sig_before = GatewayRunner._extract_cache_busting_config(
+            {
+                "platforms": {
+                    "whatsapp": {"memory": {"auto_inject_recall": True}},
+                }
+            }
+        )
+        sig_after = GatewayRunner._extract_cache_busting_config(
+            {
+                "platforms": {
+                    "whatsapp": {"memory": {"auto_inject_recall": False}},
+                }
+            }
+        )
+
+        key = "platforms.whatsapp.memory.auto_inject_recall"
+        assert sig_before[key] is True
+        assert sig_after[key] is False
+        assert sig_before != sig_after
+
     def test_honcho_cache_busting_config_memoized_by_mtime(self, monkeypatch, tmp_path):
         """Repeated Honcho extraction for unchanged honcho.json should reuse parse result."""
         from types import SimpleNamespace

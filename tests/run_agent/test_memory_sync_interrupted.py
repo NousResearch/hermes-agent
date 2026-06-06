@@ -31,6 +31,7 @@ def _bare_agent():
 
     agent = AIAgent.__new__(AIAgent)
     agent._memory_manager = MagicMock()
+    agent._memory_auto_inject_recall = True
     # session_id is now propagated into sync_all / queue_prefetch_all so
     # providers that cache per-session state can update it mid-process
     # (see #6672).
@@ -90,6 +91,24 @@ class TestSyncExternalMemoryForTurn:
             "What's the weather in Paris?",
             session_id="test_session_001",
         )
+
+    def test_completed_turn_syncs_but_skips_prefetch_when_auto_recall_disabled(self):
+        """Customer channels can persist memory without warming auto recall."""
+        agent = _bare_agent()
+        agent._memory_auto_inject_recall = False
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="I need a refund",
+            final_response="I can help with that.",
+            interrupted=False,
+        )
+
+        agent._memory_manager.sync_all.assert_called_once_with(
+            "I need a refund",
+            "I can help with that.",
+            session_id="test_session_001",
+        )
+        agent._memory_manager.queue_prefetch_all.assert_not_called()
 
     def test_completed_turn_syncs_messages_when_present(self):
         agent = _bare_agent()

@@ -3105,9 +3105,10 @@ class AIAgent:
 
         Called at the end of ``run_conversation`` with the cleaned user
         message (``original_user_message``) and the finalised assistant
-        response.  The external memory backend gets both ``sync_all`` (to
-        persist the exchange) and ``queue_prefetch_all`` (to start
-        warming context for the next turn) in one shot.
+        response.  The external memory backend always gets ``sync_all``
+        to persist the exchange.  ``queue_prefetch_all`` only runs when
+        automatic recall injection is enabled for this agent, because it
+        warms recall for the next prompt turn.
 
         Uses ``original_user_message`` rather than ``user_message``
         because the latter may carry injected skill content that bloats
@@ -3147,10 +3148,11 @@ class AIAgent:
                 response_text,
                 **sync_kwargs,
             )
-            self._memory_manager.queue_prefetch_all(
-                user_text,
-                session_id=self.session_id or "",
-            )
+            if getattr(self, "_memory_auto_inject_recall", True):
+                self._memory_manager.queue_prefetch_all(
+                    user_text,
+                    session_id=self.session_id or "",
+                )
         except Exception:
             pass
 

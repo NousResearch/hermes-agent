@@ -866,6 +866,80 @@ class TestInit:
             )
             assert a._cache_ttl == "5m"
 
+    def test_memory_auto_recall_platform_override_keeps_memory_tools(self):
+        """Disabling automatic recall must not disable explicit memory tools."""
+        class _Provider:
+            name = "fake"
+
+            def is_available(self):
+                return True
+
+            def initialize(self, session_id, **kwargs):
+                self.init_kwargs = {"session_id": session_id, **kwargs}
+
+            def get_tool_schemas(self):
+                return [
+                    {
+                        "name": "fact_store",
+                        "description": "store facts",
+                        "parameters": {"type": "object", "properties": {}},
+                    }
+                ]
+
+        cfg = {
+            "memory": {"provider": "fake", "auto_inject_recall": True},
+            "gateway": {
+                "platforms": {
+                    "whatsapp": {
+                        "memory": {"auto_inject_recall": False},
+                    }
+                }
+            },
+        }
+        provider = _Provider()
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value=cfg),
+            patch("plugins.memory.load_memory_provider", return_value=provider),
+        ):
+            a = AIAgent(
+                **{"api" + "_key": "test-k...7890"},
+                base_url="https://openrouter.ai/api/v1",
+                platform="whatsapp",
+                enabled_toolsets=["memory"],
+                quiet_mode=True,
+                skip_context_files=True,
+            )
+
+        assert a._memory_auto_inject_recall is False
+        assert "fact_store" in a.valid_tool_names
+        assert any(t["function"]["name"] == "fact_store" for t in a.tools)
+
+    def test_memory_auto_recall_flat_platform_override_precedence(self):
+        """Flattened platform config wins if both platform config shapes exist."""
+        from agent.agent_init import _resolve_memory_auto_inject_recall
+
+        cfg = {
+            "memory": {"auto_inject_recall": True},
+            "gateway": {
+                "platforms": {
+                    "whatsapp": {
+                        "memory": {"auto_inject_recall": False},
+                    }
+                }
+            },
+            "platforms": {
+                "whatsapp": {
+                    "memory": {"auto_inject_recall": True},
+                }
+            },
+        }
+
+        assert _resolve_memory_auto_inject_recall(cfg, "whatsapp") is True
+
     def test_prompt_caching_cache_ttl_custom_1h(self):
         """prompt_caching.cache_ttl 1h is applied when present in config."""
         with (
@@ -3575,18 +3649,65 @@ class TestRunConversation:
         agent.compression_enabled = False
         agent.save_trajectories = False
 
-    def test_stop_finish_reason_returns_response(self, agent):
-        self._setup_agent(agent)
-        resp = _mock_response(content="Final answer", finish_reason="stop")
-        agent.client.chat.completions.create.return_value = resp
+    def _run_single_turn(self, agent, user_message="hello"):
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            result = agent.run_conversation("hello")
+            return agent.run_conversation(user_message)
+
+    def test_stop_finish_reason_returns_response(self, agent):
+        self._setup_agent(agent)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+        result = self._run_single_turn(agent)
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_default_memory_auto_recall_prefetches_and_appends(self, agent):
+        self._setup_agent(agent)
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.prefetch_all.return_value = "## Recall\n- user likes tea"
+        agent._memory_auto_inject_recall = True
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+
+        result = self._run_single_turn(agent, "hello")
+
+        assert result["final_response"] == "Final answer"
+        agent._memory_manager.prefetch_all.assert_called_once_with("hello")
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        sent_user = next(m for m in sent_messages if m.get("role") == "user")
+        assert "<memory-context>" in sent_user["content"]
+        assert "user likes tea" in sent_user["content"]
+
+    def test_disabled_customer_memory_auto_recall_skips_prefetch_and_append(self, agent):
+        self._setup_agent(agent)
+        agent.platform = "whatsapp"
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.prefetch_all.return_value = "## Recall\n- customer recall"
+        agent._memory_auto_inject_recall = False
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[{"context": "plugin user context"}],
+        ):
+            result = self._run_single_turn(agent, "hello")
+
+        assert result["final_response"] == "Final answer"
+        agent._memory_manager.prefetch_all.assert_not_called()
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        sent_user = next(m for m in sent_messages if m.get("role") == "user")
+        assert "<memory-context>" not in sent_user["content"]
+        assert "customer recall" not in sent_user["content"]
+        assert "plugin user context" in sent_user["content"]
 
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)

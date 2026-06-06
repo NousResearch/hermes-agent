@@ -12,6 +12,7 @@ from tools.skill_manager_tool import (
     _validate_category,
     _validate_frontmatter,
     _validate_file_path,
+    _find_skill,
     _create_skill,
     _edit_skill,
     _patch_skill,
@@ -205,6 +206,21 @@ class TestCreateSkill:
             result = _create_skill("my-skill", VALID_SKILL_CONTENT)
         assert result["success"] is False
         assert "already exists" in result["error"]
+
+    def test_find_skill_finds_one_level_category(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT, category="devops")
+            result = _find_skill("my-skill")
+
+        assert result == {"path": tmp_path / "devops" / "my-skill"}
+
+    def test_find_skill_ignores_nested_skill_copies(self, tmp_path):
+        nested = tmp_path / "category" / "agent-quality-gate" / "agent-quality-gate"
+        nested.mkdir(parents=True)
+        (nested / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+
+        with _skill_dir(tmp_path):
+            assert _find_skill("agent-quality-gate") is None
 
     def test_create_invalid_name(self, tmp_path):
         with _skill_dir(tmp_path):

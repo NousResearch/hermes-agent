@@ -275,6 +275,21 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
     return SKILLS_DIR / name
 
 
+def _iter_skill_manifests(skills_dir: Path):
+    """Yield supported skill manifests without recursing into skill contents.
+
+    Skill-managed skills live either directly under ``skills_dir/<name>/`` or
+    under one category level as ``skills_dir/<category>/<name>/``.  The manager
+    must not use an unbounded ``rglob("SKILL.md")`` here: support files may
+    themselves contain nested skill-shaped directories, and recursive scans can
+    resolve edits/deletes to ``name/name/SKILL.md`` instead of the real skill.
+    """
+    for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+        yield skill_md
+    for skill_md in sorted(skills_dir.glob("*/*/SKILL.md")):
+        yield skill_md
+
+
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     """
     Find a skill by name across all skill directories.
@@ -287,7 +302,7 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
-        for skill_md in skills_dir.rglob("SKILL.md"):
+        for skill_md in _iter_skill_manifests(skills_dir):
             if is_excluded_skill_path(skill_md):
                 continue
             if skill_md.parent.name == name:
@@ -350,7 +365,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
         if not skills_dir.is_dir():
             continue
         try:
-            for skill_md in skills_dir.rglob("SKILL.md"):
+            for skill_md in _iter_skill_manifests(skills_dir):
                 if is_excluded_skill_path(skill_md):
                     continue
                 if skill_md.parent.name == name:

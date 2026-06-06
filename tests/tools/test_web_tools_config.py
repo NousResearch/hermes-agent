@@ -787,3 +787,44 @@ class TestNonBuiltinProviderAvailability:
                 "web_search tool was filtered out despite custom provider being available"
             assert web_extract_entry is not None, \
                 "web_extract tool was filtered out despite custom provider being available"
+
+
+class TestFirecrawlEnvResolution:
+    """Verify Firecrawl reads env values from hermes_cli.config.get_env_value,
+    not just os.getenv.  This catches the regression reported in #40190 where
+    values stored in ~/.hermes/.env were invisible to the provider."""
+
+    def test_direct_config_reads_via_get_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_get_direct_firecrawl_config() must use get_env_value, not os.getenv."""
+        # Ensure os.environ does NOT carry the key
+        monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+        monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
+
+        fake_key = "fc-test-key-from-dotenv"
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: fake_key if k == "FIRECRAWL_API_KEY" else None,
+        ):
+            from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
+
+            result = _get_direct_firecrawl_config()
+            assert result is not None, "get_env_value fallback should find the key"
+            kwargs, _cache_key = result
+            assert kwargs["api_key"] == fake_key
+
+    def test_direct_config_reads_url_via_get_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Self-hosted URL from .env must be picked up."""
+        monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+        monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
+
+        fake_url = "https://firecrawl.internal.example.com"
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: fake_url if k == "FIRECRAWL_API_URL" else None,
+        ):
+            from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
+
+            result = _get_direct_firecrawl_config()
+            assert result is not None
+            kwargs, _cache_key = result
+            assert kwargs["api_url"] == fake_url.rstrip("/")

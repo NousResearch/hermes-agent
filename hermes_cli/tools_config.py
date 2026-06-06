@@ -876,10 +876,29 @@ def _run_post_setup(post_setup_key: str):
             # browser_tool module at import time.
             from tools.browser_tool import (
                 _chromium_installed,
+                _get_cdp_override,
+                _get_cloud_provider,
+                _is_camofox_mode,
                 _running_in_docker,
+                _using_lightpanda_engine,
             )
         except Exception as exc:  # pragma: no cover — defensive
             _print_warning(f"    Could not check Chromium status: {exc}")
+            return
+
+        # Only force a local Chromium install when the configured engine
+        # actually needs one. Camofox, a CDP override, a cloud provider, or
+        # Lightpanda all bypass the local Chromium requirement at runtime
+        # (tools/browser_tool.py::check_browser_requirements), so demanding
+        # an install here would nag the user for a download they never use.
+        # Mirrors the same exception set as `hermes doctor` and
+        # nous_subscription so the setup surfaces stay aligned with runtime.
+        if (
+            _is_camofox_mode()
+            or bool(_get_cdp_override())
+            or _get_cloud_provider() is not None
+            or _using_lightpanda_engine()
+        ):
             return
 
         if _chromium_installed():

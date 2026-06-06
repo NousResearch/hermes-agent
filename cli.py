@@ -8480,7 +8480,7 @@ class HermesCLI:
                     try:
                         opts["repeat"] = int(tokens[i + 1])
                     except ValueError:
-                        print("(._.) --repeat must be an integer")
+                        _cprint("(._.) --repeat must be an integer")
                         return None
                     i += 2
                 elif token == "--skill" and i + 1 < len(tokens):
@@ -8512,40 +8512,40 @@ class HermesCLI:
         tokens = shlex.split(cmd)
 
         if len(tokens) == 1:
-            print()
-            print("+" + "-" * 68 + "+")
-            print("|" + " " * 22 + "(^_^) Scheduled Tasks" + " " * 23 + "|")
-            print("+" + "-" * 68 + "+")
-            print()
-            print("  Commands:")
-            print("    /cron list")
-            print('    /cron add "every 2h" "Check server status" [--skill blogwatcher]')
-            print('    /cron edit <job_id> --schedule "every 4h" --prompt "New task"')
-            print("    /cron edit <job_id> --skill blogwatcher --skill maps")
-            print("    /cron edit <job_id> --remove-skill blogwatcher")
-            print("    /cron edit <job_id> --clear-skills")
-            print("    /cron pause <job_id>")
-            print("    /cron resume <job_id>")
-            print("    /cron run <job_id>")
-            print("    /cron remove <job_id>")
-            print()
+            _cprint()
+            _cprint("+" + "-" * 68 + "+")
+            _cprint("|" + " " * 22 + "(^_^) Scheduled Tasks" + " " * 23 + "|")
+            _cprint("+" + "-" * 68 + "+")
+            _cprint()
+            _cprint("  Commands:")
+            _cprint("    /cron list")
+            _cprint('    /cron add "every 2h" "Check server status" [--skill blogwatcher]')
+            _cprint('    /cron edit <job_id> --schedule "every 4h" --prompt "New task"')
+            _cprint("    /cron edit <job_id> --skill blogwatcher --skill maps")
+            _cprint("    /cron edit <job_id> --remove-skill blogwatcher")
+            _cprint("    /cron edit <job_id> --clear-skills")
+            _cprint("    /cron pause <job_id>")
+            _cprint("    /cron resume <job_id>")
+            _cprint("    /cron run <job_id>")
+            _cprint("    /cron remove <job_id>")
+            _cprint()
             result = _cron_api(action="list")
             jobs = result.get("jobs", []) if result.get("success") else []
             if jobs:
-                print("  Current Jobs:")
-                print("  " + "-" * 63)
+                _cprint("  Current Jobs:")
+                _cprint("  " + "-" * 63)
                 for job in jobs:
                     repeat_str = job.get("repeat", "?")
-                    print(f"    {job['job_id'][:12]:<12} | {job['schedule']:<15} | {repeat_str:<8}")
+                    _cprint(f"    {job['job_id'][:12]:<12} | {job['schedule']:<15} | {repeat_str:<8}")
                     if job.get("skills"):
-                        print(f"      Skills: {', '.join(job['skills'])}")
-                    print(f"      {job.get('prompt_preview', '')}")
+                        _cprint(f"      Skills: {', '.join(job['skills'])}")
+                    _cprint(f"      {job.get('prompt_preview', '')}")
                     if job.get("next_run_at"):
-                        print(f"      Next: {job['next_run_at']}")
-                    print()
+                        _cprint(f"      Next: {job['next_run_at']}")
+                    _cprint()
             else:
-                print("  No scheduled jobs. Use '/cron add' to create one.")
-            print()
+                _cprint("  No scheduled jobs. Use '/cron add' to create one.")
+            _cprint()
             return
 
         subcommand = tokens[1].lower()
@@ -8557,36 +8557,36 @@ class HermesCLI:
             result = _cron_api(action="list", include_disabled=opts["all"])
             jobs = result.get("jobs", []) if result.get("success") else []
             if not jobs:
-                print("(._.) No scheduled jobs.")
+                _cprint("(._.) No scheduled jobs.")
                 return
 
-            print()
-            print("Scheduled Jobs:")
-            print("-" * 80)
+            _cprint()
+            _cprint("Scheduled Jobs:")
+            _cprint("-" * 80)
             for job in jobs:
-                print(f"  ID: {job['job_id']}")
-                print(f"  Name: {job['name']}")
-                print(f"  State: {job.get('state', '?')}")
-                print(f"  Schedule: {job['schedule']} ({job.get('repeat', '?')})")
-                print(f"  Next run: {job.get('next_run_at', 'N/A')}")
+                _cprint(f"  ID: {job['job_id']}")
+                _cprint(f"  Name: {job['name']}")
+                _cprint(f"  State: {job.get('state', '?')}")
+                _cprint(f"  Schedule: {job['schedule']} ({job.get('repeat', '?')})")
+                _cprint(f"  Next run: {job.get('next_run_at', 'N/A')}")
                 if job.get("skills"):
-                    print(f"  Skills: {', '.join(job['skills'])}")
-                print(f"  Prompt: {job.get('prompt_preview', '')}")
+                    _cprint(f"  Skills: {', '.join(job['skills'])}")
+                _cprint(f"  Prompt: {job.get('prompt_preview', '')}")
                 if job.get("last_run_at"):
-                    print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
-                print()
+                    _cprint(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
+                _cprint()
             return
 
         if subcommand in {"add", "create"}:
             positionals = opts["positionals"]
             if not positionals:
-                print("(._.) Usage: /cron add <schedule> <prompt>")
+                _cprint("(._.) Usage: /cron add <schedule> <prompt>")
                 return
             schedule = opts["schedule"] or positionals[0]
             prompt = opts["prompt"] or " ".join(positionals[1:])
             skills = _normalize_skills(opts["skills"])
             if not prompt and not skills:
-                print("(._.) Please provide a prompt or at least one skill")
+                _cprint("(._.) Please provide a prompt or at least one skill")
                 return
             result = _cron_api(
                 action="create",
@@ -8598,24 +8598,24 @@ class HermesCLI:
                 skills=skills or None,
             )
             if result.get("success"):
-                print(f"(^_^)b Created job: {result['job_id']}")
-                print(f"  Schedule: {result['schedule']}")
+                _cprint(f"(^_^)b Created job: {result['job_id']}")
+                _cprint(f"  Schedule: {result['schedule']}")
                 if result.get("skills"):
-                    print(f"  Skills: {', '.join(result['skills'])}")
-                print(f"  Next run: {result['next_run_at']}")
+                    _cprint(f"  Skills: {', '.join(result['skills'])}")
+                _cprint(f"  Next run: {result['next_run_at']}")
             else:
-                print(f"(x_x) Failed to create job: {result.get('error')}")
+                _cprint(f"(x_x) Failed to create job: {result.get('error')}")
             return
 
         if subcommand == "edit":
             positionals = opts["positionals"]
             if not positionals:
-                print("(._.) Usage: /cron edit <job_id> [--schedule ...] [--prompt ...] [--skill ...]")
+                _cprint("(._.) Usage: /cron edit <job_id> [--schedule ...] [--prompt ...] [--skill ...]")
                 return
             job_id = positionals[0]
             existing = get_job(job_id)
             if not existing:
-                print(f"(._.) Job not found: {job_id}")
+                _cprint(f"(._.) Job not found: {job_id}")
                 return
 
             final_skills = None
@@ -8645,42 +8645,42 @@ class HermesCLI:
             )
             if result.get("success"):
                 job = result["job"]
-                print(f"(^_^)b Updated job: {job['job_id']}")
-                print(f"  Schedule: {job['schedule']}")
+                _cprint(f"(^_^)b Updated job: {job['job_id']}")
+                _cprint(f"  Schedule: {job['schedule']}")
                 if job.get("skills"):
-                    print(f"  Skills: {', '.join(job['skills'])}")
+                    _cprint(f"  Skills: {', '.join(job['skills'])}")
                 else:
-                    print("  Skills: none")
+                    _cprint("  Skills: none")
             else:
-                print(f"(x_x) Failed to update job: {result.get('error')}")
+                _cprint(f"(x_x) Failed to update job: {result.get('error')}")
             return
 
         if subcommand in {"pause", "resume", "run", "remove", "rm", "delete"}:
             positionals = opts["positionals"]
             if not positionals:
-                print(f"(._.) Usage: /cron {subcommand} <job_id>")
+                _cprint(f"(._.) Usage: /cron {subcommand} <job_id>")
                 return
             job_id = positionals[0]
             action = "remove" if subcommand in {"remove", "rm", "delete"} else subcommand
             result = _cron_api(action=action, job_id=job_id, reason="paused from /cron" if action == "pause" else None)
             if not result.get("success"):
-                print(f"(x_x) Failed to {action} job: {result.get('error')}")
+                _cprint(f"(x_x) Failed to {action} job: {result.get('error')}")
                 return
             if action == "pause":
-                print(f"(^_^)b Paused job: {result['job']['name']} ({job_id})")
+                _cprint(f"(^_^)b Paused job: {result['job']['name']} ({job_id})")
             elif action == "resume":
-                print(f"(^_^)b Resumed job: {result['job']['name']} ({job_id})")
-                print(f"  Next run: {result['job'].get('next_run_at')}")
+                _cprint(f"(^_^)b Resumed job: {result['job']['name']} ({job_id})")
+                _cprint(f"  Next run: {result['job'].get('next_run_at')}")
             elif action == "run":
-                print(f"(^_^)b Triggered job: {result['job']['name']} ({job_id})")
-                print("  It will run on the next scheduler tick.")
+                _cprint(f"(^_^)b Triggered job: {result['job']['name']} ({job_id})")
+                _cprint("  It will run on the next scheduler tick.")
             else:
                 removed = result.get("removed_job", {})
-                print(f"(^_^)b Removed job: {removed.get('name', job_id)} ({job_id})")
+                _cprint(f"(^_^)b Removed job: {removed.get('name', job_id)} ({job_id})")
             return
 
-        print(f"(._.) Unknown cron command: {subcommand}")
-        print("  Available: list, add, edit, pause, resume, run, remove")
+        _cprint(f"(._.) Unknown cron command: {subcommand}")
+        _cprint("  Available: list, add, edit, pause, resume, run, remove")
 
     def _handle_curator_command(self, cmd: str):
         """Handle /curator slash command.
@@ -8702,7 +8702,7 @@ class HermesCLI:
             # don't kill the interactive session.
             pass
         except Exception as exc:
-            print(f"(._.) curator: {exc}")
+            _cprint(f"(._.) curator: {exc}")
 
     def _handle_kanban_command(self, cmd: str):
         """Handle the /kanban command — delegate to the shared kanban CLI.

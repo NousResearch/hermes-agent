@@ -4287,3 +4287,299 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Mac-persona dispatch preclaim (t_5650d3b6 / t_cea89616)
+# ---------------------------------------------------------------------------
+
+class TestMacPersonaDispatch:
+    """Builder/reviewer/scout/designer must never claim with conductor:*."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, kanban_home, monkeypatch):
+        from hermes_cli import profiles
+        monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+        monkeypatch.setenv("HERMES_MAC_SYNTHETIC", "1")
+
+    def _claimed_events(self, conn, task_id):
+        rows = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'claimed' "
+            "ORDER BY created_at ASC",
+            (task_id,),
+        ).fetchall()
+        import json as _json
+        return [_json.loads(r["payload"]) for r in rows if r["payload"]]
+
+    def _spawned_events(self, conn, task_id):
+        rows = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'spawned' "
+            "ORDER BY created_at ASC",
+            (task_id,),
+        ).fetchall()
+        import json as _json
+        return [_json.loads(r["payload"]) for r in rows if r["payload"]]
+
+    @pytest.mark.parametrize("persona", sorted(kb.MAC_PERSONAS))
+    def test_claimed_event_lock_starts_with_mac(self, persona):
+        """claimed event lock must be mac:<session>, never conductor:*."""
+        spawns = []
+
+        def fake_spawn(task, workspace):
+            spawns.append(task.id)
+            return None
+
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title=f"mac-test-{persona}", assignee=persona)
+            kb.dispatch_once(conn, spawn_fn=fake_spawn)
+            events = self._claimed_events(conn, tid)
+
+        assert spawns == [tid], "task was not spawned"
+        assert events, "no claimed event recorded"
+        lock = events[0].get("lock", "")
+        assert lock.startswith("mac:"), (
+            f"claimed event lock={lock!r} for persona={persona!r}; "
+            "expected mac:<session>, not conductor:*"
+        )
+        assert not lock.startswith("conductor:"), (
+            f"claimed event still has conductor:* lock for persona={persona!r}"
+        )
+
+    @pytest.mark.parametrize("persona", sorted(kb.MAC_PERSONAS))
+    def test_task_claim_lock_starts_with_mac(self, persona):
+        """tasks.claim_lock must be mac:<session> for Mac personas."""
+        def fake_spawn(task, workspace):
+            return None
+
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title=f"lock-{persona}", assignee=persona)
+            kb.dispatch_once(conn, spawn_fn=fake_spawn)
+            task = kb.get_task(conn, tid)
+
+        assert task is not None
+        lock = task.claim_lock or ""
+        assert lock.startswith("mac:"), (
+            f"tasks.claim_lock={lock!r} for persona={persona!r}; expected mac:<session>"
+        )
+
+    @pytest.mark.parametrize("persona", sorted(kb.MAC_PERSONAS))
+    def test_task_runs_metadata_host_local_false(self, persona):
+        """task_runs.metadata must have host_local=False for Mac personas."""
+        import json as _json
+
+        def fake_spawn(task, workspace):
+            return None
+
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title=f"meta-{persona}", assignee=persona)
+            kb.dispatch_once(conn, spawn_fn=fake_spawn)
+            run = conn.execute(
+                "SELECT metadata FROM task_runs WHERE task_id = ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+
+        assert run is not None, "no task_run row created"
+        meta = _json.loads(run["metadata"]) if run["metadata"] else {}
+        assert meta.get("host_local") is False, (
+            f"task_runs.metadata host_local={meta.get('host_local')!r} "
+            f"for persona={persona!r}; expected False"
+        )
+        assert "mac_session" in meta, (
+            f"task_runs.metadata missing mac_session for persona={persona!r}"
+        )
+
+    @pytest.mark.parametrize("persona", sorted(kb.MAC_PERSONAS))
+    def test_spawned_event_has_mac_session_and_host_local_false(self, persona):
+        """spawned event must carry mac_session and host_local=False."""
+        def fake_spawn(task, workspace):
+            return None
+
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title=f"spawn-ev-{persona}", assignee=persona)
+            kb.dispatch_once(conn, spawn_fn=fake_spawn)
+            events = self._spawned_events(conn, tid)
+
+        assert events, f"no spawned event for persona={persona!r}"
+        ev = events[0]
+        assert ev.get("host_local") is False, (
+            f"spawned event host_local={ev.get('host_local')!r} for persona={persona!r}"
+        )
+        assert "mac_session" in ev, (
+            f"spawned event missing mac_session for persona={persona!r}"
+        )
+
+    @pytest.mark.parametrize("persona", sorted(kb.MAC_PERSONAS))
+    def test_mac_session_name_shape(self, persona):
+        """Session name must be <profile>-<task_id_without_t_>."""
+        task_id = "t_aec2624f"
+        name = kb._mac_session_name(persona, task_id)
+        assert name == f"{persona}-aec2624f", (
+            f"unexpected session name {name!r} for persona={persona!r}"
+        )
+
+    def test_non_mac_persona_retains_conductor_style_lock(self):
+        """Non-Mac personas (e.g. 'alice') keep the existing host:pid claim."""
+        captured = {}
+
+        def fake_spawn(task, workspace):
+            captured["task"] = task
+            return None
+
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="non-mac", assignee="alice")
+            kb.dispatch_once(conn, spawn_fn=fake_spawn)
+            task = kb.get_task(conn, tid)
+
+        assert task is not None
+        lock = task.claim_lock or ""
+        assert not lock.startswith("mac:"), (
+            f"non-Mac persona 'alice' got mac: claim_lock={lock!r}"
+        )
+
+    def test_mac_synthetic_dispatch_does_not_raise(self):
+        """HERMES_MAC_SYNTHETIC=1 must allow dispatch without SSH."""
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="synthetic", assignee="builder")
+            # No spawn_fn — real Mac path, but HERMES_MAC_SYNTHETIC suppresses SSH.
+            kb.dispatch_once(conn)
+            task = kb.get_task(conn, tid)
+
+        assert task is not None
+        lock = task.claim_lock or ""
+        assert lock.startswith("mac:"), (
+            f"synthetic dispatch claim_lock={lock!r}; expected mac:<session>"
+        )
+
+    def test_detect_crashed_workers_skips_mac_sessions(self):
+        """Mac sessions must not trigger crash detection (no local PID)."""
+        def fake_spawn(task, workspace):
+            return None
+
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="mac-crash-skip", assignee="builder")
+            kb.dispatch_once(conn, spawn_fn=fake_spawn)
+            # Force worker_pid to a dead PID to prove mac sessions are skipped.
+            conn.execute("UPDATE tasks SET worker_pid = 99999 WHERE id = ?", (tid,))
+            conn.commit()
+            crashed = kb.detect_crashed_workers(conn)
+
+        assert tid not in crashed, (
+            f"Mac session task {tid} appeared in crashed list — "
+            "mac: locks must be skipped"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Mac repo inference (t_cea89616)
+# ---------------------------------------------------------------------------
+
+class TestMacRepoInference:
+    """_infer_mac_repo_path must resolve the right project directory."""
+
+    def _make_task(self, title: str) -> "kb.Task":
+        return kb.Task(
+            id="t_test0001", title=title, body=None, assignee=None,
+            status="ready", priority=0, created_by=None, created_at=0,
+            started_at=None, completed_at=None, workspace_kind="scratch",
+            workspace_path=None, claim_lock=None, claim_expires=None,
+            tenant=None,
+        )
+
+    def test_ccat_guru_beats_ccat(self):
+        """ccat-guru workspace must not resolve to bare ccat."""
+        task = self._make_task("CCAT Guru growth")
+        result = kb._infer_mac_repo_path(task, "/workspaces/ccat-guru/root")
+        assert result == "ccat-guru", f"got {result!r}"
+
+    def test_life_engine_regression_t_2ad4b03f(self):
+        """t_2ad4b03f Life Engine must resolve to life-engine, not ccat."""
+        task = self._make_task("Life Engine feature")
+        result = kb._infer_mac_repo_path(task, "/workspaces/life-engine/root")
+        assert result == "life-engine", f"got {result!r}"
+
+    def test_ccat_guru_via_title(self):
+        """ccat-guru in task title resolves to ccat-guru even with plain workspace."""
+        task = self._make_task("ccat-guru retention flow")
+        result = kb._infer_mac_repo_path(task, "/workspaces/scratch/t_d80003fa")
+        assert result == "ccat-guru", f"got {result!r}"
+
+    def test_life_engine_via_title(self):
+        """life-engine in task title resolves to life-engine."""
+        task = self._make_task("Life Engine 3D scene")
+        result = kb._infer_mac_repo_path(task, "/workspaces/scratch/t_2ad4b03f")
+        assert result == "life-engine", f"got {result!r}"
+
+    def test_herald_workspace(self):
+        task = self._make_task("Add morning brief section")
+        result = kb._infer_mac_repo_path(task, "/workspaces/herald/root")
+        assert result == "herald", f"got {result!r}"
+
+    def test_hermes_infra_resolves_to_hermes_agent(self):
+        task = self._make_task("Fix Mac dispatch bug")
+        result = kb._infer_mac_repo_path(task, "/workspaces/hermes-agent/t_1fc56fef")
+        assert result == "hermes-agent", f"got {result!r}"
+
+    def test_scout_unknown_workspace_falls_back_to_hermes_agent(self):
+        """Unrecognised workspace must default to hermes-agent, not ccat."""
+        task = self._make_task("adoption proposal research")
+        result = kb._infer_mac_repo_path(task, "/workspaces/scratch/t_81b19b74")
+        assert result == "hermes-agent", (
+            f"scout/unknown fallback got {result!r}; must be hermes-agent not ccat"
+        )
+
+    def test_bare_ccat_workspace_still_resolves(self):
+        task = self._make_task("ccat task")
+        result = kb._infer_mac_repo_path(task, "/workspaces/ccat/root")
+        assert result == "ccat", f"got {result!r}"
+
+    def test_ccat_guru_workspace_does_not_match_ccat_pattern(self):
+        """Ensure ccat-guru workspace is NOT captured by the bare 'ccat' pattern."""
+        task = self._make_task("anything")
+        result = kb._infer_mac_repo_path(task, "/workspaces/ccat-guru/root")
+        assert result == "ccat-guru", (
+            f"ccat-guru workspace incorrectly matched ccat pattern: got {result!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Mac spawn preflight: bridge missing / synthetic
+# ---------------------------------------------------------------------------
+
+class TestMacSpawnSynthetic:
+    """HERMES_MAC_SYNTHETIC=1 suppresses SSH; dispatch must complete cleanly."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, kanban_home, monkeypatch):
+        from hermes_cli import profiles
+        monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+        monkeypatch.setenv("HERMES_MAC_SYNTHETIC", "1")
+
+    def test_builder_dispatches_without_bridge(self):
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="builder task", assignee="builder")
+            result = kb.dispatch_once(conn)
+        spawned_ids = [s[0] for s in result.spawned]
+        assert tid in spawned_ids
+
+    def test_scout_dispatches_without_bridge(self):
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="scout task", assignee="scout")
+            result = kb.dispatch_once(conn)
+        spawned_ids = [s[0] for s in result.spawned]
+        assert tid in spawned_ids
+
+    def test_spawn_mac_session_synthetic_noop(self):
+        """_spawn_mac_session returns None immediately when synthetic flag set."""
+        task = kb.Task(
+            id="t_synthetic", title="test", body=None, assignee="builder",
+            status="ready", priority=0, created_by=None, created_at=0,
+            started_at=None, completed_at=None, workspace_kind="scratch",
+            workspace_path=None, claim_lock=None, claim_expires=None,
+            tenant=None,
+        )
+        # Should not raise even though bridge script doesn't exist.
+        result = kb._spawn_mac_session(task, "/tmp/workspace")
+        assert result is None

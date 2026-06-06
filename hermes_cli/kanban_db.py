@@ -4794,6 +4794,11 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Persona names that run on the Mac (via SSH bridge) rather than locally.
+# These claims use ``mac:<session>`` as the lock so the conductor never
+# appears as the claimer in audit logs.
+MAC_PERSONAS = frozenset({"builder", "reviewer", "scout", "designer"})
+
 
 @dataclass
 class DispatchResult:
@@ -5419,6 +5424,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             # Only check liveness for claims owned by this host.
             lock = row["claim_lock"] or ""
             if not lock.startswith(host_prefix):
+                continue
+            # Mac sessions have no local PID — skip liveness check.
+            if lock.startswith("mac:"):
                 continue
             # Skip liveness check inside the launch-window grace period
             # so a freshly-spawned worker isn't reclaimed before its PID
@@ -6214,7 +6222,19 @@ def dispatch_once(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        # Mac-persona preclaim: set lock to mac:<session> BEFORE the claim
+        # write so no transient conductor:* lock ever appears in audit logs.
+        _is_mac = bool(row_assignee) and row_assignee.lower() in MAC_PERSONAS
+        if _is_mac:
+            _mac_sess = _mac_session_name(row_assignee, row["id"])
+            claimed = claim_task(
+                conn, row["id"],
+                claimer=f"mac:{_mac_sess}",
+                ttl_seconds=ttl_seconds,
+            )
+        else:
+            _mac_sess = None
+            claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
         try:
@@ -6230,22 +6250,34 @@ def dispatch_once(
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
-            # Back-compat: older spawn_fn signatures accept only
-            # (task, workspace). Test stubs in the suite rely on that.
-            # Introspect the callable and pass `board` only when supported.
-            import inspect
-            try:
-                sig = inspect.signature(_spawn)
-                if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
+            if _is_mac and spawn_fn is None:
+                # Real Mac-bridge path: SSH to the Mac, no local pid.
+                _spawn_mac_session(
+                    claimed, str(workspace),
+                    session_name=_mac_sess,
+                    board=board,
+                )
+                _set_mac_worker_info(conn, claimed.id, session_name=_mac_sess)
+            else:
+                # Local or test-stub path.
+                _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+                # Back-compat: older spawn_fn signatures accept only
+                # (task, workspace). Test stubs in the suite rely on that.
+                import inspect
+                try:
+                    sig = inspect.signature(_spawn)
+                    if "board" in sig.parameters:
+                        pid = _spawn(claimed, str(workspace), board=board)
+                    else:
+                        pid = _spawn(claimed, str(workspace))
+                except (TypeError, ValueError):
                     pid = _spawn(claimed, str(workspace))
-            except (TypeError, ValueError):
-                pid = _spawn(claimed, str(workspace))
-            if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                if pid:
+                    _set_worker_pid(conn, claimed.id, int(pid))
+                if _is_mac and _mac_sess:
+                    # spawn_fn test-stub path: persist mac routing metadata.
+                    _set_mac_worker_info(conn, claimed.id, session_name=_mac_sess)
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
             # doesn't prove the run will succeed. Under unified
@@ -6300,7 +6332,19 @@ def dispatch_once(
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
-        claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        # Mac-persona preclaim: same invariant as ready dispatch.
+        _rev_assignee = row["assignee"]
+        _rev_is_mac = bool(_rev_assignee) and _rev_assignee.lower() in MAC_PERSONAS
+        if _rev_is_mac:
+            _rev_mac_sess = _mac_session_name(_rev_assignee, row["id"])
+            claimed = claim_review_task(
+                conn, row["id"],
+                claimer=f"mac:{_rev_mac_sess}",
+                ttl_seconds=ttl_seconds,
+            )
+        else:
+            _rev_mac_sess = None
+            claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
         try:
@@ -6322,19 +6366,29 @@ def dispatch_once(
         # means the review agent gets both kanban-worker (lifecycle)
         # and sdlc-review (review logic: AC verification, merge, etc.).
         claimed.skills = ["sdlc-review"]
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
-            import inspect
-            try:
-                sig = inspect.signature(_spawn)
-                if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
+            if _rev_is_mac and spawn_fn is None:
+                _spawn_mac_session(
+                    claimed, str(workspace),
+                    session_name=_rev_mac_sess,
+                    board=board,
+                )
+                _set_mac_worker_info(conn, claimed.id, session_name=_rev_mac_sess)
+            else:
+                _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+                import inspect
+                try:
+                    sig = inspect.signature(_spawn)
+                    if "board" in sig.parameters:
+                        pid = _spawn(claimed, str(workspace), board=board)
+                    else:
+                        pid = _spawn(claimed, str(workspace))
+                except (TypeError, ValueError):
                     pid = _spawn(claimed, str(workspace))
-            except (TypeError, ValueError):
-                pid = _spawn(claimed, str(workspace))
-            if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                if pid:
+                    _set_worker_pid(conn, claimed.id, int(pid))
+                if _rev_is_mac and _rev_mac_sess:
+                    _set_mac_worker_info(conn, claimed.id, session_name=_rev_mac_sess)
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
@@ -6610,6 +6664,296 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+# ---------------------------------------------------------------------------
+# Mac bridge dispatch helpers
+# ---------------------------------------------------------------------------
+
+def _mac_session_name(profile: str, task_id: str) -> str:
+    """Return the deterministic tmux session name for a Mac-bridge dispatch.
+
+    Shape: ``<profile>-<task_id_without_t_prefix>``
+    e.g. ``builder-aec2624f`` for task ``t_aec2624f``.
+    """
+    short = task_id[2:] if task_id.startswith("t_") else task_id
+    return f"{profile}-{short}"
+
+
+def _set_mac_worker_info(
+    conn: "sqlite3.Connection",
+    task_id: str,
+    *,
+    session_name: str,
+) -> None:
+    """Record Mac-bridge dispatch metadata and emit a ``spawned`` event.
+
+    Analogous to :func:`_set_worker_pid` for remote Mac-persona tasks.
+    There is no local PID, so ``worker_pid`` is left NULL. Updates
+    ``task_runs.metadata`` with ``host_local=False`` and
+    ``mac_session=<session_name>`` so the audit script can verify routing.
+    """
+    payload: dict[str, Any] = {"mac_session": session_name, "host_local": False}
+    with write_txn(conn):
+        run_id = _current_run_id(conn, task_id)
+        if run_id is not None:
+            conn.execute(
+                "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False), run_id),
+            )
+        _append_event(conn, task_id, "spawned", payload, run_id=run_id)
+
+
+# Ordered mapping from substring → Mac project dir name.
+# Longer/more specific entries MUST appear before shorter ones that are
+# substrings of them (e.g. "ccat-guru" before "ccat").
+_MAC_REPO_INFERENCE_ORDER: list[tuple[str, str]] = [
+    ("ccat-guru", "ccat-guru"),
+    ("life-engine", "life-engine"),
+    ("life_engine", "life-engine"),
+    ("life engine", "life-engine"),  # title-case variant
+    ("herald", "herald"),
+    ("hermes-agent", "hermes-agent"),
+    ("hermes_agent", "hermes-agent"),
+    ("tinytell", "tinytell"),
+    ("resume-engine", "resume-engine"),
+    ("ccat", "ccat"),         # after ccat-guru so ccat-guru wins
+]
+
+# Safe fallback when nothing else matches — hermes-agent always exists on the
+# Mac claude-worker and is appropriate for infra/research work.
+_MAC_REPO_DEFAULT = "hermes-agent"
+
+
+def _infer_mac_repo_path(task: Task, workspace: str) -> str:
+    """Return the Mac ~/projects/<repo> directory name for this task.
+
+    Checks workspace path and task title in order using
+    :data:`_MAC_REPO_INFERENCE_ORDER`.  Falls back to ``hermes-agent`` —
+    that repo always exists and is appropriate for infra/research tasks.
+
+    >>> from hermes_cli.kanban_db import _infer_mac_repo_path, Task
+    """
+    candidates = [workspace.lower(), (task.title or "").lower()]
+    for text in candidates:
+        for pattern, repo in _MAC_REPO_INFERENCE_ORDER:
+            if pattern in text:
+                return repo
+    return _MAC_REPO_DEFAULT
+
+
+def _spawn_mac_session(
+    task: Task,
+    workspace: str,
+    *,
+    session_name: Optional[str] = None,
+    board: Optional[str] = None,
+) -> None:
+    """Route Mac-persona tasks through the Mac bridge script.
+
+    ``session_name`` must be pre-computed by the caller (dispatch_once)
+    using :func:`_mac_session_name` so the claim lock is set before this
+    is called.  If omitted, falls back to computing it internally.
+
+    When ``HERMES_MAC_SYNTHETIC=1`` the bridge call is skipped so tests
+    and synthetic dispatches can exercise the preclaim path without SSH.
+
+    Workflow:
+    1. Health check — fail fast if SSH tunnel is down
+    2. Kill duplicate session if it already exists
+    3. Infer repo path (never defaults to ``ccat`` — uses ordered mapping)
+    4. Create Mac tmux session
+    5. Wait for Claude to start (``idle`` status) before sending the prompt
+    6. Send ``work kanban task <id>`` prompt
+    7. Verify packet landing (status transitions away from ``unknown``)
+
+    Steps 5 and 6 are the key fix: sending the prompt before Claude starts
+    types it into a plain zsh shell rather than Claude Code.
+
+    Errors are raised as exceptions so dispatch_once can track failures
+    and auto-block after failure_limit.
+    """
+    import subprocess
+
+    if not task.assignee:
+        raise ValueError(f"task {task.id} has no assignee")
+
+    if os.environ.get("HERMES_MAC_SYNTHETIC"):
+        return None
+
+    bridge_script = os.environ.get(
+        "HERMES_MAC_BRIDGE_SCRIPT",
+        "/home/ubuntu/.hermes/kanban/workspaces/t_e6ac6e18/mac-claude-bridge.sh",
+    )
+
+    if not os.path.exists(bridge_script):
+        raise RuntimeError(
+            f"Mac bridge script not found at {bridge_script}. "
+            "Set HERMES_MAC_BRIDGE_SCRIPT env var or check installation."
+        )
+
+    # 1. Health check
+    try:
+        health_result = subprocess.run(
+            [bridge_script, "health"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        if health_result.returncode != 0 or "disconnected" in health_result.stdout:
+            raise RuntimeError(
+                f"Mac bridge health check failed: {health_result.stdout.strip()}"
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Mac bridge health check timed out (15s)") from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"Mac bridge health check failed: {exc}") from exc
+
+    if session_name is None:
+        session_name = _mac_session_name(task.assignee, task.id)
+
+    # 2. Kill duplicate session if exists
+    try:
+        list_result = subprocess.run(
+            [bridge_script, "list"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if session_name in list_result.stdout:
+            subprocess.run(
+                [bridge_script, "kill", session_name],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            time.sleep(2)
+    except Exception:
+        pass
+
+    # 3. Infer repo path — never defaults to bare "ccat"
+    repo_path = _infer_mac_repo_path(task, workspace)
+
+    # 4. Create Mac tmux session in the correct repo directory
+    try:
+        subprocess.run(
+            [bridge_script, "create", session_name, repo_path],
+            capture_output=True, text=True, timeout=45, check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        try:
+            subprocess.run(
+                [bridge_script, "kill", session_name],
+                capture_output=True, timeout=10, check=False,
+            )
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Failed to create Mac session {session_name} "
+            f"(repo={repo_path}): {exc.stderr or exc.stdout}"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Mac session creation timed out for {session_name}"
+        ) from exc
+
+    # 5. Wait for Claude to launch (status == "idle") BEFORE sending the
+    # work prompt.  The bridge's 'create' command starts Claude
+    # asynchronously; sending too early types the prompt into zsh instead.
+    _claude_launch_timeout = 60
+    _claude_poll_interval = 3
+    _claude_max_attempts = _claude_launch_timeout // _claude_poll_interval
+    claude_ready = False
+    for _attempt in range(_claude_max_attempts):
+        try:
+            status_result = subprocess.run(
+                [bridge_script, "status", session_name],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            status_data = json.loads(status_result.stdout)
+            sv = status_data.get("status", "unknown")
+            if sv == "idle":
+                claude_ready = True
+                break
+            if sv == "not_found":
+                raise RuntimeError(
+                    f"Session {session_name} disappeared after creation "
+                    f"(repo={repo_path})"
+                )
+        except json.JSONDecodeError:
+            pass
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
+        if _attempt < _claude_max_attempts - 1:
+            time.sleep(_claude_poll_interval)
+
+    if not claude_ready:
+        try:
+            subprocess.run(
+                [bridge_script, "kill", session_name],
+                capture_output=True, timeout=10, check=False,
+            )
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Claude did not start in {session_name} within "
+            f"{_claude_launch_timeout}s (repo={repo_path}); prompt not sent"
+        )
+
+    # 6. Send work packet — Claude is confirmed running
+    prompt = f"work kanban task {task.id}"
+    try:
+        subprocess.run(
+            [bridge_script, "send", session_name, prompt],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        try:
+            subprocess.run(
+                [bridge_script, "kill", session_name],
+                capture_output=True, timeout=10, check=False,
+            )
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Failed to send work packet to {session_name}: {exc.stderr}"
+        ) from exc
+
+    # 7. Verify packet landing — Claude acknowledged the prompt
+    for _attempt in range(15):
+        try:
+            status_result = subprocess.run(
+                [bridge_script, "status", session_name],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            status_data = json.loads(status_result.stdout)
+            sv = status_data.get("status", "unknown")
+            if sv in ("idle", "working", "thinking"):
+                return None
+            if sv == "not_found":
+                raise RuntimeError(
+                    f"Session {session_name} not found after send"
+                )
+        except json.JSONDecodeError:
+            pass
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            if _attempt == 14:
+                raise RuntimeError(
+                    f"Packet landing verification failed for {session_name}: {exc}"
+                ) from exc
+        if _attempt < 14:
+            time.sleep(2)
+
+    try:
+        subprocess.run(
+            [bridge_script, "kill", session_name],
+            capture_output=True, timeout=10, check=False,
+        )
+    except Exception:
+        pass
+    raise RuntimeError(
+        f"Packet landing timed out for {session_name} (30s)"
+    )
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -6631,6 +6975,13 @@ def _default_spawn(
     import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
+
+    # Safety net: if a Mac persona somehow reaches _default_spawn without
+    # going through the dispatch_once preclaim path, route it correctly.
+    if task.assignee.lower() in MAC_PERSONAS:
+        sess = _mac_session_name(task.assignee, task.id)
+        _spawn_mac_session(task, workspace, session_name=sess, board=board)
+        return None
 
     from hermes_cli.profiles import normalize_profile_name
 

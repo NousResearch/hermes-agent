@@ -383,6 +383,8 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
 let pollerStarted = false
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let lastFocusAt = 0
+let connectionUnsub: (() => void) | null = null
+let lastConnectionMode: string | undefined
 
 /** Wire up background polling + progress streaming. Idempotent. */
 export function startUpdatePoller(): void {
@@ -402,6 +404,19 @@ export function startUpdatePoller(): void {
   void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
 
+  // The poller starts at mount, before the gateway connects — so the first
+  // backend check above sees mode≠remote and no-ops. Re-check once the
+  // connection resolves to remote.
+  connectionUnsub = $connection.subscribe(conn => {
+    if (conn?.mode === lastConnectionMode) {
+      return
+    }
+    lastConnectionMode = conn?.mode
+    if (conn?.mode === 'remote') {
+      void checkBackendUpdates()
+    }
+  })
+
   window.addEventListener('focus', onFocus)
   backgroundTimer = setInterval(() => {
     void checkUpdates()
@@ -415,6 +430,9 @@ export function stopUpdatePoller(): void {
     backgroundTimer = null
   }
 
+  connectionUnsub?.()
+  connectionUnsub = null
+  lastConnectionMode = undefined
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
 }

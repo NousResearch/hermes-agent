@@ -21,10 +21,11 @@ import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } f
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { $approvalRequest } from '@/store/prompts'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
-import { PendingToolApproval } from './tool-approval'
+import { APPROVAL_TOOLS, PendingToolApproval } from './tool-approval'
 import {
   groupCopyText as buildGroupCopyText,
   buildToolView,
@@ -389,7 +390,7 @@ function ToolEntry({ part }: ToolEntryProps) {
             ))}
           {showRawSearchDrilldown && (
             <details className="max-w-full">
-              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'cursor-pointer mb-0')}>Raw response</summary>
+              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0')}>Raw response</summary>
               <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
                 {view.rawResult}
               </pre>
@@ -458,7 +459,24 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   // tools append to the end), so user-driven open/close persists across
   // streaming.
   const disclosureId = `tool-group:${messageId}:${startIndex}`
-  const open = useDisclosureOpen(disclosureId)
+  const userOpen = useDisclosureOpen(disclosureId)
+
+  // A live approval request must NEVER be buried inside a collapsed group —
+  // the user has to be able to act on it without first expanding "Tool
+  // actions · N steps". When an approval is in flight and this group hosts
+  // the pending approval-eligible tool that raised it (terminal /
+  // execute_code with no result yet — see tool-approval.tsx for why the
+  // single pending row IS the one that raised it), force the body open so
+  // the inline ApprovalBar surfaces. The user can still collapse the group
+  // again once the approval resolves.
+  const approvalRequest = useStore($approvalRequest)
+
+  const hostsLiveApproval =
+    approvalRequest !== null &&
+    messageRunning &&
+    visibleParts.some(p => p.result === undefined && APPROVAL_TOOLS.has(p.toolName))
+
+  const open = userOpen || hostsLiveApproval
   const enterRef = useEnterAnimation(messageRunning, disclosureId)
 
   const status = groupStatus(visibleParts)

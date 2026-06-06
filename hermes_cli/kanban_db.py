@@ -83,6 +83,7 @@ import sys
 import threading
 import logging
 import time
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -222,6 +223,20 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # ---------------------------------------------------------------------------
 
 DEFAULT_BOARD = "default"
+_CURRENT_BOARD_OVERRIDE: ContextVar[str | None] = ContextVar(
+    "hermes_kanban_current_board_override",
+    default=None,
+)
+
+
+@contextlib.contextmanager
+def scoped_current_board(slug: str):
+    """Temporarily pin the active board for the current context only."""
+    token: Token[str | None] = _CURRENT_BOARD_OVERRIDE.set(slug)
+    try:
+        yield
+    finally:
+        _CURRENT_BOARD_OVERRIDE.reset(token)
 
 # Slug validator: lowercase alphanumerics, digits, hyphens; 1–64 chars.
 # Strict enough to stop traversal (`..`) and embedded path separators, loose
@@ -305,6 +320,15 @@ def get_current_board() -> str:
     with a best-effort warning — the dispatcher must never crash because a
     user hand-edited a file or removed a board directory.
     """
+    scoped = (_CURRENT_BOARD_OVERRIDE.get() or "").strip()
+    if scoped:
+        try:
+            normed = _normalize_board_slug(scoped)
+            if normed and board_exists(normed):
+                return normed
+        except ValueError:
+            pass
+
     env = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
     if env:
         try:

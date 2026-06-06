@@ -31,6 +31,7 @@ const DESKTOP_COMMAND_META = [
   ['/goal', 'Manage the standing goal for this session'],
   ['/help', 'Show desktop slash commands'],
   ['/new', 'Start a new desktop chat'],
+  ['/profile', 'Switch the active Hermes profile'],
   ['/queue', 'Queue a prompt for the next turn'],
   ['/resume', 'Resume a saved session'],
   ['/retry', 'Retry the last user message'],
@@ -42,6 +43,7 @@ const DESKTOP_COMMAND_META = [
   ['/title', 'Rename the current session'],
   ['/undo', 'Remove the last user/assistant exchange'],
   ['/usage', 'Show token usage for this session'],
+  ['/version', 'Show Hermes Agent version'],
   ['/yolo', 'Toggle YOLO — auto-approve dangerous commands']
 ] as const
 
@@ -111,7 +113,6 @@ const ADVANCED_COMMANDS = new Set([
   '/insights',
   '/kanban',
   '/personality',
-  '/profile',
   '/reasoning',
   '/reload-mcp',
   '/reload-skills',

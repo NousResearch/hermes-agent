@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { type Translations, useI18n } from '@/i18n'
 import { CheckCircle2, ExternalLink, Loader2, RefreshCw, Sparkles } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
@@ -18,29 +19,31 @@ import { ListRow, SectionHeading, SettingsContent } from './primitives'
 
 const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
 
-function relativeTime(ms: number | undefined) {
+function relativeTime(ms: number | undefined, a: Translations['settings']['about']) {
   if (!ms) {
-    return 'never'
+    return a.never
   }
 
   const diff = Date.now() - ms
 
   if (diff < 60_000) {
-    return 'just now'
+    return a.justNow
   }
 
   if (diff < 3_600_000) {
-    return `${Math.round(diff / 60_000)} min ago`
+    return a.minAgo(Math.round(diff / 60_000))
   }
 
   if (diff < 86_400_000) {
-    return `${Math.round(diff / 3_600_000)} hours ago`
+    return a.hoursAgo(Math.round(diff / 3_600_000))
   }
 
-  return `${Math.round(diff / 86_400_000)} days ago`
+  return a.daysAgo(Math.round(diff / 86_400_000))
 }
 
 export function AboutSettings() {
+  const { t } = useI18n()
+  const a = t.settings.about
   const version = useStore($desktopVersion)
   const status = useStore($updateStatus)
   const apply = useStore($updateApply)
@@ -69,21 +72,21 @@ export function AboutSettings() {
   let statusTone: 'idle' | 'available' | 'error' = 'idle'
 
   if (!supported) {
-    statusLine = status?.message ?? "This build can't update itself from inside the app."
+    statusLine = status?.message ?? a.cantUpdate
     statusTone = 'error'
   } else if (status?.error) {
-    statusLine = "We couldn't reach the update server."
+    statusLine = a.cantReach
     statusTone = 'error'
   } else if (applying) {
-    statusLine = 'An update is currently installing.'
+    statusLine = a.installing
     statusTone = 'available'
   } else if (behind > 0) {
-    statusLine = `A new update is ready (${behind} change${behind === 1 ? '' : 's'} included).`
+    statusLine = a.updateReady(behind)
     statusTone = 'available'
   } else if (status) {
-    statusLine = "You're on the latest version."
+    statusLine = a.onLatest
   } else {
-    statusLine = 'Tap "Check now" to look for updates.'
+    statusLine = a.tapCheck
   }
 
   return (
@@ -93,15 +96,15 @@ export function AboutSettings() {
           <Sparkles className="size-8" />
         </span>
         <div>
-          <h2 className="text-lg font-semibold tracking-tight">Hermes Desktop</h2>
+          <h2 className="text-lg font-semibold tracking-tight">{a.heading}</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            {version?.appVersion ? `Version ${version.appVersion}` : 'Version unavailable'}
+            {version?.appVersion ? a.version(version.appVersion) : a.versionUnavailable}
           </p>
         </div>
       </div>
 
       <div className="mx-auto mt-4 w-full max-w-2xl">
-        <SectionHeading icon={RefreshCw} title="Updates" />
+        <SectionHeading icon={RefreshCw} title={a.updates} />
 
         <div
           className={cn(
@@ -120,35 +123,30 @@ export function AboutSettings() {
             <div className="min-w-0">
               <p className="font-medium">{statusLine}</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Last checked {relativeTime(status?.fetchedAt)}
-                {justChecked && !checking ? ' · just now' : ''}
+                {a.lastChecked(relativeTime(status?.fetchedAt, a))}
+                {justChecked && !checking ? a.justNowSuffix : ''}
               </p>
             </div>
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-2">
+          <div className="mt-3 flex flex-wrap items-center gap-4">
             <Button
               disabled={checking || applying || !supported}
               onClick={() => void handleCheck()}
               size="sm"
-              variant="outline"
+              variant="textStrong"
             >
               {checking ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
-              {checking ? 'Checking…' : 'Check now'}
+              {checking ? a.checking : a.checkNow}
             </Button>
 
             {behind > 0 && supported && !applying && (
               <Button onClick={() => openUpdatesWindow()} size="sm">
-                See what&apos;s new
+                {a.seeWhatsNew}
               </Button>
             )}
 
-            <Button
-              asChild
-              className="ml-auto text-xs text-muted-foreground hover:text-foreground"
-              size="sm"
-              variant="ghost"
-            >
+            <Button asChild className="ml-auto" size="sm" variant="text">
               <a
                 href={RELEASE_NOTES_URL}
                 onClick={event => {
@@ -159,16 +157,16 @@ export function AboutSettings() {
                 target="_blank"
               >
                 <ExternalLink className="size-3" />
-                Release notes
+                {a.releaseNotes}
               </a>
             </Button>
           </div>
         </div>
 
         <ListRow
-          description="Hermes checks for updates automatically in the background and lets you know when one is ready."
-          hint={`Branch ${status?.branch ?? 'unknown'} · Commit ${status?.currentSha?.slice(0, 7) ?? 'unknown'}`}
-          title="Automatic updates"
+          description={a.automaticUpdatesDesc}
+          hint={a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
+          title={a.automaticUpdates}
         />
       </div>
     </SettingsContent>

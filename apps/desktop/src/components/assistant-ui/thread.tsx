@@ -117,10 +117,6 @@ function messageContentText(content: unknown): string {
   return Array.isArray(content) ? content.map(partText).join('').trim() : ''
 }
 
-const INTERRUPTED_ONLY_RE = /^_?\[interrupted\]_?$/i
-
-const isInterruptedOnlyMessage = (text: string) => INTERRUPTED_ONLY_RE.test(text.trim())
-
 export const Thread: FC<{
   clampToComposer?: boolean
   cwd?: string | null
@@ -220,7 +216,6 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
 
   const messageStatus = useAuiState(s => s.message.status?.type)
   const isPlaceholder = messageStatus === 'running' && content.length === 0
-  const interruptedOnly = useMemo(() => isInterruptedOnlyMessage(messageText), [messageText])
   const enterRef = useEnterAnimation(messageStatus === 'running', `assistant-message:${messageId}`)
 
   if (isPlaceholder) {
@@ -236,10 +231,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       ref={enterRef}
     >
       <div
-        className={cn(
-          'wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
-          interruptedOnly && 'text-[0.8rem] leading-5 text-muted-foreground/82'
-        )}
+        className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
         data-slot="aui_assistant-message-content"
       >
         {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
@@ -260,7 +252,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
       </div>
-      {messageText.trim().length > 0 && !interruptedOnly && (
+      {messageText.trim().length > 0 && (
         <AssistantFooter messageId={messageId} messageText={messageText} onBranchInNewChat={onBranchInNewChat} />
       )}
     </MessagePrimitive.Root>
@@ -438,7 +430,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
       s.thread.isRunning &&
       s.message.status?.type === 'running' &&
       s.message.parts
-        .slice(Math.max(0, startIndex), Math.min(s.message.parts.length, endIndex))
+        .slice(Math.max(0, startIndex))
         .some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
   )
 
@@ -618,13 +610,13 @@ const AssistantFooter: FC<MessageActionProps> = props => (
       className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
       hideWhenSingleBranch
     >
-      <BranchPickerPrimitive.Previous className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+      <BranchPickerPrimitive.Previous className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
         <Codicon name="chevron-left" size="0.875rem" />
       </BranchPickerPrimitive.Previous>
       <span className="tabular-nums">
         <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
       </span>
-      <BranchPickerPrimitive.Next className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+      <BranchPickerPrimitive.Next className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
         <Codicon name="chevron-right" size="0.875rem" />
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>
@@ -662,7 +654,7 @@ const USER_BUBBLE_BASE_CLASS =
   'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left shadow-composer'
 
 const USER_ACTION_ICON_BUTTON_CLASS =
-  'grid cursor-pointer place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
+  'grid place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
 
 const USER_ACTION_ICON_SIZE = '0.6875rem'
 const StopGlyph = <IconPlayerStopFilled aria-hidden className="size-3.5 -translate-y-px" />
@@ -805,7 +797,7 @@ const UserMessage: FC<{
             >
               <span aria-hidden className="checkpoint-icon size-1.5 rounded-full border border-current" />
               <BranchPickerPrimitive.Previous
-                className="checkpoint-restore-text cursor-pointer rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
+                className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
                 title="Restore previous checkpoint"
               >
                 Restore checkpoint
@@ -814,7 +806,7 @@ const UserMessage: FC<{
                 <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
               </span>
               <BranchPickerPrimitive.Next
-                className="checkpoint-restore-text cursor-pointer rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
+                className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
                 title="Restore next checkpoint"
               >
                 Go forward
@@ -828,12 +820,30 @@ const UserMessage: FC<{
 }
 
 const SLASH_STATUS_RE = /^slash:(?<command>\/[^\n]+)\n(?<output>[\s\S]*)$/
+const STEER_NOTE_RE = /^steer:(?<text>[\s\S]+)$/
 
 const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
 
   if (!text) {
     return null
+  }
+
+  const steerNote = text.match(STEER_NOTE_RE)
+
+  if (steerNote?.groups) {
+    return (
+      <MessagePrimitive.Root
+        className="flex max-w-[min(86%,44rem)] items-center gap-1.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60"
+        data-role="system"
+        data-slot="aui_system-message-root"
+      >
+        <Codicon className="text-muted-foreground/55" name="compass" size="0.75rem" />
+        <span className="text-muted-foreground/55">steered</span>
+        <span className="text-muted-foreground/35">·</span>
+        <span className="whitespace-pre-wrap">{steerNote.groups.text.trim()}</span>
+      </MessagePrimitive.Root>
+    )
   }
 
   const slashStatus = text.match(SLASH_STATUS_RE)

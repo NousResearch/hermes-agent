@@ -12,6 +12,7 @@ import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
   $messages,
@@ -36,8 +37,8 @@ import {
   setMessages,
   setSelectedStoredSessionId,
   setSessions,
-  setSessionsTotal,
   setSessionStartedAt,
+  setSessionsTotal,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -173,6 +174,10 @@ function upsertOptimisticSession(
   preview: string | null = null
 ) {
   const now = Date.now() / 1000
+  // Stamp the profile the session was just created on (= the live gateway's
+  // profile) so the scoped sidebar shows the new row immediately instead of
+  // filtering it out as "default" until the aggregator re-fetches.
+  const profileKey = normalizeProfileKey($activeGatewayProfile.get())
 
   const session: SessionInfo = {
     cwd: created.info?.cwd ?? null,
@@ -180,11 +185,13 @@ function upsertOptimisticSession(
     id,
     input_tokens: 0,
     is_active: true,
+    is_default_profile: profileKey === 'default',
     last_active: now,
     message_count: created.message_count ?? created.messages?.length ?? 0,
     model: created.info?.model ?? null,
     output_tokens: 0,
     preview,
+    profile: profileKey,
     source: 'tui',
     started_at: now,
     title,
@@ -311,74 +318,87 @@ export function useSessionActions({
     [activeSessionIdRef, busyRef, navigate, selectedStoredSessionIdRef]
   )
 
-  const createBackendSessionForSend = useCallback(async (preview: string | null = null): Promise<string | null> => {
-    const startingActiveSessionId = activeSessionIdRef.current
-    const startingStoredSessionId = selectedStoredSessionIdRef.current
-    const startingRouteToken = getRouteToken()
+  const createBackendSessionForSend = useCallback(
+    async (preview: string | null = null): Promise<string | null> => {
+      const startingActiveSessionId = activeSessionIdRef.current
+      const startingStoredSessionId = selectedStoredSessionIdRef.current
+      const startingRouteToken = getRouteToken()
 
-    creatingSessionRef.current = true
+      creatingSessionRef.current = true
 
-    try {
-      const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
-      const created = await requestGateway<SessionCreateResponse>('session.create', { cols: 96, ...(cwd && { cwd }) })
-      const stored = created.stored_session_id ?? null
+      try {
+        // Route the new chat to the chosen profile's backend (null = primary,
+        // so single-profile users are unaffected).
+        await ensureGatewayProfile($newChatProfile.get())
+        const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
+        // Pass the owning profile so a new chat under a non-launch profile (global
+        // remote mode) builds its agent + persists against THAT profile's home/db.
+        const newChatProfile = $newChatProfile.get()
+        const created = await requestGateway<SessionCreateResponse>('session.create', {
+          cols: 96,
+          ...(cwd && { cwd }),
+          ...(newChatProfile ? { profile: newChatProfile } : {})
+        })
+        const stored = created.stored_session_id ?? null
 
-      if (
-        activeSessionIdRef.current !== startingActiveSessionId ||
-        selectedStoredSessionIdRef.current !== startingStoredSessionId ||
-        getRouteToken() !== startingRouteToken
-      ) {
-        await requestGateway('session.close', { session_id: created.session_id }).catch(() => undefined)
+        if (
+          activeSessionIdRef.current !== startingActiveSessionId ||
+          selectedStoredSessionIdRef.current !== startingStoredSessionId ||
+          getRouteToken() !== startingRouteToken
+        ) {
+          await requestGateway('session.close', { session_id: created.session_id }).catch(() => undefined)
 
-        return null
+          return null
+        }
+
+        activeSessionIdRef.current = created.session_id
+        selectedStoredSessionIdRef.current = stored
+        ensureSessionState(created.session_id, stored)
+
+        if (stored) {
+          // Seed the sidebar preview with the user's first message so the row
+          // reads meaningfully while the turn is in flight, instead of flashing
+          // "Untitled session" until the turn persists and auto-title runs. The
+          // server later returns its own preview/title and supersedes this.
+          upsertOptimisticSession(created, stored, null, preview?.trim() || null)
+          navigate(sessionRoute(stored), { replace: true })
+        }
+
+        setFreshDraftReady(false)
+        setActiveSessionId(created.session_id)
+        setSelectedStoredSessionId(stored)
+        setSessionStartedAt(Date.now())
+        const yoloArmed = $yoloActive.get()
+        const runtimeInfo = applyRuntimeInfo(created.info)
+
+        if (runtimeInfo) {
+          updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored)
+        }
+
+        // User may have armed YOLO on the new-chat draft before the runtime
+        // session existed — apply it to the freshly created session.
+        if (yoloArmed) {
+          await setSessionYolo(requestGateway, created.session_id, true).catch(() => undefined)
+        }
+
+        return created.session_id
+      } finally {
+        window.setTimeout(() => {
+          creatingSessionRef.current = false
+        }, 0)
       }
-
-      activeSessionIdRef.current = created.session_id
-      selectedStoredSessionIdRef.current = stored
-      ensureSessionState(created.session_id, stored)
-
-      if (stored) {
-        // Seed the sidebar preview with the user's first message so the row
-        // reads meaningfully while the turn is in flight, instead of flashing
-        // "Untitled session" until the turn persists and auto-title runs. The
-        // server later returns its own preview/title and supersedes this.
-        upsertOptimisticSession(created, stored, null, preview?.trim() || null)
-        navigate(sessionRoute(stored), { replace: true })
-      }
-
-      setFreshDraftReady(false)
-      setActiveSessionId(created.session_id)
-      setSelectedStoredSessionId(stored)
-      setSessionStartedAt(Date.now())
-      const yoloArmed = $yoloActive.get()
-      const runtimeInfo = applyRuntimeInfo(created.info)
-
-      if (runtimeInfo) {
-        updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored)
-      }
-
-      // User may have armed YOLO on the new-chat draft before the runtime
-      // session existed — apply it to the freshly created session.
-      if (yoloArmed) {
-        await setSessionYolo(requestGateway, created.session_id, true).catch(() => undefined)
-      }
-
-      return created.session_id
-    } finally {
-      window.setTimeout(() => {
-        creatingSessionRef.current = false
-      }, 0)
-    }
-  }, [
-    activeSessionIdRef,
-    creatingSessionRef,
-    ensureSessionState,
-    getRouteToken,
-    navigate,
-    requestGateway,
-    selectedStoredSessionIdRef,
-    updateSessionState
-  ])
+    },
+    [
+      activeSessionIdRef,
+      creatingSessionRef,
+      ensureSessionState,
+      getRouteToken,
+      navigate,
+      requestGateway,
+      selectedStoredSessionIdRef,
+      updateSessionState
+    ]
+  )
 
   const selectSidebarItem = useCallback(
     (item: SidebarNavItem) => {
@@ -417,6 +437,12 @@ export function useSessionActions({
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
 
+      // Swap the single live gateway to this session's profile before any
+      // gateway call (no-op when it's already on that profile / single-profile).
+      const storedForProfile = $sessions.get().find(session => session.id === storedSessionId)
+      const sessionProfile = storedForProfile?.profile
+      await ensureGatewayProfile(sessionProfile)
+
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
@@ -434,15 +460,31 @@ export function useSessionActions({
         clearComposerDraft()
         clearComposerAttachments()
 
-        void requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
-          .then(usage => {
-            if (isCurrentResume() && usage) {
-              setCurrentUsage(current => ({ ...current, ...usage }))
-            }
-          })
-          .catch(() => undefined)
+        try {
+          const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
 
-        return
+          if (!isCurrentResume()) {
+            return
+          }
+
+          if (usage) {
+            setCurrentUsage(current => ({ ...current, ...usage }))
+          }
+
+          return
+        } catch {
+          // The cached runtime id was minted by a prior backend instance. A
+          // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
+          // and respawned across a profile swap mints fresh ids, so this mapping
+          // now 404s ("session not found"). Drop it and fall through to a full
+          // resume that rebinds a live runtime id.
+          if (!isCurrentResume()) {
+            return
+          }
+
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+        }
       }
 
       setFreshDraftReady(false)
@@ -479,7 +521,7 @@ export function useSessionActions({
         let localSnapshot = $messages.get()
 
         try {
-          const storedMessages = await getSessionMessages(storedSessionId)
+          const storedMessages = await getSessionMessages(storedSessionId, sessionProfile)
 
           if (isCurrentResume()) {
             localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
@@ -494,7 +536,11 @@ export function useSessionActions({
 
         const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
-          cols: 96
+          cols: 96,
+          // Owning profile: in app-global remote mode one backend serves every
+          // profile, so the gateway opens this profile's state.db + home to
+          // resume + persist the right session (no-op for single/launch profile).
+          ...(sessionProfile ? { profile: sessionProfile } : {})
         })
 
         if (!isCurrentResume()) {
@@ -549,7 +595,7 @@ export function useSessionActions({
           return
         }
 
-        const fallback = await getSessionMessages(storedSessionId)
+        const fallback = await getSessionMessages(storedSessionId, sessionProfile)
 
         if (!isCurrentResume()) {
           return
@@ -728,7 +774,7 @@ export function useSessionActions({
           await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
         }
 
-        await deleteSession(storedSessionId)
+        await deleteSession(storedSessionId, removed?.profile)
         clearQueuedPrompts(storedSessionId)
 
         if (closingRuntimeId) {
@@ -804,7 +850,7 @@ export function useSessionActions({
       }
 
       try {
-        await setSessionArchived(storedSessionId, true)
+        await setSessionArchived(storedSessionId, true, archived?.profile)
         notify({ durationMs: 2_000, kind: 'success', message: 'Archived' })
       } catch (err) {
         if (archived) {

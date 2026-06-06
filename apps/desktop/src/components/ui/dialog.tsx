@@ -1,6 +1,7 @@
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import * as React from 'react'
 
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { cn } from '@/lib/utils'
 
@@ -57,12 +58,16 @@ function DialogContent({
       >
         {children}
         {showCloseButton && (
-          <DialogPrimitive.Close
-            className="absolute right-2.5 top-2.5 rounded-md p-1 text-(--ui-text-tertiary) opacity-70 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground hover:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none"
-            data-slot="dialog-close-button"
-          >
-            <Codicon name="close" size="1rem" />
-            <span className="sr-only">Close</span>
+          <DialogPrimitive.Close asChild data-slot="dialog-close-button">
+            <Button
+              aria-label="Close"
+              className="absolute right-2.5 top-2.5 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name="close" size="1rem" />
+              <span className="sr-only">Close</span>
+            </Button>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Content>

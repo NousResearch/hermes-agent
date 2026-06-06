@@ -40,6 +40,7 @@ import { useI18n } from '@/i18n'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { cn } from '@/lib/utils'
+import { $cronJobs } from '@/store/cron'
 import {
   $panesFlipped,
   $pinnedSessionIds,
@@ -81,6 +82,7 @@ import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '..
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
+import { SidebarCronJobsSection } from './cron-jobs-section'
 import { ProfileRail } from './profile-switcher'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
@@ -226,6 +228,8 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
+  onManageCronJob: (jobId: string) => void
+  onTriggerCronJob: (jobId: string) => void
 }
 
 export function ChatSidebar({
@@ -236,7 +240,9 @@ export function ChatSidebar({
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
-  onNewSessionInWorkspace
+  onNewSessionInWorkspace,
+  onManageCronJob,
+  onTriggerCronJob
 }: ChatSidebarProps) {
   const { t } = useI18n()
   const s = t.sidebar
@@ -250,6 +256,7 @@ export function ChatSidebar({
   const selectedSessionId = useStore($selectedStoredSessionId)
   const sessions = useStore($sessions)
   const cronSessions = useStore($cronSessions)
+  const cronJobs = useStore($cronJobs)
   const sessionsLoading = useStore($sessionsLoading)
   const sessionsTotal = useStore($sessionsTotal)
   const sessionProfileTotals = useStore($sessionProfileTotals)
@@ -413,17 +420,6 @@ export function ChatSidebar({
     return [...out.values()]
   }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
 
-  // Cron-job sessions are a fully independent list (fetched separately so they
-  // never consume the recents page budget). Scope them like recents and drop
-  // any that are pinned (pin wins) to avoid a double-listing.
-  const visibleCronSessions = useMemo(() => {
-    const scoped = showAllProfiles
-      ? cronSessions
-      : cronSessions.filter(s => normalizeProfileKey(s.profile) === profileScope)
-
-    return scoped.filter(s => !pinnedRealIdSet.has(s.id)).sort((a, b) => sessionTime(b) - sessionTime(a))
-  }, [cronSessions, showAllProfiles, profileScope, pinnedRealIdSet])
-
   const unpinnedAgentSessions = useMemo(
     () => sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
     [sortedSessions, pinnedRealIdSet]
@@ -502,8 +498,7 @@ export function ChatSidebar({
 
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
 
-  const showSessionSections =
-    showSessionSkeletons || sortedSessions.length > 0 || visibleCronSessions.length > 0
+  const showSessionSections = showSessionSkeletons || sortedSessions.length > 0
 
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
   // unified set. When scoped to one profile it must compare that profile's own
@@ -781,23 +776,15 @@ export function ChatSidebar({
           />
         )}
 
-        {sidebarOpen && showSessionSections && !trimmedQuery && visibleCronSessions.length > 0 && (
-          <SidebarSessionsSection
-            activeSessionId={activeSidebarSessionId}
-            contentClassName="flex max-h-64 shrink-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
-            emptyState={null}
+        {sidebarOpen && !trimmedQuery && cronJobs.length > 0 && (
+          <SidebarCronJobsSection
+            jobs={cronJobs}
             label={s.cronJobs}
-            labelMeta={String(visibleCronSessions.length)}
-            onArchiveSession={onArchiveSession}
-            onDeleteSession={onDeleteSession}
-            onResumeSession={onResumeSession}
+            onManageJob={onManageCronJob}
+            onOpenRun={onResumeSession}
             onToggle={() => setSidebarCronOpen(!cronOpen)}
-            onTogglePin={pinSession}
+            onTriggerJob={onTriggerCronJob}
             open={cronOpen}
-            pinned={false}
-            rootClassName="shrink-0 p-0 pb-1"
-            sessions={visibleCronSessions}
-            workingSessionIdSet={workingSessionIdSet}
           />
         )}
 

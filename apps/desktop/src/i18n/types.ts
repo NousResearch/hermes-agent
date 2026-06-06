@@ -715,6 +715,11 @@ export interface Translations {
     emptyTitleSearch: string
     last: string
     next: string
+    noRuns: string
+    manage: string
+    showRuns: string
+    hideRuns: string
+    runHistory: string
     actionsFor: (title: string) => string
     actionsTitle: string
     resume: string

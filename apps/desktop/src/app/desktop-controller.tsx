@@ -11,8 +11,9 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getSessionMessages, listAllProfileSessions, type SessionInfo } from '../hermes'
+import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { setCronFocusJobId, setCronJobs } from '../store/cron'
 import {
   $panesFlipped,
   $pinnedSessionIds,
@@ -37,6 +38,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
+  CRON_SECTION_LIMIT,
   mergeSessionPage,
   sessionPinId,
   setAwaitingResponse,
@@ -72,7 +74,7 @@ import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
-import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
@@ -103,9 +105,19 @@ const SettingsView = lazy(async () => ({ default: (await import('./settings')).S
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
 
 // Latest cron-job sessions surfaced in the collapsed "Cron jobs" section. The
-// section shows the most-recent jobs, not the full history (that lives in
-// search), so this stays small and is fetched as a single bounded page.
-const CRON_SECTION_LIMIT = 50
+// Cron sessions are written by a background scheduler tick (the desktop
+// backend), so no user action signals the UI. Poll the bounded cron list on
+// this cadence while the app is open + visible so new runs surface promptly
+// instead of waiting for the next user-triggered refreshSessions().
+const CRON_POLL_INTERVAL_MS = 30_000
+
+// Cheap signature compare so the poll only swaps the atom (and re-renders the
+// sidebar) when the visible cron rows actually changed.
+function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
+  if (a.length !== b.length) {return false}
+
+  return a.every((session, i) => session.id === b[i]?.id && session.title === b[i]?.title)
+}
 
 // Rows a session refresh must preserve even if the aggregator omits them:
 // in-flight first turns (message_count 0), pinned rows aged off the page, and
@@ -231,17 +243,32 @@ export function DesktopController() {
   }, [])
 
   // Cron-job sessions as their own list (latest N). Independent of the recents
-  // page so the two never compete for slots. Cheap + bounded; refreshed
-  // alongside recents.
+  // page so the two never compete for slots. Cheap + bounded. Kept (even though
+  // the sidebar now lists cron *jobs*, not run sessions) so a pinned cron run
+  // still resolves into the Pinned section via sessionByAnyId.
   const refreshCronSessions = useCallback(async () => {
     try {
       const { sessions } = await listAllProfileSessions(CRON_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
         source: 'cron'
       })
 
-      setCronSessions(sessions)
+      setCronSessions(prev => (sameCronSignature(prev, sessions) ? prev : sessions))
     } catch {
       // Non-fatal: the cron section just stays empty/stale.
+    }
+  }, [])
+
+  // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
+  // synchronously (agent tool call or the cron UI), so refreshing here right
+  // after an agent turn surfaces a new job immediately; the interval poll keeps
+  // next-run/state fresh as the scheduler advances them.
+  const refreshCronJobs = useCallback(async () => {
+    try {
+      const jobs = await getCronJobs()
+
+      setCronJobs(jobs)
+    } catch {
+      // Non-fatal: the cron section just keeps its last-known jobs.
     }
   }, [])
 
@@ -277,7 +304,8 @@ export function DesktopController() {
     }
 
     void refreshCronSessions()
-  }, [refreshCronSessions])
+    void refreshCronJobs()
+  }, [refreshCronSessions, refreshCronJobs])
 
   const loadMoreSessions = useCallback(() => {
     bumpSessionsLimit()
@@ -592,6 +620,25 @@ export function DesktopController() {
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
 
+  // Keep the cron jobs section live without a user action: the scheduler ticks
+  // in the background (advancing next-run/state and creating runs), so poll the
+  // job list on an interval (and on tab re-focus) while connected.
+  useEffect(() => {
+    if (gatewayState !== 'open') {return}
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') {void refreshCronJobs()}
+    }
+
+    const intervalId = window.setInterval(tick, CRON_POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [gatewayState, refreshCronJobs])
+
   useRouteResume({
     activeSessionId,
     activeSessionIdRef,
@@ -632,9 +679,18 @@ export function DesktopController() {
       onDeleteSession={sessionId => void removeSession(sessionId)}
       onLoadMoreProfileSessions={loadMoreSessionsForProfile}
       onLoadMoreSessions={loadMoreSessions}
+      onManageCronJob={jobId => {
+        setCronFocusJobId(jobId)
+        navigate(CRON_ROUTE)
+      }}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
+      onTriggerCronJob={jobId => {
+        void triggerCronJob(jobId)
+          .then(() => refreshCronJobs())
+          .catch(() => undefined)
+      }}
     />
   )
 
@@ -701,7 +757,10 @@ export function DesktopController() {
 
       {cronOpen && (
         <Suspense fallback={null}>
-          <CronView onClose={closeOverlayToPreviousRoute} />
+          <CronView
+            onClose={closeOverlayToPreviousRoute}
+            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+          />
         </Suspense>
       )}
 

@@ -14,6 +14,17 @@ approval:
   denied:          "      ✗ Refusé"
   cancelled:       "      ✗ Annulé"
   blocklist_message: "Cette commande est sur la liste de blocage inconditionnel et ne peut pas être approuvée."
+  changes_prompt: "      📝 Décris les modifications nécessaires (vide pour annuler): "
+  changes_empty: "      ✗ Aucun retour fourni - commande refusée"
+  changes_received: "      ✓ Retour enregistré - l'agent révisera la commande"
+  button_once: "✅ Autoriser une fois"
+  button_session: "✅ Session"
+  button_always: "✅ Toujours"
+  button_changes: "📝 Demander des modifications"
+  button_deny: "❌ Refuser"
+  changes_telegram_prompt: "📝 Réponds à ce message avec les modifications souhaitées (ou \"cancel\" pour refuser)."
+  changes_resolved: "📝 Modifications demandées par {user}"
+  changes_resolved_short: "📝 Demander des modifications"
 
 gateway:
   approval_expired: "⚠️ Approbation expirée (l'agent n'attend plus). Demandez à l'agent de réessayer."

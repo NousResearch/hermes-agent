@@ -14,6 +14,17 @@ approval:
   denied:          "      ✗ 거부됨"
   cancelled:       "      ✗ 취소됨"
   blocklist_message: "이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다."
+  changes_prompt: "      📝 필요한 변경 사항을 설명하세요 (비우면 취소): "
+  changes_empty: "      ✗ 피드백 없음 - 명령 거부"
+  changes_received: "      ✓ 피드백 저장됨 - 에이전트가 명령을 수정합니다"
+  button_once: "✅ 한 번 허용"
+  button_session: "✅ 세션"
+  button_always: "✅ 항상"
+  button_changes: "📝 변경 요청"
+  button_deny: "❌ 거부"
+  changes_telegram_prompt: "📝 이 메시지에 원하는 변경 사항으로 답장하세요 (거부하려면 \"cancel\")."
+  changes_resolved: "📝 {user}님이 변경을 요청했습니다"
+  changes_resolved_short: "📝 변경 요청"
 
 gateway:
   approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."

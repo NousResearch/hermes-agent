@@ -14,6 +14,17 @@ approval:
   denied:          "      ✗ Geweier"
   cancelled:       "      ✗ Gekanselleer"
   blocklist_message: "Hierdie opdrag is op die onvoorwaardelike blokkeerlys en kan nie goedgekeur word nie."
+  changes_prompt: "      📝 Beskryf die veranderinge wat jy nodig het (leeg kanselleer): "
+  changes_empty: "      ✗ Geen terugvoer gegee nie - besig om opdrag te weier"
+  changes_received: "      ✓ Terugvoer vasgelê - agent sal die opdrag hersien"
+  button_once: "✅ Laat een keer toe"
+  button_session: "✅ Sessie"
+  button_always: "✅ Altyd"
+  button_changes: "📝 Versoek veranderinge"
+  button_deny: "❌ Weier"
+  changes_telegram_prompt: "📝 Antwoord op hierdie boodskap met die veranderinge wat jy wil hê (of \"cancel\" om eerder te weier)."
+  changes_resolved: "📝 Veranderinge aangevra deur {user}"
+  changes_resolved_short: "📝 Versoek veranderinge"
 
 gateway:
   approval_expired: "⚠️ Goedkeuring het verval (die agent wag nie meer nie). Vra die agent om weer te probeer."

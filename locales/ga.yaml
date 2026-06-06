@@ -18,6 +18,17 @@ approval:
   denied:          "      ✗ Diúltaithe"
   cancelled:       "      ✗ Cealaithe"
   blocklist_message: "Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú."
+  changes_prompt: "      📝 Cuir síos ar na hathruithe atá uait (cealaítear le folamh): "
+  changes_empty: "      ✗ Níor tugadh aiseolas - ag diúltú don ordú"
+  changes_received: "      ✓ Aiseolas gafa - athbhreithneoidh an gníomhaire an t-ordú"
+  button_once: "✅ Ceadaigh uair amháin"
+  button_session: "✅ Seisiún"
+  button_always: "✅ I gcónaí"
+  button_changes: "📝 Iarr athruithe"
+  button_deny: "❌ Diúltaigh"
+  changes_telegram_prompt: "📝 Freagair an teachtaireacht seo leis na hathruithe atá uait (nó \"cancel\" chun diúltú)."
+  changes_resolved: "📝 Athruithe iarrtha ag {user}"
+  changes_resolved_short: "📝 Iarr athruithe"
 
 gateway:
   approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."

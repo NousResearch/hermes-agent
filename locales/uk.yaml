@@ -14,6 +14,17 @@ approval:
   denied:          "      ✗ Відхилено"
   cancelled:       "      ✗ Скасовано"
   blocklist_message: "Ця команда є в безумовному списку блокування, її не можна схвалити."
+  changes_prompt: "      📝 Опишіть потрібні зміни (порожнє скасовує): "
+  changes_empty: "      ✗ Відгук не надано - команду відхилено"
+  changes_received: "      ✓ Відгук отримано - агент перегляне команду"
+  button_once: "✅ Дозволити одноразово"
+  button_session: "✅ Сесія"
+  button_always: "✅ Завжди"
+  button_changes: "📝 Запитати зміни"
+  button_deny: "❌ Відхилити"
+  changes_telegram_prompt: "📝 Відповідайте на це повідомлення потрібними змінами (або \"cancel\" для відхилення)."
+  changes_resolved: "📝 Зміни запитано {user}"
+  changes_resolved_short: "📝 Запитати зміни"
 
 gateway:
   approval_expired: "⚠️ Час схвалення минув (агент більше не очікує). Попросіть агента спробувати ще раз."

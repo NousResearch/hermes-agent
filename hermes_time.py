@@ -88,6 +88,14 @@ def get_timezone() -> Optional[ZoneInfo]:
     return _cached_tz
 
 
+def reset_cache() -> None:
+    """Clear the cached timezone so the next ``get_timezone()`` call re-resolves."""
+    global _cached_tz, _cached_tz_name, _cache_resolved
+    _cached_tz = None
+    _cached_tz_name = None
+    _cache_resolved = False
+
+
 def now() -> datetime:
     """
     Return the current time as a timezone-aware datetime.

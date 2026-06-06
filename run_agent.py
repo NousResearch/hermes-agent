@@ -1479,7 +1479,7 @@ class AIAgent:
         a raw ``tool`` message and the next user turn lands as
         ``...tool, user, user`` — a protocol-invalid sequence that most
         providers silently reject (returns empty content), causing the
-        empty-retry loop to fire forever. See #<TBD>.
+        empty-retry loop to fire forever.
         """
         # Pass 1: strip the flagged scaffolding messages themselves.
         dropped_scaffolding = False
@@ -3116,7 +3116,7 @@ class AIAgent:
             self._todo_store.write(last_todo_response, merge=False)
             if not self.quiet_mode:
                 self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
-        _set_interrupt(False)
+        _set_interrupt(False, self._execution_thread_id)
 
     @property
     def is_interrupted(self) -> bool:

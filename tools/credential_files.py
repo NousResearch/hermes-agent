@@ -81,7 +81,7 @@ def register_credential_file(
     host_path = hermes_home / relative_path
 
     # Resolve symlinks and normalise ``..`` before the containment check so
-    # that traversal like ``../. ssh/id_rsa`` cannot escape HERMES_HOME.
+    # that traversal like ``../.ssh/id_rsa`` cannot escape HERMES_HOME.
     from tools.path_security import validate_within_dir
 
     containment_error = validate_within_dir(host_path, hermes_home)

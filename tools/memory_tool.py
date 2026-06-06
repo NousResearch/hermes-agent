@@ -17,7 +17,7 @@ Entry delimiter: § (section sign). Entries can be multiline.
 Character limits (not tokens) because char counts are model-independent.
 
 Design:
-- Single `memory` tool with action parameter: add, replace, remove, read
+- Single `memory` tool with action parameter: add, replace, remove
 - replace/remove use short unique substring matching (not full text or IDs)
 - Behavioral guidance lives in the tool schema description
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state

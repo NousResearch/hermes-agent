@@ -42,6 +42,7 @@ def _make_event(chat_id: str = "123", message_id: str = "456") -> MessageEvent:
 def test_reactions_disabled_by_default(monkeypatch):
     """Telegram reactions should be disabled by default."""
     monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_REACTIONS_ENABLED", raising=False)
     adapter = _make_adapter()
     assert adapter._reactions_enabled() is False
 
@@ -145,6 +146,7 @@ async def test_on_processing_start_adds_eyes_reaction(monkeypatch):
 async def test_on_processing_start_skipped_when_disabled(monkeypatch):
     """Processing start should not react when reactions are disabled."""
     monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_REACTIONS_ENABLED", raising=False)
     adapter = _make_adapter()
     event = _make_event()
 
@@ -175,7 +177,7 @@ async def test_on_processing_start_handles_missing_ids(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_processing_complete_success(monkeypatch):
-    """Successful processing should set thumbs-up reaction."""
+    """Successful processing should set check reaction."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
@@ -185,13 +187,13 @@ async def test_on_processing_complete_success(monkeypatch):
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\U0001f44d",
+        reaction="\u2705",
     )
 
 
 @pytest.mark.asyncio
 async def test_on_processing_complete_failure(monkeypatch):
-    """Failed processing should set thumbs-down reaction."""
+    """Failed processing should set x reaction."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
@@ -201,7 +203,7 @@ async def test_on_processing_complete_failure(monkeypatch):
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\U0001f44e",
+        reaction="\u274c",
     )
 
 
@@ -209,6 +211,7 @@ async def test_on_processing_complete_failure(monkeypatch):
 async def test_on_processing_complete_skipped_when_disabled(monkeypatch):
     """Processing complete should not react when reactions are disabled."""
     monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_REACTIONS_ENABLED", raising=False)
     adapter = _make_adapter()
     event = _make_event()
 
@@ -243,8 +246,9 @@ async def test_on_processing_complete_cancelled_clears_reaction(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_processing_complete_cancelled_skipped_when_disabled(monkeypatch):
-    """Cancelled processing should not call the API when reactions are off."""
+    """Cancelled processing complete should not react when reactions are disabled."""
     monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_REACTIONS_ENABLED", raising=False)
     adapter = _make_adapter()
     event = _make_event()
 

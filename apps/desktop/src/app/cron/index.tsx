@@ -32,7 +32,7 @@ import {
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, Clock } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $cronFocusJobId, setCronFocusJobId } from '@/store/cron'
+import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs, updateCronJobs } from '@/store/cron'
 import { notify, notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -247,7 +247,11 @@ interface CronViewProps extends React.ComponentProps<'section'> {
 export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setStatusbarItemGroup }: CronViewProps) {
   const { t } = useI18n()
   const c = t.cron
-  const [jobs, setJobs] = useState<CronJob[] | null>(null)
+  // Source of truth is the shared atom (also fed by the controller poll), so the
+  // sidebar and this overlay never drift — a delete here clears the sidebar row
+  // immediately. `loading` only gates the first paint before the atom is filled.
+  const jobs = useStore($cronJobs)
+  const [loading, setLoading] = useState(jobs.length === 0)
   const [query, setQuery] = useState('')
   const [busyJobId, setBusyJobId] = useState<null | string>(null)
   // Master/detail: the job whose schedule + run history fill the right pane.
@@ -263,10 +267,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   const refresh = useCallback(async () => {
     try {
-      const result = await getCronJobs()
-      setJobs(result)
+      setCronJobs(await getCronJobs())
     } catch (err) {
       notifyError(err, c.failedLoad)
+    } finally {
+      setLoading(false)
     }
   }, [c])
 
@@ -280,7 +285,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // it, queue a scroll, then clear the one-shot focus so re-opening cron
   // normally doesn't re-trigger it.
   useEffect(() => {
-    if (!focusJobId || !jobs) {return}
+    if (!focusJobId) {return}
 
     const match = jobs.find(job => job.id === focusJobId || jobName(job) === focusJobId)
 
@@ -292,13 +297,10 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     setCronFocusJobId(null)
   }, [focusJobId, jobs])
 
-  const visibleJobs = useMemo(() => {
-    if (!jobs) {
-      return []
-    }
-
-    return jobs.filter(job => matchesQuery(job, query.trim())).sort((a, b) => jobTitle(a).localeCompare(jobTitle(b)))
-  }, [jobs, query])
+  const visibleJobs = useMemo(
+    () => jobs.filter(job => matchesQuery(job, query.trim())).sort((a, b) => jobTitle(a).localeCompare(jobTitle(b))),
+    [jobs, query]
+  )
 
   // Detail always reflects a concrete job: the explicitly selected one, else the
   // first visible row, so the right pane is never empty while jobs exist.
@@ -319,7 +321,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     })
   }, [selectedJob])
 
-  const totalCount = jobs?.length ?? 0
+  const totalCount = jobs.length
 
   async function handlePauseResume(job: CronJob) {
     setBusyJobId(job.id)
@@ -327,7 +329,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     try {
       const isPaused = jobState(job) === 'paused'
       const updated = isPaused ? await resumeCronJob(job.id) : await pauseCronJob(job.id)
-      setJobs(current => (current ? current.map(row => (row.id === job.id ? updated : row)) : current))
+      updateCronJobs(rows => rows.map(row => (row.id === job.id ? updated : row)))
       notify({
         kind: 'success',
         title: isPaused ? c.resumed : c.paused,
@@ -345,7 +347,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
     try {
       const updated = await triggerCronJob(job.id)
-      setJobs(current => (current ? current.map(row => (row.id === job.id ? updated : row)) : current))
+      updateCronJobs(rows => rows.map(row => (row.id === job.id ? updated : row)))
       notify({ kind: 'success', title: c.triggered, message: truncate(jobTitle(job), 60) })
     } catch (err) {
       notifyError(err, c.failedTrigger)
@@ -363,7 +365,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
     try {
       await deleteCronJob(pendingDelete.id)
-      setJobs(current => (current ? current.filter(row => row.id !== pendingDelete.id) : current))
+      updateCronJobs(rows => rows.filter(row => row.id !== pendingDelete.id))
       notify({ kind: 'success', title: c.deleted, message: truncate(jobTitle(pendingDelete), 60) })
       setPendingDelete(null)
     } catch (err) {
@@ -382,7 +384,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         deliver: values.deliver || DEFAULT_DELIVER
       })
 
-      setJobs(current => (current ? [...current, created] : [created]))
+      updateCronJobs(rows => [...rows, created])
       notify({ kind: 'success', title: c.created, message: truncate(jobTitle(created), 60) })
     } else if (editor.mode === 'edit') {
       const updated = await updateCronJob(editor.job.id, {
@@ -392,7 +394,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         deliver: values.deliver
       })
 
-      setJobs(current => (current ? current.map(row => (row.id === updated.id ? updated : row)) : current))
+      updateCronJobs(rows => rows.map(row => (row.id === updated.id ? updated : row)))
       notify({ kind: 'success', title: c.updated, message: truncate(jobTitle(updated), 60) })
     }
 
@@ -401,7 +403,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   return (
     <OverlayView closeLabel={c.close} onClose={onClose}>
-      {!jobs ? (
+      {loading && jobs.length === 0 ? (
         <PageLoader label={c.loading} />
       ) : (
         <OverlaySplitLayout>

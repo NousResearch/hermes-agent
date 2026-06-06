@@ -8,6 +8,10 @@ import type { CronJob } from '@/types/hermes'
 export const $cronJobs = atom<CronJob[]>([])
 export const setCronJobs = (jobs: CronJob[]) => $cronJobs.set(jobs)
 
+// In-place edit so the cron overlay's mutations (create/edit/delete/pause/…)
+// land in the same atom the sidebar renders — no stale list until the next poll.
+export const updateCronJobs = (fn: (jobs: CronJob[]) => CronJob[]) => $cronJobs.set(fn($cronJobs.get()))
+
 // One-shot focus target: clicking "Manage" on a job sets this, then opens the
 // cron overlay, which reads it once to select + scroll to that job. Cleared
 // after consumption so re-opening cron normally doesn't re-focus a stale job.

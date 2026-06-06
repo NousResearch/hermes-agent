@@ -973,6 +973,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         gateway_session_key: Optional[str] = None,
     ) -> Any:
         """
@@ -1021,6 +1022,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
+            reasoning_callback=reasoning_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
@@ -2224,6 +2226,16 @@ class APIServerAdapter(BasePlatformAdapter):
         # Output items we've emitted so far (used to build the terminal
         # response.completed payload).  Kept in the order they appeared.
         emitted_items: List[Dict[str, Any]] = []
+        # Streaming reasoning text (model thinking).  Each chunk is emitted
+        # immediately as ``response.reasoning_text.delta`` after a single
+        # opening ``response.output_item.added`` (status=in_progress).  The
+        # matching ``response.reasoning_text.done`` + ``response.output_item.done``
+        # pair is sent at end-of-run — see _emit_reasoning_delta / _close_reasoning.
+        reasoning_text_parts: List[str] = []
+        reasoning_item_id: Optional[str] = None
+        reasoning_output_index: Optional[int] = None
+        reasoning_opened = False
+        reasoning_closed = False
         # Monotonic counter for output_index (spec requires it).
         output_index = 0
         # Monotonic counter for call_id generation if the agent doesn't
@@ -2293,6 +2305,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 return
             incomplete_text = "".join(final_text_parts) or final_response_text
             incomplete_items: List[Dict[str, Any]] = list(emitted_items)
+            # If reasoning item was opened (deltas streamed) but never closed
+            # (client disconnect before _close_reasoning ran), snapshot it into
+            # the incomplete payload so GET /v1/responses/{id} still surfaces
+            # the partial thinking.
+            if reasoning_opened and not reasoning_closed:
+                _full = "".join(reasoning_text_parts)
+                incomplete_items.append({
+                    "id": reasoning_item_id or f"rs_{uuid.uuid4().hex[:24]}",
+                    "type": "reasoning",
+                    "status": "incomplete",
+                    "summary": [{"type": "summary_text", "text": _full}],
+                    "content": [{"type": "reasoning_text", "text": _full}],
+                })
             if incomplete_text:
                 incomplete_items.append({
                     "type": "message",
@@ -2466,26 +2491,108 @@ class APIServerAdapter(BasePlatformAdapter):
                     "item": output_item,
                 })
 
+            async def _emit_reasoning_delta(delta_text: str) -> None:
+                """Stream a single reasoning chunk in real time.
+
+                First chunk opens a ``response.output_item.added`` (item.type=
+                reasoning, status=in_progress) so clients can render a "thinking"
+                block immediately.  Every chunk (including the first) emits
+                ``response.reasoning_text.delta`` mirroring how regular text
+                deltas stream — the model's chain-of-thought is no longer
+                buffered until end-of-run.
+
+                The matching close pair is sent by ``_close_reasoning``.
+                """
+                nonlocal output_index, reasoning_item_id, reasoning_output_index, reasoning_opened
+                if not isinstance(delta_text, str) or not delta_text:
+                    return
+
+                if not reasoning_opened:
+                    reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+                    reasoning_output_index = output_index
+                    output_index += 1
+                    reasoning_opened = True
+                    initial_item = {
+                        "id": reasoning_item_id,
+                        "type": "reasoning",
+                        "status": "in_progress",
+                        "summary": [],
+                        "content": [{"type": "reasoning_text", "text": ""}],
+                    }
+                    await _write_event("response.output_item.added", {
+                        "type": "response.output_item.added",
+                        "output_index": reasoning_output_index,
+                        "item": initial_item,
+                    })
+
+                reasoning_text_parts.append(delta_text)
+                await _write_event("response.reasoning_text.delta", {
+                    "type": "response.reasoning_text.delta",
+                    "item_id": reasoning_item_id,
+                    "output_index": reasoning_output_index,
+                    "content_index": 0,
+                    "delta": delta_text,
+                })
+
+            async def _close_reasoning() -> None:
+                """Close the streaming reasoning item at end-of-run.
+
+                Emits ``response.reasoning_text.done`` then
+                ``response.output_item.done`` (status=completed) with the
+                full accumulated text.  Idempotent and a no-op when no
+                reasoning was ever streamed.
+                """
+                nonlocal reasoning_closed
+                if reasoning_closed or not reasoning_opened:
+                    return
+                reasoning_closed = True
+                full_text = "".join(reasoning_text_parts)
+                await _write_event("response.reasoning_text.done", {
+                    "type": "response.reasoning_text.done",
+                    "item_id": reasoning_item_id,
+                    "output_index": reasoning_output_index,
+                    "content_index": 0,
+                    "text": full_text,
+                })
+                final_item = {
+                    "id": reasoning_item_id,
+                    "type": "reasoning",
+                    "status": "completed",
+                    "summary": [{"type": "summary_text", "text": full_text}],
+                    "content": [{"type": "reasoning_text", "text": full_text}],
+                }
+                emitted_items.append(final_item)
+                await _write_event("response.output_item.done", {
+                    "type": "response.output_item.done",
+                    "output_index": reasoning_output_index,
+                    "item": final_item,
+                })
+
             # Main drain loop — thread-safe queue fed by agent callbacks.
             async def _dispatch(it) -> None:
                 """Route a queue item to the correct SSE emitter.
 
                 Plain strings are text deltas — they are batched (50ms)
                 to reduce Open WebUI re-render storms.  Tagged tuples
-                with ``__tool_started__`` / ``__tool_completed__``
-                prefixes are tool lifecycle events and flush the buffer
-                before emitting.
+                with ``__tool_started__`` / ``__tool_completed__`` /
+                ``__reasoning__`` prefixes are control events and flush
+                the text buffer before emitting.
                 """
                 nonlocal _batch_timer
                 if isinstance(it, tuple) and len(it) == 2 and isinstance(it[0], str):
                     tag, payload = it
-                    # Flush batched text before tool events
+                    # Flush batched text before tool / reasoning events
                     if _batch_buf:
                         await _flush_batch()
                     if tag == "__tool_started__":
                         await _emit_tool_started(payload)
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
+                    elif tag == "__reasoning__":
+                        # Stream reasoning chunk in real time via SSE delta —
+                        # consumers see the thinking unfold like normal text,
+                        # not a single end-of-run dump.
+                        await _emit_reasoning_delta(payload)
                 elif isinstance(it, str):
                     # Batch text deltas — append to buffer, flush on timer
                     _batch_buf.append(it)
@@ -2575,6 +2682,10 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:  # noqa: BLE001
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
                 agent_error = str(e)
+
+            # Close the streaming reasoning item before the message item closes
+            # so the persisted output[] order is function_calls → reasoning → message
+            await _close_reasoning()
 
             # Close the message item if it was opened
             final_response_text = "".join(final_text_parts) or final_response_text
@@ -2900,6 +3011,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     "result": function_result,
                 }))
 
+            def _on_reasoning(text):
+                """Queue reasoning text (model thinking) for live emission as a
+                reasoning output_item.  Fires from AIAgent._fire_reasoning_delta
+                during streaming and from the post-response capture in
+                non-streaming mode.  The SSE writer batches deltas and emits
+                a single reasoning output_item.added/done pair before the
+                assistant message item closes."""
+                if text:
+                    _stream_q.put(("__reasoning__", str(text)))
+
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -2910,6 +3031,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                reasoning_callback=_on_reasoning,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
             ))
@@ -3445,6 +3567,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
     ) -> tuple:
@@ -3469,6 +3592,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                reasoning_callback=reasoning_callback,
                 gateway_session_key=gateway_session_key,
             )
             if agent_ref is not None:

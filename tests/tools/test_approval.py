@@ -1548,6 +1548,7 @@ class TestProjectAutonomyApprovalBridge:
                 "HERMES_SESSION_KEY",
                 "HERMES_INTERACTIVE",
                 "HERMES_KANBAN_BOARD",
+                "HERMES_KANBAN_WORKSPACE",
             )
         }
         os.environ.pop("HERMES_CRON_SESSION", None)
@@ -1556,6 +1557,7 @@ class TestProjectAutonomyApprovalBridge:
         os.environ["HERMES_GATEWAY_SESSION"] = "1"
         os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
         os.environ["HERMES_KANBAN_BOARD"] = "hermes-maintenance"
+        os.environ["HERMES_KANBAN_WORKSPACE"] = "/home/engs2272/.worktrees/t_374a6388"
 
     def teardown_method(self):
         from tools import approval as mod
@@ -1624,3 +1626,76 @@ class TestProjectAutonomyApprovalBridge:
         assert config_result.get("approval_pending") is True
         assert gateway_result["approved"] is False
         assert gateway_result.get("approval_pending") is True
+
+    def test_high_autonomy_auto_approves_scoped_tmp_recursive_delete(self, monkeypatch):
+        from tools import approval as mod
+        self._manual_mode(monkeypatch)
+        self._board_level(monkeypatch, "High")
+
+        result = mod.check_all_command_guards("rm -rf /tmp/hm-runtime-v202606063-testtree", "local")
+
+        assert result["approved"] is True
+        assert result.get("project_autonomy_approved") is True
+        assert "delete" in result.get("description", "")
+
+    def test_high_autonomy_does_not_auto_approve_unscoped_recursive_delete(self, monkeypatch):
+        from tools import approval as mod
+        self._manual_mode(monkeypatch)
+        self._board_level(monkeypatch, "High")
+
+        result = mod.check_all_command_guards("rm -rf /home/engs2272/important", "local")
+
+        assert result["approved"] is False
+        assert result.get("approval_pending") is True
+
+    def test_high_autonomy_auto_approves_scoped_github_pr_comment(self, monkeypatch):
+        from tools import approval as mod
+        self._manual_mode(monkeypatch)
+        self._board_level(monkeypatch, "High")
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+
+        result = mod.check_all_command_guards(
+            "gh pr comment 47 --repo yunuenmf/hermes-maintenance --body-file /tmp/evidence.md",
+            "local",
+        )
+
+        assert result["approved"] is True
+        assert result.get("project_autonomy_approved") is True
+        assert "GitHub authority yellow" in result.get("description", "")
+
+    def test_medium_autonomy_still_prompts_for_scoped_github_pr_comment(self, monkeypatch):
+        from tools import approval as mod
+        self._manual_mode(monkeypatch)
+        self._board_level(monkeypatch, "Medium")
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+
+        result = mod.check_all_command_guards(
+            "gh pr comment 47 --repo yunuenmf/hermes-maintenance --body-file /tmp/evidence.md",
+            "local",
+        )
+
+        assert result["approved"] is False
+        assert result.get("approval_pending") is True
+
+    def test_high_autonomy_does_not_auto_approve_github_pr_merge(self, monkeypatch):
+        from tools import approval as mod
+        self._manual_mode(monkeypatch)
+        self._board_level(monkeypatch, "High")
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+
+        result = mod.check_all_command_guards(
+            "gh pr merge 47 --repo yunuenmf/hermes-maintenance --squash",
+            "local",
+        )
+
+        assert result["approved"] is False
+        assert result.get("approval_pending") is True

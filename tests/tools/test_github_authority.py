@@ -18,6 +18,14 @@ def test_green_gh_pr_view_is_classified_read_only():
     assert decision.command_family == "gh pr"
 
 
+def test_yellow_gh_issue_comment_is_classified_scoped_write():
+    decision = classify_github_command("gh issue comment 36 --repo yunuenmf/hermes-maintenance --body-file /tmp/body.md")
+
+    assert decision.tier == "yellow"
+    assert decision.requires_preflight is True
+    assert decision.command_family == "gh issue"
+
+
 def test_compound_command_is_not_green_allowlisted():
     decision = classify_github_command("gh pr view 25 && gh pr merge 25")
 

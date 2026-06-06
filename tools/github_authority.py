@@ -141,6 +141,14 @@ def _classify_gh(argv: list[str]) -> GitHubAuthorityDecision:
         if sub in {"create", "comment", "edit", "review", "ready", "reopen"}:
             return _yellow("PR write requires scoped task evidence before automation", "gh pr")
 
+    if top == "issue":
+        if sub in {"view", "list", "status"}:
+            return _green("read-only issue inspection", "gh issue")
+        if sub in {"create", "comment", "edit", "reopen"}:
+            return _yellow("issue write requires scoped task evidence before automation", "gh issue")
+        if sub in {"close"}:
+            return _yellow("issue close requires replacement-preservation evidence", "gh issue")
+
     if top == "run":
         if sub in {"view", "list", "watch"}:
             return _green("read-only workflow run inspection", "gh run")

@@ -921,6 +921,94 @@ _ROUTINE_MEDIUM_APPROVAL_DESCRIPTIONS = {
     "script execution via heredoc",
 }
 
+_HIGH_AUTONOMY_GITHUB_AUTO_FAMILIES = {
+    "git push",
+    "gh pr",
+    "gh issue",
+    "gh api",
+}
+
+_HIGH_AUTONOMY_GITHUB_EXCLUDED_REASON_FRAGMENTS = (
+    "merge",
+    "review",
+    "close",
+    "workflow",
+    "release",
+    "secret",
+    "token",
+    "deploy",
+    "visibility",
+    "default branch",
+)
+
+
+def _is_high_autonomy_github_medium_warning(key: str, description: str, is_policy_warning: bool) -> bool:
+    """True for deterministic GitHub yellow operations High autonomy may handle."""
+    if not is_policy_warning or not key.startswith("github-authority:yellow:"):
+        return False
+    family = key.rsplit(":", 1)[-1]
+    if family not in _HIGH_AUTONOMY_GITHUB_AUTO_FAMILIES:
+        return False
+    lowered = str(description or "").lower()
+    return not any(fragment in lowered for fragment in _HIGH_AUTONOMY_GITHUB_EXCLUDED_REASON_FRAGMENTS)
+
+
+def _tokenize_shell_command(command: str) -> list[str]:
+    try:
+        import shlex
+
+        return shlex.split(command or "")
+    except Exception:
+        return []
+
+
+def _is_scoped_delete_target(target: str) -> bool:
+    """Return True when a recursive-delete target is bounded to scratch scope."""
+    target = (target or "").strip()
+    if not target or target in {"/", ".", "..", "~", "$HOME", "${HOME}"}:
+        return False
+    lowered = target.lower()
+    if any(ch in target for ch in "*?["):
+        return False
+    if lowered.startswith(("/etc", "/dev", "/proc", "/sys", "/boot", "/usr", "/bin", "/sbin", "/lib", "/var/lib", "/home")):
+        workspace = os.getenv("HERMES_KANBAN_WORKSPACE") or ""
+        if workspace and os.path.isabs(target):
+            try:
+                return os.path.abspath(target).startswith(os.path.abspath(workspace) + os.sep)
+            except Exception:
+                return False
+        return False
+    if target.startswith(("/tmp/", "/var/tmp/")):
+        base = os.path.basename(target.rstrip("/"))
+        return bool(base) and base not in {"tmp", "var"}
+    if target.startswith("/"):
+        return False
+    return not target.startswith(("../", "~/", "$HOME/", "${HOME}/"))
+
+
+def _is_scoped_recursive_delete_command(command: str) -> bool:
+    argv = _tokenize_shell_command(command)
+    if not argv:
+        return False
+    separators = {"&&", "||", ";"}
+    segments: list[list[str]] = [[]]
+    for token in argv:
+        if token in separators:
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    rm_segments = [seg for seg in segments if seg and os.path.basename(seg[0]) == "rm"]
+    if not rm_segments:
+        return False
+    for seg in rm_segments:
+        recursive = any(t.startswith("-") and ("r" in t or "R" in t or "recursive" in t) for t in seg[1:])
+        if not recursive:
+            return False
+        targets = [t for t in seg[1:] if not t.startswith("-")]
+        if not targets or not all(_is_scoped_delete_target(t) for t in targets):
+            return False
+    return True
+
 
 def _is_routine_medium_project_warning(key: str, description: str, is_policy_warning: bool) -> bool:
     """True for approval warnings High autonomy may safely auto-handle.
@@ -939,13 +1027,25 @@ def _is_routine_medium_project_warning(key: str, description: str, is_policy_war
     return desc in _ROUTINE_MEDIUM_APPROVAL_DESCRIPTIONS
 
 
-def _project_autonomy_allows_routine_medium_auto_approval(warnings: list[tuple[str, str, bool]]) -> bool:
+def _is_project_autonomy_medium_warning(key: str, description: str, is_policy_warning: bool, command: str) -> bool:
+    """Return True for Medium-risk warning classes handled by High autonomy."""
+    desc = str(description or "").strip().lower()
+    if _is_routine_medium_project_warning(key, description, is_policy_warning):
+        return True
+    if key in {"recursive delete", "delete in root path"} and desc in {"recursive delete", "delete in root path"}:
+        return _is_scoped_recursive_delete_command(command)
+    if _is_high_autonomy_github_medium_warning(key, description, is_policy_warning):
+        return True
+    return False
+
+
+def _project_autonomy_allows_routine_medium_auto_approval(warnings: list[tuple[str, str, bool]], command: str = "") -> bool:
     """Return True when active board High/Full may auto-approve warnings."""
     if not warnings:
         return False
     if _get_project_autonomy_level() not in {"High", "Full"}:
         return False
-    return all(_is_routine_medium_project_warning(key, desc, is_policy)
+    return all(_is_project_autonomy_medium_warning(key, desc, is_policy, command)
                for key, desc, is_policy in warnings)
 
 
@@ -1376,7 +1476,7 @@ def check_all_command_guards(command: str, env_type: str,
     # Hardline and sudo guards already returned above; Tirith, GitHub authority,
     # secrets/config, destructive, runtime, service, and unclassified warnings
     # deliberately continue to the human/smart approval surfaces below.
-    if _project_autonomy_allows_routine_medium_auto_approval(warnings):
+    if _project_autonomy_allows_routine_medium_auto_approval(warnings, command):
         combined_desc = "; ".join(desc for _, desc, _ in warnings)
         for key, _, _ in warnings:
             approve_session(session_key, key)

@@ -54,11 +54,20 @@ class TestMaybeApplyCodexAppServerRuntime:
         )
         assert got == "chat_completions"
 
+
+    def test_legacy_openai_runtime_is_ignored_when_gate_disabled(self) -> None:
+        got = _maybe_apply_codex_app_server_runtime(
+            provider="openai",
+            api_mode="chat_completions",
+            model_cfg={"codex_runtime": {"enabled": False, "mode": "responses_only"}, "openai_runtime": "codex_app_server"},
+        )
+        assert got == "chat_completions"
+
     def test_opt_in_rewrites_openai(self) -> None:
         got = _maybe_apply_codex_app_server_runtime(
             provider="openai",
             api_mode="chat_completions",
-            model_cfg={"openai_runtime": "codex_app_server"},
+            model_cfg={"codex_runtime": {"enabled": True, "mode": "app_server"}, "openai_runtime": "codex_app_server"},
         )
         assert got == "codex_app_server"
 
@@ -66,7 +75,7 @@ class TestMaybeApplyCodexAppServerRuntime:
         got = _maybe_apply_codex_app_server_runtime(
             provider="openai-codex",
             api_mode="codex_responses",
-            model_cfg={"openai_runtime": "codex_app_server"},
+            model_cfg={"codex_runtime": {"enabled": True, "mode": "app_server"}, "openai_runtime": "codex_app_server"},
         )
         assert got == "codex_app_server"
 
@@ -74,7 +83,7 @@ class TestMaybeApplyCodexAppServerRuntime:
         got = _maybe_apply_codex_app_server_runtime(
             provider="openai",
             api_mode="chat_completions",
-            model_cfg={"openai_runtime": "Codex_App_Server"},
+            model_cfg={"codex_runtime": {"enabled": True, "mode": "APP_SERVER"}, "openai_runtime": "Codex_App_Server"},
         )
         assert got == "codex_app_server"
 
@@ -97,7 +106,7 @@ class TestMaybeApplyCodexAppServerRuntime:
         got = _maybe_apply_codex_app_server_runtime(
             provider=provider,
             api_mode="anthropic_messages",
-            model_cfg={"openai_runtime": "codex_app_server"},
+            model_cfg={"codex_runtime": {"enabled": True, "mode": "app_server"}, "openai_runtime": "codex_app_server"},
         )
         assert got == "anthropic_messages", (
             f"provider={provider!r} should not be rerouted to codex_app_server"

@@ -60,12 +60,13 @@ logger = logging.getLogger(__name__)
 #   - terminal / shell / read_file / write_file / patch / search_files /
 #     process — codex's built-ins cover these and approval routes through
 #     codex's own UI.
-#   - delegate_task / memory / session_search / todo — these are
-#     `_AGENT_LOOP_TOOLS` in Hermes (model_tools.py:493). They require
-#     the running AIAgent context to dispatch (mid-loop state), so a
-#     stateless MCP callback can't drive them. Hermes' default runtime
-#     keeps these working; the codex_app_server runtime cannot.
-EXPOSED_TOOLS: tuple[str, ...] = (
+#   - delegate_task / memory / session_search / send_message / cronjob /
+#     clarify / todo — these are Hermes agent-loop or delivery/state tools.
+#     A stateless MCP callback must not own them.
+#
+# The default callback exposes no tools. The configured allowlist arrives via
+# HERMES_CODEX_RUNTIME_TOOLS and is intersected with AVAILABLE_CALLBACK_TOOLS.
+AVAILABLE_CALLBACK_TOOLS: tuple[str, ...] = (
     "web_search",
     "web_extract",
     "browser_navigate",
@@ -122,14 +123,26 @@ def _build_server() -> Any:
         handle_function_call,
     )
 
+    allowed_tools = {
+        name.strip()
+        for name in os.environ.get("HERMES_CODEX_RUNTIME_TOOLS", "").split(",")
+        if name.strip()
+    }
+    protected_tools = {
+        "memory", "session_search", "send_message", "cronjob",
+        "clarify", "todo", "delegate_task",
+    }
+    exposed_tools = tuple(
+        name for name in AVAILABLE_CALLBACK_TOOLS
+        if name in allowed_tools and name not in protected_tools
+    )
+
     mcp = FastMCP(
         "hermes-tools",
         instructions=(
-            "Hermes Agent's tool surface, exposed for use inside a Codex "
-            "session. Use these for capabilities Codex's built-in toolset "
-            "doesn't cover: web search/extract, browser automation, "
-            "subagent delegation, vision, image generation, persistent "
-            "memory, skills, and cross-session search."
+            "Hermes Agent's explicitly allowlisted tool surface, exposed for "
+            "use inside a Codex session. Protected Hermes state/delivery "
+            "tools are never exposed through this callback."
         ),
     )
 
@@ -143,7 +156,7 @@ def _build_server() -> Any:
 
     exposed_count = 0
 
-    for name in EXPOSED_TOOLS:
+    for name in exposed_tools:
         spec = all_defs.get(name)
         if spec is None:
             logger.debug(
@@ -189,7 +202,7 @@ def _build_server() -> Any:
     logger.info(
         "hermes-tools MCP server registered %d/%d tools",
         exposed_count,
-        len(EXPOSED_TOOLS),
+        len(exposed_tools),
     )
     return mcp
 

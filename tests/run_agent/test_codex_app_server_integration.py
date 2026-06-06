@@ -53,15 +53,19 @@ def _make_codex_agent():
     """Construct an AIAgent in codex_app_server mode without contacting any
     real provider. We pass api_mode explicitly so the constructor takes the
     fast path for direct credentials."""
-    return run_agent.AIAgent(
-        api_key="stub",
-        base_url="https://stub.invalid",
-        provider="openai",
-        api_mode="codex_app_server",
-        quiet_mode=True,
-        skip_context_files=True,
-        skip_memory=True,
-    )
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={"codex_runtime": {"enabled": True, "mode": "app_server", "allow_runtime_tools": []}},
+    ):
+        return run_agent.AIAgent(
+            api_key="stub",
+            base_url="https://stub.invalid",
+            provider="openai",
+            api_mode="codex_app_server",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
 
 
 class TestApiModeAccepted:

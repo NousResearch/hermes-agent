@@ -49,10 +49,16 @@ class TestGetCurrentRuntime:
             {"model": {"openai_runtime": "garbage"}}
         ) == "auto"
 
-    def test_explicit_codex(self):
+    def test_legacy_openai_runtime_is_not_authoritative(self):
         assert crs.get_current_runtime(
             {"model": {"openai_runtime": "codex_app_server"}}
-        ) == "codex_app_server"
+        ) == "auto"
+
+    def test_prefers_codex_runtime_flag_over_legacy_key(self):
+        assert crs.get_current_runtime({
+            "model": {"openai_runtime": "codex_app_server"},
+            "codex_runtime": {"enabled": True, "mode": "app_server"},
+        }) == "codex_app_server"
 
     def test_handles_non_dict_config(self):
         assert crs.get_current_runtime(None) == "auto"  # type: ignore[arg-type]
@@ -68,10 +74,15 @@ class TestSetRuntime:
         assert cfg["model"]["openai_runtime"] == "codex_app_server"
 
     def test_returns_previous_value(self):
-        cfg = {"model": {"openai_runtime": "codex_app_server"}}
+        cfg = {
+            "model": {"openai_runtime": "codex_app_server"},
+            "codex_runtime": {"enabled": True, "mode": "app_server"},
+        }
         old = crs.set_runtime(cfg, "auto")
         assert old == "codex_app_server"
-        assert cfg["model"]["openai_runtime"] == "auto"
+        assert cfg["model"].get("openai_runtime") in (None, "")
+        assert cfg["codex_runtime"]["enabled"] is False
+        assert cfg["codex_runtime"]["mode"] == "responses_only"
 
     def test_invalid_value_raises(self):
         with pytest.raises(ValueError):
@@ -80,7 +91,10 @@ class TestSetRuntime:
 
 class TestApply:
     def test_read_only_call_reports_state(self):
-        cfg = {"model": {"openai_runtime": "codex_app_server"}}
+        cfg = {
+            "model": {"openai_runtime": "codex_app_server"},
+            "codex_runtime": {"enabled": True, "mode": "app_server"},
+        }
         with patch.object(crs, "check_codex_binary_ok",
                           return_value=(True, "0.130.0")):
             r = crs.apply(cfg, None)
@@ -94,7 +108,7 @@ class TestApply:
         cfg = {"model": {"openai_runtime": "auto"}}
         r = crs.apply(cfg, "auto")
         assert r.success
-        assert r.message == "openai_runtime already set to auto"
+        assert r.message == "codex_runtime already set to auto"
 
     def test_enable_blocked_when_codex_missing(self):
         cfg = {}
@@ -128,12 +142,16 @@ class TestApply:
         assert r.new_value == "codex_app_server"
         assert r.old_value == "auto"
         assert r.requires_new_session is True
-        assert "via MCP" in r.message  # hermes-tools callback message
+        assert cfg["codex_runtime"]["enabled"] is True
+        assert cfg["codex_runtime"]["mode"] == "app_server"
         assert cfg["model"]["openai_runtime"] == "codex_app_server"
-        assert persisted["model"]["openai_runtime"] == "codex_app_server"
+        assert persisted["codex_runtime"]["enabled"] is True
 
     def test_disable_does_not_check_binary(self):
-        cfg = {"model": {"openai_runtime": "codex_app_server"}}
+        cfg = {
+            "model": {"openai_runtime": "codex_app_server"},
+            "codex_runtime": {"enabled": True, "mode": "app_server"},
+        }
         with patch.object(crs, "check_codex_binary_ok") as bin_check:
             r = crs.apply(cfg, "auto")
         assert r.success
@@ -182,12 +200,13 @@ class TestApply:
         # Permissions default surfaces
         assert "Default sandbox: :workspace" in r.message
         # Hermes tool callback announcement
-        assert "via MCP" in r.message
+        assert "Hermes tool callback registered" in r.message
 
     def test_disable_does_not_trigger_migration(self):
         """Switching back to auto must not write to ~/.codex/."""
         cfg = {
             "model": {"openai_runtime": "codex_app_server"},
+            "codex_runtime": {"enabled": True, "mode": "app_server"},
             "mcp_servers": {"x": {"command": "y"}},
         }
         with patch("hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
@@ -231,7 +250,10 @@ class TestApply:
     def test_binary_check_cached_on_read_only_call(self):
         """Read-only call (new_value=None) calls the binary check exactly
         once and reuses the result for the message."""
-        cfg = {"model": {"openai_runtime": "codex_app_server"}}
+        cfg = {
+            "model": {"openai_runtime": "codex_app_server"},
+            "codex_runtime": {"enabled": True, "mode": "app_server"},
+        }
         with patch.object(crs, "check_codex_binary_ok",
                           return_value=(True, "0.130.0")) as bin_check:
             crs.apply(cfg, None)

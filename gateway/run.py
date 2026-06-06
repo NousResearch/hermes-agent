@@ -11067,11 +11067,23 @@ class GatewayRunner:
         try:
             cfg = _load_gateway_config()
             if cfg:
-                model_cfg = cfg.get("model", {})
-                if isinstance(model_cfg, dict):
-                    current_model = model_cfg.get("default", "")
-                    current_provider = model_cfg.get("provider", current_provider)
-                    current_base_url = model_cfg.get("base_url", "")
+                # Handle both config formats:
+                # 1. New format: model: <string>, provider: <string> at root level
+                # 2. Old format: model: {default: <string>, provider: <string>, base_url: <string>}
+                model_config = cfg.get("model")
+                if isinstance(model_config, str):
+                    # New format: model is a string
+                    current_model = model_config
+                    # Provider should be at root level
+                    current_provider = cfg.get("provider", current_provider)
+                    # Base URL might be in providers section or elsewhere
+                    # For now, leave as empty - it's not used in the model picker display
+                elif isinstance(model_config, dict):
+                    # Old format: model is a dict with default/provider/base_url
+                    current_model = model_config.get("default", "")
+                    current_provider = model_config.get("provider", current_provider)
+                    current_base_url = model_config.get("base_url", "")
+                # If model_config is neither string nor dict, keep defaults
                 user_provs = cfg.get("providers")
                 try:
                     from hermes_cli.config import get_compatible_custom_providers

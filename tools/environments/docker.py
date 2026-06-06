@@ -90,6 +90,37 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     return normalized
 
 
+def _rewrite_mount_source_for_docker_host(
+    path: str,
+    *,
+    container_root: str,
+    host_root: str,
+) -> str:
+    """Translate a container-visible host path into a Docker-host-visible path.
+
+    This is for Docker-outside-of-Docker setups where Hermes runs in a container
+    but the Docker daemon resolves bind-mount sources on the host filesystem.
+    When ``path`` lives under ``container_root``, rewrite that prefix to
+    ``host_root`` before passing it to ``docker run``.
+    """
+    if not path or not container_root or not host_root:
+        return path
+
+    source = os.path.abspath(os.path.expanduser(path))
+    container_root_abs = os.path.abspath(os.path.expanduser(container_root))
+    host_root_abs = os.path.abspath(os.path.expanduser(host_root))
+    try:
+        if os.path.commonpath([source, container_root_abs]) != container_root_abs:
+            return source
+    except ValueError:
+        return source
+
+    rel = os.path.relpath(source, container_root_abs)
+    if rel == ".":
+        return host_root_abs
+    return os.path.join(host_root_abs, rel)
+
+
 def _load_hermes_env_vars() -> dict[str, str]:
     """Load ~/.hermes/.env values without failing Docker command execution."""
     try:
@@ -590,14 +621,22 @@ class DockerEnvironment(BaseEnvironment):
                 logger.warning(f"Docker volume '{vol}' missing colon, skipping")
 
         host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        translate_mount_source = lambda path: _rewrite_mount_source_for_docker_host(
+            path,
+            container_root=cwd,
+            host_root=host_cwd_abs,
+        )
         bind_host_cwd = (
             auto_mount_cwd
             and bool(host_cwd_abs)
-            and os.path.isdir(host_cwd_abs)
             and not workspace_explicitly_mounted
         )
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
-            logger.debug(f"Skipping docker cwd mount: host_cwd is not a valid directory: {host_cwd}")
+            logger.debug(
+                "Docker cwd mount source is not visible locally; "
+                "passing through for host-side Docker resolution: %s",
+                host_cwd_abs,
+            )
 
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
@@ -607,13 +646,13 @@ class DockerEnvironment(BaseEnvironment):
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([
-                "-v", f"{self._home_dir}:/root",
+                "-v", f"{translate_mount_source(self._home_dir)}:/root",
             ])
             if not bind_host_cwd and not workspace_explicitly_mounted:
                 self._workspace_dir = str(sandbox / "workspace")
                 os.makedirs(self._workspace_dir, exist_ok=True)
                 writable_args.extend([
-                    "-v", f"{self._workspace_dir}:/workspace",
+                    "-v", f"{translate_mount_source(self._workspace_dir)}:/workspace",
                 ])
         else:
             if not bind_host_cwd and not workspace_explicitly_mounted:
@@ -659,7 +698,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
+                    f"{translate_mount_source(mount_entry['host_path'])}:{mount_entry['container_path']}:ro",
                 ])
                 logger.info(
                     "Docker: mounting credential %s -> %s",
@@ -679,7 +718,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
+                    f"{translate_mount_source(skills_mount['host_path'])}:{skills_mount['container_path']}:ro",
                 ])
                 logger.info(
                     "Docker: mounting skills dir %s -> %s",
@@ -701,7 +740,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro",
+                    f"{translate_mount_source(cache_mount['host_path'])}:{cache_mount['container_path']}:ro",
                 ])
                 logger.info(
                     "Docker: mounting cache dir %s -> %s",

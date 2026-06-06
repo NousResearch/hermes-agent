@@ -5046,6 +5046,117 @@ def _(rid, params: dict) -> dict:
     )
 
 
+@method("file.attach")
+def _(rid, params: dict) -> dict:
+    """Generalized file attach — supports any MIME in the whitelist
+    (not just images). Validates by magic bytes, enforces size limit,
+    copies to per-session sandbox. Added in v2 design."""
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    raw = str(params.get("path", "") or "").strip()
+    if not raw:
+        return _err(rid, 4015, "path required")
+    try:
+        from cli import (
+            _copy_to_sandbox,
+            _detect_mime,
+            _resolve_attachment_path,
+            _split_path_input,
+            _validate_upload,
+        )
+
+        path_token, remainder = _split_path_input(raw)
+        resolved = _resolve_attachment_path(path_token)
+        if resolved is None:
+            return _err(rid, 4016, f"file not found: {path_token}")
+
+        size = resolved.stat().st_size
+        mime = _detect_mime(resolved)
+
+        # Raises ValueError on rejection — caught and returned as 4017.
+        try:
+            _validate_upload(resolved, mime, size)
+        except ValueError as ve:
+            return _err(rid, 4017, str(ve))
+
+        session_id = str(params.get("session_id", "")).strip()
+        attached = _copy_to_sandbox(resolved, session_id=session_id)
+        # Use the same id scheme as _list_attached (first 8 hex chars
+        # of the stored filename stem, which is the sha16 prefix) so
+        # the attach/list/detach cycle stays consistent.
+        attach_id = attached.stored_path.stem[:8]
+        return _ok(
+            rid,
+            {
+                "attached": True,
+                "id": attach_id,
+                "name": resolved.name,
+                "stored_path": str(attached.stored_path),
+                "mime_type": attached.mime_type,
+                "size_bytes": attached.size_bytes,
+                "kind": attached.kind,
+                "preview_text": attached.preview_text,
+                "remainder": remainder,
+                **_image_meta(resolved),  # width/height/tokens for images
+            },
+        )
+    except Exception as e:
+        return _err(rid, 5028, str(e))
+
+
+@method("file.list")
+def _(rid, params: dict) -> dict:
+    """List all files attached to the current session's sandbox."""
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    try:
+        from cli import _list_attached
+        session_id = str(params.get("session_id", "")).strip()
+        attached = _list_attached(session_id=session_id)
+        return _ok(
+            rid,
+            {
+                "files": [
+                    {
+                        "id": a.id,
+                        "name": a.stored_path.name,
+                        "stored_path": str(a.stored_path),
+                        "mime_type": a.mime_type,
+                        "size_bytes": a.size_bytes,
+                        "kind": a.kind,
+                    }
+                    for a in attached
+                ]
+            },
+        )
+    except Exception as e:
+        return _err(rid, 5029, str(e))
+
+
+@method("file.detach")
+def _(rid, params: dict) -> dict:
+    """Remove a single file from the session's sandbox by id."""
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    file_id = str(params.get("id", "") or "").strip()
+    if not file_id:
+        return _err(rid, 4015, "id required")
+    try:
+        from cli import _list_attached
+        session_id = str(params.get("session_id", "")).strip()
+        attached = _list_attached(session_id=session_id)
+        target = next((a for a in attached if a.id == file_id), None)
+        if target is None:
+            return _err(rid, 4016, f"file id not found: {file_id}")
+        target.stored_path.unlink()
+        return _ok(rid, {"detached": True, "id": file_id})
+    except Exception as e:
+        return _err(rid, 5030, str(e))
+
+
 @method("input.detect_drop")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)

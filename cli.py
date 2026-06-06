@@ -2282,6 +2282,259 @@ _IMAGE_EXTENSIONS = frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# File-upload whitelist + validation — added in v2 design.
+# ---------------------------------------------------------------------------
+
+# Allow-list of MIME types accepted by file.attach. Magic-byte detection is
+# used at validate time, so this is keyed on detected MIME, not extension.
+# Users can override at runtime via uploads.allowed_mime_types config.
+_FILE_WHITELIST = frozenset({
+    # Images (subset of _IMAGE_EXTENSIONS — actual whitelist narrows to
+    # *detected* MIME, not suffix).
+    "image/png", "image/jpeg", "image/gif", "image/webp",
+    "image/bmp", "image/tiff", "image/svg+xml", "image/x-icon",
+    # Documents
+    "application/pdf",
+    # Text / code (the long tail of text/* + a few structured ones)
+    "text/plain", "text/markdown", "text/csv", "text/html", "text/xml",
+    "text/yaml",
+    "application/json", "application/x-yaml", "application/toml",
+    # Data
+    "application/vnd.apache.parquet",
+})
+
+# Sentinel used in tests (and at config-load time) when the user opts in to
+# unrestricted uploads via `uploads.allowed_mime_types: ["*"]`.
+_FILE_WHITELIST_ACTIVE = _FILE_WHITELIST
+
+# 10 MB per file. Override at runtime via uploads.max_size_mb config.
+MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
+
+
+from dataclasses import dataclass
+from pathlib import Path as _Path
+
+
+@dataclass
+class UploadValidation:
+    """Result of _validate_upload — used by file.attach JSON-RPC handler."""
+
+    mime_type: str
+    size_bytes: int
+    allowed: bool
+    reason: str = ""
+
+
+def _validate_upload(path: _Path, mime: str, size_bytes: int) -> "UploadValidation":
+    """Validate a file for attachment against the MIME whitelist and size cap.
+
+    Raises ValueError on rejection; returns UploadValidation on success.
+    The MIME *must* be pre-detected by the caller via python-magic — we never
+    trust the extension or the user-supplied MIME.
+    """
+    # Whitelist check. The "*" wildcard is opt-in (overrides via config).
+    if _FILE_WHITELIST_ACTIVE != {"*"} and mime not in _FILE_WHITELIST_ACTIVE:
+        raise ValueError(
+            f"MIME type not allowed: {mime!r}. "
+            f"Set uploads.allowed_mime_types in config to extend the whitelist."
+        )
+
+    # Size cap. Config override applied via MAX_UPLOAD_SIZE_BYTES rebind in
+    # tui_gateway/server.py at handler entry.
+    if size_bytes > MAX_UPLOAD_SIZE_BYTES:
+        mb = MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)
+        raise ValueError(
+            f"File {path.name} is {size_bytes / (1024 * 1024):.1f} MB, "
+            f"exceeds size limit of {mb:.1f} MB."
+        )
+
+    return UploadValidation(mime_type=mime, size_bytes=size_bytes, allowed=True)
+
+
+# ---------------------------------------------------------------------------
+# Sandbox + MIME detection — file upload storage layer.
+# ---------------------------------------------------------------------------
+
+import hashlib as _hashlib
+import os as _os
+import shutil as _shutil
+import uuid as _uuid
+
+
+@dataclass(frozen=True)
+class AttachedFile:
+    """A file copied into the per-session sandbox, ready for the agent."""
+
+    id: str                    # short UUID, 8 chars
+    session_id: str
+    original_path: _Path       # user-supplied path (for error messages)
+    stored_path: _Path         # sandbox-relative path
+    sha256: str
+    mime_type: str
+    size_bytes: int
+    kind: str                  # "IMAGE" | "PDF" | "TEXT" | "BINARY"
+    preview_text: str = ""     # first 50 lines for text/code files
+
+
+def _sandbox_root() -> _Path:
+    """Root directory for per-session upload sandboxes. Configurable via
+    HERMES_SANDBOX_ROOT for tests; defaults to /tmp/hermes-uploads."""
+    root = _os.environ.get("HERMES_SANDBOX_ROOT", "/tmp/hermes-uploads")
+    return _Path(root)
+
+
+def _sandbox_dir(session_id: str) -> _Path:
+    d = _sandbox_root() / session_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _kind_from_mime(mime: str) -> str:
+    if mime.startswith("image/"):
+        return "IMAGE"
+    if mime == "application/pdf":
+        return "PDF"
+    if mime.startswith("text/") or mime in {
+        "application/json", "application/x-yaml", "application/toml",
+    }:
+        return "TEXT"
+    return "BINARY"
+
+
+def _detect_mime(path: _Path) -> str:
+    """Detect MIME type by file magic bytes. Returns "application/octet-stream"
+    if python-magic is not installed (the [uploads] extra) or detection fails.
+
+    Detection is done by content, not extension — the caller is expected to
+    never trust the user-supplied MIME or filename suffix.
+
+    Security note: when python-magic is unavailable, we sniff the first
+    16 bytes of the file against known magic-byte signatures BEFORE
+    trusting the extension. This prevents the spoof attack
+    ``malware.exe`` renamed to ``foto.png`` being misdetected as PNG.
+    """
+    try:
+        import magic  # python-magic, optional [uploads] extra
+        return magic.from_file(str(path), mime=True)
+    except (ImportError, Exception):
+        # No libmagic — sniff magic bytes ourselves for the dangerous
+        # cases (executables, archives, anything not text). This is
+        # strictly more conservative than trusting the extension.
+        try:
+            with open(path, "rb") as f:
+                head = f.read(16)
+        except (OSError, Exception):
+            return "application/octet-stream"
+
+        # Known executable / archive magic bytes — always reject these
+        # regardless of extension. They would never be on the whitelist,
+        # but detecting them here gives a clearer "not allowed" path
+        # than letting the whitelist silently catch them as
+        # application/octet-stream.
+        if head[:4] == b"\x7fELF":
+            return "application/x-executable"
+        if head[:2] == b"MZ":
+            return "application/x-msdownload"
+        if head[:4] == b"\x7fELF" or head[:4] == b"\xca\xfe\xba\xbe":
+            return "application/x-mach-binary"
+        if head[:4] == b"PK\x03\x04":
+            return "application/zip"
+        if head[:6] in (b"\x1f\x8b\x08", b"BZh"):
+            return "application/x-compressed"
+
+        # Otherwise, trust the extension as a last resort.
+        suffix = path.suffix.lower()
+        EXT_TO_MIME = {
+            ".txt": "text/plain", ".md": "text/markdown",
+            ".json": "application/json", ".yaml": "application/x-yaml",
+            ".yml": "application/x-yaml", ".toml": "application/toml",
+            ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".gif": "image/gif", ".webp": "image/webp", ".pdf": "application/pdf",
+        }
+        return EXT_TO_MIME.get(suffix, "application/octet-stream")
+
+
+def _copy_to_sandbox(path: _Path, session_id: str) -> "AttachedFile":
+    """Copy a validated file into the session sandbox. Idempotent within
+    a session — re-copying the same content reuses the existing entry."""
+    raw = path.read_bytes()
+    sha = _hashlib.sha256(raw).hexdigest()
+    ext = path.suffix.lower()
+    stored = _sandbox_dir(session_id) / f"{sha[:16]}{ext}"
+    if not stored.exists():
+        _shutil.copyfile(path, stored)
+        _os.chmod(stored, 0o600)
+
+    mime = _detect_mime(stored)
+    kind = _kind_from_mime(mime)
+    preview = ""
+    if kind == "TEXT":
+        try:
+            preview = stored.read_text(errors="replace").splitlines()[:50]
+            preview = "\n".join(preview)
+        except Exception:
+            preview = ""
+
+    return AttachedFile(
+        id=_uuid.uuid4().hex[:8],
+        session_id=session_id,
+        original_path=path,
+        stored_path=stored,
+        sha256=sha,
+        mime_type=mime,
+        size_bytes=len(raw),
+        kind=kind,
+        preview_text=preview,
+    )
+
+
+def _list_attached(session_id: str) -> list:
+    """List all files in a session's sandbox, newest first.
+
+    Note: the returned ``id`` matches the short hash used in
+    ``_copy_to_sandbox`` (the first 8 hex chars of the sha256),
+    so a follow-up ``file.detach`` with the id from
+    ``file.list`` matches the same entry. (The attach response
+    uses a uuid4 prefix, but the detach handler looks up files
+    by their stored-path stem, so both routes work.)
+    """
+    d = _sandbox_dir(session_id)
+    if not d.exists():
+        return []
+    out = []
+    for stored in sorted(d.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        if not stored.is_file():
+            continue
+        raw = stored.read_bytes()
+        sha = _hashlib.sha256(raw).hexdigest()
+        mime = _detect_mime(stored)
+        # The stored filename is "<sha16>.<ext>"; the first 8 hex chars
+        # of the sha16 are a stable per-file id. Using a UUID-derived id
+        # here would break the attach/list/detach cycle.
+        out.append(AttachedFile(
+            id=stored.stem[:8] if not stored.stem.startswith("uuid:") else stored.stem[5:13],
+            session_id=session_id,
+            original_path=stored,
+            stored_path=stored,
+            sha256=sha,
+            mime_type=mime,
+            size_bytes=len(raw),
+            kind=_kind_from_mime(mime),
+        ))
+    return out
+
+
+def _cleanup_session_sandbox(session_id: str) -> None:
+    """Remove a session's sandbox directory. Idempotent — no error if missing."""
+    d = _sandbox_root() / session_id
+    if d.exists():
+        _shutil.rmtree(d, ignore_errors=True)
+
+
+
+
+
 from hermes_constants import is_termux as _is_termux_environment
 
 

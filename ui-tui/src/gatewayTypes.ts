@@ -332,6 +332,40 @@ export interface ImageAttachResponse {
   width?: number
 }
 
+// ── File attach (v2 design) ──────────────────────────────────────────
+
+export interface FileAttachResponse {
+  attached: boolean
+  id: string
+  name: string
+  stored_path: string
+  mime_type: string
+  size_bytes: number
+  kind: 'IMAGE' | 'PDF' | 'TEXT' | 'BINARY'
+  preview_text?: string
+  remainder?: string
+  // Image metadata (only present when kind === 'IMAGE').
+  height?: number
+  width?: number
+  token_estimate?: number
+}
+
+export interface FileListResponse {
+  files: Array<{
+    id: string
+    name: string
+    stored_path: string
+    mime_type: string
+    size_bytes: number
+    kind: 'IMAGE' | 'PDF' | 'TEXT' | 'BINARY'
+  }>
+}
+
+export interface FileDetachResponse {
+  detached: boolean
+  id: string
+}
+
 // ── Voice ────────────────────────────────────────────────────────────
 
 export interface VoiceToggleResponse {

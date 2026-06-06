@@ -145,6 +145,11 @@ honcho = ["honcho-ai==2.0.1"]
 # Declared here so packagers (Nix, Homebrew) ship it with [all] and so
 # `pip install hermes-agent[vision]` / the lazy-install path can resolve it.
 vision = ["Pillow==12.2.0"]
+# File uploads — used by the TUI file.attach JSON-RPC handler for MIME
+# detection by magic bytes. Lazy-installed because not every hermes session
+# needs upload support; cli.py imports it lazily inside _detect_mime().
+# Requires libmagic1 system package (apt: libmagic1, brew: libmagic).
+uploads = ["python-magic==0.4.27"]
 # CVE-2026-48710 (BadHost): Starlette is pulled transitively by mcp's
 # sse-starlette / HTTP-SSE stack (and by fastapi in the `web` extra). Before
 # 1.0.1, a malformed Host header makes `request.url.path` desync from the path

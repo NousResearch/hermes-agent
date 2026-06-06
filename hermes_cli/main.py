@@ -15738,6 +15738,21 @@ Examples:
         action="store_true",
         help="List running hermes dashboard processes and exit",
     )
+    # Backward-compat shim: older Hermes desktop app shells (<= 0.15.x) spawn the
+    # backend as `hermes dashboard --no-open --tui --host ... --port ...`. The
+    # `--tui` flag was removed from this subcommand in cae6b5486 (embedded chat is
+    # always on now). When a user's CLI updates past that commit but their desktop
+    # app binary has not, argparse used to hard-error with "unrecognized arguments:
+    # --tui" and exit(2) — the backend died before becoming ready and the GUI just
+    # showed "Hermes couldn't start" with no actionable cause. Accept and silently
+    # ignore the flag so an old app + new CLI degrades gracefully instead of
+    # bricking. Hidden from --help; safe to delete once the floor app version is
+    # well past 0.16.0.
+    dashboard_parser.add_argument(
+        "--tui",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     dashboard_parser.set_defaults(func=cmd_dashboard)
 
     # `hermes dashboard register` — register a self-hosted dashboard OAuth

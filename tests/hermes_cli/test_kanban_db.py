@@ -1379,6 +1379,22 @@ def test_list_tasks_order_by(kanban_home):
         except ValueError as e:
             assert "order_by must be one of" in str(e)
 
+
+def test_list_tasks_priority_recent_order(kanban_home):
+    # Used by the dashboard so newest cards float to the top of each lane
+    # while higher-priority cards still sort above lower-priority ones.
+    with kb.connect() as conn:
+        t_a = kb.create_task(conn, title="alpha", priority=1)
+        t_b = kb.create_task(conn, title="beta", priority=2)
+        t_c = kb.create_task(conn, title="gamma", priority=1)
+        t_d = kb.create_task(conn, title="delta", priority=2)
+
+        ordered = kb.list_tasks(conn, order_by="priority-recent")
+        # priority=2 group: newest first (t_d before t_b),
+        # then priority=1 group: newest first (t_c before t_a).
+        assert [t.id for t in ordered] == [t_d, t_b, t_c, t_a]
+
+
 def test_delete_task_removes_task_and_cascades(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="to-delete", assignee="alice")

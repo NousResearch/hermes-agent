@@ -405,6 +405,7 @@ def get_board(
             include_archived=include_archived,
             workflow_template_id=workflow_template_id,
             current_step_key=current_step_key,
+            order_by="priority-recent",
         )
         # Pre-fetch link counts per task (cheap: one query).
         link_counts: dict[str, dict[str, int]] = {}

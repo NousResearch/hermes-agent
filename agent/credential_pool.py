@@ -34,6 +34,7 @@ from hermes_cli.auth import (
     _save_provider_state,
     _store_provider_state,
     read_credential_pool,
+    resolve_codex_base_url,
     write_credential_pool,
 )
 
@@ -1901,7 +1902,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "auth_type": AUTH_TYPE_OAUTH,
                     "access_token": tokens.get("access_token", ""),
                     "refresh_token": tokens.get("refresh_token"),
-                    "base_url": "https://chatgpt.com/backend-api/codex",
+                    "base_url": resolve_codex_base_url(),
                     "last_refresh": state.get("last_refresh"),
                     "label": custom_label or label_from_token(tokens.get("access_token", ""), "device_code"),
                 },

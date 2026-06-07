@@ -915,6 +915,53 @@ def _load_ai_pair_state(project: str | Path, issue_id: str) -> tuple[Path, dict[
     return pair_dir, json.loads(state_path.read_text(encoding="utf-8"))
 
 
+def _markdown_field_value(text: str, field: str) -> str:
+    prefix = f"{field}:"
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            return stripped[len(prefix) :].strip()
+    return ""
+
+
+def _write_ai_pair_state(pair_dir: Path, state: dict[str, Any]) -> None:
+    state["updated_at"] = _now_iso()
+    (pair_dir / "pair-state.json").write_text(
+        json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _validate_ai_pair_review_gate(
+    *,
+    pair_dir: Path,
+    state: dict[str, Any],
+    plan_text: str,
+    brief_text: str,
+    diff_summary: str,
+    verification_evidence: str,
+) -> None:
+    errors: list[str] = []
+    approval = _markdown_field_value(plan_text, "approved_by_owner").lower()
+    if approval not in {"yes", "true", "approved"}:
+        errors.append("coder-plan.md must include approved_by_owner: yes")
+
+    for field in ("diff_summary", "files_changed", "commands_run", "results", "review_focus"):
+        if not _markdown_field_value(brief_text, field):
+            errors.append(f"coder-brief.md missing required value: {field}:")
+
+    if not diff_summary.strip():
+        errors.append("diff_summary argument must not be empty")
+    if not verification_evidence.strip():
+        errors.append("verification_evidence argument must not be empty")
+
+    if errors:
+        state["status"] = "blocked_missing_review_gate"
+        state["review_gate_errors"] = errors
+        _write_ai_pair_state(pair_dir, state)
+        raise ValueError("AI Pair review gate blocked: " + "; ".join(errors))
+
+
 def render_ai_pair_review_packet(
     *,
     project: str | Path,
@@ -925,6 +972,14 @@ def render_ai_pair_review_packet(
     pair_dir, state = _load_ai_pair_state(project, issue_id)
     plan_text = (pair_dir / "coder-plan.md").read_text(encoding="utf-8")
     brief_text = (pair_dir / "coder-brief.md").read_text(encoding="utf-8")
+    _validate_ai_pair_review_gate(
+        pair_dir=pair_dir,
+        state=state,
+        plan_text=plan_text,
+        brief_text=brief_text,
+        diff_summary=diff_summary,
+        verification_evidence=verification_evidence,
+    )
     packet = f"""# Review Packet
 
 issue_id: {issue_id}
@@ -955,11 +1010,8 @@ verification_evidence:
     packet_path = pair_dir / "review-packet.md"
     packet_path.write_text(packet, encoding="utf-8")
     state["status"] = "review_packet_ready"
-    state["updated_at"] = _now_iso()
-    (pair_dir / "pair-state.json").write_text(
-        json.dumps(state, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    state.pop("review_gate_errors", None)
+    _write_ai_pair_state(pair_dir, state)
     return packet_path
 
 

@@ -149,6 +149,14 @@ Required flow:
 9. Reviewer checks read-only.
 10. Passing review moves to GitLab Merge Request / CI gate.
 
+Review packet hard gate:
+
+- `coder-plan.md` must include `approved_by_owner: yes`.
+- `coder-brief.md` must include non-empty `diff_summary`, `files_changed`,
+  `commands_run`, `results`, and `review_focus`.
+- If these fields are missing, the pair job is blocked as
+  `blocked_missing_review_gate` and no reviewer packet may be used.
+
 Private GitLab host:
 
 ```text

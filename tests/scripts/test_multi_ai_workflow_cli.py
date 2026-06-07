@@ -9,6 +9,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "multi_ai_workflow.py"
 CHECK_PATH = Path(__file__).resolve().parents[2] / "scripts" / "multi_ai_workflow_check.py"
@@ -733,8 +735,24 @@ def test_render_ai_pair_review_packet_includes_read_only_rules(tmp_path):
         force=False,
     )
     pair_dir = tmp_path / ".hermes" / "ai-pair" / "pair-001-use-ai-pair"
-    (pair_dir / "coder-plan.md").write_text("# Plan\napproved\n", encoding="utf-8")
-    (pair_dir / "coder-brief.md").write_text("# Brief\nchanged prompt registry\n", encoding="utf-8")
+    (pair_dir / "coder-plan.md").write_text(
+        "# Plan\n\napproved_by_owner: yes\napproval_note: Owner approved test plan.\n",
+        encoding="utf-8",
+    )
+    (pair_dir / "coder-brief.md").write_text(
+        "\n".join(
+            [
+                "# Brief",
+                "diff_summary: changed prompt registry",
+                "files_changed: docs and scripts",
+                "commands_run: pytest tests/scripts/test_multi_ai_workflow_cli.py -q",
+                "results: passed",
+                "review_focus: confirm read-only reviewer packet",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
     packet_path = cli.render_ai_pair_review_packet(
         project=tmp_path,
@@ -749,6 +767,39 @@ def test_render_ai_pair_review_packet_includes_read_only_rules(tmp_path):
     assert "Reviewer must not edit files." in text
     assert "Modified prompt shortcut files only." in text
     assert "pytest passed 22/22" in text
+
+
+def test_render_ai_pair_review_packet_blocks_unapproved_plan_and_empty_brief(tmp_path):
+    cli = _load_cli()
+    cli.init_project(tmp_path, force=False)
+    cli.create_ai_pair_job(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        task="Add Use AI Pair",
+        coder_ai="Codecode",
+        reviewer_ai="Codex",
+        branch="ai-pair/pair-001-use-ai-pair",
+        gitlab_host="https://gitlab.dev.jigsawgroups.work/",
+        force=False,
+    )
+
+    with pytest.raises(ValueError) as exc:
+        cli.render_ai_pair_review_packet(
+            project=tmp_path,
+            issue_id="pair-001-use-ai-pair",
+            diff_summary="Modified prompt shortcut files only.",
+            verification_evidence="pytest passed 22/22",
+        )
+
+    message = str(exc.value)
+    assert "approved_by_owner: yes" in message
+    assert "coder-brief.md missing required value" in message
+    state = json.loads(
+        (tmp_path / ".hermes" / "ai-pair" / "pair-001-use-ai-pair" / "pair-state.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["status"] == "blocked_missing_review_gate"
 
 
 def test_gitlab_gate_dry_run_never_prints_token(tmp_path):

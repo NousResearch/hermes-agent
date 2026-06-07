@@ -2774,6 +2774,7 @@ class FeishuAdapter(BasePlatformAdapter):
             user_name=sender_profile["user_name"],
             thread_id=None,
             user_id_alt=sender_profile["user_id_alt"],
+            user_id_aliases=sender_profile.get("user_id_aliases"),
         )
         synthetic_event = MessageEvent(
             text=synthetic_text,
@@ -2836,6 +2837,7 @@ class FeishuAdapter(BasePlatformAdapter):
             user_name=sender_profile["user_name"],
             thread_id=None,
             user_id_alt=sender_profile["user_id_alt"],
+            user_id_aliases=sender_profile.get("user_id_aliases"),
         )
         synthetic_event = MessageEvent(
             text=synthetic_text,
@@ -3110,6 +3112,7 @@ class FeishuAdapter(BasePlatformAdapter):
             user_name=sender_profile["user_name"],
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
+            user_id_aliases=sender_profile.get("user_id_aliases"),
             is_bot=is_bot,
         )
         normalized = MessageEvent(
@@ -3847,17 +3850,19 @@ class FeishuAdapter(BasePlatformAdapter):
         sender_id: Any,
         *,
         is_bot: bool = False,
-    ) -> Dict[str, Optional[str]]:
+    ) -> Dict[str, Any]:
         """Map Feishu's three-tier user IDs onto Hermes' SessionSource fields.
 
         Preference order for the primary ``user_id`` field:
           1. user_id  (tenant-scoped, most stable — requires permission scope)
           2. open_id  (app-scoped, always available — different per bot app)
 
-        ``user_id_alt`` carries the union_id (developer-scoped, stable across
-        all apps by the same developer).  Session-key generation prefers
-        user_id_alt when present, so participant isolation stays stable even
-        if the primary ID is the app-scoped open_id.
+        ``user_id_alt`` is used for stable session-key generation and primary
+        authorization fallback. When ``union_id`` is available it takes
+        priority as alt (more stable across developer apps). Historical IDs
+        such as the old ``open_id`` are also returned in ``user_id_aliases`` so
+        existing pairing and allowlist entries continue to authorize the user
+        after the ID-preference switch.
         """
         open_id = getattr(sender_id, "open_id", None) or None
         user_id = getattr(sender_id, "user_id", None) or None
@@ -3869,10 +3874,23 @@ class FeishuAdapter(BasePlatformAdapter):
         display_name = await self._resolve_sender_name_from_api(
             name_lookup_id, is_bot=is_bot,
         )
+        if union_id:
+            alt_id = union_id
+        elif open_id and open_id != primary_id:
+            alt_id = open_id
+        else:
+            alt_id = None
+
+        aliases: List[str] = []
+        for candidate in (union_id, open_id):
+            if candidate and candidate != primary_id and candidate not in aliases:
+                aliases.append(candidate)
+
         return {
             "user_id": primary_id,
             "user_name": display_name,
-            "user_id_alt": union_id,
+            "user_id_alt": alt_id,
+            "user_id_aliases": aliases,
         }
 
     def _get_cached_sender_name(self, sender_id: Optional[str]) -> Optional[str]:

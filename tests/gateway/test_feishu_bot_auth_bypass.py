@@ -57,6 +57,40 @@ def _make_feishu_human_source(open_id: str = "ou_human"):
     )
 
 
+def test_feishu_pairing_authorizes_historical_open_id_alias():
+    runner = _make_bare_runner()
+    runner.pairing_store = SimpleNamespace(
+        is_approved=lambda platform, user_id: platform == "feishu" and user_id == "ou_legacy",
+    )
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="group",
+        user_id="u_tenant",
+        user_id_alt="on_stable",
+        user_id_aliases=["on_stable", "ou_legacy"],
+        is_bot=False,
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_feishu_allowlist_authorizes_historical_open_id_alias(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_legacy")
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="group",
+        user_id="u_tenant",
+        user_id_alt="on_stable",
+        user_id_aliases=["on_stable", "ou_legacy"],
+        is_bot=False,
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
 def test_feishu_bot_authorized_when_allow_bots_mentions(monkeypatch):
     runner = _make_bare_runner()
     monkeypatch.setenv("FEISHU_ALLOW_BOTS", "mentions")

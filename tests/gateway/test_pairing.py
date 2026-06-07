@@ -17,6 +17,7 @@ from gateway.pairing import (
     MAX_PENDING_PER_PLATFORM,
     MAX_FAILED_ATTEMPTS,
     _secure_write,
+    _resolve_pairing_dir,
 )
 
 
@@ -24,6 +25,24 @@ def _make_store(tmp_path):
     """Create a PairingStore with PAIRING_DIR pointed to tmp_path."""
     with patch("gateway.pairing.PAIRING_DIR", tmp_path):
         return PairingStore()
+
+
+def test_resolve_pairing_dir_prefers_current_data_over_empty_legacy_dir(tmp_path):
+    current = tmp_path / "platforms" / "pairing"
+    legacy = tmp_path / "pairing"
+    current.mkdir(parents=True)
+    legacy.mkdir()
+    (current / "feishu-approved.json").write_text("{}", encoding="utf-8")
+
+    assert _resolve_pairing_dir(tmp_path) == current
+
+
+def test_resolve_pairing_dir_uses_legacy_when_only_legacy_has_data(tmp_path):
+    legacy = tmp_path / "pairing"
+    legacy.mkdir()
+    (legacy / "telegram-approved.json").write_text("{}", encoding="utf-8")
+
+    assert _resolve_pairing_dir(tmp_path) == legacy
 
 
 # ---------------------------------------------------------------------------

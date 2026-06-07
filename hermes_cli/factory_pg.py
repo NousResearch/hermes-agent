@@ -6,6 +6,7 @@ route production Factory work to SQLite.
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 import uuid
 from datetime import datetime, timezone
@@ -40,7 +41,7 @@ RECONCILIATION_TASK_SPECS: dict[str, dict[str, Any]] = {
         "engine": "zeus",
         "priority": 10,
         "acceptance": [
-            "Project-specific Notion PM tracker exists or an explicit no-Notion waiver is recorded in project metadata.",
+            "Project-specific Notion PM tracker exists, unless Jean explicitly authorized a no-Notion exception for this project.",
             "Factory DB project metadata includes notion_tracker_page_id or notion_tracker_url when Notion is required.",
             "Notion remains human reporting only; Factory DB stays the source of truth.",
         ],
@@ -65,8 +66,34 @@ RECONCILIATION_TASK_SPECS: dict[str, dict[str, Any]] = {
         "engine": "zeus",
         "priority": 30,
         "acceptance": [
-            "Required project-local Factory docs exist or each missing document has an explicit waiver with reason.",
+            "Required project-local Factory docs exist, unless Jean explicitly authorized a document exception for this project.",
             "PRD, ADRs, sprint plan, task graph, QA/security gates, tracker, and delivery report are reconciled against Factory DB.",
+        ],
+    },
+    "docs_not_indexed": {
+        "title": "R2b — Reconciliation: update DOCUMENTATION_INDEX.md",
+        "phase": "documentation",
+        "owner": "factory-reporter",
+        "reviewer": "factory-orchestrator",
+        "engine": "zeus",
+        "priority": 35,
+        "acceptance": [
+            "DOCUMENTATION_INDEX.md lists every required project-local Factory artifact path.",
+            "The documentation index is generated from real artifact files, not only filename guesses.",
+            "Builder context points at DOCUMENTATION_INDEX.md before implementation starts.",
+        ],
+    },
+    "uncommitted_project_artifacts": {
+        "title": "R2c — Reconciliation: commit project-local Factory artifacts",
+        "phase": "documentation",
+        "owner": "factory-reporter",
+        "reviewer": "factory-orchestrator",
+        "engine": "zeus",
+        "priority": 37,
+        "acceptance": [
+            "Project-local Factory artifacts have a git commit checkpoint, unless Jean explicitly authorized a project-specific exception.",
+            "Factory DB metadata or gate evidence records the commit SHA used as the source-of-truth checkpoint.",
+            "Untracked or modified methodology docs are not treated as completed delivery evidence.",
         ],
     },
     "missing_task_graph": {
@@ -114,6 +141,7 @@ ACTIVE_TASK_STATUSES = IN_FLIGHT_TASK_STATUSES | {"rework"}
 DISPATCHABLE_PROJECT_STATUSES = {"active", "planned", "intake", "blocked"}
 TERMINAL_GATE_STATUSES = {"passed", "failed", "waived"}
 BLOCKER_ACTION_CATEGORIES = {"auto_resolvable", "technical_rework", "human_question_required", "stale_orphan_state"}
+DELIVERY_HOLD_STATUS = "delivery_hold"
 BLOCKED_ALERT_DEFAULT_MINUTES = 60
 CLAIMED_NULL_ALERT_ROUNDS = 3
 _BLOCKER_TECHNICAL_KEYWORDS = (
@@ -347,6 +375,68 @@ def _metadata(row: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _waiver_explicitly_authorized(metadata: dict[str, Any], waiver_key: str) -> bool:
+    """Return True only for a project-specific waiver Jean authorized.
+
+    Suppressor booleans such as ``notion_waived`` and
+    ``required_docs_waived`` explain historical drift, but they must not mute
+    canonical Factory readiness unless an explicit human authorization is
+    attached to that project.
+    """
+
+    if not metadata.get(waiver_key):
+        return False
+    authorizer = (
+        metadata.get(f"{waiver_key}_authorized_by")
+        or metadata.get("waiver_authorized_by")
+        or metadata.get("waivers_authorized_by")
+    )
+    reason = (
+        metadata.get(f"{waiver_key}_reason")
+        or metadata.get("waiver_reason")
+        or metadata.get("waiver_authorization_reason")
+    )
+    return bool(authorizer and reason)
+
+
+def _any_explicit_waiver(metadata: dict[str, Any], *waiver_keys: str) -> bool:
+    return any(_waiver_explicitly_authorized(metadata, key) for key in waiver_keys)
+
+
+def _has_unauthorized_completion_waivers(metadata: dict[str, Any]) -> bool:
+    waiver_keys = ("notion_waived", "tracker_waived", "required_docs_waived")
+    return any(metadata.get(key) and not _waiver_explicitly_authorized(metadata, key) for key in waiver_keys)
+
+
+def _required_docs_explicitly_waived(metadata: dict[str, Any]) -> bool:
+    if _waiver_explicitly_authorized(metadata, "required_docs_waived"):
+        return True
+    waivers = metadata.get("required_doc_waivers")
+    if not waivers:
+        return False
+    authorizer = metadata.get("required_doc_waivers_authorized_by") or metadata.get("waiver_authorized_by")
+    reason = metadata.get("required_doc_waivers_reason") or metadata.get("waiver_reason")
+    return bool(authorizer and reason)
+
+
+def _all_open_work_is_reconciliation(tasks: list[dict[str, Any]]) -> bool:
+    open_tasks = [task for task in tasks if str(task.get("status") or "") not in TERMINAL_TASK_STATUSES]
+    return bool(open_tasks) and all(_is_reconciliation_task(task) for task in open_tasks)
+
+
+def _all_blocked_work_is_documentation_hold(tasks: list[dict[str, Any]]) -> bool:
+    blocked_statuses = {"blocked", "review_pending_human"}
+    blocking_tasks = [task for task in tasks if str(task.get("status") or "") in blocked_statuses]
+    if not blocking_tasks:
+        return False
+    documentation_phases = {"documentation", "docs", "pm", "reporting"}
+    for task in blocking_tasks:
+        phase = str(task.get("phase") or "").lower()
+        if phase not in documentation_phases and not _is_reconciliation_task(task):
+            return False
+    return True
+
+
 def _project_artifact_dir(project: dict[str, Any]) -> tuple[Path | None, str]:
     project_id = str(project.get("project_id") or "")
     metadata = _metadata(project)
@@ -355,6 +445,67 @@ def _project_artifact_dir(project: dict[str, Any]) -> tuple[Path | None, str]:
     if not repo_path:
         return None, artifact_dir
     return Path(repo_path).expanduser() / artifact_dir, artifact_dir
+
+
+def _docs_missing_from_documentation_index(factory_dir: Path, required_docs: tuple[str, ...] = FACTORY_REQUIRED_DOCS) -> list[str]:
+    """Return required docs not referenced by the project documentation index.
+
+    The repo-first Factory contract treats ``DOCUMENTATION_INDEX.md`` as the
+    builder entry point. A file existing on disk is not enough; builders and
+    reviewers need the index to enumerate every canonical artifact path.
+    """
+
+    index_path = factory_dir / "DOCUMENTATION_INDEX.md"
+    try:
+        index_text = index_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return list(required_docs)
+    return [name for name in required_docs if name not in index_text]
+
+
+def _repo_commit_explicitly_waived(metadata: dict[str, Any]) -> bool:
+    return _any_explicit_waiver(
+        metadata,
+        "repo_commit_waived",
+        "commit_checkpoint_waived",
+        "uncommitted_artifacts_waived",
+    )
+
+
+def _uncommitted_project_artifacts(repo_path: Path, artifact_dir: str) -> list[str]:
+    """Return git porcelain rows for uncommitted project-local artifacts.
+
+    If the repo is unavailable or not a git worktree, return an empty list so the
+    reconciler does not turn filesystem errors into false blockers. Git-backed
+    Factory repos, however, must leave no modified/untracked project artifacts
+    before critical readiness/delivery closure.
+    """
+
+    repo = Path(repo_path).expanduser()
+    if not repo.exists():
+        return []
+    try:
+        probe = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"],
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        if probe.returncode != 0 or probe.stdout.strip() != "true":
+            return []
+        status = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain", "--", artifact_dir],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception:
+        return []
+    if status.returncode != 0:
+        return []
+    return [line for line in status.stdout.splitlines() if line.strip()]
 
 
 def _is_reconciliation_task(task: dict[str, Any]) -> bool:
@@ -378,6 +529,10 @@ def _task_covers_reconciliation_anomaly(task: dict[str, Any], code: str) -> bool
         return "artifact" in text or "documentation" in text or "documentación" in text
     if code == "missing_required_docs":
         return any(term in text for term in ("documentation", "documentación", "docs", "tracker", "delivery report"))
+    if code == "docs_not_indexed":
+        return "documentation_index" in text or "documentation index" in text or "índice" in text or "indexed" in text
+    if code == "uncommitted_project_artifacts":
+        return "commit" in text or "uncommitted" in text or "git" in text or "checkpoint" in text
     if code == "missing_task_graph":
         return "task graph" in text or "task-graph" in text or "canonical task" in text or "task graph recovery" in text
     if code == "pending_effective_gates":
@@ -406,7 +561,12 @@ def reconciliation_findings(project: dict[str, Any], tasks: list[dict[str, Any]]
     project is resumed.
     """
 
-    if str(project.get("status") or "") in {"completed", "accepted"} and not _metadata(project).get("force_reconcile_completed"):
+    metadata = _metadata(project)
+    if (
+        str(project.get("status") or "") in {"completed", "accepted"}
+        and not metadata.get("force_reconcile_completed")
+        and not _has_unauthorized_completion_waivers(metadata)
+    ):
         return []
 
     findings: list[dict[str, Any]] = []
@@ -416,9 +576,12 @@ def reconciliation_findings(project: dict[str, Any], tasks: list[dict[str, Any]]
             raise ValueError(f"unknown reconciliation anomaly code: {code}")
         findings.append({"code": code, "message": message, "metadata": metadata})
 
-    metadata = _metadata(project)
     factory_dir, artifact_dir = _project_artifact_dir(project)
-    if not (metadata.get("notion_tracker_url") or metadata.get("notion_tracker_page_id") or metadata.get("notion_waived")):
+    if not (
+        metadata.get("notion_tracker_url")
+        or metadata.get("notion_tracker_page_id")
+        or _any_explicit_waiver(metadata, "notion_waived", "tracker_waived")
+    ):
         add("missing_notion_project", "Missing project-specific Notion PM tracker metadata")
 
     if factory_dir is None or not factory_dir.is_dir():
@@ -426,8 +589,28 @@ def reconciliation_findings(project: dict[str, Any], tasks: list[dict[str, Any]]
         missing_docs = list(FACTORY_REQUIRED_DOCS)
     else:
         missing_docs = [name for name in FACTORY_REQUIRED_DOCS if not (factory_dir / name).is_file()]
-    if missing_docs and not (metadata.get("required_docs_waived") or metadata.get("required_doc_waivers")):
+    if missing_docs and not _required_docs_explicitly_waived(metadata):
         add("missing_required_docs", "Missing required Factory methodology documents", missing_docs=missing_docs, artifact_dir=artifact_dir)
+    elif factory_dir is not None and factory_dir.is_dir():
+        missing_from_index = _docs_missing_from_documentation_index(factory_dir)
+        if missing_from_index and not _required_docs_explicitly_waived(metadata):
+            add(
+                "docs_not_indexed",
+                "Required Factory methodology documents are missing from DOCUMENTATION_INDEX.md",
+                missing_from_index=missing_from_index,
+                artifact_dir=artifact_dir,
+            )
+
+    repo_path = str(project.get("repo_path") or "").strip()
+    if repo_path and factory_dir is not None and factory_dir.is_dir() and not _repo_commit_explicitly_waived(metadata):
+        uncommitted_paths = _uncommitted_project_artifacts(Path(repo_path), artifact_dir)
+        if uncommitted_paths:
+            add(
+                "uncommitted_project_artifacts",
+                "Project-local Factory artifacts have uncommitted git changes",
+                uncommitted_paths=uncommitted_paths,
+                artifact_dir=artifact_dir,
+            )
 
     non_reconciliation_tasks = [task for task in tasks if not _is_reconciliation_task(task)]
     if not non_reconciliation_tasks:
@@ -471,6 +654,7 @@ def ensure_reconciliation_tasks(project: dict[str, Any], findings: list[dict[str
             f"Deterministic reconciliation task generated because: {finding.get('message')}.\n\n"
             "Do not close the project manually from UI state. Inspect Factory DB, project-local artifacts, Notion metadata, gates, and deliverable evidence; then record gates/evidence canonically."
         )
+        reopen_note = f"\n\n[factory-reconciler] Reopened because the canonical anomaly recurred: {code}."
         statements.append(
             f"""
             INSERT INTO factory.tasks (
@@ -487,11 +671,16 @@ def ensure_reconciliation_tasks(project: dict[str, Any], findings: list[dict[str
               {_j(metadata)}, {_q('reconcile-' + code)}, {int(spec['priority'])}, now(), now()
             )
             ON CONFLICT (task_id) DO UPDATE SET
+              status=CASE WHEN factory.tasks.status IN ({terminal}) THEN 'todo' ELSE factory.tasks.status END,
+              evidence_status=CASE WHEN factory.tasks.status IN ({terminal}) THEN 'missing' ELSE factory.tasks.evidence_status END,
+              result_summary=CASE
+                WHEN factory.tasks.status IN ({terminal}) THEN COALESCE(factory.tasks.result_summary, '') || {_q(reopen_note)}
+                ELSE factory.tasks.result_summary
+              END,
               description=EXCLUDED.description,
               acceptance_criteria=EXCLUDED.acceptance_criteria,
-              metadata=factory.tasks.metadata || EXCLUDED.metadata,
-              updated_at=now()
-            WHERE factory.tasks.status NOT IN ({terminal});
+              metadata=factory.tasks.metadata || EXCLUDED.metadata || {_j({'reopened_by': 'factory_reconciler', 'reopen_reason': 'canonical_anomaly_recurred'})},
+              updated_at=now();
             INSERT INTO factory.events(project_id, lane_id, task_id, actor, event_type, message, metadata)
             VALUES ({_q(project_id)}, (SELECT lane_id FROM factory.lanes WHERE project_id={_q(project_id)} ORDER BY created_at, lane_id LIMIT 1), {_q(task_id)}, 'factory-reconciler', 'reconciliation_task_ensured', {_q(f'Reconciliation task ensured for anomaly {code}')}, {_j({'task_id': task_id, 'reconciliation_anomaly': code})});
             """
@@ -520,20 +709,25 @@ def critical_readiness_findings(project_id: str) -> list[str]:
     tracker_ok = bool(
         metadata.get("notion_tracker_url")
         or metadata.get("notion_tracker_page_id")
-        or metadata.get("notion_waived")
-        or metadata.get("tracker_waived")
+        or _any_explicit_waiver(metadata, "notion_waived", "tracker_waived")
     )
-    if factory_dir:
-        tracker_ok = tracker_ok or (factory_dir / "TRACKER.md").is_file()
     if not tracker_ok:
-        findings.append("missing tracker PM (project-local TRACKER.md or Notion tracker metadata)")
+        findings.append("missing project-specific Notion PM tracker metadata")
 
     if not factory_dir or not factory_dir.is_dir():
         findings.append(f"missing project-local factory documentation directory: {artifact_dir}")
     else:
         missing_docs = [name for name in FACTORY_REQUIRED_DOCS if not (factory_dir / name).is_file()]
-        if missing_docs and not (metadata.get("required_docs_waived") or metadata.get("required_doc_waivers")):
+        if missing_docs and not _required_docs_explicitly_waived(metadata):
             findings.append("missing minimum docs: " + ", ".join(missing_docs))
+        elif not _required_docs_explicitly_waived(metadata):
+            missing_from_index = _docs_missing_from_documentation_index(factory_dir)
+            if missing_from_index:
+                findings.append("documentation index missing required docs: " + ", ".join(missing_from_index))
+        if repo_path and not _repo_commit_explicitly_waived(metadata):
+            uncommitted_paths = _uncommitted_project_artifacts(Path(repo_path), str(artifact_dir))
+            if uncommitted_paths:
+                findings.append("uncommitted project-local factory artifacts: " + ", ".join(uncommitted_paths))
 
     self_approved = sql.rows(
         f"""
@@ -647,7 +841,7 @@ def reconcile_project(project_id: str) -> dict[str, Any]:
     project = _project(project_id)
     if not project:
         raise ValueError(f"Factory project not found: {project_id}")
-    metadata = project.get("metadata") if isinstance(project.get("metadata"), dict) else {}
+    metadata = _metadata(project)
     pending_gates = _active_pending_gates(project_id)
     latest_gates = _latest_gate_rows(project_id)
     findings = reconciliation_findings(project, tasks, pending_gates, latest_gates)
@@ -659,14 +853,20 @@ def reconcile_project(project_id: str) -> dict[str, Any]:
     if str(project.get("status")) == "paused" or metadata.get("autonomous_enabled") is False and project.get("paused_at"):
         new_status = "paused"
     elif any(status in counts for status in ("blocked", "review_pending_human")):
-        new_status = "blocked"
+        new_status = DELIVERY_HOLD_STATUS if _all_blocked_work_is_documentation_hold(tasks) else "blocked"
     elif active_runs or any(status in counts for status in ACTIVE_TASK_STATUSES):
         new_status = "active"
     elif tasks and not any(str(t.get("status") or "") not in TERMINAL_TASK_STATUSES for t in tasks) and not pending_gates and not findings:
-        new_status = "completed"
+        new_status = DELIVERY_HOLD_STATUS if metadata.get("closure_pending_human_ui") else "completed"
+    elif findings and _all_open_work_is_reconciliation(tasks) and not active_runs:
+        # Documentation/PM reconciliation must keep the project visibly open,
+        # but it is not a technical blocker and should not present as a blocked
+        # engineering increment. Jean can close it explicitly from the UI once
+        # the document side-effect is generated/reconciled.
+        new_status = DELIVERY_HOLD_STATUS
     elif findings:
         # Incomplete projects should not remain "active" solely because the
-        # autonomous flag is true.  Planned + autonomous_enabled=true is still
+        # autonomous flag is true. Planned + autonomous_enabled=true is still
         # claimable by the orchestrator tick, but the UI no longer shows an
         # active project with no canonical recovery work.
         new_status = "planned"
@@ -685,7 +885,7 @@ def reconcile_project(project_id: str) -> dict[str, Any]:
             last_reconciled_at=now(), updated_at=now()
         WHERE project_id={_q(project_id)};
         UPDATE factory.lanes
-        SET status = CASE WHEN { _q(new_status) } IN ('active','completed','blocked','paused','planned','intake') THEN { _q(new_status) } ELSE status END,
+        SET status = CASE WHEN { _q(new_status) } IN ('active','completed','blocked','paused','planned','intake','delivery_hold') THEN { _q(new_status) } ELSE status END,
             updated_at=now()
         WHERE project_id={_q(project_id)};
         INSERT INTO factory.events(project_id, actor, event_type, message, metadata)

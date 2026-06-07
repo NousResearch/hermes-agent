@@ -107,7 +107,7 @@ def test_factory_reconciliation_detects_incomplete_methodology_contract(tmp_path
     assert "deliverable_unverified" in codes
 
 
-def test_factory_reconciliation_honors_required_docs_waiver(tmp_path: Path):
+def test_factory_reconciliation_honors_required_docs_waiver_only_when_authorized(tmp_path: Path):
     from hermes_cli import factory_pg
 
     repo = tmp_path / "repo"
@@ -122,8 +122,11 @@ def test_factory_reconciliation_honors_required_docs_waiver(tmp_path: Path):
         "metadata": {
             "artifact_dir": "factory/projects/demo",
             "notion_waived": True,
+            "notion_waived_authorized_by": "jean-garcia",
+            "notion_waived_reason": "Jean explicitly accepted no Notion for this project.",
             "required_docs_waived": True,
-            "required_docs_waiver_reason": "Internal urgent runtime repair documented in Factory DB task graph.",
+            "required_docs_waived_authorized_by": "jean-garcia",
+            "required_docs_waived_reason": "Jean explicitly accepted reduced docs for this project.",
         },
     }
     tasks = [{"task_id": "demo-f0", "status": "todo", "title": "F0", "phase": "planning"}]
@@ -134,7 +137,120 @@ def test_factory_reconciliation_honors_required_docs_waiver(tmp_path: Path):
     assert "missing_required_docs" not in codes
 
 
-def test_factory_critical_readiness_honors_tracker_and_docs_waivers(monkeypatch, tmp_path: Path):
+def _write_complete_factory_doc_pack(project_dir: Path, *, omit_from_index: set[str] | None = None) -> None:
+    from hermes_cli import factory_pg
+
+    omit_from_index = omit_from_index or set()
+    project_dir.mkdir(parents=True, exist_ok=True)
+    for name in factory_pg.FACTORY_REQUIRED_DOCS:
+        (project_dir / name).write_text(f"# {name}\n\nRequired Factory artifact.\n", encoding="utf-8")
+    indexed = [name for name in factory_pg.FACTORY_REQUIRED_DOCS if name not in omit_from_index]
+    (project_dir / "DOCUMENTATION_INDEX.md").write_text(
+        "# Documentation Index\n\n" + "\n".join(f"- `{name}`" for name in indexed) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _repo_first_ready_project(repo: Path) -> dict:
+    return {
+        "project_id": "demo",
+        "name": "Demo",
+        "repo_path": str(repo),
+        "status": "active",
+        "risk_level": "high",
+        "metadata": {
+            "artifact_dir": "factory/projects/demo",
+            "notion_tracker_url": "https://notion.example/demo",
+        },
+    }
+
+
+def test_factory_reconciliation_detects_docs_missing_from_documentation_index(tmp_path: Path):
+    from hermes_cli import factory_pg
+
+    repo = tmp_path / "repo"
+    project_dir = repo / "factory" / "projects" / "demo"
+    _write_complete_factory_doc_pack(project_dir, omit_from_index={"SECURITY_REVIEW.md"})
+    project = _repo_first_ready_project(repo)
+    tasks = [{"task_id": "demo-f0", "status": "todo", "title": "F0", "phase": "planning"}]
+    gates = [{"gate_type": "delivery", "status": "passed"}]
+
+    findings = factory_pg.reconciliation_findings(project, tasks, [], gates)
+    by_code = {finding["code"]: finding for finding in findings}
+
+    assert "missing_required_docs" not in by_code
+    assert by_code["docs_not_indexed"]["metadata"]["missing_from_index"] == ["SECURITY_REVIEW.md"]
+
+
+def test_factory_reconciliation_detects_uncommitted_project_artifacts(monkeypatch, tmp_path: Path):
+    from hermes_cli import factory_pg
+
+    repo = tmp_path / "repo"
+    project_dir = repo / "factory" / "projects" / "demo"
+    _write_complete_factory_doc_pack(project_dir)
+    project = _repo_first_ready_project(repo)
+    tasks = [{"task_id": "demo-f0", "status": "todo", "title": "F0", "phase": "planning"}]
+    gates = [{"gate_type": "delivery", "status": "passed"}]
+    monkeypatch.setattr(
+        factory_pg,
+        "_uncommitted_project_artifacts",
+        lambda repo_path, artifact_dir: [" M factory/projects/demo/PRD.md"],
+    )
+
+    findings = factory_pg.reconciliation_findings(project, tasks, [], gates)
+    by_code = {finding["code"]: finding for finding in findings}
+
+    assert by_code["uncommitted_project_artifacts"]["metadata"]["uncommitted_paths"] == [" M factory/projects/demo/PRD.md"]
+
+
+def test_factory_critical_readiness_requires_index_and_commit_checkpoint(monkeypatch, tmp_path: Path):
+    from hermes_cli import factory_pg
+
+    repo = tmp_path / "repo"
+    project_dir = repo / "factory" / "projects" / "demo"
+    _write_complete_factory_doc_pack(project_dir, omit_from_index={"TASK_GRAPH.md"})
+    project = _repo_first_ready_project(repo)
+    monkeypatch.setattr(factory_pg, "_project", lambda project_id: project)
+    monkeypatch.setattr(factory_pg, "_user", lambda: "factory_runtime")
+    monkeypatch.setattr(factory_pg.sql, "rows", lambda query, *, user: [])
+    monkeypatch.setattr(
+        factory_pg,
+        "_uncommitted_project_artifacts",
+        lambda repo_path, artifact_dir: ["?? factory/projects/demo/TASK_GRAPH.md"],
+    )
+
+    findings = factory_pg.critical_readiness_findings("demo")
+
+    assert "documentation index missing required docs: TASK_GRAPH.md" in findings
+    assert "uncommitted project-local factory artifacts: ?? factory/projects/demo/TASK_GRAPH.md" in findings
+
+
+def test_factory_reconciliation_ignores_unauthorized_completion_waivers(tmp_path: Path):
+    from hermes_cli import factory_pg
+
+    repo = tmp_path / "repo"
+    (repo / "factory" / "projects" / "demo").mkdir(parents=True)
+    project = {
+        "project_id": "demo",
+        "name": "Demo",
+        "repo_path": str(repo),
+        "status": "completed",
+        "risk_level": "high",
+        "metadata": {
+            "artifact_dir": "factory/projects/demo",
+            "notion_waived": True,
+            "required_docs_waived": True,
+        },
+    }
+    tasks = [{"task_id": "demo-f0", "status": "done", "title": "F0", "phase": "planning"}]
+
+    codes = {finding["code"] for finding in factory_pg.reconciliation_findings(project, tasks, [])}
+
+    assert "missing_notion_project" in codes
+    assert "missing_required_docs" in codes
+
+
+def test_factory_critical_readiness_honors_tracker_and_docs_waivers_when_authorized(monkeypatch, tmp_path: Path):
     from hermes_cli import factory_pg
 
     repo = tmp_path / "repo"
@@ -146,7 +262,11 @@ def test_factory_critical_readiness_honors_tracker_and_docs_waivers(monkeypatch,
         "metadata": {
             "artifact_dir": "factory/projects/demo",
             "notion_waived": True,
+            "notion_waived_authorized_by": "jean-garcia",
+            "notion_waived_reason": "Jean explicitly accepted no Notion for this project.",
             "required_docs_waived": True,
+            "required_docs_waived_authorized_by": "jean-garcia",
+            "required_docs_waived_reason": "Jean explicitly accepted reduced docs for this project.",
         },
     }
     monkeypatch.setattr(factory_pg, "_project", lambda project_id: project)
@@ -187,6 +307,102 @@ def test_factory_reconcile_creates_recovery_tasks_and_moves_empty_project_to_pla
     assert "reconciliation_anomaly" in combined
     assert "factory_reconciliation_task" in combined
     assert "UPDATE factory.projects" in combined
+
+
+def test_factory_reconcile_holds_documentation_only_work_open(monkeypatch, tmp_path: Path):
+    from hermes_cli import factory_pg
+
+    repo = tmp_path / "repo"
+    project_dir = repo / "factory" / "projects" / "demo"
+    project_dir.mkdir(parents=True)
+    for name in factory_pg.FACTORY_REQUIRED_DOCS:
+        (project_dir / name).write_text(f"# {name}\n", encoding="utf-8")
+    (project_dir / "DOCUMENTATION_INDEX.md").write_text(
+        "# Documentation Index\n\n" + "\n".join(f"- `{name}`" for name in factory_pg.FACTORY_REQUIRED_DOCS) + "\n",
+        encoding="utf-8",
+    )
+    project = {
+        "project_id": "demo",
+        "name": "Demo",
+        "repo_path": str(repo),
+        "status": "completed",
+        "risk_level": "high",
+        "metadata": {
+            "artifact_dir": "factory/projects/demo",
+            "notion_waived": True,
+        },
+    }
+    before_tasks = [
+        {"task_id": "demo-f0", "status": "done", "title": "F0", "phase": "implementation"},
+        {
+            "task_id": "demo-reconcile-missing-notion-project",
+            "status": "cancelled",
+            "title": "R0 — Reconciliation: create Notion",
+            "phase": "documentation",
+            "metadata": {"factory_reconciliation_task": True, "reconciliation_anomaly": "missing_notion_project"},
+        },
+    ]
+    after_tasks = [
+        before_tasks[0],
+        {**before_tasks[1], "status": "todo"},
+    ]
+    task_snapshots = iter([before_tasks, after_tasks])
+    writes: list[str] = []
+
+    monkeypatch.setattr(factory_pg, "ensure_runtime_schema", lambda: None)
+    monkeypatch.setattr(factory_pg, "_project", lambda project_id: project)
+    monkeypatch.setattr(factory_pg, "_tasks", lambda project_id: next(task_snapshots))
+    monkeypatch.setattr(factory_pg, "_active_pending_gates", lambda project_id: [])
+    monkeypatch.setattr(factory_pg, "_latest_gate_rows", lambda project_id: [{"gate_type": "delivery", "status": "passed"}])
+    monkeypatch.setattr(factory_pg, "_user", lambda: "factory_runtime")
+    monkeypatch.setattr(factory_pg.sql, "rows", lambda query, *, user: [])
+    monkeypatch.setattr(factory_pg.sql, "psql", lambda query, *, user: writes.append(query))
+
+    result = factory_pg.reconcile_project("demo")
+
+    assert result["status"] == "delivery_hold"
+    assert result["anomalies"] == ["missing_notion_project"]
+    combined = "\n".join(writes)
+    assert "status=CASE WHEN factory.tasks.status IN" in combined
+    assert "Project reconciled as delivery_hold" in combined
+
+
+def test_factory_reconcile_treats_documentation_review_as_delivery_hold(monkeypatch, tmp_path: Path):
+    from hermes_cli import factory_pg
+
+    repo = tmp_path / "repo"
+    project = {
+        "project_id": "demo",
+        "name": "Demo",
+        "repo_path": str(repo),
+        "status": "blocked",
+        "risk_level": "high",
+        "metadata": {"artifact_dir": "factory/projects/demo"},
+    }
+    tasks = [
+        {"task_id": "demo-f0", "status": "done", "title": "F0", "phase": "implementation"},
+        {
+            "task_id": "demo-docs-review",
+            "status": "review_pending_human",
+            "title": "PM/Docs tracker ownership",
+            "phase": "documentation",
+        },
+    ]
+    writes: list[str] = []
+
+    monkeypatch.setattr(factory_pg, "ensure_runtime_schema", lambda: None)
+    monkeypatch.setattr(factory_pg, "_project", lambda project_id: project)
+    monkeypatch.setattr(factory_pg, "_tasks", lambda project_id: tasks)
+    monkeypatch.setattr(factory_pg, "_active_pending_gates", lambda project_id: [])
+    monkeypatch.setattr(factory_pg, "_latest_gate_rows", lambda project_id: [])
+    monkeypatch.setattr(factory_pg, "_user", lambda: "factory_runtime")
+    monkeypatch.setattr(factory_pg.sql, "rows", lambda query, *, user: [])
+    monkeypatch.setattr(factory_pg.sql, "psql", lambda query, *, user: writes.append(query))
+
+    result = factory_pg.reconcile_project("demo")
+
+    assert result["status"] == "delivery_hold"
+    assert result["task_counts"]["review_pending_human"] == 1
 
 
 def test_factory_force_tick_claims_rework_before_new_task(monkeypatch):

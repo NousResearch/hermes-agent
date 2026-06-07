@@ -15294,6 +15294,22 @@ Examples:
     insights_parser.add_argument(
         "--source", help="Filter by platform (cli, telegram, discord, etc.)"
     )
+    insights_parser.add_argument(
+        "--no-recommendations", action="store_true",
+        help="Disable heuristic workflow-intelligence recommendations"
+    )
+    insights_parser.add_argument(
+        "--markdown", action="store_true",
+        help="Render a Markdown report instead of the terminal report"
+    )
+    insights_parser.add_argument(
+        "--html", action="store_true",
+        help="Render a self-contained HTML report instead of the terminal report"
+    )
+    insights_parser.add_argument(
+        "--output", "-o",
+        help="Write the rendered report to a file instead of stdout"
+    )
 
     def cmd_insights(args):
         try:
@@ -15302,8 +15318,19 @@ Examples:
 
             db = SessionDB()
             engine = InsightsEngine(db)
-            report = engine.generate(days=args.days, source=args.source)
-            print(engine.format_terminal(report))
+            report = engine.generate(days=args.days, source=args.source, workflow=not args.no_recommendations)
+            if args.html:
+                rendered = engine.format_html(report)
+            elif args.markdown:
+                rendered = engine.format_markdown(report)
+            else:
+                rendered = engine.format_terminal(report)
+            if args.output:
+                from pathlib import Path
+                Path(args.output).expanduser().write_text(rendered, encoding="utf-8")
+                print(f"Wrote insights report to {args.output}")
+            else:
+                print(rendered)
             db.close()
         except Exception as e:
             print(f"Error generating insights: {e}")

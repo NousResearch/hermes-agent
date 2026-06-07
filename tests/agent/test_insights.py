@@ -531,6 +531,238 @@ class TestGatewayFormatting:
         assert "sessions" in text
 
 
+
+
+class TestWorkflowIntelligence:
+    def test_generate_includes_workflow_intelligence_layer(self, db):
+        db.create_session(session_id="q1", source="discord", model="gpt-5.5")
+        db.append_message("q1", role="user", content="Fix the failing pytest around slash command insights")
+        db.append_message("q1", role="assistant", content="I will inspect the code and run tests.",
+                          tool_calls=[{"function": {"name": "read_file"}}])
+        db.append_message("q1", role="tool", content="file contents", tool_name="read_file")
+        db.append_message("q1", role="assistant", content="Applying a targeted fix.",
+                          tool_calls=[{"function": {"name": "patch"}}])
+        db.append_message("q1", role="tool", content="patched successfully", tool_name="patch")
+        db.append_message("q1", role="assistant", content="Running pytest now.",
+                          tool_calls=[{"function": {"name": "terminal"}}])
+        db.append_message("q1", role="tool", content="1 passed", tool_name="terminal")
+        db.append_message("q1", role="assistant", content="Done — the test passes.")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        workflow = report["workflow_intelligence"]
+
+        assert workflow["summary"]["sessions_analyzed"] == 1
+        assert workflow["task_types"][0]["task_type"] == "debugging"
+        assert workflow["outcomes"][0]["outcome"] == "completed"
+        assert workflow["what_worked"]
+        assert workflow["recommendations"]
+        assert workflow["recommendations"][0]["priority"]
+        assert workflow["recommendations"][0]["action"]
+        assert workflow["approval_required"] is True
+
+    def test_workflow_intelligence_flags_verification_gap(self, db):
+        db.create_session(session_id="q2", source="cli", model="gpt-5.5")
+        db.append_message("q2", role="user", content="Build the feature")
+        db.append_message("q2", role="assistant", content="Writing the file.",
+                          tool_calls=[{"function": {"name": "write_file"}}])
+        db.append_message("q2", role="tool", content="written", tool_name="write_file")
+        db.append_message("q2", role="assistant", content="Implemented.")
+        db._conn.commit()
+
+        workflow = InsightsEngine(db).generate(days=30)["workflow_intelligence"]
+
+        assert any(f["type"] == "verification_gap" for f in workflow["friction_points"])
+        assert any("verification" in r["recommendation"].lower() for r in workflow["recommendations"])
+
+    def test_workflow_intelligence_ignores_skill_document_error_words(self, db):
+        db.create_session(session_id="q3", source="discord", model="gpt-5.5")
+        db.append_message("q3", role="user", content="Run insights")
+        db.append_message("q3", role="assistant", content="Loading the insights skill.",
+                          tool_calls=[{"function": {"name": "skill_view"}}])
+        db.append_message("q3", role="tool", tool_name="skill_view",
+                          content='{"success": true, "content": "friction_points include tool_failure and errors as schema labels"}')
+        db.append_message("q3", role="assistant", content="Done.")
+        db._conn.commit()
+
+        workflow = InsightsEngine(db).generate(days=30)["workflow_intelligence"]
+
+        assert workflow["friction_points"] == []
+
+    def test_workflow_intelligence_treats_recovered_test_red_as_what_worked(self, db):
+        db.create_session(session_id="q4", source="discord", model="gpt-5.5")
+        db.append_message("q4", role="user", content="Build the feature with tests")
+        db.append_message("q4", role="assistant", content="Writing a failing test first.",
+                          tool_calls=[{"function": {"name": "terminal"}}])
+        db.append_message("q4", role="tool", tool_name="terminal",
+                          content='{"output": "FAILED expected missing workflow_intelligence", "exit_code": 1}')
+        db.append_message("q4", role="assistant", content="Now implementing and rerunning tests.",
+                          tool_calls=[{"function": {"name": "terminal"}}])
+        db.append_message("q4", role="tool", tool_name="terminal",
+                          content='{"output": "3 passed", "exit_code": 0}')
+        db.append_message("q4", role="assistant", content="Done — implemented and verified; tests passed.")
+        db._conn.commit()
+
+        workflow = InsightsEngine(db).generate(days=30)["workflow_intelligence"]
+
+        assert workflow["friction_points"] == []
+        assert any("Recovered" in item["pattern"] for item in workflow["what_worked"])
+
+    def test_workflow_intelligence_ignores_successful_tool_output_with_failure_words(self, db):
+        db.create_session(session_id="q5", source="discord", model="gpt-5.5")
+        db.append_message("q5", role="user", content="Search online")
+        db.append_message("q5", role="assistant", content="Searching.",
+                          tool_calls=[{"function": {"name": "browser_navigate"}}])
+        db.append_message("q5", role="tool", tool_name="browser_navigate",
+                          content='{"success": true, "snapshot": "search result mentions failed builds and exceptions"}')
+        db.append_message("q5", role="assistant", content="Done.")
+        db._conn.commit()
+
+        workflow = InsightsEngine(db).generate(days=30)["workflow_intelligence"]
+
+        assert workflow["friction_points"] == []
+
+    def test_workflow_intelligence_terminal_uses_exit_code_not_output_words(self, db):
+        db.create_session(session_id="q6", source="discord", model="gpt-5.5")
+        db.append_message("q6", role="user", content="Review usage")
+        db.append_message("q6", role="assistant", content="Searching archives.",
+                          tool_calls=[{"function": {"name": "terminal"}}])
+        db.append_message("q6", role="tool", tool_name="terminal",
+                          content='{"output": "archived session text says failed and exception", "exit_code": 0}')
+        db.append_message("q6", role="assistant", content="Done.")
+        db._conn.commit()
+
+        workflow = InsightsEngine(db).generate(days=30)["workflow_intelligence"]
+
+        assert workflow["friction_points"] == []
+
+    def test_workflow_intelligence_does_not_treat_read_file_text_as_validation(self, db):
+        db.create_session(session_id="q6b", source="discord", model="gpt-5.5")
+        db.append_message("q6b", role="user", content="Build the feature")
+        db.append_message("q6b", role="assistant", content="Writing the file.",
+                          tool_calls=[{"function": {"name": "write_file"}}])
+        db.append_message("q6b", role="tool", content="written", tool_name="write_file")
+        db.append_message("q6b", role="assistant", content="Reading docs.",
+                          tool_calls=[{"function": {"name": "read_file"}}])
+        db.append_message("q6b", role="tool", tool_name="read_file",
+                          content="Documentation says tests passed in a different archived session.")
+        db.append_message("q6b", role="assistant", content="Implemented.")
+        db._conn.commit()
+
+        workflow = InsightsEngine(db).generate(days=30)["workflow_intelligence"]
+
+        assert any(f["type"] == "verification_gap" for f in workflow["friction_points"])
+
+    def test_workflow_intelligence_terminal_before_mutation_is_not_validation(self, db):
+        db.create_session(session_id="q6c", source="discord", model="gpt-5.5")
+        db.append_message("q6c", role="user", content="Build the feature")
+        db.append_message("q6c", role="assistant", content="Checking the repo.",
+                          tool_calls=[{"function": {"name": "terminal"}}])
+        db.append_message("q6c", role="tool", tool_name="terminal",
+                          content='{"output": "pwd", "exit_code": 0}')
+        db.append_message("q6c", role="assistant", content="Writing the file.",
+                          tool_calls=[{"function": {"name": "write_file"}}])
+        db.append_message("q6c", role="tool", content="written", tool_name="write_file")
+        db.append_message("q6c", role="assistant", content="Implemented.")
+        db._conn.commit()
+
+        workflow = InsightsEngine(db).generate(days=30)["workflow_intelligence"]
+
+        assert any(f["type"] == "verification_gap" for f in workflow["friction_points"])
+
+    def test_workflow_intelligence_missing_context_ignores_tool_text(self, db):
+        db.create_session(session_id="q6d", source="discord", model="gpt-5.5")
+        db.append_message("q6d", role="user", content="Summarize this file")
+        db.append_message("q6d", role="assistant", content="Reading the file.",
+                          tool_calls=[{"function": {"name": "read_file"}}])
+        db.append_message("q6d", role="tool", tool_name="read_file",
+                          content="The document contains a section titled missing context.")
+        db.append_message("q6d", role="assistant", content="Done.")
+        db._conn.commit()
+
+        workflow = InsightsEngine(db).generate(days=30)["workflow_intelligence"]
+
+        assert workflow["friction_points"] == []
+
+    def test_workflow_intelligence_pairs_cli_tool_responses_without_tool_name(self, db):
+        db.create_session(session_id="q6e", source="cli", model="gpt-5.5")
+        db.append_message("q6e", role="user", content="Fix the feature")
+        db.append_message("q6e", role="assistant", content="Patching now.",
+                          tool_calls=[{"id": "call_1", "type": "function",
+                                       "function": {"name": "patch", "arguments": "{}"}}])
+        db.append_message("q6e", role="tool", content="patched", tool_call_id="call_1")
+        db.append_message("q6e", role="assistant", content="Running tests.",
+                          tool_calls=[{"id": "call_2", "type": "function",
+                                       "function": {"name": "terminal", "arguments": "{}"}}])
+        db.append_message("q6e", role="tool", content='{"output": "1 passed", "exit_code": 0}',
+                          tool_call_id="call_2")
+        db.append_message("q6e", role="assistant", content="Done — verified; tests passed.")
+        db._conn.commit()
+
+        workflow = InsightsEngine(db).generate(days=30)["workflow_intelligence"]
+
+        assert workflow["summary"]["completion_rate"] == 100.0
+        assert workflow["friction_points"] == []
+
+    def test_workflow_intelligence_blocked_negation_wins_over_done_words(self, db):
+        db.create_session(session_id="q6f", source="discord", model="gpt-5.5")
+        db.append_message("q6f", role="user", content="Open the PR")
+        db.append_message("q6f", role="assistant", content="Not done — blocked by missing credentials.")
+        db._conn.commit()
+
+        workflow = InsightsEngine(db).generate(days=30)["workflow_intelligence"]
+
+        assert workflow["outcomes"][0] == {"outcome": "blocked", "count": 1}
+        assert any("blocked" in rec["recommendation"].lower() for rec in workflow["recommendations"])
+
+    def test_workflow_intelligence_recovered_missing_issue_can_complete(self, db):
+        db.create_session(session_id="q6g", source="discord", model="gpt-5.5")
+        db.append_message("q6g", role="user", content="Fix missing import")
+        db.append_message("q6g", role="assistant", content="The first run failed because an import was missing.")
+        db.append_message("q6g", role="assistant", content="Done — fixed, verified, and tests passed.")
+        db._conn.commit()
+
+        workflow = InsightsEngine(db).generate(days=30)["workflow_intelligence"]
+
+        assert workflow["outcomes"][0] == {"outcome": "completed", "count": 1}
+
+    def test_workflow_intelligence_treats_followup_success_as_recovered(self, db):
+        db.create_session(session_id="q7", source="discord", model="gpt-5.5")
+        db.append_message("q7", role="user", content="Review usage")
+        db.append_message("q7", role="assistant", content="Trying archive search.",
+                          tool_calls=[{"function": {"name": "terminal"}}])
+        db.append_message("q7", role="tool", tool_name="terminal",
+                          content='{"output": "invalid choice", "exit_code": 2}')
+        db.append_message("q7", role="assistant", content="Retrying with the right subcommand.",
+                          tool_calls=[{"function": {"name": "terminal"}}])
+        db.append_message("q7", role="tool", tool_name="terminal",
+                          content='{"output": "results", "exit_code": 0}')
+        db.append_message("q7", role="assistant", content="Here is the usage review.")
+        db._conn.commit()
+
+        workflow = InsightsEngine(db).generate(days=30)["workflow_intelligence"]
+
+        assert workflow["friction_points"] == []
+        assert any("Recovered" in item["pattern"] for item in workflow["what_worked"])
+
+    def test_terminal_markdown_and_html_render_workflow_intelligence(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+
+        terminal_text = engine.format_terminal(report)
+        markdown_text = engine.format_markdown(report)
+        html_text = engine.format_html(report)
+
+        assert "Workflow Intelligence" in terminal_text
+        assert "Recommendations" in terminal_text
+        assert "## Workflow Intelligence" in markdown_text
+        assert "Approval-gated" in markdown_text
+        assert "<!doctype html>" in html_text
+        assert "<h2>Recommendations</h2>" in html_text
+        assert "raw tool output and prompt dumps are not included" in html_text
+
+
 # =========================================================================
 # Edge cases
 # =========================================================================

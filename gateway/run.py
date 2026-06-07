@@ -14249,10 +14249,13 @@ class GatewayRunner:
         args = event.get_command_args().strip()
 
         # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
-        args = re.sub(r'[\u2012\u2013\u2014\u2015](days|source)', r'--\1', args)
+        args = re.sub(r'[\u2012\u2013\u2014\u2015](days|source|no-recommendations|markdown|html)', r'--\1', args)
 
         days = 30
         source = None
+        workflow = True
+        markdown = False
+        html_report = False
 
         # Parse simple args: /insights 7  or  /insights --days 7
         if args:
@@ -14268,6 +14271,15 @@ class GatewayRunner:
                 elif parts[i] == "--source" and i + 1 < len(parts):
                     source = parts[i + 1]
                     i += 2
+                elif parts[i] == "--no-recommendations":
+                    workflow = False
+                    i += 1
+                elif parts[i] == "--markdown":
+                    markdown = True
+                    i += 1
+                elif parts[i] == "--html":
+                    html_report = True
+                    i += 1
                 elif parts[i].isdigit():
                     days = int(parts[i])
                     i += 1
@@ -14283,8 +14295,13 @@ class GatewayRunner:
             def _run_insights():
                 db = SessionDB()
                 engine = InsightsEngine(db)
-                report = engine.generate(days=days, source=source)
-                result = engine.format_gateway(report)
+                report = engine.generate(days=days, source=source, workflow=workflow)
+                if html_report:
+                    result = engine.format_html(report)
+                elif markdown:
+                    result = engine.format_markdown(report)
+                else:
+                    result = engine.format_gateway(report)
                 db.close()
                 return result
 

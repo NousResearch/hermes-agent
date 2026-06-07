@@ -10750,6 +10750,9 @@ class HermesCLI:
         parts = command.split()
         days = 30
         source = None
+        workflow = True
+        markdown = False
+        html_report = False
         i = 1
         while i < len(parts):
             if parts[i] == "--days" and i + 1 < len(parts):
@@ -10762,6 +10765,15 @@ class HermesCLI:
             elif parts[i] == "--source" and i + 1 < len(parts):
                 source = parts[i + 1]
                 i += 2
+            elif parts[i] == "--no-recommendations":
+                workflow = False
+                i += 1
+            elif parts[i] == "--markdown":
+                markdown = True
+                i += 1
+            elif parts[i] == "--html":
+                html_report = True
+                i += 1
             elif parts[i].isdigit():
                 days = int(parts[i])
                 i += 1
@@ -10774,8 +10786,13 @@ class HermesCLI:
 
             db = SessionDB()
             engine = InsightsEngine(db)
-            report = engine.generate(days=days, source=source)
-            print(engine.format_terminal(report))
+            report = engine.generate(days=days, source=source, workflow=workflow)
+            if html_report:
+                print(engine.format_html(report))
+            elif markdown:
+                print(engine.format_markdown(report))
+            else:
+                print(engine.format_terminal(report))
             db.close()
         except Exception as e:
             print(f"  Error generating insights: {e}")

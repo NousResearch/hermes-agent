@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -266,6 +267,18 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(os.path.expanduser(filepath))
+
+    # macOS exposes the per-user temp dir under /private/var/folders/… .  That
+    # is safe for tests and normal scratch files; the sensitive-path guard is
+    # meant to catch system-managed paths such as /private/var/db and logs, not
+    # pytest/tmpdir writes.
+    try:
+        tmp_root = os.path.realpath(tempfile.gettempdir())
+        if resolved == tmp_root or resolved.startswith(tmp_root.rstrip(os.sep) + os.sep):
+            return None
+    except Exception:
+        pass
+
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."

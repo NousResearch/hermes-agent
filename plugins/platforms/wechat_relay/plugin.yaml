@@ -1,0 +1,46 @@
+name: wechat-relay-platform
+label: WeChat Relay
+kind: platform
+version: 0.1.0
+description: >
+  Independent WeChat relay adapter for Hermes Agent. This is the 微信中转方案:
+  a dedicated Android relay transport compatible with the OpenClaw 9797 shape,
+  not Hermes' existing Weixin/WeChat plugin and not a replacement for it.
+  It hosts its own HTTP/WebSocket transport, accepts text inbound events from
+  the Android WeChat Relay app, binds sessions by logicalKey first, and sends
+  outbound text back to the Android relay send endpoint.
+author: Hermes Agent
+requires_env: []
+optional_env:
+  - name: WECHAT_RELAY_ENABLED
+    description: "Enable the independent WeChat relay adapter (true/false)"
+    prompt: "Enable WeChat Relay?"
+    password: false
+  - name: WECHAT_RELAY_HOST
+    description: "Listen host for Android relay app (default 127.0.0.1; use LAN IP/0.0.0.0 only when trusted)"
+    prompt: "WeChat Relay host"
+    password: false
+  - name: WECHAT_RELAY_PORT
+    description: "Dedicated WeChat relay port (default 9797; do not use 8787)"
+    prompt: "WeChat Relay port"
+    password: false
+  - name: WECHAT_RELAY_SEND_URL
+    description: "Android outbound send URL (default http://127.0.0.1:9797/_openclaw/wechat/send)"
+    prompt: "WeChat Relay send URL"
+    password: false
+  - name: WECHAT_RELAY_SHARED_SECRET
+    description: "Optional bearer/x-wechat-relay-secret secret for inbound/outbound relay calls"
+    prompt: "WeChat Relay shared secret"
+    password: true
+  - name: WECHAT_RELAY_ALLOWED_LOGICAL_KEYS
+    description: "Optional comma-separated logicalKey allowlist"
+    prompt: "Allowed WeChat logical keys"
+    password: false
+  - name: WECHAT_RELAY_ALLOW_ALL_USERS
+    description: "Allow all logical keys through Hermes gateway auth (true/false, default true because adapter enforces its own policy)"
+    prompt: "Allow all WeChat Relay users?"
+    password: false
+  - name: WECHAT_RELAY_HOME_CHANNEL
+    description: "Default logicalKey/chat id for cron or send_message delivery"
+    prompt: "WeChat Relay home logical key"
+    password: false

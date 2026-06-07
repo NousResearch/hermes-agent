@@ -171,6 +171,19 @@ def _json_dumps(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _pkcs7_pad(data: bytes, block_size: int = 16) -> bytes:
     pad_len = block_size - (len(data) % block_size)
     return data + bytes([pad_len] * pad_len)
@@ -1172,6 +1185,16 @@ class WeixinAdapter(BasePlatformAdapter):
             extra.get("send_chunk_retry_delay_seconds")
             or os.getenv("WEIXIN_SEND_CHUNK_RETRY_DELAY_SECONDS", "1.0")
         )
+        self._tokenless_on_rate_limit = _parse_bool(
+            extra.get("tokenless_on_rate_limit")
+            if extra.get("tokenless_on_rate_limit") is not None
+            else os.getenv("WEIXIN_TOKENLESS_ON_RATE_LIMIT", "true"),
+            True,
+        )
+        self._rate_limit_backoff_multiplier = float(
+            extra.get("rate_limit_backoff_multiplier")
+            or os.getenv("WEIXIN_RATE_LIMIT_BACKOFF_MULTIPLIER", "10.0")
+        )
         self._dm_policy = str(extra.get("dm_policy") or os.getenv("WEIXIN_DM_POLICY", "open")).strip().lower()
         self._group_policy = str(extra.get("group_policy") or os.getenv("WEIXIN_GROUP_POLICY", "disabled")).strip().lower()
         allow_from = extra.get("allow_from")
@@ -1695,13 +1718,29 @@ class WeixinAdapter(BasePlatformAdapter):
                                 self.name, _safe_id(chat_id),
                             )
                             continue
-                        # Rate limit (-2) — backoff and retry
+                        # Rate limit (-2) — if this was a context-token send,
+                        # retry tokenless once before treating it as a genuine
+                        # frequency cap. iLink returns the same ret=-2 for some
+                        # stale/over-constrained context-token pushes, especially
+                        # cron-originated messages after no recent inbound WeChat
+                        # activity.
                         is_rate_limited = (
                             ret == RATE_LIMIT_ERRCODE
                             or errcode == RATE_LIMIT_ERRCODE
                         )
                         if is_rate_limited:
                             errmsg = resp.get("errmsg") or resp.get("msg") or "rate limited"
+                            if self._tokenless_on_rate_limit and not retried_without_token and context_token:
+                                retried_without_token = True
+                                context_token = None
+                                self._token_store._cache.pop(
+                                    self._token_store._key(self._account_id, chat_id), None
+                                )
+                                logger.warning(
+                                    "[%s] rate limited for %s with context_token; retrying without context_token",
+                                    self.name, _safe_id(chat_id),
+                                )
+                                continue
                             # Record the error so we raise a descriptive
                             # RuntimeError (instead of AssertionError) if the
                             # loop exhausts with the server still rate-limiting.
@@ -1710,7 +1749,7 @@ class WeixinAdapter(BasePlatformAdapter):
                             )
                             if attempt >= self._send_chunk_retries:
                                 break
-                            wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
+                            wait = self._send_chunk_retry_delay_seconds * self._rate_limit_backoff_multiplier
                             logger.warning(
                                 "[%s] rate limited for %s; backing off %.1fs before retry",
                                 self.name, _safe_id(chat_id), wait,

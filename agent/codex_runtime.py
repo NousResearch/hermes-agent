@@ -490,6 +490,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             # OSError here lets the stream retry catch it instead.
             BrokenPipeError,
             OSError,
+            # httpx.NetworkError covers ReadError / WriteError / CloseError
+            # (httpx WRAPS underlying socket errors — including EPIPE — in
+            # its own NetworkError hierarchy that does NOT subclass OSError
+            # or ConnectionError). Without this, an EPIPE that fires inside
+            # httpx's transport layer is re-raised as httpx.ReadError and
+            # escapes our retry path. Empirically verified against
+            # api.githubcopilot.com gpt-5.5 + xhigh + large-prompt failures.
+            _httpx.NetworkError,
         ) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
@@ -526,6 +534,13 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 # server times out partway through the SSE response.
                 BrokenPipeError,
                 OSError,
+                # httpx wraps mid-stream EPIPE into httpx.ReadError
+                # (a NetworkError subclass that does NOT inherit from OSError
+                # or ConnectionError). Empirically confirmed: api.githubcopilot.com
+                # raises this when its upstream proxy closes the socket
+                # while the gpt-5.5 model is still streaming SSE events.
+                # See connect-time handler above for full rationale.
+                _httpx.NetworkError,
             ) as exc:
                 if attempt < max_stream_retries:
                     logger.debug(

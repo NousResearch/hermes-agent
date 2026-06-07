@@ -1110,10 +1110,60 @@ class AIAgent:
         from agent.chat_completion_helpers import estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         if est_tokens > 100_000:
-            return max(stale_base, 240.0)
-        if est_tokens > 50_000:
-            return max(stale_base, 150.0)
-        return stale_base
+            timeout = max(stale_base, 240.0)
+        elif est_tokens > 50_000:
+            timeout = max(stale_base, 150.0)
+        else:
+            timeout = stale_base
+
+        # Reasoning-effort multiplier (symmetric with the Codex stream
+        # watchdog at chat_completion_helpers.py:289-302). GPT-5+ models
+        # with any non-minimal reasoning_effort routinely spend 30-280s
+        # in server-side thinking before emitting any response. On
+        # non-streaming calls this manifests as zero bytes received until
+        # done, which the 90s default kills as "stale." The effort lives
+        # in ``api_payload['reasoning']['effort']`` for the Responses API
+        # (and ``api_payload['reasoning_effort']`` for some Chat Completions
+        # backends). ``self.reasoning_config`` is NOT a reliable signal
+        # here — many AIAgent paths (oneshot, cron, default chat) never
+        # populate it. Read straight from the payload that the wire will
+        # actually see. Empirically verified against api.githubcopilot.com
+        # gpt-5.5 + medium effort + ~13K-token prompts that legitimately
+        # take 200-280s. Override via
+        # HERMES_API_CALL_STALE_REASONING_MULTIPLIER (default 5.0 for
+        # high/xhigh, 3.5 for medium, 1.0 for low/minimal/none).
+        try:
+            _effort_level = ""
+            if isinstance(api_payload, dict):
+                _reasoning = api_payload.get("reasoning")
+                if isinstance(_reasoning, dict):
+                    _effort_level = str(_reasoning.get("effort", "")).strip().lower()
+                if not _effort_level:
+                    _effort_level = str(
+                        api_payload.get("reasoning_effort", "")
+                    ).strip().lower()
+            if not _effort_level:
+                # Fall back to the agent-level config if api_payload didn't
+                # carry it (some non-Responses paths).
+                _rc = getattr(self, "reasoning_config", None)
+                if isinstance(_rc, dict):
+                    _effort_level = str(_rc.get("effort", "")).strip().lower()
+
+            _high_mult = float(
+                os.getenv("HERMES_API_CALL_STALE_REASONING_MULTIPLIER", "5.0")
+            )
+            # Medium is the GPT-5+ default on many configs and still needs
+            # significant headroom over the 90s base; scale it sub-high.
+            _med_mult = _high_mult * 0.7
+            if _effort_level in {"high", "xhigh"}:
+                timeout = timeout * _high_mult
+            elif _effort_level == "medium":
+                timeout = timeout * _med_mult
+            # low/minimal/none/'' keep the 1.0 multiplier (no change)
+        except Exception:
+            pass
+
+        return timeout
 
     def _codex_silent_hang_hint(self, model: Optional[str] = None) -> Optional[str]:
         """Return an actionable hint when this request matches a known

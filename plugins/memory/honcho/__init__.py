@@ -91,9 +91,13 @@ SEARCH_SCHEMA = {
 REASONING_SCHEMA = {
     "name": "honcho_reasoning",
     "description": (
-        "Ask Honcho a natural language question and get a synthesized answer. "
-        "Uses Honcho's LLM (dialectic reasoning) — higher cost than honcho_profile or honcho_search. "
-        "Can query about any peer via alias or explicit peer ID. "
+        "Ask Honcho a natural language question about a PERSON — their traits, "
+        "preferences, relationships, or history — and get a synthesized answer "
+        "from stored memory. Uses Honcho's LLM (dialectic reasoning) — higher cost "
+        "than honcho_profile or honcho_search. Can query about any peer via alias "
+        "or explicit peer ID. NOT for current events, news, general knowledge, or "
+        "anything that requires looking outside Honcho's stored memory — use "
+        "web_search for that instead. "
         "Pass reasoning_level to control depth: minimal (fast/cheap), low (default), "
         "medium, high, max (deep/expensive). Omit for configured default."
     ),

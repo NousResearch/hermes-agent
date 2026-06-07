@@ -2674,7 +2674,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
-        conversation_messages: List[Dict[str, str]] = []
+        conversation_messages: List[Dict[str, Any]] = []
 
         for idx, msg in enumerate(messages):
             role = msg.get("role", "")
@@ -2687,12 +2687,35 @@ class APIServerAdapter(BasePlatformAdapter):
                     system_prompt = content
                 else:
                     system_prompt = system_prompt + "\n" + content
-            elif role in {"user", "assistant"}:
-                try:
-                    content = _normalize_multimodal_content(raw_content)
-                except ValueError as exc:
-                    return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
-                conversation_messages.append({"role": role, "content": content})
+            elif role in {"user", "assistant", "tool"}:
+                # Accept ``tool`` messages and preserve ``tool_calls`` /
+                # ``tool_call_id`` / ``name`` (and any other OpenAI message
+                # fields) so that tool-call/tool-result pairs submitted in the
+                # request survive through ``sanitize_api_messages``. Previously
+                # tool messages were silently dropped and assistant.tool_calls
+                # was stripped — the model then lost all prior tool-calling
+                # context and had to re-learn the tool protocol in-context.
+                out_msg: Dict[str, Any] = {"role": role}
+                for k, v in msg.items():
+                    if k == "role":
+                        continue
+                    if k == "content":
+                        if v is None:
+                            # assistant messages with only tool_calls have no content
+                            out_msg["content"] = None
+                        else:
+                            try:
+                                out_msg["content"] = _normalize_multimodal_content(v)
+                            except ValueError as exc:
+                                return _multimodal_validation_error(
+                                    exc, param=f"messages[{idx}].content"
+                                )
+                    else:
+                        # Pass through tool_calls, tool_call_id, name, etc. as-is
+                        out_msg[k] = v
+                if "content" not in out_msg:
+                    out_msg["content"] = None
+                conversation_messages.append(out_msg)
 
         # Extract the last user message as the primary input
         user_message: Any = ""
@@ -3853,16 +3876,39 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=400,
                 )
             for i, entry in enumerate(raw_history):
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
+                if not isinstance(entry, dict) or "role" not in entry:
                     return web.json_response(
-                        _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
+                        _openai_error(f"conversation_history[{i}] must have a 'role' field"),
                         status=400,
                     )
-                try:
-                    entry_content = _normalize_multimodal_content(entry["content"])
-                except ValueError as exc:
-                    return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
-                conversation_history.append({"role": str(entry["role"]), "content": entry_content})
+                # Preserve tool_calls / tool_call_id / name (and any other
+                # OpenAI message fields) so that tool-call/tool-result pairs in
+                # history survive intact through ``sanitize_api_messages``.
+                # Previously only ``{role, content}`` were kept, which stripped
+                # ``tool_calls`` from assistant messages and ``tool_call_id``
+                # from tool messages — causing the sanitizer to silently drop
+                # tool results and the model to lose all prior tool-calling
+                # context.  ``content`` is now optional because assistant
+                # messages that only emit ``tool_calls`` have no text content.
+                msg: Dict[str, Any] = {}
+                for k, v in entry.items():
+                    if k == "role":
+                        msg["role"] = str(v)
+                    elif k == "content":
+                        if v is None:
+                            msg["content"] = None
+                        else:
+                            try:
+                                msg["content"] = _normalize_multimodal_content(v)
+                            except ValueError as exc:
+                                return _multimodal_validation_error(
+                                    exc, param=f"conversation_history[{i}].content"
+                                )
+                    else:
+                        msg[k] = v
+                if "content" not in msg:
+                    msg["content"] = None
+                conversation_history.append(msg)
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
@@ -4806,7 +4852,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, str]] = []
+        conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
@@ -4815,12 +4861,33 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=400,
                 )
             for i, entry in enumerate(raw_history):
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
+                if not isinstance(entry, dict) or "role" not in entry:
                     return web.json_response(
-                        _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
+                        _openai_error(f"conversation_history[{i}] must have a 'role' field"),
                         status=400,
                     )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+                # Preserve all OpenAI message fields (tool_calls, tool_call_id,
+                # name, etc.) so that tool-call/tool-result pairs in history
+                # survive intact.  Previously only ``{role, content}`` were
+                # kept, which stripped ``tool_calls`` from assistant messages
+                # and ``tool_call_id`` from tool messages — causing
+                # ``sanitize_api_messages`` to silently drop tool results and
+                # the model to lose all tool-calling context from prior turns.
+                msg: Dict[str, Any] = {}
+                for k, v in entry.items():
+                    if k == "role":
+                        msg["role"] = str(v)
+                    elif k == "content":
+                        # ``content`` may be None for assistant messages that
+                        # only carry ``tool_calls``.
+                        msg["content"] = str(v) if v is not None else None
+                    else:
+                        # Pass through tool_calls, tool_call_id, name, etc. as-is
+                        msg[k] = v
+                # Ensure content key exists (may be absent if sender omitted it)
+                if "content" not in msg:
+                    msg["content"] = None
+                conversation_history.append(msg)
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 

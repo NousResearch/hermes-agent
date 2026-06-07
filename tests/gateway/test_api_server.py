@@ -4262,7 +4262,6 @@ class TestModelRoutesAgentCreation:
         assert adapter._session_model_override_for("chan-2") is None
         assert adapter._session_model_override_for(None) is None
 
-
 # ---------------------------------------------------------------------------
 # Event-loop offloading for synchronous SessionDB calls (P1)
 # ---------------------------------------------------------------------------
@@ -4387,3 +4386,303 @@ class TestSessionDbOffEventLoop:
             hermes_state.SessionDB = original_class
             auth_adapter._session_db = None
             auth_adapter._session_db_lock = None
+
+
+# ---------------------------------------------------------------------------
+# Tool-call/tool-result preservation in client-supplied history
+# ---------------------------------------------------------------------------
+
+
+class TestToolCallHistoryPreservation:
+    """Regression: client-supplied conversation history must keep tool-calling fields.
+
+    Previously, three endpoints (``/v1/chat/completions``, ``/v1/responses``,
+    ``/v1/runs``) reduced every inbound history message to ``{role, content}``
+    and ``/v1/chat/completions`` additionally dropped messages whose role was
+    ``"tool"``.  ``sanitize_api_messages`` then deleted the now-orphaned tool
+    messages, so the agent received zero evidence of prior tool calls and had
+    to re-discover the tool protocol from scratch on every turn (often calling
+    the same tool again, or hallucinating a generic answer).
+
+    These tests pin down the field-preservation contract for assistant
+    ``tool_calls`` and tool-role ``tool_call_id`` / ``name`` / ``content``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_preserves_tool_calls_and_tool_messages(self, adapter):
+        """tool_calls on assistant + tool-role messages pass through to _run_agent."""
+        mock_result = {"final_response": "It's 65 in NY.", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {"role": "user", "content": "What is the weather in SF?"},
+                            {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_weather",
+                                            "arguments": '{"city":"SF"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": "call_1",
+                                "name": "get_weather",
+                                "content": '{"temp":72}',
+                            },
+                            {"role": "assistant", "content": "It's 72 in SF."},
+                            {"role": "user", "content": "And NY?"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["user_message"] == "And NY?"
+
+            history = call_kwargs["conversation_history"]
+            # All four prior messages survive (last user becomes user_message).
+            assert len(history) == 4
+
+            # 1. Plain user message round-trips.
+            assert history[0] == {"role": "user", "content": "What is the weather in SF?"}
+
+            # 2. Assistant with tool_calls: content stays None, tool_calls preserved.
+            assert history[1]["role"] == "assistant"
+            assert history[1]["content"] is None
+            assert history[1]["tool_calls"] == [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"city":"SF"}'},
+                }
+            ]
+
+            # 3. Tool message: role, tool_call_id, name, and content all preserved.
+            assert history[2]["role"] == "tool"
+            assert history[2]["tool_call_id"] == "call_1"
+            assert history[2]["name"] == "get_weather"
+            assert history[2]["content"] == '{"temp":72}'
+
+            # 4. Plain assistant text.
+            assert history[3] == {"role": "assistant", "content": "It's 72 in SF."}
+
+    @pytest.mark.asyncio
+    async def test_responses_preserves_tool_calls_in_conversation_history(self, adapter):
+        """/v1/responses ``conversation_history`` keeps tool_calls / tool_call_id / name."""
+        mock_result = {"final_response": "Done.", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "And what about NY?",
+                        "conversation_history": [
+                            {"role": "user", "content": "weather in SF?"},
+                            {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_weather",
+                                            "arguments": '{"city":"SF"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": "call_1",
+                                "name": "get_weather",
+                                "content": '{"temp":72}',
+                            },
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["user_message"] == "And what about NY?"
+
+            history = call_kwargs["conversation_history"]
+            assert len(history) == 3
+            assert history[0] == {"role": "user", "content": "weather in SF?"}
+
+            assert history[1]["role"] == "assistant"
+            assert history[1]["content"] is None
+            assert history[1]["tool_calls"][0]["id"] == "call_1"
+            assert (
+                history[1]["tool_calls"][0]["function"]["name"] == "get_weather"
+            )
+
+            assert history[2]["role"] == "tool"
+            assert history[2]["tool_call_id"] == "call_1"
+            assert history[2]["name"] == "get_weather"
+            assert history[2]["content"] == '{"temp":72}'
+
+    @pytest.mark.asyncio
+    async def test_responses_assistant_without_content_no_longer_400s(self, adapter):
+        """Assistant entries that only carry tool_calls (no ``content`` key) are accepted.
+
+        The pre-fix validator required both ``role`` and ``content`` on every
+        ``conversation_history`` entry and rejected the request with 400.  This
+        made it impossible for clients to replay a real OpenAI assistant turn,
+        because OpenAI emits ``content: null`` (or omits the key) when the
+        assistant only issued tool calls.
+        """
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "input": "follow-up",
+                        "conversation_history": [
+                            {"role": "user", "content": "hi"},
+                            {
+                                # No ``content`` field at all — only tool_calls.
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_x",
+                                        "type": "function",
+                                        "function": {"name": "noop", "arguments": "{}"},
+                                    }
+                                ],
+                            },
+                            {"role": "tool", "tool_call_id": "call_x", "content": "ok"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            history = mock_run.call_args.kwargs["conversation_history"]
+            assert len(history) == 3
+            assert history[1]["content"] is None
+            assert history[1]["tool_calls"][0]["id"] == "call_x"
+            assert history[2]["tool_call_id"] == "call_x"
+
+    @pytest.mark.asyncio
+    async def test_runs_preserves_tool_calls_in_conversation_history(self, adapter):
+        """/v1/runs ``conversation_history`` keeps tool_calls / tool_call_id / name."""
+        import threading
+
+        captured: dict = {}
+        run_completed = threading.Event()
+
+        mock_agent = MagicMock()
+
+        def _run_conv(**kwargs):
+            captured.update(kwargs)
+            run_completed.set()
+            return {"final_response": "Done.", "messages": [], "api_calls": 1}
+
+        mock_agent.run_conversation.side_effect = _run_conv
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        mock_agent.session_id = "session-runs"
+
+        # /v1/runs is not registered by _create_app — wire it explicitly.
+        app = _create_app(adapter)
+        app.router.add_post("/v1/runs", adapter._handle_runs)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "And NY?",
+                        "conversation_history": [
+                            {"role": "user", "content": "weather in SF?"},
+                            {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_weather",
+                                            "arguments": '{"city":"SF"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": "call_1",
+                                "name": "get_weather",
+                                "content": '{"temp":72}',
+                            },
+                        ],
+                    },
+                )
+
+                assert resp.status == 202
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                # _handle_runs returns 202 immediately; the actual
+                # run_conversation call happens in a background task
+                # via run_in_executor.  Wait (with a generous timeout)
+                # for the executor thread to invoke the mock.
+                await asyncio.get_running_loop().run_in_executor(
+                    None, run_completed.wait, 10.0
+                )
+
+                # Drain the background task so test teardown is clean.
+                task = adapter._active_run_tasks.get(run_id)
+                if task is not None:
+                    try:
+                        await asyncio.wait_for(task, timeout=5.0)
+                    except asyncio.TimeoutError:
+                        task.cancel()
+
+        assert run_completed.is_set(), "run_conversation was never invoked"
+        assert captured.get("user_message") == "And NY?"
+
+        history = captured.get("conversation_history") or []
+        assert len(history) == 3
+        assert history[0] == {"role": "user", "content": "weather in SF?"}
+
+        assert history[1]["role"] == "assistant"
+        assert history[1]["content"] is None
+        assert history[1]["tool_calls"][0]["id"] == "call_1"
+
+        assert history[2]["role"] == "tool"
+        assert history[2]["tool_call_id"] == "call_1"
+        assert history[2]["name"] == "get_weather"
+        assert history[2]["content"] == '{"temp":72}'

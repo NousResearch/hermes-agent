@@ -4,7 +4,18 @@ Gateway runner - entry point for messaging platform integrations.
 This module provides:
 - start_gateway(): Start all configured platform adapters
 - GatewayRunner: Main class managing the gateway lifecycle
-
+async def start(self) -> bool:
+        # --- ANA GATEWAY KİLİDİ ---
+        lock_file = os.path.join(self.profile_dir, "gateway.lock")
+        self._gateway_lock_fd = open(lock_file, 'w')
+        try:
+            portalocker.lock(self._gateway_lock_fd, portalocker.LOCK_EX | portalocker.LOCK_NB)
+        except portalocker.exceptions.LockException:
+            logger.error("Gateway is already running! Exiting.")
+            return False # Gateway'i başlatma, zaten çalışıyor.
+        # --------------------------
+        
+        # ... (mevcut start kodların burada devam edecek)
 Usage:
     # Start the gateway
     python -m gateway.run
@@ -23,7 +34,9 @@ except ModuleNotFoundError:
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
-
+#import fcntl
+#import os
+import portalocker    
 import asyncio
 import dataclasses
 import inspect
@@ -5756,8 +5769,35 @@ class GatewayRunner:
                     "kanban notifier: artifact upload (%s) failed: %s",
                     path, exc,
                 )
+            # Bunu GatewayRunner sınıfı içine veya modül seviyGatewayRunneresine ekleyebiliriz
 
+lock_file = os.path.join(self.profile_dir, "dispatcher.lock")
+        try:
+            self._lock_fd = open(lock_file, 'w')
+            # Bu satır hem Windows hem Linux'ta çalışır!
+            portalocker.lock(self._lock_fd, portalocker.LOCK_EX | portalocker.LOCK_NB)
+        except (portalocker.exceptions.LockException, IOError):
+            logger.error("kanban dispatcher: Another gateway instance is already running. Exiting.")
+            return
     async def _kanban_dispatcher_watcher(self) -> None:
+        async def _kanban_dispatcher_watcher(self) -> None:
+        """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`."""
+        
+        # --- Kilit Mekanizması ---
+        lock_file = os.path.join(self.profile_dir, "dispatcher.lock")
+        try:
+            self._lock_fd = open(lock_file, 'w')
+            portalocker.lock(self._lock_fd, portalocker.LOCK_EX | portalocker.LOCK_NB)
+        except (portalocker.exceptions.LockException, IOError):
+            logger.error("kanban dispatcher: Another dispatcher is already running for this profile. Exiting.")
+            return
+        # -------------------------
+
+        # Mevcut config yükleme kodların buraya gelecek
+        if not await self.config.get("kanban.dispatch_in_gateway", True):
+            return
+
+        # ... (buradan sonra mevcut dispatcher döngün aynen devam etmeli) ...
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
 
         Gated by `kanban.dispatch_in_gateway` in config.yaml (default True).
@@ -5775,6 +5815,17 @@ class GatewayRunner:
         in-flight ``to_thread`` returns on its own after the current
         ``dispatch_once`` call finishes (typically <1ms on an idle board).
         """
+        # --- BURAYA EKLE ---
+        lock_file = os.path.join(self.profile_dir, "dispatcher.lock")
+        try:
+            self._lock_fd = open(lock_file, 'w')
+            fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (IOError, OSError):
+            logger.error("kanban dispatcher: Another gateway instance is already running for this profile. Exiting dispatcher loop.")
+            return
+        # -------------------
+
+        # ... (bundan sonraki mevcut dispatch döngün aynen devam edecek) ...
         # Read config once at boot. If the user flips the flag later, they
         # restart the gateway; same pattern as every other background
         # watcher here. Honours HERMES_KANBAN_DISPATCH_IN_GATEWAY env var

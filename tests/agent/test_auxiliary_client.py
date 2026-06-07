@@ -106,7 +106,6 @@ class TestBuildCallKwargsMaxTokens:
             ("copilot", "gpt-5.4", "https://api.githubcopilot.com"),
             ("copilot", "gpt-5.5", "https://api.githubcopilot.com"),
             ("custom", "gpt-5", "https://api.openai.com/v1"),
-            ("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1"),
             ("nous", "hermes-4", "https://inference-api.nousresearch.com/v1"),
             ("custom", "qwen", "http://localhost:8080/v1"),
             ("zai", "glm-4v-flash", "https://open.bigmodel.cn/api/paas/v4"),
@@ -126,13 +125,18 @@ class TestBuildCallKwargsMaxTokens:
         assert "max_completion_tokens" not in kwargs
 
     @pytest.mark.parametrize(
-        "provider,model,base_url",
+        "provider,model,base_url,max_tokens_key",
         [
-            ("minimax", "minimax-m2", "https://api.minimax.io/v1"),
-            ("custom", "claude", "https://proxy.example.com/anthropic/v1"),
+            # Anthropic wire: max_tokens is mandatory
+            ("minimax", "minimax-m2", "https://api.minimax.io/v1", "max_tokens"),
+            ("custom", "claude", "https://proxy.example.com/anthropic/v1", "max_tokens"),
+            # OpenRouter: max_tokens required to avoid HTTP 402 on free tier (#41035)
+            ("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1", "max_tokens"),
+            ("openrouter", "openai/gpt-4o-mini", "https://openrouter.ai/api/v1", "max_tokens"),
+            ("custom", "some-model", "https://openrouter.ai/api/v1", "max_tokens"),
         ],
     )
-    def test_keeps_max_tokens_on_anthropic_wire(self, provider, model, base_url):
+    def test_keeps_max_tokens_on_anthropic_wire(self, provider, model, base_url, max_tokens_key):
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
@@ -142,7 +146,7 @@ class TestBuildCallKwargsMaxTokens:
             max_tokens=1234,
             base_url=base_url,
         )
-        assert kwargs["max_tokens"] == 1234
+        assert kwargs[max_tokens_key] == 1234
         assert "max_completion_tokens" not in kwargs
 
 
@@ -2131,7 +2135,99 @@ class TestAnthropicCompatImageConversion:
         assert _is_anthropic_compat_endpoint("custom", "https://example.com/anthropic/v1")
         assert not _is_anthropic_compat_endpoint("custom", "https://api.openai.com/v1")
 
-    def test_base64_image_converted(self):
+
+class TestOpenrouterEndpointDetection:
+    """Tests for _is_openrouter_endpoint (#41035)."""
+
+    def test_openrouter_url_detected(self):
+        from agent.auxiliary_client import _is_openrouter_endpoint
+        assert _is_openrouter_endpoint("https://openrouter.ai/api/v1")
+        assert _is_openrouter_endpoint("https://openrouter.ai/api/v1/")
+        assert _is_openrouter_endpoint("https://subdomain.openrouter.ai/api/v1")
+
+    def test_non_openrouter_not_detected(self):
+        from agent.auxiliary_client import _is_openrouter_endpoint
+        assert not _is_openrouter_endpoint("https://api.openai.com/v1")
+        assert not _is_openrouter_endpoint("https://api.minimax.io/v1")
+        assert not _is_openrouter_endpoint("")
+
+    def test_case_insensitive(self):
+        from agent.auxiliary_client import _is_openrouter_endpoint
+        assert _is_openrouter_endpoint("https://OPENROUTER.AI/api/v1")
+        assert _is_openrouter_endpoint("https://OpenRouter.ai/api/v1")
+
+
+class TestTryOpenrouterPoolFallback:
+    """Tests for _try_openrouter credential pool fallback to env var (#41035).
+
+    When a credential pool exists but has no usable entry, the function
+    should fall through to the OPENROUTER_API_KEY env var instead of
+    returning None, None.
+    """
+
+    def test_pool_no_entry_falls_through_to_env_var(self, monkeypatch):
+        """Pool present but entry is None → fall through to env var."""
+        from agent.auxiliary_client import _try_openrouter
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-key")
+
+        mock_entry = None
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)):
+            with patch("agent.auxiliary_client.build_or_headers", return_value={}):
+                client, model = _try_openrouter()
+                assert client is not None
+                assert client.api_key == "sk-test-key"
+
+    def test_pool_entry_no_key_falls_through_to_env_var(self, monkeypatch):
+        """Pool entry exists but has no runtime API key → fall through to env var."""
+        from agent.auxiliary_client import _try_openrouter
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-env-key")
+
+        mock_entry = {"some_field": "value"}
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, mock_entry)):
+            with patch("agent.auxiliary_client._pool_runtime_api_key", return_value=None):
+                with patch("agent.auxiliary_client.build_or_headers", return_value={}):
+                    client, model = _try_openrouter()
+                    assert client is not None
+                    assert client.api_key == "sk-env-key"
+
+    def test_pool_entry_with_key_uses_pool(self):
+        """Pool entry with a valid key → use pool, not env var."""
+        from agent.auxiliary_client import _try_openrouter
+
+        mock_entry = {"some_field": "value"}
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, mock_entry)):
+            with patch("agent.auxiliary_client._pool_runtime_api_key", return_value="sk-pool-key"):
+                with patch("agent.auxiliary_client._pool_runtime_base_url", return_value=None):
+                    with patch("agent.auxiliary_client.OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"):
+                        with patch("agent.auxiliary_client.build_or_headers", return_value={}):
+                            client, model = _try_openrouter()
+                            assert client is not None
+                            assert client.api_key == "sk-pool-key"
+
+    def test_no_pool_uses_env_var(self, monkeypatch):
+        """No pool present → use env var directly."""
+        from agent.auxiliary_client import _try_openrouter
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-env-key")
+
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            with patch("agent.auxiliary_client.build_or_headers", return_value={}):
+                client, model = _try_openrouter()
+                assert client is not None
+                assert client.api_key == "sk-env-key"
+
+    def test_no_pool_no_env_returns_none(self, monkeypatch):
+        """No pool and no env var → returns None, None."""
+        from agent.auxiliary_client import _try_openrouter
+
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            client, model = _try_openrouter()
+            assert client is None
+            assert model is None
         from agent.auxiliary_client import _convert_openai_images_to_anthropic
         messages = [{
             "role": "user",

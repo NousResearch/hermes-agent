@@ -1502,15 +1502,17 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     pool_present, entry = _select_pool_entry("openrouter")
-    if pool_present:
+    if pool_present and entry is not None:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
-        if not or_key:
-            _mark_provider_unhealthy("openrouter", ttl=60)
-            return None, None
-        base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
-        logger.debug("Auxiliary client: OpenRouter via pool")
-        return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=build_or_headers()), model or _OPENROUTER_MODEL
+        if or_key:
+            base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
+            logger.debug("Auxiliary client: OpenRouter via pool")
+            return OpenAI(api_key=or_key, base_url=base_url,
+                           default_headers=build_or_headers()), model or _OPENROUTER_MODEL
+        # Pool entry present but no usable key — fall through to env var (#41035)
+    elif pool_present:
+        # Pool exists but no entry matched — fall through to env var (#41035)
+        pass
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
@@ -4752,6 +4754,15 @@ def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
     return "/anthropic" in url_lower
 
 
+def _is_openrouter_endpoint(base_url: str) -> bool:
+    """Detect if an endpoint is OpenRouter.
+
+    OpenRouter free/limited-credit tiers cannot afford the model's full
+    output window and return HTTP 402 when max_tokens is omitted.
+    """
+    return bool(base_url) and "openrouter" in base_url.lower()
+
+
 def _convert_openai_images_to_anthropic(messages: list) -> list:
     """Convert OpenAI ``image_url``/``video_url`` blocks to Anthropic format.
 
@@ -4887,10 +4898,14 @@ def _build_call_kwargs(
         # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
         # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
         # there.
+        #
+        # OpenRouter is a second exception: free/limited-credit tiers cannot
+        # afford the model's full output window and return HTTP 402 when
+        # max_tokens is omitted. (#41035)
         _effective_base = base_url or (
             _current_custom_base_url() if provider == "custom" else ""
         )
-        if _is_anthropic_compat_endpoint(provider, _effective_base):
+        if _is_anthropic_compat_endpoint(provider, _effective_base) or _is_openrouter_endpoint(_effective_base):
             kwargs["max_tokens"] = max_tokens
 
     if tools:

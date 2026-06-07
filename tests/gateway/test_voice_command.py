@@ -2926,6 +2926,43 @@ class TestVoiceTTSPlayback:
 
         assert response == "Te aud tare și clar, Pafi. OK."
 
+    def test_voice_reply_sanitizer_maps_quota_failure_for_test_prompt(self):
+        """Provider quota failures should not be spoken back to the user."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="ch1"),
+            text="Permis, răspunde foarte scurt. Test ok.",
+            message_type=MessageType.VOICE,
+        )
+
+        response = runner._sanitize_voice_reply_response(
+            "I reached the maximum iterations (1) but couldn't summarize. "
+            "Error: Gemini quota exhausted (You have exhausted your capacity on this model.)",
+            event,
+        )
+
+        assert response == "Test ok."
+
+    def test_voice_reply_sanitizer_maps_quota_failure_for_simple_math(self):
+        """Simple result-only arithmetic still works when the fast provider fails."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="ch1"),
+            text="Hermes, cât face 2 plus 3? Răspunde doar rezultatul.",
+            message_type=MessageType.VOICE,
+        )
+
+        response = runner._sanitize_voice_reply_response(
+            "Gemini quota exhausted. Check /gquota.",
+            event,
+        )
+
+        assert response == "5"
+
     def test_voice_reply_context_prompt_absent_for_text_input(self):
         """voice_only must not constrain normal text turns."""
         from gateway.config import Platform

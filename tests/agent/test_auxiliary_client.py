@@ -1720,6 +1720,13 @@ class TestIsConnectionError:
         err.status_code = 500
         assert _is_connection_error(err) is False
 
+    @pytest.mark.parametrize("status_code", [502, 503, 504])
+    def test_gateway_errors_trigger_fallback(self, status_code):
+        from agent.auxiliary_client import _is_connection_error
+        err = Exception(f"HTTP {status_code}: upstream connect error or disconnect/reset before headers")
+        err.status_code = status_code
+        assert _is_connection_error(err) is True
+
 
 class TestKimiTemperatureOmitted:
     """Kimi/Moonshot models should have temperature OMITTED from API kwargs.

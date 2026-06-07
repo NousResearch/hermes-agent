@@ -584,6 +584,42 @@ class TestMarkJobRun:
         assert updated["enabled"] is False
         assert updated["state"] == "completed"
 
+    def test_retry_on_transient_save_failure(self, tmp_cron_dir, monkeypatch):
+        """save_jobs failures should be retried with exponential backoff."""
+        job = create_job(prompt="Retry me", schedule="every 1h")
+        call_count = 0
+        original_save = save_jobs
+
+        def flaky_save(jobs_list):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise OSError("disk full")
+            original_save(jobs_list)
+
+        monkeypatch.setattr("cron.jobs.save_jobs", flaky_save)
+        mark_job_run(job["id"], success=True)
+        assert call_count == 3
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "ok"
+
+    def test_terminal_failure_logs_error(self, tmp_cron_dir, caplog, monkeypatch):
+        """When all retries are exhausted, an ERROR log with job_id and timestamp is emitted."""
+        job = create_job(prompt="Doomed", schedule="every 1h")
+        monkeypatch.setattr("cron.jobs.save_jobs", lambda _jobs: (_ for _ in ()).throw(OSError("read-only filesystem")))
+
+        with pytest.raises(OSError):
+            mark_job_run(job["id"], success=True)
+
+        error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert error_records, "Expected at least one ERROR log record"
+        msg = error_records[-1].getMessage()
+        assert job["id"] in msg, f"ERROR log should contain job_id: {msg}"
+        # Timestamp is included in the message (ISO format from _hermes_now)
+        import re
+        assert re.search(r"\d{4}-\d{2}-\d{2}T", msg), f"ERROR log should contain ISO timestamp: {msg}"
+        assert "read-only filesystem" in msg, f"ERROR log should contain exception details: {msg}"
+
 
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""
@@ -689,6 +725,7 @@ class TestGetDueJobs:
         """Recurring jobs past their dynamic grace window are fast-forwarded, not fired.
 
         For an hourly job, grace = 30 min. Setting 35 min late exceeds the window.
+        State must still be updated (last_run_at, completed_count) for consistency.
         """
         job = create_job(prompt="Stale", schedule="every 1h")
         # Force next_run_at to 35 minutes ago (beyond the 30-min grace for hourly)
@@ -703,6 +740,22 @@ class TestGetDueJobs:
         from cron.jobs import _ensure_aware, _hermes_now
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert next_dt > _hermes_now()
+        # State should reflect the skipped run
+        assert updated["last_run_at"] is not None, "last_run_at not set after fast-forward"
+        assert updated["repeat"]["completed"] == 1, f"completed count wrong: {updated['repeat']['completed']}"
+
+    def test_stale_fast_forward_repeat_limit_removes_job(self, tmp_cron_dir):
+        """Fast-forwarding a job that hits its repeat limit should remove it."""
+        job = create_job(prompt="Limited", schedule="every 1h", repeat=1)
+        # Force next_run_at to 35 minutes ago so it fast-forwards
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=35)).isoformat()
+        save_jobs(jobs)
+
+        due = get_due_jobs()
+        assert len(due) == 0
+        # Job should be removed because repeat limit (1) was hit
+        assert get_job(job["id"]) is None, "Job should have been removed after fast-forward hit repeat limit"
 
     def test_future_not_returned(self, tmp_cron_dir):
         create_job(prompt="Not yet", schedule="every 1h")

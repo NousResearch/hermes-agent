@@ -88,6 +88,26 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
     runner._service_tier = "priority"
     runtime_kwargs = {
         "api_key": "***",
+        "base_url": "https://api.openai.com/v1",
+        "provider": "openai",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.4", runtime_kwargs)
+
+    assert route["runtime"]["provider"] == "openai"
+    assert route["runtime"]["api_mode"] == "chat_completions"
+    assert route["request_overrides"] == {"service_tier": "priority"}
+
+
+def test_turn_route_skips_priority_processing_for_openrouter_runtime():
+    runner = _make_runner()
+    runner._service_tier = "priority"
+    runtime_kwargs = {
+        "api_key": "***",
         "base_url": "https://openrouter.ai/api/v1",
         "provider": "openrouter",
         "api_mode": "chat_completions",
@@ -99,7 +119,44 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
     route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.4", runtime_kwargs)
 
     assert route["runtime"]["provider"] == "openrouter"
-    assert route["runtime"]["api_mode"] == "chat_completions"
+    assert route["request_overrides"] == {}
+
+
+def test_turn_route_skips_priority_processing_for_copilot_runtime():
+    runner = _make_runner()
+    runner._service_tier = "priority"
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://api.githubcopilot.com",
+        "provider": "copilot",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.4", runtime_kwargs)
+
+    assert route["runtime"]["provider"] == "copilot"
+    assert route["request_overrides"] == {}
+
+
+def test_turn_route_allows_priority_processing_for_openai_codex_runtime():
+    runner = _make_runner()
+    runner._service_tier = "priority"
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "provider": "openai-codex",
+        "api_mode": "codex_responses",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.5", runtime_kwargs)
+
+    assert route["runtime"]["provider"] == "openai-codex"
     assert route["request_overrides"] == {"service_tier": "priority"}
 
 
@@ -162,9 +219,9 @@ async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch
         gateway_run,
         "_resolve_runtime_agent_kwargs",
         lambda: {
-            "provider": "openrouter",
+            "provider": "openai",
             "api_mode": "chat_completions",
-            "base_url": "https://openrouter.ai/api/v1",
+            "base_url": "https://api.openai.com/v1",
             "api_key": "***",
         },
     )

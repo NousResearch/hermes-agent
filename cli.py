@@ -5022,7 +5022,7 @@ class HermesCLI:
         Processing / Anthropic fast mode, attach `request_overrides` so the
         API call is marked accordingly.
         """
-        from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.models import resolve_fast_mode_overrides_for_runtime
 
         runtime = {
             "api_key": self.api_key,
@@ -5052,7 +5052,12 @@ class HermesCLI:
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            overrides = resolve_fast_mode_overrides_for_runtime(
+                route["model"],
+                provider=runtime["provider"],
+                api_mode=runtime["api_mode"],
+                base_url=runtime["base_url"],
+            )
         except Exception:
             overrides = None
         route["request_overrides"] = overrides

@@ -14,6 +14,7 @@ import urllib.error
 import time
 from difflib import get_close_matches
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli import __version__ as _HERMES_VERSION
@@ -1852,11 +1853,11 @@ def provider_label(provider: Optional[str]) -> str:
 # See https://openai.com/api-priority-processing/ for the canonical list.
 #
 # Pattern-based matching — any OpenAI flagship model (gpt-*, o1*, o3*, o4*)
-# is assumed to support Priority Processing. service_tier=priority is silently
-# ignored by non-OpenAI endpoints (OpenRouter/Copilot/opencode-zen proxies
-# strip the field), so false positives are harmless. Codex-series models
-# (gpt-5-codex, gpt-5.3-codex, etc.) are excluded — they don't expose the
-# service_tier parameter through the Codex Responses API.
+# is assumed to support Priority Processing on OpenAI-compatible primary
+# runtimes. Provider-aware call sites must still avoid injecting
+# service_tier into third-party endpoints such as Copilot/DeepSeek fallbacks.
+# Codex-series models (gpt-5-codex, gpt-5.3-codex, etc.) are excluded — they
+# don't expose the service_tier parameter through the Codex Responses API.
 _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = (
     "gpt-",
     "o1",
@@ -1935,6 +1936,57 @@ def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | Non
     if _is_anthropic_fast_model(model_id):
         return {"speed": "fast"}
     return {"service_tier": "priority"}
+
+
+def _hostname_for_fast_mode(base_url: Optional[str]) -> str:
+    raw = str(base_url or "").strip()
+    if not raw:
+        return ""
+    try:
+        return (urlparse(raw).hostname or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _is_direct_openai_fast_runtime(provider: Optional[str], base_url: Optional[str]) -> bool:
+    normalized = normalize_provider(provider) if provider else ""
+    if normalized == "openai-codex":
+        return True
+    if normalized != "openai":
+        return False
+    host = _hostname_for_fast_mode(base_url)
+    return not host or host == "api.openai.com"
+
+
+def _is_direct_anthropic_fast_runtime(provider: Optional[str], base_url: Optional[str]) -> bool:
+    normalized = normalize_provider(provider) if provider else ""
+    if normalized != "anthropic":
+        return False
+    host = _hostname_for_fast_mode(base_url)
+    return not host or host == "api.anthropic.com"
+
+
+def resolve_fast_mode_overrides_for_runtime(
+    model_id: Optional[str],
+    *,
+    provider: Optional[str] = None,
+    api_mode: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> dict[str, Any] | None:
+    """Return fast-mode request overrides for a concrete provider runtime."""
+    del api_mode  # Reserved for future endpoint-specific gates.
+
+    if _is_anthropic_fast_model(model_id):
+        if _is_direct_anthropic_fast_runtime(provider, base_url):
+            return {"speed": "fast"}
+        return None
+
+    if _is_openai_fast_model(model_id):
+        if _is_direct_openai_fast_runtime(provider, base_url):
+            return {"service_tier": "priority"}
+        return None
+
+    return None
 
 
 def _resolve_copilot_catalog_api_key() -> str:

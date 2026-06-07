@@ -156,9 +156,11 @@ class GatewayStreamConsumer:
         # streaming, even if the final edit (cursor removal etc.)
         # subsequently failed.
         self._final_content_delivered = False
-        # Cache adapter lifecycle capability: only platforms that need an
-        # explicit finalize call (e.g. DingTalk AI Cards) force us to make
-        # a redundant final edit.  Everyone else keeps the fast path.
+        # Cache adapter lifecycle capability: platforms with native streaming
+        # lifecycles (for example DingTalk AI Cards or Feishu CardKit) need a
+        # final finalize=True edit to close/render the message even when the
+        # final text matches the last visible snapshot.  Everyone else keeps
+        # the fast path and can short-circuit identical final edits.
         # Use ``is True`` (not ``bool(...)``) so MagicMock attribute access
         # in tests doesn't incorrectly enable this path.
         self._adapter_requires_finalize: bool = (
@@ -558,12 +560,11 @@ class GatewayStreamConsumer:
                     if not got_done and not got_segment_break and commentary_text is None:
                         display_text += self.cfg.cursor
 
-                    # Segment break: finalize the current message so platforms
-                    # that need explicit closure (e.g. DingTalk AI Cards) don't
-                    # leave the previous segment stuck in a loading state when
-                    # the next segment (tool progress, next chunk) creates a
-                    # new message below it.  got_done has its own finalize
-                    # path below so we don't finalize here for it.
+                    # ``finalize`` marks the end of the current streaming
+                    # message lifecycle.  On a segment break it closes the
+                    # current bubble before tool progress or the next text
+                    # segment appears below it; on _DONE it lets platforms
+                    # apply final formatting or close native streaming cards.
                     current_update_visible = await self._send_or_edit(
                         display_text,
                         finalize=(got_done or got_segment_break),
@@ -1138,6 +1139,18 @@ class GatewayStreamConsumer:
             self._final_response_sent = True
         return True
 
+    def _primary_stream_send_metadata(self) -> dict:
+        metadata = dict(self.metadata or {})
+        # Mark only the first primary response surface as a native card
+        # streaming lifecycle hint.  The key name comes from Feishu CardKit, but
+        # the gateway-level meaning is intentionally broader: adapters with
+        # updateable card surfaces (for example Feishu CardKit or DingTalk AI
+        # Card) can use it to create a card that later edit/finalize calls will
+        # update and close.  Overflow chunks, fallback sends, and tool progress
+        # have their own routing rules.
+        metadata["cardkit_streaming"] = True
+        return metadata
+
     async def _send_or_edit(
         self, text: str, *, finalize: bool = False, is_turn_final: bool = True,
     ) -> bool:
@@ -1213,10 +1226,10 @@ class GatewayStreamConsumer:
                 if self._edit_supported:
                     # Skip if text is identical to what we last sent.
                     # Exception: adapters that require an explicit finalize
-                    # call (REQUIRES_EDIT_FINALIZE) must still receive the
+                    # signal (REQUIRES_EDIT_FINALIZE) must still receive a
                     # finalize=True edit even when content is unchanged, so
-                    # their streaming UI can transition out of the in-
-                    # progress state.  Everyone else short-circuits.
+                    # they can apply final formatting or close a native
+                    # streaming lifecycle.  Everyone else short-circuits.
                     if text == self._last_sent_text and not (
                         finalize and self._adapter_requires_finalize
                     ):
@@ -1323,7 +1336,7 @@ class GatewayStreamConsumer:
                     chat_id=self.chat_id,
                     content=text,
                     reply_to=self._initial_reply_to_id,
-                    metadata=self.metadata,
+                    metadata=self._primary_stream_send_metadata(),
                 )
                 if result.success:
                     if result.message_id:

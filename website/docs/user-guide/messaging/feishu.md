@@ -420,6 +420,28 @@ If the Feishu API rejects the post payload (e.g., due to unsupported markdown co
 
 Plain text messages (no markdown detected) are sent as the simple `text` message type.
 
+## Streaming Responses
+
+Feishu supports gateway token streaming through native CardKit messages. When enabled, Hermes sends a CardKit message on the first token, updates it as the model generates more text, and finalizes the card when the response finishes.
+
+Enable streaming globally in `config.yaml`:
+
+```yaml
+streaming:
+  enabled: true
+```
+
+Or enable it only for Feishu:
+
+```yaml
+display:
+  platforms:
+    feishu:
+      streaming: true
+```
+
+Set the Feishu override to `false` to opt Feishu out when global gateway streaming is enabled.
+
 ## Processing Status Reactions
 
 While the agent is working, the bot shows a `Typing` reaction on your message. It's cleared when the reply arrives, or replaced with `CrossMark` if processing failed.

@@ -89,13 +89,13 @@ class TestCleanForDisplay:
 
 
 class TestFinalizeCapabilityGate:
-    """Verify REQUIRES_EDIT_FINALIZE gates the redundant final edit.
+    """Verify REQUIRES_EDIT_FINALIZE gates identical-content final edits.
 
-    Platforms that don't need an explicit finalize signal (Telegram,
-    Slack, Matrix, …) should skip the redundant final edit when the
-    mid-stream edit already delivered the final content.  Platforms that
-    *do* need it (DingTalk AI Cards) must always receive a finalize=True
-    edit at the end of the stream.
+    ``finalize`` is the per-edit lifecycle signal.  ``REQUIRES_EDIT_FINALIZE``
+    is narrower: it means the final edit must still be sent when the final
+    content is identical to the last visible snapshot.  Platforms without that
+    requirement can skip the identical edit; platforms with native streaming
+    lifecycles must receive it so they can close/render the final state.
     """
 
     @pytest.mark.asyncio
@@ -131,6 +131,44 @@ class TestFinalizeCapabilityGate:
         # Finalize edit must go through even on identical content.
         picky.edit_message.assert_called_once()
         assert picky.edit_message.call_args[1]["finalize"] is True
+
+    @pytest.mark.asyncio
+    async def test_done_tick_finalizes_once_for_finalize_required_adapter(self):
+        """A _DONE tick already sends finalize=True; do not finalize again.
+
+        Feishu CardKit closes and untracks the streaming session on the first
+        finalize edit. A second finalize attempt targets a message that is no
+        longer a tracked CardKit session, so the gateway can fail to confirm
+        final delivery and then send a duplicate final card.
+        """
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=4),
+        )
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("hello")
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        finalize_calls = [
+            call for call in adapter.edit_message.await_args_list
+            if call.kwargs.get("finalize") is True
+        ]
+        assert len(finalize_calls) == 1
+        assert consumer.final_response_sent is True
 
 
 class TestEditMessageFinalizeSignature:
@@ -1908,3 +1946,108 @@ class TestUtf16OverflowDetection:
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
 
+
+
+class TestCardKitStreamingMetadata:
+    def _adapter(self):
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_primary_first_send_injects_cardkit_streaming_without_mutating_metadata(self):
+        adapter = self._adapter()
+        metadata = {"thread_id": "topic_1"}
+        consumer = GatewayStreamConsumer(adapter, "chat_1", metadata=metadata)
+
+        ok = await consumer._send_or_edit("hello")
+
+        assert ok is True
+        adapter.send.assert_awaited_once_with(
+            chat_id="chat_1",
+            content="hello",
+            reply_to=None,
+            metadata={"thread_id": "topic_1", "cardkit_streaming": True},
+        )
+        assert metadata == {"thread_id": "topic_1"}
+
+    @pytest.mark.asyncio
+    async def test_primary_first_send_injects_cardkit_streaming_when_metadata_is_missing(self):
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+
+        ok = await consumer._send_or_edit("hello")
+
+        assert ok is True
+        adapter.send.assert_awaited_once_with(
+            chat_id="chat_1",
+            content="hello",
+            reply_to=None,
+            metadata={"cardkit_streaming": True},
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_new_chunk_does_not_inject_cardkit_streaming(self):
+        adapter = self._adapter()
+        metadata = {"thread_id": "topic_1"}
+        consumer = GatewayStreamConsumer(adapter, "chat_1", metadata=metadata)
+
+        message_id = await consumer._send_new_chunk("overflow", reply_to_id="msg_prev")
+
+        assert message_id == "msg_1"
+        adapter.send.assert_awaited_once_with(
+            chat_id="chat_1",
+            content="overflow",
+            reply_to="msg_prev",
+            metadata={"thread_id": "topic_1"},
+        )
+        assert metadata == {"thread_id": "topic_1"}
+
+    @pytest.mark.asyncio
+    async def test_fallback_final_send_does_not_inject_cardkit_streaming(self):
+        adapter = self._adapter()
+        metadata = {"thread_id": "topic_1"}
+        consumer = GatewayStreamConsumer(adapter, "chat_1", metadata=metadata)
+        consumer._fallback_prefix = "hello"
+
+        await consumer._send_fallback_final("hello final tail")
+
+        adapter.send.assert_awaited_once_with(
+            chat_id="chat_1",
+            content="final tail",
+            metadata={"thread_id": "topic_1"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_fresh_final_send_does_not_inject_cardkit_streaming(self):
+        adapter = self._adapter()
+        adapter.send.side_effect = [
+            SimpleNamespace(success=True, message_id="preview_msg"),
+            SimpleNamespace(success=True, message_id="fresh_msg"),
+        ]
+        metadata = {"thread_id": "topic_1"}
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            config=StreamConsumerConfig(fresh_final_after_seconds=1.0),
+            metadata=metadata,
+        )
+
+        assert await consumer._send_or_edit("hello") is True
+        consumer._message_created_ts = 0.0
+        assert await consumer._send_or_edit("hello final", finalize=True) is True
+
+        first_send = adapter.send.await_args_list[0]
+        second_send = adapter.send.await_args_list[1]
+        assert first_send.kwargs["metadata"] == {
+            "thread_id": "topic_1",
+            "cardkit_streaming": True,
+        }
+        assert second_send.kwargs["metadata"] == {"thread_id": "topic_1"}

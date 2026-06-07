@@ -4944,3 +4944,606 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestFeishuCardKitRuntimeDefaults(unittest.TestCase):
+    def test_cardkit_is_attemptable_with_credentials_and_connected_client(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"app_id": "app", "app_secret": "secret"}))
+        adapter._client = SimpleNamespace(cardkit=SimpleNamespace(v1=SimpleNamespace()))
+
+        self.assertTrue(adapter._should_try_cardkit())
+        self.assertTrue(adapter.SUPPORTS_MESSAGE_EDITING)
+        self.assertTrue(adapter.REQUIRES_EDIT_FINALIZE)
+
+    def test_cardkit_is_not_attemptable_without_connected_client(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"app_id": "app", "app_secret": "secret"}))
+        adapter._client = None
+
+        self.assertFalse(adapter._should_try_cardkit())
+        self.assertTrue(adapter.SUPPORTS_MESSAGE_EDITING)
+
+    def test_cardkit_is_not_attemptable_when_helper_import_unavailable(self):
+        from gateway.config import PlatformConfig
+        import gateway.platforms.feishu as feishu
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"app_id": "app", "app_secret": "secret"}))
+        adapter._client = SimpleNamespace(cardkit=SimpleNamespace(v1=SimpleNamespace()))
+
+        with patch.object(feishu, "FeishuCardKitClient", None):
+            self.assertFalse(adapter._should_try_cardkit())
+
+    def test_display_streaming_config_does_not_disable_cardkit(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        disabled_streaming_config = {
+            "streaming": {"enabled": False, "transport": "off"},
+            "display": {
+                "platforms": {
+                    "feishu": {
+                        "streaming": False,
+                    }
+                }
+            },
+        }
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                extra={
+                    "app_id": "app",
+                    "app_secret": "secret",
+                    **disabled_streaming_config,
+                }
+            )
+        )
+        adapter._client = SimpleNamespace(cardkit=SimpleNamespace(v1=SimpleNamespace()))
+
+        self.assertFalse(disabled_streaming_config["display"]["platforms"]["feishu"]["streaming"])
+        self.assertTrue(adapter._should_try_cardkit())
+
+
+class FakeCardSession:
+    counter = 0
+    instances = []
+
+    def __init__(self, *, client, chat_id, send_card_reference, profile="assistant"):
+        FakeCardSession.counter += 1
+        FakeCardSession.instances.append(self)
+        self.client = client
+        self.chat_id = chat_id
+        self.message_id = f"card_msg_{FakeCardSession.counter}"
+        self.profile = profile
+        self.started = []
+        self.closed_with = []
+        self.current_text = ""
+        self.send_card_reference = send_card_reference
+
+    async def start(self, content, *, reply_to, metadata):
+        self.current_text = content
+        self.started.append((content, reply_to, metadata))
+        return SimpleNamespace(success=True, message_id=self.message_id, raw_response=None)
+
+    async def update(self, content):
+        self.current_text = content
+        self.started.append(("update", content))
+        return SimpleNamespace(success=True, message_id=self.message_id)
+
+    async def close(self, final_text=None):
+        if final_text is not None:
+            self.current_text = final_text
+        self.closed_with.append(final_text)
+        return SimpleNamespace(success=True, message_id=self.message_id)
+
+
+class FakeCardKitClient:
+    instances = []
+
+    def __init__(self, sdk_client):
+        self.sdk_client = sdk_client
+        self.created = []
+        FakeCardKitClient.instances.append(self)
+
+    async def create_card(self, *, content="", streaming_mode=True, profile="assistant"):
+        card_id = f"card_{len(self.created) + 1}"
+        self.created.append(
+            {
+                "card_id": card_id,
+                "content": content,
+                "streaming_mode": streaming_mode,
+                "profile": profile,
+            }
+        )
+        return card_id
+
+
+class FailingStaticCardKitClient(FakeCardKitClient):
+    async def create_card(self, *, content="", streaming_mode=True, profile="assistant"):
+        self.created.append(
+            {
+                "card_id": "card_failed",
+                "content": content,
+                "streaming_mode": streaming_mode,
+                "profile": profile,
+            }
+        )
+        return "card_failed"
+
+
+class RaisingStaticCardKitClient(FakeCardKitClient):
+    async def create_card(self, *, content="", streaming_mode=True, profile="assistant"):
+        raise RuntimeError("static create boom")
+
+
+class FakeCardStartFailureSession(FakeCardSession):
+    async def start(self, content, *, reply_to, metadata):
+        self.started.append((content, reply_to, metadata))
+        return SimpleNamespace(success=False, error="create card failed", message_id=None)
+
+
+class FakeCardStartRaisesSession(FakeCardSession):
+    async def start(self, content, *, reply_to, metadata):
+        self.started.append((content, reply_to, metadata))
+        raise RuntimeError("boom")
+
+
+class FailingUpdateSession(FakeCardSession):
+    async def update(self, content):
+        self.started.append(("update_failed", content))
+        return SimpleNamespace(success=False, error="update failed", message_id=self.message_id)
+
+
+class TestFeishuCardKitSendLifecycle(unittest.TestCase):
+    def setUp(self):
+        FakeCardSession.counter = 0
+        FakeCardSession.instances = []
+        FakeCardKitClient.instances = []
+
+    def _adapter(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"app_id": "app", "app_secret": "secret"}))
+        adapter._client = SimpleNamespace(cardkit=SimpleNamespace(v1=SimpleNamespace()))
+        return adapter
+
+    @patch("gateway.platforms.feishu.FeishuCardKitClient", FakeCardKitClient)
+    def test_send_without_streaming_metadata_creates_static_card(self):
+        adapter = self._adapter()
+        adapter._send_cardkit_reference = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="static_msg")
+        )
+
+        result = asyncio.run(adapter.send("oc_chat", "final answer"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "static_msg")
+        self.assertEqual(
+            FakeCardKitClient.instances[-1].created,
+            [
+                {
+                    "card_id": "card_1",
+                    "content": "final answer",
+                    "streaming_mode": False,
+                    "profile": "static",
+                }
+            ],
+        )
+        adapter._send_cardkit_reference.assert_awaited_once_with(
+            card_id="card_1",
+            chat_id="oc_chat",
+            reply_to=None,
+            metadata=None,
+        )
+        self.assertEqual(adapter._cardkit_sessions, {})
+        self.assertEqual(adapter._cardkit_open_by_chat, {})
+
+    @patch("gateway.platforms.feishu.FeishuCardKitClient", FakeCardKitClient)
+    def test_send_reply_to_preserves_routing_but_stays_static_without_streaming_metadata(self):
+        adapter = self._adapter()
+        metadata = {"thread_id": "topic_1", "reply_to_message_id": "om_topic_root"}
+        adapter._send_cardkit_reference = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="static_reply_msg")
+        )
+
+        result = asyncio.run(
+            adapter.send(
+                "oc_chat",
+                "topic final answer",
+                reply_to="om_user",
+                metadata=metadata,
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "static_reply_msg")
+        self.assertEqual(FakeCardKitClient.instances[-1].created[-1]["streaming_mode"], False)
+        adapter._send_cardkit_reference.assert_awaited_once_with(
+            card_id="card_1",
+            chat_id="oc_chat",
+            reply_to="om_user",
+            metadata=metadata,
+        )
+        self.assertEqual(adapter._cardkit_sessions, {})
+        self.assertEqual(adapter._cardkit_open_by_chat, {})
+
+    @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FakeCardSession)
+    def test_cardkit_streaming_metadata_tracks_open_card_even_with_reply_to(self):
+        adapter = self._adapter()
+        metadata = {"cardkit_streaming": True, "thread_id": "topic_1"}
+
+        result = asyncio.run(
+            adapter.send("oc_chat", "stream chunk", reply_to="om_user", metadata=metadata)
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "card_msg_1")
+        self.assertIn(result.message_id, adapter._cardkit_sessions)
+        self.assertIn(result.message_id, adapter._cardkit_open_by_chat["oc_chat"])
+        self.assertEqual(FakeCardSession.instances[-1].profile, "assistant")
+        self.assertEqual(FakeCardSession.instances[-1].closed_with, [])
+        self.assertEqual(
+            FakeCardSession.instances[-1].started,
+            [("stream chunk", "om_user", metadata)],
+        )
+
+    @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FakeCardSession)
+    def test_tool_progress_does_not_close_open_assistant_streaming_card(self):
+        adapter = self._adapter()
+
+        first = asyncio.run(
+            adapter.send("oc_chat", "assistant prefix", metadata={"cardkit_streaming": True})
+        )
+        first_session = adapter._cardkit_sessions[first.message_id]
+        second = asyncio.run(
+            adapter.send("oc_chat", "Using terminal", metadata={"message_kind": "tool_progress"})
+        )
+        final = asyncio.run(
+            adapter.edit_message("oc_chat", first.message_id, "assistant complete", finalize=True)
+        )
+
+        self.assertTrue(second.success)
+        self.assertTrue(final.success)
+        self.assertEqual(first_session.closed_with, ["assistant complete"])
+        self.assertNotIn(first.message_id, adapter._cardkit_sessions)
+        self.assertIn(second.message_id, adapter._cardkit_sessions)
+        self.assertEqual(FakeCardSession.instances[-1].profile, "tool_progress")
+
+    @patch("gateway.platforms.feishu.FeishuCardKitClient", FakeCardKitClient)
+    @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FakeCardSession)
+    def test_static_card_closes_open_streaming_sibling_before_send(self):
+        adapter = self._adapter()
+        first = asyncio.run(
+            adapter.send("oc_chat", "Using terminal", metadata={"message_kind": "tool_progress"})
+        )
+        first_session = adapter._cardkit_sessions[first.message_id]
+        adapter._send_cardkit_reference = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="static_msg")
+        )
+
+        result = asyncio.run(adapter.send("oc_chat", "final answer"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "static_msg")
+        self.assertEqual(first_session.closed_with, ["Using terminal"])
+        self.assertNotIn(first.message_id, adapter._cardkit_sessions)
+        self.assertEqual(adapter._cardkit_open_by_chat, {})
+        self.assertEqual(
+            FakeCardKitClient.instances[-1].created,
+            [
+                {
+                    "card_id": "card_1",
+                    "content": "final answer",
+                    "streaming_mode": False,
+                    "profile": "static",
+                }
+            ],
+        )
+
+    @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FakeCardSession)
+    def test_tool_progress_message_kind_forces_streaming_card_with_tool_profile(self):
+        adapter = self._adapter()
+        metadata = {"message_kind": "tool_progress"}
+
+        result = asyncio.run(adapter.send("oc_chat", "Using terminal", metadata=metadata))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "card_msg_1")
+        self.assertIn(result.message_id, adapter._cardkit_sessions)
+        self.assertEqual(FakeCardSession.instances[-1].profile, "tool_progress")
+
+    @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FakeCardStartFailureSession)
+    def test_send_start_failure_falls_back_to_standard_send(self):
+        adapter = self._adapter()
+        response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="normal_msg"))
+        adapter._feishu_send_with_retry = AsyncMock(return_value=response)
+        metadata = {"cardkit_streaming": True}
+
+        result = asyncio.run(adapter.send("oc_chat", "stream chunk", metadata=metadata))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "normal_msg")
+        self.assertEqual(adapter._cardkit_sessions, {})
+        self.assertEqual(adapter._cardkit_open_by_chat, {})
+        adapter._feishu_send_with_retry.assert_awaited_once_with(
+            chat_id="oc_chat",
+            msg_type="text",
+            payload=json.dumps({"text": "stream chunk"}, ensure_ascii=False),
+            reply_to=None,
+            metadata=metadata,
+        )
+
+    @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FakeCardStartRaisesSession)
+    def test_send_start_exception_falls_back_to_standard_send(self):
+        adapter = self._adapter()
+        response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="normal_msg"))
+        adapter._feishu_send_with_retry = AsyncMock(return_value=response)
+        metadata = {"cardkit_streaming": True}
+
+        result = asyncio.run(adapter.send("oc_chat", "stream chunk", metadata=metadata))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "normal_msg")
+        self.assertEqual(adapter._cardkit_sessions, {})
+        self.assertEqual(adapter._cardkit_open_by_chat, {})
+        adapter._feishu_send_with_retry.assert_awaited_once_with(
+            chat_id="oc_chat",
+            msg_type="text",
+            payload=json.dumps({"text": "stream chunk"}, ensure_ascii=False),
+            reply_to=None,
+            metadata=metadata,
+        )
+
+    @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FakeCardSession)
+    def test_edit_message_updates_open_card_and_keeps_it_open(self):
+        adapter = self._adapter()
+        sent = asyncio.run(
+            adapter.send("oc_chat", "hello", metadata={"cardkit_streaming": True})
+        )
+        session = adapter._cardkit_sessions[sent.message_id]
+
+        result = asyncio.run(adapter.edit_message("oc_chat", sent.message_id, "hello world", finalize=False))
+
+        self.assertTrue(result.success)
+        self.assertIn(sent.message_id, adapter._cardkit_sessions)
+        self.assertIn(("update", "hello world"), session.started)
+
+    @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FakeCardSession)
+    def test_edit_message_success_recreates_stale_open_card_index(self):
+        adapter = self._adapter()
+        sent = asyncio.run(
+            adapter.send("oc_chat", "hello", metadata={"cardkit_streaming": True})
+        )
+        session = adapter._cardkit_sessions[sent.message_id]
+        adapter._cardkit_open_by_chat.pop("oc_chat", None)
+
+        result = asyncio.run(adapter.edit_message("oc_chat", sent.message_id, "hello world", finalize=False))
+
+        self.assertTrue(result.success)
+        self.assertIs(adapter._cardkit_sessions[sent.message_id], session)
+        self.assertIs(adapter._cardkit_open_by_chat["oc_chat"][sent.message_id], session)
+        self.assertIn(("update", "hello world"), session.started)
+
+    @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FakeCardSession)
+    def test_edit_message_finalize_closes_and_removes_card(self):
+        adapter = self._adapter()
+        sent = asyncio.run(
+            adapter.send("oc_chat", "hello", metadata={"cardkit_streaming": True})
+        )
+        session = adapter._cardkit_sessions[sent.message_id]
+
+        result = asyncio.run(adapter.edit_message("oc_chat", sent.message_id, "hello final", finalize=True))
+
+        self.assertTrue(result.success)
+        self.assertEqual(session.closed_with, ["hello final"])
+        self.assertNotIn(sent.message_id, adapter._cardkit_sessions)
+        self.assertNotIn("oc_chat", adapter._cardkit_open_by_chat)
+
+    def test_edit_message_unknown_card_uses_existing_update_path(self):
+        adapter = self._adapter()
+
+        response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="normal_msg"),
+        )
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=SimpleNamespace(update=Mock(return_value=response))
+                )
+            )
+        )
+
+        result = asyncio.run(adapter.edit_message("oc_chat", "normal_msg", "updated text", finalize=True))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "normal_msg")
+        adapter._client.im.v1.message.update.assert_called_once()
+
+
+class FailingStartSession(FakeCardSession):
+    async def start(self, content, *, reply_to, metadata):
+        return SimpleNamespace(success=False, error="create card failed", message_id=None)
+
+
+class FailingCloseSession(FakeCardSession):
+    async def close(self, final_text=None):
+        self.closed_with.append(final_text)
+        return SimpleNamespace(success=False, error="close failed", message_id=self.message_id)
+
+
+class RaisingCloseSession(FakeCardSession):
+    async def close(self, final_text=None):
+        self.closed_with.append(final_text)
+        raise RuntimeError("close boom")
+
+
+class TestFeishuCardKitFallbacks(unittest.TestCase):
+    def setUp(self):
+        FakeCardSession.counter = 0
+        FakeCardSession.instances = []
+        FakeCardKitClient.instances = []
+
+    def _adapter(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"app_id": "app", "app_secret": "secret"}))
+        adapter._client = SimpleNamespace(cardkit=SimpleNamespace(v1=SimpleNamespace()))
+        return adapter
+
+    @patch("gateway.platforms.feishu.FeishuCardKitClient", FailingStaticCardKitClient)
+    def test_static_reference_failure_falls_back_to_standard_send(self):
+        adapter = self._adapter()
+        response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="normal_msg"))
+        adapter._feishu_send_with_retry = AsyncMock(return_value=response)
+        metadata = {"root_id": "om_root"}
+        adapter._send_cardkit_reference = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="reference failed", message_id=None)
+        )
+
+        result = asyncio.run(adapter.send("oc_chat", "final answer", reply_to="om_user", metadata=metadata))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "normal_msg")
+        self.assertEqual(
+            FakeCardKitClient.instances[-1].created,
+            [
+                {
+                    "card_id": "card_failed",
+                    "content": "final answer",
+                    "streaming_mode": False,
+                    "profile": "static",
+                }
+            ],
+        )
+        adapter._send_cardkit_reference.assert_awaited_once_with(
+            card_id="card_failed",
+            chat_id="oc_chat",
+            reply_to="om_user",
+            metadata=metadata,
+        )
+        self.assertEqual(adapter._cardkit_sessions, {})
+        self.assertEqual(adapter._cardkit_open_by_chat, {})
+        adapter._feishu_send_with_retry.assert_awaited_once_with(
+            chat_id="oc_chat",
+            msg_type="text",
+            payload=json.dumps({"text": "final answer"}, ensure_ascii=False),
+            reply_to="om_user",
+            metadata=metadata,
+        )
+
+    @patch("gateway.platforms.feishu.FeishuCardKitClient", RaisingStaticCardKitClient)
+    def test_static_create_exception_falls_back_to_standard_send(self):
+        adapter = self._adapter()
+        response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="normal_msg"))
+        adapter._feishu_send_with_retry = AsyncMock(return_value=response)
+        metadata = {"root_id": "om_root"}
+
+        result = asyncio.run(adapter.send("oc_chat", "final answer", reply_to="om_user", metadata=metadata))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "normal_msg")
+        self.assertEqual(adapter._cardkit_sessions, {})
+        self.assertEqual(adapter._cardkit_open_by_chat, {})
+        adapter._feishu_send_with_retry.assert_awaited_once_with(
+            chat_id="oc_chat",
+            msg_type="text",
+            payload=json.dumps({"text": "final answer"}, ensure_ascii=False),
+            reply_to="om_user",
+            metadata=metadata,
+        )
+
+    def test_standard_send_path_preserves_existing_text_delivery(self):
+        adapter = self._adapter()
+        adapter._client = SimpleNamespace()
+        adapter._app_id = ""
+        response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="normal_msg"))
+        adapter._feishu_send_with_retry = AsyncMock(return_value=response)
+
+        result = asyncio.run(adapter.send("oc_chat", "hello"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "normal_msg")
+        adapter._feishu_send_with_retry.assert_awaited_once()
+
+
+class TestFeishuCardKitFinalizeFailures(unittest.TestCase):
+    def setUp(self):
+        FakeCardSession.counter = 0
+        FakeCardSession.instances = []
+        FakeCardKitClient.instances = []
+
+    def _adapter(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"app_id": "app", "app_secret": "secret"}))
+        adapter._client = SimpleNamespace(cardkit=SimpleNamespace(v1=SimpleNamespace()))
+        return adapter
+
+    @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FailingCloseSession)
+    def test_finalize_failure_keeps_cardkit_session_tracked(self):
+        adapter = self._adapter()
+        sent = asyncio.run(
+            adapter.send("oc_chat", "hello", metadata={"cardkit_streaming": True})
+        )
+        session = adapter._cardkit_sessions[sent.message_id]
+
+        result = asyncio.run(adapter.edit_message("oc_chat", sent.message_id, "hello final", finalize=True))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "close failed")
+        self.assertEqual(session.closed_with, ["hello final"])
+        self.assertIn(sent.message_id, adapter._cardkit_sessions)
+        self.assertIn(sent.message_id, adapter._cardkit_open_by_chat["oc_chat"])
+
+    @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FailingUpdateSession)
+    def test_tracked_update_failure_returns_unsuccessful_and_keeps_session(self):
+        adapter = self._adapter()
+        sent = asyncio.run(
+            adapter.send("oc_chat", "hello", metadata={"cardkit_streaming": True})
+        )
+        session = adapter._cardkit_sessions[sent.message_id]
+        adapter._cardkit_open_by_chat.pop("oc_chat", None)
+
+        result = asyncio.run(adapter.edit_message("oc_chat", sent.message_id, "hello more", finalize=False))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "update failed")
+        self.assertIs(adapter._cardkit_sessions[sent.message_id], session)
+        self.assertNotIn("oc_chat", adapter._cardkit_open_by_chat)
+
+    @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FailingCloseSession)
+    def test_sibling_close_failure_keeps_failed_sessions_indexed_and_sends_current(self):
+        adapter = self._adapter()
+        first = asyncio.run(
+            adapter.send("oc_chat", "tool progress", metadata={"cardkit_streaming": True})
+        )
+        extra = FailingCloseSession(
+            client=adapter._get_cardkit_client(),
+            chat_id="oc_chat",
+            send_card_reference=adapter._send_cardkit_reference,
+        )
+        extra.message_id = "card_msg_extra"
+        extra.current_text = "still open"
+        adapter._cardkit_sessions[extra.message_id] = extra
+        adapter._cardkit_open_by_chat["oc_chat"][extra.message_id] = extra
+
+        result = asyncio.run(
+            adapter.send(
+                "oc_chat",
+                "assistant commentary",
+                metadata={"cardkit_streaming": True},
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertIn(first.message_id, adapter._cardkit_open_by_chat["oc_chat"])
+        self.assertIn(extra.message_id, adapter._cardkit_open_by_chat["oc_chat"])
+        self.assertIn(result.message_id, adapter._cardkit_open_by_chat["oc_chat"])

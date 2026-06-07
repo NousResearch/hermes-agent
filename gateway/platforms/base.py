@@ -2246,12 +2246,11 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
-    # Default: the adapter treats ``finalize=True`` on edit_message as a
-    # no-op and is happy to have the stream consumer skip redundant final
-    # edits.  Subclasses that *require* an explicit finalize call to close
-    # out the message lifecycle (e.g. rich card / AI assistant surfaces
-    # such as DingTalk AI Cards) override this to True (class attribute or
-    # property) so the stream consumer knows not to short-circuit.
+    # Default: the adapter does not require ``finalize=True`` edits to
+    # bypass identical-content short-circuiting.  Subclasses that must
+    # observe a final edit even when the text did not change (e.g.
+    # DingTalk AI Cards or Feishu CardKit closing a native streaming
+    # card) override this to True as a class attribute or property.
     REQUIRES_EDIT_FINALIZE: bool = False
 
     async def create_handoff_thread(
@@ -2294,19 +2293,16 @@ class BasePlatformAdapter(ABC):
         support editing return success=False and callers fall back to
         sending a new message.
 
-        ``finalize`` signals that this is the last edit in a streaming
-        sequence.  Most platforms (Telegram, Slack, Discord, Matrix,
-        etc.) treat it as a no-op because their edit APIs have no notion
-        of message lifecycle state — an edit is an edit.  Platforms that
-        render streaming updates with a distinct "in progress" state and
-        require explicit closure (e.g. rich card / AI assistant surfaces
-        such as DingTalk AI Cards) use it to finalize the message and
-        transition the UI out of the streaming indicator — those should
-        also set ``REQUIRES_EDIT_FINALIZE = True`` so callers route a
-        final edit through even when content is unchanged.  Callers
-        should set ``finalize=True`` on the final edit of a streamed
-        response (typically when ``got_done`` fires in the stream
-        consumer) and leave it ``False`` on intermediate edits.
+        ``finalize`` signals that this edit ends the current streaming
+        message or segment.  Adapters may ignore it, use it for final
+        formatting (e.g. Telegram MarkdownV2), stop typing indicators
+        (e.g. Slack), or close native streaming card lifecycles (e.g.
+        DingTalk AI Cards or Feishu CardKit).  ``REQUIRES_EDIT_FINALIZE``
+        is a narrower capability flag: set it only when a final edit must
+        still be sent even if the final content is identical to the last
+        visible edit.  Callers should set ``finalize=True`` on segment
+        boundaries and on the final edit of a streamed response, and leave
+        it ``False`` on intermediate edits.
         """
         return SendResult(success=False, error="Not supported")
 

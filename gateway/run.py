@@ -17320,6 +17320,15 @@ class GatewayRunner:
             if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
             else None
         )
+        _progress_send_metadata = _progress_metadata
+        if source.platform == Platform.FEISHU:
+            _progress_send_metadata = dict(_progress_metadata or {})
+            # Mark this as a tool-progress message at the gateway semantic
+            # layer.  Native-card adapters can map that kind to their own card
+            # profile (for example Feishu CardKit's tool-progress card, and
+            # future DingTalk AI Card progress surfaces) instead of treating it
+            # like an assistant response stream.
+            _progress_send_metadata["message_kind"] = "tool_progress"
 
         async def send_progress_messages():
             if not progress_queue:
@@ -17566,7 +17575,7 @@ class GatewayRunner:
                                 chat_id=source.chat_id,
                                 content=msg,
                                 reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
+                                metadata=_progress_send_metadata,
                             )
                             if (
                                 _cleanup_progress
@@ -17582,7 +17591,7 @@ class GatewayRunner:
                                 chat_id=source.chat_id,
                                 content=full_text,
                                 reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
+                                metadata=_progress_send_metadata,
                             )
                         else:
                             # Editing unsupported: send just this line
@@ -17590,7 +17599,7 @@ class GatewayRunner:
                                 chat_id=source.chat_id,
                                 content=msg,
                                 reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
+                                metadata=_progress_send_metadata,
                             )
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id

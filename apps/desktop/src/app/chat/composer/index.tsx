@@ -23,7 +23,14 @@ import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { $composerAttachments, clearComposerAttachments, type ComposerAttachment } from '@/store/composer'
+import {
+  $composerAttachments,
+  $composerDraft,
+  clearComposerAttachments,
+  clearComposerDraft,
+  type ComposerAttachment,
+  setComposerDraft
+} from '@/store/composer'
 import {
   browseBackward,
   browseForward,
@@ -144,6 +151,7 @@ export function ChatBar({
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
+  const restoredSavedDraftRef = useRef(false)
   const previousBusyRef = useRef(busy)
   const drainingQueueRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
@@ -171,10 +179,12 @@ export function ChatBar({
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
   const canSteer =
     busy && !!onSteer && attachments.length === 0 && trimmedDraft.length > 0 && !SLASH_COMMAND_RE.test(trimmedDraft)
+
   const showHelpHint = draft === '?'
 
   const { t } = useI18n()
@@ -284,24 +294,6 @@ export function ChatBar({
       offInsert()
     }
   }, [appendExternalText, disabled])
-
-  // Keep draftRef in sync with the assistant-ui composer state for callers
-  // that read the latest text outside the React render cycle. We don't push
-  // to `$composerDraft` per keystroke any more — nobody outside the composer
-  // subscribes to it (verified by grep), and the round-trip
-  // `setText` ⇄ `subscribe` ⇄ `setText` was adding two useEffects to the per-
-  // keystroke critical path. `reconcileComposerTerminalSelections` only
-  // matters when the draft is submitted; we now call it from the submit
-  // path instead.
-  useEffect(() => {
-    draftRef.current = draft
-
-    const editor = editorRef.current
-
-    if (editor && document.activeElement !== editor && composerPlainText(editor) !== draft) {
-      renderComposerContents(editor, draft)
-    }
-  }, [draft])
 
   useEffect(() => {
     if (urlOpen) {
@@ -976,15 +968,17 @@ export function ChatBar({
   const clearDraft = useCallback(() => {
     aui.composer().setText('')
     draftRef.current = ''
+    clearComposerDraft()
 
     if (editorRef.current) {
       editorRef.current.replaceChildren()
     }
   }, [aui])
 
-  const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
+  const loadIntoComposer = useCallback((text: string, attachments: ComposerAttachment[]) => {
     draftRef.current = text
     aui.composer().setText(text)
+    setComposerDraft(text)
     $composerAttachments.set(cloneAttachments(attachments))
 
     const editor = editorRef.current
@@ -993,7 +987,42 @@ export function ChatBar({
       renderComposerContents(editor, text)
       placeCaretEnd(editor)
     }
-  }
+  }, [aui])
+
+  useEffect(() => {
+    if (restoredSavedDraftRef.current) {
+      return
+    }
+
+    restoredSavedDraftRef.current = true
+
+    const savedDraft = $composerDraft.get()
+
+    if (!savedDraft || draft || draftRef.current) {
+      return
+    }
+
+    loadIntoComposer(savedDraft, $composerAttachments.get())
+  }, [draft, loadIntoComposer])
+
+  // Keep draftRef in sync with the assistant-ui composer state for callers
+  // that read the latest text outside the React render cycle. `$composerDraft`
+  // now carries the route-survivable text snapshot, but we still avoid
+  // feeding it back into assistant-ui reactively on each keystroke.
+  useEffect(() => {
+    if (!draft && !draftRef.current && $composerDraft.get()) {
+      return
+    }
+
+    draftRef.current = draft
+    setComposerDraft(draft)
+
+    const editor = editorRef.current
+
+    if (editor && document.activeElement !== editor && composerPlainText(editor) !== draft) {
+      renderComposerContents(editor, draft)
+    }
+  }, [draft])
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
     if (!activeQueueSessionKey || queueEdit) {

@@ -1,0 +1,62 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: knowmind
+description: Connect Hermes to Knowmind, a tenant-scoped knowledge graph and long-term memory backend.
+source: https://knowmind.de
+
+# Knowmind ships a stdio MCP server through the public npm package.
+# The package is pinned here so catalog installs are deterministic and never
+# float to a new upstream version without a Hermes catalog update.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "knowmind@0.1.11"
+    - "mcp"
+  version: "0.1.11"
+
+# Credentials are tenant/user-specific. The catalog never ships Schübeler
+# Consulting credentials; each Hermes user provides their own Knowmind API URL
+# and bearer token at install time. Values are written to the user's
+# ~/.hermes/.env and passed only to this MCP subprocess via the MCP env config.
+auth:
+  type: api_key
+  env:
+    - name: KNOWMIND_API_URL
+      prompt: "Knowmind API URL"
+      default: "https://knowmind.de"
+      required: true
+      secret: false
+    - name: KNOWMIND_TOKEN
+      prompt: "Knowmind API token (create one at https://knowmind.de/dashboard/api-tokens)"
+      required: true
+      secret: true
+
+# Knowmind exposes recall/search plus write/link operations. Keep the default
+# surface read-mostly so casual installs do not mutate a user's memory graph.
+# Users can opt into store/link/unlink with `hermes mcp configure knowmind`.
+tools:
+  default_enabled:
+    - knowmind.recall
+    - knowmind.relations
+    - knowmind.stats
+    - knowmind.health
+
+post_install: |
+  No Knowmind account yet? Register at:
+    https://knowmind.de/register
+
+  Then create an API token in your Knowmind dashboard:
+    https://knowmind.de/dashboard/api-tokens
+
+  Install this catalog entry with your own token. Schübeler Consulting
+  credentials are not bundled or reused.
+
+  Default tools are read-mostly. To enable memory writes and graph mutations,
+  run:
+    hermes mcp configure knowmind
+
+  Start a new Hermes session or run /reload-mcp to load the Knowmind tools.

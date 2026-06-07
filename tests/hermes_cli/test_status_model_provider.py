@@ -46,6 +46,8 @@ def test_show_status_displays_configured_dict_model_and_provider_label(monkeypat
     out = capsys.readouterr().out
     assert "Model:        anthropic/claude-sonnet-4" in out
     assert "Provider:     Anthropic" in out
+    assert "Current run:" not in out
+    assert "Override:" not in out
 
 
 def test_show_status_displays_legacy_string_model_and_custom_endpoint(monkeypatch, capsys, tmp_path):
@@ -62,6 +64,30 @@ def test_show_status_displays_legacy_string_model_and_custom_endpoint(monkeypatc
     out = capsys.readouterr().out
     assert "Model:        qwen3:latest" in out
     assert "Provider:     Custom endpoint" in out
+
+
+def test_show_status_surfaces_runtime_override_separately(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    monkeypatch.setattr(
+        status_mod,
+        "load_config",
+        lambda: {"model": {"default": "gpt-5.4", "provider": "custom:ciyuanliudong"}},
+        raising=False,
+    )
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "custom:ciyuanliudong", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "custom", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "Custom endpoint", raising=False)
+    monkeypatch.setenv("HERMES_MODEL", "gpt-5.5")
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    out = capsys.readouterr().out
+    assert "Model:        gpt-5.4" in out
+    assert "Current run:  gpt-5.5" in out
+    assert "Override:     active (session/process)" in out
 
 
 def test_show_status_reports_managed_nous_features(monkeypatch, capsys, tmp_path):

@@ -72,6 +72,15 @@ def _configured_model_label(config: dict) -> str:
     return model or "(not set)"
 
 
+def _runtime_model_label() -> str:
+    """Return the active per-process model override, if any."""
+    model = (
+        os.environ.get("HERMES_MODEL", "")
+        or os.environ.get("HERMES_INFERENCE_MODEL", "")
+    ).strip()
+    return model
+
+
 def _effective_provider_label() -> str:
     """Return the provider label matching current CLI runtime resolution."""
     requested = resolve_requested_provider()
@@ -115,7 +124,12 @@ def show_status(args):
     except Exception:
         config = {}
 
-    print(f"  Model:        {_configured_model_label(config)}")
+    configured_model = _configured_model_label(config)
+    runtime_model = _runtime_model_label()
+    print(f"  Model:        {configured_model}")
+    if runtime_model and runtime_model != configured_model:
+        print(f"  Current run:  {runtime_model}")
+        print(f"  Override:     active (session/process)")
     print(f"  Provider:     {_effective_provider_label()}")
 
     # =========================================================================

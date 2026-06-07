@@ -669,12 +669,29 @@ def run_conversation(
             # context windows (each pass summarises the middle N turns).
             for _pass in range(3):
                 _orig_len = len(messages)
+                _orig_tokens = _preflight_tokens
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
                     task_id=effective_task_id,
                 )
-                if len(messages) >= _orig_len:
-                    break  # Cannot compress further
+                # Re-estimate after compression
+                _preflight_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=agent.tools or None,
+                )
+                # Compression success requires EITHER:
+                # 1. Message count actually decreased, OR
+                # 2. Token savings >= 20% (material improvement), OR
+                # 3. Post-compression tokens below 70% of context (safe margin)
+                _new_len = len(messages)
+                _token_savings_pct = (((_orig_tokens - _preflight_tokens) / _orig_tokens) * 100) if _orig_tokens > 0 else 0
+                _material_token_savings = _token_savings_pct >= 20
+                _message_count_decreased = _new_len < _orig_len
+                
+                if not (_message_count_decreased or _material_token_savings):
+                    # No meaningful compression — stop trying
+                    break
                 # Compression created a new session — clear the history
                 # reference so _flush_messages_to_session_db writes ALL
                 # compressed messages to the new session's SQLite, not
@@ -691,12 +708,8 @@ def run_conversation(
                 agent._last_content_with_tools = None
                 agent._last_content_tools_all_housekeeping = False
                 agent._mute_post_response = False
-                # Re-estimate after compression
-                _preflight_tokens = estimate_request_tokens_rough(
-                    messages,
-                    system_prompt=active_system_prompt or "",
-                    tools=agent.tools or None,
-                )
+                # Compression loop continues if compression was effective.
+                # Continue to next pass if under threshold guard hasn't stopped it.
                 if not _compressor.should_compress(_preflight_tokens):
                     break  # Under threshold or anti-thrash guard stopped it
 

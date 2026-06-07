@@ -154,6 +154,7 @@ class TestHandleVoiceCommand:
 
     @pytest.mark.asyncio
     async def test_voice_bench_reports_current_chat(self, runner, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "user1")
         calls = {}
         monkeypatch.setattr(
             "gateway.run._voice_bench_format_recent",
@@ -164,6 +165,24 @@ class TestHandleVoiceCommand:
         assert result == "bench ok"
         assert calls == {"platform": "telegram", "chat_id": "123", "limit": 3}
         assert runner._voice_mode == {}
+
+    @pytest.mark.asyncio
+    async def test_voice_bench_rejects_group_chat_allowlist_without_user(self, runner, monkeypatch):
+        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+        monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-1001")
+        calls = {}
+        monkeypatch.setattr(
+            "gateway.run._voice_bench_format_recent",
+            lambda *_args, **_kwargs: calls.update({"called": True}) or "bench ok",
+        )
+        event = _make_event("/voice bench 1", chat_id="-1001")
+        event.source.chat_type = "group"
+
+        result = await runner._handle_voice_command(event)
+
+        assert "restricted" in result.lower()
+        assert calls == {}
 
     @pytest.mark.asyncio
     async def test_toggle_off_to_on(self, runner):

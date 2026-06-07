@@ -1,6 +1,7 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
+import threading
 from unittest.mock import patch, MagicMock
 
 import httpx
@@ -21,6 +22,7 @@ from tools.skills_hub import (
     bundle_content_hash,
     check_for_skill_updates,
     create_source_router,
+    parallel_search_sources,
     unified_search,
     append_audit_log,
     _skill_meta_to_dict,
@@ -1600,6 +1602,62 @@ class TestUnifiedSearchDedup:
         ])
         results = unified_search("query", [failing, ok])
         assert len(results) == 1
+
+
+class TestParallelSearchSources:
+    def _make_source(self, source_id, search_fn):
+        src = MagicMock()
+        src.source_id.return_value = source_id
+        src.search.side_effect = search_fn
+        return src
+
+    def test_returns_after_timeout_without_waiting_for_stuck_worker(self):
+        blocker = threading.Event()
+        returned = threading.Event()
+        captured = {}
+
+        fast_skill = SkillMeta(
+            name="fast-skill",
+            description="fast",
+            source="ok",
+            identifier="ok/fast-skill",
+            trust_level="community",
+        )
+
+        def slow_search(_query, limit=10):
+            blocker.wait(timeout=5)
+            return []
+
+        def fast_search(_query, limit=10):
+            return [fast_skill]
+
+        slow = self._make_source("slow", slow_search)
+        fast = self._make_source("ok", fast_search)
+
+        def run_search():
+            captured["result"] = parallel_search_sources(
+                [slow, fast],
+                query="fast",
+                overall_timeout=0.05,
+            )
+            returned.set()
+
+        runner = threading.Thread(target=run_search)
+        runner.start()
+
+        assert returned.wait(timeout=0.5), (
+            "parallel_search_sources() should return promptly after timeout "
+            "instead of blocking on ThreadPoolExecutor shutdown"
+        )
+
+        blocker.set()
+        runner.join(timeout=1.0)
+        assert not runner.is_alive()
+
+        all_results, source_counts, timed_out = captured["result"]
+        assert [skill.identifier for skill in all_results] == ["ok/fast-skill"]
+        assert source_counts == {"ok": 1}
+        assert timed_out == ["slow"]
 
 
 # ---------------------------------------------------------------------------

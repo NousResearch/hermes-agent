@@ -3692,8 +3692,9 @@ def parallel_search_sources(
     if not active:
         return all_results, source_counts, timed_out_ids
 
-    with ThreadPoolExecutor(max_workers=min(len(active), 8)) as pool:
-        futures = {}
+    pool = ThreadPoolExecutor(max_workers=min(len(active), 8))
+    futures = {}
+    try:
         for src in active:
             lim = per_source_limits.get(src.source_id(), 50)
             fut = pool.submit(_search_one_source, src, query, lim)
@@ -3718,6 +3719,15 @@ def parallel_search_sources(
                     "Skills browse timed out waiting for: %s",
                     ", ".join(timed_out_ids),
                 )
+                for fut in futures:
+                    if not fut.done():
+                        fut.cancel()
+    finally:
+        # Do not wait for timed-out workers here. The old ``with
+        # ThreadPoolExecutor(...)`` block always performed
+        # ``shutdown(wait=True)``, so the CLI still hung until slow network
+        # calls unwound even after ``as_completed(..., timeout=...)`` fired.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     return all_results, source_counts, timed_out_ids
 

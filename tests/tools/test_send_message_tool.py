@@ -28,6 +28,7 @@ from tools.send_message_tool import (
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
+    _send_telegram_message_with_retry,
     _send_to_platform,
     send_message_tool,
 )
@@ -740,6 +741,41 @@ class TestSendTelegramHtmlDetection:
         assert result["success"] is True
         assert bot.send_message.await_count == 2
         sleep_mock.assert_awaited_once()
+
+    def test_retry_after_above_cap_fails_without_sleeping(self, monkeypatch):
+        class RetryAfterError(Exception):
+            retry_after = 1_000_000
+
+        bot = self._make_bot()
+        bot.send_message = AsyncMock(side_effect=RetryAfterError("Too Many Requests"))
+
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            with pytest.raises(RetryAfterError):
+                asyncio.run(
+                    _send_telegram_message_with_retry(bot, chat_id=123, text="hello")
+                )
+
+        bot.send_message.assert_awaited_once()
+        sleep_mock.assert_not_awaited()
+
+    def test_retry_after_within_cap_still_retries(self, monkeypatch):
+        class RetryAfterError(Exception):
+            retry_after = 2
+
+        bot = self._make_bot()
+        bot.send_message = AsyncMock(
+            side_effect=[RetryAfterError("Too Many Requests"), SimpleNamespace(message_id=2)]
+        )
+
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            result = asyncio.run(
+                _send_telegram_message_with_retry(bot, chat_id=123, text="hello")
+            )
+
+        assert result.message_id == 2
+        assert bot.send_message.await_count == 2
+        sleep_mock.assert_awaited_once_with(2.0)
+
 
 
 class TestSendTelegramThreadIdMapping:

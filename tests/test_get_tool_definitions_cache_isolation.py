@@ -92,3 +92,84 @@ class TestQuietModeCacheIsolation:
         explains why the bug only hit Gateway."""
         model_tools.get_tool_definitions(quiet_mode=False)
         assert len(model_tools._tool_defs_cache) == 0
+
+
+def _tool_names(definitions):
+    return [tool.get("function", {}).get("name") for tool in definitions]
+
+
+class TestQuietModeAvailabilityCache:
+
+    def test_check_fn_ttl_refreshes_outer_cache(self, monkeypatch):
+        """The quiet_mode schema cache must not keep gated tools forever."""
+        from tools import registry as registry_module
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        available = {"value": True}
+        calls = {"count": 0}
+        tool_name = "av_cache_ttl_test_tool"
+        toolset_name = "av_cache_ttl_test_toolset"
+
+        def check_fn():
+            calls["count"] += 1
+            return available["value"]
+
+        registry.register(
+            name=tool_name,
+            toolset=toolset_name,
+            schema={"description": "test tool", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: "{}",
+            check_fn=check_fn,
+        )
+        monkeypatch.setattr(registry_module, "_CHECK_FN_TTL_SECONDS", 0.001)
+        try:
+            first = model_tools.get_tool_definitions(enabled_toolsets=[toolset_name], quiet_mode=True)
+            assert tool_name in _tool_names(first)
+            assert calls["count"] == 1
+
+            available["value"] = False
+            monkeypatch.setattr(registry_module.time, "monotonic", lambda: 10_000.0)
+
+            second = model_tools.get_tool_definitions(enabled_toolsets=[toolset_name], quiet_mode=True)
+            assert tool_name not in _tool_names(second)
+            assert calls["count"] == 2
+        finally:
+            registry.deregister(tool_name)
+            invalidate_check_fn_cache()
+            model_tools._tool_defs_cache.clear()
+
+    def test_check_fn_invalidation_refreshes_outer_cache(self):
+        """Explicit check_fn cache invalidation should also invalidate schema hits."""
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        available = {"value": True}
+        calls = {"count": 0}
+        tool_name = "av_cache_invalidate_test_tool"
+        toolset_name = "av_cache_invalidate_test_toolset"
+
+        def check_fn():
+            calls["count"] += 1
+            return available["value"]
+
+        registry.register(
+            name=tool_name,
+            toolset=toolset_name,
+            schema={"description": "test tool", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: "{}",
+            check_fn=check_fn,
+        )
+        try:
+            first = model_tools.get_tool_definitions(enabled_toolsets=[toolset_name], quiet_mode=True)
+            assert tool_name in _tool_names(first)
+            assert calls["count"] == 1
+
+            available["value"] = False
+            invalidate_check_fn_cache()
+
+            second = model_tools.get_tool_definitions(enabled_toolsets=[toolset_name], quiet_mode=True)
+            assert tool_name not in _tool_names(second)
+            assert calls["count"] == 2
+        finally:
+            registry.deregister(tool_name)
+            invalidate_check_fn_cache()
+            model_tools._tool_defs_cache.clear()

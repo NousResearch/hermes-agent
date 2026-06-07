@@ -71,13 +71,24 @@ def _error(message: str) -> dict:
     return {"error": _sanitize_error_text(message)}
 
 
+_TELEGRAM_MAX_RETRY_AFTER_SECONDS = 10.0
+
+
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     retry_after = getattr(exc, "retry_after", None)
     if retry_after is not None:
         try:
-            return max(float(retry_after), 0.0)
+            delay = max(float(retry_after), 0.0)
         except (TypeError, ValueError):
             return 1.0
+        if delay > _TELEGRAM_MAX_RETRY_AFTER_SECONDS:
+            logger.warning(
+                "Telegram retry_after %.1fs exceeds %.1fs cap; failing without sleep",
+                delay,
+                _TELEGRAM_MAX_RETRY_AFTER_SECONDS,
+            )
+            return None
+        return delay
 
     text = str(exc).lower()
     if "timed out" in text or "timeout" in text:
@@ -1474,8 +1485,8 @@ async def _send_mattermost(token, extra, chat_id, message):
 async def _send_matrix(token, extra, chat_id, message):
     """Send via Matrix Client-Server API.
 
-    Converts markdown to HTML for rich rendering in Matrix clients.
-    Falls back to plain text if the ``markdown`` library is not installed.
+    Converts markdown to sanitized HTML for rich rendering in Matrix clients.
+    Falls back to plain text if Matrix HTML conversion is unavailable.
     """
     try:
         import aiohttp
@@ -1495,14 +1506,21 @@ async def _send_matrix(token, extra, chat_id, message):
         # Build message payload with optional HTML formatted_body.
         payload = {"msgtype": "m.text", "body": message}
         try:
-            import markdown as _md
-            html = _md.markdown(message, extensions=["fenced_code", "tables"])
-            # Convert h1-h6 to bold for Element X compatibility.
-            html = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
-            payload["format"] = "org.matrix.custom.html"
-            payload["formatted_body"] = html
-        except ImportError:
-            pass
+            from gateway.platforms.matrix import MatrixAdapter
+        except ImportError as exc:
+            logger.debug("Matrix HTML formatting unavailable; sending plain-text body: %s", exc)
+        else:
+            try:
+                html = MatrixAdapter._markdown_to_html_fallback(message)
+                if html and html != message:
+                    payload["format"] = "org.matrix.custom.html"
+                    payload["formatted_body"] = html
+            except (AttributeError, TypeError, ValueError) as exc:
+                logger.debug(
+                    "Matrix HTML conversion failed; sending plain-text body: %s",
+                    exc,
+                    exc_info=True,
+                )
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.put(url, headers=headers, json=payload) as resp:

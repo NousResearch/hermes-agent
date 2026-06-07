@@ -9,7 +9,20 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
+INSTALL_SH_CANDIDATES = (REPO_ROOT / "scripts" / "install.sh", REPO_ROOT / "install.sh")
+
+
+def _resolve_install_sh() -> Path:
+    for path in INSTALL_SH_CANDIDATES:
+        if path.exists():
+            return path
+    raise AssertionError(
+        f"install.sh not found at any expected location: "
+        f"{', '.join(str(path) for path in INSTALL_SH_CANDIDATES)}"
+    )
+
+
+INSTALL_SH = _resolve_install_sh()
 
 
 def test_install_script_unsets_pythonpath_and_pythonhome_early() -> None:

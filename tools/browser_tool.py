@@ -126,12 +126,10 @@ def _browser_url_security_block(url: str, *, auto_local_this_nav: bool = False) 
             ),
         }
 
-    if not _is_local_backend() and _is_always_blocked_url(url):
+    if _is_always_blocked_url(url):
         return {"success": False, "error": "Blocked: URL targets a cloud metadata endpoint"}
 
     if _is_camofox_mode():
-        if _is_always_blocked_url(url):
-            return {"success": False, "error": "Blocked: URL targets a cloud metadata endpoint"}
         if not _is_safe_url(url):
             return {"success": False, "error": "Blocked: URL targets a private or internal address"}
 
@@ -1711,37 +1709,42 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
         if provider is None:
             session_info = _create_local_session(task_id)
         else:
+            provider_name = type(provider).__name__
             try:
                 session_info = provider.create_session(task_id)
-                # Validate cloud provider returned a usable session
-                if not session_info or not isinstance(session_info, dict):
-                    raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
-                if session_info.get("cdp_url"):
-                    # Some cloud providers (including Browser-Use v3) return an HTTP
-                    # CDP discovery URL instead of a raw websocket endpoint.
-                    session_info = dict(session_info)
-                    session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
             except Exception as e:
-                provider_name = type(provider).__name__
-                logger.warning(
-                    "Cloud provider %s failed (%s); attempting fallback to local "
-                    "Chromium for task %s",
-                    provider_name, e, task_id,
-                    exc_info=True,
+                raise RuntimeError(
+                    f"Cloud browser provider {provider_name} failed to create a "
+                    "session; refusing to fall back to local Chromium because that "
+                    "would move browser execution onto the Hermes host"
+                ) from e
+
+            # Validate cloud provider returned a usable remote session. A cloud
+            # configuration is an isolation boundary: missing CDP metadata must
+            # fail closed rather than implicitly selecting local --session mode.
+            if not session_info or not isinstance(session_info, dict):
+                raise RuntimeError(
+                    f"Cloud browser provider {provider_name} returned invalid "
+                    f"session metadata: {session_info!r}"
                 )
-                try:
-                    session_info = _create_local_session(task_id)
-                except Exception as local_error:
-                    raise RuntimeError(
-                        f"Cloud provider {provider_name} failed ({e}) and local "
-                        f"fallback also failed ({local_error})"
-                    ) from e
-                # Mark session as degraded for observability
-                if isinstance(session_info, dict):
-                    session_info = dict(session_info)
-                    session_info["fallback_from_cloud"] = True
-                    session_info["fallback_reason"] = str(e)
-                    session_info["fallback_provider"] = provider_name
+            raw_cdp_url = str(session_info.get("cdp_url") or "").strip()
+            if not raw_cdp_url:
+                raise RuntimeError(
+                    f"Cloud browser provider {provider_name} returned session "
+                    "metadata without a CDP URL; refusing to fall back to local "
+                    "Chromium"
+                )
+
+            # Some cloud providers (including Browser-Use v3) return an HTTP
+            # CDP discovery URL instead of a raw websocket endpoint.
+            session_info = dict(session_info)
+            session_info["cdp_url"] = _resolve_cdp_override(raw_cdp_url)
+            if not session_info["cdp_url"]:
+                raise RuntimeError(
+                    f"Cloud browser provider {provider_name} returned session "
+                    "metadata without a CDP URL; refusing to fall back to local "
+                    "Chromium"
+                )
 
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we
@@ -2000,34 +2003,6 @@ def _run_browser_command(
         if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
             idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
             browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
-
-        # Inject --no-sandbox when needed (issue #15765):
-        # - Running as root: Chromium always refuses to start without it
-        # - Ubuntu 23.10+ / AppArmor systems: unprivileged user namespaces
-        #   are restricted, causing Chromium to exit with "No usable sandbox"
-        #   even for non-root users running under systemd or containers.
-        if "AGENT_BROWSER_CHROME_FLAGS" not in browser_env:
-            _needs_sandbox_bypass = False
-            if hasattr(os, "geteuid") and os.geteuid() == 0:
-                _needs_sandbox_bypass = True
-                logger.debug("browser: running as root — injecting --no-sandbox")
-            else:
-                # Detect AppArmor user namespace restrictions (Ubuntu 23.10+)
-                _userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
-                try:
-                    with open(_userns_restrict, encoding="utf-8") as _f:
-                        if _f.read().strip() == "1":
-                            _needs_sandbox_bypass = True
-                            logger.debug(
-                                "browser: AppArmor userns restrictions detected — "
-                                "injecting --no-sandbox"
-                            )
-                except OSError:
-                    pass
-            if _needs_sandbox_bypass:
-                browser_env["AGENT_BROWSER_CHROME_FLAGS"] = (
-                    "--no-sandbox --disable-dev-shm-usage"
-                )
 
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file
@@ -2321,23 +2296,19 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # 169.254.169.254 / metadata.google.internal / ECS task metadata
     # via a browser, and routing those to a local Chromium sidecar
     # on an EC2/GCP/Azure host exfiltrates IAM credentials (#16234).
-    if not _is_local_backend() and _is_always_blocked_url(url):
+    # Local backends are NOT exempt — an agent on EC2 with a local
+    # Chromium and allow_private_urls=true could otherwise hit IMDS.
+    if _is_always_blocked_url(url):
         return json.dumps({
             "success": False,
             "error": "Blocked: URL targets a cloud metadata endpoint",
         })
 
-    if _is_camofox_mode():
-        if _is_always_blocked_url(url):
-            return json.dumps({
-                "success": False,
-                "error": "Blocked: URL targets a cloud metadata endpoint",
-            })
-        if not _is_safe_url(url):
-            return json.dumps({
-                "success": False,
-                "error": "Blocked: URL targets a private or internal address",
-            })
+    if _is_camofox_mode() and not _is_safe_url(url):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: URL targets a private or internal address",
+        })
 
     if (
         not auto_local_this_nav
@@ -2401,11 +2372,10 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # and for the hybrid local sidecar (we're already on a local browser
         # hitting a private URL by design).
         # Always-blocked floor (cloud metadata / IMDS) is enforced even
-        # when auto_local_this_nav is true — see pre-nav check for
-        # rationale (#16234).
+        # when auto_local_this_nav is true and for local backends — see
+        # pre-nav check for rationale (#16234).
         if (
-            not _is_local_backend()
-            and final_url
+            final_url
             and final_url != url
             and _is_always_blocked_url(final_url)
         ):
@@ -2424,7 +2394,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
             return json.dumps({
                 "success": False,
-                "error": "Blocked: redirect landed on a private/internal address",
+                "error": "Blocked: redirect landed on a private or internal address",
             })
 
         response = {
@@ -2488,6 +2458,63 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         }, ensure_ascii=False)
 
 
+def _enforce_post_action_cloud_safety(effective_task_id: str) -> Optional[dict]:
+    """Guard a cloud browser session against landing on a metadata endpoint.
+
+    Navigation-capable actions (click, eval/console, and reads like snapshot)
+    can leave a cloud browser session pointed at an always-blocked cloud
+    metadata endpoint (e.g. http://169.254.169.254/latest/meta-data/) even
+    though the original ``open`` was safe -- a link click or in-page JS can
+    navigate there. For non-local backends we re-check the live page URL and,
+    if it resolves to an always-blocked endpoint, force the context back to
+    ``about:blank`` and return a failure payload so the caller never reads or
+    returns metadata content.
+
+    The probe fails *closed*: if the live URL cannot be verified (the eval
+    probe raises, times out, or returns no result), we cannot rule out that the
+    session navigated onto a metadata endpoint, so we reset to ``about:blank``
+    and refuse the action rather than risk reading/returning its content. This
+    is safe here because the guard only runs for non-local (cloud) backends,
+    which are CDP-based and support ``eval`` -- a probe failure means a
+    transient hang/timeout, not an unsupported command, so the caller can
+    simply retry.
+
+    Returns a failure dict when the session was reset, or ``None`` when the
+    page was verified safe (or the backend is local, where the metadata floor
+    is handled elsewhere and private URLs may be explicitly allowed).
+    """
+    if _is_local_backend():
+        return None
+
+    def _reset_and_block(reason: str) -> dict:
+        try:
+            _run_browser_command(effective_task_id, "open", ["about:blank"], timeout=10)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("about:blank reset failed: %s", exc)
+        return {"success": False, "error": reason}
+
+    try:
+        url_result = _run_browser_command(
+            effective_task_id, "eval", ["window.location.href"], timeout=10
+        )
+    except Exception as exc:
+        logger.warning(
+            "post-action URL probe failed: %s; resetting cloud session for safety", exc
+        )
+        return _reset_and_block("Blocked: could not verify page URL after navigation")
+
+    if not isinstance(url_result, dict) or not url_result.get("success"):
+        logger.warning(
+            "post-action URL probe returned no result; resetting cloud session for safety"
+        )
+        return _reset_and_block("Blocked: could not verify page URL after navigation")
+
+    final_url = (url_result.get("data") or {}).get("result") or ""
+    if final_url and _is_always_blocked_url(final_url):
+        return _reset_and_block("Blocked: navigation landed on a cloud metadata endpoint")
+    return None
+
+
 def browser_snapshot(
     full: bool = False,
     task_id: Optional[str] = None,
@@ -2509,6 +2536,13 @@ def browser_snapshot(
         return camofox_snapshot(full, task_id, user_task)
 
     effective_task_id = _last_session_key(task_id or "default")
+
+    # Refuse to read the page when a cloud session has navigated onto an
+    # always-blocked metadata endpoint -- reading the snapshot would leak that
+    # content. Check the live URL *before* issuing the snapshot command.
+    _blocked = _enforce_post_action_cloud_safety(effective_task_id)
+    if _blocked is not None:
+        return json.dumps(_blocked, ensure_ascii=False)
 
     # Build command args based on full flag
     args = []
@@ -2581,6 +2615,11 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "click", [ref])
 
     if result.get("success"):
+        # A click can navigate; ensure a cloud session didn't land on a
+        # blocked metadata endpoint before reporting success.
+        _blocked = _enforce_post_action_cloud_safety(effective_task_id)
+        if _blocked is not None:
+            return json.dumps(_blocked, ensure_ascii=False)
         response = {
             "success": True,
             "clicked": ref
@@ -2881,6 +2920,12 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
             "error": err,
         }
         return json.dumps(_copy_fallback_warning(response, result))
+
+    # In-page JS can navigate (e.g. location.href = ...); ensure a cloud
+    # session didn't land on a blocked metadata endpoint before returning.
+    _blocked = _enforce_post_action_cloud_safety(effective_task_id)
+    if _blocked is not None:
+        return json.dumps(_blocked, ensure_ascii=False)
 
     data = result.get("data", {})
     raw_result = data.get("result")

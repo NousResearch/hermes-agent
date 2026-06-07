@@ -643,7 +643,7 @@ services.hermes-agent.extraPythonPackages = [
 ];
 ```
 
-The package's `site-packages` is added to PYTHONPATH in the hermes wrapper. `importlib.metadata` discovers the entry point at session start.
+The package's `site-packages` is exposed through `HERMES_PLUGIN_PYTHONPATH` in the hermes wrapper. Hermes scans that metadata at session start and only adds the path to `sys.path` after the plugin is enabled, so Python startup hooks from disabled plugins do not run.
 
 ### Optional Dependency Groups (`extraDependencyGroups`)
 
@@ -835,7 +835,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `extraArgs` | `listOf str` | `[]` | Extra args for `hermes gateway` |
 | `extraPackages` | `listOf package` | `[]` | Extra packages available to the agent. Added to the hermes user's per-user profile so terminal commands, skills, and cron jobs all see them |
 | `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
-| `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Build with `python312Packages` |
+| `extraPythonPackages` | `listOf package` | `[]` | Python packages exposed for entry-point plugin discovery without startup `PYTHONPATH`. Build with `python312Packages` |
 | `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras to include in the sealed venv (e.g. `["hindsight"]`). Resolved by uv — no collisions |
 | `restart` | `str` | `"always"` | systemd `Restart=` policy |
 | `restartSec` | `int` | `5` | systemd `RestartSec=` value |

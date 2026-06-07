@@ -2014,6 +2014,71 @@ class TestMatrixImageOnlyMediaNormalization:
 
         assert captured_event is not None
         assert captured_event.text == "Please describe this chart"
+
+    @pytest.mark.asyncio
+    async def test_group_media_without_mention_is_not_downloaded(self):
+        self.adapter._require_mention = True
+        self.adapter._free_rooms = set()
+        self.adapter._is_dm_room = AsyncMock(return_value=False)
+        self.adapter._client.download_media = AsyncMock(return_value=b"attacker bytes")
+        self.adapter.handle_message = AsyncMock()
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$file1",
+            event_ts=0.0,
+            source_content={
+                "msgtype": "m.file",
+                "body": "payload.bin",
+                "url": "mxc://example/payload",
+                "info": {"mimetype": "application/octet-stream"},
+            },
+            relates_to={},
+            msgtype="m.file",
+        )
+
+        self.adapter._client.download_media.assert_not_awaited()
+        self.adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_media_is_not_downloaded_before_gateway_auth(self):
+        class FakeRunner:
+            def __init__(self):
+                self.events = []
+
+            def _is_user_authorized(self, source):
+                return False
+
+            async def _handle_message(self, event):
+                self.events.append(event)
+
+        fake_runner = FakeRunner()
+        self.adapter.set_message_handler(fake_runner._handle_message)
+        self.adapter.handle_message = fake_runner._handle_message
+        self.adapter._client.download_media = AsyncMock(return_value=b"attacker bytes")
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$video1",
+            event_ts=0.0,
+            source_content={
+                "msgtype": "m.video",
+                "body": "clip.mp4",
+                "url": "mxc://example/clip",
+                "info": {"mimetype": "video/mp4"},
+            },
+            relates_to={},
+            msgtype="m.video",
+        )
+
+        self.adapter._client.download_media.assert_not_awaited()
+        assert len(fake_runner.events) == 1
+        assert fake_runner.events[0].message_type == MessageType.VIDEO
+        assert fake_runner.events[0].media_urls == []
+
+
 # ---------------------------------------------------------------------------
 # Message redaction
 # ---------------------------------------------------------------------------

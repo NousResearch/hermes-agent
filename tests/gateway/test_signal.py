@@ -353,6 +353,87 @@ class TestSignalPhoneRedaction:
 
 
 # ---------------------------------------------------------------------------
+# Signal processing reactions authorization
+# ---------------------------------------------------------------------------
+
+class TestSignalReactionAuthorization:
+    def _event(self):
+        from gateway.platforms.base import MessageEvent
+        from gateway.session import SessionSource
+
+        source = SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id="+15550001111",
+            chat_type="dm",
+            user_id="+15550001111",
+            user_name="unauthorized",
+        )
+        return MessageEvent(
+            source=source,
+            text="hello",
+            raw_message={"sender": "+15550001111", "timestamp_ms": 1710000000000},
+        )
+
+    @pytest.mark.asyncio
+    async def test_reaction_hooks_skip_gateway_denied_sender(self, monkeypatch):
+        """Signal reactions must not bypass the gateway allowlist decision."""
+        from gateway.platforms.base import ProcessingOutcome
+
+        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "*")
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.gateway_runner = MagicMock()
+        adapter.gateway_runner._is_user_authorized.return_value = False
+        adapter.send_reaction = AsyncMock()
+        adapter.remove_reaction = AsyncMock()
+        event = self._event()
+
+        await adapter.on_processing_start(event)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        adapter.gateway_runner._is_user_authorized.assert_any_call(event.source)
+        adapter.send_reaction.assert_not_awaited()
+        adapter.remove_reaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reaction_hooks_allow_gateway_authorized_sender(self, monkeypatch):
+        """Authorized Signal messages keep the existing progress reactions."""
+        from gateway.platforms.base import ProcessingOutcome
+
+        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "*")
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.gateway_runner = MagicMock()
+        adapter.gateway_runner._is_user_authorized.return_value = True
+        adapter.send_reaction = AsyncMock()
+        adapter.remove_reaction = AsyncMock()
+        event = self._event()
+
+        await adapter.on_processing_start(event)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        adapter.send_reaction.assert_any_await("+15550001111", "👀", "+15550001111", 1710000000000)
+        adapter.remove_reaction.assert_awaited_once_with("+15550001111", "+15550001111", 1710000000000)
+        adapter.send_reaction.assert_any_await("+15550001111", "✅", "+15550001111", 1710000000000)
+
+    @pytest.mark.asyncio
+    async def test_reaction_hooks_fail_closed_on_auth_error(self, monkeypatch):
+        """Reactions are suppressed when _is_user_authorized raises an exception."""
+        from gateway.platforms.base import ProcessingOutcome
+
+        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "*")
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.gateway_runner = MagicMock()
+        adapter.gateway_runner._is_user_authorized.side_effect = RuntimeError("auth backend unavailable")
+        adapter.send_reaction = AsyncMock()
+        adapter.remove_reaction = AsyncMock()
+        event = self._event()
+
+        await adapter.on_processing_start(event)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        adapter.send_reaction.assert_not_awaited()
+        adapter.remove_reaction.assert_not_awaited()
+
+# ---------------------------------------------------------------------------
 # Authorization in run.py
 # ---------------------------------------------------------------------------
 
@@ -1768,6 +1849,43 @@ class TestSignalContentlessEnvelope:
 
         assert "event" in captured, "Message with attachment should NOT be skipped"
         assert captured["event"].media_urls == ["/tmp/img.png"]
+
+    @pytest.mark.asyncio
+    async def test_skips_attachment_fetch_for_unauthorized_dm_sender(self, monkeypatch):
+        """DM attachments must not be fetched before authorization is checked."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+        adapter.set_interaction_authorizer(lambda _source: False)
+
+        fetch_calls = []
+
+        async def fake_fetch(attachment_id):
+            fetch_calls.append(attachment_id)
+            return "/tmp/should_not_exist.png", ".png"
+
+        adapter._fetch_attachment = fake_fetch
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Unauthorized Sender",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    "message": "with attachment",
+                    "attachments": [{"id": "att-123", "size": 200}],
+                },
+            }
+        })
+
+        assert fetch_calls == []
+        assert "event" in captured
+        assert captured["event"].media_urls == []
 
     @pytest.mark.asyncio
     async def test_allows_normal_text_message(self, monkeypatch):

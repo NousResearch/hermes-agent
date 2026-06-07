@@ -334,7 +334,7 @@ async function fetchHtmlTitle(normalizedUrl: string): Promise<string> {
         'Accept-Language': 'en-US,en;q=0.7',
         'User-Agent': TITLE_USER_AGENT
       },
-      redirect: 'follow',
+      redirect: 'manual',
       signal: controller.signal
     })
 

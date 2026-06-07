@@ -121,31 +121,62 @@ class ToolEntry:
 _CHECK_FN_TTL_SECONDS = 30.0
 _check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
 _check_fn_cache_lock = threading.Lock()
+_check_fn_cache_generation = 0
+
+
+def get_check_fn_cache_fingerprint() -> int:
+    """Return the generation for availability-filtered tool schemas.
+
+    ``model_tools.get_tool_definitions`` caches already-filtered schemas, so
+    its key must change when check_fn TTL results expire or are explicitly
+    invalidated. This function also expires stale check results before the
+    caller looks up an outer schema-cache entry.
+    """
+    global _check_fn_cache_generation
+    now = time.monotonic()
+    ttl = float(_CHECK_FN_TTL_SECONDS)
+    with _check_fn_cache_lock:
+        expired = [
+            fn for fn, (ts, _value) in _check_fn_cache.items()
+            if now - ts >= ttl
+        ]
+        if expired:
+            for fn in expired:
+                _check_fn_cache.pop(fn, None)
+            _check_fn_cache_generation += 1
+        return _check_fn_cache_generation
 
 
 def _check_fn_cached(fn: Callable) -> bool:
     """Return bool(fn()), TTL-cached across calls. Swallows exceptions as False."""
+    global _check_fn_cache_generation
     now = time.monotonic()
+    expired_cached_result = False
     with _check_fn_cache_lock:
         cached = _check_fn_cache.get(fn)
         if cached is not None:
             ts, value = cached
             if now - ts < _CHECK_FN_TTL_SECONDS:
                 return value
+            expired_cached_result = True
     try:
         value = bool(fn())
     except Exception:
         value = False
     with _check_fn_cache_lock:
         _check_fn_cache[fn] = (now, value)
+        if expired_cached_result:
+            _check_fn_cache_generation += 1
     return value
 
 
 def invalidate_check_fn_cache() -> None:
     """Drop all cached ``check_fn`` results. Call after config changes that
     affect tool availability (e.g. ``hermes tools enable``)."""
+    global _check_fn_cache_generation
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
+        _check_fn_cache_generation += 1
 
 
 class ToolRegistry:

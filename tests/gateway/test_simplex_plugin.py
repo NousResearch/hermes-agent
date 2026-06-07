@@ -264,6 +264,50 @@ async def test_handle_event_filters_own_corr_id():
     assert own not in adapter._pending_corr_ids  # discarded
 
 
+@pytest.mark.asyncio
+async def test_handle_group_item_with_null_group_profile_dispatches():
+    """A group newChatItem whose groupProfile is JSON ``null`` must dispatch.
+
+    The daemon can emit ``"groupProfile": null`` rather than omitting the
+    key. With a falsy top-level ``displayName`` the name lookup then has to
+    fall through to ``groupProfile``; a plain ``.get("groupProfile", {})``
+    returns ``None`` there (the default only applies to a missing key) and
+    the subsequent ``.get(...)`` raises ``AttributeError``. That exception is
+    swallowed by the WS-read loop, so the inbound group message is silently
+    dropped. The name lookup must be null-safe and still dispatch.
+    """
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    captured: list = []
+    adapter.handle_message = AsyncMock(side_effect=lambda ev: captured.append(ev))  # type: ignore
+    adapter._fetch_file = AsyncMock(return_value=None)  # type: ignore
+
+    wrapper = {
+        "chatInfo": {
+            "type": "group",
+            "groupInfo": {
+                "groupId": 7,
+                "displayName": "",
+                "groupProfile": None,
+            },
+        },
+        "chatItem": {
+            "content": {"msgContent": {"type": "text", "text": "hi all"}},
+            "meta": {"itemStatus": {"type": "rcvNew"}},
+        },
+    }
+
+    await adapter._handle_new_chat_item(wrapper)
+
+    assert len(captured) == 1
+    event = captured[0]
+    assert event.text == "hi all"
+    assert event.source.chat_id == "group:7"
+    assert event.source.chat_name == ""
+
+
 # ---------------------------------------------------------------------------
 # 9. Standalone (out-of-process) send for cron
 # ---------------------------------------------------------------------------

@@ -339,7 +339,7 @@ class SimplexAdapter(BasePlatformAdapter):
         if is_group:
             group_info = chat_info.get("groupInfo") or chat_info.get("group") or {}
             group_id = str(group_info.get("groupId") or group_info.get("id") or "")
-            group_name = group_info.get("displayName") or group_info.get("groupProfile", {}).get("displayName", "")
+            group_name = group_info.get("displayName") or (group_info.get("groupProfile") or {}).get("displayName", "")
             chat_id = f"group:{group_id}" if group_id else ""
             chat_name = group_name
         else:

@@ -4224,7 +4224,11 @@ def run_conversation(
                             "as final response"
                         )
                         final_response = _recovered
-                        agent._response_was_previewed = True
+                        # Streaming delivered a fragment, not a confirmed
+                        # final preview. Leave response_previewed false so
+                        # gateway fallback delivery can send the recovered
+                        # text plus the abnormal-turn explanation.
+                        agent._response_was_previewed = False
                         break
 
                     # If the previous turn already delivered real content alongside
@@ -4774,7 +4778,14 @@ def run_conversation(
                     and len(_stripped) <= 24
                     and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}
                 )
-                if _is_empty_terminal or _is_partial_fragment:
+                _is_partial_stream_recovery = (
+                    str(_turn_exit_reason) == "partial_stream_recovery"
+                )
+                if (
+                    _is_empty_terminal
+                    or _is_partial_fragment
+                    or _is_partial_stream_recovery
+                ):
                     _explanation = agent._format_turn_completion_explanation(
                         _turn_exit_reason
                     )

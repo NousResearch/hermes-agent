@@ -467,6 +467,124 @@ def print_scored(scored: list[dict], limit: int) -> None:
     )
 
 
+def reason_for(s: dict) -> str:
+    """Return a short, neutral reason for the classification."""
+    cls = s["classification"]
+    if cls == "SKIP":
+        if s["readme_known"] and not s["readme_present"]:
+            return "No README; not enough public information to assess."
+        if s["unclear_purpose"]:
+            return "Unclear purpose and minimal documentation."
+        return "Weak overall signals for now."
+    if cls == "TEST":
+        bits = []
+        if s["has_play_signal"]:
+            bits.append("demo/playable signal")
+        if s["has_test_signal"]:
+            bits.append("early-access/testnet signal")
+        detail = ", ".join(bits) or "testable signal"
+        return f"Concrete way to try it ({detail}) with basic documentation."
+    if cls == "CONTACT":
+        return "Substantial signals and docs, but no open test yet — outreach candidate."
+    return "Interesting signals; needs more observation before action."
+
+
+def build_markdown_report(
+    scored: list[dict], total_unique: int, days: int, generated: str, limit: int
+) -> str:
+    """Build a lightweight Markdown report string from scored results."""
+    top = scored[:limit]
+    counts = {"WATCH": 0, "TEST": 0, "CONTACT": 0, "SKIP": 0}
+    for s in scored:
+        counts[s["classification"]] = counts.get(s["classification"], 0) + 1
+
+    lines: list[str] = []
+    lines.append("# Game Research — Scan Report")
+    lines.append("")
+    lines.append(f"**Generated:** {generated}")
+    lines.append(f"**Scan window:** last {days} days")
+    lines.append(f"**Projects scanned (unique):** {total_unique}")
+    lines.append(f"**Projects scored:** {len(scored)}")
+    lines.append("")
+    lines.append("## Summary")
+    lines.append("")
+    lines.append(
+        f"- WATCH: {counts['WATCH']} | TEST: {counts['TEST']} | "
+        f"CONTACT: {counts['CONTACT']} | SKIP: {counts['SKIP']}"
+    )
+    lines.append("")
+    lines.append(f"## Top {len(top)} projects (by Game Research Signal Score)")
+    lines.append("")
+
+    for i, s in enumerate(top, start=1):
+        repo = s["repo"]
+        full_name = repo.get("full_name") or "unknown"
+        url = repo.get("html_url") or ""
+        signals = ", ".join(s["signals"]) or "none"
+        risks = ", ".join(s["risks"]) or "none"
+        breakdown = ", ".join(s["components"])
+        if s["readme_present"]:
+            readme_src = f"{url}#readme"
+        elif s["readme_known"]:
+            readme_src = "none found"
+        else:
+            readme_src = "not retrieved"
+
+        lines.append(f"### {i}. {full_name} — {s['score']}/100 [{s['classification']}]")
+        lines.append("")
+        lines.append(f"- **Recommendation:** {s['classification']} — {reason_for(s)}")
+        lines.append(
+            f"- **Stats:** stars {repo.get('stargazers_count')} | "
+            f"forks {repo.get('forks_count')} | "
+            f"language {repo.get('language') or 'unknown'} | "
+            f"created {repo.get('created_at')}"
+        )
+        lines.append(f"- **Detected signals:** {signals}")
+        lines.append(f"- **Risk notes:** {risks}")
+        lines.append(f"- **Score breakdown:** {breakdown}")
+        lines.append("- **Sources:**")
+        lines.append(f"  - Repository: {url}")
+        lines.append(f"  - README: {readme_src}")
+        lines.append("")
+
+    lines.append("## Manual verification")
+    lines.append("")
+    lines.append(
+        "All signals above are automated and **unverified**. Before acting on "
+        "any entry, open the repository, read the README, and confirm the "
+        "detected signals (testnet / demo / early access, etc.) are real and "
+        "current."
+    )
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append(
+        "*Game Research Signal Score reflects research signal strength, not "
+        "financial merit. Neutral research summary — not financial advice. "
+        "Verify all project claims manually.*"
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_report(
+    scored: list[dict],
+    total_unique: int,
+    days: int,
+    limit: int,
+    reports_dir: Path,
+) -> Path:
+    """Write the Markdown report to a timestamped file and return its path."""
+    now = datetime.now(timezone.utc)
+    generated = now.strftime("%Y-%m-%d %H:%M UTC")
+    stamp = now.strftime("%Y%m%d-%H%M%S")
+    content = build_markdown_report(scored, total_unique, days, generated, limit)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    path = reports_dir / f"game-research-report-{stamp}.md"
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Starter GitHub scanner + scorer for early-stage game projects."
@@ -495,6 +613,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=40,
         help="Max repos to fetch README + score, to bound API use (default: 40).",
     )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Also write a Markdown report to the reports/ folder.",
+    )
+    parser.add_argument(
+        "--report-dir",
+        default=None,
+        help="Directory for the report (default: ../reports next to this script).",
+    )
     return parser.parse_args(argv)
 
 
@@ -517,6 +645,15 @@ def main(argv: list[str] | None = None) -> int:
     results = scan(args.days, args.per_keyword, headers)
     scored = score_and_rank(results, headers, args.fetch_cap)
     print_scored(scored, args.limit)
+
+    if args.report:
+        reports_dir = (
+            Path(args.report_dir)
+            if args.report_dir
+            else script_dir.parent / "reports"
+        )
+        path = write_report(scored, len(results), args.days, args.limit, reports_dir)
+        print(f"\nReport written to {path}")
     return 0
 
 

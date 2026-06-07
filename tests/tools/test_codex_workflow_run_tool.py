@@ -71,6 +71,21 @@ def test_cache_only_dirty_cleanup_then_calls_staged(tmp_path, monkeypatch):
     cache_path = repo / ".pytest_cache" / "v" / "cache" / "nodeids"
     cache_path.parent.mkdir(parents=True)
     cache_path.write_text("cached\n", encoding="utf-8")
+    branch = _git(repo, "branch", "--show-current")
+    head = _git(repo, "rev-parse", "HEAD")
+    event = workflow.provenance.provenance_event(
+        repo=repo,
+        branch=branch,
+        head_sha=head,
+        stage_id="phase12a0",
+        session_id="session-a",
+        actor="hermes",
+        tool="codex_workflow_run",
+        operation="create",
+        path=".pytest_cache/v/cache/nodeids",
+        before_hash=None,
+        after_hash=workflow.provenance.file_hash(cache_path),
+    )
     calls = []
 
     def fake_staged(args):
@@ -83,6 +98,9 @@ def test_cache_only_dirty_cleanup_then_calls_staged(tmp_path, monkeypatch):
         workdir=str(repo),
         standing_authorization=True,
         auto_clean_cache=True,
+        cleanup_allowed_globs=[".pytest_cache/**"],
+        session_id="session-a",
+        provenance_events=[event],
     )
 
     assert result["status"] == "staged_called"
@@ -161,6 +179,9 @@ def test_registration_and_core_toolset_exposure():
     assert "codex_workflow_run" in toolsets.resolve_toolset("codex_staged_implement")
     assert "codex_staged_implement" in toolsets.resolve_toolset("codex_staged_implement")
     assert "codex_workflow_run" in toolsets.resolve_toolset("codex_workflow_run")
+    properties = schema["parameters"]["properties"]
+    assert "session_id" in properties
+    assert "provenance_events" in properties
 
 
 def test_schema_has_no_executable_command_suggestions():
@@ -476,3 +497,204 @@ def test_dry_run_source_dirty_does_not_create_isolated_worktree(tmp_path, monkey
     assert source_path.exists()
     assert staged_calls == []
     assert worktree_calls == []
+
+
+def test_unknown_untracked_doc_plan_is_preserved(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    plan_path = repo / "docs" / "plans" / "phase12-notes.md"
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("notes from another session\n", encoding="utf-8")
+    calls = []
+
+    def fake_staged(args):
+        calls.append(args)
+        raise AssertionError("unknown docs/plans dirty must not call staged implementation")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        mode="dry_run",
+        standing_authorization=True,
+        auto_clean_cache=True,
+        allowed_files=["README.md"],
+    )
+
+    assert result["status"] == "dry_run"
+    assert plan_path.exists()
+    assert calls == []
+    assert result["would_delete_paths"] == []
+    assert result["would_overwrite_paths"] == []
+    assert result["dirty_ownership"][0]["path"] == "docs/plans/phase12-notes.md"
+    assert result["dirty_ownership"][0]["owner_policy"] == "unknown_unowned"
+    assert result["dirty_ownership"][0]["default_behavior"] == "preserve"
+    assert "docs_plans_default_preserve" in result["cleanup_blocking_reasons"]
+
+
+def test_dry_run_outputs_dirty_ownership_and_cleanup_block_reasons(tmp_path):
+    repo = _clean_repo(tmp_path)
+    cache_path = repo / ".pytest_cache" / "v" / "cache" / "nodeids"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("cached\n", encoding="utf-8")
+
+    result = _call(
+        workdir=str(repo),
+        mode="dry_run",
+        standing_authorization=True,
+        auto_clean_cache=True,
+        session_id="session-a",
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["dirty_ownership"] == [
+        {
+            "path": ".pytest_cache/v/cache/nodeids",
+            "path_class": "cache",
+            "owner_policy": "generated_cache",
+            "owner_session_id": None,
+            "default_behavior": "preserve",
+            "cleanup_allowed": False,
+            "blocking_reasons": ["dry_run_non_mutating", "owner_policy_not_current_session", "path_not_in_allowlist"],
+        }
+    ]
+    assert result["cleanup_allowed"] is False
+    assert result["cleanup_blocking_reasons"] == [
+        "dry_run_non_mutating",
+        "owner_policy_not_current_session",
+        "path_not_in_allowlist",
+    ]
+    assert result["would_delete_paths"] == []
+    assert result["would_overwrite_paths"] == []
+    assert cache_path.exists()
+
+
+def test_execute_cache_cleanup_blocks_other_session_owner(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    cache_path = repo / ".pytest_cache" / "v" / "cache" / "nodeids"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("cached\n", encoding="utf-8")
+    calls = []
+
+    def fake_staged(args):
+        calls.append(args)
+        raise AssertionError("cache cleanup without provenance should not call staged")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        standing_authorization=True,
+        auto_clean_cache=True,
+        session_id="session-a",
+        provenance_events=[
+            {
+                "schema_version": 1,
+                "event_id": "evt-other",
+                "repo_id": workflow.provenance.repo_id(repo),
+                "branch": _git(repo, "branch", "--show-current"),
+                "head_sha": _git(repo, "rev-parse", "HEAD"),
+                "stage_id": "phase12a0",
+                "session_id": "session-b",
+                "actor": "hermes",
+                "tool": "codex_workflow_run",
+                "operation": "create",
+                "path": ".pytest_cache/v/cache/nodeids",
+                "path_class": "generated_cache",
+                "before_hash": None,
+                "after_hash": workflow.provenance.file_hash(cache_path),
+                "owner_session_id": "session-b",
+                "owner_policy": "current_session",
+                "authorization": {"explicit": False, "reason": ""},
+                "timestamp": "2026-06-06T00:00:00Z",
+            }
+        ],
+    )
+
+    assert result["status"] == "dirty_recovery_required"
+    assert cache_path.exists()
+    assert result["dirty_recovery"]["strategy"] == "cache_cleanup_blocked_by_provenance"
+    assert result["dirty_recovery"]["provenance_cleanup"][".pytest_cache/v/cache/nodeids"]["cleanup_allowed"] is False
+    assert calls == []
+
+
+def test_execute_cache_cleanup_blocks_unprovenanced_cache(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    cache_path = repo / ".pytest_cache" / "v" / "cache" / "nodeids"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("cached\n", encoding="utf-8")
+    calls = []
+
+    def fake_staged(args):
+        calls.append(args)
+        raise AssertionError("unprovenanced cache cleanup must not call staged")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        standing_authorization=True,
+        auto_clean_cache=True,
+        cleanup_allowed_globs=[".pytest_cache/**"],
+        session_id="session-a",
+    )
+
+    assert result["status"] == "dirty_recovery_required"
+    assert result["dirty_recovery"]["strategy"] == "cache_cleanup_blocked_by_provenance"
+    assert "owner_policy_not_current_session" in result["dirty_recovery"]["cleanup_blocking_reasons"]
+    assert cache_path.exists()
+    assert calls == []
+
+
+def test_execute_cache_cleanup_blocks_current_session_cache_outside_allowlist(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    cache_path = repo / ".pytest_cache" / "v" / "cache" / "nodeids"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("cached\n", encoding="utf-8")
+    branch = _git(repo, "branch", "--show-current")
+    head = _git(repo, "rev-parse", "HEAD")
+    event = workflow.provenance.provenance_event(
+        repo=repo,
+        branch=branch,
+        head_sha=head,
+        stage_id="phase12a0",
+        session_id="session-a",
+        actor="hermes",
+        tool="codex_workflow_run",
+        operation="create",
+        path=".pytest_cache/v/cache/nodeids",
+        before_hash=None,
+        after_hash=workflow.provenance.file_hash(cache_path),
+    )
+    calls = []
+
+    def fake_staged(args):
+        calls.append(args)
+        raise AssertionError("out-of-allowlist cache cleanup must not call staged")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        # Keep execution scope valid but intentionally exclude cache cleanup path.
+        allowed_files=["README.md"],
+        allowed_globs=[],
+        standing_authorization=True,
+        auto_clean_cache=True,
+        session_id="session-a",
+        provenance_events=[event],
+    )
+
+    assert result["status"] == "dirty_recovery_required"
+    assert result["dirty_recovery"]["strategy"] == "cache_cleanup_blocked_by_provenance"
+    assert "path_not_in_allowlist" in result["dirty_recovery"]["cleanup_blocking_reasons"]
+    assert cache_path.exists()
+    assert calls == []
+
+
+def test_cleanup_allowlist_is_separate_from_codex_write_scope():
+    cleanup_scope = workflow._cleanup_allowlist(
+        {"cleanup_allowed_globs": [".pytest_cache/**"]},
+        {"files": ["README.md"], "globs": ["tools/**"]},
+    )
+
+    assert cleanup_scope == {"files": [], "globs": [".pytest_cache/**"]}

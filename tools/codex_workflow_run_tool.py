@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from agent import codex_workflow_provenance as provenance
 from tools import codex_staged_implement_tool as staged
 from tools.registry import registry
 
@@ -113,6 +114,19 @@ def _call_staged(normalized: dict[str, Any]) -> dict[str, Any]:
 def _current_dirty_paths(dirty: dict[str, Any]) -> list[str]:
     paths = dirty.get("dirty_paths")
     return list(paths) if isinstance(paths, list) else []
+
+
+def _current_branch(repo: Path) -> str | None:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--show-current"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
 
 
 def _path_in_allowlist(path: str, allowlist: dict[str, list[str]]) -> bool:
@@ -321,9 +335,12 @@ def _safe_cache_path(repo: Path, rel_path: str) -> Path | None:
     return target
 
 
-def _clean_cache_dirty_paths(repo: Path, dirty: dict[str, Any]) -> list[str]:
+def _clean_cache_dirty_paths(repo: Path, dirty: dict[str, Any], *, approved_paths: set[str] | None = None) -> list[str]:
+    approved = approved_paths or set()
     cleaned: list[str] = []
     for rel_path in dirty.get("dirty_path_classes", {}).get("cache", []):
+        if rel_path not in approved:
+            continue
         target = _safe_cache_path(repo, rel_path)
         if target is None or not (target.exists() or target.is_symlink()):
             continue
@@ -333,6 +350,68 @@ def _clean_cache_dirty_paths(repo: Path, dirty: dict[str, Any]) -> list[str]:
             target.unlink()
         cleaned.append(rel_path)
     return cleaned
+
+
+def _provenance_events(args: dict[str, Any]) -> list[dict[str, Any]]:
+    events = args.get("provenance_events")
+    if not isinstance(events, list):
+        return []
+    return [event for event in events if isinstance(event, dict)]
+
+
+def _cleanup_allowlist(args: dict[str, Any], allowlist: dict[str, list[str]]) -> dict[str, list[str]]:
+    # Cleanup/delete scope is intentionally separate from Codex implementation
+    # write scope. A file being safe for Codex to edit does not make it safe to
+    # delete or overwrite during dirty recovery.
+    files: list[str] = []
+    globs: list[str] = []
+    extra_files = args.get("cleanup_allowed_files")
+    extra_globs = args.get("cleanup_allowed_globs")
+    if isinstance(extra_files, list):
+        files.extend(path for path in extra_files if isinstance(path, str) and path.strip())
+    if isinstance(extra_globs, list):
+        globs.extend(pattern for pattern in extra_globs if isinstance(pattern, str) and pattern.strip())
+    return {"files": files, "globs": globs}
+
+
+def _cleanup_decisions(
+    *,
+    args: dict[str, Any],
+    repo: Path,
+    git_head: str | None,
+    dirty: dict[str, Any],
+    allowlist: dict[str, list[str]],
+    dry_run: bool,
+) -> dict[str, dict[str, Any]]:
+    branch = _current_branch(repo)
+    cleanup_allowlist = _cleanup_allowlist(args, allowlist)
+    return {
+        rel_path: provenance.cleanup_decision(
+            repo=repo,
+            rel_path=rel_path,
+            current_session_id=args.get("session_id") if isinstance(args.get("session_id"), str) else None,
+            branch=branch,
+            head_sha=git_head,
+            events=_provenance_events(args),
+            allowed_files=cleanup_allowlist.get("files", []),
+            allowed_globs=cleanup_allowlist.get("globs", []),
+            explicit_authorization=bool(args.get("standing_authorization")),
+            operation="delete",
+            dry_run=dry_run,
+        )
+        for rel_path in _current_dirty_paths(dirty)
+    }
+
+
+def _cleanup_blocking_reasons(decisions: dict[str, dict[str, Any]]) -> list[str]:
+    reasons: set[str] = set()
+    for decision in decisions.values():
+        reasons.update(decision.get("blocking_reasons") or [])
+    return sorted(reasons)
+
+
+def _ownership_preview_from_decisions(decisions: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    return [decisions[path] for path in sorted(decisions)]
 
 
 def _stage_slug(stage_id: Any) -> str:
@@ -378,6 +457,14 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
     dirty = staged._dirty_check(repo)
 
     if validated["mode"] == "dry_run":
+        cleanup_decisions = _cleanup_decisions(
+            args=args,
+            repo=repo,
+            git_head=git_head,
+            dirty=dirty,
+            allowlist=validated["allowlist"],
+            dry_run=True,
+        )
         return _json_result(
             _base(
                 "dry_run",
@@ -386,6 +473,28 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
                 dirty=dirty,
                 resolved_allowlist=validated["allowlist"],
                 would_call_staged=bool(dirty.get("is_clean")),
+                would_run_review=False,
+                would_run_verification=False,
+                would_create_isolated_worktree=False,
+                would_commit=False,
+                would_push=False,
+                would_deploy_or_restart=False,
+                would_write_ledger=True,
+                would_record_ledger_events=True,
+                ledger_event_preview=[],
+                dirty_ownership=_ownership_preview_from_decisions(cleanup_decisions),
+                cleanup_allowed=False,
+                cleanup_blocking_reasons=_cleanup_blocking_reasons(cleanup_decisions),
+                would_delete_paths=[],
+                would_overwrite_paths=[],
+                blocking_reasons=[],
+                authorization_required=["write_stage"],
+                recommended_next_stage={
+                    "stage_id": args.get("stage_id") or "phase12a0-provenance-contract",
+                    "allowed_files": normalized.get("allowed_files", []),
+                    "allowed_globs": normalized.get("allowed_globs", []),
+                    "verify_cmd_ids": normalized.get("verify_cmd_ids", []),
+                },
             )
         )
 
@@ -403,7 +512,34 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
 
     standing_auth = bool(args.get("standing_authorization"))
     if _cache_only(dirty) and standing_auth and bool(args.get("auto_clean_cache")):
-        cleaned_paths = _clean_cache_dirty_paths(repo, dirty)
+        cleanup_decisions = _cleanup_decisions(
+            args=args,
+            repo=repo,
+            git_head=git_head,
+            dirty=dirty,
+            allowlist=validated["allowlist"],
+            dry_run=False,
+        )
+        blocked_cleanup = {
+            path: decision for path, decision in cleanup_decisions.items() if not decision.get("cleanup_allowed")
+        }
+        if blocked_cleanup:
+            result = _base("dirty_recovery_required", repo=repo, git_head=git_head, dirty=dirty)
+            result["dirty_recovery"].update(
+                {
+                    "strategy": "cache_cleanup_blocked_by_provenance",
+                    "provenance_cleanup": cleanup_decisions,
+                    "cleanup_blocking_reasons": _cleanup_blocking_reasons(cleanup_decisions),
+                }
+            )
+            return _json_result(result)
+        cleaned_paths = _clean_cache_dirty_paths(
+            repo,
+            dirty,
+            approved_paths={
+                path for path, decision in cleanup_decisions.items() if decision.get("cleanup_allowed")
+            },
+        )
         after = staged._dirty_check(repo)
         if after.get("is_clean"):
             staged_result = _call_staged(normalized)
@@ -479,7 +615,11 @@ _SCHEMA = {
             "continue_policy": {"type": "string", "enum": ["stop-on-review-needed"]},
             "dirty_baseline_policy": {"type": "string", "enum": ["require-clean"]},
             "standing_authorization": {"type": "boolean"},
+            "session_id": {"type": "string"},
+            "provenance_events": {"type": "array", "items": {"type": "object"}},
             "auto_clean_cache": {"type": "boolean"},
+            "cleanup_allowed_files": {"type": "array", "items": {"type": "string"}},
+            "cleanup_allowed_globs": {"type": "array", "items": {"type": "string"}},
             "allow_isolated_worktree": {"type": "boolean"},
             "stage_id": {"type": "string"},
             "checkpoint_verified_diff": {"type": "boolean"},

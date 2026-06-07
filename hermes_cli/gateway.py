@@ -3008,11 +3008,63 @@ def get_launchd_label() -> str:
 
 
 def _launchd_domain() -> str:
-    # The `user/<uid>` domain (vs the older `gui/<uid>`) is reachable from
-    # non-Aqua/background sessions (SSH, headless, login items) and is the only
-    # one that supports service management on macOS 26+. `gui/<uid>` returns
-    # error 125 ("Domain does not support specified action") there. See #23387.
-    return f"user/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    """Detect the correct launchd management domain for the current session.
+    
+    Probes both gui/<uid> and user/<uid> domains to find which one is active.
+    This handles both Aqua login sessions (gui/<uid>) and background/headless
+    sessions (user/<uid>), addressing both #23387 and #40831.
+    
+    Probing strategy:
+    1. Try to detect the active domain by checking which one exists in launchctl print
+    2. Fall back to launchctl managername to determine the session type
+    3. Use that to pick the most likely domain
+    """
+    uid = os.getuid()
+    label = get_launchd_label()
+    
+    # Try gui/<uid> first (works for Aqua sessions)
+    try:
+        subprocess.run(
+            ["launchctl", "print", f"gui/{uid}/{label}"],
+            check=True,
+            capture_output=True,
+            timeout=5,
+        )
+        return f"gui/{uid}"
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass  # gui/<uid> not available, try user/<uid>
+    
+    # Try user/<uid> (works for background/headless sessions)
+    try:
+        subprocess.run(
+            ["launchctl", "print", f"user/{uid}/{label}"],
+            check=True,
+            capture_output=True,
+            timeout=5,
+        )
+        return f"user/{uid}"
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass  # user/<uid> not available either
+    
+    # Neither domain contains the service yet (fresh install). Detect based on session type.
+    try:
+        manager_name = subprocess.run(
+            ["launchctl", "managername"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        
+        # Aqua = GUI login session, use gui/<uid>
+        if manager_name == "Aqua":
+            return f"gui/{uid}"
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        pass  # Can't detect, fall through to default
+    
+    # Default to user/<uid> for background/headless sessions
+    # This maintains backward compatibility with #40581 for non-Aqua sessions
+    return f"user/{uid}"
 
 
 # On macOS, exit code 125 ("Domain does not support specified action") and

@@ -92,6 +92,29 @@ def _ensure_platform_extra_dict(platforms_data: dict, name: str) -> tuple[dict, 
     return plat_data, extra
 
 
+def _bridge_platform_home_channel_env_from_yaml(yaml_cfg: dict, registry) -> None:
+    """Seed ``*_HOME_CHANNEL`` env vars from top-level ``config.yaml`` keys.
+
+    ``hermes config set LINE_HOME_CHANNEL ...`` and similar commands persist
+    env-style keys in ``config.yaml`` rather than ``.env``. Plugin platforms
+    expose only ``cron_deliver_env_var`` metadata, so bridge those YAML values
+    into ``os.environ`` early and let the existing env-driven runtime path wire
+    them into ``GatewayConfig``. Real env vars still take precedence.
+    """
+    if not isinstance(yaml_cfg, dict) or registry is None:
+        return
+
+    for entry in registry.all_entries():
+        env_var = (entry.cron_deliver_env_var or "").strip()
+        if not env_var:
+            continue
+        for key in (env_var, f"{env_var}_NAME", f"{env_var}_THREAD_ID"):
+            value = yaml_cfg.get(key)
+            if value is None or os.getenv(key):
+                continue
+            os.environ[key] = str(value)
+
+
 # Module-level cache for bundled platform plugin names (lives outside the
 # enum so it doesn't become an accidental enum member).
 _Platform__bundled_plugin_names: Optional[set] = None
@@ -828,6 +851,8 @@ def load_gateway_config() -> GatewayConfig:
             except Exception as e:
                 logger.debug("plugin discovery skipped: %s", e)
                 _pr = None
+
+            _bridge_platform_home_channel_env_from_yaml(yaml_cfg, _pr)
 
             _shared_loop_targets: list = list(Platform)
             if _pr is not None:
@@ -1995,6 +2020,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                             str(home["thread_id"])
                             if home.get("thread_id")
                             else None
+                        ),
+                    )
+
+            home_env = (entry.cron_deliver_env_var or "").strip()
+            if home_env:
+                home_chat_id = os.getenv(home_env)
+                if home_chat_id:
+                    existing_home = config.platforms[platform].home_channel
+                    config.platforms[platform].home_channel = HomeChannel(
+                        platform=platform,
+                        chat_id=str(home_chat_id),
+                        name=(
+                            os.getenv(f"{home_env}_NAME")
+                            or (existing_home.name if existing_home else "Home")
+                        ),
+                        thread_id=(
+                            os.getenv(f"{home_env}_THREAD_ID")
+                            or (existing_home.thread_id if existing_home else None)
                         ),
                     )
     except Exception as e:

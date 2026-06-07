@@ -5774,3 +5774,65 @@ def test_notification_event_dedup_key_keeps_completions_one_shot():
     assert server._notification_event_dedup_key(first) == server._notification_event_dedup_key(
         replay
     )
+
+
+def test_session_db_without_profile_uses_launch_db(monkeypatch):
+    """A session bound to the launch profile keeps using the shared db handle
+    (and the caller must NOT close it)."""
+    sentinel = object()
+    monkeypatch.setattr(server, "_db", sentinel)
+
+    db, close_db = server._session_db({"session_key": "k"})
+
+    assert db is sentinel
+    assert close_db is False
+
+
+def test_session_db_truncate_targets_profile_db_not_launch(tmp_path, monkeypatch):
+    """Edit-and-resend (truncate) in app-global remote mode must rewrite the
+    session's OWN profile transcript, never the launch profile's state.db.
+
+    Regression: prompt.submit's truncate branch resolved the db via the
+    launch-profile ``_get_db()``, so for a profile-scoped session the
+    delete+reinsert ran against the wrong store. The real transcript was never
+    truncated (so the edited-away messages reappeared on resume, duplicated by
+    the resend) and the launch db received orphaned rows. ``_session_db`` must
+    open the session's own profile db instead.
+    """
+    from hermes_state import SessionDB
+
+    key = "trunc-key"
+
+    launch_db = SessionDB(db_path=tmp_path / "launch.db")
+    launch_db.create_session(key, source="tui")
+    launch_db.replace_messages(key, [{"role": "user", "content": "launch-keep"}])
+    monkeypatch.setattr(server, "_db", launch_db)
+
+    profile_home = tmp_path / "profileA"
+    profile_home.mkdir()
+    profile_db = SessionDB(db_path=profile_home / "state.db")
+    profile_db.create_session(key, source="tui")
+    profile_db.replace_messages(
+        key,
+        [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "two"},
+            {"role": "assistant", "content": "a2"},
+        ],
+    )
+
+    session = {"session_key": key, "profile_home": str(profile_home)}
+
+    db, close_db = server._session_db(session)
+    assert close_db is True  # opened just for this call — caller owns it
+    try:
+        # Mirror the truncate branch: drop everything from the second user turn.
+        db.replace_messages(key, [{"role": "user", "content": "one"}])
+    finally:
+        db.close()
+
+    # The session's own profile transcript was truncated to the kept message...
+    assert [m["content"] for m in profile_db.get_messages(key)] == ["one"]
+    # ...and the launch profile's db was left completely untouched.
+    assert [m["content"] for m in launch_db.get_messages(key)] == ["launch-keep"]

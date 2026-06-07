@@ -488,6 +488,33 @@ def _profile_home(profile: str | None) -> Path | None:
     return home if (home / "state.db").exists() or home.exists() else None
 
 
+def _session_db(session: dict) -> tuple[Any, bool]:
+    """Resolve the SessionDB that owns this session's persisted messages.
+
+    In the desktop's app-global remote mode a session can belong to a
+    *different* local profile (``session['profile_home']`` is set). Any
+    persistence for such a session must target that profile's ``state.db`` —
+    not the launch profile's process-cached db from :func:`_get_db` — or the
+    write lands in the wrong store and the session's real transcript is never
+    touched.
+
+    Returns ``(db, close_db)``. ``db`` may be ``None`` when the store is
+    unavailable. When ``close_db`` is True the returned handle was opened just
+    for this call and the caller owns it (must close it in a ``finally``); the
+    shared launch-profile handle is never closed here.
+    """
+    profile_home = session.get("profile_home")
+    if profile_home:
+        from hermes_state import SessionDB
+
+        try:
+            return SessionDB(db_path=Path(profile_home) / "state.db"), True
+        except Exception:
+            logger.debug("failed to open profile db for session", exc_info=True)
+            return None, False
+    return _get_db(), False
+
+
 def write_json(obj: dict) -> bool:
     """Emit one JSON frame. Routes via the most-specific transport available.
 
@@ -902,19 +929,7 @@ def _ensure_session_db_row(session: dict) -> None:
     # Persist into the session's own profile db (global remote mode), not the
     # launch profile's — otherwise the row lands in the wrong state.db, the
     # unified list mis-tags it, and resume 404s ("session not found").
-    profile_home = session.get("profile_home")
-    if profile_home:
-        from hermes_state import SessionDB
-
-        try:
-            db = SessionDB(db_path=Path(profile_home) / "state.db")
-        except Exception:
-            logger.debug("failed to open profile db for session row", exc_info=True)
-            return
-        close_db = True
-    else:
-        db = _get_db()
-        close_db = False
+    db, close_db = _session_db(session)
     if db is None:
         return
     try:
@@ -4366,11 +4381,18 @@ def _(rid, params: dict) -> dict:
             truncated = history[: user_indices[ordinal]]
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
-            if (db := _get_db()) is not None:
+            db, close_db = _session_db(session)
+            if db is not None:
                 try:
                     db.replace_messages(session["session_key"], truncated)
                 except Exception as exc:
                     print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
+                finally:
+                    if close_db:
+                        try:
+                            db.close()
+                        except Exception:
+                            pass
         session["running"] = True
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)

@@ -1,0 +1,8 @@
+name: live-glass
+version: "0.1.0"
+description: "Plugin-first live glass event bus for computer-use frames, tool logs, and approval requests."
+author: NousResearch
+hooks:
+  - post_tool_call
+  - pre_approval_request
+  - post_approval_response

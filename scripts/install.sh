@@ -641,6 +641,88 @@ attempt_install_git() {
     return 1
 }
 
+# Node release tarballs default to .tar.xz, which GNU tar can only unpack when
+# the external `xz` binary is present — otherwise tar dies with the opaque
+# "xz: Cannot exec: No such file or directory". Best-effort install of xz so
+# install_node can keep using the smaller .xz artifact. Returns 0 if xz is
+# available afterwards, non-zero otherwise (caller falls back to .tar.gz or
+# prints a manual-install hint).
+attempt_install_xz() {
+    if command -v xz >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [ "$DISTRO" = "termux" ]; then
+        log_info "Installing xz via pkg..."
+        pkg install -y xz-utils >/dev/null 2>&1 || true
+        command -v xz >/dev/null 2>&1 && return 0
+        return 1
+    fi
+
+    case "$OS" in
+        macos)
+            if command -v brew >/dev/null 2>&1; then
+                log_info "Installing xz via Homebrew..."
+                brew install xz >/dev/null 2>&1 || true
+            fi
+            command -v xz >/dev/null 2>&1 && return 0
+            return 1
+            ;;
+        linux)
+            local sudo_cmd=""
+            if [ "$(id -u 2>/dev/null || echo 1000)" -ne 0 ]; then
+                if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+                    sudo_cmd="sudo"
+                fi
+            fi
+            case "$DISTRO" in
+                ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
+                    log_info "Installing xz via apt..."
+                    $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+                    $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq xz-utils >/dev/null 2>&1 || true
+                    ;;
+                fedora|rhel|centos|rocky|alma)
+                    log_info "Installing xz via dnf..."
+                    $sudo_cmd dnf install -y xz >/dev/null 2>&1 || true
+                    ;;
+                arch|manjaro|cachyos|endeavouros|garuda)
+                    log_info "Installing xz via pacman..."
+                    $sudo_cmd pacman -S --noconfirm --needed xz >/dev/null 2>&1 || true
+                    ;;
+                opensuse*|sles)
+                    log_info "Installing xz via zypper..."
+                    $sudo_cmd zypper install -y xz >/dev/null 2>&1 || true
+                    ;;
+                *)
+                    return 1
+                    ;;
+            esac
+            command -v xz >/dev/null 2>&1 && return 0
+            return 1
+            ;;
+    esac
+    return 1
+}
+
+# Print distro-appropriate manual install instructions for xz.
+show_xz_install_hint() {
+    log_info "To install xz manually:"
+    case "$OS" in
+        linux)
+            case "$DISTRO" in
+                ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
+                    log_info "  sudo apt install xz-utils" ;;
+                fedora|rhel|centos|rocky|alma) log_info "  sudo dnf install xz" ;;
+                arch|manjaro|cachyos|endeavouros|garuda) log_info "  sudo pacman -S xz" ;;
+                opensuse*|sles) log_info "  sudo zypper install xz" ;;
+                *) log_info "  Use your package manager to install xz (xz-utils)" ;;
+            esac
+            ;;
+        android) log_info "  pkg install xz-utils" ;;
+        macos) log_info "  brew install xz" ;;
+    esac
+}
+
 check_git() {
     log_info "Checking Git..."
 
@@ -786,14 +868,33 @@ install_node() {
             ;;
     esac
 
-    # Resolve the latest v22.x.x tarball name from the index page
-    local index_url="https://nodejs.org/dist/latest-v${NODE_VERSION}.x/"
-    local tarball_name
-    tarball_name=$(curl -fsSL "$index_url" \
-        | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
-        | head -1)
+    # Node ships each release as .tar.xz (smaller) and .tar.gz. GNU tar can
+    # only unpack the .xz variant when the external `xz` binary is present;
+    # without it tar aborts with "xz: Cannot exec". Make sure xz is available
+    # (installing it via the detected distro when possible) before preferring
+    # .tar.xz, and fall back to .tar.gz when xz can't be provisioned.
+    local have_xz=true
+    if ! command -v xz >/dev/null 2>&1; then
+        log_info "xz not found — needed to extract Node.js .tar.xz archives"
+        if attempt_install_xz; then
+            log_success "xz installed"
+        else
+            have_xz=false
+            log_warn "Could not install xz automatically — falling back to .tar.gz archive"
+        fi
+    fi
 
-    # Fallback to .tar.gz if .tar.xz not available
+    # Resolve the latest v22.x.x tarball name from the index page. Prefer the
+    # smaller .tar.xz only when xz is available to extract it.
+    local index_url="https://nodejs.org/dist/latest-v${NODE_VERSION}.x/"
+    local tarball_name=""
+    if [ "$have_xz" = true ]; then
+        tarball_name=$(curl -fsSL "$index_url" \
+            | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
+            | head -1)
+    fi
+
+    # Fallback to .tar.gz if .tar.xz not available (or xz is missing)
     if [ -z "$tarball_name" ]; then
         tarball_name=$(curl -fsSL "$index_url" \
             | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.gz" \
@@ -801,8 +902,14 @@ install_node() {
     fi
 
     if [ -z "$tarball_name" ]; then
-        log_warn "Could not find Node.js $NODE_VERSION binary for $node_os-$node_arch"
-        log_info "Install manually: https://nodejs.org/en/download/"
+        if [ "$have_xz" = false ]; then
+            log_error "xz is not installed and no .tar.gz Node.js archive was found."
+            show_xz_install_hint
+            log_info "Then re-run this installer."
+        else
+            log_warn "Could not find Node.js $NODE_VERSION binary for $node_os-$node_arch"
+            log_info "Install manually: https://nodejs.org/en/download/"
+        fi
         HAS_NODE=false
         return 0
     fi

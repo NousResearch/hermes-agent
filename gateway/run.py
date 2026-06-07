@@ -8234,6 +8234,9 @@ class GatewayRunner:
         if canonical == "fast":
             return await self._handle_fast_command(event)
 
+        if canonical == "context":
+            return await self._handle_context_command(event)
+
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
 
@@ -12981,6 +12984,28 @@ class GatewayRunner:
         if _save_config_key("agent.service_tier", saved_value):
             return t("gateway.fast.saved", label=label)
         return t("gateway.fast.session_only", label=label)
+
+    async def _handle_context_command(self, event: MessageEvent) -> str:
+        """Handle /context — manage the model.context_length override."""
+        from hermes_cli.context_cmd import parse_context_length_action, run_context_config_command
+
+        raw_args = event.get_command_args().strip()
+        try:
+            action, _ = parse_context_length_action(raw_args)
+            message = run_context_config_command(raw_args)
+        except ValueError as exc:
+            return f"❌ {exc}"
+        except Exception as exc:
+            return f"❌ Could not update context override: {exc}"
+
+        if action != "status":
+            try:
+                session_key = self._session_key_for_source(event.source)
+                self._evict_cached_agent(session_key)
+            except Exception:
+                logger.debug("could not evict cached agent after context change", exc_info=True)
+            message += "\nCached session agent refreshed; the next message will use this context setting."
+        return message
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""

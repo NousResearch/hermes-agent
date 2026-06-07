@@ -16,6 +16,7 @@ from hermes_cli.config import (
     load_config,
     load_env,
     migrate_config,
+    read_raw_config,
     remove_env_value,
     save_config,
     save_env_value,
@@ -81,6 +82,63 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
+
+    def test_duplicate_top_level_model_uses_last_section(self, tmp_path, capsys):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text(
+                "\n".join([
+                    "model:",
+                    "  default: old-model",
+                    "  provider: old-provider",
+                    "custom_providers:",
+                    "  - name: current-provider",
+                    "    model: nested-model",
+                    "model:",
+                    "  default: current-model",
+                    "  provider: current-provider",
+                    "",
+                ]),
+                encoding="utf-8",
+            )
+
+            raw = read_raw_config()
+            config = load_config()
+
+            assert raw["model"]["default"] == "current-model"
+            assert raw["model"]["provider"] == "current-provider"
+            assert raw["custom_providers"][0]["model"] == "nested-model"
+            assert config["model"]["default"] == "current-model"
+            assert config["model"]["provider"] == "current-provider"
+            assert "hermes config:" not in capsys.readouterr().err
+
+    def test_save_config_collapses_duplicate_top_level_model(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text(
+                "\n".join([
+                    "model:",
+                    "  default: old-model",
+                    "  provider: old-provider",
+                    "custom_providers:",
+                    "  - name: current-provider",
+                    "    model: nested-model",
+                    "model:",
+                    "  default: current-model",
+                    "  provider: current-provider",
+                    "",
+                ]),
+                encoding="utf-8",
+            )
+
+            config = load_config()
+            save_config(config)
+
+            saved = config_path.read_text(encoding="utf-8")
+            top_level_model_count = sum(1 for line in saved.splitlines() if line == "model:")
+            parsed = yaml.safe_load(saved)
+            assert top_level_model_count == 1
+            assert parsed["model"]["default"] == "current-model"
 
 
 class TestLoadConfigParseFailure:

@@ -799,6 +799,79 @@ def _ensure_hermes_home_managed(home: Path):
 # Config loading/saving
 # =============================================================================
 
+def _is_top_level_yaml_key_line(line: str) -> bool:
+    if not line:
+        return False
+    if line[0] in (" ", "\t", "#", "-"):
+        return False
+    key, sep, rest = line.partition(":")
+    if not sep or not key:
+        return False
+    return rest == "" or rest.startswith((" ", "\t", "\r"))
+
+
+def _is_top_level_yaml_section_line(line: str, section_key: str) -> bool:
+    target = f"{section_key}:"
+    if not _is_top_level_yaml_key_line(line) or not line.startswith(target):
+        return False
+    rest = line[len(target):]
+    return rest == "" or rest.startswith((" ", "\t", "\r"))
+
+
+def _find_top_level_yaml_section_ranges(raw: str, section_key: str) -> List[Tuple[int, int]]:
+    ranges: List[Tuple[int, int]] = []
+    current_start: Optional[int] = None
+    current_matches = False
+    offset = 0
+
+    for line in raw.split("\n"):
+        if _is_top_level_yaml_key_line(line):
+            if current_start is not None and current_matches:
+                ranges.append((current_start, offset))
+            current_start = offset
+            current_matches = _is_top_level_yaml_section_line(line, section_key)
+        offset += len(line) + 1
+
+    if current_start is not None and current_matches:
+        ranges.append((current_start, len(raw)))
+
+    return ranges
+
+
+def _dedupe_top_level_yaml_section_keep_last(raw: str, section_key: str) -> str:
+    """Return ``raw`` with duplicate top-level ``section_key`` entries collapsed.
+
+    Hermes historically uses PyYAML, which silently lets the last duplicate key
+    win. Keep that behavior explicit for ``model:`` so switching to a stricter
+    parser later does not make a polluted config fall back to defaults.
+    """
+    ranges = _find_top_level_yaml_section_ranges(raw, section_key)
+    if len(ranges) <= 1:
+        return raw
+
+    pieces: List[str] = []
+    cursor = 0
+    for index, (start, end) in enumerate(ranges):
+        if index + 1 == len(ranges):
+            pieces.append(raw[cursor:])
+            return "".join(pieces)
+        pieces.append(raw[cursor:start])
+        cursor = end
+
+    pieces.append(raw[cursor:])
+    return "".join(pieces)
+
+
+def _load_config_yaml_text(raw: str) -> Any:
+    # Only normalize the root model section. Other duplicate keys remain YAML
+    # errors/fallback candidates for whichever parser policy is in force.
+    return yaml.safe_load(_dedupe_top_level_yaml_section_keep_last(raw, "model")) or {}
+
+
+def _load_config_yaml_file(config_path: Path) -> Any:
+    return _load_config_yaml_text(config_path.read_text(encoding="utf-8"))
+
+
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
@@ -3987,8 +4060,7 @@ def check_config_version() -> Tuple[int, int]:
         return latest, latest
 
     try:
-        with open(config_path, encoding="utf-8") as f:
-            config = yaml.safe_load(f) or {}
+        config = _load_config_yaml_file(config_path)
     except Exception as e:
         # Invalid YAML needs a parse warning, not an automatic schema rewrite
         # that could replace the user's broken file with defaults.
@@ -5081,8 +5153,7 @@ def read_raw_config() -> Dict[str, Any]:
             return copy.deepcopy(cached[2])
 
         try:
-            with open(config_path, encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
+            data = _load_config_yaml_file(config_path)
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
             return {}
@@ -5153,8 +5224,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         if cache_key is not None:
             try:
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
+                user_config = _load_config_yaml_file(config_path)
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})

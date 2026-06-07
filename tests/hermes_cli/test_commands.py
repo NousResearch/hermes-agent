@@ -628,6 +628,13 @@ class TestSubcommands:
         assert "normal" in subs
         assert "status" in subs
 
+    def test_context_has_subcommands(self):
+        assert "/context" in SUBCOMMANDS
+        subs = SUBCOMMANDS["/context"]
+        assert "1m" in subs
+        assert "auto" in subs
+        assert "status" in subs
+
     def test_voice_has_subcommands(self):
         assert "/voice" in SUBCOMMANDS
         assert "on" in SUBCOMMANDS["/voice"]
@@ -661,6 +668,13 @@ class TestSubcommandCompletion:
         texts = {c.text for c in completions}
         assert "fast" in texts
         assert "normal" in texts
+
+    def test_context_subcommand_completion_after_space(self):
+        completions = _completions(SlashCommandCompleter(), "/context ")
+        texts = {c.text for c in completions}
+        assert "1m" in texts
+        assert "auto" in texts
+        assert "status" in texts
 
     def test_fast_command_filtered_out_when_unavailable(self):
         completions = _completions(

@@ -8288,6 +8288,24 @@ class HermesCLI:
         if result.success and result.requires_new_session:
             _cprint("    Tip: `/reset` starts a new session immediately.")
 
+    def _handle_context_command(self, cmd_original: str) -> None:
+        """Handle /context — manage the primary model context-window override."""
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        try:
+            from hermes_cli.context_cmd import run_context_config_command
+
+            message = run_context_config_command(raw_args, agent=self.agent)
+        except ValueError as exc:
+            _cprint(f"  ✗ {exc}")
+            return
+        except Exception as exc:
+            _cprint(f"  ✗ Could not update context override: {exc}")
+            return
+
+        for line in message.splitlines():
+            _cprint(f"  {line}")
+
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""
         if not text or has_images or not _looks_like_slash_command(text):
@@ -8992,6 +9010,8 @@ class HermesCLI:
             self._handle_sessions_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
+        elif canonical == "context":
+            self._handle_context_command(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
         elif canonical == "gquota":

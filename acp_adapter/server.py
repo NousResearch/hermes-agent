@@ -449,7 +449,7 @@ class HermesACPAgent(acp.Agent):
         "help": "Show available commands",
         "model": "Show or change current model",
         "tools": "List available tools",
-        "context": "Show conversation context info",
+        "context": "Show context info or set 1M/auto context override",
         "reset": "Clear conversation history",
         "compact": "Compress conversation context",
         "steer": "Inject guidance into the currently running agent turn",
@@ -473,7 +473,8 @@ class HermesACPAgent(acp.Agent):
         },
         {
             "name": "context",
-            "description": "Show conversation message counts by role",
+            "description": "Show context usage, or set 1M/auto context override",
+            "input_hint": "1m, auto, or status",
         },
         {
             "name": "reset",
@@ -1709,6 +1710,14 @@ class HermesACPAgent(acp.Agent):
 
     def _cmd_context(self, args: str, state: SessionState) -> str:
         """Show ACP session context pressure and compression guidance."""
+        if args.strip():
+            try:
+                from hermes_cli.context_cmd import run_context_config_command
+
+                return run_context_config_command(args, agent=state.agent)
+            except ValueError as exc:
+                return str(exc)
+
         n_messages = len(state.history)
 
         # Count by role.

@@ -6629,6 +6629,13 @@ def cmd_config(args):
     config_command(args)
 
 
+def cmd_context(args):
+    """Model context-length override management."""
+    from hermes_cli.context_cmd import run_context_config_command
+
+    print(run_context_config_command(getattr(args, "context_mode", "") or ""))
+
+
 def cmd_backup(args):
     """Back up Hermes home directory to a zip file."""
     if getattr(args, "quick", False):
@@ -12527,7 +12534,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "cron", "curator", "dashboard", "debug", "doctor",
+        "config", "context", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
@@ -12938,6 +12945,25 @@ def main():
         help="Disable TLS verification for Nous login (testing only)",
     )
     model_parser.set_defaults(func=cmd_model)
+
+    # =========================================================================
+    # context command — manage the primary model context-window override
+    # =========================================================================
+    context_parser = subparsers.add_parser(
+        "context",
+        help="Manage model context window override",
+        description=(
+            "Show or change model.context_length. Use '1m' to force a "
+            "1,000,000-token window or 'auto' to clear the override."
+        ),
+    )
+    context_parser.add_argument(
+        "context_mode",
+        nargs="?",
+        default="status",
+        help="1m, auto, status, or a numeric token count",
+    )
+    context_parser.set_defaults(func=cmd_context)
 
     # =========================================================================
     # fallback command — manage the fallback provider chain

@@ -1421,6 +1421,22 @@ class TestSlashCommands:
         assert "2 messages" in result
         assert "user: 1" in result
 
+    def test_context_1m_sets_config_and_live_agent(self, agent, mock_manager, tmp_path):
+        from hermes_cli.config import read_raw_config
+        from hermes_cli.context_cmd import ONE_M_CONTEXT_LENGTH
+
+        state = self._make_state(mock_manager)
+        state.agent.context_compressor = SimpleNamespace(update_model=MagicMock())
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            result = agent._handle_slash_command("/context 1m", state)
+            raw = read_raw_config()
+
+        assert "1,000,000" in result
+        assert raw["model"]["context_length"] == ONE_M_CONTEXT_LENGTH
+        assert state.agent._config_context_length == ONE_M_CONTEXT_LENGTH
+        state.agent.context_compressor.update_model.assert_called_once()
+
     def test_context_shows_usage_and_compression_threshold(self, agent, mock_manager):
         state = self._make_state(mock_manager)
         state.history = [{"role": "user", "content": "hello"}]

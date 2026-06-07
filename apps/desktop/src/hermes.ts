@@ -443,6 +443,15 @@ export function selectToolsetProvider(
   })
 }
 
+export function runToolsetPostSetup(name: string, key: string): Promise<ActionResponse & { key: string }> {
+  return window.hermesDesktop.api<ActionResponse & { key: string }>({
+    ...profileScoped(),
+    path: `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
+    method: 'POST',
+    body: { key }
+  })
+}
+
 export function getMessagingPlatforms(): Promise<MessagingPlatformsResponse> {
   return window.hermesDesktop.api<MessagingPlatformsResponse>({
     path: '/api/messaging/platforms'

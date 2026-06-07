@@ -542,8 +542,16 @@ export const en: Translations = {
       ready: 'Ready',
       nousIncluded: 'Included with a Nous subscription — sign in to Nous Portal to activate.',
       noApiKeyRequired: 'No API key required.',
-      postSetup: step =>
-        `This provider needs an extra setup step (${step}). Run it from the CLI with hermes tools for now.`
+      postSetupHint: step =>
+        `This backend needs a one-time install (${step}). Runs on this machine — may take a few minutes.`,
+      postSetupRun: 'Run setup',
+      postSetupRunning: 'Installing…',
+      postSetupStarting: 'Starting…',
+      postSetupCompleteTitle: 'Setup complete',
+      postSetupCompleteMessage: step => `${step} installed.`,
+      postSetupErrorTitle: 'Setup finished with errors',
+      postSetupErrorMessage: step => `Check the ${step} log.`,
+      postSetupFailed: step => `Failed to run ${step} setup`
     }
   },
 

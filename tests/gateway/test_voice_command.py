@@ -3138,6 +3138,29 @@ class TestVoiceTTSPlayback:
             "Hermes, raspunde foarte scurt cu test OK."
         ) is False
 
+    def test_research_profile_router_detects_live_call_voice_transcript(self):
+        """Hermes-main voice research prompts must route to Hermes Research."""
+        from gateway.run import _should_auto_load_hermes_research
+
+        message = (
+            "[The user sent a voice message~ Here's what they said: "
+            "\"I want you to research how can we connect Hermes agent to a "
+            "platform so that we can run live calls. So we can communicate in "
+            "live calls instead of exchanging voice files via Telegram. A real "
+            "account, not a bot account? Also, is it better to use maybe "
+            "WhatsApp call or regular call? What is the best?\"]"
+        )
+
+        assert _should_auto_load_hermes_research(message) is True
+
+    def test_research_profile_router_ignores_internal_diagnostics(self):
+        """Debugging Hermes routing should stay in Hermes-main."""
+        from gateway.run import _should_auto_load_hermes_research
+
+        assert _should_auto_load_hermes_research(
+            "Audit Hermes research and check why the profile router was not invoked."
+        ) is False
+
     def test_voice_fast_reply_route_uses_configured_fast_runtime(self, monkeypatch):
         """voice.fast_reply can route voice notes to a fast, tool-free model."""
         from hermes_cli import runtime_provider

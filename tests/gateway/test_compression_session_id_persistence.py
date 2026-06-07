@@ -1,20 +1,20 @@
-"""Regression tests for #29335 — gateway must persist ``session_entry.session_id``
-after the agent's compression path mutates it.
+"""Regression tests for #29335 — gateway compression session switches must
+persist routing through one shared helper.
 
-When ``_compress_context()`` rolls the agent forward into a new session, the
-agent now returns the new ``session_id`` in its result dict. The gateway
-updates ``session_entry.session_id`` in memory AND must call
-``session_store._save()`` so the new mapping survives a gateway restart.
-Without ``_save()``, the next turn loads the OLD session's transcript and
-re-triggers compression forever.
+When compression rolls a gateway session forward into a new ``session_id``, the
+agent returns the new id in its result dict. The gateway must update
+``session_entry.session_id`` in memory and call ``session_store._save()`` so the
+mapping survives a gateway restart; otherwise the next turn loads the old
+transcript and re-triggers compression forever.
 
-Three sites in ``gateway/run.py`` mutate ``session_entry.session_id`` after
-a compression-induced session split. All three MUST be followed by a
-``_save()`` call. This test pins that invariant.
+That same seam now also migrates session-scoped ``/goal`` state, so old inline
+``session_entry.session_id = ...`` mutations are no longer safe. Every
+compression-producing path should route through
+``GatewayRunner._handle_compression_session_switch()``.
 
 ``TestCompressionSessionPropagation`` adds behavioral tests that exercise the
-actual propagation path inline, verifying that the mock session_entry update
-and _save() semantics are correct without requiring a live gateway.
+propagation path with mocks mirroring the gateway objects, verifying the
+session-entry update and ``_save()`` semantics without requiring a live gateway.
 """
 
 from __future__ import annotations
@@ -28,20 +28,26 @@ from gateway import run as gateway_run
 from gateway.session_context import set_current_session_id, get_session_env
 
 
-def _session_id_assignments_followed_by_save(source: str) -> list[tuple[int, bool]]:
-    """For each ``session_entry.session_id = ...`` assignment in *source*,
-    return ``(lineno, saved_within_5_stmts)`` — True iff a
-    ``self.session_store._save()`` call appears in the same block within the
-    next 5 statements (covers normal control flow without false-flagging
-    cleanup that lives 200 lines away).
-    """
+def _session_entry_session_id_assignments(source: str) -> list[tuple[str, int]]:
+    """Return ``(function_name, lineno)`` for direct session_entry.session_id writes."""
     tree = ast.parse(textwrap.dedent(source))
-    results: list[tuple[int, bool]] = []
+    results: list[tuple[str, int]] = []
 
     class _Visitor(ast.NodeVisitor):
-        def _is_session_id_assign(self, node: ast.AST) -> bool:
-            if not isinstance(node, ast.Assign):
-                return False
+        def __init__(self) -> None:
+            self._function_stack: list[str] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._function_stack.append(node.name)
+            self.generic_visit(node)
+            self._function_stack.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._function_stack.append(node.name)
+            self.generic_visit(node)
+            self._function_stack.pop()
+
+        def visit_Assign(self, node: ast.Assign) -> None:
             for target in node.targets:
                 if (
                     isinstance(target, ast.Attribute)
@@ -49,71 +55,38 @@ def _session_id_assignments_followed_by_save(source: str) -> list[tuple[int, boo
                     and isinstance(target.value, ast.Name)
                     and target.value.id == "session_entry"
                 ):
-                    return True
-            return False
-
-        def _block_has_save_after(self, body: list[ast.stmt], idx: int) -> bool:
-            for stmt in body[idx : idx + 6]:
-                for sub in ast.walk(stmt):
-                    if (
-                        isinstance(sub, ast.Call)
-                        and isinstance(sub.func, ast.Attribute)
-                        and sub.func.attr == "_save"
-                    ):
-                        return True
-            return False
-
-        def _walk_body(self, body: list[ast.stmt]) -> None:
-            for i, stmt in enumerate(body):
-                if self._is_session_id_assign(stmt):
-                    results.append((stmt.lineno, self._block_has_save_after(body, i)))
-                for child in ast.iter_child_nodes(stmt):
-                    if isinstance(child, (ast.If, ast.For, ast.While, ast.With,
-                                          ast.Try, ast.AsyncWith, ast.AsyncFor)):
-                        self._walk_node(child)
-
-        def _walk_node(self, node: ast.AST) -> None:
-            for attr in ("body", "orelse", "finalbody"):
-                inner = getattr(node, attr, None)
-                if isinstance(inner, list):
-                    self._walk_body(inner)
-            if hasattr(node, "handlers"):
-                for handler in node.handlers:
-                    self._walk_body(handler.body)
-
-        def visit(self, node: ast.AST) -> None:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                self._walk_body(node.body)
-            for child in ast.iter_child_nodes(node):
-                self.visit(child)
+                    results.append((self._function_stack[-1] if self._function_stack else "<module>", node.lineno))
+            self.generic_visit(node)
 
     _Visitor().visit(tree)
     return results
 
 
-def test_every_post_compression_session_id_assignment_persists():
-    """Every ``session_entry.session_id = ...`` in gateway/run.py must be
-    followed by a ``session_store._save()`` call within the same block.
+def test_post_compression_session_id_updates_use_shared_switch_helper():
+    """Direct ``session_entry.session_id = ...`` writes must stay centralized.
 
-    Regression for #29335 — the assignment at the end of
-    ``_handle_message_with_agent`` used to skip ``_save()`` while two sibling
-    sites (hygiene rewrite, manual /compress) already persisted. The agent
-    would compress correctly, the gateway would update its in-memory
-    session_id, then drop it on next gateway restart.
+    The helper persists the session-store mapping and runs companion session
+    split behavior such as Telegram binding sync and /goal migration. If a new
+    compression path mutates ``session_entry.session_id`` inline, it can revive
+    the old #29335 restart loop or orphan session-scoped state again.
     """
     source = inspect.getsource(gateway_run)
-    assignments = _session_id_assignments_followed_by_save(source)
+    assignments = _session_entry_session_id_assignments(source)
     assert assignments, (
-        "No ``session_entry.session_id = ...`` assignments found in gateway/run.py — "
-        "either the structure changed or the AST walker is broken."
+        "No direct ``session_entry.session_id = ...`` assignment found. If the "
+        "helper was refactored to avoid direct assignment entirely, update this "
+        "guard to assert the new persistence/migration choke point instead."
     )
-    missing = [lineno for lineno, saved in assignments if not saved]
-    assert not missing, (
-        f"{len(missing)} ``session_entry.session_id = ...`` site(s) in gateway/run.py "
-        f"are not followed by ``session_store._save()`` within the same block "
-        f"(lines: {missing}). Every post-compression session_id update must persist "
-        f"or the next turn loads the pre-compression transcript and triggers an "
-        f"infinite compression loop. See issue #29335."
+    unexpected = [
+        (function_name, lineno)
+        for function_name, lineno in assignments
+        if function_name != "_handle_compression_session_switch"
+    ]
+    assert not unexpected, (
+        "Post-compression session_id changes must route through "
+        "GatewayRunner._handle_compression_session_switch() so routing persistence, "
+        "Telegram binding sync, and /goal migration stay together. Unexpected "
+        f"direct assignments: {unexpected}"
     )
 
 

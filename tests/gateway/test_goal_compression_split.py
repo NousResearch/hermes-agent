@@ -5,13 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, build_session_key
 from hermes_state import SessionDB
@@ -68,6 +68,19 @@ def _make_runner(session_entry: SessionEntry, source: SessionSource) -> tuple[Ga
     runner.session_store._generate_session_key.return_value = session_key
     runner.session_store.get_or_create_session.return_value = session_entry
 
+    def _switch_session(_session_key: str, target_session_id: str) -> SessionEntry:
+        return SessionEntry(
+            session_key=_session_key,
+            session_id=target_session_id,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=source.platform,
+            chat_type=source.chat_type,
+        )
+
+    runner.session_store.switch_session = MagicMock(side_effect=_switch_session)
+
     adapter = _RecordingAdapter()
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner, adapter
@@ -108,6 +121,93 @@ def _create_non_compression_child(db: SessionDB, parent_id: str, child_id: str) 
 
 def _sid(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def _event(text: str, source: SessionSource) -> MessageEvent:
+    return MessageEvent(text=text, source=source, message_id="mock-message")
+
+
+def _history() -> list[dict[str, str]]:
+    return [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+    ]
+
+
+def _fake_compression_agent(child_id: str, compressed: list[dict[str, str]]) -> MagicMock:
+    agent = MagicMock()
+    agent.session_id = child_id
+    agent._cached_system_prompt = ""
+    agent.tools = []
+    agent._compress_context.return_value = (compressed, "")
+    agent.context_compressor = SimpleNamespace(
+        has_content_to_compress=lambda _messages: True,
+        _last_compress_aborted=False,
+        _last_summary_error=None,
+        _last_aux_model_failure_model=None,
+        _last_aux_model_failure_error=None,
+    )
+    return agent
+
+
+def _prepare_runner_for_manual_compress(
+    runner: GatewayRunner,
+    source: SessionSource,
+    session_entry: SessionEntry,
+    history: list[dict[str, str]],
+) -> None:
+    runner.session_store.load_transcript.return_value = history
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.update_session = MagicMock()
+    runner._session_key_for_source = lambda _source: session_entry.session_key
+    runner._resolve_session_agent_runtime = lambda **_kwargs: (
+        "test-model",
+        {"api_key": "***"},
+    )
+    runner._evict_cached_agent = MagicMock()
+    runner._cleanup_agent_resources = MagicMock()
+
+
+def _prepare_runner_for_hygiene_message(
+    runner: GatewayRunner,
+    source: SessionSource,
+    session_entry: SessionEntry,
+    history: list[dict[str, str]],
+) -> None:
+    _prepare_runner_for_manual_compress(runner, source, session_entry, history)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.clear_resume_pending = MagicMock()
+    runner._recover_telegram_topic_thread_id = lambda _source: None
+    runner._cache_session_source = MagicMock()
+    runner._is_telegram_topic_lane = lambda _source: False
+    runner._is_telegram_topic_root_lobby = lambda _source: False
+    runner._set_session_env = lambda _context: None
+    runner._clear_session_env = MagicMock()
+    runner._set_session_reasoning_override = MagicMock()
+    runner._format_session_info = MagicMock(return_value="")
+    runner._thread_metadata_for_source = lambda *_args, **_kwargs: {}
+    runner._reply_anchor_for_event = lambda _event: None
+    runner._deliver_platform_notice = AsyncMock()
+    runner._prepare_inbound_message_text = AsyncMock(return_value="after hygiene")
+    runner._bind_adapter_run_generation = MagicMock()
+    runner._run_agent = AsyncMock(
+        return_value={
+            "success": True,
+            "final_response": "hygiene turn complete",
+            "session_id": session_entry.session_id,
+            "messages": [],
+        }
+    )
+    runner._is_session_run_current = MagicMock(return_value=True)
+    runner._clear_restart_failure_count = MagicMock()
+    runner._should_send_voice_reply = lambda *_args, **_kwargs: False
+    runner._send_voice_reply = MagicMock()
+    runner._emit_gateway_run_progress = MagicMock()
+    runner._read_user_config = lambda: {}
+    runner._show_reasoning = False
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), emit_collect=AsyncMock(return_value=[]))
 
 
 @pytest.mark.asyncio
@@ -320,3 +420,94 @@ async def test_compression_tip_walk_does_not_cross_non_compression_edge(hermes_h
     judge.assert_not_called()
     assert adapter.sends == []
     assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_manual_compress_migrates_goal_to_compressed_session(hermes_home):
+    db = SessionDB()
+    parent_id = _sid("goal-manual-compress-parent")
+    child_id = _sid("goal-manual-compress-child")
+    _create_compression_child(db, parent_id, child_id)
+
+    from hermes_cli.goals import GoalManager, load_goal
+
+    GoalManager(parent_id).set("survive manual compress")
+    source = _source()
+    session_entry = _session_entry(source, parent_id)
+    runner, _adapter = _make_runner(session_entry, source)
+    runner._session_db = db
+    history = _history()
+    compressed = [history[0], history[-1]]
+    _prepare_runner_for_manual_compress(runner, source, session_entry, history)
+    fake_agent = _fake_compression_agent(child_id, compressed)
+
+    with (
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=fake_agent),
+        patch("agent.manual_compression_feedback.summarize_manual_compression", return_value={
+            "headline": "compressed",
+            "token_line": "tokens reduced",
+            "note": "",
+        }),
+        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+    ):
+        result = await runner._handle_compress_command(_event("/compress", source))
+
+    child_goal = load_goal(child_id)
+    old_goal = load_goal(parent_id)
+    assert "compressed" in result
+    assert child_goal is not None
+    assert child_goal.goal == "survive manual compress"
+    assert old_goal.status == "cleared"
+    assert f"migrated to {child_id}" in (old_goal.paused_reason or "")
+    assert session_entry.session_id == child_id
+    runner.session_store.rewrite_transcript.assert_called_once_with(child_id, compressed)
+
+
+@pytest.mark.asyncio
+async def test_hygiene_compress_migrates_goal_before_agent_turn(hermes_home):
+    db = SessionDB()
+    parent_id = _sid("goal-hygiene-compress-parent")
+    child_id = _sid("goal-hygiene-compress-child")
+    _create_compression_child(db, parent_id, child_id)
+
+    from hermes_cli.goals import GoalManager, load_goal
+
+    GoalManager(parent_id).set("survive hygiene compress")
+    source = _source()
+    session_entry = _session_entry(source, parent_id)
+    session_entry.last_prompt_tokens = 900
+    runner, _adapter = _make_runner(session_entry, source)
+    runner._session_db = db
+    history = _history()
+    compressed = [history[0], history[-1]]
+    _prepare_runner_for_hygiene_message(runner, source, session_entry, history)
+    fake_agent = _fake_compression_agent(child_id, compressed)
+
+    with (
+        patch("gateway.run._load_gateway_config", return_value={
+            "model": {"default": "test-model", "context_length": 1000},
+            "compression": {"enabled": True, "hygiene_hard_message_limit": 4},
+        }),
+        patch("agent.model_metadata.get_model_context_length", return_value=1000),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=900),
+        patch("run_agent.AIAgent", return_value=fake_agent),
+    ):
+        result = await runner._handle_message_with_agent(
+            _event("continue after hygiene", source),
+            source,
+            session_entry.session_key,
+            1,
+        )
+
+    child_goal = load_goal(child_id)
+    old_goal = load_goal(parent_id)
+    assert result == "hygiene turn complete"
+    assert child_goal is not None
+    assert child_goal.goal == "survive hygiene compress"
+    assert old_goal.status == "cleared"
+    assert f"migrated to {child_id}" in (old_goal.paused_reason or "")
+    assert session_entry.session_id == child_id
+    runner._run_agent.assert_awaited_once()
+    assert runner._run_agent.call_args.kwargs["session_id"] == child_id
+    runner.session_store.rewrite_transcript.assert_called_once_with(child_id, compressed)

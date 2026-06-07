@@ -2701,10 +2701,13 @@ class GatewaySlashCommandsMixin:
                 rotated = new_session_id != session_entry.session_id
                 _in_place = bool(getattr(tmp_agent, "compression_in_place", False))
                 if rotated:
-                    session_entry.session_id = new_session_id
-                    self.session_store._save()
-                    self._sync_telegram_topic_binding(
-                        source, session_entry, reason="compress-command",
+                    session_entry = self._handle_compression_session_switch(
+                        session_key=session_key,
+                        session_entry=session_entry,
+                        old_session_id=session_entry.session_id,
+                        new_session_id=new_session_id,
+                        source=source,
+                        reason="compress-command",
                     )
 
                 # Rewrite the transcript when EITHER rotation produced a new id

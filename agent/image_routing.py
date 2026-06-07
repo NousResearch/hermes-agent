@@ -435,14 +435,14 @@ def build_native_content_parts(
     For each successfully attached image, a hint is appended to the text
     part:
 
-      * local path → ``[Image attached at: <path>]``
+      * local path → ``[Image attached: <filename>]``
       * URL        → ``[Image attached: <url>]``
 
-    The hint gives the model a string handle so MCP/skill tools that take
-    an image path or URL argument can be invoked on the same image without
-    an extra round-trip. This parallels the text-mode hint produced by
-    ``Runner._enrich_message_with_vision`` (``vision_analyze using image_url:
-    <path>``) so behaviour is consistent across both image input modes.
+    The hint gives the model a reference to the attached image without
+    exposing the full local file path (which may contain sensitive user
+    directory information). The agent can still use ``vision_analyze`` or
+    other tools that accept image paths — the full path is available in
+    the ``image_url`` content part.
 
     Images are attached at their native size. If a provider rejects the
     request because an image is too large (e.g. Anthropic's 5 MB per-image
@@ -490,7 +490,7 @@ def build_native_content_parts(
     if attached_paths or attached_urls:
         base_text = text or "What do you see in this image?"
         hint_lines: List[str] = []
-        hint_lines.extend(f"[Image attached at: {p}]" for p in attached_paths)
+        hint_lines.extend(f"[Image attached: {Path(p).name}]" for p in attached_paths)
         hint_lines.extend(f"[Image attached: {u}]" for u in attached_urls)
         combined_text = f"{base_text}\n\n" + "\n".join(hint_lines)
         parts: List[Dict[str, Any]] = [{"type": "text", "text": combined_text}]

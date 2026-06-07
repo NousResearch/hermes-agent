@@ -311,7 +311,7 @@ class TestBuildNativeContentParts:
         # User caption is preserved and a per-image path hint is appended so
         # the model can use the local path as a string argument for tools
         # that take ``image_url: str`` (issue #18960).
-        assert parts[0]["text"] == f"hello\n\n[Image attached at: {img}]"
+        assert parts[0]["text"] == f"hello\n\n[Image attached: cat.png]"
         assert parts[1]["type"] == "image_url"
         assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
@@ -324,7 +324,7 @@ class TestBuildNativeContentParts:
         # isn't just pixels, and the path hint is appended after.
         assert parts[0]["type"] == "text"
         assert parts[0]["text"] == (
-            f"What do you see in this image?\n\n[Image attached at: {img}]"
+            "What do you see in this image?\n\n[Image attached: cat.jpg]"
         )
         assert parts[1]["type"] == "image_url"
 
@@ -336,22 +336,21 @@ class TestBuildNativeContentParts:
         assert parts == [{"type": "text", "text": "hi"}]
 
     def test_path_hint_appended(self, tmp_path: Path):
-        """The local path of each attached image is appended to the user
-        text part so MCP/skill tools that take ``image_url: str`` can be
-        invoked on the same image (issue #18960). Mirrors text-mode
-        behaviour (`Runner._enrich_message_with_vision`).
+        """The filename of each attached image is appended to the user
+        text part so the model knows what image was attached.
         """
         img = tmp_path / "scan.png"
         img.write_bytes(_png_bytes())
         parts, _ = build_native_content_parts("attach this", [str(img)])
         text_part = next(p for p in parts if p.get("type") == "text")
-        assert "[Image attached at:" in text_part["text"]
-        assert str(img) in text_part["text"]
+        assert "[Image attached: scan.png]" in text_part["text"]
+        # Full path is NOT exposed in the text hint
+        assert str(img) not in text_part["text"]
         # User caption is preserved verbatim ahead of the hint.
         assert text_part["text"].startswith("attach this")
 
     def test_path_hint_one_per_attached_image(self, tmp_path: Path):
-        """Each successfully attached image gets its own path hint line;
+        """Each successfully attached image gets its own filename hint line;
         skipped images do NOT appear in the hints.
         """
         good = tmp_path / "good.png"
@@ -362,9 +361,9 @@ class TestBuildNativeContentParts:
         )
         assert skipped == [str(missing)]
         text_part = next(p for p in parts if p.get("type") == "text")
-        assert text_part["text"].count("[Image attached at:") == 1
-        assert str(good) in text_part["text"]
-        assert str(missing) not in text_part["text"]
+        assert text_part["text"].count("[Image attached:") == 1
+        assert "good.png" in text_part["text"]
+        assert "missing.png" not in text_part["text"]
 
     def test_multiple_images(self, tmp_path: Path):
         img1 = tmp_path / "a.png"
@@ -375,11 +374,11 @@ class TestBuildNativeContentParts:
         assert skipped == []
         image_parts = [p for p in parts if p.get("type") == "image_url"]
         assert len(image_parts) == 2
-        # Both paths surface in the text part, one per line.
+        # Both filenames surface in the text part, one per line.
         text_part = next(p for p in parts if p.get("type") == "text")
-        assert text_part["text"].count("[Image attached at:") == 2
-        assert str(img1) in text_part["text"]
-        assert str(img2) in text_part["text"]
+        assert text_part["text"].count("[Image attached:") == 2
+        assert "a.png" in text_part["text"]
+        assert "b.png" in text_part["text"]
 
     def test_mime_inference_jpg(self, tmp_path: Path):
         # Real JPEG bytes (SOI marker FF D8 FF): sniffing now wins over suffix.
@@ -611,7 +610,7 @@ class TestBuildNativeContentPartsURLs:
         assert image_parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
         assert image_parts[1]["image_url"]["url"] == "https://example.com/remote.jpg"
         text = parts[0]["text"]
-        assert "[Image attached at:" in text
+        assert "[Image attached: local.png]" in text
         assert "[Image attached: https://example.com/remote.jpg]" in text
 
     def test_empty_url_list_is_no_op(self, tmp_path: Path):

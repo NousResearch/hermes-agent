@@ -15855,23 +15855,24 @@ class GatewayRunner:
                 if result.get("success"):
                     description = result.get("analysis", "")
                     description = sanitize_context(description)
+                    fname = Path(path).name
                     enriched_parts.append(
-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {path} ~]"
+                        f"[The user sent an image ({fname}). Here's what I can see:\n{description}]"
                     )
                 else:
+                    fname = Path(path).name
                     enriched_parts.append(
-                        "[The user sent an image but I couldn't quite see it "
-                        "this time (>_<) You can try looking at it yourself "
-                        f"with vision_analyze using image_url: {path}]"
+                        f"[The user sent an image ({fname}) but automatic "
+                        f"analysis was not available. You can analyze it by calling "
+                        f"vision_analyze with image_url set to the full file path.]"
                     )
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
+                fname = Path(path).name
                 enriched_parts.append(
-                    f"[The user sent an image but something went wrong when I "
-                    f"tried to look at it~ You can try examining it yourself "
-                    f"with vision_analyze using image_url: {path}]"
+                    f"[The user sent an image ({fname}) but automatic "
+                    f"analysis was not available. You can analyze it by calling "
+                    f"vision_analyze with image_url set to the full file path.]"
                 )
 
         # Combine: vision descriptions first, then the user's original text

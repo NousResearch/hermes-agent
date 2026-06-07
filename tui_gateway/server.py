@@ -2793,19 +2793,27 @@ def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
         p = Path(path)
         if not p.exists():
             continue
-        hint = f"[You can examine it with vision_analyze using image_url: {p}]"
+        fname = p.name
         try:
             r = _json.loads(
                 asyncio.run(vision_analyze_tool(image_url=str(p), user_prompt=prompt))
             )
             desc = r.get("analysis", "") if r.get("success") else None
             parts.append(
-                f"[The user attached an image:\n{desc}]\n{hint}"
+                f"[The user attached an image ({fname}):\n{desc}]"
                 if desc
-                else f"[The user attached an image but analysis failed.]\n{hint}"
+                else (
+                    f"[The user attached an image ({fname}) but automatic "
+                    f"analysis was not available. You can analyze it by calling "
+                    f"vision_analyze with image_url set to the full file path.]"
+                )
             )
         except Exception:
-            parts.append(f"[The user attached an image but analysis failed.]\n{hint}")
+            parts.append(
+                f"[The user attached an image ({fname}) but automatic "
+                f"analysis was not available. You can analyze it by calling "
+                f"vision_analyze with image_url set to the full file path.]"
+            )
 
     text = user_text or ""
     prefix = "\n\n".join(parts)
@@ -2966,6 +2974,11 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not content_text.strip():
             continue
         msg = {"role": role, "text": content_text}
+        # Surface per-message timestamp so the TUI can render [HH:MM]
+        # when display.timestamps is enabled.
+        ts = m.get("timestamp")
+        if ts is not None:
+            msg["timestamp"] = ts
         if role == "assistant":
             for key in (
                 "reasoning",
@@ -4804,6 +4817,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 status = "complete"
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            payload["created_at"] = time.time()
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:

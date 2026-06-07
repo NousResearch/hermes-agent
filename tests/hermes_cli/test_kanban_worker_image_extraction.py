@@ -152,7 +152,7 @@ class TestBuildPartsFromTaskBody:
         assert len(parts) == 2
         assert parts[0]["type"] == "text"
         assert parts[0]["text"].startswith(f"work kanban task {tid}")
-        assert f"[Image attached at: {img}]" in parts[0]["text"]
+        assert f"[Image attached: {img.name}]" in parts[0]["text"]
         assert parts[1]["type"] == "image_url"
         assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
 

@@ -4766,6 +4766,15 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   }
 })
 
+ipcMain.handle('hermes:writeFileText', async (_event, filePath, content) => {
+  if (typeof filePath !== 'string' || typeof content !== 'string') {
+    throw new Error('writeFileText requires (filePath: string, content: string)')
+  }
+  const resolved = path.resolve(filePath)
+  await fs.promises.writeFile(resolved, content, 'utf8')
+  return { path: resolved }
+})
+
 ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
   const properties = options?.directories ? ['openDirectory'] : ['openFile']
   if (options?.multiple !== false) properties.push('multiSelections')

@@ -2,11 +2,11 @@ import { atom } from 'nanostores'
 
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 
-export type RightSidebarTabId = 'files' | 'git' | 'terminal' | 'web'
+export type RightSidebarTabId = 'files' | 'git' | 'terminal' | 'web' | 'overview' | 'review'
 
 const TAKEOVER_KEY = 'hermes.desktop.terminalTakeover'
 
-export const $rightSidebarTab = atom<RightSidebarTabId>('files')
+export const $rightSidebarTab = atom<RightSidebarTabId>('overview')
 export const $terminalTakeover = atom(storedBoolean(TAKEOVER_KEY, false))
 
 $terminalTakeover.subscribe(active => persistBoolean(TAKEOVER_KEY, active))

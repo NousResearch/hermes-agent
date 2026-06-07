@@ -19,6 +19,8 @@ import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
 import { $rightSidebarTab, $terminalTakeover, type RightSidebarTabId, setRightSidebarTab } from './store'
 import { TerminalSlot } from './terminal/persistent'
+import { SessionOverview } from '@/components/assistant-ui/session-overview'
+import { SessionReview } from '@/components/assistant-ui/session-review'
 
 interface RightSidebarPaneProps {
   onActivateFile: (path: string) => void
@@ -33,6 +35,8 @@ interface RightSidebarTab {
 }
 
 const RIGHT_SIDEBAR_TABS: readonly RightSidebarTab[] = [
+  { id: 'overview', label: 'Overview', icon: 'symbol-method' },
+  { id: 'review', label: 'Review', icon: 'diff' },
   { id: 'files', label: 'File system', icon: 'list-tree' },
   { id: 'terminal', label: 'Terminal', icon: 'terminal' }
 ]
@@ -94,7 +98,9 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
     }
   }
 
-  const tabs = terminalTakeover ? RIGHT_SIDEBAR_TABS.filter(tab => tab.id !== 'terminal') : RIGHT_SIDEBAR_TABS
+  const tabs = terminalTakeover
+    ? RIGHT_SIDEBAR_TABS.filter(tab => tab.id !== 'terminal')
+    : RIGHT_SIDEBAR_TABS
 
   return (
     <aside
@@ -108,9 +114,9 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
     >
       <RightSidebarChrome activeTab={effectiveTab} branch={currentBranch} tabs={tabs} />
 
-      {effectiveTab === 'terminal' ? (
-        <TerminalSlot />
-      ) : (
+      {effectiveTab === 'overview' && <SessionOverview />}
+      {effectiveTab === 'review' && <SessionReview />}
+      {effectiveTab === 'files' && (
         <FilesystemTab
           canCollapse={canCollapse}
           collapseNonce={collapseNonce}
@@ -131,6 +137,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
           openState={openState}
         />
       )}
+      {effectiveTab === 'terminal' && <TerminalSlot />}
     </aside>
   )
 }

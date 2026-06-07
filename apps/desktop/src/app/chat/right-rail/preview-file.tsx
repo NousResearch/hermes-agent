@@ -13,6 +13,8 @@ import { Streamdown } from 'streamdown'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { PageLoader } from '@/components/page-loader'
 import { cn } from '@/lib/utils'
+import { Pencil, Save, X } from '@/lib/icons'
+import { notify, notifyError } from '@/store/notifications'
 import type { PreviewTarget } from '@/store/preview'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
@@ -411,6 +413,9 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
   const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editContent, setEditContent] = useState('')
+  const [editDirty, setEditDirty] = useState(false)
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
 
@@ -528,19 +533,103 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     const isMarkdown = (state.language || target.language) === 'markdown'
     const showRendered = isMarkdown && !renderMarkdownAsSource
 
+    const handleStartEdit = () => {
+      setEditContent(state.text ?? '')
+      setEditDirty(false)
+      setEditing(true)
+    }
+
+    const handleCancelEdit = () => {
+      setEditing(false)
+      setEditDirty(false)
+      setEditContent('')
+    }
+
+    const handleSaveEdit = async () => {
+      try {
+        await window.hermesDesktop.writeFileText(filePath, editContent)
+        setState(prev => ({ ...prev, text: editContent }))
+        setEditing(false)
+        setEditDirty(false)
+        notify({ kind: 'success', title: 'Saved', message: `${target.label} saved.` })
+      } catch (error) {
+        notifyError(error, 'Save failed')
+      }
+    }
+
     return (
-      <div className="h-full overflow-auto bg-transparent">
-        {state.truncated && (
-          <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
-            Showing first 512 KB.
-          </div>
-        )}
-        {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} />}
-        {showRendered ? (
-          <MarkdownPreview text={state.text} />
-        ) : (
-          <SourceView filePath={filePath} language={state.language || 'text'} text={state.text} />
-        )}
+      <div className="flex h-full flex-col bg-transparent">
+        {/* Toolbar */}
+        <div className="flex shrink-0 items-center gap-1 border-b border-border/40 px-2 py-1">
+          {!editing ? (
+            <button
+              className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              onClick={handleStartEdit}
+              title="Edit file"
+              type="button"
+            >
+              <Pencil size={14} />
+            </button>
+          ) : (
+            <>
+              <button
+                className={cn(
+                  'rounded p-1 transition-colors',
+                  editDirty
+                    ? 'text-foreground hover:bg-muted'
+                    : 'cursor-not-allowed text-muted-foreground/50'
+                )}
+                disabled={!editDirty}
+                onClick={() => void handleSaveEdit()}
+                title="Save (Ctrl+S)"
+                type="button"
+              >
+                <Save size={14} />
+              </button>
+              <button
+                className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                onClick={handleCancelEdit}
+                title="Cancel (Escape)"
+                type="button"
+              >
+                <X size={14} />
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* Content */}
+        <div className="min-h-0 flex-1 overflow-auto">
+          {state.truncated && (
+            <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
+              Showing first 512 KB.
+            </div>
+          )}
+          {editing ? (
+            <textarea
+              className="h-full w-full resize-none bg-transparent p-3 font-mono text-xs leading-relaxed text-foreground outline-none"
+              onChange={e => {
+                setEditContent(e.target.value)
+                setEditDirty(true)
+              }}
+              onKeyDown={e => {
+                if (e.key === 's' && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault()
+                  if (editDirty) void handleSaveEdit()
+                }
+                if (e.key === 'Escape') handleCancelEdit()
+              }}
+              value={editContent}
+            />
+          ) : isMarkdown && showRendered ? (
+            <MarkdownPreview text={state.text} />
+          ) : (
+            <>
+              {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} />}
+              <SourceView filePath={filePath} language={state.language || 'text'} text={state.text} />
+            </>
+          )}
+        </div>
       </div>
     )
   }

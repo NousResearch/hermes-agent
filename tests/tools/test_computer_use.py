@@ -1132,6 +1132,36 @@ class TestElementLabelParsing:
         assert labels[14] == "One"
         assert labels[15] == "Search"
 
+    def test_parenthesised_and_value_label_formats(self):
+        """Real cua-driver System Settings format: `(label)` and `= "value"`.
+
+        Regression for the bug where AXButton (Dark), AXStaticText = "Wi-Fi",
+        and AXPopUpButton = "Automatic" all came back with EMPTY labels because
+        the regex only matched the quoted and id= forms. A pure-digit (N) is an
+        order number, not a label, and must be skipped in favour of id=.
+        """
+        from tools.computer_use.cua_backend import _parse_elements_from_tree
+        tree = (
+            '- [77] AXButton (Auto) [help="..." actions=[press]]\n'
+            '- [78] AXButton (Light) [help="..." actions=[press]]\n'
+            '- [79] AXButton (Dark) [help="Use a dark appearance..." actions=[press]]\n'
+            '          - [4] AXStaticText = "Wi\u2011Fi" [id=com.apple.wifi actions=[showmenu]]\n'
+            '- [92] AXPopUpButton = "Automatic" [id=HighlightColorPicker actions=[press]]\n'
+            '- [100] AXRadioButton (Always) [actions=[press]]\n'
+            '[200] AXButton (5) id=RealLabel\n'   # (5) is order number -> label from id=
+            '[201] AXButton (7)\n'                # order number only, no real label
+        )
+        els = _parse_elements_from_tree(tree)
+        labels = {e.index: e.label for e in els}
+        assert labels[77] == "Auto"
+        assert labels[78] == "Light"
+        assert labels[79] == "Dark"           # the exact case that broke theme-switching
+        assert labels[4] == "Wi\u2011Fi"
+        assert labels[92] == "Automatic"
+        assert labels[100] == "Always"
+        assert labels[200] == "RealLabel"     # (5) order skipped, id= used
+        assert labels[201] == ""              # pure order number, no label
+
 
 class TestUpdateCheck:
     """cua_driver_update_check() / _nudge(): native `check-update --json`.

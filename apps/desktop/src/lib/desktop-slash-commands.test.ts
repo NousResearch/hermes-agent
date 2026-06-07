@@ -6,6 +6,7 @@ import {
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
   isDesktopSlashCommand,
+  isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
   isModelPickerCommand
 } from './desktop-slash-commands'
@@ -25,6 +26,37 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/my-skill')).toBe(true)
     expect(isDesktopSlashSuggestion('/gif-search')).toBe(true)
     expect(isDesktopSlashCommand('/my-skill')).toBe(true)
+  })
+
+  it('treats omitted Hermes built-ins as built-ins, not skill extensions', () => {
+    for (const command of ['/bundles', '/codex-runtime', '/handoff', '/sessions', '/whoami']) {
+      // Not mistaken for a skill / quick-command extension…
+      expect(isDesktopSlashExtensionCommand(command)).toBe(false)
+      // …so they stay out of the slash palette…
+      expect(isDesktopSlashSuggestion(command)).toBe(false)
+      // …and report a clear "not surfaced here" message instead of running.
+      expect(isDesktopSlashCommand(command)).toBe(false)
+      expect(desktopSlashUnavailableMessage(command)).toBeTruthy()
+    }
+  })
+
+  it('routes the /codex_runtime alias like its canonical built-in', () => {
+    expect(isDesktopSlashExtensionCommand('/codex_runtime')).toBe(false)
+    expect(isDesktopSlashSuggestion('/codex_runtime')).toBe(false)
+    expect(isDesktopSlashCommand('/codex_runtime')).toBe(false)
+  })
+
+  it('surfaces /subgoal alongside its companion /goal', () => {
+    expect(isDesktopSlashExtensionCommand('/subgoal')).toBe(false)
+    expect(isDesktopSlashSuggestion('/subgoal')).toBe(true)
+    expect(isDesktopSlashCommand('/subgoal')).toBe(true)
+    expect(desktopSlashDescription('/subgoal', 'fallback')).toBe('Manage extra criteria for the active goal')
+  })
+
+  it('lets the /v alias execute like /version without cluttering the popover', () => {
+    expect(isDesktopSlashExtensionCommand('/v')).toBe(false)
+    expect(isDesktopSlashSuggestion('/v')).toBe(false)
+    expect(isDesktopSlashCommand('/v')).toBe(true)
   })
 
   it('hides terminal, messaging, and dedicated-UI commands from suggestions', () => {

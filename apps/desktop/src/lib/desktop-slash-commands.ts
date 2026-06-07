@@ -40,6 +40,7 @@ const DESKTOP_COMMAND_META = [
   ['/status', 'Show current session status'],
   ['/steer', 'Steer the current run after the next tool call'],
   ['/stop', 'Stop running background processes'],
+  ['/subgoal', 'Manage extra criteria for the active goal'],
   ['/title', 'Rename the current session'],
   ['/undo', 'Remove the last user/assistant exchange'],
   ['/usage', 'Show token usage for this session'],
@@ -52,12 +53,14 @@ const DESKTOP_COMMANDS: ReadonlySet<string> = new Set(DESKTOP_COMMAND_META.map((
 const DESKTOP_ALIASES = new Map([
   ['/bg', '/background'],
   ['/btw', '/background'],
+  ['/codex_runtime', '/codex-runtime'],
   ['/fork', '/branch'],
   ['/q', '/queue'],
   ['/reload_mcp', '/reload-mcp'],
   ['/reload_skills', '/reload-skills'],
   ['/reset', '/new'],
-  ['/tasks', '/agents']
+  ['/tasks', '/agents'],
+  ['/v', '/version']
 ])
 
 const DESKTOP_COMMAND_DESCRIPTIONS: ReadonlyMap<string, string> = new Map(DESKTOP_COMMAND_META)
@@ -119,12 +122,22 @@ const ADVANCED_COMMANDS = new Set([
   '/voice'
 ])
 
+// Real Hermes built-ins (defined in hermes_cli/commands.py `COMMAND_REGISTRY`)
+// that the desktop deliberately does NOT surface, and that don't fit the
+// terminal-/messaging-/picker-/settings-/advanced-specific buckets above. They
+// MUST still be listed here: any built-in absent from every set in this file is
+// treated as a skill / quick-command extension by `isDesktopSlashExtensionCommand`
+// and wrongly leaks into the slash palette. Keep this in sync when a built-in is
+// added to the backend registry.
+const OMITTED_BUILTIN_COMMANDS = new Set(['/bundles', '/codex-runtime', '/handoff', '/sessions', '/whoami'])
+
 const BLOCKED_COMMANDS = new Set([
   ...PICKER_OWNED_COMMANDS,
   ...TERMINAL_ONLY_COMMANDS,
   ...MESSAGING_ONLY_COMMANDS,
   ...SETTINGS_OWNED_COMMANDS,
-  ...ADVANCED_COMMANDS
+  ...ADVANCED_COMMANDS,
+  ...OMITTED_BUILTIN_COMMANDS
 ])
 
 function normalizeCommand(command: string): string {
@@ -215,6 +228,10 @@ export function desktopSlashUnavailableMessage(command: string): string | null {
     return `/${canonical.slice(1)} is not shown in the desktop slash palette. Use the relevant desktop control or terminal interface instead.`
   }
 
+  if (OMITTED_BUILTIN_COMMANDS.has(canonical)) {
+    return `/${canonical.slice(1)} is a Hermes built-in that isn't surfaced in the desktop app. Use the terminal interface instead.`
+  }
+
   if (TERMINAL_ONLY_COMMANDS.has(normalized) || TERMINAL_ONLY_COMMANDS.has(canonical)) {
     return `/${canonical.slice(1)} is only available in the terminal interface.`
   }
@@ -281,6 +298,13 @@ export function filterDesktopCommandsCatalog(catalog: CommandsCatalogLike): Comm
   }
 }
 
+/**
+ * True when `command` is a Hermes built-in (shown, aliased, or block-listed) as
+ * opposed to a backend-surfaced extension (skill / quick command). This is the
+ * inverse of `isDesktopSlashExtensionCommand`, so the union below must enumerate
+ * EVERY built-in from `COMMAND_REGISTRY` — a built-in missing from all three
+ * sets is mistaken for an extension and leaks into the palette.
+ */
 function isKnownHermesSlashCommand(command: string): boolean {
   return DESKTOP_COMMANDS.has(command) || DESKTOP_ALIASES.has(command) || BLOCKED_COMMANDS.has(command)
 }

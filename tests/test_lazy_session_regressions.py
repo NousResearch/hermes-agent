@@ -403,6 +403,64 @@ class TestGatewaySurfacesNullResponse:
         assert "500 Internal Server Error" in response
         assert "/reset" in response
 
+    def test_failed_auth_error_surfaces_reauth_guidance(self):
+        """Structured provider auth failures should tell gateway users to re-auth."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": None,
+            "api_calls": 1,
+            "failed": True,
+            "error": "401 Unauthorized",
+            "auth_error": {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "status_code": 401,
+                "is_auth": True,
+                "relogin_required": True,
+            },
+        }
+
+        response = _normalize_empty_agent_response(
+            agent_result, "", history_len=5,
+        )
+
+        assert "Model provider login expired" in response
+        assert "openai-codex / gpt-5.5" in response
+        assert "hermes auth add openai-codex" in response
+        assert "401 Unauthorized" in response
+        assert "/reset" not in response
+
+    def test_failed_codex_nonetype_error_uses_auth_guidance(self, monkeypatch):
+        """Known opaque Codex auth failures should not leak as Python errors."""
+        import gateway.run as gateway_run
+
+        monkeypatch.setattr(
+            gateway_run,
+            "_load_gateway_config",
+            lambda: {
+                "model": {
+                    "provider": "openai-codex",
+                    "default": "gpt-5.5",
+                }
+            },
+        )
+        agent_result = {
+            "final_response": None,
+            "api_calls": 1,
+            "failed": True,
+            "error": "'NoneType' object is not iterable",
+        }
+
+        response = gateway_run._normalize_empty_agent_response(
+            agent_result, "", history_len=5,
+        )
+
+        assert "Model provider login expired" in response
+        assert "openai-codex / gpt-5.5" in response
+        assert "hermes auth add openai-codex" in response
+        assert "Raw error: 'NoneType' object is not iterable" in response
+
     def test_nonempty_response_passes_through(self):
         """Non-empty response is returned unchanged."""
         from gateway.run import _normalize_empty_agent_response

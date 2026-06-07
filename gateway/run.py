@@ -1607,6 +1607,65 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _resolve_gateway_provider(config: dict | None = None) -> str:
+    """Read provider from config.yaml for user-facing diagnostics."""
+    cfg = config if config is not None else _load_gateway_config()
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        return model_cfg.get("provider") or ""
+    return ""
+
+
+def _gateway_reauth_command(provider: str) -> str:
+    """Return the most direct re-auth command for a gateway provider."""
+    if provider:
+        return f"hermes auth add {provider}"
+    return "hermes model"
+
+
+def _format_gateway_provider_auth_failure(
+    *,
+    provider: str = "",
+    model: str = "",
+    raw_error: object = "",
+) -> str:
+    """Render a concise gateway-safe message for provider auth failures."""
+    provider_label = provider or "configured provider"
+    model_label = f" / {model}" if model else ""
+    command = _gateway_reauth_command(provider)
+    message = (
+        "⚠️ Model provider login expired or was rejected.\n"
+        f"Provider: {provider_label}{model_label}\n"
+        f"Run `{command}` to re-authenticate, then restart the gateway or retry."
+    )
+    if raw_error:
+        message += f"\nRaw error: {str(raw_error)[:200]}"
+    return message
+
+
+def _agent_result_auth_failure(agent_result: dict, error_str: str) -> dict | None:
+    """Extract structured auth failure metadata from an agent result.
+
+    ``agent.run_conversation`` may return provider-auth metadata without a final
+    response when all fallback providers are exhausted.  Keep a conservative
+    legacy fallback for the known opaque Codex auth failure shape so gateways do
+    not leak a Python ``NoneType`` error to chat users.
+    """
+    auth_error = agent_result.get("auth_error")
+    if isinstance(auth_error, dict):
+        if auth_error.get("relogin_required") or auth_error.get("is_auth"):
+            return auth_error
+
+    provider = _resolve_gateway_provider()
+    if (
+        provider == "openai-codex"
+        and "nonetype" in error_str
+        and "not iterable" in error_str
+    ):
+        return {"provider": provider, "relogin_required": True}
+    return None
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -1722,6 +1781,17 @@ def _normalize_empty_agent_response(
                 "Use /compact to compress the conversation, or "
                 "/reset to start fresh."
             )
+
+        auth_error = _agent_result_auth_failure(agent_result, error_str)
+        if auth_error is not None:
+            provider = str(auth_error.get("provider") or _resolve_gateway_provider() or "")
+            model = str(auth_error.get("model") or _resolve_gateway_model() or "")
+            return _format_gateway_provider_auth_failure(
+                provider=provider,
+                model=model,
+                raw_error=error_detail,
+            )
+
         return (
             f"The request failed: {str(error_detail)[:300]}\n"
             "Try again or use /reset to start a fresh session."

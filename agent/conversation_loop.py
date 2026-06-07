@@ -3433,7 +3433,16 @@ def run_conversation(
                             "failed": True,
                             "error": f"content_policy_blocked: {_summary}",
                         }
-                    return {
+                    _auth_error = None
+                    if classified.is_auth:
+                        _auth_error = {
+                            "provider": _provider,
+                            "model": _model,
+                            "status_code": status_code,
+                            "is_auth": True,
+                            "relogin_required": status_code == 401,
+                        }
+                    _failed_result = {
                         "final_response": None,
                         "messages": messages,
                         "api_calls": api_call_count,
@@ -3441,6 +3450,9 @@ def run_conversation(
                         "failed": True,
                         "error": str(api_error),
                     }
+                    if _auth_error is not None:
+                        _failed_result["auth_error"] = _auth_error
+                    return _failed_result
 
                 if retry_count >= max_retries:
                     # Before falling back, try rebuilding the primary

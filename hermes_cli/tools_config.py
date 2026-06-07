@@ -29,6 +29,7 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from tools.tool_backend_helpers import fal_key_is_configured, managed_nous_tools_enabled
+from tools.environments.local import _sanitize_subprocess_env
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -584,7 +585,7 @@ def _pip_install(
     (or the last failure for the caller to inspect).
     """
     venv_root = Path(sys.executable).parent.parent
-    uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)}
+    uv_env = _sanitize_subprocess_env(os.environ.copy(), {"VIRTUAL_ENV": str(venv_root)})
 
     uv_bin = shutil.which("uv")
     if uv_bin:
@@ -607,6 +608,7 @@ def _pip_install(
         probe = subprocess.run(
             pip_cmd + ["--version"],
             capture_output=True, text=True, timeout=15,
+            env=_sanitize_subprocess_env(os.environ.copy()),
         )
         if probe.returncode != 0:
             raise FileNotFoundError("pip not in venv")
@@ -615,6 +617,7 @@ def _pip_install(
             subprocess.run(
                 [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                 capture_output=True, text=True, timeout=120, check=True,
+                env=_sanitize_subprocess_env(os.environ.copy()),
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             # Synthesize a result so callers see a clean failure path.
@@ -626,6 +629,7 @@ def _pip_install(
     return subprocess.run(
         pip_cmd + ["install", *args],
         capture_output=capture_output, text=True, timeout=timeout,
+        env=_sanitize_subprocess_env(os.environ.copy()),
     )
 
 
@@ -646,7 +650,8 @@ def _run_post_setup(post_setup_key: str):
             # behaviour as before.
             result = subprocess.run(
                 [npm_bin, "install", "--silent"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+                env=_sanitize_subprocess_env(os.environ.copy()),
             )
             if result.returncode == 0:
                 _print_success("    Node.js dependencies installed")
@@ -722,6 +727,7 @@ def _run_post_setup(post_setup_key: str):
             result = subprocess.run(
                 install_cmd,
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT), timeout=600,
+                env=_sanitize_subprocess_env(os.environ.copy()),
             )
             if result.returncode == 0:
                 _print_success("    Chromium installed")
@@ -751,7 +757,8 @@ def _run_post_setup(post_setup_key: str):
             # Absolute npm path so .cmd shim executes on Windows.
             result = subprocess.run(
                 [_npm_bin, "install", "--silent"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+                env=_sanitize_subprocess_env(os.environ.copy()),
             )
             if result.returncode == 0:
                 _print_success("    Camofox installed")
@@ -779,6 +786,7 @@ def _run_post_setup(post_setup_key: str):
                 version = subprocess.run(
                     ["cua-driver", "--version"],
                     capture_output=True, text=True, timeout=5,
+                    env=_sanitize_subprocess_env(os.environ.copy()),
                 ).stdout.strip()
                 _print_success(f"    cua-driver already installed: {version or 'unknown version'}")
             except Exception:
@@ -798,7 +806,10 @@ def _run_post_setup(post_setup_key: str):
                 "https://raw.githubusercontent.com/trycua/cua/main/"
                 "libs/cua-driver/scripts/install.sh)\""
             )
-            result = subprocess.run(install_cmd, shell=True, timeout=300)
+            result = subprocess.run(
+                install_cmd, shell=True, timeout=300,
+                env=_sanitize_subprocess_env(os.environ.copy()),
+            )
             if result.returncode == 0 and shutil.which("cua-driver"):
                 _print_success("    cua-driver installed.")
                 _print_info("    IMPORTANT — grant macOS permissions now:")

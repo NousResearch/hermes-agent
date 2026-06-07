@@ -12,6 +12,16 @@ import {
   SLASH_COMMAND_RE
 } from '@/lib/chat-runtime'
 import {
+  formatCheckpointList,
+  formatRollbackDiff,
+  formatRollbackRestore,
+  parseRollbackCommand,
+  type RollbackDiffResponse,
+  type RollbackListResponse,
+  type RollbackRestoreResponse,
+  trimLastExchange
+} from '@/lib/desktop-rollback'
+import {
   type CommandsCatalogLike,
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
@@ -629,6 +639,68 @@ export function usePromptActions({
           return
         }
 
+        // /rollback routes through the native rollback.list/diff/restore RPCs —
+        // the same path the TUI uses — NOT the slash worker. slash.exec runs in a
+        // throwaway HermesCLI subprocess that restores the file on disk but only
+        // undoes its OWN in-memory history copy, so the live gateway session (the
+        // agent's next-turn context) silently diverges from the restored files.
+        // rollback.restore mutates the live session["history"] and reports how
+        // many messages it dropped via history_removed.
+        if (normalizedName === 'rollback') {
+          const plan = parseRollbackCommand(arg)
+
+          if (plan.kind === 'usage') {
+            renderSlashOutput(plan.message)
+
+            return
+          }
+
+          try {
+            if (plan.kind === 'list') {
+              const result = await requestGateway<RollbackListResponse>('rollback.list', { session_id: sessionId })
+
+              renderSlashOutput(formatCheckpointList(result))
+
+              return
+            }
+
+            if (plan.kind === 'diff') {
+              const result = await requestGateway<RollbackDiffResponse>('rollback.diff', {
+                hash: plan.hash,
+                session_id: sessionId
+              })
+
+              renderSlashOutput(formatRollbackDiff(result))
+
+              return
+            }
+
+            const result = await requestGateway<RollbackRestoreResponse>('rollback.restore', {
+              hash: plan.hash,
+              session_id: sessionId,
+              ...(plan.filePath ? { file_path: plan.filePath } : {})
+            })
+
+            // A full-history restore drops the rolled-back exchange from the live
+            // session; mirror that in the visible transcript so the chat matches
+            // the restored files. A file-scoped restore leaves history untouched
+            // (history_removed = 0), so the transcript is left as-is.
+            if (result?.success && (result.history_removed ?? 0) > 0) {
+              updateSessionState(
+                sessionId,
+                state => ({ ...state, messages: trimLastExchange(state.messages) }),
+                selectedStoredSessionIdRef.current
+              )
+            }
+
+            renderSlashOutput(formatRollbackRestore(result, plan.filePath))
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+
+          return
+        }
+
         if (!isDesktopSlashCommand(name)) {
           renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
 
@@ -714,8 +786,10 @@ export function usePromptActions({
       handleSkinCommand,
       refreshSessions,
       requestGateway,
+      selectedStoredSessionIdRef,
       startFreshSessionDraft,
-      submitPromptText
+      submitPromptText,
+      updateSessionState
     ]
   )
 

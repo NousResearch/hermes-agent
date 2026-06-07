@@ -295,7 +295,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if not text:
         return text
     if _gateway_platform_value(platform) != "telegram":
-        return text
+        return None
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
@@ -309,7 +309,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     if not text:
         return None
     if _gateway_platform_value(platform) != "telegram":
-        return text
+        return None
 
     text = _redact_gateway_user_facing_secrets(text)
     if _TELEGRAM_NOISY_STATUS_RE.search(text):

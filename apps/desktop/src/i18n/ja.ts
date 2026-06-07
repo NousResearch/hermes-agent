@@ -637,8 +637,16 @@ export const ja = defineLocale({
       ready: '準備完了',
       nousIncluded: 'Nous サブスクリプションに含まれています。有効にするには Nous Portal にサインインしてください。',
       noApiKeyRequired: 'API キーは不要です。',
-      postSetup: step =>
-        `このプロバイダーは追加のセットアップ手順 (${step}) が必要です。今は CLI で hermes tools を実行してください。`
+      postSetupHint: step =>
+        `このバックエンドは一度だけインストールが必要です (${step})。このマシン上で実行され、数分かかる場合があります。`,
+      postSetupRun: 'セットアップを実行',
+      postSetupRunning: 'インストール中…',
+      postSetupStarting: '開始中…',
+      postSetupCompleteTitle: 'セットアップ完了',
+      postSetupCompleteMessage: step => `${step} をインストールしました。`,
+      postSetupErrorTitle: 'セットアップはエラーで終了しました',
+      postSetupErrorMessage: step => `${step} のログを確認してください。`,
+      postSetupFailed: step => `${step} のセットアップの実行に失敗しました`
     }
   },
 

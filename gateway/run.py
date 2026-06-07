@@ -1989,6 +1989,38 @@ class GatewayRunner:
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
 
+        # Wire the durable approval store (production-switch).
+        # tools.approval will use this for /approve <id> atomic consume,
+        # pinned-policy persistence, cross-process visibility, and the
+        # Phase 3 stricter-runtime guard. Without this call, gateway
+        # falls back to the legacy in-memory FIFO which does not satisfy
+        # the security invariants documented in
+        # docs/security/gateway-approval-lifecycle.md.
+        #
+        # State DB lives under the existing hermes-home convention
+        # (~/.hermes/state.db by default; respects
+        # set_hermes_home_override for profile-isolated tests).
+        try:
+            from tools.approval import set_default_approval_store
+            from tools.approval_store_sqlite import SqliteApprovalStore
+            set_default_approval_store(SqliteApprovalStore())
+            logger.info(
+                "Gateway approval store initialised: SqliteApprovalStore "
+                "(state.db under hermes home)"
+            )
+        except Exception as exc:
+            # Surface loudly but do NOT silently downgrade — leave the
+            # store at None so _await_gateway_decision sees no store
+            # configured and the legacy path takes over. Operators
+            # should treat this log line as a deployment-blocker.
+            logger.error(
+                "FAILED to wire SqliteApprovalStore as gateway approval "
+                "store: %s. Gateway will fall back to in-memory FIFO "
+                "approval which does NOT satisfy the security invariants. "
+                "Investigate immediately.",
+                exc, exc_info=True,
+            )
+
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}

@@ -8884,6 +8884,19 @@ class GatewayRunner:
                         "Image routing: native (model supports vision). %d image(s) will be attached inline.",
                         len(image_paths),
                     )
+                elif self._caption_requests_ocr(message_text):
+                    # Caption signals a verbatim-transcription request (or is
+                    # empty): route to the dedicated OCR path instead of the
+                    # describe path.
+                    logger.info(
+                        "Image routing: text/OCR (mode=%s). Transcribing %d "
+                        "image(s) via ocr_image.",
+                        _img_mode, len(image_paths),
+                    )
+                    message_text = await self._enrich_message_with_ocr(
+                        message_text,
+                        image_paths,
+                    )
                 else:
                     logger.info(
                         "Image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
@@ -15912,6 +15925,82 @@ class GatewayRunner:
         except Exception as exc:
             logger.debug("image_routing: decision failed, falling back to text — %s", exc)
             return "text"
+
+    @staticmethod
+    def _caption_requests_ocr(user_text: str) -> bool:
+        """True if the image caption signals a verbatim-transcription request.
+
+        Triggers on explicit OCR intent ("transcribe", "read this",
+        "what does this say", "ocr") or an EMPTY caption (a bare image with no
+        instruction defaults to transcription, which is the most common intent
+        for screenshots of text / documents). Anything else (e.g. "what's in
+        this picture") stays on the describe path (vision_analyze).
+        """
+        text = (user_text or "").strip()
+        # The gateway substitutes a placeholder for empty inbound text; treat it
+        # as "no caption" so a bare image still triggers OCR.
+        _placeholder = "(The user sent a message with no text content)"
+        if not text or text == _placeholder:
+            return True
+        lowered = text.lower()
+        ocr_markers = (
+            "transcribe",
+            "read this",
+            "read the",
+            "what does this say",
+            "what does it say",
+            "ocr",
+        )
+        return any(marker in lowered for marker in ocr_markers)
+
+    async def _enrich_message_with_ocr(
+        self,
+        user_text: str,
+        image_paths: List[str],
+    ) -> str:
+        """Verbatim-OCR user-attached images and prepend the transcribed text.
+
+        Uses the dedicated ocr_image tool (forced OpenRouter qwen3-vl, strict
+        no-translate transcription). Falls back to a clear note per image on
+        failure so the model can recover with the tool itself.
+        """
+        from tools.vision_tools import ocr_image_tool
+        from agent.memory_manager import sanitize_context
+
+        enriched_parts = []
+        for path in image_paths:
+            try:
+                logger.debug("Auto-OCR user image: %s", path)
+                result_json = await ocr_image_tool(image_url=path)
+                result = json.loads(result_json)
+                if result.get("success"):
+                    text = sanitize_context(result.get("text", ""))
+                    enriched_parts.append(
+                        f"[The user sent an image to transcribe~ Here is the "
+                        f"verbatim text I read from it:\n{text}]\n"
+                        f"[If you need to re-read it, use ocr_image with "
+                        f"image_url: {path} ~]"
+                    )
+                else:
+                    enriched_parts.append(
+                        "[The user sent an image to transcribe but I couldn't "
+                        "read it this time (>_<) You can try yourself with "
+                        f"ocr_image using image_url: {path}]"
+                    )
+            except Exception as e:
+                logger.error("OCR auto-transcription error: %s", e)
+                enriched_parts.append(
+                    f"[The user sent an image to transcribe but something went "
+                    f"wrong~ You can try ocr_image with image_url: {path}]"
+                )
+
+        if enriched_parts:
+            prefix = "\n\n".join(enriched_parts)
+            _placeholder = "(The user sent a message with no text content)"
+            if user_text and user_text.strip() != _placeholder:
+                return f"{prefix}\n\n{user_text}"
+            return prefix
+        return user_text
 
     async def _enrich_message_with_vision(
         self,

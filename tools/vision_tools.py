@@ -8,6 +8,8 @@ Nous, Codex, native Anthropic, or a custom OpenAI-compatible endpoint.
 
 Available tools:
 - vision_analyze_tool: Analyze images from URLs with custom prompts
+- ocr_image_tool: Verbatim OCR transcription of images/PDFs via a forced
+  direct OpenRouter call to a strong vision model (qwen3-vl by default)
 
 Features:
 - Downloads images from URLs and converts to base64 for API compatibility
@@ -1103,6 +1105,314 @@ def check_vision_requirements() -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# OCR (verbatim transcription) — dedicated tool that FORCES a direct OpenRouter
+# call to a strong vision model and asks for a faithful, untranslated transcript.
+# Unlike vision_analyze (which describes/answers), this returns only the text.
+# ---------------------------------------------------------------------------
+
+# Default OCR model — overridable via config `ocr.model` or env HERMES_OCR_MODEL.
+_OCR_DEFAULT_MODEL = "qwen/qwen3-vl-32b-instruct"
+
+# Strict transcription instruction. Deliberately forbids translation, correction,
+# summarization, and commentary so the result is a faithful copy of the source.
+_OCR_PROMPT = (
+    "Transcribe ALL text in this image verbatim. Preserve original language, "
+    "spelling, punctuation, line breaks, and layout as closely as possible. "
+    "Do NOT translate. Do NOT correct, summarize, or comment. "
+    "Output only the transcribed text."
+)
+
+# PDF rasterization guards.
+_OCR_PDF_MAX_PAGES = 20          # hard cap on pages we will OCR from one PDF
+_OCR_PDF_DPI = 200               # rasterization resolution (legible, not huge)
+_OCR_PDF_MAX_BYTES = 50 * 1024 * 1024  # refuse to rasterize PDFs bigger than this
+
+
+def _resolve_ocr_model() -> str:
+    """Resolve the OCR model: env HERMES_OCR_MODEL → config ocr.model → default.
+
+    The gateway reads config.yaml directly (not the CLI defaults dict), so the
+    config key lives at the top-level ``ocr.model``.
+    """
+    env_val = os.getenv("HERMES_OCR_MODEL", "").strip()
+    if env_val:
+        return env_val
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        cfg = load_config()
+        val = cfg_get(cfg, "ocr", "model")
+        if val:
+            return str(val)
+    except Exception:
+        pass
+    return _OCR_DEFAULT_MODEL
+
+
+def _resolve_ocr_base_url() -> str:
+    """Resolve the OCR base_url: config ocr.base_url → OpenRouter default."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        cfg = load_config()
+        val = cfg_get(cfg, "ocr", "base_url")
+        if val:
+            return str(val)
+    except Exception:
+        pass
+    from hermes_constants import OPENROUTER_BASE_URL
+    return OPENROUTER_BASE_URL
+
+
+async def _ocr_one_image_data_url(image_data_url: str, *, model: str,
+                                  base_url: str) -> str:
+    """Run a single verbatim-OCR LLM call on an already-encoded data URL.
+
+    FORCES provider=openrouter and task=vision so attribution headers are added
+    and the model is the configured OCR model regardless of auxiliary.vision.
+    Returns the transcribed text (may be empty on a content-less response).
+    """
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": _OCR_PROMPT},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ],
+        }
+    ]
+    response = await async_call_llm(
+        task="vision",
+        provider="openrouter",
+        model=model,
+        base_url=base_url,
+        messages=messages,
+        temperature=0,
+        max_tokens=4000,
+        timeout=120,
+    )
+    text = extract_content_or_reasoning(response)
+    if not text:
+        # Retry once on empty content (reasoning-only / transient empty response).
+        response = await async_call_llm(
+            task="vision",
+            provider="openrouter",
+            model=model,
+            base_url=base_url,
+            messages=messages,
+            temperature=0,
+            max_tokens=4000,
+            timeout=120,
+        )
+        text = extract_content_or_reasoning(response)
+    return text or ""
+
+
+def _is_pdf(path: Path) -> bool:
+    """True if the file looks like a PDF (by extension or magic bytes)."""
+    if path.suffix.lower() == ".pdf":
+        return True
+    try:
+        with path.open("rb") as f:
+            return f.read(5) == b"%PDF-"
+    except Exception:
+        return False
+
+
+def _rasterize_pdf(pdf_path: Path) -> list:
+    """Rasterize a PDF into a list of base64 data URLs, one per page.
+
+    Uses pdf2image (system poppler / pdftoppm). Page count is capped at
+    ``_OCR_PDF_MAX_PAGES`` and the PDF byte size at ``_OCR_PDF_MAX_BYTES``.
+    Raises RuntimeError if pdf2image/poppler is unavailable, ValueError on
+    guard violations.
+    """
+    size = pdf_path.stat().st_size
+    if size > _OCR_PDF_MAX_BYTES:
+        raise ValueError(
+            f"PDF too large for OCR: {size / (1024 * 1024):.1f} MB "
+            f"(limit {_OCR_PDF_MAX_BYTES / (1024 * 1024):.0f} MB)."
+        )
+    try:
+        from pdf2image import convert_from_path
+    except ImportError:
+        # pdf2image is a soft dependency; try a best-effort lazy install.
+        try:
+            from tools.lazy_deps import ensure as _ensure_dep
+            _ensure_dep("tool.vision")
+            from pdf2image import convert_from_path
+        except Exception as exc:
+            raise RuntimeError(
+                "PDF OCR requires pdf2image + poppler (pdftoppm). "
+                "Install with `pip install pdf2image` and the system poppler "
+                f"package. Underlying error: {exc}"
+            )
+
+    import io as _io
+    # Rasterize at most _OCR_PDF_MAX_PAGES + 1 so we can detect truncation.
+    images = convert_from_path(
+        str(pdf_path),
+        dpi=_OCR_PDF_DPI,
+        first_page=1,
+        last_page=_OCR_PDF_MAX_PAGES,
+    )
+    data_urls = []
+    for img in images:
+        buf = _io.BytesIO()
+        img.save(buf, format="PNG")
+        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+        data_url = f"data:image/png;base64,{encoded}"
+        # Reuse the size ceiling that the vision API enforces.
+        if len(data_url) > _MAX_BASE64_BYTES:
+            # Downscale this page via Pillow before giving up.
+            try:
+                from PIL import Image as _PILImg
+                w, h = img.size
+                img2 = img.resize((max(w // 2, 64), max(h // 2, 64)),
+                                  _PILImg.LANCZOS)
+                buf2 = _io.BytesIO()
+                img2.save(buf2, format="PNG")
+                encoded = base64.b64encode(buf2.getvalue()).decode("ascii")
+                data_url = f"data:image/png;base64,{encoded}"
+            except Exception:
+                pass
+        data_urls.append(data_url)
+    if not data_urls:
+        raise ValueError("PDF produced no rasterizable pages.")
+    return data_urls
+
+
+async def ocr_image_tool(image_url: str, model: str = None) -> str:
+    """Transcribe ALL text in an image or PDF verbatim via OpenRouter qwen3-vl.
+
+    Accepts an HTTP/HTTPS URL or a local file path. PNG/JPEG/etc. images are
+    OCR'd directly; PDFs are rasterized page-by-page (poppler) and each page is
+    OCR'd, with page texts concatenated (blank line between pages).
+
+    Returns a JSON string: {"success": bool, "text": str, "pages": int,
+    "model": str} or {"success": False, "error": str, "text": ""}.
+    """
+    debug_call_data = {
+        "parameters": {"image_url": image_url, "model": model},
+        "error": None,
+        "success": False,
+        "text_length": 0,
+        "pages": 0,
+    }
+
+    temp_image_path = None
+    should_cleanup = True
+    resolved_model = model or _resolve_ocr_model()
+    base_url = _resolve_ocr_base_url()
+
+    try:
+        from tools.interrupt import is_interrupted
+        if is_interrupted():
+            return tool_error("Interrupted", success=False)
+
+        logger.info("OCR transcribing: %s (model=%s)", image_url[:80], resolved_model)
+
+        # Resolve local file vs remote URL (mirrors vision_analyze_tool).
+        resolved_url = image_url
+        if resolved_url.startswith("file://"):
+            resolved_url = resolved_url[len("file://"):]
+        local_path = Path(os.path.expanduser(resolved_url))
+        if local_path.is_file():
+            temp_image_path = local_path
+            should_cleanup = False
+        elif await _validate_image_url_async(image_url):
+            blocked = check_website_access(image_url)
+            if blocked:
+                raise PermissionError(blocked["message"])
+            temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+            temp_image_path = temp_dir / f"ocr_{uuid.uuid4()}.bin"
+            await _download_image(image_url, temp_image_path)
+            should_cleanup = True
+        else:
+            raise ValueError(
+                "Invalid image source. Provide an HTTP/HTTPS URL or a valid "
+                "local file path."
+            )
+
+        # PDF path: rasterize → OCR each page → concatenate.
+        if _is_pdf(temp_image_path):
+            logger.info("OCR: input is a PDF — rasterizing pages")
+            page_data_urls = _rasterize_pdf(temp_image_path)
+            page_texts = []
+            for idx, data_url in enumerate(page_data_urls, start=1):
+                logger.info("OCR: transcribing PDF page %d/%d",
+                            idx, len(page_data_urls))
+                page_text = await _ocr_one_image_data_url(
+                    data_url, model=resolved_model, base_url=base_url)
+                page_texts.append(page_text)
+            full_text = "\n\n".join(page_texts).strip()
+            result = {
+                "success": True,
+                "text": full_text or "(no text found)",
+                "pages": len(page_data_urls),
+                "model": resolved_model,
+            }
+            debug_call_data["success"] = True
+            debug_call_data["text_length"] = len(full_text)
+            debug_call_data["pages"] = len(page_data_urls)
+            _debug.log_call("ocr_image_tool", debug_call_data)
+            _debug.save()
+            return json.dumps(result, indent=2, ensure_ascii=False)
+
+        # Image path.
+        detected_mime_type = _detect_image_mime_type(temp_image_path)
+        if not detected_mime_type:
+            raise ValueError(
+                "Only real image files or PDFs are supported for OCR."
+            )
+        # Encode (auto-resize on the byte/dimension ceiling).
+        image_data_url = _image_to_base64_data_url(
+            temp_image_path, mime_type=detected_mime_type)
+        if len(image_data_url) > _MAX_BASE64_BYTES:
+            image_data_url = _resize_image_for_vision(
+                temp_image_path, mime_type=detected_mime_type)
+            if len(image_data_url) > _MAX_BASE64_BYTES:
+                raise ValueError(
+                    f"Image too large for OCR API: "
+                    f"{len(image_data_url) / (1024 * 1024):.1f} MB even after "
+                    f"resizing."
+                )
+
+        text = await _ocr_one_image_data_url(
+            image_data_url, model=resolved_model, base_url=base_url)
+        result = {
+            "success": True,
+            "text": text or "(no text found)",
+            "pages": 1,
+            "model": resolved_model,
+        }
+        debug_call_data["success"] = True
+        debug_call_data["text_length"] = len(text)
+        debug_call_data["pages"] = 1
+        _debug.log_call("ocr_image_tool", debug_call_data)
+        _debug.save()
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    except Exception as e:
+        error_msg = f"Error transcribing image: {str(e)}"
+        logger.error("%s", error_msg, exc_info=True)
+        result = {
+            "success": False,
+            "error": error_msg,
+            "text": "",
+        }
+        debug_call_data["error"] = error_msg
+        _debug.log_call("ocr_image_tool", debug_call_data)
+        _debug.save()
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    finally:
+        if should_cleanup and temp_image_path and temp_image_path.exists():
+            try:
+                temp_image_path.unlink()
+            except Exception as cleanup_error:
+                logger.warning(
+                    "Could not delete temporary OCR file: %s", cleanup_error)
+
 
 if __name__ == "__main__":
     """
@@ -1221,6 +1531,46 @@ registry.register(
     check_fn=check_vision_requirements,
     is_async=True,
     emoji="👁️",
+)
+
+
+OCR_IMAGE_SCHEMA = {
+    "name": "ocr_image",
+    "description": (
+        "Transcribe ALL text in an image or PDF verbatim — no translation, no "
+        "correction, no summary. Use this whenever the user wants the literal "
+        "text out of an image/scan/screenshot/PDF (\"transcribe this\", \"read "
+        "this\", \"what does this say\", \"ocr\"). Accepts a URL or a local "
+        "file path. PDFs are rasterized page-by-page and each page transcribed. "
+        "Returns the original-language text exactly as written. For describing "
+        "or answering questions about an image, use vision_analyze instead."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "image_url": {
+                "type": "string",
+                "description": "Image/PDF URL (http/https) or local file path to transcribe."
+            }
+        },
+        "required": ["image_url"]
+    }
+}
+
+
+def _handle_ocr_image(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
+    image_url = args.get("image_url", "")
+    return ocr_image_tool(image_url)
+
+
+registry.register(
+    name="ocr_image",
+    toolset="vision",
+    schema=OCR_IMAGE_SCHEMA,
+    handler=_handle_ocr_image,
+    check_fn=check_vision_requirements,
+    is_async=True,
+    emoji="🔤",
 )
 
 

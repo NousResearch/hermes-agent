@@ -17,7 +17,7 @@ ntfy 是 Hermes 的轻量级推送渠道的理想选择：通过 [ntfy 移动应
 ### 通过设置向导
 
 ```bash
-hermes gateway setup
+hermes setup gateway
 ```
 
 选择 **ntfy** 并按提示操作。

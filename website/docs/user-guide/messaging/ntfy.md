@@ -19,7 +19,7 @@ That's it. No SDK, no daemon, no Node.js. The adapter uses `httpx` which is alre
 ### Via setup wizard
 
 ```bash
-hermes gateway setup
+hermes setup gateway
 ```
 
 Select **ntfy** and follow the prompts.

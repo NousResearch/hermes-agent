@@ -539,13 +539,6 @@ export interface Translations {
   theme: {
     title: string;
     switchTheme: string;
-    /** Font-override section (optional — locales fall back to English). */
-    fontTitle?: string;
-    fontDefault?: string;
-    fontDefaultHint?: string;
-    fontSans?: string;
-    fontSerif?: string;
-    fontMono?: string;
   };
 
   // ── Achievements plugin (plugins/hermes-achievements) ──

@@ -29,7 +29,7 @@ High-level categories:
 | **Memory & recall** | `memory`, `session_search` | Persistent memory and session search. |
 | **Database retrieval** | `database_retrieve` | Read-only SQL validation, dialect transpilation, schema inspection, and retrieval from configured databases. |
 | **Automation & delivery** | `cronjob`, `send_message` | Scheduled tasks with create/list/update/pause/resume/run/remove actions, plus outbound messaging delivery. |
-| **Integrations** | `ha_*`, MCP server tools | Home Assistant, MCP, and other integrations. |
+| **Integrations** | `ha_*`, MCP server tools, `rl_*` | Home Assistant, MCP, RL training, and other integrations. |
 
 For the authoritative code-derived registry, see [Built-in Tools Reference](/reference/tools-reference) and [Toolsets Reference](/reference/toolsets-reference).
 

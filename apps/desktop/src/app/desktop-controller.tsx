@@ -29,14 +29,7 @@ import {
   unpinSession
 } from '../store/layout'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
-import {
-  $activeGatewayProfile,
-  $freshSessionRequest,
-  $profileScope,
-  ALL_PROFILES,
-  normalizeProfileKey,
-  refreshActiveProfile
-} from '../store/profile'
+import { $activeGatewayProfile, $freshSessionRequest, normalizeProfileKey, refreshActiveProfile } from '../store/profile'
 import {
   $activeSessionId,
   $currentCwd,
@@ -164,7 +157,6 @@ export function DesktopController() {
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const terminalTakeover = useStore($terminalTakeover)
   const panesFlipped = useStore($panesFlipped)
-  const profileScope = useStore($profileScope)
 
   const routedSessionId = routeSessionId(location.pathname)
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
@@ -296,11 +288,7 @@ export function DesktopController() {
       // the same rows tagged profile="default". Cron sessions are excluded here
       // and fetched separately (refreshCronSessions) so the scheduler's
       // always-newest rows can't consume the recents page budget.
-      // Scope the fetch to the active profile (not always 'all') so a profile
-      // with few recent sessions isn't windowed out of the cross-profile
-      // recency page — the empty-history-on-profile-switch bug.
-      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
-      const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', sessionProfile, {
+      const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', 'all', {
         excludeSources: ['cron']
       })
 
@@ -317,7 +305,7 @@ export function DesktopController() {
 
     void refreshCronSessions()
     void refreshCronJobs()
-  }, [profileScope, refreshCronSessions, refreshCronJobs])
+  }, [refreshCronSessions, refreshCronJobs])
 
   const loadMoreSessions = useCallback(() => {
     bumpSessionsLimit()

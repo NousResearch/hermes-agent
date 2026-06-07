@@ -76,21 +76,6 @@ function bootstrapCacheDir(hermesHome) {
   return path.join(hermesHome, 'bootstrap-cache')
 }
 
-// The install.sh / install.ps1 that ships inside the already-installed agent
-// checkout under ~/.hermes/hermes-agent. Used as a last-resort fallback when
-// the pinned commit can't be fetched from GitHub (e.g. a locally-built desktop
-// app stamped to an unpushed HEAD).
-function installedAgentInstallScript(hermesHome) {
-  if (!hermesHome) return null
-  const candidate = path.join(hermesHome, 'hermes-agent', 'scripts', installScriptName())
-  try {
-    fs.accessSync(candidate, fs.constants.R_OK)
-    return candidate
-  } catch {
-    return null
-  }
-}
-
 function cachedScriptPath(hermesHome, commit) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
@@ -170,7 +155,7 @@ function downloadInstallScript(commit, destPath) {
   })
 }
 
-async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit, _download = downloadInstallScript }) {
+async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit }) {
   // 1. Dev shortcut: prefer a local checkout's installer so we can iterate
   //    without pushing. SOURCE_REPO_ROOT comes from main.cjs (path.resolve
   //    of APP_ROOT/../..).
@@ -204,35 +189,9 @@ async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, 
     type: 'log',
     line: `[bootstrap] fetching ${installScriptName()} for ${installStamp.commit.slice(0, 12)} from GitHub`
   })
-  try {
-    await _download(installStamp.commit, cached)
-    emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
-    return { path: cached, source: 'download', commit: installStamp.commit, kind: installScriptKind() }
-  } catch (err) {
-    // The pinned commit may not be fetchable from GitHub -- most commonly a
-    // locally-built desktop app stamped to an unpushed HEAD (see
-    // write-build-stamp.cjs fromLocalGit). Fall back to the installer that
-    // ships inside the already-installed agent checkout so dev/self-builds can
-    // still bootstrap instead of dying with a fatal 404.
-    const installed = installedAgentInstallScript(hermesHome)
-    if (installed) {
-      emit({
-        type: 'log',
-        line:
-          `[bootstrap] GitHub fetch failed (${err.message}); ` +
-          `falling back to installed agent ${installScriptName()} at ${installed}`
-      })
-      try {
-        fs.mkdirSync(path.dirname(cached), { recursive: true })
-        fs.copyFileSync(installed, cached)
-        return { path: cached, source: 'installed-agent', commit: installStamp.commit, kind: installScriptKind() }
-      } catch {
-        // Cache copy failed (read-only FS, etc.) -- use the source path directly.
-        return { path: installed, source: 'installed-agent', commit: installStamp.commit, kind: installScriptKind() }
-      }
-    }
-    throw err
-  }
+  await downloadInstallScript(installStamp.commit, cached)
+  emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
+  return { path: cached, source: 'download', commit: installStamp.commit, kind: installScriptKind() }
 }
 
 // ---------------------------------------------------------------------------
@@ -714,7 +673,5 @@ module.exports = {
   // Exposed for testability
   parseStageResult,
   resolveLocalInstallScript,
-  resolveInstallScript,
-  installedAgentInstallScript,
   cachedScriptPath
 }

@@ -8,12 +8,6 @@ import {
   type ReactNode,
 } from "react";
 import { BUILTIN_THEMES, defaultTheme } from "./presets";
-import {
-  FONT_CHOICES,
-  THEME_DEFAULT_FONT_ID,
-  getFontChoice,
-  type FontChoice,
-} from "./fonts";
 import type {
   DashboardTheme,
   ThemeAssets,
@@ -33,12 +27,6 @@ import { api } from "@/lib/api";
 /** LocalStorage key — pre-applied before the React tree mounts to avoid
  *  a visible flash of the default palette on theme-overridden installs. */
 const STORAGE_KEY = "hermes-dashboard-theme";
-
-/** LocalStorage key for the font override (independent of theme). Holds a
- *  font id from the catalog in `fonts.ts`, or the `THEME_DEFAULT_FONT_ID`
- *  sentinel / absent = "use the active theme's font". Pre-applied before
- *  the React tree mounts (see `main.tsx`) to avoid a font flash. */
-const FONT_STORAGE_KEY = "hermes-dashboard-font";
 
 /** Renames of built-in theme keys we've shipped previously. Without this,
  *  users who saved one of the old names in localStorage (or had it
@@ -309,40 +297,6 @@ function injectFontStylesheet(url: string | undefined) {
 }
 
 // ---------------------------------------------------------------------------
-// Font override (independent of theme)
-// ---------------------------------------------------------------------------
-
-/** The active font-override id, mirrored at module scope so `applyTheme`
- *  can re-assert it after every theme switch (theme application rewrites
- *  `--theme-font-sans`, so the override has to win again afterwards). */
-let _ACTIVE_FONT_OVERRIDE: string = THEME_DEFAULT_FONT_ID;
-
-/** Apply (or clear) the font override on `:root`. When a catalog font is
- *  active we override `--theme-font-sans` and `--theme-font-display` and
- *  inject its webfont; the theme keeps ownership of `--theme-font-mono`
- *  (code/terminal) so picking a body font doesn't mangle code blocks.
- *  Passing the theme-default sentinel removes the override so the theme's
- *  own font shows through. */
-function applyFontOverride(fontId: string | undefined) {
-  if (typeof document === "undefined") return;
-  const root = document.documentElement;
-  const choice: FontChoice | undefined = getFontChoice(fontId);
-  if (!choice) {
-    // Clear → fall back to whatever the active theme set (applyTheme already
-    // wrote the theme's --theme-font-sans/-display before this runs).
-    root.style.removeProperty("--theme-font-override-sans");
-    return;
-  }
-  injectFontStylesheet(choice.fontUrl);
-  // Set both the override marker var (used by the picker for diagnostics)
-  // and the live consumed vars. We re-set the consumed vars directly so the
-  // change is immediate and survives the next applyTheme via _ACTIVE_FONT_OVERRIDE.
-  root.style.setProperty("--theme-font-override-sans", choice.stack);
-  root.style.setProperty("--theme-font-sans", choice.stack);
-  root.style.setProperty("--theme-font-display", choice.stack);
-}
-
-// ---------------------------------------------------------------------------
 // Apply a full theme to :root
 // ---------------------------------------------------------------------------
 
@@ -396,10 +350,6 @@ function applyTheme(theme: DashboardTheme) {
     "--theme-terminal-background",
     theme.terminalBackground ?? "#000000",
   );
-
-  // Re-assert the font override last: theme application just rewrote
-  // --theme-font-sans/-display, so an active override has to win again.
-  applyFontOverride(_ACTIVE_FONT_OVERRIDE);
 }
 
 // ---------------------------------------------------------------------------
@@ -436,16 +386,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     Record<string, DashboardTheme>
   >({});
 
-  /** Active font-override id (independent of theme). `THEME_DEFAULT_FONT_ID`
-   *  = no override. Seeded from localStorage so it's applied flash-free. */
-  const [fontId, setFontId] = useState<string>(() => {
-    if (typeof window === "undefined") return THEME_DEFAULT_FONT_ID;
-    const stored = window.localStorage.getItem(FONT_STORAGE_KEY);
-    const valid = stored && getFontChoice(stored) ? stored : THEME_DEFAULT_FONT_ID;
-    _ACTIVE_FONT_OVERRIDE = valid;
-    return valid;
-  });
-
   // Resolve a theme name to a full DashboardTheme, falling back to default
   // only when neither a built-in nor a user theme is found.
   const resolveTheme = useCallback(
@@ -459,14 +399,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [userThemeDefs],
   );
 
-  // Apply the active theme (and re-assert the font override at its tail)
-  // whenever the theme, the resolver, OR the font override changes. Folding
-  // font into the same effect means clearing the override re-runs applyTheme,
-  // which restores the theme's own font; setting it re-asserts the override.
+  // Re-apply on every themeName change, or when user themes arrive from
+  // the API (since the active theme might be a user theme whose definition
+  // hadn't loaded yet on first render).
   useEffect(() => {
-    _ACTIVE_FONT_OVERRIDE = fontId;
     applyTheme(resolveTheme(themeName));
-  }, [themeName, resolveTheme, fontId]);
+  }, [themeName, resolveTheme]);
 
   // Load server-side themes (built-ins + user YAMLs) once on mount.
   useEffect(() => {
@@ -514,30 +452,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load the server-persisted font override once on mount. The server is
-  // the source of truth across browsers; localStorage just avoids the flash.
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .getFontPref()
-      .then((resp) => {
-        if (cancelled) return;
-        const serverId =
-          resp?.font && getFontChoice(resp.font) ? resp.font : THEME_DEFAULT_FONT_ID;
-        if (serverId !== fontId) {
-          setFontId(serverId);
-          if (typeof window !== "undefined") {
-            window.localStorage.setItem(FONT_STORAGE_KEY, serverId);
-          }
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const setTheme = useCallback(
     (name: string) => {
       // Accept any name the server told us exists OR any built-in.
@@ -556,26 +470,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [availableThemes, userThemeDefs],
   );
 
-  const setFont = useCallback((id: string) => {
-    const next = getFontChoice(id) ? id : THEME_DEFAULT_FONT_ID;
-    setFontId(next);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(FONT_STORAGE_KEY, next);
-    }
-    api.setFontPref(next).catch(() => {});
-  }, []);
-
   const value = useMemo<ThemeContextValue>(
     () => ({
       theme: resolveTheme(themeName),
       themeName,
       availableThemes,
       setTheme,
-      fontId,
-      fontChoices: FONT_CHOICES,
-      setFont,
     }),
-    [themeName, availableThemes, setTheme, resolveTheme, fontId, setFont],
+    [themeName, availableThemes, setTheme, resolveTheme],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
@@ -594,9 +496,6 @@ const ThemeContext = createContext<ThemeContextValue>({
     description: t.description,
   })),
   setTheme: () => {},
-  fontId: THEME_DEFAULT_FONT_ID,
-  fontChoices: FONT_CHOICES,
-  setFont: () => {},
 });
 
 interface ThemeContextValue {
@@ -604,10 +503,4 @@ interface ThemeContextValue {
   setTheme: (name: string) => void;
   theme: DashboardTheme;
   themeName: string;
-  /** Active font-override id (`THEME_DEFAULT_FONT_ID` = no override). */
-  fontId: string;
-  /** Curated font catalog for the picker. */
-  fontChoices: FontChoice[];
-  /** Set the font override (independent of theme). */
-  setFont: (id: string) => void;
 }

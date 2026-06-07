@@ -5657,9 +5657,14 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
     Cron runs are stored as ordinary sessions whose id is
     ``cron_{job_id}_{timestamp}`` (see cron/scheduler.run_job). A job's history
     is therefore every session whose id carries that prefix; ``source='cron'``
-    narrows it and the id substring binds it to this job. Powers the run-history
+    narrows it and the id prefix binds it to this job. Powers the run-history
     list under each job in the desktop cron detail. Same row shape as
     ``/api/sessions`` so the frontend can reuse SessionInfo.
+
+    Backed by ``SessionDB.list_cron_job_runs`` — a bounded ``[prefix, hi)``
+    id-range scan, not the compression-chain CTE used for the recents list,
+    so the cost scales with the requested window and not the (unbounded) total
+    cron history.
     """
     selected = profile or _find_cron_job_profile(job_id)
     # job_id may be a human name; resolve to the canonical id used in run-session ids.
@@ -5676,13 +5681,7 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
 
     db = _open_session_db_for_profile(selected)
     try:
-        runs = db.list_sessions_rich(
-            source="cron",
-            id_query=f"cron_{canonical}_",
-            limit=limit_n,
-            offset=0,
-            order_by_last_active=True,
-        )
+        runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
         now = time.time()
         for s in runs:
             s["is_active"] = (

@@ -463,14 +463,14 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     # Under the TUI we skip the prompt and proceed — lazy installs are
     # gated by security.allow_lazy_installs, so reaching here is
     # already user opt-in.
-    _pt_active = False
-    if "prompt_toolkit.application.current" in sys.modules:
-        try:
-            from prompt_toolkit.application.current import get_app_or_none
-            _app = get_app_or_none()
-            _pt_active = _app is not None and getattr(_app, "is_running", False)
-        except Exception:
-            _pt_active = False
+    #
+    # Detect prompt_toolkit by checking if any prompt_toolkit module is loaded.
+    # This is conservative: if the user has imported prompt_toolkit anywhere,
+    # we assume it may own stdin and skip the interactive prompt (#40504 / #40490).
+    _pt_active = any(
+        name.startswith("prompt_toolkit")
+        for name in sys.modules.keys()
+    )
 
     if prompt and not _pt_active and sys.stdin.isatty() and sys.stdout.isatty():
         spec_list = ", ".join(missing)

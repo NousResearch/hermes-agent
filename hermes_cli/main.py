@@ -9928,6 +9928,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
+        "work",
         "version", "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -10449,6 +10450,12 @@ def main():
     # =========================================================================
     from hermes_cli.send_cmd import register_send_subparser
     register_send_subparser(subparsers)
+
+    # =========================================================================
+    # work command — preflight/closeout gates for agent handoffs
+    # =========================================================================
+    from hermes_cli.work_closeout import register_work_subparser
+    register_work_subparser(subparsers)
 
     # =========================================================================
     # login command

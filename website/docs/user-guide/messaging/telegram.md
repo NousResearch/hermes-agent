@@ -876,9 +876,9 @@ When streaming is enabled (`gateway.streaming.enabled: true`), Hermes picks one 
 
 | Value | Behaviour |
 |---|---|
-| `auto` | Native draft streaming on supported chats (currently Telegram DMs); legacy edit-based path otherwise. Falls back gracefully if a draft frame fails. |
+| `auto` (default) | Native draft streaming on supported chats (currently Telegram DMs); legacy edit-based path otherwise. Falls back gracefully if a draft frame fails. |
 | `draft` | Force native drafts. Logs a downgrade and falls back to edit if the chat doesn't support drafts (e.g. groups/topics). |
-| `edit` (default) | Legacy progressive `editMessageText` polling for every chat type. |
+| `edit` | Legacy progressive `editMessageText` polling for every chat type. |
 | `off` | Disable streaming entirely (final reply only, no progressive updates). |
 
 In `~/.hermes/config.yaml`:
@@ -887,7 +887,7 @@ In `~/.hermes/config.yaml`:
 gateway:
   streaming:
     enabled: true
-    transport: edit    # edit | auto | draft | off
+    transport: auto    # auto | draft | edit | off
 ```
 
 **What you'll see in DMs with `edit` (default)** — the gateway sends a normal preview message and progressively updates it via `editMessageText`, avoiding Telegram's draft-preview collapse/rollback effect.

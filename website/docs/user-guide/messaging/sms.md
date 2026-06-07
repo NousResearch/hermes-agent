@@ -126,7 +126,7 @@ Text your Twilio number — Hermes will respond via SMS.
 | `TWILIO_PHONE_NUMBER` | Yes | Your Twilio phone number (E.164 format) |
 | `SMS_WEBHOOK_URL` | Yes | Public URL for Twilio signature validation — must match the webhook URL in your Twilio Console |
 | `SMS_WEBHOOK_PORT` | No | Webhook listener port (default: `8080`) |
-| `SMS_WEBHOOK_HOST` | No | Webhook bind address (default: `0.0.0.0`) |
+| `SMS_WEBHOOK_HOST` | No | Webhook bind address (default: `127.0.0.1`) |
 | `SMS_INSECURE_NO_SIGNATURE` | No | Set to `true` to disable signature validation (local dev only — **not for production**) |
 | `SMS_ALLOWED_USERS` | No | Comma-separated E.164 phone numbers allowed to chat |
 | `SMS_ALLOW_ALL_USERS` | No | Set to `true` to allow anyone (not recommended) |

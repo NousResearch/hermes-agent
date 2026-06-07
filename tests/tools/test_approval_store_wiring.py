@@ -71,10 +71,18 @@ def _run_decision_with_resolution(
             session_key=session_key,
             notify_cb=notify,
             approval_data={
-                "command": "rm -rf /important",
-                "description": "rm with recursive flag",
-                "pattern_key": "rm-recursive",
-                "pattern_keys": ["rm-recursive"],
+                # Use a description that maps to the same risk-level
+                # the runtime classifier will assign — otherwise the
+                # Phase 3 guard (correctly) fail-closes when pinned <
+                # runtime. Real classifier flows always have matching
+                # pinned/runtime descriptions because they come from
+                # the SAME classifier; this test was originally written
+                # before Phase 3 + Phase 4 risk-mapping, hence the
+                # artificial mismatch.
+                "command": "echo wiring-test",
+                "description": "world/other-writable permissions",
+                "pattern_key": "perm-loose",
+                "pattern_keys": ["perm-loose"],
             },
             surface="test",
         )
@@ -115,8 +123,8 @@ def test_store_receives_proposal_with_pinned_metadata():
     # Store row exists and pinned fields are present
     proposal = store.get(approval_id)
     assert proposal is not None
-    assert proposal.command == "rm -rf /important"
-    assert proposal.risk_reason == "rm with recursive flag"
+    assert proposal.command == "echo wiring-test"
+    assert proposal.risk_reason == "world/other-writable permissions"
     assert proposal.session_key == "tester:c1:u1"
     assert proposal.policy_decision == "needs_approval"
     assert proposal.requires_explicit_approval is True

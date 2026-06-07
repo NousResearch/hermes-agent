@@ -3457,6 +3457,14 @@ class GatewayRunner:
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
+
+        # Slash commands must bypass the busy handler so they reach the
+        # command dispatcher unimpeded.  Without this, commands like
+        # /background, /queue, /steer are intercepted by the steer logic
+        # and injected as guidance text instead of being dispatched. (#41572)
+        if event.message_type == MessageType.COMMAND:
+            return False
+
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"

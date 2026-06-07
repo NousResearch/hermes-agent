@@ -617,3 +617,123 @@ class TestBusySessionOnboardingHint:
         assert "/busy interrupt" in content
         # Must NOT tell the user to /busy queue when they're already on queue.
         assert "/busy queue" not in content
+
+
+class TestSlashCommandBypassesBusyHandler:
+    """Slash commands (MessageType.COMMAND) must pass through the busy handler
+    so the command dispatcher can process them.  Without the bypass, commands
+    like /background are intercepted by the steer logic and treated as
+    guidance text.  See issue #41572."""
+
+    @pytest.mark.asyncio
+    async def test_command_bypasses_steer_mode(self):
+        """COMMAND messages return False in steer mode so dispatcher handles them."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = MessageEvent(
+            text="/background do some research",
+            message_type=MessageType.COMMAND,
+            source=SessionSource(
+                platform=MagicMock(value="telegram"),
+                chat_id="123",
+                chat_type="private",
+                user_id="user1",
+            ),
+            message_id="msg1",
+        )
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        # Must return False — not handled, let command dispatcher run
+        assert result is False
+        # Agent.steer must NOT have been called
+        agent.steer.assert_not_called()
+        # No ack sent
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_command_bypasses_interrupt_mode(self):
+        """COMMAND messages return False in interrupt mode too."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = MessageEvent(
+            text="/stop",
+            message_type=MessageType.COMMAND,
+            source=SessionSource(
+                platform=MagicMock(value="telegram"),
+                chat_id="123",
+                chat_type="private",
+                user_id="user1",
+            ),
+            message_id="msg1",
+        )
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is False
+        agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_command_bypasses_queue_mode(self):
+        """COMMAND messages return False in queue mode."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        event = MessageEvent(
+            text="/queue some text",
+            message_type=MessageType.COMMAND,
+            source=SessionSource(
+                platform=MagicMock(value="telegram"),
+                chat_id="123",
+                chat_type="private",
+                user_id="user1",
+            ),
+            message_id="msg1",
+        )
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_text_message_still_stillers_in_steer_mode(self):
+        """Regular TEXT messages should still be steered (regression check)."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="also check the tests")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        with patch("gateway.run.merge_pending_message_event"):
+            result = await runner._handle_active_session_busy_message(event, sk)
+
+        # TEXT messages in steer mode should be handled (True)
+        assert result is True
+        agent.steer.assert_called_once_with("also check the tests")

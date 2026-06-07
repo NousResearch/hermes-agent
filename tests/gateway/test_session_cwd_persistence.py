@@ -145,8 +145,8 @@ class TestSetSessionEnvCwd:
 
 
 class TestCwdPersistence:
-    def test_cwd_saved_when_changed(self):
-        """When resolve_agent_cwd returns a different path, it should be saved."""
+    def test_cwd_saved_from_terminal_env(self):
+        """When terminal env has a different cwd, it should be saved."""
         from gateway.session import SessionEntry
         now = datetime.now(timezone.utc)
         entry = SessionEntry(
@@ -157,17 +157,21 @@ class TestCwdPersistence:
             cwd="/old/path",
         )
 
-        mock_resolve = MagicMock(return_value=Path("/new/path"))
-        with patch("agent.runtime_cwd.resolve_agent_cwd", mock_resolve):
-            from agent.runtime_cwd import resolve_agent_cwd
-            current_cwd = str(resolve_agent_cwd())
-            if current_cwd != entry.cwd:
-                entry.cwd = current_cwd
+        mock_env = MagicMock()
+        mock_env.cwd = "/new/path"
+
+        with patch("tools.terminal_tool._active_environments", {"s1": mock_env}):
+            from tools.terminal_tool import _active_environments
+            _env = _active_environments.get(entry.session_id)
+            if _env is not None:
+                _live_cwd = getattr(_env, "cwd", "")
+                if _live_cwd and _live_cwd != entry.cwd:
+                    entry.cwd = _live_cwd
 
         assert entry.cwd == "/new/path"
 
     def test_cwd_not_saved_when_unchanged(self):
-        """When cwd hasn't changed, no save should occur."""
+        """When cwd hasn't changed, no update should occur."""
         from gateway.session import SessionEntry
         now = datetime.now(timezone.utc)
         entry = SessionEntry(
@@ -178,12 +182,16 @@ class TestCwdPersistence:
             cwd="/same/path",
         )
 
-        mock_resolve = MagicMock(return_value=Path("/same/path"))
-        with patch("agent.runtime_cwd.resolve_agent_cwd", mock_resolve):
-            from agent.runtime_cwd import resolve_agent_cwd
-            current_cwd = str(resolve_agent_cwd())
-            if current_cwd != entry.cwd:
-                entry.cwd = current_cwd
+        mock_env = MagicMock()
+        mock_env.cwd = "/same/path"
+
+        with patch("tools.terminal_tool._active_environments", {"s1": mock_env}):
+            from tools.terminal_tool import _active_environments
+            _env = _active_environments.get(entry.session_id)
+            if _env is not None:
+                _live_cwd = getattr(_env, "cwd", "")
+                if _live_cwd and _live_cwd != entry.cwd:
+                    entry.cwd = _live_cwd
 
         assert entry.cwd == "/same/path"
 
@@ -199,11 +207,67 @@ class TestCwdPersistence:
             cwd=None,
         )
 
-        mock_resolve = MagicMock(return_value=Path("/first/path"))
-        with patch("agent.runtime_cwd.resolve_agent_cwd", mock_resolve):
-            from agent.runtime_cwd import resolve_agent_cwd
-            current_cwd = str(resolve_agent_cwd())
-            if current_cwd != entry.cwd:
-                entry.cwd = current_cwd
+        mock_env = MagicMock()
+        mock_env.cwd = "/first/path"
+
+        with patch("tools.terminal_tool._active_environments", {"s1": mock_env}):
+            from tools.terminal_tool import _active_environments
+            _env = _active_environments.get(entry.session_id)
+            if _env is not None:
+                _live_cwd = getattr(_env, "cwd", "")
+                if _live_cwd and _live_cwd != entry.cwd:
+                    entry.cwd = _live_cwd
 
         assert entry.cwd == "/first/path"
+
+    def test_cwd_fallback_to_task_id(self):
+        """When session_id doesn't match, fall back to task_id lookup."""
+        from gateway.session import SessionEntry
+        now = datetime.now(timezone.utc)
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=now,
+            updated_at=now,
+            cwd=None,
+        )
+
+        mock_env = MagicMock()
+        mock_env.cwd = "/task/path"
+
+        # No match on session_id, but match on task_id
+        with patch("tools.terminal_tool._active_environments", {"task-123": mock_env}):
+            from tools.terminal_tool import _active_environments
+            _env = _active_environments.get(entry.session_id)
+            if _env is None:
+                _task_id = "task-123"
+                if _task_id:
+                    _env = _active_environments.get(_task_id)
+            if _env is not None:
+                _live_cwd = getattr(_env, "cwd", "")
+                if _live_cwd and _live_cwd != entry.cwd:
+                    entry.cwd = _live_cwd
+
+        assert entry.cwd == "/task/path"
+
+    def test_cwd_no_env_graceful(self):
+        """When no terminal env exists, cwd should not change."""
+        from gateway.session import SessionEntry
+        now = datetime.now(timezone.utc)
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=now,
+            updated_at=now,
+            cwd="/unchanged",
+        )
+
+        with patch("tools.terminal_tool._active_environments", {}):
+            from tools.terminal_tool import _active_environments
+            _env = _active_environments.get(entry.session_id)
+            if _env is not None:
+                _live_cwd = getattr(_env, "cwd", "")
+                if _live_cwd and _live_cwd != entry.cwd:
+                    entry.cwd = _live_cwd
+
+        assert entry.cwd == "/unchanged"

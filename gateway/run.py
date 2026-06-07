@@ -9609,14 +9609,22 @@ class GatewayRunner:
                 )
 
             # Persist the agent's current working directory so it survives
-            # gateway restarts (#41128).
+            # gateway restarts (#41128).  Read the terminal environment's live
+            # cwd (which reflects cd commands executed during the turn) rather
+            # than the static ContextVar set at turn start.
             try:
-                from agent.runtime_cwd import resolve_agent_cwd
+                from tools.terminal_tool import _active_environments
 
-                current_cwd = str(resolve_agent_cwd())
-                if current_cwd != session_entry.cwd:
-                    session_entry.cwd = current_cwd
-                    self.session_store._save()
+                _env = _active_environments.get(session_entry.session_id)
+                if _env is None:
+                    _task_id = agent_result.get("task_id", "")
+                    if _task_id:
+                        _env = _active_environments.get(_task_id)
+                if _env is not None:
+                    _live_cwd = getattr(_env, "cwd", "")
+                    if _live_cwd and _live_cwd != session_entry.cwd:
+                        session_entry.cwd = _live_cwd
+                        self.session_store._save()
             except Exception:
                 pass
 

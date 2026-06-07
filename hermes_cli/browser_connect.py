@@ -44,7 +44,7 @@ _LINUX_BROWSER_GROUPS = (
         ("/usr/bin/chromium-browser", "/usr/bin/chromium"),
     ),
     (
-        ("brave-browser", "brave-browser-stable", "brave"),
+        ("brave-browser", "brave-browser-stable", "brave", "brave-origin", "brave-origin-nightly"),
         (
             "/usr/bin/brave-browser",
             "/usr/bin/brave-browser-stable",
@@ -52,6 +52,8 @@ _LINUX_BROWSER_GROUPS = (
             "/snap/bin/brave",
             "/opt/brave.com/brave/brave-browser",
             "/opt/brave.com/brave/brave",
+            "/opt/brave.com/brave-origin/brave-origin",
+            "/opt/brave.com/brave-origin-nightly/brave-origin",
             "/opt/brave-bin/brave",
         ),
     ),

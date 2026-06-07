@@ -405,6 +405,47 @@ class TestMcpAdd:
         out = capsys.readouterr().out
         assert "Unknown MCP preset" in out
 
+    def test_argparse_env_flag_is_repeatable(self):
+        """Repeated --env flags should all be collected, not just the last one.
+
+        Regression test for issue #37501 where `nargs="*"` caused each
+        --env to overwrite the previous, so only the last survived.
+        The fix changed `nargs="*"` to `action="append"`.
+        """
+        # Build a parser that mirrors the hermes_cli/main.py mcp add subparser
+        p = argparse.ArgumentParser()
+        p.add_argument("name", help="Server name")
+        p.add_argument("--url", help="HTTP/SSE endpoint URL")
+        p.add_argument("--command", help="Stdio command")
+        p.add_argument("--args", nargs="*", default=[], help="Args")
+        p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
+        p.add_argument("--preset", help="Known MCP preset name")
+        p.add_argument(
+            "--env",
+            action="append",
+            default=[],
+            help="Environment variables for stdio servers (KEY=VALUE, repeatable)",
+        )
+
+        # Repeated --env flags → all collected
+        args = p.parse_args([
+            "foo", "--command", "bar",
+            "--env", "A=1", "--env", "B=2", "--env", "C=3",
+        ])
+        assert args.env == ["A=1", "B=2", "C=3"], \
+            f"Expected three env vars but got {args.env!r}"
+
+    def test_argparse_env_defaults_to_empty_list(self):
+        """No --env flag → empty list, not None."""
+        p = argparse.ArgumentParser()
+        p.add_argument("name")
+        p.add_argument("--command")
+        p.add_argument("--args", nargs="*", default=[])
+        p.add_argument("--env", action="append", default=[])
+
+        args = p.parse_args(["foo", "--command", "bar"])
+        assert args.env == []
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_test

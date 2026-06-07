@@ -5803,9 +5803,12 @@ class GatewayRunner:
 
         try:
             from hermes_cli import kanban_db as _kb
+            from hermes_cli.profiles import get_active_profile_name as _get_active_profile_name
         except Exception:
             logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
             return
+
+        active_profile = _get_active_profile_name()
 
         try:
             interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
@@ -5938,6 +5941,39 @@ class GatewayRunner:
         disabled_corrupt_boards: dict[
             str, tuple[tuple[str, int | None, int | None], float]
         ] = {}
+        logged_dispatch_skip_reasons: set[tuple[str, str]] = set()
+
+        def _dispatchable_boards() -> list[dict]:
+            try:
+                boards = _kb.dispatchable_boards_for_profile(
+                    active_profile,
+                    include_archived=False,
+                )
+                for skipped, reason in _kb.skipped_dispatch_boards_for_profile(
+                    active_profile,
+                    include_archived=False,
+                ):
+                    slug = skipped.get("slug") or _kb.DEFAULT_BOARD
+                    key = (str(slug), reason)
+                    if key in logged_dispatch_skip_reasons:
+                        continue
+                    logged_dispatch_skip_reasons.add(key)
+                    logger.warning(
+                        "kanban dispatcher: skipping board %s for active profile %s: %s",
+                        slug,
+                        active_profile,
+                        reason,
+                    )
+                return boards
+            except Exception:
+                if active_profile in {"default", "admin"}:
+                    return [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+                logger.warning(
+                    "kanban dispatcher: cannot resolve dispatchable boards for active "
+                    "profile %s; no boards will be dispatched",
+                    active_profile,
+                )
+                return []
 
         def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
             path = _kb.kanban_db_path(slug)
@@ -6058,10 +6094,7 @@ class GatewayRunner:
             when users create a new board mid-run: no restart required,
             the next tick picks it up automatically.
             """
-            try:
-                boards = _kb.list_boards(include_archived=False)
-            except Exception:
-                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            boards = _dispatchable_boards()
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
@@ -6080,10 +6113,7 @@ class GatewayRunner:
             here keeps the stuck-warn fire only on real failures (broken
             PATH, missing venv, credential loss for a real Hermes profile).
             """
-            try:
-                boards = _kb.list_boards(include_archived=False)
-            except Exception:
-                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            boards = _dispatchable_boards()
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 conn = None
@@ -6131,10 +6161,7 @@ class GatewayRunner:
                     "kanban auto-decompose: import failed (%s); skipping", exc,
                 )
                 return 0
-            try:
-                boards = _kb.list_boards(include_archived=False)
-            except Exception:
-                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            boards = _dispatchable_boards()
             attempted = 0
             successes = 0
             for b in boards:
@@ -6197,7 +6224,9 @@ class GatewayRunner:
             return successes
 
         logger.info(
-            "kanban dispatcher: embedded in gateway (interval=%.1fs)", interval
+            "kanban dispatcher: embedded in gateway (interval=%.1fs, active_profile=%s)",
+            interval,
+            active_profile,
         )
         while self._running:
             try:

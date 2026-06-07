@@ -111,6 +111,121 @@ _IS_WINDOWS = sys.platform == "win32"
 # long single-call MCP workflows.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 
+BOARD_OWNERSHIP_SCHEMA_VERSION = 1
+BOARD_OWNERSHIP_FIELDS = (
+    "coordinator_profile",
+    "dispatch_owner",
+    "watchdog_owner",
+    "matrix_space",
+    "matrix_room",
+    "pa_audit_owner",
+)
+BOARD_OWNER_PROFILE_FIELDS = (
+    "coordinator_profile",
+    "dispatch_owner",
+    "watchdog_owner",
+    "pa_audit_owner",
+)
+BOARD_MATRIX_FIELDS = ("matrix_space", "matrix_room")
+_PROFILE_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+def _empty_board_ownership() -> dict[str, Any]:
+    return {
+        "schema_version": BOARD_OWNERSHIP_SCHEMA_VERSION,
+        "coordinator_profile": None,
+        "dispatch_owner": None,
+        "watchdog_owner": None,
+        "matrix_space": None,
+        "matrix_room": None,
+        "pa_audit_owner": None,
+    }
+
+
+def validate_board_owner_profile(field: str, value: Any) -> Optional[str]:
+    """Validate a nullable owner/profile field used by board metadata."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string or null")
+    trimmed = value.strip()
+    if not trimmed or not _PROFILE_VALUE_RE.match(trimmed):
+        raise ValueError(
+            f"{field} must be a profile-like name using letters, numbers, '_' or '-'"
+        )
+    return trimmed
+
+
+def _validate_board_matrix_field(field: str, value: Any, *, reusable_template: bool = False) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string or null")
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+    if reusable_template and trimmed.startswith(("!", "#")):
+        raise ValueError(f"{field} must not hard-code a concrete Matrix ID in reusable templates")
+    return trimmed
+
+
+def validate_board_ownership(
+    ownership: Optional[dict[str, Any]] = None,
+    *,
+    reusable_template: bool = False,
+) -> dict[str, Any]:
+    """Return canonical nested board ownership metadata.
+
+    Concrete board metadata may include Matrix room/space IDs; reusable templates
+    must not bake those live IDs in. Unknown keys inside ``ownership`` are
+    intentionally not preserved because the nested object is a versioned schema.
+    Unknown top-level board metadata fields remain preserved by read/write.
+    """
+    if ownership is None:
+        ownership = {}
+    if not isinstance(ownership, dict):
+        raise ValueError("ownership must be an object")
+    canonical = _empty_board_ownership()
+    schema_version = ownership.get("schema_version", BOARD_OWNERSHIP_SCHEMA_VERSION)
+    if schema_version in (None, ""):
+        schema_version = BOARD_OWNERSHIP_SCHEMA_VERSION
+    try:
+        schema_version_int = int(schema_version)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("ownership.schema_version must be an integer") from exc
+    if schema_version_int != BOARD_OWNERSHIP_SCHEMA_VERSION:
+        raise ValueError(
+            f"ownership.schema_version must be {BOARD_OWNERSHIP_SCHEMA_VERSION}"
+        )
+    canonical["schema_version"] = schema_version_int
+    for field in BOARD_OWNER_PROFILE_FIELDS:
+        canonical[field] = validate_board_owner_profile(field, ownership.get(field))
+    for field in BOARD_MATRIX_FIELDS:
+        canonical[field] = _validate_board_matrix_field(
+            field,
+            ownership.get(field),
+            reusable_template=reusable_template,
+        )
+    return canonical
+
+
+def _canonical_board_ownership_from_metadata(
+    meta: dict[str, Any],
+    *,
+    reusable_template: bool = False,
+) -> dict[str, Any]:
+    legacy = {field: meta.get(field) for field in BOARD_OWNERSHIP_FIELDS if field in meta}
+    nested = meta.get("ownership")
+    if nested is None:
+        nested_values: dict[str, Any] = {}
+    elif isinstance(nested, dict):
+        nested_values = dict(nested)
+    else:
+        raise ValueError("ownership must be an object")
+    merged = {**legacy, **nested_values}
+    return validate_board_ownership(merged, reusable_template=reusable_template)
+
+
 # If a worker's PID is still alive but its ``last_heartbeat_at`` is
 # older than this when ``release_stale_claims`` runs, treat the worker
 # as wedged and reclaim regardless of PID liveness (#29747 gap 3).
@@ -555,6 +670,10 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
                 meta.update(raw)
     except (OSError, json.JSONDecodeError):
         pass
+    try:
+        meta["ownership"] = _canonical_board_ownership_from_metadata(meta)
+    except ValueError:
+        meta["ownership"] = _empty_board_ownership()
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
 
@@ -568,6 +687,14 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    ownership: Optional[dict[str, Any]] = None,
+    coordinator_profile: Optional[str] = None,
+    dispatch_owner: Optional[str] = None,
+    watchdog_owner: Optional[str] = None,
+    matrix_space: Optional[str] = None,
+    matrix_room: Optional[str] = None,
+    pa_audit_owner: Optional[str] = None,
+    reusable_template: bool = False,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -591,6 +718,32 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    updates = {
+        "coordinator_profile": coordinator_profile,
+        "dispatch_owner": dispatch_owner,
+        "watchdog_owner": watchdog_owner,
+        "matrix_space": matrix_space,
+        "matrix_room": matrix_room,
+        "pa_audit_owner": pa_audit_owner,
+    }
+    if ownership is not None or any(value is not None for value in updates.values()):
+        current_ownership = dict(meta.get("ownership") or {})
+        if ownership is not None:
+            if not isinstance(ownership, dict):
+                raise ValueError("ownership must be an object")
+            current_ownership.update(ownership)
+        current_ownership.update({k: v for k, v in updates.items() if v is not None})
+        meta["ownership"] = validate_board_ownership(
+            current_ownership,
+            reusable_template=reusable_template,
+        )
+    else:
+        meta["ownership"] = validate_board_ownership(
+            meta.get("ownership"),
+            reusable_template=reusable_template,
+        )
+    for legacy_key in BOARD_OWNERSHIP_FIELDS:
+        meta.pop(legacy_key, None)
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -611,6 +764,14 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
+    ownership: Optional[dict[str, Any]] = None,
+    coordinator_profile: Optional[str] = None,
+    dispatch_owner: Optional[str] = None,
+    watchdog_owner: Optional[str] = None,
+    matrix_space: Optional[str] = None,
+    matrix_room: Optional[str] = None,
+    pa_audit_owner: Optional[str] = None,
+    reusable_template: bool = False,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -628,6 +789,14 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
+        ownership=ownership,
+        coordinator_profile=coordinator_profile,
+        dispatch_owner=dispatch_owner,
+        watchdog_owner=watchdog_owner,
+        matrix_space=matrix_space,
+        matrix_room=matrix_room,
+        pa_audit_owner=pa_audit_owner,
+        reusable_template=reusable_template,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -676,6 +845,67 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
             entries.append(meta)
             seen.add(normed)
     return entries
+
+
+def _normalize_dispatch_profile(profile: Optional[str]) -> str:
+    val = str(profile or "").strip()
+    return val or "default"
+
+
+def board_dispatch_skip_reason(meta: dict, active_profile: Optional[str]) -> Optional[str]:
+    """Return why ``active_profile`` must not dispatch ``meta``, or None.
+
+    Project boards are dispatchable only when ownership.dispatch_owner exactly
+    matches the active gateway profile. The legacy default board is the one
+    safe exception: if it has no explicit dispatch owner, only the default/admin
+    gateway may dispatch it so project coordinator gateways do not fight over
+    admin work.
+    """
+    profile = _normalize_dispatch_profile(active_profile)
+    slug = str(meta.get("slug") or DEFAULT_BOARD)
+    raw_ownership = meta.get("ownership")
+    ownership: dict[str, Any] = raw_ownership if isinstance(raw_ownership, dict) else {}
+    dispatch_owner = str(ownership.get("dispatch_owner") or "").strip()
+    if dispatch_owner:
+        if dispatch_owner == profile:
+            return None
+        return f"dispatch_owner={dispatch_owner!r} does not match active profile {profile!r}"
+    if slug == DEFAULT_BOARD:
+        if profile in {"default", "admin"}:
+            return None
+        return "legacy default board has no dispatch_owner and active profile is not default/admin"
+    return "missing ownership.dispatch_owner"
+
+
+def dispatchable_boards_for_profile(
+    active_profile: Optional[str],
+    *,
+    include_archived: bool = False,
+) -> list[dict]:
+    """Return boards this gateway profile is allowed to dispatch.
+
+    Notifier subscriptions are intentionally not considered here: this helper
+    is for dispatcher/auto-decomposer ownership only.
+    """
+    boards = list_boards(include_archived=include_archived)
+    return [
+        board for board in boards
+        if board_dispatch_skip_reason(board, active_profile) is None
+    ]
+
+
+def skipped_dispatch_boards_for_profile(
+    active_profile: Optional[str],
+    *,
+    include_archived: bool = False,
+) -> list[tuple[dict, str]]:
+    """Return ``(board, reason)`` pairs skipped by dispatcher ownership."""
+    skipped: list[tuple[dict, str]] = []
+    for board in list_boards(include_archived=include_archived):
+        reason = board_dispatch_skip_reason(board, active_profile)
+        if reason is not None:
+            skipped.append((board, reason))
+    return skipped
 
 
 def remove_board(slug: str, *, archive: bool = True) -> dict:
@@ -5821,8 +6051,10 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) after at least one prior
+        worker run exists for the task.  A prior worker already opened a PR;
+        re-spawning risks a duplicate PR on the same task. Fresh tasks with
+        no runs are not guarded by comment PR URLs alone.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -5889,6 +6121,15 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # Fresh tasks with no worker run can legitimately mention related PRs in
+    # coordinator/reporting comments; do not let those comments suppress the
+    # first worker spawn.
+    if not conn.execute(
+        "SELECT id FROM task_runs WHERE task_id = ? LIMIT 1",
+        (task_id,),
+    ).fetchone():
+        return None
+
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",

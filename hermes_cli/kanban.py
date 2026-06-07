@@ -189,6 +189,32 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
 # Argparse builder
 # ---------------------------------------------------------------------------
 
+def _add_board_ownership_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--coordinator-profile", default=None,
+                        help="Coordinator profile that owns the board/project")
+    parser.add_argument("--dispatch-owner", default=None,
+                        help="Profile whose gateway may dispatch this board")
+    parser.add_argument("--watchdog-owner", default=None,
+                        help="Profile responsible for the project watchdog")
+    parser.add_argument("--matrix-space", default=None,
+                        help="Matrix Space ID/alias for this project board")
+    parser.add_argument("--matrix-room", default=None,
+                        help="Matrix room ID/alias for this project board")
+    parser.add_argument("--pa-audit-owner", default=None,
+                        help="PA/audit-only owner profile for board oversight")
+
+
+def _ownership_kwargs_from_args(args: argparse.Namespace) -> dict[str, Optional[str]]:
+    return {
+        "coordinator_profile": getattr(args, "coordinator_profile", None),
+        "dispatch_owner": getattr(args, "dispatch_owner", None),
+        "watchdog_owner": getattr(args, "watchdog_owner", None),
+        "matrix_space": getattr(args, "matrix_space", None),
+        "matrix_room": getattr(args, "matrix_room", None),
+        "pa_audit_owner": getattr(args, "pa_audit_owner", None),
+    }
+
+
 def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Attach the ``kanban`` subcommand tree under an existing subparsers.
 
@@ -266,6 +292,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Switch to the new board after creating it")
     b_create.add_argument("--default-workdir", default=None,
                           help="Default workspace path for tasks created on this board")
+    _add_board_ownership_args(b_create)
+
+    b_set_owner = boards_sub.add_parser(
+        "set-ownership",
+        help="Set deterministic board ownership metadata",
+    )
+    b_set_owner.add_argument("slug")
+    _add_board_ownership_args(b_set_owner)
 
     b_rm = boards_sub.add_parser(
         "rm", aliases=["remove", "delete"],
@@ -1012,10 +1046,12 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_switch(args)
     if sub in {"show", "current"}:
         return _cmd_boards_show(args)
-    if sub == "rename":
+    if sub in ("rename",):
         return _cmd_boards_rename(args)
     if sub == "set-default-workdir":
         return _cmd_boards_set_default_workdir(args)
+    if sub == "set-ownership":
+        return _cmd_boards_set_ownership(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
     return 2
 
@@ -1080,14 +1116,19 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
         print("kanban boards create: slug is required", file=sys.stderr)
         return 2
     already = kb.board_exists(normed) and normed != kb.DEFAULT_BOARD
-    meta = kb.create_board(
-        normed,
-        name=args.name,
-        description=args.description,
-        icon=args.icon,
-        color=args.color,
-        default_workdir=args.default_workdir,
-    )
+    try:
+        meta = kb.create_board(
+            normed,
+            name=args.name,
+            description=args.description,
+            icon=args.icon,
+            color=args.color,
+            default_workdir=args.default_workdir,
+            **_ownership_kwargs_from_args(args),
+        )
+    except ValueError as exc:
+        print(f"kanban boards create: {exc}", file=sys.stderr)
+        return 2
     verb = "already exists" if already else "created"
     print(f"Board {meta['slug']!r} {verb}.")
     print(f"  Display name: {meta.get('name', '')}")
@@ -1151,6 +1192,11 @@ def _cmd_boards_show(args: argparse.Namespace) -> int:
     if meta.get("description"):
         print(f"  Description:  {meta['description']}")
     print(f"  DB path:      {meta['db_path']}")
+    ownership = meta.get("ownership") or {}
+    if any(ownership.get(field) for field in kb.BOARD_OWNERSHIP_FIELDS):
+        print("  Ownership:")
+        for field in kb.BOARD_OWNERSHIP_FIELDS:
+            print(f"    {field}: {ownership.get(field) or ''}")
     print(f"  Tasks:        {total} total"
           + (f" ({', '.join(f'{k}={v}' for k, v in sorted(counts.items()))})"
              if counts else ""))
@@ -1169,6 +1215,28 @@ def _cmd_boards_rename(args: argparse.Namespace) -> int:
         return 1
     meta = kb.write_board_metadata(normed, name=args.name)
     print(f"Board {normed!r} renamed to {meta['name']!r}.")
+    return 0
+
+
+def _cmd_boards_set_ownership(args: argparse.Namespace) -> int:
+    try:
+        normed = kb._normalize_board_slug(args.slug)
+    except ValueError as exc:
+        print(f"kanban boards set-ownership: {exc}", file=sys.stderr)
+        return 2
+    if not normed or not kb.board_exists(normed):
+        print(f"kanban boards set-ownership: board {args.slug!r} does not exist",
+              file=sys.stderr)
+        return 1
+    try:
+        meta = kb.write_board_metadata(normed, **_ownership_kwargs_from_args(args))
+    except ValueError as exc:
+        print(f"kanban boards set-ownership: {exc}", file=sys.stderr)
+        return 2
+    print(f"Board {normed!r} ownership updated.")
+    ownership = meta.get("ownership") or {}
+    for field in kb.BOARD_OWNERSHIP_FIELDS:
+        print(f"  {field}: {ownership.get(field) or ''}")
     return 0
 
 

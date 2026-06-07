@@ -310,6 +310,93 @@ class TestBoardCRUD:
         assert kb.board_exists("slug-immutable")
 
 
+class TestBoardOwnershipMetadata:
+    def test_existing_board_gets_empty_nested_ownership_defaults(self, fresh_home):
+        kb.create_board("legacy", name="Legacy")
+
+        meta = kb.read_board_metadata("legacy")
+
+        assert meta["ownership"] == {
+            "schema_version": 1,
+            "coordinator_profile": None,
+            "dispatch_owner": None,
+            "watchdog_owner": None,
+            "matrix_space": None,
+            "matrix_room": None,
+            "pa_audit_owner": None,
+        }
+        assert meta["name"] == "Legacy"
+
+    def test_create_writes_full_nested_ownership_and_preserves_presentation(self, fresh_home):
+        meta = kb.create_board(
+            "owned",
+            name="Owned",
+            description="project board",
+            coordinator_profile="coordinator_owned",
+            dispatch_owner="coordinator_owned",
+            watchdog_owner="coordinator_owned",
+            matrix_space="!space123:matrix.org",
+            matrix_room="!room123:matrix.org",
+            pa_audit_owner="pa_yunuen",
+        )
+
+        assert meta["name"] == "Owned"
+        assert meta["description"] == "project board"
+        assert meta["ownership"] == {
+            "schema_version": 1,
+            "coordinator_profile": "coordinator_owned",
+            "dispatch_owner": "coordinator_owned",
+            "watchdog_owner": "coordinator_owned",
+            "matrix_space": "!space123:matrix.org",
+            "matrix_room": "!room123:matrix.org",
+            "pa_audit_owner": "pa_yunuen",
+        }
+        raw = json.loads(kb.board_metadata_path("owned").read_text(encoding="utf-8"))
+        assert raw["ownership"] == meta["ownership"]
+        for legacy_key in kb.BOARD_OWNERSHIP_FIELDS:
+            assert legacy_key not in raw
+
+    def test_write_preserves_unknown_fields_and_removes_legacy_aliases(self, fresh_home):
+        path = kb.board_metadata_path("mixed")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "slug": "wrong",
+            "name": "Mixed",
+            "custom": {"keep": True},
+            "dispatch_owner": "legacy_owner",
+            "ownership": {"dispatch_owner": "nested_owner"},
+        }), encoding="utf-8")
+
+        meta = kb.write_board_metadata("mixed", watchdog_owner="watchdog_profile")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+
+        assert meta["slug"] == "mixed"
+        assert meta["custom"] == {"keep": True}
+        assert meta["ownership"]["dispatch_owner"] == "nested_owner"
+        assert meta["ownership"]["watchdog_owner"] == "watchdog_profile"
+        assert raw["custom"] == {"keep": True}
+        assert raw["ownership"] == meta["ownership"]
+        for legacy_key in kb.BOARD_OWNERSHIP_FIELDS:
+            assert legacy_key not in raw
+
+    @pytest.mark.parametrize("field", [
+        "coordinator_profile",
+        "dispatch_owner",
+        "watchdog_owner",
+        "pa_audit_owner",
+    ])
+    def test_invalid_owner_profile_field_rejected(self, fresh_home, field):
+        with pytest.raises(ValueError, match=field):
+            kb.create_board("bad-owner", **{field: "not a profile!"})
+
+    def test_reusable_template_rejects_concrete_matrix_ids(self, fresh_home):
+        with pytest.raises(ValueError, match="matrix_room"):
+            kb.validate_board_ownership(
+                {"matrix_room": "!room123:matrix.org"},
+                reusable_template=True,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Connection isolation
 # ---------------------------------------------------------------------------
@@ -507,6 +594,41 @@ class TestCLI:
         data = json.loads(r2.stdout)
         cur = [b for b in data if b["is_current"]][0]
         assert cur["slug"] == "myproj"
+
+    def test_boards_create_accepts_ownership_flags(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        r1 = _cli([
+            "boards", "create", "owned",
+            "--coordinator-profile", "coordinator_owned",
+            "--dispatch-owner", "coordinator_owned",
+            "--watchdog-owner", "coordinator_owned",
+            "--matrix-space", "!space123:matrix.org",
+            "--matrix-room", "!room123:matrix.org",
+            "--pa-audit-owner", "pa_yunuen",
+        ], env_extra=env)
+        assert r1.returncode == 0, r1.stderr
+
+        r2 = _cli(["boards", "list", "--json"], env_extra=env)
+        data = {b["slug"]: b for b in json.loads(r2.stdout)}
+        assert data["owned"]["ownership"]["dispatch_owner"] == "coordinator_owned"
+        assert data["owned"]["ownership"]["matrix_room"] == "!room123:matrix.org"
+
+    def test_boards_set_ownership_updates_existing_board(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        assert _cli(["boards", "create", "owned"], env_extra=env).returncode == 0
+
+        r1 = _cli([
+            "boards", "set-ownership", "owned",
+            "--dispatch-owner", "coordinator_owned",
+            "--watchdog-owner", "coordinator_owned",
+        ], env_extra=env)
+        assert r1.returncode == 0, r1.stderr
+        assert "ownership updated" in r1.stdout
+
+        r2 = _cli(["boards", "list", "--json"], env_extra=env)
+        data = {b["slug"]: b for b in json.loads(r2.stdout)}
+        assert data["owned"]["ownership"]["dispatch_owner"] == "coordinator_owned"
+        assert data["owned"]["ownership"]["watchdog_owner"] == "coordinator_owned"
 
     def test_per_board_task_isolation_via_cli(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}

@@ -8,6 +8,7 @@ export interface FilePreviewDirty {
 
 export const $filePreviewDirty = atom<FilePreviewDirty | null>(null)
 export const $filePreviewEditing = atom(false)
+export const $fileSaving = atom(false)
 
 export function startEditing(path: string, originalContent: string) {
   $filePreviewEditing.set(true)

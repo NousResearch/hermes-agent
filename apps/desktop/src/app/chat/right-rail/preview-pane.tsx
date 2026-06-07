@@ -1,9 +1,10 @@
 import { useStore } from '@nanostores/react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-controls'
 import { Tip } from '@/components/ui/tooltip'
+import { $fileSaving } from '@/store/file-preview'
 import { Bug } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -418,6 +419,12 @@ export function PreviewPane({
     let watchId = ''
 
     const flushReload = () => {
+      // Skip reload if a save is in progress — the watcher detected our own write.
+      if ($fileSaving.get()) {
+        pendingReloadCount = 0
+        pendingReloadUrl = ''
+        return
+      }
       if (!active || pendingReloadCount === 0) {
         return
       }

@@ -15,6 +15,7 @@ import { PageLoader } from '@/components/page-loader'
 import { cn } from '@/lib/utils'
 import { Pencil, Save, X } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
+import { $fileSaving } from '@/store/file-preview'
 import type { PreviewTarget } from '@/store/preview'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
@@ -547,8 +548,9 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
     const handleSaveEdit = async () => {
       try {
-        // Stop all file watchers to prevent them from detecting our own write
-        // and triggering a reload cascade that loses session data.
+        // Set saving flag BEFORE stopping watchers — this tells flushReload
+        // to skip the reload even if a watcher event was already queued.
+        $fileSaving.set(true)
         await window.hermesDesktop.stopAllPreviewFileWatches()
         await window.hermesDesktop.writeFileText(filePath, editContent)
         setState(prev => ({ ...prev, text: editContent }))
@@ -557,6 +559,9 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         notify({ kind: 'success', title: 'Saved', message: `${target.label} saved.` })
       } catch (error) {
         notifyError(error, 'Save failed')
+      } finally {
+        // Clear the saving flag after a short delay to let any queued events drain
+        setTimeout(() => $fileSaving.set(false), 500)
       }
     }
 

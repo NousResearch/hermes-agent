@@ -142,6 +142,14 @@ def test_adapter_platform_identity():
     assert adapter.platform is Platform("simplex")
 
 
+def test_message_editing_disabled():
+    """SimpleX has no edit API (send() returns no message_id), so the
+    adapter must declare SUPPORTS_MESSAGE_EDITING = False to keep the
+    streaming consumer from emitting a partial-preview + separate final
+    message (a duplicate bubble with a stuck cursor)."""
+    assert SimplexAdapter.SUPPORTS_MESSAGE_EDITING is False
+
+
 # ---------------------------------------------------------------------------
 # 5. Helper functions (magic-byte detection)
 # ---------------------------------------------------------------------------

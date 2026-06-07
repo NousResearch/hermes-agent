@@ -119,6 +119,13 @@ class SimplexAdapter(BasePlatformAdapter):
     ``ctx.register_platform()`` in :func:`register`.
     """
 
+    # SimpleX cannot edit already-sent messages: ``send()`` returns no
+    # message_id and there is no edit_message implementation. Mark it
+    # explicitly so streaming suppresses the visible cursor instead of
+    # falling back to a partial-preview plus a separate final message
+    # (a duplicate bubble with a stuck cursor in the chat client).
+    SUPPORTS_MESSAGE_EDITING = False
+
     def __init__(self, config: PlatformConfig, **kwargs):
         platform = Platform("simplex")
         super().__init__(config=config, platform=platform)

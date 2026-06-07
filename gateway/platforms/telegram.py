@@ -942,6 +942,45 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, exc_info=True,
             )
 
+    async def _drain_general_connections(self) -> None:
+        """Reset the httpx connection pool used for general requests (send/edit).
+
+        Network errors (especially through proxies like sing-box) can leave
+        httpx connections in a half-closed state that still occupy pool slots.
+        After enough reconnect cycles the pool fills up entirely, causing
+        ``Pool timeout: All connections in the connection pool are occupied.``
+        during send_message / edit_message.
+
+        We reset ONLY ``_request[1]`` (the general request) — the getUpdates
+        request (``_request[0]``) is left untouched so polling continues
+        uninterrupted.  Call this when pool-timeout errors are detected during
+        send operations so the retry has a fresh pool to work with.
+        """
+        if not (self._app and self._app.bot):
+            return
+        try:
+            general_req = self._app.bot._request[1]  # noqa: SLF001
+        except Exception:
+            return
+        try:
+            await general_req.shutdown()
+        except Exception:
+            logger.debug(
+                "[%s] General request shutdown failed (non-fatal)",
+                self.name, exc_info=True,
+            )
+        try:
+            await general_req.initialize()
+            logger.info(
+                "[%s] General request pool drained (send path)",
+                self.name,
+            )
+        except Exception:
+            logger.debug(
+                "[%s] General request re-initialize failed (non-fatal)",
+                self.name, exc_info=True,
+            )
+
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
 
@@ -2049,8 +2088,13 @@ class TelegramAdapter(BasePlatformAdapter):
                             and isinstance(send_err, _TimedOut)
                             and not self._looks_like_connect_timeout(send_err)
                             and not self._looks_like_pool_timeout(send_err)
-                        ):
+                        ) :
                             raise
+                        # Pool timeout: the httpx connection pool is exhausted.
+                        # Drain the general request pool so the retry below has
+                        # fresh connections instead of waiting for stuck ones.
+                        if self._looks_like_pool_timeout(send_err):
+                            await self._drain_general_connections()
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
                             logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
@@ -2115,6 +2159,13 @@ class TelegramAdapter(BasePlatformAdapter):
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(e)
             is_pool_timeout = self._looks_like_pool_timeout(e)
+            if is_pool_timeout:
+                # Drain the general request pool so the next send() call has
+                # a clean pool instead of inheriting stuck connections.
+                try:
+                    await self._drain_general_connections()
+                except Exception:
+                    pass
             return SendResult(success=False, error=str(e), retryable=(is_connect_timeout or is_pool_timeout or not is_timeout))
 
     async def send_or_update_status(
@@ -2269,6 +2320,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 "httpx",
             )
             _is_transient = any(m in err_str for m in _transient_markers)
+            _is_pool_timeout = self._looks_like_pool_timeout(e)
+            if _is_pool_timeout:
+                try:
+                    await self._drain_general_connections()
+                except Exception:
+                    pass
             if _is_transient:
                 logger.warning(
                     "[%s] Transient network error editing message %s (will retry): %s",

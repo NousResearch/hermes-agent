@@ -147,9 +147,15 @@ describe('settings helpers', () => {
       expect(opts).toContain('elevenlabs')
     })
 
-    it('renders a dropdown for the STT provider', () => {
+    it('renders a dropdown for the STT provider including xAI (Grok)', () => {
       const opts = enumOptionsFor('stt.provider', 'local', config)
-      expect(opts).toEqual(['local', 'groq', 'openai', 'mistral', 'elevenlabs'])
+      expect(opts).toEqual(['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'])
+    })
+
+    it('renders dropdowns for per-backend model/device sub-fields', () => {
+      expect(enumOptionsFor('stt.openai.model', 'whisper-1', config)).toContain('gpt-4o-transcribe')
+      expect(enumOptionsFor('tts.openai.model', 'gpt-4o-mini-tts', config)).toContain('tts-1-hd')
+      expect(enumOptionsFor('tts.neutts.device', 'cpu', config)).toEqual(['cpu', 'cuda', 'mps'])
     })
 
     it('renders a dropdown for the terminal execution backend', () => {

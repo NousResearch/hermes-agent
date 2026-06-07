@@ -12,7 +12,8 @@ import re
 from datetime import datetime
 from typing import Any, Optional
 
-_TIMESTAMP_PREFIX_RE = re.compile(r"^\[sent: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})\]\s*")
+_TIMESTAMP_MARKER_RE = re.compile(r"\[sent: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})\]\s*")
+_TIMESTAMP_PREFIX_RE = re.compile(rf"^{_TIMESTAMP_MARKER_RE.pattern}")
 
 
 def _coerce_datetime(value: Any) -> Optional[datetime]:
@@ -39,7 +40,15 @@ def _coerce_datetime(value: Any) -> Optional[datetime]:
 
 
 def _format_sent_timestamp(dt: datetime) -> str:
-    if dt.tzinfo is None:
+    try:
+        from hermes_time import get_timezone
+
+        tz = get_timezone()
+    except Exception:
+        tz = None
+    if tz is not None:
+        dt = dt.astimezone(tz)
+    elif dt.tzinfo is None:
         dt = dt.astimezone()
     return dt.isoformat(timespec="minutes")
 
@@ -68,7 +77,7 @@ def strip_sent_timestamp_prefix(content: Any) -> Any:
     """Remove an internal send-time prefix if the model echoes it visibly."""
     if not isinstance(content, str) or not content:
         return content
-    return _TIMESTAMP_PREFIX_RE.sub("", content, count=1)
+    return _TIMESTAMP_MARKER_RE.sub("", content)
 
 
 # Backward-compatible name used by the first implementation on this branch.

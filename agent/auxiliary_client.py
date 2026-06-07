@@ -4103,7 +4103,7 @@ def _try_gemini_vision(model: Optional[str] = None) -> Tuple[Optional[Any], Opti
         return None, None
     base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
     _http_client = httpx.Client(timeout=120.0)
-    logger.info("VISION-FIX: _try_gemini_vision called — creating OpenAI client for Gemini")
+    logger.debug("_try_gemini_vision called — creating OpenAI client for Gemini")
     return (
         OpenAI(api_key=api_key, base_url=base_url, http_client=_http_client),
         model or "gemini-2.0-flash-001",
@@ -4325,15 +4325,15 @@ def resolve_vision_provider_client(
 
     # Gemini vision: use OpenAI-compatible endpoint so image_url is accepted
     if requested == "gemini":
-        logger.info("VISION-FIX: resolve_vision_provider_client: gemini path hit, requested=%s", requested)
+        logger.debug("resolve_vision_provider_client: gemini path hit, requested=%s", requested)
         sync_client, default_model = _resolve_strict_vision_backend(
             requested, resolved_model
         )
         if sync_client is not None:
-            logger.info("VISION-FIX: gemini client created, model=%s", default_model)
+            logger.debug("gemini client created, model=%s", default_model)
             return _finalize(requested, sync_client, default_model)
         else:
-            logger.warning("VISION-FIX: gemini client creation FAILED")
+            logger.warning("[vision] Gemini client creation failed")
 
     client, final_model = _get_cached_client(requested, resolved_model, async_mode,
                                              api_mode=resolved_api_mode,
@@ -4788,9 +4788,9 @@ def _resolve_task_provider_model(
             # unless the provider is also explicitly set — in that case
             # keep it so strict-vision-backend routing works (e.g. gemini).
             if cfg_provider and cfg_provider != "auto":
-                logger.info("VISION-FIX: _resolve_task_provider_model returning provider=%s model=%s base=%s", cfg_provider, resolved_model, cfg_base_url)
+                logger.debug("_resolve_task_provider_model returning provider=%s model=%s base=%s", cfg_provider, resolved_model, cfg_base_url)
                 return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
-            logger.info("VISION-FIX: _resolve_task_provider_model returning custom")
+            logger.debug("_resolve_task_provider_model returning custom")
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_base_url and cfg_provider and cfg_provider != "auto":
             # base_url set without api_key but with a known provider — use

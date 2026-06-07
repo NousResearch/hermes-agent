@@ -671,7 +671,7 @@ def create_job(
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
     job = {
         "id": job_id,
-        "name": name or label_source[:50].strip(),
+        "name": (name or label_source)[:50].strip(),
         "prompt": prompt_text,
         "skills": normalized_skills,
         "skill": normalized_skills[0] if normalized_skills else None,

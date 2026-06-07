@@ -340,14 +340,20 @@ def _build_gateway_cmd_script(
     working_dir: str,
     hermes_home: str,
     profile_arg: str,
+    project_root: str | None = None,
 ) -> str:
     """Build the ``gateway.cmd`` wrapper content (CRLF-terminated).
 
     The script:
       - cd's into a stable working directory
       - exports HERMES_HOME, PYTHONIOENCODING, VIRTUAL_ENV
-      - invokes ``pythonw -m hermes_cli.main [--profile X] gateway run``
+      - invokes a no-console ``pythonw -m hermes_cli.main [--profile X] gateway run``
         directly so the wrapper cmd.exe exits without a visible gateway console
+
+    uv-created venv launchers need special care: ``venv\\Scripts\\pythonw.exe``
+    can respawn the base interpreter as console ``python.exe``.  Reuse the same
+    resolver as direct detached starts so Scheduled Task launches use the base
+    ``pythonw.exe`` plus PYTHONPATH entries for the repo and venv site-packages.
 
     We intentionally do NOT inline PATH overrides here — cmd.exe inherits
     the per-user PATH the Scheduled Task was created with, and forcibly
@@ -358,12 +364,18 @@ def _build_gateway_cmd_script(
     lines.append(f'set "HERMES_HOME={hermes_home}"')
     lines.append('set "PYTHONIOENCODING=utf-8"')
     lines.append('set "HERMES_GATEWAY_DETACHED=1"')
-    # VIRTUAL_ENV lets the gateway's own python detection find the venv
-    # if someone imports hermes_constants-based logic during startup.
-    venv_dir = str(Path(python_path).resolve().parent.parent)
+
+    pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
 
-    pythonw_path = _derive_venv_pythonw(python_path)
+    repo_root = project_root or str(Path(python_path).resolve().parent.parent.parent)
+    pythonpath_entries = [repo_root, *extra_pythonpath]
+    if pythonpath_entries:
+        prefix = ";".join(str(Path(entry)) for entry in pythonpath_entries if entry)
+        lines.append(
+            f'if defined PYTHONPATH (set "PYTHONPATH={prefix};%PYTHONPATH%") else (set "PYTHONPATH={prefix}")'
+        )
+
     prog_args = [pythonw_path, "-m", "hermes_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())
@@ -420,7 +432,13 @@ def _write_task_script() -> Path:
     hermes_home = str(Path(get_hermes_home()).resolve())
     profile_arg = _profile_arg(hermes_home)
 
-    content = _build_gateway_cmd_script(python_path, working_dir, hermes_home, profile_arg)
+    content = _build_gateway_cmd_script(
+        python_path,
+        working_dir,
+        hermes_home,
+        profile_arg,
+        project_root=str(PROJECT_ROOT),
+    )
     script_path = get_task_script_path()
     tmp = script_path.with_suffix(".tmp")
     tmp.write_text(content, encoding="utf-8", newline="")

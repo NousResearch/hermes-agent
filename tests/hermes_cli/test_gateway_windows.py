@@ -206,6 +206,41 @@ def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypa
     assert "exit /b 0" in content
 
 
+def test_gateway_cmd_script_uses_base_pythonw_for_uv_venv_launcher(tmp_path):
+    """Scheduled Task wrapper must match direct detached starts for uv venvs."""
+    project = tmp_path / "project"
+    scripts = project / "venv" / "Scripts"
+    site_packages = project / "venv" / "Lib" / "site-packages"
+    base = tmp_path / "uv-base"
+    for directory in (scripts, site_packages, base):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    venv_python = scripts / "python.exe"
+    venv_pythonw = scripts / "pythonw.exe"
+    base_pythonw = base / "pythonw.exe"
+    for exe in (venv_python, venv_pythonw, base_pythonw):
+        exe.write_text("", encoding="utf-8")
+    (project / "venv" / "pyvenv.cfg").write_text(
+        f"home = {base}\nuv = true\n",
+        encoding="utf-8",
+    )
+
+    content = gateway_windows._build_gateway_cmd_script(
+        str(venv_python),
+        str(tmp_path / "hermes-home"),
+        str(tmp_path / "hermes-home"),
+        "",
+        project_root=str(project),
+    )
+
+    assert str(base_pythonw) in content
+    assert str(venv_pythonw) not in content
+    assert f'set "VIRTUAL_ENV={project / "venv"}"' in content
+    assert str(project) in content
+    assert str(site_packages) in content
+    assert "PYTHONPATH=" in content
+
+
 def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
     """UAC handoff should not leave a second elevated cmd.exe window open."""
     calls = []

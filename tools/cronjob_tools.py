@@ -477,6 +477,7 @@ def cronjob(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    timeout: Optional[int] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -544,6 +545,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 profile=_normalize_optional_job_value(profile),
                 no_agent=_no_agent,
+                timeout=int(timeout) if timeout else None,
             )
             return json.dumps(
                 {
@@ -681,6 +683,8 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["profile"] = _normalize_optional_job_value(profile) or None
+            if timeout is not None:
+                updates["timeout"] = int(timeout) if timeout and int(timeout) > 0 else None
             if no_agent is not None:
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
@@ -794,6 +798,16 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
             },
+            "timeout": {
+                "type": "integer",
+                "description": (
+                    "Optional per-job script timeout in seconds. Applies only to no_agent=True jobs "
+                    "and overrides the global cron.script_timeout_seconds config for this job alone. "
+                    "Use when a specific script legitimately needs more time than the system-wide "
+                    "default (e.g. a slow indexing job) without raising the global limit for every job. "
+                    "On update, pass 0 or null to clear (restores global default)."
+                ),
+            },
             "no_agent": {
                 "type": "boolean",
                 "default": False,
@@ -894,6 +908,7 @@ registry.register(
         workdir=args.get("workdir"),
         profile=args.get("profile"),
         no_agent=args.get("no_agent"),
+        timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

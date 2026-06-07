@@ -776,17 +776,37 @@ class DiscordAdapter(BasePlatformAdapter):
 
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
-                #   "mentions" — accept bot messages only when they @mention us
+                #   "mentions" — accept bot messages only when they explicitly
+                #                  @mention us in message content
                 #   "all"      — accept all bot messages
                 # Must run BEFORE the user allowlist check so that bots
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
+                #
+                # Important: Discord replies can populate message.mentions with
+                # the replied-to author even when the bot did not type an
+                # explicit @mention.  Using only message.mentions lets two bots
+                # wake each other through reply metadata and creates ack loops.
+                # For bot-to-bot mode, require the mention token to be present
+                # in content so inter-agent handoffs stay intentional.
                 if getattr(message.author, "bot", False):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                        _client = self._client
+                        _client_user = getattr(_client, "user", None) if _client else None
+                        if not _client_user:
+                            return
+                        _self_id = getattr(_client_user, "id", None)
+                        _content = getattr(message, "content", "") or ""
+                        _explicit_self_mention = False
+                        if _self_id is not None:
+                            _explicit_self_mention = (
+                                f"<@{_self_id}>" in _content
+                                or f"<@!{_self_id}>" in _content
+                            )
+                        if not _explicit_self_mention:
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).

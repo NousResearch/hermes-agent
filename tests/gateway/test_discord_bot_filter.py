@@ -51,7 +51,17 @@ class TestDiscordBotFilter(unittest.TestCase):
             if allow == "none":
                 return False
             elif allow == "mentions":
-                if not client_user or client_user not in message.mentions:
+                if not client_user:
+                    return False
+                client_id = getattr(client_user, "id", None)
+                content = getattr(message, "content", "") or ""
+                explicit_self_mention = False
+                if client_id is not None:
+                    explicit_self_mention = (
+                        f"<@{client_id}>" in content
+                        or f"<@!{client_id}>" in content
+                    )
+                if not explicit_self_mention:
                     return False
             # "all" falls through
         
@@ -90,12 +100,19 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot, mentions=[])
         self.assertFalse(self._run_filter(msg, "mentions", our_user))
 
-    def test_allow_bots_mentions_accepts_with_mention(self):
-        """With allow_bots=mentions, bot messages with @mention are accepted."""
+    def test_allow_bots_mentions_accepts_with_explicit_mention(self):
+        """With allow_bots=mentions, bot messages with explicit @mention are accepted."""
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot, mentions=[our_user])
+        msg = _make_message(author=bot, content=f"<@{our_user.id}> please handle this", mentions=[our_user])
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
+
+    def test_allow_bots_mentions_rejects_reply_metadata_mention(self):
+        """Reply metadata mentions do not count as intentional bot-to-bot handoffs."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="Acknowledged.", mentions=[our_user])
+        self.assertFalse(self._run_filter(msg, "mentions", our_user))
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""

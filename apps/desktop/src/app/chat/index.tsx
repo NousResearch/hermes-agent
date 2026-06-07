@@ -61,6 +61,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onToggleSelectedPin: () => void
   onDeleteSelectedSession: () => void
   onCancel: () => Promise<void> | void
+  onChangeCwd?: (cwd: string) => Promise<void> | void
   onAddContextRef: (refText: string, label?: string, detail?: string) => void
   onAddUrl: (url: string) => void
   onBranchInNewChat: (messageId: string) => void
@@ -154,6 +155,7 @@ export function ChatView({
   onToggleSelectedPin,
   onDeleteSelectedSession,
   onCancel,
+  onChangeCwd,
   onAddContextRef,
   onAddUrl,
   onAttachImageBlob,
@@ -362,6 +364,7 @@ export function ChatView({
                 focusKey={activeSessionId}
                 gateway={gateway}
                 maxRecordingSeconds={maxVoiceRecordingSeconds}
+                onChangeCwd={onChangeCwd}
                 onAddContextRef={onAddContextRef}
                 onAddUrl={onAddUrl}
                 onAttachDroppedItems={onAttachDroppedItems}

@@ -37,6 +37,7 @@ export interface ChatBarProps {
   queueSessionKey?: string | null
   sessionId?: string | null
   cwd?: string | null
+  onChangeCwd?: (cwd: string) => Promise<void> | void
   onCancel: () => Promise<void> | void
   onAddContextRef?: (refText: string, label?: string, detail?: string) => void
   onAddUrl?: (url: string) => void

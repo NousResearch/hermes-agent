@@ -15,6 +15,7 @@ import {
 
 import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
@@ -115,6 +116,7 @@ export function ChatBar({
   sessionId,
   state,
   onCancel,
+  onChangeCwd,
   onAddUrl,
   onAttachDroppedItems,
   onAttachImageBlob,
@@ -1554,6 +1556,29 @@ export function ChatBar({
                   </div>
                 )}
                 {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+                {cwd && (
+                  <div className="flex items-center gap-1.5 px-1 pb-0.5">
+                    <button
+                      className="inline-flex min-w-0 items-center gap-1 rounded px-1 py-0.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+                      onClick={async () => {
+                        const selected = await window.hermesDesktop?.selectPaths({
+                          defaultPath: cwd,
+                          directories: true,
+                          multiple: false,
+                          title: 'Change working directory'
+                        })
+                        if (selected?.[0]) {
+                          onChangeCwd?.(selected[0])
+                        }
+                      }}
+                      title={cwd}
+                      type="button"
+                    >
+                      <Codicon name="folder" size="0.75rem" />
+                      <span className="truncate">{cwd.split(/[/\\]+/).filter(Boolean).pop()}</span>
+                    </button>
+                  </div>
+                )}
                 <div
                   className={cn(
                     'grid w-full',

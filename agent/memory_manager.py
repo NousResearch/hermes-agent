@@ -281,9 +281,28 @@ class MemoryManager:
 
         self._providers.append(provider)
 
+        # Core tool names are reserved — a memory provider must never register
+        # a tool that shadows a built-in (e.g. ``clarify``, ``delegate_task``).
+        # Built-ins always win, so such a tool is dropped at agent init and
+        # would otherwise linger in ``_tool_to_provider`` and hijack dispatch
+        # (#40466). Reject it here, at the door, so it never enters the routing
+        # table at all — matching the built-ins-always-win invariant used by
+        # the TTS/browser/search provider registries.
+        from toolsets import _HERMES_CORE_TOOLS
+
+        _core_tool_names = set(_HERMES_CORE_TOOLS)
+
         # Index tool names → provider for routing
         for schema in provider.get_tool_schemas():
             tool_name = schema.get("name", "")
+            if tool_name in _core_tool_names:
+                logger.warning(
+                    "Memory provider '%s' tool '%s' shadows a reserved core "
+                    "tool name; registration ignored. Core tools always win — "
+                    "rename the provider's tool to something unique.",
+                    provider.name, tool_name,
+                )
+                continue
             if tool_name and tool_name not in self._tool_to_provider:
                 self._tool_to_provider[tool_name] = provider
             elif tool_name in self._tool_to_provider:
@@ -413,13 +432,24 @@ class MemoryManager:
     # -- Tools ---------------------------------------------------------------
 
     def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Collect tool schemas from all providers."""
+        """Collect tool schemas from all providers.
+
+        Reserved core tool names (``clarify``, ``delegate_task``, etc.) are
+        skipped — they are rejected from the routing table in
+        :meth:`add_provider`, so the manager must not advertise a schema it
+        will never route. Built-ins always win (#40466).
+        """
+        from toolsets import _HERMES_CORE_TOOLS
+
+        _core_tool_names = set(_HERMES_CORE_TOOLS)
         schemas = []
         seen = set()
         for provider in self._providers:
             try:
                 for schema in provider.get_tool_schemas():
                     name = schema.get("name", "")
+                    if name in _core_tool_names:
+                        continue
                     if name and name not in seen:
                         schemas.append(schema)
                         seen.add(name)

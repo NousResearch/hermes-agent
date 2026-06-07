@@ -114,6 +114,38 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_board_and_task_detail_include_gate_state(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "gate dashboard", "assignee": "worker"},
+    ).json()["task"]
+    tid = created["id"]
+
+    conn = kb.connect()
+    try:
+        kb.request_verification(conn, tid, note="artifact ready", requested_by="worker")
+        kb.record_effective_state_check(
+            conn,
+            tid,
+            passed=True,
+            checks=["artifact_exists", "tests_pass"],
+            note="checked",
+            checked_by="verifier",
+        )
+    finally:
+        conn.close()
+
+    board = client.get("/api/plugins/kanban/board").json()
+    ready = next(c for c in board["columns"] if c["name"] == "ready")
+    card = next(t for t in ready["tasks"] if t["id"] == tid)
+    assert card["gate_state"]["verification"]["status"] == "requested"
+    assert card["gate_state"]["effective_state"]["status"] == "passed"
+    assert card["gate_state"]["effective_state"]["checks"] == ["artifact_exists", "tests_pass"]
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{tid}").json()
+    assert detail["task"]["gate_state"] == card["gate_state"]
+
+
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
     """Scheduled/time-delay tasks must not be silently bucketed into todo."""
 
@@ -209,6 +241,21 @@ def test_dashboard_select_filters_use_sdk_value_change_handler():
     assert "onChange: function (e)" in js
     assert "selectChangeHandler(props.setTenantFilter)" in js
     assert "selectChangeHandler(props.setAssigneeFilter)" in js
+
+
+def test_dashboard_bundle_renders_gate_state_badges_and_drawer_section():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    css_path = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    js = bundle.read_text()
+    css = css_path.read_text()
+
+    assert "function gateStateSummary" in js
+    assert "GateStateSection" in js
+    assert "hermes-kanban-gate-chip" in js
+    assert "effective-state:" in js
+    assert "hermes-kanban-gate-chip" in css
+    assert "hermes-kanban-gate-row" in css
 
 
 def test_dashboard_client_side_filtering_includes_tenant_filter():

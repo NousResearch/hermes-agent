@@ -504,6 +504,88 @@ def worker_logs_dir(board: Optional[str] = None) -> Path:
     return board_dir(slug) / "logs"
 
 
+@dataclass
+class DispatcherLock:
+    """Held advisory lock for the single embedded Kanban dispatcher owner."""
+
+    path: Path
+    owner: str
+    acquired: bool
+    fd: Any = None
+
+    def close(self) -> None:
+        if not self.acquired or self.fd is None:
+            return
+        try:
+            if _IS_WINDOWS:
+                import msvcrt  # type: ignore
+                self.fd.seek(0)
+                msvcrt.locking(self.fd.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl  # type: ignore
+                fcntl.flock(self.fd.fileno(), fcntl.LOCK_UN)
+        finally:
+            try:
+                self.fd.close()
+            finally:
+                self.fd = None
+                self.acquired = False
+
+
+def acquire_dispatcher_lock(owner: str, *, board: Optional[str] = None) -> DispatcherLock:
+    """Acquire the process-wide embedded dispatcher lock for a shared board.
+
+    SQLite serializes writes, but multiple gateway-embedded dispatchers are a
+    deployment error for a team board: they can duplicate verifier routing and
+    spawn competing workers. This advisory file lock lets extra gateways enter
+    passive mode before a dispatcher tick writes anything.
+    """
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    lock_dir = kanban_home() / "kanban" / "locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    safe_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", slug)
+    path = lock_dir / f"dispatcher-{safe_slug}.lock"
+    fd = path.open("a+")
+    try:
+        if _IS_WINDOWS:
+            import msvcrt  # type: ignore
+            fd.seek(0)
+            try:
+                msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                fd.close()
+                return DispatcherLock(path=path, owner=owner, acquired=False)
+        else:
+            import fcntl  # type: ignore
+            try:
+                fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                fd.close()
+                return DispatcherLock(path=path, owner=owner, acquired=False)
+        fd.seek(0)
+        fd.truncate()
+        fd.write(json.dumps({"owner": owner, "pid": os.getpid(), "at": int(time.time())}))
+        fd.flush()
+        return DispatcherLock(path=path, owner=owner, acquired=True, fd=fd)
+    except Exception:
+        try:
+            fd.close()
+        finally:
+            raise
+
+
+def check_db_integrity(conn: sqlite3.Connection) -> tuple[bool, str]:
+    """Return (ok, detail) from SQLite integrity_check without writing."""
+    try:
+        row = conn.execute("PRAGMA integrity_check").fetchone()
+    except sqlite3.DatabaseError as exc:
+        return False, str(exc)
+    detail = ""
+    if row is not None:
+        detail = str(row[0])
+    return detail.lower() == "ok", detail or "empty integrity_check result"
+
+
 def board_metadata_path(board: Optional[str] = None) -> Path:
     """Return the path to ``board.json`` for ``board``.
 
@@ -2697,6 +2779,67 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return out
 
 
+def summarize_gate_state(events: Iterable[Event]) -> dict[str, Any]:
+    """Return latest soft-gate/effective-state state for CLI/dashboard cards."""
+    state: dict[str, Any] = {
+        "plan": None,
+        "verification": None,
+        "effective_state": None,
+        "latest": None,
+    }
+    gate_kinds = {
+        "plan_proposed", "plan_approved", "plan_changes_requested",
+        "verification_requested", "verified", "rework_required",
+        "effective_state_passed", "effective_state_failed",
+    }
+
+    def _actor(payload: dict[str, Any]) -> Optional[str]:
+        for key in ("proposed_by", "approved_by", "requested_by", "verified_by", "checked_by"):
+            value = payload.get(key)
+            if value and str(value).strip():
+                return str(value).strip()
+        return None
+
+    for ev in events:
+        if ev.kind not in gate_kinds:
+            continue
+        payload = ev.payload or {}
+        base = {
+            "kind": ev.kind,
+            "event_id": ev.id,
+            "created_at": ev.created_at,
+            "note": payload.get("note"),
+            "actor": _actor(payload),
+        }
+        if payload.get("proof_required"):
+            base["proof_required"] = payload.get("proof_required")
+        state["latest"] = dict(base)
+        if ev.kind == "plan_proposed":
+            state["plan"] = {**base, "status": "proposed"}
+        elif ev.kind == "plan_approved":
+            state["plan"] = {**base, "status": "approved"}
+        elif ev.kind == "plan_changes_requested":
+            state["plan"] = {**base, "status": "changes_requested"}
+        elif ev.kind == "verification_requested":
+            state["verification"] = {**base, "status": "requested"}
+        elif ev.kind == "verified":
+            state["verification"] = {**base, "status": "verified"}
+        elif ev.kind == "rework_required":
+            state["verification"] = {**base, "status": "rework_required"}
+        elif ev.kind in {"effective_state_passed", "effective_state_failed"}:
+            state["effective_state"] = {
+                **base,
+                "status": "passed" if ev.kind == "effective_state_passed" else "failed",
+                "checks": list(payload.get("checks") or []),
+                "passed": bool(payload.get("passed")),
+            }
+    return state
+
+
+def latest_gate_state(conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
+    return summarize_gate_state(list_events(conn, task_id))
+
+
 def _append_event(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2719,6 +2862,378 @@ def _append_event(
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+
+
+def _append_gate_event_and_comment(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    kind: str,
+    payload: dict,
+    comment_author: str,
+    comment_body: str,
+) -> bool:
+    """Append a soft workflow-gate event and matching durable comment.
+
+    Phase-1 gate helpers deliberately do not introduce new task statuses
+    or change dispatcher semantics. They write auditable events/comments
+    only; later phases can route notifications or enforce transitions from
+    this shared event vocabulary.
+    """
+    if not task_id:
+        raise ValueError("task_id is required")
+    if not comment_author or not comment_author.strip():
+        raise ValueError("comment author is required")
+    if not comment_body or not comment_body.strip():
+        raise ValueError("comment body is required")
+    with write_txn(conn):
+        if not conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone():
+            return False
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (task_id, comment_author.strip(), comment_body.strip(), now),
+        )
+        _append_event(conn, task_id, kind, payload)
+        return True
+
+
+def propose_plan(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    note: str,
+    proposed_by: str,
+) -> bool:
+    """Record that the executor proposed a plan/variant before acting."""
+    if not note or not note.strip():
+        raise ValueError("plan note is required")
+    return _append_gate_event_and_comment(
+        conn, task_id,
+        kind="plan_proposed",
+        payload={"note": note.strip(), "proposed_by": proposed_by},
+        comment_author=proposed_by,
+        comment_body=f"PLAN_PROPOSED: {note.strip()}",
+    )
+
+
+def approve_plan(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    note: Optional[str] = None,
+    approved_by: str,
+) -> bool:
+    """Record initiator approval for a proposed plan or item.
+
+    If Phase-5 plan rescue parked the task in ``blocked`` awaiting
+    approval, approving the plan also releases it back to the normal
+    dispatcher path (``ready`` or ``todo`` depending on parent gates).
+    """
+    body = f"PLAN_APPROVED: {note.strip()}" if note and note.strip() else "PLAN_APPROVED"
+    payload = {"approved_by": approved_by}
+    if note and note.strip():
+        payload["note"] = note.strip()
+    ok = _append_gate_event_and_comment(
+        conn, task_id,
+        kind="plan_approved",
+        payload=payload,
+        comment_author=approved_by,
+        comment_body=body,
+    )
+    if not ok:
+        return False
+    row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row and row["status"] == "blocked":
+        unblock_task(conn, task_id)
+    return True
+
+
+def request_plan_changes(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    note: str,
+    requested_by: str,
+) -> bool:
+    """Record requested changes to a proposed plan."""
+    if not note or not note.strip():
+        raise ValueError("plan change note is required")
+    return _append_gate_event_and_comment(
+        conn, task_id,
+        kind="plan_changes_requested",
+        payload={"note": note.strip(), "requested_by": requested_by},
+        comment_author=requested_by,
+        comment_body=f"PLAN_CHANGES_REQUESTED: {note.strip()}",
+    )
+
+
+def request_verification(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    note: str,
+    requested_by: str,
+) -> bool:
+    """Record that worker evidence is ready for independent verification."""
+    if not note or not note.strip():
+        raise ValueError("verification note is required")
+    return _append_gate_event_and_comment(
+        conn, task_id,
+        kind="verification_requested",
+        payload={"note": note.strip(), "requested_by": requested_by},
+        comment_author=requested_by,
+        comment_body=f"VERIFICATION_REQUESTED: {note.strip()}",
+    )
+
+
+def mark_verified(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    note: Optional[str] = None,
+    verified_by: str,
+) -> bool:
+    """Record independent verifier approval. Does not alter task status yet."""
+    body = f"VERIFIED: {note.strip()}" if note and note.strip() else "VERIFIED"
+    payload = {"verified_by": verified_by}
+    if note and note.strip():
+        payload["note"] = note.strip()
+    return _append_gate_event_and_comment(
+        conn, task_id,
+        kind="verified",
+        payload=payload,
+        comment_author=verified_by,
+        comment_body=body,
+    )
+
+
+def require_rework(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    note: str,
+    requested_by: str,
+    proof_required: Optional[str] = None,
+) -> bool:
+    """Record verifier rejection/rework request with exact proof needed."""
+    if not note or not note.strip():
+        raise ValueError("rework note is required")
+    payload = {"note": note.strip(), "requested_by": requested_by}
+    body = f"REWORK_REQUIRED: {note.strip()}"
+    if proof_required and proof_required.strip():
+        payload["proof_required"] = proof_required.strip()
+        body += f"\nProof required: {proof_required.strip()}"
+    return _append_gate_event_and_comment(
+        conn, task_id,
+        kind="rework_required",
+        payload=payload,
+        comment_author=requested_by,
+        comment_body=body,
+    )
+
+
+def _normalize_effective_state_checks(checks: Optional[Iterable[str]]) -> list[str]:
+    normalized: list[str] = []
+    for raw in checks or []:
+        text = str(raw or "").strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def record_effective_state_check(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    passed: bool,
+    checks: Optional[Iterable[str]] = None,
+    note: str,
+    checked_by: str,
+    proof_required: Optional[str] = None,
+) -> bool:
+    """Record explicit artifact/runtime/effective-state verification evidence."""
+    if not note or not note.strip():
+        raise ValueError("effective-state note is required")
+    actor = (checked_by or "").strip()
+    if not actor:
+        raise ValueError("checked_by is required")
+    normalized_checks = _normalize_effective_state_checks(checks)
+    kind = "effective_state_passed" if passed else "effective_state_failed"
+    payload = {
+        "passed": bool(passed),
+        "checks": normalized_checks,
+        "note": note.strip(),
+        "checked_by": actor,
+    }
+    body = f"{kind.upper()}: {note.strip()}"
+    if normalized_checks:
+        body += "\nChecks: " + ", ".join(normalized_checks)
+    if proof_required and proof_required.strip():
+        payload["proof_required"] = proof_required.strip()
+        body += f"\nProof required: {proof_required.strip()}"
+    return _append_gate_event_and_comment(
+        conn, task_id,
+        kind=kind,
+        payload=payload,
+        comment_author=actor,
+        comment_body=body,
+    )
+
+
+def _existing_profile_assignee(value: object) -> Optional[str]:
+    """Return a canonical assignee only when it maps to a real profile."""
+    if not value or not str(value).strip():
+        return None
+    assignee = _canonical_assignee(str(value).strip())
+    if not assignee:
+        return None
+    try:
+        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+    except Exception:
+        # Degraded installs keep the old permissive behavior; normal runtimes
+        # must not create verifier cards assigned to non-existent humans.
+        return assignee
+    return assignee if profile_exists(assignee) else None
+
+
+def _verification_router_assignee(task: Task, payload: Optional[dict]) -> Optional[str]:
+    """Resolve who should verify a verification_requested event.
+
+    Only spawn a verifier card for an actual Hermes profile. Human names such
+    as ``vitaliy`` are valid audit actors, but not dispatcher-spawnable
+    assignees; leaving the event visible is better than creating a forever-ready
+    card that no gateway can run.
+    """
+    payload = payload or {}
+    for key in ("verifier", "initiator", "requested_to"):
+        value = payload.get(key)
+        if value and str(value).strip():
+            return _existing_profile_assignee(value)
+    return _existing_profile_assignee(task.created_by)
+
+
+def _has_verifier_task_event(
+    conn: sqlite3.Connection,
+    original_task_id: str,
+    verification_event_id: int,
+) -> bool:
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = ?",
+        (original_task_id, "verifier_task_created"),
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except Exception:
+            continue
+        if int(payload.get("verification_event_id") or 0) == int(verification_event_id):
+            return True
+    return False
+
+
+def _active_verifier_task_for_original(
+    conn: sqlite3.Connection,
+    original_task_id: str,
+) -> Optional[str]:
+    prefix = f"verify:{original_task_id}:"
+    row = conn.execute(
+        """
+        SELECT id
+          FROM tasks
+         WHERE idempotency_key LIKE ?
+           AND status NOT IN ('done', 'archived')
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1
+        """,
+        (prefix + "%",),
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def ensure_verifier_tasks_for_requests(conn: sqlite3.Connection) -> list[str]:
+    """Create/wake verifier tasks for `verification_requested` events.
+
+    Phase 4 keeps this as a soft workflow layer: it creates a separate
+    verifier card and records an audit event on the original task, but does
+    not migrate task statuses or alter dispatcher hard gates yet.
+    """
+    ensured: list[str] = []
+    events = conn.execute(
+        """
+        SELECT e.*
+          FROM task_events e
+         WHERE e.kind = 'verification_requested'
+         ORDER BY e.id ASC
+        """
+    ).fetchall()
+    for row in events:
+        event_id = int(row["id"])
+        original_id = row["task_id"]
+        task = get_task(conn, original_id)
+        if task is None or task.status == "archived":
+            continue
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except Exception:
+            payload = {}
+        assignee = _verification_router_assignee(task, payload)
+        if not assignee:
+            continue
+        active_verifier = _active_verifier_task_for_original(conn, original_id)
+        if active_verifier:
+            if active_verifier not in ensured:
+                ensured.append(active_verifier)
+            continue
+        idempotency_key = f"verify:{original_id}:{event_id}"
+        existing = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (idempotency_key,),
+        ).fetchone()
+        if existing:
+            verifier_id = existing["id"]
+        else:
+            note = str(payload.get("note") or "verification requested").strip()
+            requested_by = str(payload.get("requested_by") or task.assignee or "executor").strip()
+            body = (
+                f"Verify original Kanban task `{original_id}`.\n\n"
+                f"Original title: {task.title}\n"
+                f"Executor: {requested_by}\n"
+                f"Evidence note: {note}\n\n"
+                "Steps:\n"
+                f"1. Inspect artifacts/effective runtime state for `{original_id}` independently.\n"
+                "2. If accepted, call `kanban_mark_verified(task_id=original, note=...)`.\n"
+                "3. If failed, call `kanban_rework_required(task_id=original, note=..., proof_required=...)`.\n"
+            )
+            verifier_id = create_task(
+                conn,
+                title=f"verify: {task.title[:80]}",
+                body=body,
+                assignee=assignee,
+                created_by="kanban-verifier-router",
+                tenant=task.tenant,
+                priority=max(int(task.priority or 0), 0),
+                idempotency_key=idempotency_key,
+                initial_status="running",
+            )
+        if not _has_verifier_task_event(conn, original_id, event_id):
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    original_id,
+                    "verifier_task_created",
+                    {
+                        "verification_event_id": event_id,
+                        "verifier_task_id": verifier_id,
+                        "assignee": assignee,
+                    },
+                )
+        ensured.append(verifier_id)
+    return ensured
 
 
 def _end_run(
@@ -3541,6 +4056,47 @@ def _scan_prose_for_phantom_ids(
     return [m for m in unique if m not in existing]
 
 
+_PLAN_PROPOSAL_PREFIX_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?(?:plan|план)\s*[:：\-–—]",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_plan_proposal(text: Optional[str], metadata: Optional[dict]) -> bool:
+    """Return True for completion payloads that are actually approval plans.
+
+    Deliberately conservative: only explicit ``PLAN:`` / ``ПЛАН:`` style
+    prefixes, or an explicit metadata marker, are rescued. Ordinary final
+    summaries such as "implemented the approved plan" must still close.
+    """
+    if isinstance(metadata, dict):
+        marker = metadata.get("workflow_gate") or metadata.get("gate")
+        if str(marker or "").strip().lower() in {"plan_proposed", "approval_required"}:
+            return True
+    if not text:
+        return False
+    first_line = ""
+    for line in str(text).splitlines():
+        if line.strip():
+            first_line = line.strip()
+            break
+    return bool(first_line and _PLAN_PROPOSAL_PREFIX_RE.search(first_line))
+
+
+def _plan_rescue_actor(task_row: sqlite3.Row, metadata: Optional[dict]) -> str:
+    """Trusted actor for completion-time PLAN rescue.
+
+    ``metadata`` is worker/model supplied handoff data, so actor-like keys in
+    it (``actor``, ``proposed_by``, ``profile``, etc.) are not trusted. Use the
+    task assignee recorded by the dispatcher/creator instead; this matches the
+    tool-layer rule that gate provenance comes from runtime identity, not from
+    caller-provided args.
+    """
+    if task_row["assignee"] and str(task_row["assignee"]).strip():
+        return str(task_row["assignee"]).strip()
+    return "worker"
+
+
 class HallucinatedCardsError(ValueError):
     """Raised by ``complete_task`` when ``created_cards`` contains ids
     that don't exist or weren't created by the completing worker.
@@ -3625,6 +4181,81 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    plan_text = (summary if summary is not None else result) or ""
+    if _looks_like_plan_proposal(plan_text, metadata):
+        with write_txn(conn):
+            task_row = conn.execute(
+                "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if task_row is None:
+                return False
+            if expected_run_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'blocked',
+                           result       = NULL,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready', 'blocked')
+                    """,
+                    (task_id,),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'blocked',
+                           result       = NULL,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready', 'blocked')
+                       AND current_run_id = ?
+                    """,
+                    (task_id, int(expected_run_id)),
+                )
+            if cur.rowcount != 1:
+                return False
+            actor = _plan_rescue_actor(task_row, metadata)
+            note = str(plan_text).strip()
+            run_id = _end_run(
+                conn, task_id,
+                outcome="blocked", status="blocked",
+                summary=note, metadata=metadata,
+            )
+            if run_id is None:
+                run_id = _synthesize_ended_run(
+                    conn, task_id,
+                    outcome="blocked",
+                    summary=note,
+                    metadata=metadata,
+                )
+            now_comment = int(time.time())
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (task_id, actor, f"PLAN_PROPOSED: {note}", now_comment),
+            )
+            _append_event(
+                conn, task_id, "plan_proposed",
+                {
+                    "note": note,
+                    "proposed_by": actor,
+                    "rescued_from": "kanban_complete",
+                },
+                run_id=run_id,
+            )
+            _append_event(
+                conn, task_id, "blocked",
+                {"reason": "awaiting plan approval", "source": "plan_rescue"},
+                run_id=run_id,
+            )
+        return True
 
     with write_txn(conn):
         if expected_run_id is None:

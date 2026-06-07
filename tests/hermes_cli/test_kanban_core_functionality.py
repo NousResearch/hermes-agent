@@ -632,6 +632,53 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
         conn2.close()
 
 
+
+# ---------------------------------------------------------------------------
+# Verification gates / verifier task routing hardening
+# ---------------------------------------------------------------------------
+
+def test_dispatcher_lock_allows_single_owner_per_board(kanban_home):
+    first = kb.acquire_dispatcher_lock("universal", board="default")
+    try:
+        assert first.acquired is True
+        second = kb.acquire_dispatcher_lock("cassandra-h", board="default")
+        try:
+            assert second.acquired is False
+        finally:
+            second.close()
+    finally:
+        first.close()
+
+    third = kb.acquire_dispatcher_lock("cassandra-h", board="default")
+    try:
+        assert third.acquired is True
+    finally:
+        third.close()
+
+
+def test_verifier_task_dedupes_active_verifier_per_original(kanban_home):
+    (kanban_home / "profiles" / "initiator").mkdir(parents=True)
+    conn = kb.connect()
+    try:
+        original = kb.create_task(conn, title="implementation task", assignee="executor", created_by="initiator")
+        kb.request_verification(conn, original, note="first artifact ready", requested_by="executor")
+        first = kb.ensure_verifier_tasks_for_requests(conn)
+        assert len(first) == 1
+
+        kb.request_verification(conn, original, note="updated evidence", requested_by="executor")
+        second = kb.ensure_verifier_tasks_for_requests(conn)
+        assert second == first
+
+        verifier_tasks = [
+            t for t in kb.list_tasks(conn, include_archived=True)
+            if (t.idempotency_key or "").startswith(f"verify:{original}:")
+        ]
+        assert len(verifier_tasks) == 1
+        events = [e for e in kb.list_events(conn, original) if e.kind == "verifier_task_created"]
+        assert len(events) == 1
+    finally:
+        conn.close()
+
 # ---------------------------------------------------------------------------
 # GC + retention
 # ---------------------------------------------------------------------------
@@ -4531,3 +4578,34 @@ def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch
         )
         assert res.stale == [], "stale_timeout_seconds=0 should disable detection"
         assert kb.get_task(conn, t).status == "running"
+
+
+def test_plan_rescue_ignores_metadata_actor_spoof(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="needs approval", assignee="trusted-worker")
+        kb.claim_task(conn, tid)
+        ok = kb.complete_task(
+            conn,
+            tid,
+            summary="PLAN: implement after approval",
+            metadata={
+                "actor": "spoofed-actor",
+                "proposed_by": "spoofed-proposer",
+                "profile": "spoofed-profile",
+                "worker_profile": "spoofed-worker",
+            },
+        )
+        assert ok is True
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+        comments = kb.list_comments(conn, tid)
+    finally:
+        conn.close()
+
+    assert task.status == "blocked"
+    plan_events = [e for e in events if e.kind == "plan_proposed"]
+    assert plan_events
+    assert plan_events[-1].payload["proposed_by"] == "trusted-worker"
+    assert "spoofed" not in plan_events[-1].payload["proposed_by"]
+    assert comments[-1].author == "trusted-worker"

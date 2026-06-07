@@ -720,6 +720,231 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+
+def _workflow_actor(args: dict) -> str:
+    """Return the trusted runtime actor for workflow-gate events.
+
+    Tool callers are not allowed to override verifier/approver identity: the
+    actor comes from the profile that owns this process. Orchestrator profiles
+    may still act by running without HERMES_KANBAN_TASK and with HERMES_PROFILE
+    set to their real profile name.
+    """
+    actor = os.environ.get("HERMES_PROFILE") or "worker"
+    return str(actor).strip() or "worker"
+
+
+def _worker_is_verifier_for_task(kb, conn, *, worker_task_id: str, original_task_id: str) -> bool:
+    events = kb.list_events(conn, original_task_id)
+    for ev in events:
+        if ev.kind != "verifier_task_created":
+            continue
+        payload = ev.payload or {}
+        if payload.get("verifier_task_id") == worker_task_id:
+            return True
+    return False
+
+
+def _gate_scope_error(
+    kb,
+    conn,
+    *,
+    tid: str,
+    tool_name: str,
+    allow_own_worker_task: bool = False,
+) -> Optional[str]:
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not env_tid:
+        return None
+    if allow_own_worker_task and tid == env_tid:
+        return None
+    if _worker_is_verifier_for_task(
+        kb, conn, worker_task_id=env_tid, original_task_id=tid
+    ):
+        return None
+    return tool_error(
+        f"{tool_name}: worker task {env_tid} is not authorized to record "
+        f"workflow-gate state for {tid}. Executors may propose plans/request "
+        "verification for their own task; verification/rework/effective-state "
+        "events require a linked verifier task or an orchestrator profile."
+    )
+
+
+def _handle_soft_gate(
+    args: dict,
+    *,
+    tool_name: str,
+    db_func_name: str,
+    note_required: bool,
+    actor_field: str,
+    allow_own_worker_task: bool = False,
+) -> str:
+    """Append a Phase-1 soft gate event/comment via a worker/verifier tool.
+
+    These tools intentionally do NOT enforce ``HERMES_KANBAN_TASK`` ownership:
+    a verifier task often needs to mark the original implementation task, not
+    its own verifier card. They are metadata/comment mutations, not lifecycle
+    run-state transitions like complete/block/heartbeat.
+    """
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    note = args.get("note")
+    if note_required and (not note or not str(note).strip()):
+        return tool_error("note is required")
+    board = args.get("board")
+    actor = _workflow_actor(args)
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            scope_error = _gate_scope_error(
+                kb,
+                conn,
+                tid=tid,
+                tool_name=tool_name,
+                allow_own_worker_task=allow_own_worker_task,
+            )
+            if scope_error:
+                return scope_error
+            kwargs: dict[str, Any] = {actor_field: actor}
+            if note is not None:
+                kwargs["note"] = str(note)
+            if db_func_name == "require_rework":
+                proof_required = args.get("proof_required")
+                if proof_required is not None:
+                    kwargs["proof_required"] = str(proof_required)
+            ok = getattr(kb, db_func_name)(conn, tid, **kwargs)
+            if not ok:
+                return tool_error(f"{tool_name}: task not found: {tid}")
+            return _ok(task_id=tid, actor=actor, event=db_func_name)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"{tool_name}: {e}")
+    except Exception as e:
+        logger.exception("%s failed", tool_name)
+        return tool_error(f"{tool_name}: {e}")
+
+
+def _handle_plan_propose(args: dict, **kw) -> str:
+    return _handle_soft_gate(
+        args,
+        tool_name="kanban_plan_propose",
+        db_func_name="propose_plan",
+        note_required=True,
+        actor_field="proposed_by",
+        allow_own_worker_task=True,
+    )
+
+
+def _handle_plan_approve(args: dict, **kw) -> str:
+    return _handle_soft_gate(
+        args,
+        tool_name="kanban_plan_approve",
+        db_func_name="approve_plan",
+        note_required=False,
+        actor_field="approved_by",
+    )
+
+
+def _handle_plan_changes(args: dict, **kw) -> str:
+    return _handle_soft_gate(
+        args,
+        tool_name="kanban_plan_changes",
+        db_func_name="request_plan_changes",
+        note_required=True,
+        actor_field="requested_by",
+    )
+
+
+def _handle_request_verification(args: dict, **kw) -> str:
+    return _handle_soft_gate(
+        args,
+        tool_name="kanban_request_verification",
+        db_func_name="request_verification",
+        note_required=True,
+        actor_field="requested_by",
+        allow_own_worker_task=True,
+    )
+
+
+def _handle_mark_verified(args: dict, **kw) -> str:
+    return _handle_soft_gate(
+        args,
+        tool_name="kanban_mark_verified",
+        db_func_name="mark_verified",
+        note_required=False,
+        actor_field="verified_by",
+    )
+
+
+def _handle_rework_required(args: dict, **kw) -> str:
+    return _handle_soft_gate(
+        args,
+        tool_name="kanban_rework_required",
+        db_func_name="require_rework",
+        note_required=True,
+        actor_field="requested_by",
+    )
+
+
+def _handle_effective_check(args: dict, **kw) -> str:
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    passed_raw = args.get("passed")
+    if not isinstance(passed_raw, bool):
+        return tool_error("passed must be a boolean")
+    note = args.get("note")
+    if not note or not str(note).strip():
+        return tool_error("note is required")
+    checks = args.get("checks") or []
+    if isinstance(checks, str):
+        checks = [checks]
+    if not isinstance(checks, (list, tuple)):
+        return tool_error("checks must be a list of strings")
+    actor = _workflow_actor(args)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            scope_error = _gate_scope_error(
+                kb,
+                conn,
+                tid=tid,
+                tool_name="kanban_effective_check",
+                allow_own_worker_task=False,
+            )
+            if scope_error:
+                return scope_error
+            ok = kb.record_effective_state_check(
+                conn,
+                tid,
+                passed=passed_raw,
+                checks=[str(c) for c in checks],
+                note=str(note),
+                checked_by=str(actor),
+                proof_required=args.get("proof_required"),
+            )
+            if not ok:
+                return tool_error(f"kanban_effective_check: task not found: {tid}")
+            return _ok(
+                task_id=tid,
+                actor=str(actor),
+                event=("effective_state_passed" if passed_raw else "effective_state_failed"),
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_effective_check: {e}")
+    except Exception as e:
+        logger.exception("kanban_effective_check failed")
+        return tool_error(f"kanban_effective_check: {e}")
+
+
 def _handle_create(args: dict, **kw) -> str:
     """Create a child task. Orchestrator workers use this to fan out.
 
@@ -1155,6 +1380,132 @@ KANBAN_COMMENT_SCHEMA = {
     },
 }
 
+
+def _soft_gate_schema(
+    name: str,
+    description: str,
+    *,
+    note_required: bool,
+    include_proof: bool = False,
+) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "task_id": {
+            "type": "string",
+            "description": (
+                _DESC_TASK_ID_DEFAULT + " Verifier/reviewer tasks may pass "
+                "the original implementation task id explicitly."
+            ),
+        },
+        "note": {
+            "type": "string",
+            "description": "Compact human-readable gate note/evidence.",
+        },
+        "board": _board_schema_prop(),
+    }
+    required = ["note"] if note_required else []
+    if include_proof:
+        properties["proof_required"] = {
+            "type": "string",
+            "description": (
+                "Exact proof required from the executor before the verifier "
+                "can accept the retry."
+            ),
+        }
+    return {
+        "name": name,
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        },
+    }
+
+
+KANBAN_PLAN_PROPOSE_SCHEMA = _soft_gate_schema(
+    "kanban_plan_propose",
+    "Propose a plan before execution. This records plan_proposed and a "
+    "PLAN_PROPOSED comment; it is an approval gate, not task completion.",
+    note_required=True,
+)
+
+KANBAN_PLAN_APPROVE_SCHEMA = _soft_gate_schema(
+    "kanban_plan_approve",
+    "Approve a proposed plan or exact next item. Records plan_approved "
+    "without changing task status.",
+    note_required=False,
+)
+
+KANBAN_PLAN_CHANGES_SCHEMA = _soft_gate_schema(
+    "kanban_plan_changes",
+    "Request changes to a proposed plan. Records plan_changes_requested "
+    "without treating the worker as failed execution.",
+    note_required=True,
+)
+
+KANBAN_REQUEST_VERIFICATION_SCHEMA = _soft_gate_schema(
+    "kanban_request_verification",
+    "Request independent verification for worker evidence/artifacts. "
+    "Records verification_requested without marking the task finally done.",
+    note_required=True,
+)
+
+KANBAN_MARK_VERIFIED_SCHEMA = _soft_gate_schema(
+    "kanban_mark_verified",
+    "Record verifier acceptance after independent artifact/effective-state "
+    "checking. Records verified; hard closure is handled by later phases.",
+    note_required=False,
+)
+
+KANBAN_REWORK_REQUIRED_SCHEMA = _soft_gate_schema(
+    "kanban_rework_required",
+    "Record verifier rejection/rework with exact expected fix and proof. "
+    "Records rework_required and a durable comment.",
+    note_required=True,
+    include_proof=True,
+)
+
+KANBAN_EFFECTIVE_CHECK_SCHEMA = {
+    "name": "kanban_effective_check",
+    "description": (
+        "Record explicit artifact/runtime/effective-state verification evidence. "
+        "Use passed=false for stale runtime, missing artifact, failed smoke, or "
+        "boundary failures so rework is structured, not hidden in prose."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "passed": {
+                "type": "boolean",
+                "description": "True if every listed effective-state check passed.",
+            },
+            "checks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Checklist items inspected, e.g. artifact_exists, tests_pass, "
+                    "runtime_loaded, status_endpoint_matches, boundaries_clean."
+                ),
+            },
+            "note": {
+                "type": "string",
+                "description": "Verifier evidence note explaining what was observed.",
+            },
+            "proof_required": {
+                "type": "string",
+                "description": "Exact proof required on retry when passed=false.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["passed", "note"],
+    },
+}
+
+
 KANBAN_CREATE_SCHEMA = {
     "name": "kanban_create",
     "description": (
@@ -1401,6 +1752,69 @@ registry.register(
     handler=_handle_comment,
     check_fn=_check_kanban_mode,
     emoji="💬",
+)
+
+registry.register(
+    name="kanban_plan_propose",
+    toolset="kanban",
+    schema=KANBAN_PLAN_PROPOSE_SCHEMA,
+    handler=_handle_plan_propose,
+    check_fn=_check_kanban_mode,
+    emoji="📝",
+)
+
+registry.register(
+    name="kanban_plan_approve",
+    toolset="kanban",
+    schema=KANBAN_PLAN_APPROVE_SCHEMA,
+    handler=_handle_plan_approve,
+    check_fn=_check_kanban_mode,
+    emoji="✅",
+)
+
+registry.register(
+    name="kanban_plan_changes",
+    toolset="kanban",
+    schema=KANBAN_PLAN_CHANGES_SCHEMA,
+    handler=_handle_plan_changes,
+    check_fn=_check_kanban_mode,
+    emoji="↩",
+)
+
+registry.register(
+    name="kanban_request_verification",
+    toolset="kanban",
+    schema=KANBAN_REQUEST_VERIFICATION_SCHEMA,
+    handler=_handle_request_verification,
+    check_fn=_check_kanban_mode,
+    emoji="🔎",
+)
+
+registry.register(
+    name="kanban_mark_verified",
+    toolset="kanban",
+    schema=KANBAN_MARK_VERIFIED_SCHEMA,
+    handler=_handle_mark_verified,
+    check_fn=_check_kanban_mode,
+    emoji="✅",
+)
+
+registry.register(
+    name="kanban_rework_required",
+    toolset="kanban",
+    schema=KANBAN_REWORK_REQUIRED_SCHEMA,
+    handler=_handle_rework_required,
+    check_fn=_check_kanban_mode,
+    emoji="🛠",
+)
+
+registry.register(
+    name="kanban_effective_check",
+    toolset="kanban",
+    schema=KANBAN_EFFECTIVE_CHECK_SCHEMA,
+    handler=_handle_effective_check,
+    check_fn=_check_kanban_mode,
+    emoji="🧪",
 )
 
 registry.register(

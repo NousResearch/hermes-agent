@@ -367,11 +367,21 @@ def _validate_post_login_target(raw: str) -> str:
         return ""
     from urllib.parse import unquote
     decoded = unquote(raw)
-    if not decoded.startswith("/") or decoded.startswith("//"):
+    # Fold backslashes to forward slashes BEFORE the same-origin checks.
+    # Browsers parsing an http(s) URL treat ``\`` as ``/`` (WHATWG URL
+    # spec), and ``window.location.assign`` on the login page applies the
+    # same normalization, so ``/\evil.com`` and the encoded
+    # ``/%5Cevil.com`` both resolve to the protocol-relative
+    # ``//evil.com`` and redirect off-origin. Without this fold a
+    # backslash smuggles such a value straight past the ``//`` guard
+    # below — a classic open-redirect bypass. Validate the normalized
+    # form so every same-origin check sees what the browser will.
+    normalized = decoded.replace("\\", "/")
+    if not normalized.startswith("/") or normalized.startswith("//"):
         return ""
     # Don't loop back to login pages or auth flow.
     if any(
-        decoded == p or decoded.startswith(p)
+        normalized == p or normalized.startswith(p)
         for p in ("/login", "/auth/", "/api/auth/")
     ):
         return ""
@@ -382,7 +392,7 @@ def _validate_post_login_target(raw: str) -> str:
     # API endpoint renders raw JSON in the browser address bar — never
     # a useful post-login destination, and indistinguishable from an
     # attacker trying to weaponise the redirect.
-    if decoded == "/api" or decoded.startswith("/api/"):
+    if normalized == "/api" or normalized.startswith("/api/"):
         return ""
     return decoded
 

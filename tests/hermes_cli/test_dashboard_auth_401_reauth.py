@@ -601,6 +601,23 @@ class TestValidatePostLoginTarget:
         assert _validate_post_login_target("//evil.com") == ""
         assert _validate_post_login_target("%2F%2Fevil.com") == ""
 
+    def test_rejects_backslash_open_redirect(self):
+        """Backslash bypass of the protocol-relative guard.
+
+        Browsers fold ``\\`` to ``/`` when resolving an http(s) URL, so
+        ``/\\evil.com`` (and its encoded ``/%5Cevil.com`` form) resolve to
+        ``//evil.com`` and redirect off-origin. The login page's
+        ``window.location.assign`` applies the same normalization, so these
+        MUST be dropped just like a literal ``//`` prefix."""
+        from hermes_cli.dashboard_auth.routes import _validate_post_login_target
+        assert _validate_post_login_target("/\\evil.com") == ""
+        assert _validate_post_login_target("/%5Cevil.com") == ""
+        assert _validate_post_login_target("%2F%5Cevil.com") == ""
+        assert _validate_post_login_target("/\\/evil.com") == ""
+        # A backslash that doesn't form an authority is harmless and the
+        # value stays same-origin, so it is still accepted.
+        assert _validate_post_login_target("/foo\\bar") == "/foo\\bar"
+
     def test_rejects_login_loop(self):
         from hermes_cli.dashboard_auth.routes import _validate_post_login_target
         assert _validate_post_login_target("/login") == ""

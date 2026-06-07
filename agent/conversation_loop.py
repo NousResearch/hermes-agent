@@ -4720,7 +4720,9 @@ def run_conversation(
             if _failed and agent._file_mutation_verifier_enabled():
                 footer = agent._format_file_mutation_failure_footer(_failed)
                 if footer:
-                    final_response = final_response.rstrip() + "\n\n" + footer
+                    final_response = agent._apply_file_mutation_failure_footer(
+                        final_response, footer,
+                    )
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 

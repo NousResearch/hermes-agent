@@ -17454,6 +17454,7 @@ class GatewayRunner:
                             fresh_final_after_seconds=_fresh_final_secs,
                             transport=_scfg.transport or "edit",
                             chat_type=getattr(source, "chat_type", "") or "",
+                            compact_commentary=source.platform == Platform.TELEGRAM,
                         )
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,

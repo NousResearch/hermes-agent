@@ -11,7 +11,8 @@
 | F2 | Watchdog alerts y notificación | Zeus/claude-builder | devops-release | done |
 | F3 | Dispatcher sobre proyectos blocked | Zeus/claude-builder | security-reviewer | done |
 | F4 | QA, smoke, delivery | Zeus/qa-verifier | factory-orchestrator | done |
-| F5 | Corrección metodológica Notion/docs | Zeus/factory-reporter | factory-orchestrator | active/done en esta remediación |
+| F5 | Corrección metodológica Notion/docs | Zeus/factory-reporter | factory-orchestrator | done/hold para proyección Notion |
+| F6 | Repo-first runtime contract: índice documental + checkpoint git | Zeus/claude-builder | quality-reviewer | implemented |
 
 ## Definition of Ready
 
@@ -25,9 +26,11 @@
 - Código/scripts implementados.
 - Tests enfocados pasan.
 - Scripts smoke contra Agent Core Postgres pasan.
+- `DOCUMENTATION_INDEX.md` lista todos los documentos requeridos.
+- Project-local artifacts quedan en checkpoint de git o tienen waiver explícito de Jean.
 - Notion project page enlazada en metadata.
 - Documentos requeridos existen.
-- Reconciler sin anomalías.
+- Reconciler sin anomalías críticas de repo/docs.
 
 ## Riesgos del sprint
 

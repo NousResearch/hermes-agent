@@ -3206,3 +3206,147 @@ class TestValidateProviderCredential:
         data = self._post("OPENAI_API_KEY", "   ").json()
         assert data["ok"] is False
 
+
+def test_factory_doc_inventory_adds_browser_openable_document_links(tmp_path):
+    from hermes_cli import web_server
+
+    repo = tmp_path / "repo"
+    doc_dir = repo / "factory" / "projects" / "demo"
+    doc_dir.mkdir(parents=True)
+    (doc_dir / "PRD.md").write_text("# PRD\n", encoding="utf-8")
+
+    project = {
+        "project_id": "demo",
+        "repo_path": str(repo),
+        "repo_remote": "git@github.com:SiteOneTech/demo.git",
+        "base_branch": "feat/factory-docs",
+        "metadata": {"artifact_dir": "factory/projects/demo"},
+    }
+
+    docs = web_server._factory_doc_inventory(project)
+    prd = next(doc for doc in docs if doc["name"] == "PRD.md")
+
+    assert prd["exists"] is True
+    assert prd["url"] == "https://github.com/SiteOneTech/demo/blob/feat%2Ffactory-docs/factory/projects/demo/PRD.md"
+
+
+def test_factory_notion_blocks_convert_markdown_links_to_notion_href():
+    from hermes_cli import web_server
+
+    blocks = web_server._factory_notion_blocks("Open [PRD.md](https://github.com/SiteOneTech/demo/blob/main/PRD.md)")
+    rich_text = blocks[0]["paragraph"]["rich_text"]
+
+    assert any(chunk.get("href") == "https://github.com/SiteOneTech/demo/blob/main/PRD.md" for chunk in rich_text)
+    assert "[PRD.md](" not in "".join(chunk["text"]["content"] for chunk in rich_text)
+
+
+def test_factory_replace_notion_page_children_uses_official_block_api(monkeypatch):
+    from hermes_cli import web_server
+
+    calls = []
+
+    def fake_request(method, path, api_key, body=None):
+        calls.append((method, path, body))
+        if path.startswith("blocks/page-1/children"):
+            return {"results": [{"id": "child-1"}], "has_more": False}
+        return {}
+
+    monkeypatch.setattr(web_server, "_notion_request", fake_request)
+
+    web_server._factory_replace_notion_page_children("page-1", "## Current\n\nUpdated", "secret")
+
+    assert calls[0][0] == "GET"
+    assert calls[0][1] == "blocks/page-1/children?page_size=100"
+    assert calls[1] == ("PATCH", "blocks/child-1", {"archived": True})
+    assert calls[2][0] == "PATCH"
+    assert calls[2][1] == "blocks/page-1/children"
+    assert "children" in calls[2][2]
+
+
+def test_factory_notion_create_uses_official_children_payload(monkeypatch):
+    from hermes_cli import web_server
+
+    requests = []
+    project = {
+        "project_id": "demo",
+        "name": "Demo Factory",
+        "status": "planned",
+        "repo_path": "/work/demo",
+        "metadata": {},
+        "dashboard": {"required_docs": [], "findings": []},
+    }
+
+    async def fake_dashboard(project_id=None):
+        return {"projects": [project], "tasks": [], "gates": [], "events": [], "task_runs": []}
+
+    def fake_notion_request(method, path, api_key, body=None):
+        requests.append((method, path, body))
+        return {"id": "page-1", "url": "https://notion.example/page-1"}
+
+    monkeypatch.setattr(web_server, "get_factory_dashboard", fake_dashboard)
+    monkeypatch.setattr(web_server, "_factory_project_notion", lambda project: {})
+    monkeypatch.setattr(web_server, "_notion_api_key", lambda: "secret")
+    monkeypatch.setattr(web_server, "_factory_notion_parent_page_id", lambda project, api_key: "parent-1")
+    monkeypatch.setattr(web_server, "_notion_request", fake_notion_request)
+    monkeypatch.setattr(web_server, "_factory_update_project_metadata", lambda project_id, metadata: None)
+
+    import asyncio
+    result = asyncio.run(web_server.create_factory_project_notion("demo"))
+
+    assert result["created"] is True
+    create_body = requests[-1][2]
+    assert requests[-1][0] == "POST"
+    assert requests[-1][1] == "pages"
+    assert "children" in create_body
+    assert "markdown" not in create_body
+
+
+def test_factory_notion_markdown_is_link_first_project_log():
+    from hermes_cli import web_server
+
+    project = {
+        "project_id": "demo",
+        "name": "Demo Factory",
+        "status": "delivery_hold",
+        "methodology": "Hybrid",
+        "risk_level": "medium",
+        "repo_path": "/work/demo",
+        "repo_remote": "https://github.com/SiteOneTech/demo.git",
+        "base_branch": "main",
+        "started_at": "2026-06-01T00:00:00Z",
+        "updated_at": "2026-06-02T00:00:00Z",
+        "metadata": {},
+        "dashboard": {
+            "quick_status": "Technical work done; waiting on delivery approval.",
+            "open_task_count": 1,
+            "blocked_task_count": 0,
+            "review_task_count": 0,
+            "effective_gate_counts": {"passed": 2, "failed": 0, "pending": 1},
+            "current_task": {"task_id": "D1", "title": "Delivery review", "status": "review_pending_human"},
+            "active_run": None,
+            "required_docs": [
+                {
+                    "name": "PRD.md",
+                    "path": "/work/demo/factory/projects/demo/PRD.md",
+                    "url": "https://github.com/SiteOneTech/demo/blob/main/factory/projects/demo/PRD.md",
+                    "exists": True,
+                    "size": 4096,
+                }
+            ],
+            "findings": [],
+        },
+    }
+    payload = {
+        "tasks": [{"project_id": "demo", "task_id": "D1", "title": "Delivery review", "status": "review_pending_human", "priority": 1, "evidence_status": "current"}],
+        "gates": [{"project_id": "demo", "gate_type": "delivery", "status": "pending", "reviewer": "devops-release", "created_at": "2026-06-02T00:00:00Z"}],
+        "events": [{"project_id": "demo", "created_at": "2026-06-02T00:00:00Z", "actor": "factory-reporter", "event_type": "notion_sync", "message": "Updated PM page"}],
+        "task_runs": [],
+    }
+
+    markdown = web_server._factory_notion_markdown(payload, project)
+
+    assert "## 3. Document Hub — links directos" in markdown
+    assert "[PRD.md](https://github.com/SiteOneTech/demo/blob/main/factory/projects/demo/PRD.md)" in markdown
+    assert "## 7. Bitácora ejecutiva" in markdown
+    assert "Updated PM page" in markdown
+

@@ -17,6 +17,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
 import stat
 import subprocess
@@ -915,6 +916,46 @@ def _factory_project_artifact_dir(project: Dict[str, Any]) -> Path | None:
     return Path(repo_path).expanduser() / relative
 
 
+def _factory_repo_web_base(project: Dict[str, Any]) -> str:
+    """Return a browser-openable repository URL when the project remote is GitHub."""
+
+    remote = str(project.get("repo_remote") or "").strip()
+    if not remote:
+        return ""
+    if remote.startswith("git@github.com:"):
+        remote = "https://github.com/" + remote.removeprefix("git@github.com:")
+    if remote.endswith(".git"):
+        remote = remote[:-4]
+    if remote.startswith("https://github.com/"):
+        return remote
+    return ""
+
+
+def _factory_doc_external_url(project: Dict[str, Any], path: Path) -> str:
+    """Create a direct web link for a project-local document when possible."""
+
+    repo_base = _factory_repo_web_base(project)
+    repo_path = str(project.get("repo_path") or "").strip()
+    if not repo_base or not repo_path:
+        return ""
+    try:
+        rel = path.resolve().relative_to(Path(repo_path).expanduser().resolve()).as_posix()
+    except Exception:
+        return ""
+    branch = str(project.get("base_branch") or "main").strip() or "main"
+    branch_slug = urllib.parse.quote(branch, safe="")
+    rel_slug = urllib.parse.quote(rel, safe="/")
+    return f"{repo_base}/blob/{branch_slug}/{rel_slug}"
+
+
+def _factory_markdown_link(label: str, url: str) -> str:
+    clean_label = str(label or "").replace("[", "\\[").replace("]", "\\]").strip() or "link"
+    clean_url = str(url or "").strip()
+    if not clean_url:
+        return f"`{clean_label}`"
+    return f"[{clean_label}]({clean_url})"
+
+
 def _factory_doc_inventory(project: Dict[str, Any]) -> List[Dict[str, Any]]:
     base = _factory_project_artifact_dir(project)
     if base is None:
@@ -928,7 +969,13 @@ def _factory_doc_inventory(project: Dict[str, Any]) -> List[Dict[str, Any]]:
         except Exception:
             exists = False
             size = 0
-        docs.append({"name": name, "path": str(path), "exists": exists, "size": size})
+        docs.append({
+            "name": name,
+            "path": str(path),
+            "url": _factory_doc_external_url(project, path) if exists else "",
+            "exists": exists,
+            "size": size,
+        })
     return docs
 
 
@@ -1126,9 +1173,12 @@ def _factory_project_dashboard(
 
     active_runs = [run for run in project_runs if str(run.get("status") or "") in {"queued", "running"}]
     active_run = sorted(active_runs, key=lambda r: str(r.get("heartbeat_at") or r.get("started_at") or ""), reverse=True)[0] if active_runs else None
+    project_status = str(project.get("status") or "").lower()
+    static_project_statuses = {"blocked", "cancelled", "closed", "completed", "delivery_hold", "hold", "on_hold", "paused"}
     workflow_stage = "running" if active_run else "blocked" if blocked_tasks else "review" if review_tasks else "planned" if open_tasks else "completed"
+    workflow_operative = bool(active_run or project.get("autonomous_enabled")) and project_status not in static_project_statuses
     workflow = {
-        "operative": bool(active_run or project.get("autonomous_enabled")),
+        "operative": workflow_operative,
         "stage": workflow_stage,
         "worker": (active_run or {}).get("worker_profile") if active_run else None,
         "heartbeat_at": (active_run or {}).get("heartbeat_at") if active_run else None,
@@ -1307,10 +1357,20 @@ def _factory_notion_markdown(payload: Dict[str, Any], project: Dict[str, Any]) -
     dashboard = project.get("dashboard") or {}
     tasks = [task for task in payload.get("tasks", []) if task.get("project_id") == project_id]
     gates = [gate for gate in payload.get("gates", []) if gate.get("project_id") == project_id]
+    events = [event for event in payload.get("events", []) if event.get("project_id") == project_id]
+    task_runs = [run for run in payload.get("task_runs", []) if run.get("project_id") == project_id]
     findings = dashboard.get("findings") or []
     docs = dashboard.get("required_docs") or []
+    repo_base = _factory_repo_web_base(project)
+    repo_link = _factory_markdown_link(repo_base or str(project.get("repo_path") or "Repo"), repo_base)
+    metadata = _factory_project_metadata(project)
+    runtime_url = str(metadata.get("runtime_url") or metadata.get("preview_url") or metadata.get("sandbox_url") or "").strip()
     task_rows = sorted(tasks, key=lambda row: (int(row.get("priority") or 999), str(row.get("updated_at") or "")))[:25]
     gate_rows = gates[:25]
+    event_rows = sorted(events, key=lambda row: str(row.get("created_at") or ""), reverse=True)[:12]
+    run_rows = sorted(task_runs, key=lambda row: str(row.get("started_at") or ""), reverse=True)[:10]
+    current_task = dashboard.get("current_task") or {}
+    active_run = dashboard.get("active_run") or {}
 
     task_table = ["| ID | Tarea | Estado | Owner | Evidencia |", "|---|---|---|---|---|"]
     task_table.extend(
@@ -1347,62 +1407,160 @@ def _factory_notion_markdown(payload: Dict[str, Any], project: Dict[str, Any]) -
     if len(gate_table) == 2:
         gate_table.append("| — | — | — | — |")
 
-    doc_lines = [
-        f"- [{'x' if doc.get('exists') else ' '}] `{doc.get('name')}` — {doc.get('path')}"
-        for doc in docs
-    ] or ["- —"]
-    finding_lines = [f"- **{finding.get('code')}** — {finding.get('message')}" for finding in findings] or ["- Ninguna detectada por Factory DB."]
+    docs_ready = sum(1 for doc in docs if doc.get("exists"))
+    executive_table = [
+        "| Área | Señal | Lectura ejecutiva |",
+        "|---|---:|---|",
+        f"| Status DB | `{_factory_markdown_cell(project.get('status'))}` | {_factory_markdown_cell(dashboard.get('quick_status') or 'Sin resumen DB.')} |",
+        f"| Tareas abiertas | {_factory_markdown_cell(dashboard.get('open_task_count'))} | blocked={_factory_markdown_cell(dashboard.get('blocked_task_count'))} · revisión humana={_factory_markdown_cell(dashboard.get('review_task_count'))} |",
+        f"| Gates | {_factory_markdown_cell((dashboard.get('effective_gate_counts') or dashboard.get('gate_counts') or {}).get('passed', 0))} passed | failed={_factory_markdown_cell((dashboard.get('effective_gate_counts') or dashboard.get('gate_counts') or {}).get('failed', 0))} · pending={_factory_markdown_cell((dashboard.get('effective_gate_counts') or dashboard.get('gate_counts') or {}).get('pending', 0))} |",
+        f"| Docs Factory | {docs_ready}/{len(docs)} | Cada doc existente debe abrir desde link directo. |",
+        f"| Run activo | `{_factory_markdown_cell(active_run.get('status'))}` | worker={_factory_markdown_cell(active_run.get('worker_profile'))} · task={_factory_markdown_cell(active_run.get('task_id'))} |",
+    ]
+
+    quick_links = [
+        f"- **Repo:** {repo_link}",
+        f"- **Worktree local:** `{project.get('repo_path') or '—'}`",
+        f"- **Branch base:** `{project.get('base_branch') or 'main'}`",
+        f"- **Runtime / preview:** {_factory_markdown_link(runtime_url, runtime_url) if runtime_url else '—'}",
+        "- **Factory DB:** Agent Core Postgres `factory.*`",
+    ]
+
+    doc_table = ["| Documento | Estado | Abrir | Tamaño |", "|---|---|---|---:|"]
+    for doc in docs:
+        name = str(doc.get("name") or "—")
+        exists = bool(doc.get("exists"))
+        url = str(doc.get("url") or "").strip()
+        location = _factory_markdown_link(name, url) if exists and url else f"`{doc.get('path') or name}`"
+        try:
+            size = int(doc.get("size") or 0)
+        except Exception:
+            size = 0
+        size_label = "—" if size <= 0 else f"{size / 1024:.1f} KB"
+        doc_table.append(
+            "| "
+            + " | ".join(
+                [
+                    _factory_markdown_cell(name),
+                    "✅ current" if exists else "⚠️ missing",
+                    location,
+                    _factory_markdown_cell(size_label),
+                ]
+            )
+            + " |"
+        )
+    if len(doc_table) == 2:
+        doc_table.append("| — | — | — | — |")
+
+    event_table = ["| Fecha | Actor | Evento | Mensaje |", "|---|---|---|---|"]
+    event_table.extend(
+        "| "
+        + " | ".join(
+            [
+                _factory_markdown_cell(event.get("created_at")),
+                _factory_markdown_cell(event.get("actor")),
+                _factory_markdown_cell(event.get("event_type")),
+                _factory_markdown_cell(event.get("message")),
+            ]
+        )
+        + " |"
+        for event in event_rows
+    )
+    if len(event_table) == 2:
+        event_table.append("| — | — | — | — |")
+
+    run_table = ["| Run | Task | Worker | Estado | Inicio | Evidencia |", "|---|---|---|---|---|---|"]
+    run_table.extend(
+        "| "
+        + " | ".join(
+            [
+                _factory_markdown_cell(run.get("run_id")),
+                _factory_markdown_cell(run.get("task_id")),
+                _factory_markdown_cell(run.get("worker_profile")),
+                _factory_markdown_cell(run.get("status")),
+                _factory_markdown_cell(run.get("started_at")),
+                _factory_markdown_cell(run.get("log_path") or run.get("prompt_path") or "—"),
+            ]
+        )
+        + " |"
+        for run in run_rows
+    )
+    if len(run_table) == 2:
+        run_table.append("| — | — | — | — | — | — |")
+
+    current_task_lines = [
+        f"- **Tarea actual/relevante:** `{current_task.get('task_id') or '—'}` — {current_task.get('title') or '—'}",
+        f"- **Estado tarea:** `{current_task.get('status') or '—'}` · owner={current_task.get('owner_agent_id') or current_task.get('owner_profile') or '—'} · reviewer={current_task.get('reviewer_agent_id') or current_task.get('reviewer_profile') or '—'}",
+        f"- **Run activo:** `{active_run.get('run_id') or '—'}` · status={active_run.get('status') or '—'} · evidence={active_run.get('log_path') or active_run.get('prompt_path') or '—'}",
+    ]
+    finding_lines = [f"- **{finding.get('code')}** · {finding.get('severity', 'info')} — {finding.get('message')}" for finding in findings] or ["- ✅ Ninguna anomalía detectada por Factory DB en este snapshot."]
 
     return "\n".join(
         [
             f"# 🏭 {project.get('name')} — Factory PM",
             "",
-            "<callout icon=\"🏭\" color=\"blue_bg\">",
-            "\tPágina generada desde Zeus Factory Dashboard. Notion es documentación humana; la fuente operativa sigue siendo Agent Core Postgres `factory.*`.",
+            f"Última sincronización: **{_factory_utc_now()}** · Fuente operativa: **Agent Core Postgres `factory.*`**",
+            "",
+            "<callout icon=\"🎯\" color=\"blue_bg\">",
+            "\tTablero humano de PM: estado ejecutivo, bitácora, gates y links para abrir documentos. La verdad operativa sigue en Factory DB + repo + evidencia de runtime.",
             "</callout>",
             "",
-            "## Resumen ejecutivo",
+            "<table_of_contents color=\"gray\"/>",
             "",
-            f"- **Project ID:** `{project_id}`",
-            f"- **Estado:** {project.get('status')}",
-            f"- **Metodología:** {project.get('methodology')}",
-            f"- **Riesgo:** {project.get('risk_level')}",
-            f"- **Inicio:** {project.get('started_at') or '—'}",
-            f"- **Última actualización:** {project.get('updated_at') or '—'}",
-            f"- **Repo:** {project.get('repo_path') or '—'}",
-            f"- **Resumen DB:** {dashboard.get('quick_status') or '—'}",
+            "## 1. Snapshot ejecutivo",
             "",
-            "## Contrato metodológico",
+            f"**Project ID:** `{project_id}` · **Status:** `{project.get('status')}` · **Metodología:** `{project.get('methodology')}` · **Riesgo:** `{project.get('risk_level')}`",
             "",
-            "- Factory DB es la fuente operativa de verdad.",
-            "- Notion registra supervisión humana, sprint status, decisiones y retrospectiva.",
-            "- Si el proyecto aparece en `intake`, debe tratarse como entrada incompleta hasta cerrar PRD, plan, task graph, gates y documentación.",
+            *executive_table,
             "",
-            "## Tareas / task graph",
+            "## 2. Abrir rápido",
+            "",
+            *quick_links,
+            "",
+            "## 3. Document Hub — links directos",
+            "",
+            "Cada documento existente debe ser clickeable desde esta tabla. Si un link falta, el proyecto necesita metadata de repo/remoto o publicación de artifacts.",
+            "",
+            *doc_table,
+            "",
+            "## 4. Estado operativo actual",
+            "",
+            *current_task_lines,
+            "",
+            "## 5. Task graph / backlog visible",
             "",
             *task_table,
             "",
-            "## Gates",
+            "## 6. Gates efectivos",
             "",
             *gate_table,
             "",
-            "## Documentos requeridos",
+            "## 7. Bitácora ejecutiva",
             "",
-            *doc_lines,
+            "Registro reciente de eventos Factory. Esto debe sentirse como log de proyecto, no como plantilla vacía.",
             "",
-            "## Anomalías y deuda metodológica",
+            *event_table,
+            "",
+            "## 8. Runs / workers recientes",
+            "",
+            *run_table,
+            "",
+            "## 9. Anomalías y deuda metodológica",
             "",
             *finding_lines,
             "",
-            "## Próximos pasos / supervisión humana",
+            "## 10. Próximos pasos / supervisión humana",
             "",
             "- [ ] Verificar estado live en Factory DB antes de retomar ejecución.",
-            "- [ ] Cerrar o reabrir tareas `intake` con PRD/ADR/sprint plan/gates.",
-            "- [ ] Registrar decisiones humanas y criterio de aceptación del siguiente incremento.",
+            "- [ ] Resolver gates failed/pending antes de marcar cierre.",
+            "- [ ] Crear o linkear cualquier doc missing antes del cierre.",
+            "- [ ] Actualizar esta página al cierre de sprint o cuando cambie un blocker real.",
             "",
-            "## Retrospectiva",
+            "## 11. Retrospectiva / metodología",
             "",
-            "- Pendiente de completar al cierre del ciclo.",
+            "- Qué funcionó:",
+            "- Qué produjo deriva:",
+            "- Qué regla se debe incorporar a la Factory:",
         ]
     )
 
@@ -1432,6 +1590,26 @@ def _notion_request(method: str, path: str, api_key: str, body: Optional[Dict[st
         raise RuntimeError(f"Notion API {exc.code}: {detail}") from exc
 
 
+_FACTORY_NOTION_MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+
+
+def _factory_notion_rich_text(text: str) -> list[dict[str, Any]]:
+    """Convert inline Markdown links into Notion rich_text chunks."""
+
+    chunks: list[dict[str, Any]] = []
+    cursor = 0
+    for match in _FACTORY_NOTION_MARKDOWN_LINK_RE.finditer(text):
+        if match.start() > cursor:
+            chunks.append({"type": "text", "text": {"content": text[cursor:match.start()]}})
+        label = match.group(1).strip() or match.group(2)
+        url = match.group(2).strip()
+        chunks.append({"type": "text", "text": {"content": label, "link": {"url": url}}, "href": url})
+        cursor = match.end()
+    if cursor < len(text):
+        chunks.append({"type": "text", "text": {"content": text[cursor:]}})
+    return chunks or [{"type": "text", "text": {"content": " "}}]
+
+
 def _factory_notion_blocks(markdown: str, *, limit: int = 90) -> list[dict[str, Any]]:
     """Convert a Markdown status snapshot into simple Notion paragraph/code blocks."""
 
@@ -1453,10 +1631,38 @@ def _factory_notion_blocks(markdown: str, *, limit: int = 90) -> list[dict[str, 
         text = line.strip() or " "
         block_type = "heading_2" if text.startswith("## ") else "heading_3" if text.startswith("### ") else "paragraph"
         clean = text.removeprefix("### ").removeprefix("## ")[:1900]
-        blocks.append({"object": "block", "type": block_type, block_type: {"rich_text": [{"type": "text", "text": {"content": clean}}]}})
+        blocks.append({"object": "block", "type": block_type, block_type: {"rich_text": _factory_notion_rich_text(clean)}})
         if len(blocks) >= limit:
             break
     return blocks or [{"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": "Factory status synced."}}]}}]
+
+
+def _factory_replace_notion_page_children(page_id: str, markdown: str, api_key: str) -> None:
+    """Replace generated Factory PM page content using official Notion block APIs.
+
+    Notion's public REST API accepts page creation with ``children`` and updates
+    through ``blocks/{page_id}/children``. It does not expose a stable
+    ``pages/{id}/markdown`` endpoint, so the dashboard keeps the link-first
+    Markdown renderer but converts it to blocks before writing.
+    """
+
+    cursor = ""
+    while True:
+        path = f"blocks/{page_id}/children?page_size=100"
+        if cursor:
+            path += f"&start_cursor={urllib.parse.quote(cursor, safe='')}"
+        children = _notion_request("GET", path, api_key)
+        for block in children.get("results") or []:
+            if not isinstance(block, dict):
+                continue
+            block_id = str(block.get("id") or "").strip()
+            block_type = str(block.get("type") or "").strip()
+            if block_id and block_type not in {"child_page", "child_database"}:
+                _notion_request("PATCH", f"blocks/{block_id}", api_key, {"archived": True})
+        if not children.get("has_more") or not children.get("next_cursor"):
+            break
+        cursor = str(children.get("next_cursor") or "")
+    _notion_request("PATCH", f"blocks/{page_id}/children", api_key, {"children": _factory_notion_blocks(markdown)})
 
 
 def _notion_page_title(page: Dict[str, Any]) -> str:
@@ -1599,23 +1805,9 @@ async def sync_factory_project_notion(project_id: str):
     api_key = _notion_api_key()
     page_id = str(existing.get("page_id") or "").strip()
     if api_key and page_id:
-        markdown = "\n".join(
-            [
-                f"## Factory sync — {_factory_utc_now()}",
-                "",
-                (project.get("dashboard") or {}).get("quick_status") or "Factory dashboard synced",
-            ]
-        )
+        markdown = _factory_notion_markdown(payload, project)
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None,
-            lambda: _notion_request(
-                "PATCH",
-                f"blocks/{page_id}/children",
-                api_key,
-                {"children": _factory_notion_blocks(markdown, limit=10)},
-            ),
-        )
+        await loop.run_in_executor(None, _factory_replace_notion_page_children, page_id, markdown, api_key)
     _factory_update_project_metadata(project_id, metadata)
     return {
         "ok": True,

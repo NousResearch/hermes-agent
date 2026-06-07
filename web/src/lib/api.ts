@@ -1305,6 +1305,7 @@ export interface FactoryFinding {
 export interface FactoryDocumentStatus {
   name: string;
   path: string;
+  url?: string | null;
   exists: boolean;
   size: number;
 }

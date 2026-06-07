@@ -8,6 +8,7 @@ graph TD
   F3[F3 Dispatcher can repair/continue blocked projects]
   F4[F4 QA + live smoke + delivery report]
   F5[F5 Methodology debt correction: required docs + Notion + no waivers]
+  F6[F6 Repo-first runtime contract: doc index + git checkpoint]
 
   F0 --> F1
   F0 --> F2
@@ -15,6 +16,7 @@ graph TD
   F2 --> F4
   F3 --> F4
   F4 --> F5
+  F5 --> F6
 ```
 
 ## Factory DB tasks
@@ -25,8 +27,9 @@ graph TD
 | `factory-runtime-remediation-f1-blocker-detector-classifications-and-` | F1 — Blocker detector classifications and actions | done | `factory_pg.py`, `factory_blocker_detector.py`, tests |
 | `factory-runtime-remediation-f2-cron-dashboard-watchdog-alerts-and-te` | F2 — Watchdog alerts and notification path | done | alerts in status, cron `factory-watchdog-alerts` |
 | `factory-runtime-remediation-f3-dispatcher-acts-on-blocked-projects-s` | F3 — Dispatcher acts on blocked projects | done | claim predicates and force_tick repair/reopen |
-| `factory-runtime-remediation-f4-qa-live-smoke-and-delivery-report` | F4 — QA, smoke, report | done | 23/23 tests passed, scripts smoked |
-| F5 — Methodology debt correction | Build docs/Notion and remove waivers | in correction | This document set + Notion page |
+| `factory-runtime-remediation-f4-qa-live-smoke-and-delivery-report` | F4 — QA, smoke, report | done | focused runtime tests and script smokes |
+| `factory-runtime-remediation-reconcile-missing-notion-project` | R0 — Notion PM tracker reconciliation | todo/hold | Side-effect/documentation projection; not technical runtime blocker |
+| `factory-runtime-remediation-f5-repo-first-runtime-contract-v1` | F5/F6 — Repo-first runtime contract v1 | implemented in this worktree | Tests for `docs_not_indexed`, `uncommitted_project_artifacts`, critical readiness |
 
 ## Dependency rules
 

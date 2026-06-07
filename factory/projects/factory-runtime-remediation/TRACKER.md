@@ -9,7 +9,7 @@
 | Source of truth | Agent Core Postgres `factory.*` |
 | Repo artifacts | `factory/projects/factory-runtime-remediation/` |
 | Notion | Required; created/linked during correction |
-| Current state | Methodology correction after first closure attempt |
+| Current state | Completed; repo-first Runtime Contract v1 delivered and R0 Notion reconciliation closed |
 
 ## Task tracker
 
@@ -20,14 +20,20 @@
 | F2 Watchdog alerts | done | Zeus/claude-builder | devops-release | `factory_watchdog_alerts.py`, cron job |
 | F3 Blocked dispatch repair | done | Zeus/claude-builder | security-reviewer | claim predicates, force_tick behavior |
 | F4 QA/live smoke | done | Zeus/qa-verifier | factory-orchestrator | 23/23 tests + script smoke |
-| F5 Notion/docs correction | active/done in this correction | Zeus/factory-reporter | factory-orchestrator | full docs + Notion metadata |
+| F5 Notion/docs correction | done | Zeus/factory-reporter | factory-orchestrator | full docs + Notion metadata |
+| R0 Notion reconciliation | done | factory-reconciler | factory-reconciler | Notion page verified; reconcile anomalies=0 |
 
 ## Open methodology debt
 
-- Previous waiver decision was wrong.
-- Required docs must exist.
-- Notion project page must exist and be linked.
-- Metadata must remove `notion_waived` and `required_docs_waived`.
+(none — all resolved)
+
+## R0 Closure evidence
+
+- Notion PM page: `Factory Runtime Remediation — Factory PM`
+- Notion page ID: `37737b39-cad6-8198-a63e-faf0920031d4`
+- Notion URL: `https://app.notion.com/p/Factory-Runtime-Remediation-Factory-PM-37737b39cad68198a63efaf0920031d4`
+- `hermes factory project reconcile factory-runtime-remediation` → `anomalies: []`
+- Acceptance criteria: all 3 met (Notion exists, metadata linked, DB stays source of truth)
 
 ## Close criteria
 

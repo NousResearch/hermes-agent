@@ -53,6 +53,19 @@ const THINKING_MESSAGES = [
   "esperando el próximo tick",
 ];
 
+const STATIC_FACTORY_PROJECT_STATUSES = new Set([
+  "blocked",
+  "cancelled",
+  "closed",
+  "completed",
+  "delivery_hold",
+  "hold",
+  "on_hold",
+  "paused",
+]);
+
+const ACTIVE_FACTORY_RUN_STATUSES = new Set(["queued", "running"]);
+
 const STATUS_COPY: Record<string, { label: string; description: string }> = {
   intake: {
     label: "Intake",
@@ -68,7 +81,7 @@ const STATUS_COPY: Record<string, { label: string; description: string }> = {
   },
   delivery_hold: {
     label: "Delivery hold",
-    description: "Detenido por bloqueo de entrega, decisión humana o deuda de verificación.",
+    description: "Trabajo técnico terminado o en pausa de entrega; queda abierto por documentación, Notion o cierre explícito de Jean/UI, sin marcarse como bloqueo de programación.",
   },
   planned: {
     label: "Planificado",
@@ -119,13 +132,34 @@ function statusInfo(status?: string | null): { label: string; description: strin
   };
 }
 
+function isStaticFactoryProjectStatus(status?: string | null): boolean {
+  return STATIC_FACTORY_PROJECT_STATUSES.has((status || "").toLowerCase());
+}
+
+function activeRunIsLive(project: FactoryProject): boolean {
+  const runStatus = (project.dashboard?.active_run?.status || "").toLowerCase();
+  return ACTIVE_FACTORY_RUN_STATUSES.has(runStatus);
+}
+
+function workflowIdleCopy(project: FactoryProject): string {
+  const status = (project.status || "").toLowerCase();
+  if (status === "completed" || status === "closed") return "cerrado; sin proceso activo";
+  if (status === "delivery_hold" || status === "hold" || status === "on_hold") {
+    return "en hold de entrega; sin proceso activo";
+  }
+  if (status === "blocked") return "bloqueado; esperando reparación o decisión";
+  if (status === "paused" || status === "cancelled") return "pausado; sin proceso activo";
+  if (status === "planned" || status === "intake") return "planificado; sin ejecución activa";
+  return "sin ejecución activa";
+}
+
 function statusTone(status?: string | null): BadgeTone {
   const normalized = (status || "").toLowerCase();
   if (["done", "completed", "verified", "passed", "active"].includes(normalized)) {
     return "success";
   }
-  if (["failed", "blocked", "delivery_hold"].includes(normalized)) return "destructive";
-  if (["todo", "planned", "pending", "review_pending_human", "intake"].includes(normalized)) {
+  if (["failed", "blocked"].includes(normalized)) return "destructive";
+  if (["todo", "planned", "pending", "review_pending_human", "intake", "delivery_hold"].includes(normalized)) {
     return "warning";
   }
   return "secondary";
@@ -728,9 +762,21 @@ export default function FactoryPage() {
               <CardContent className="grid gap-2 text-xs">
                 {(selectedProject.dashboard?.required_docs ?? []).map((doc) => (
                   <div key={doc.name} className="flex items-center justify-between gap-3 border-b border-border/50 pb-2 last:border-b-0 last:pb-0">
-                    <span className="flex items-center gap-2">
-                      <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-                      {doc.name}
+                    <span className="flex min-w-0 items-center gap-2">
+                      <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      {doc.url ? (
+                        <a
+                          href={doc.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="truncate text-primary underline-offset-4 hover:underline"
+                          title={doc.url}
+                        >
+                          {doc.name}
+                        </a>
+                      ) : (
+                        <span className="truncate" title={doc.path}>{doc.name}</span>
+                      )}
                     </span>
                     <Badge tone={doc.exists ? "success" : "warning"}>
                       {doc.exists ? `${Math.round(doc.size / 1024)}KB` : "missing"}
@@ -890,10 +936,13 @@ function ProjectDetailsGrid({ project }: { project: FactoryProject }) {
 function FactoryWorkflowPanel({ project, now, refreshing }: { project: FactoryProject; now: number; refreshing: boolean }) {
   const workflow = project.dashboard?.workflow;
   const activeRun = project.dashboard?.active_run;
+  const staticProject = isStaticFactoryProjectStatus(project.status);
+  const showLiveAnimation = !staticProject && (activeRunIsLive(project) || Boolean(workflow?.operative));
   const heartbeatAt = workflow?.heartbeat_at ?? activeRun?.heartbeat_at;
   const workingText = refreshing
     ? "actualizando snapshot"
     : THINKING_MESSAGES[Math.floor(now / 4000) % THINKING_MESSAGES.length];
+  const statusText = showLiveAnimation ? `${workingText} · contador ${Math.floor(now / 1000) % 60}s` : workflowIdleCopy(project);
   const heartbeatAge = heartbeatAt ? formatRelativeAge(heartbeatAt, now) : "sin heartbeat";
   const stages = [
     { id: "planned", label: "Plan" },
@@ -907,13 +956,13 @@ function FactoryWorkflowPanel({ project, now, refreshing }: { project: FactoryPr
       <div className="flex flex-wrap items-center gap-2">
         <Activity className="h-4 w-4 text-primary" />
         <p className="text-sm font-semibold">Ciclo productivo Factory</p>
-        <Badge tone={workflow?.operative ? "success" : "secondary"}>
-          {workflow?.operative ? "operativo" : "sin ejecución activa"}
+        <Badge tone={showLiveAnimation ? "success" : staticProject ? statusTone(project.status) : "secondary"}>
+          {showLiveAnimation ? "operativo" : "sin ejecución activa"}
         </Badge>
         {workflow?.single_active_increment ? <Badge tone="outline">1 incremento activo</Badge> : null}
         <span className="ml-auto inline-flex items-center gap-2 text-xs text-muted-foreground">
-          <Spinner />
-          {workingText} · contador {Math.floor(now / 1000) % 60}s
+          {showLiveAnimation ? <Spinner /> : <PauseCircle className="h-3.5 w-3.5" />}
+          {statusText}
         </span>
       </div>
       <div className="mt-4 grid gap-2 md:grid-cols-4">

@@ -38,6 +38,9 @@ Además, el propio proyecto de remediación debía cumplir la metodología Facto
 | PRD-F3 | Alertar anomalías | Cron/dashboard reportan alertas para blocked>X, blocked sin pregunta humana, huérfanos y claimed-null repetido. |
 | PRD-F4 | Dispatch en blocked | Proyectos `blocked` autónomos pueden ser reparados y seguir tareas independientes seguras. |
 | PRD-F5 | Ruta Factory completa | El proyecto tiene Notion, PRD, ADRs, sprint plan, task graph, QA/security gates, reports y delivery evidence. |
+| PRD-F6 | Índice documental obligatorio | `DOCUMENTATION_INDEX.md` lista todos los documentos requeridos para que builders/reviewers entren por el repo y no por contexto improvisado. |
+| PRD-F7 | Checkpoint de commits | El reconciler/critical readiness detecta artifacts project-local modificados o untracked antes de cierre, salvo waiver explícito de Jean. |
+| PRD-F8 | Memoria global de proyecto | El repo incluye `PROJECT_GLOBAL_VISION.md` con objetivo, decisiones, fase actual, repo/worktree y próximos incrementos. |
 
 ## 6. Requisitos no funcionales
 

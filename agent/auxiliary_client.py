@@ -10,17 +10,14 @@ Resolution order for text tasks (auto mode):
   2. OpenRouter  (OPENROUTER_API_KEY)
   3. Nous Portal (~/.hermes/auth.json active provider)
   4. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
-  7. None
+  5. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+  6. None
 
 Resolution order for vision/multimodal tasks (auto mode):
   1. Selected main provider, if it is one of the supported vision backends below
   2. OpenRouter
   3. Nous Portal
-  4. Native Anthropic
-  5. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
-  6. None
+  4. None
 
 Codex OAuth (ChatGPT-account auth) is intentionally NOT in either
 fallback chain: OpenAI gates this endpoint behind an undocumented,

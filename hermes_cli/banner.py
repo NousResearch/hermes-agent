@@ -144,11 +144,37 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _detect_canonical_remote(repo_dir: Path) -> str:
+    """Return ``'upstream'`` if that remote is configured, else ``'origin'``.
+
+    Mirrors the fork-aware convention used by ``cmd_update`` so the
+    update-check banner measures distance to the canonical source rather
+    than to the user's own fork. See issue #26172.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "upstream"],
+            capture_output=True, text=True, timeout=2,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return "upstream"
+    except Exception:
+        pass
+    return "origin"
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
+    """Count commits behind the canonical remote's ``main`` branch.
+
+    Prefers the ``upstream`` remote when present (typical fork layout) so
+    the count measures distance to the canonical source; falls back to
+    ``origin`` otherwise.
+    """
+    remote = _detect_canonical_remote(repo_dir)
     try:
         subprocess.run(
-            ["git", "fetch", "origin", "--quiet"],
+            ["git", "fetch", remote, "--quiet"],
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
@@ -157,7 +183,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
 
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            ["git", "rev-list", "--count", f"HEAD..{remote}/main"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
         )
@@ -215,7 +241,8 @@ def check_for_updates() -> Optional[int]:
 
     Two paths: if ``HERMES_REVISION`` is set (nix builds embed it), compare
     it to upstream main via ``git ls-remote``. Otherwise look for a local
-    git checkout and count commits behind ``origin/main``.
+    git checkout and count commits behind the canonical remote's main
+    (``upstream`` if configured, ``origin`` otherwise).
 
     Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
     if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if

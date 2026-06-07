@@ -9445,11 +9445,41 @@ class GatewayRunner:
 
         # First-message onboarding -- only on the very first interaction ever
         if not history and not self.session_store.has_any_sessions():
-            context_prompt += (
+            # Default first-contact note: a brief self-introduction.
+            _intro_note = (
                 "\n\n[System note: This is the user's very first message ever. "
                 "Briefly introduce yourself and mention that /help shows available commands. "
                 "Keep the introduction concise -- one or two sentences max.]"
             )
+            # Opt-in structured profile-build path. When enabled (default
+            # "ask") and not yet offered on this install, swap the plain intro
+            # for a consent-gated directive that offers to build a user
+            # profile and persists confirmed facts via memory(target="user").
+            # The offer fires at most once (onboarding.seen flag); set
+            # onboarding.profile_build: off in config.yaml to disable.
+            try:
+                from agent.onboarding import (
+                    PROFILE_BUILD_FLAG,
+                    is_seen,
+                    mark_seen,
+                    profile_build_directive,
+                    profile_build_mode,
+                )
+                _onb_cfg = _load_gateway_config()
+                if (
+                    profile_build_mode(_onb_cfg) == "ask"
+                    and not is_seen(_onb_cfg, PROFILE_BUILD_FLAG)
+                ):
+                    context_prompt += profile_build_directive()
+                    mark_seen(_hermes_home / "config.yaml", PROFILE_BUILD_FLAG)
+                else:
+                    context_prompt += _intro_note
+            except Exception as _pb_err:
+                logger.debug(
+                    "Profile-build onboarding directive failed, using plain intro: %s",
+                    _pb_err,
+                )
+                context_prompt += _intro_note
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)

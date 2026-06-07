@@ -7139,6 +7139,9 @@ class GatewayRunner:
         if canonical == "model":
             return await self._handle_model_command(event)
 
+        if canonical == "qwen-ops":
+            return await self._handle_qwen_ops_command(event)
+
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
 
@@ -10138,6 +10141,43 @@ class GatewayRunner:
             lines.append(t("gateway.model.session_only_hint"))
 
         return "\n".join(lines)
+
+    async def _handle_qwen_ops_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle qwen-ops as a routed Telegram/Hermes client."""
+        from gateway.qwen_ops import (
+            QWEN_OPS_MODEL_COMMAND_TEXT,
+            QWEN_OPS_SCOPE_DECLARATION,
+            build_qwen_ops_escalation_packet,
+            is_qwen_ops_escalation,
+            qwen_ops_help_text,
+            qwen_ops_prompt_text,
+        )
+
+        raw_args = event.get_command_args().strip()
+        lowered = raw_args.lower()
+        if lowered in {"help", "status", "scope"}:
+            return qwen_ops_help_text()
+
+        if is_qwen_ops_escalation(raw_args):
+            return build_qwen_ops_escalation_packet(raw_args)
+
+        switch_event = dataclasses.replace(event, text=QWEN_OPS_MODEL_COMMAND_TEXT)
+        switch_result = await self._handle_model_command(switch_event)
+        if not raw_args or lowered in {"on", "enable", "switch"}:
+            if switch_result:
+                return f"{QWEN_OPS_SCOPE_DECLARATION}\n\n{switch_result}"
+            return QWEN_OPS_SCOPE_DECLARATION
+
+        switch_text = str(switch_result or "").lstrip()
+        if (
+            switch_text.startswith("❌")
+            or switch_text.startswith("✗")
+            or switch_text.lower().startswith("error:")
+        ):
+            return f"{QWEN_OPS_SCOPE_DECLARATION}\n\n{switch_result}"
+
+        prompt_event = dataclasses.replace(event, text=qwen_ops_prompt_text(raw_args))
+        return await self._handle_message(prompt_event)
 
     async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
         """Handle /codex-runtime command in the gateway.

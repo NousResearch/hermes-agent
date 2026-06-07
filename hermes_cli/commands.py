@@ -125,6 +125,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
+    CommandDef("qwen-ops", "Route local advisory ops through Qwen", "Configuration",
+               gateway_only=True, aliases=("qwen", "qwenops", "qwen_ops"),
+               args_hint="[on|help|escalate|prompt]"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
 

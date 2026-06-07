@@ -42,6 +42,22 @@ FRONTIER_ACTIONS = {
     "FRONTIER_REVIEW_BLOCKED_NO_CONSUMER",
     "FRONTIER_REVIEW_RECEIPT_VERIFIED",
 }
+FRONTIER_ESCALATION_PACKET_FIELDS = (
+    "frontier_ticket_id",
+    "target_model_lane",
+    "org",
+    "repo",
+    "pr_numbers",
+    "pr_head_sha",
+    "blocker_type",
+    "why_frontier_is_needed",
+    "why_controller_cannot_drain_directly",
+    "requested_output_type",
+    "expected_next_action_after_frontier_response",
+    "state_fingerprint",
+    "created_at",
+    "status",
+)
 REVIEW_CONSUMER_STATUSES = {"queued", "invoked", "already_pending", "blocked_no_consumer", "assigned", "not_yet_routed"}
 
 

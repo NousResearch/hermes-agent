@@ -1968,6 +1968,13 @@ def _run_browser_command(
     if browser_cmd == "npx agent-browser":
         _npx_bin = shutil.which("npx") or "npx"
         cmd_prefix = [_npx_bin, "agent-browser"]
+        
+        # Windows cmd.exe splits on '&' when calling .cmd files unless quoted.
+        # Python's subprocess doesn't quote arguments with '&' if they lack spaces.
+        if os.name == "nt" and _npx_bin.endswith(".cmd"):
+            for i in range(len(args)):
+                if "&" in args[i] and " " not in args[i]:
+                    args[i] = args[i].replace("&", "^&")
     else:
         cmd_prefix = [browser_cmd]
 

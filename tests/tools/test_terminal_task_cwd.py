@@ -242,3 +242,25 @@ def test_safe_getcwd_falls_back_to_home_when_no_terminal_cwd(monkeypatch):
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     monkeypatch.setattr(terminal_tool.os.path, "expanduser", lambda p: "/home/me")
     assert terminal_tool._safe_getcwd() == "/home/me"
+
+
+def test_resolve_container_task_id():
+    """Verify that _resolve_container_task_id correctly parses session vs subagent IDs."""
+    
+    # 1. Overrides return task_id directly
+    terminal_tool._task_env_overrides["rollout-1"] = {}
+    assert terminal_tool._resolve_container_task_id("rollout-1") == "rollout-1"
+    
+    # 2. None returns "default"
+    assert terminal_tool._resolve_container_task_id(None) == "default"
+    
+    # 3. Empty string returns "default"
+    assert terminal_tool._resolve_container_task_id("") == "default"
+    
+    # 4. Gateway session ID returns itself (isolated)
+    assert terminal_tool._resolve_container_task_id("857f7a71-c77e-453a-99a6-6af5227df351") == "857f7a71-c77e-453a-99a6-6af5227df351"
+    
+    # 5. Subagent IDs extract the parent session ID (sharing parent's container)
+    assert terminal_tool._resolve_container_task_id("session-abc/task-123") == "session-abc"
+    assert terminal_tool._resolve_container_task_id("session-xyz/task-456") == "session-xyz"
+

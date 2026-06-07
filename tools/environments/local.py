@@ -446,6 +446,7 @@ class LocalEnvironment(BaseEnvironment):
         if cwd:
             cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        self._persistent = True
         self.init_session()
 
     def get_temp_dir(self) -> str:

@@ -993,23 +993,28 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     Map a tool-call ``task_id`` to the container/sandbox key used by
     ``_active_environments``.
 
-    The top-level agent passes ``task_id=None`` and lands on ``"default"``.
-    ``delegate_task`` children pass their own subagent ID so that
-    file-state tracking, the active-subagents registry, and TUI events stay
-    distinct per child -- but we deliberately collapse that ID back to
-    ``"default"`` here so subagents share the parent's long-lived container
-    (one bash, one /workspace, one set of installed packages).
-
-    Exception: RL / benchmark environments (TerminalBench2, HermesSweEnv, ...)
-    call ``register_task_env_overrides(task_id, {...})`` to request a
-    per-task Docker/Modal image. When an override is registered for a
-    task_id, we honour it by returning the task_id unchanged -- those
-    rollouts need their own isolated sandbox, which is the whole point of
-    the override.
+    The top-level agent passes ``task_id=session_id`` (or None in CLI mode).
+    ``delegate_task`` children pass their own subagent ID (e.g. session_id/task-123) 
+    so that file-state tracking and TUI events stay distinct per child -- but we 
+    deliberately collapse that ID back to the parent session_id here so subagents 
+    share the parent's container.
     """
     if task_id and task_id in _task_env_overrides:
         return task_id
-    return "default"
+        
+    if not task_id:
+        return "default"
+        
+    # Subagent IDs are formatted as "parent_id/task-xxx".
+    # By splitting on '/' and taking the first part, subagents share their parent's environment,
+    # while distinct gateway sessions get their own isolated environments (and their own CWD tracking).
+    return task_id.split("/")[0]
+
+
+def get_active_env(task_id: str) -> Optional[BaseEnvironment]:
+    """Retrieve the active environment for a given task ID."""
+    with _env_lock:
+        return _active_environments.get(task_id)
 
 
 # Configuration from environment variables
@@ -1066,7 +1071,13 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    try:
+        from agent.runtime_cwd import _session_cwd_override
+        _override = _session_cwd_override()
+    except Exception:
+        _override = ""
+        
+    cwd = _override or os.getenv("TERMINAL_CWD", default_cwd)
     if cwd:
         cwd = os.path.expanduser(cwd)
     host_cwd = None

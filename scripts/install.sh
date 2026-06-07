@@ -1094,11 +1094,14 @@ clone_repo() {
 
     # An interrupted previous clone leaves a .git with no initial commit, where
     # the update path's `git stash` / `git checkout` abort with "You do not
-    # have the initial commit yet" and fail the install (#40998). Drop such a
-    # partial checkout so the fresh-clone path below handles it cleanly.
+    # have the initial commit yet" and fail the install (#40998). Move such a
+    # partial checkout aside -- never delete it, in case it holds something the
+    # user wants -- so the fresh-clone path below can proceed.
     if [ -d "$INSTALL_DIR/.git" ] && ! git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
-        log_warn "Existing checkout at $INSTALL_DIR has no commits (interrupted clone) -- replacing it."
-        rm -rf "$INSTALL_DIR"
+        backup_dir="${INSTALL_DIR}.broken-$(date -u +%Y%m%d-%H%M%S)"
+        log_warn "Existing checkout at $INSTALL_DIR has no commits (interrupted clone)."
+        log_warn "Moving it aside to $backup_dir before re-cloning."
+        mv "$INSTALL_DIR" "$backup_dir"
     fi
 
     if [ -d "$INSTALL_DIR" ]; then

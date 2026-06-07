@@ -1612,7 +1612,19 @@ def _describe_openrouter_unavailable() -> str:
     return "no usable OpenRouter credentials found"
 
 
-def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_nous(
+    vision: bool = False,
+    explicit_model: Optional[str] = None,
+) -> Tuple[Optional[OpenAI], Optional[str]]:
+    # ``explicit_model`` lets callers pass through a user-configured model
+    # (e.g. ``auxiliary.vision.model`` from config.yaml).  When set we skip the
+    # Portal-recommendation lookup entirely — querying the recommendation and
+    # silently using it would clobber the user's explicit choice, which is
+    # surprising and has caused 404s when the recommendation returns a bare
+    # model name that downstream vendor-prefix logic then re-qualifies wrong
+    # (e.g. ``qwen2.5-vl-72b-instruct`` -> ``nous/qwen2.5-vl-72b-instruct``
+    # rather than the catalog's ``qwen/qwen2.5-vl-72b-instruct``).
+    #
     # Check cross-session rate limit guard before attempting Nous —
     # if another session already recorded a 429, skip Nous entirely
     # to avoid piling more requests onto the tapped RPH bucket.
@@ -1647,33 +1659,41 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
 
-    # Ask the Portal which model it currently recommends for this task type.
-    # The /api/nous/recommended-models endpoint is the authoritative source:
-    # it distinguishes paid vs free tier recommendations, and get_nous_recommended_aux_model
-    # auto-detects the caller's tier via check_nous_free_tier().  Fall back to
-    # _NOUS_MODEL (google/gemini-3-flash-preview) when the Portal is unreachable
-    # or returns a null recommendation for this task type.
-    model = _NOUS_MODEL
-    try:
-        from hermes_cli.models import get_nous_recommended_aux_model
-        recommended = get_nous_recommended_aux_model(vision=vision)
-        if recommended:
-            model = recommended
-            logger.debug(
-                "Auxiliary/%s: using Portal-recommended model %s",
-                "vision" if vision else "text", model,
-            )
-        else:
-            logger.debug(
-                "Auxiliary/%s: no Portal recommendation, falling back to %s",
-                "vision" if vision else "text", model,
-            )
-    except Exception as exc:
+    # Resolve the model.  Caller-supplied ``explicit_model`` wins outright;
+    # otherwise ask the Portal for its recommendation and fall back to
+    # ``_NOUS_MODEL`` when unreachable.  The /api/nous/recommended-models
+    # endpoint is the authoritative source: it distinguishes paid vs free tier
+    # recommendations, and get_nous_recommended_aux_model auto-detects the
+    # caller's tier via check_nous_free_tier().
+    if explicit_model:
+        model = explicit_model
         logger.debug(
-            "Auxiliary/%s: recommended-models lookup failed (%s); "
-            "falling back to %s",
-            "vision" if vision else "text", exc, model,
+            "Auxiliary/%s: using caller-provided model %s "
+            "(skipping Portal recommendation)",
+            "vision" if vision else "text", model,
         )
+    else:
+        model = _NOUS_MODEL
+        try:
+            from hermes_cli.models import get_nous_recommended_aux_model
+            recommended = get_nous_recommended_aux_model(vision=vision)
+            if recommended:
+                model = recommended
+                logger.debug(
+                    "Auxiliary/%s: using Portal-recommended model %s",
+                    "vision" if vision else "text", model,
+                )
+            else:
+                logger.debug(
+                    "Auxiliary/%s: no Portal recommendation, falling back to %s",
+                    "vision" if vision else "text", model,
+                )
+        except Exception as exc:
+            logger.debug(
+                "Auxiliary/%s: recommended-models lookup failed (%s); "
+                "falling back to %s",
+                "vision" if vision else "text", exc, model,
+            )
 
     if runtime is not None:
         api_key, base_url = runtime
@@ -4100,7 +4120,7 @@ def _resolve_strict_vision_backend(
     if provider == "openrouter":
         return _try_openrouter(model=model)
     if provider == "nous":
-        return _try_nous(vision=True)
+        return _try_nous(vision=True, explicit_model=model)
     if provider == "openai-codex":
         # Route through resolve_provider_client so the caller's explicit
         # model is used.  There is no safe default Codex model (shifting

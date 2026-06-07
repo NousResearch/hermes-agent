@@ -369,7 +369,19 @@ class BaseEnvironment(ABC):
         # backends) into every terminal-tool response.
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
+        # Restrict the snapshot / cwd-file permissions to the owner BEFORE they
+        # are created.  ``export -p`` dumps every exported env var of the login
+        # shell, which inherits the host environment (SUDO_PASSWORD, the general
+        # AWS credential chain, and any user-set secrets that aren't in the
+        # provider blocklist).  The snapshot lives in a shared temp dir (``/tmp``
+        # on the default local backend), so with the inherited default umask
+        # (typically 022 -> mode 0644) any other local user could read it and
+        # harvest those secrets for the whole — potentially long-lived — gateway
+        # session.  ``umask 077`` forces the files to mode 0600.  It is set once
+        # at the top of the bootstrap; the script only creates these two files,
+        # so nothing user-facing is affected.
         bootstrap = (
+            f"umask 077\n"
             f"export -p > {_quoted_snap}\n"
             f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
             f"alias -p >> {_quoted_snap}\n"
@@ -449,12 +461,16 @@ class BaseEnvironment(ABC):
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
 
-        # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
+        # Re-dump env vars to snapshot (last-writer-wins for concurrent calls).
+        # Wrap the redirect in a subshell with ``umask 077`` so a snapshot that
+        # gets recreated mid-session (e.g. the user's command deleted it) is
+        # rewritten 0600 rather than world-readable — mirroring init_session.
+        # The subshell keeps the umask change off the user's own command above.
         if self._snapshot_ready:
-            parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
+            parts.append(f"(umask 077; export -p > {_quoted_snap}) 2>/dev/null || true")
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)
-        parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
+        parts.append(f"(umask 077; pwd -P > {_quoted_cwd_file}) 2>/dev/null || true")
         # Use a distinct line for the marker. The leading \n ensures
         # the marker starts on its own line even if the command doesn't
         # end with a newline (e.g. printf 'exact'). We'll strip this

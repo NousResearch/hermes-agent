@@ -8850,7 +8850,7 @@ class HermesCLI:
                 "The current conversation history will be discarded.",
                 cmd_original=cmd_original,
             ) is None:
-                return
+                return True
             self.new_session(silent=True)
             _clear_output_history()
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
@@ -8984,7 +8984,7 @@ class HermesCLI:
                 "The current conversation history will be discarded.",
                 cmd_original=cmd_original,
             ) is None:
-                return
+                return True
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
@@ -9014,7 +9014,7 @@ class HermesCLI:
                     _undo_n = int(_undo_parts[1])
                 except ValueError:
                     print(f"(._.) Invalid count {_undo_parts[1]!r} — use /undo or /undo N.")
-                    return
+                    return True
                 if _undo_n < 1:
                     _undo_n = 1
             _undo_desc = (
@@ -9027,7 +9027,7 @@ class HermesCLI:
                 _undo_desc,
                 cmd_original=cmd_original,
             ) is None:
-                return
+                return True
             self.undo_last(_undo_n)
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)

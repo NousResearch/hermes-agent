@@ -38,7 +38,7 @@ def test_text_only_acp_blocks_stay_string_for_legacy_prompt_path():
 
 def test_acp_resource_link_file_is_inlined_as_text(tmp_path):
     attached = tmp_path / "notes.md"
-    attached.write_text("# Notes\n\nAttached file body", encoding="utf-8")
+    attached.write_bytes(b"# Notes\n\nAttached file body")
 
     content = _content_blocks_to_openai_user_content([
         TextContentBlock(type="text", text="Please read this file"),

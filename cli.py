@@ -25,6 +25,7 @@ except ModuleNotFoundError:
 
 import logging
 import os
+import posixpath
 import shutil
 import sys
 import json
@@ -2295,8 +2296,8 @@ def _termux_example_image_path(filename: str = "cat.png") -> str:
     ]
     for root in candidates:
         if os.path.isdir(root):
-            return os.path.join(root, "Pictures", filename)
-    return os.path.join("~/storage/shared", "Pictures", filename)
+            return posixpath.join(root, "Pictures", filename)
+    return posixpath.join("~/storage/shared", "Pictures", filename)
 
 
 def _split_path_input(raw: str) -> tuple[str, str]:
@@ -2365,10 +2366,23 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
             parsed = urlparse(token)
             if parsed.scheme == "file":
                 expanded = unquote(parsed.path or "")
+                if (
+                    os.name == "nt"
+                    and len(expanded) >= 3
+                    and expanded[0] == "/"
+                    and expanded[2] == ":"
+                    and expanded[1].isalpha()
+                ):
+                    expanded = expanded[1:]
                 if parsed.netloc and os.name == "nt":
                     expanded = f"//{parsed.netloc}{expanded}"
         except Exception:
             expanded = token
+    if expanded == "~" or expanded.startswith(("~/", "~\\")):
+        home_override = os.getenv("HOME")
+        if home_override:
+            suffix = expanded[2:] if len(expanded) > 1 else ""
+            expanded = os.path.join(home_override, suffix) if suffix else home_override
     expanded = os.path.expandvars(os.path.expanduser(expanded))
     if os.name != "nt":
         normalized = expanded.replace("\\", "/")

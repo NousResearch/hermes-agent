@@ -45,7 +45,17 @@ def _get_platform_default_hermes_home() -> Path:
     """Return the platform-native default Hermes home path."""
     if sys.platform == "win32":
         local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        if local_appdata:
+            base = Path(local_appdata)
+        else:
+            try:
+                base = Path.home() / "AppData" / "Local"
+            except RuntimeError:
+                # Some tests and scrubbed subprocesses clear USERPROFILE/HOME.
+                # Fall back to a process-local writable root instead of raising
+                # during import-time default_factory calls.
+                temp_root = os.environ.get("TEMP") or os.environ.get("TMP")
+                base = Path(temp_root) if temp_root else Path.cwd()
         return base / "hermes"
     return Path.home() / ".hermes"
 

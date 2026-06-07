@@ -16,6 +16,7 @@ import base64
 import hashlib
 import json
 import stat
+import sys
 import time
 from pathlib import Path
 
@@ -215,6 +216,10 @@ class TestCredentialIo:
         assert loaded.refresh_token == "rt-1"
         assert loaded.project_id == "proj-abc"
 
+    @pytest.mark.skipif(
+        sys.platform.startswith("win"),
+        reason="POSIX mode bits are not enforced on Windows filesystems",
+    )
     def test_save_uses_0600_permissions(self):
         from agent.google_oauth import _credentials_path, save_credentials
 

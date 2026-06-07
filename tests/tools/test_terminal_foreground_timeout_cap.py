@@ -94,6 +94,63 @@ class TestForegroundTimeoutCap:
         call_kwargs = mock_env.execute.call_args
         assert call_kwargs[0][0] == "pnpm dev --help"
 
+    def test_foreground_rejects_broad_raw_pytest_run(self):
+        """Broad raw pytest should be redirected to the safe wrapper."""
+        from tools.terminal_tool import terminal_tool
+
+        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
+             patch("tools.terminal_tool._start_cleanup_thread"):
+            result = json.loads(terminal_tool(
+                command="./venv/bin/python -m pytest -q -o 'addopts=' -n 2 tests/agent",
+                timeout=300,
+            ))
+
+        assert result["exit_code"] == -1
+        assert "hermes_safe_pytest.py" in result["error"]
+        assert "xdist workers" in result["error"]
+
+    def test_foreground_allows_targeted_pytest_nodeid(self):
+        """Tight TDD node-id pytest loops stay allowed."""
+        from tools.terminal_tool import terminal_tool
+
+        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
+             patch("tools.terminal_tool._start_cleanup_thread"):
+
+            mock_env = MagicMock()
+            mock_env.execute.return_value = {"output": "1 passed", "returncode": 0}
+
+            with patch("tools.terminal_tool._active_environments", {"default": mock_env}), \
+                 patch("tools.terminal_tool._last_activity", {"default": 0}), \
+                 patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+                result = json.loads(terminal_tool(
+                    command="pytest tests/tools/test_terminal_tool.py::test_validate_workdir_allows_windows_drive_paths -q",
+                    timeout=120,
+                ))
+
+        assert result["error"] is None
+        assert mock_env.execute.call_args[0][0].startswith("pytest tests/tools")
+
+    def test_foreground_allows_safe_pytest_wrapper(self):
+        """The safe wrapper itself must not be blocked."""
+        from tools.terminal_tool import terminal_tool
+
+        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
+             patch("tools.terminal_tool._start_cleanup_thread"):
+
+            mock_env = MagicMock()
+            mock_env.execute.return_value = {"output": "ok", "returncode": 0}
+
+            with patch("tools.terminal_tool._active_environments", {"default": mock_env}), \
+                 patch("tools.terminal_tool._last_activity", {"default": 0}), \
+                 patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+                result = json.loads(terminal_tool(
+                    command="python3 scripts/hermes_safe_pytest.py tests/agent -q",
+                    timeout=300,
+                ))
+
+        assert result["error"] is None
+        assert "hermes_safe_pytest.py" in mock_env.execute.call_args[0][0]
+
     def test_foreground_timeout_within_max_executes(self):
         """When model requests timeout <= FOREGROUND_MAX_TIMEOUT, execute normally."""
         from tools.terminal_tool import terminal_tool

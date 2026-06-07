@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from io import StringIO
 
 import pytest
@@ -118,6 +119,10 @@ class _FakeAgent:
         pass
 
 
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="asyncio connect_*_pipe does not support os.pipe handles on Windows",
+)
 @pytest.mark.asyncio
 async def test_bare_ping_request_produces_proper_response_and_no_stderr_noise(
     caplog: pytest.LogCaptureFixture,

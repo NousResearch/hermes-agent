@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -134,6 +135,12 @@ def test_resolve_workspace_falls_back_to_file_location(tmp_path: Path, monkeypat
 
 
 def test_normalize_path_expands_tilde(monkeypatch):
-    monkeypatch.setenv("HOME", "/home/user")
+    if sys.platform == "win32":
+        monkeypatch.setenv("USERPROFILE", r"C:\Users\user")
+        expected = os.path.abspath(r"C:\Users\user\x.py")
+    else:
+        monkeypatch.setenv("HOME", "/home/user")
+        expected = os.path.abspath("/home/user/x.py")
+
     p = normalize_path("~/x.py")
-    assert p == os.path.abspath("/home/user/x.py")
+    assert p == expected

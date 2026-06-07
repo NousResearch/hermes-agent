@@ -62,7 +62,9 @@ _IMAGE_EXT_PATTERN = "|".join(e.lstrip(".") for e in _IMAGE_EXTS)
 # extract_local_files() uses: anchors to ``~/`` or ``/``, ignores matches inside
 # URLs (the ``(?<![/:\w.])`` lookbehind), and case-insensitive on the extension.
 _LOCAL_IMAGE_PATH_RE = re.compile(
-    r"(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:" + _IMAGE_EXT_PATTERN + r")\b",
+    r"(?<![/:\\w.])(?:~/|/|[A-Za-z]:[\\/])(?:[\w.\-]+[\\/])*[\w.\-]+\.(?:"
+    + _IMAGE_EXT_PATTERN
+    + r")\b",
     re.IGNORECASE,
 )
 
@@ -74,6 +76,15 @@ _IMAGE_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+def _expand_local_image_ref(raw: str) -> str:
+    expanded = raw
+    if expanded == "~" or expanded.startswith(("~/", "~\\")):
+        home_override = os.getenv("HOME")
+        if home_override:
+            suffix = expanded[2:] if len(expanded) > 1 else ""
+            expanded = os.path.join(home_override, suffix) if suffix else home_override
+    return os.path.expanduser(expanded)
 
 def extract_image_refs(text: str) -> Tuple[List[str], List[str]]:
     """Scan free-form text for image references the model should see.
@@ -115,7 +126,7 @@ def extract_image_refs(text: str) -> Tuple[List[str], List[str]]:
         if _in_code(match.start()):
             continue
         raw = match.group(0)
-        expanded = os.path.expanduser(raw)
+        expanded = _expand_local_image_ref(raw)
         try:
             if not os.path.isfile(expanded):
                 continue

@@ -55,8 +55,16 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
     )
     env = dict(initial_env)
     env["HERMES_HOME"] = str(hermes_home)
-    # Keep PATH / PYTHONPATH so venv imports resolve.
-    for k in ("PATH", "PYTHONPATH", "VIRTUAL_ENV", "HOME"):
+    # Keep PATH / PYTHONPATH so venv imports resolve.  On Windows,
+    # SYSTEMROOT/WINDIR/COMSPEC/PATHEXT are also process essentials: without
+    # them Python cannot initialize Winsock in modules imported by gateway.run.
+    inherited = ["PATH", "PYTHONPATH", "VIRTUAL_ENV", "HOME"]
+    if sys.platform.startswith("win"):
+        inherited.extend([
+            "SYSTEMROOT", "SystemRoot", "WINDIR", "COMSPEC", "ComSpec",
+            "PATHEXT", "SystemDrive", "USERPROFILE",
+        ])
+    for k in inherited:
         if k in os.environ and k not in env:
             env[k] = os.environ[k]
 

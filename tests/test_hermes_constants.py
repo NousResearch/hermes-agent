@@ -23,6 +23,7 @@ class TestGetDefaultHermesRoot:
         """When HERMES_HOME is not set, returns ~/.hermes."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(hermes_constants.sys, "platform", "linux")
 
         assert get_default_hermes_root() == tmp_path / ".hermes"
 

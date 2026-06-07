@@ -15,6 +15,13 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 from hermes_constants import display_hermes_home
 
 
+def _safe_cprint(*args, **kwargs):
+    try:
+        cprint(*args, **kwargs)
+    except Exception:
+        pass
+
+
 def clarify_callback(cli, question, choices):
     """Prompt for clarifying question through the TUI.
 
@@ -56,7 +63,7 @@ def clarify_callback(cli, question, choices):
     cli._clarify_deadline = 0
     if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
-    cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
+    _safe_cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
     return (
         "The user did not provide a response within the time limit. "
         "Use your best judgement to make the choice and proceed."
@@ -80,7 +87,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
             value = ""
 
         if not value:
-            cprint(f"\n{_DIM}  ⏭ Secret entry skipped{_RST}")
+            _safe_cprint(f"\n{_DIM}  ⏭ Secret entry skipped{_RST}")
             return {
                 "success": True,
                 "reason": "cancelled",
@@ -92,7 +99,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
 
         stored = save_env_value_secure(var_name, value)
         _dhh = display_hermes_home()
-        cprint(f"\n{_DIM}  ✓ Stored secret in {_dhh}/.env as {var_name}{_RST}")
+        _safe_cprint(f"\n{_DIM}  ✓ Stored secret in {_dhh}/.env as {var_name}{_RST}")
         return {
             **stored,
             "skipped": False,
@@ -133,7 +140,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
                 cli._app.invalidate()
 
             if not value:
-                cprint(f"\n{_DIM}  ⏭ Secret entry skipped{_RST}")
+                _safe_cprint(f"\n{_DIM}  ⏭ Secret entry skipped{_RST}")
                 return {
                     "success": True,
                     "reason": "cancelled",
@@ -145,7 +152,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
 
             stored = save_env_value_secure(var_name, value)
             _dhh = display_hermes_home()
-            cprint(f"\n{_DIM}  ✓ Stored secret in {_dhh}/.env as {var_name}{_RST}")
+            _safe_cprint(f"\n{_DIM}  ✓ Stored secret in {_dhh}/.env as {var_name}{_RST}")
             return {
                 **stored,
                 "skipped": False,
@@ -172,7 +179,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
             pass
     if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
-    cprint(f"\n{_DIM}  ⏱ Timeout — secret capture cancelled{_RST}")
+    _safe_cprint(f"\n{_DIM}  ⏱ Timeout — secret capture cancelled{_RST}")
     return {
         "success": True,
         "reason": "timeout",
@@ -238,5 +245,5 @@ def approval_callback(cli, command: str, description: str) -> str:
         cli._approval_deadline = 0
         if hasattr(cli, "_app") and cli._app:
             cli._app.invalidate()
-        cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
+        _safe_cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
         return "deny"

@@ -855,8 +855,9 @@ class MatrixAdapter(BasePlatformAdapter):
 
                 # Accept unverified devices so senders share Megolm
                 # session keys with us automatically.
-                olm.share_keys_min_trust = TrustState.UNVERIFIED
-                olm.send_keys_min_trust = TrustState.UNVERIFIED
+                unverified_trust = getattr(TrustState, "UNVERIFIED", "unverified")
+                olm.share_keys_min_trust = unverified_trust
+                olm.send_keys_min_trust = unverified_trust
 
                 await olm.load()
 

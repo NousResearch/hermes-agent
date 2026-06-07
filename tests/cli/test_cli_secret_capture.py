@@ -40,7 +40,9 @@ def test_secret_capture_callback_can_be_completed_from_cli_state_machine():
     cli = _make_cli_stub(with_app=True)
     results = []
 
-    with patch("hermes_cli.callbacks.save_env_value_secure") as save_secret:
+    with patch("hermes_cli.callbacks.save_env_value_secure") as save_secret, patch(
+        "hermes_cli.callbacks.cprint", side_effect=RuntimeError("no console")
+    ):
         save_secret.return_value = {
             "success": True,
             "stored_as": "TENOR_API_KEY",

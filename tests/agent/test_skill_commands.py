@@ -1,7 +1,9 @@
 """Tests for agent/skill_commands.py — skill slash command scanning and platform filtering."""
 
 import os
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -745,7 +747,11 @@ class TestInlineShellExpansion:
                 return_value={"template_vars": True, "inline_shell": True,
                               "inline_shell_timeout": 5},
             ),
+            patch("agent.skill_preprocessing.subprocess.run") as run_shell,
         ):
+            run_shell.return_value = SimpleNamespace(
+                stdout="INLINE_RAN\n", stderr="", returncode=0
+            )
             _make_skill(
                 tmp_path,
                 "dyn-on",
@@ -757,6 +763,7 @@ class TestInlineShellExpansion:
         assert msg is not None
         assert "Marker: INLINE_RAN." in msg
         assert "!`echo INLINE_RAN`" not in msg
+        run_shell.assert_called_once()
 
     def test_inline_shell_runs_in_skill_directory(self, tmp_path):
         """Inline snippets get the skill dir as CWD so relative paths work."""
@@ -767,12 +774,20 @@ class TestInlineShellExpansion:
                 return_value={"template_vars": True, "inline_shell": True,
                               "inline_shell_timeout": 5},
             ),
+            patch("agent.skill_preprocessing.subprocess.run") as run_shell,
         ):
             skill_dir = _make_skill(
                 tmp_path,
                 "dyn-cwd",
                 body="Here: !`pwd`",
             )
+
+            def fake_run(cmd, **kwargs):
+                assert cmd == ["bash", "-c", "pwd"]
+                assert kwargs.get("cwd") == str(skill_dir)
+                return SimpleNamespace(stdout=f"{skill_dir}\n", stderr="", returncode=0)
+
+            run_shell.side_effect = fake_run
             scan_skill_commands()
             msg = build_skill_invocation_message("/dyn-cwd")
 
@@ -787,7 +802,11 @@ class TestInlineShellExpansion:
                 return_value={"template_vars": True, "inline_shell": True,
                               "inline_shell_timeout": 1},
             ),
+            patch("agent.skill_preprocessing.subprocess.run") as run_shell,
         ):
+            run_shell.side_effect = subprocess.TimeoutExpired(
+                ["bash", "-c", "sleep 5 && printf DYN_MARKER"], 1
+            )
             _make_skill(
                 tmp_path,
                 "dyn-slow",

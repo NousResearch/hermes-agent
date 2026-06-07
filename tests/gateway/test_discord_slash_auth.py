@@ -141,9 +141,13 @@ def _make_interaction(
     response = SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock())
 
     if in_dm:
-        channel = discord.DMChannel()
+        channel = object.__new__(discord.DMChannel)
+        try:
+            channel.id = channel_id
+        except AttributeError:
+            pass
     elif in_thread:
-        channel = discord.Thread()
+        channel = object.__new__(discord.Thread)
         channel.id = channel_id
         channel.parent_id = parent_channel_id
     elif channel_id is None:

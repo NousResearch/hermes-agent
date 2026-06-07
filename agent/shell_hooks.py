@@ -59,6 +59,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -361,6 +362,17 @@ def _parse_single_entry(
 _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
 
 
+def _expand_hook_path(path: str) -> str:
+    """Expand hook paths, honoring HOME overrides on native Windows too."""
+    expanded = path
+    if expanded == "~" or expanded.startswith(("~/", "~" + chr(92))):
+        home_override = os.environ.get("HOME")
+        if home_override:
+            suffix = expanded[2:] if len(expanded) > 1 else ""
+            expanded = os.path.join(home_override, suffix) if suffix else home_override
+    return os.path.expanduser(expanded)
+
+
 def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     """Run ``spec.command`` as a subprocess with ``stdin_json`` on stdin.
 
@@ -380,13 +392,18 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         "error": None,
     }
     try:
-        argv = shlex.split(os.path.expanduser(spec.command))
+        argv = shlex.split(_expand_hook_path(spec.command), posix=os.name != "nt")
     except ValueError as exc:
         result["error"] = f"command {spec.command!r} cannot be parsed: {exc}"
         return result
     if not argv:
         result["error"] = "empty command"
         return result
+
+    if os.name == "nt" and argv[0].lower().endswith((".sh", ".bash")):
+        bash = shutil.which("bash")
+        if bash:
+            argv = [bash, Path(argv[0]).as_posix(), *argv[1:]]
 
     t0 = time.monotonic()
     try:
@@ -732,7 +749,7 @@ def _command_script_path(command: str) -> str:
     common bare-path form.
     """
     try:
-        parts = shlex.split(command)
+        parts = shlex.split(command, posix=os.name != "nt")
     except ValueError:
         return command
     if not parts:
@@ -796,7 +813,7 @@ def script_mtime_iso(command: str) -> Optional[str]:
     if not path:
         return None
     try:
-        expanded = os.path.expanduser(path)
+        expanded = _expand_hook_path(path)
         return datetime.fromtimestamp(
             os.path.getmtime(expanded), tz=timezone.utc,
         ).isoformat().replace("+00:00", "Z")
@@ -815,11 +832,11 @@ def script_is_executable(command: str) -> bool:
     path = _command_script_path(command)
     if not path:
         return False
-    expanded = os.path.expanduser(path)
+    expanded = _expand_hook_path(path)
     if not os.path.isfile(expanded):
         return False
     try:
-        argv = shlex.split(command)
+        argv = shlex.split(command, posix=os.name != "nt")
     except ValueError:
         return False
     is_bare_invocation = bool(argv) and argv[0] == path

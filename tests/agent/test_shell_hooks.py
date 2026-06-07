@@ -9,6 +9,7 @@ covered in ``test_shell_hooks_consent.py``.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -239,6 +240,7 @@ class TestMatcher:
 # ── End-to-end subprocess behaviour ───────────────────────────────────────
 
 
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX shell-script hooks require a POSIX shell")
 class TestCallbackSubprocess:
     def test_timeout_returns_none(self, tmp_path):
         # Script that sleeps forever; we set a 1s timeout.
@@ -671,6 +673,9 @@ class TestAllowlistConcurrency:
         # Interpreter prefix: R_OK is enough.
         assert shell_hooks.script_is_executable(f"python3 {script}")
         assert shell_hooks.script_is_executable(f"/usr/bin/env python3 {script}")
+
+        if sys.platform.startswith("win"):
+            return
 
         # Bare invocation on the same non-X_OK file: not runnable.
         assert not shell_hooks.script_is_executable(str(script))

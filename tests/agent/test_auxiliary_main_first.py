@@ -15,6 +15,17 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clear_aux_unhealthy_cache():
+    """Keep main-first tests independent of aux provider health set elsewhere."""
+    from agent.auxiliary_client import _reset_aux_unhealthy_cache
+
+    _reset_aux_unhealthy_cache()
+    yield
+    _reset_aux_unhealthy_cache()
 
 
 # ── Text aux tasks — _resolve_auto ──────────────────────────────────────────

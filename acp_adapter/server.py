@@ -168,15 +168,17 @@ def _path_from_file_uri(uri: str) -> Path | None:
     else:
         path_text = unquote(raw)
 
-    # file:///C:/Users/... or C:\Users\...
+    def _drive_path(drive: str, rest: str) -> Path:
+        normalized_rest = rest.lstrip("/\\").replace("\\", "/")
+        if os.name == "nt":
+            return Path(f"{drive.upper()}:/") / normalized_rest
+        return Path("/mnt") / drive.lower() / normalized_rest
+
+    # file:///C:/Users/... or C:\\Users\\...
     if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
-        drive = path_text[1].lower()
-        rest = path_text[3:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
+        return _drive_path(path_text[1], path_text[3:])
     if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
-        drive = path_text[0].lower()
-        rest = path_text[2:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
+        return _drive_path(path_text[0], path_text[2:])
 
     return Path(path_text)
 

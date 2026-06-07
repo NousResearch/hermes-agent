@@ -41,7 +41,7 @@ class TestClassifySandboxMirrorTarget:
         result = classify_sandbox_mirror_target(str(target))
         assert result is not None
         assert result["target_path"] == str(target.resolve())
-        assert result["mirror_root"].endswith(
+        assert result["mirror_root"].replace("\\", "/").endswith(
             "sandboxes/docker/default/home/.hermes"
         )
         assert result["inner_path"] == "profiles/group1/SOUL.md"

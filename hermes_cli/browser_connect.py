@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import posixpath
 import shlex
 import shutil
 import subprocess
@@ -89,8 +90,9 @@ def get_chrome_debug_candidates(system: str) -> list[str]:
     ) -> None:
         for _, group in install_groups:
             for base in filter(None, bases):
+                join = posixpath.join if str(base).startswith("/") else os.path.join
                 for parts in group:
-                    add(os.path.join(base, *parts))
+                    add(join(base, *parts))
 
     if system == "Darwin":
         for app in _DARWIN_APPS:

@@ -7,6 +7,7 @@ when proxy env vars or custom endpoint URLs are malformed.
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -45,7 +46,8 @@ def test_proxy_env_normalizes_socks_alias(monkeypatch):
 ])
 def test_proxy_env_rejects_malformed_port(monkeypatch, key):
     monkeypatch.setenv(key, "http://127.0.0.1:6153export")
-    with pytest.raises(RuntimeError, match=rf"Malformed proxy environment variable {key}=.*6153export"):
+    expected_key = key.upper() if sys.platform == "win32" else key
+    with pytest.raises(RuntimeError, match=rf"Malformed proxy environment variable {expected_key}=.*6153export"):
         _validate_proxy_env_urls()
 
 

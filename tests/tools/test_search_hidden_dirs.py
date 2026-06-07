@@ -13,9 +13,14 @@ Fix: _search_files (find) and _search_with_grep both now exclude hidden
 directories, matching ripgrep's default behavior.
 """
 
+import shutil
 import subprocess
+import sys
 
 import pytest
+
+POSIX_SHELL_COMMANDS = not sys.platform.startswith("win")
+RG_AVAILABLE = shutil.which("rg") is not None
 
 
 @pytest.fixture
@@ -41,6 +46,7 @@ def searchable_tree(tmp_path):
     return tmp_path / "skills"
 
 
+@pytest.mark.skipif(not POSIX_SHELL_COMMANDS, reason="POSIX find command semantics")
 class TestFindExcludesHiddenDirs:
     """_search_files uses find, which should exclude hidden directories."""
 
@@ -71,6 +77,7 @@ class TestFindExcludesHiddenDirs:
         assert "SKILL.md" in result.stdout
 
 
+@pytest.mark.skipif(not POSIX_SHELL_COMMANDS, reason="POSIX grep command semantics")
 class TestGrepExcludesHiddenDirs:
     """_search_with_grep should exclude hidden directories."""
 
@@ -96,10 +103,7 @@ class TestGrepExcludesHiddenDirs:
 class TestRipgrepAlreadyExcludesHidden:
     """Verify ripgrep's default behavior is to skip hidden directories."""
 
-    @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
-        reason="ripgrep not installed",
-    )
+    @pytest.mark.skipif(not RG_AVAILABLE, reason="ripgrep not installed")
     def test_rg_skips_hub_by_default(self, searchable_tree):
         """rg should skip .hub/ by default (no --hidden flag)."""
         result = subprocess.run(
@@ -109,10 +113,7 @@ class TestRipgrepAlreadyExcludesHidden:
         assert ".hub" not in result.stdout
         assert "catalog.json" not in result.stdout
 
-    @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
-        reason="ripgrep not installed",
-    )
+    @pytest.mark.skipif(not RG_AVAILABLE, reason="ripgrep not installed")
     def test_rg_finds_visible_content(self, searchable_tree):
         """rg should find content in visible directories."""
         result = subprocess.run(

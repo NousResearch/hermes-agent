@@ -60,10 +60,17 @@ class ProviderProfile:
     # True when the provider's API accepts image content inside
     # tool-result messages natively.  Set on providers that expose
     # multimodal models via tool results (Anthropic Messages API,
-    # OpenAI Chat Completions, Gemini, Xiaomi, MiniMax, etc.).
+    # OpenAI Chat Completions, Gemini, MiniMax, etc.).
     # Falls back to model-catalog lookup when False and the provider
     # has no registered profile.
     supports_vision: bool = False
+
+    # True when the provider's API accepts list-type tool message
+    # content (multipart with image_url parts).  Defaults to True for
+    # backward compatibility.  Set to False for providers that accept
+    # multimodal user messages but reject list-type tool content
+    # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
+    supports_vision_tool_messages: bool = True
 
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.

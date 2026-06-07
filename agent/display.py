@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
+from typing import Any
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
@@ -166,6 +167,181 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
 def _oneline(text: str) -> str:
     """Collapse whitespace (including newlines) to single spaces."""
     return " ".join(text.split())
+
+
+def _truncate_preview(text: str, max_len: int | None = None) -> str:
+    if max_len is None:
+        max_len = _tool_preview_max_len
+    if max_len and max_len > 0 and len(text) > max_len:
+        return text[:max_len - 3] + "..."
+    return text
+
+
+def _display_path(path: str, *, max_parts: int = 3) -> str:
+    if not path:
+        return "file"
+    compact = str(path).replace(str(Path.home()), "~")
+    parts = [part for part in compact.split("/") if part]
+    if compact.startswith("/") and parts:
+        prefix = "/"
+    else:
+        prefix = ""
+    if len(parts) <= max_parts:
+        return prefix + "/".join(parts)
+    return ".../" + "/".join(parts[-max_parts:])
+
+
+def _terminal_command_status(command: str) -> str:
+    cmd = _oneline(command)
+    low = cmd.lower()
+    if not cmd:
+        return "Running shell command"
+    if "pytest" in low:
+        return "Running Python tests"
+    if "vitest" in low or "bun test" in low or "npm test" in low or "pnpm test" in low:
+        return "Running tests"
+    if "tsc" in low or "typecheck" in low:
+        return "Running typecheck"
+    if "lint" in low:
+        return "Running lint checks"
+    if "graphify update" in low:
+        return "Refreshing the code graph"
+    if low.startswith("git status"):
+        return "Checking git status"
+    if low.startswith("git diff"):
+        return "Inspecting the diff"
+    if low.startswith("git log"):
+        return "Reading git history"
+    if low.startswith("git fetch"):
+        return "Fetching latest git refs"
+    if low.startswith("git push"):
+        return "Pushing branch"
+    if low.startswith("git commit"):
+        return "Creating commit"
+    if "rg " in low or low.startswith("rg ") or low.startswith("grep "):
+        return "Searching the workspace"
+    if low.startswith("curl "):
+        return "Calling an HTTP endpoint"
+    if low.startswith("python") or " python " in low:
+        return "Running Python script"
+    if low.startswith("node ") or low.startswith("bun ") or low.startswith("npm ") or low.startswith("pnpm "):
+        return "Running project command"
+    return f"Running: {_truncate_preview(cmd, 72)}"
+
+
+def build_meaningful_tool_status(tool_name: str, args: Any, max_len: int | None = None) -> str | None:
+    """Return a human-facing progress phrase for a tool call.
+
+    Unlike ``build_tool_preview()``, this deliberately avoids raw tool names such
+    as ``read_file`` or ``search_files``. Chat surfaces should read like a coding
+    agent's status line: what Hermes is doing, not which plumbing function fired.
+    """
+    if max_len is None:
+        max_len = _tool_preview_max_len
+    if not isinstance(args, dict):
+        return None
+
+    def finish(text: str | None) -> str | None:
+        if not text:
+            return None
+        return _truncate_preview(_oneline(text), max_len)
+
+    if tool_name == "terminal":
+        return finish(_terminal_command_status(str(args.get("command") or "")))
+    if tool_name == "process":
+        action = args.get("action") or "check"
+        sid = str(args.get("session_id") or "")[:12]
+        labels = {
+            "list": "Checking background processes",
+            "poll": f"Checking background job {sid}",
+            "log": f"Reading background job log {sid}",
+            "wait": f"Waiting for background job {sid}",
+            "kill": f"Stopping background job {sid}",
+            "write": f"Sending input to background job {sid}",
+            "submit": f"Submitting input to background job {sid}",
+        }
+        return finish(labels.get(str(action), f"Managing background job {sid}"))
+    if tool_name == "read_file":
+        return finish(f"Reading {_display_path(str(args.get('path') or 'file'))}")
+    if tool_name == "write_file":
+        return finish(f"Writing {_display_path(str(args.get('path') or 'file'))}")
+    if tool_name == "patch":
+        path = args.get("path") or "files"
+        return finish(f"Editing {_display_path(str(path))}")
+    if tool_name == "search_files":
+        pattern = args.get("pattern") or ""
+        target = args.get("target") or "content"
+        verb = "Finding files" if target == "files" else "Searching code"
+        return finish(f"{verb} for \"{pattern}\"")
+    if tool_name == "web_search":
+        return finish(f"Searching the web for \"{args.get('query') or ''}\"")
+    if tool_name == "web_extract":
+        urls = args.get("urls") or []
+        count = len(urls) if isinstance(urls, list) else 1
+        return finish(f"Reading {count} web page{'s' if count != 1 else ''}")
+    if tool_name == "browser_navigate":
+        url = str(args.get("url") or "")
+        domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+        return finish(f"Opening {domain or 'page'}")
+    if tool_name == "browser_snapshot":
+        return finish("Inspecting the page")
+    if tool_name == "browser_click":
+        return finish("Clicking in the browser")
+    if tool_name == "browser_type":
+        return finish("Typing in the browser")
+    if tool_name == "browser_scroll":
+        return finish("Scrolling the page")
+    if tool_name == "todo":
+        todos_arg = args.get("todos")
+        if todos_arg is None:
+            return finish("Checking the task plan")
+        return finish(f"Updating the task plan ({len(todos_arg)} items)")
+    if tool_name == "session_search":
+        return finish(f"Searching prior sessions for \"{args.get('query') or ''}\"")
+    if tool_name == "memory":
+        action = args.get("action") or "update"
+        target = args.get("target") or "memory"
+        verbs = {"add": "Saving", "replace": "Updating", "remove": "Removing"}
+        return finish(f"{verbs.get(action, 'Updating')} {target} memory")
+    if tool_name == "skills_list":
+        return finish("Listing available skills")
+    if tool_name == "skill_view":
+        return finish(f"Loading skill {args.get('name') or ''}")
+    if tool_name == "skill_manage":
+        return finish(f"Updating skill {args.get('name') or ''}")
+    if tool_name == "execute_code":
+        code = str(args.get("code") or "")
+        first = code.strip().split("\n")[0] if code.strip() else ""
+        if "web_search" in code or "web_extract" in code:
+            return finish("Running scripted web research")
+        if "terminal(" in code:
+            return finish("Running scripted terminal workflow")
+        return finish(f"Running Python workflow{': ' + first if first else ''}")
+    if tool_name == "delegate_task":
+        tasks = args.get("tasks")
+        if isinstance(tasks, list) and tasks:
+            return finish(f"Delegating {len(tasks)} parallel workstream{'s' if len(tasks) != 1 else ''}")
+        return finish(f"Delegating: {args.get('goal') or 'focused task'}")
+    if tool_name == "workflow":
+        action = args.get("action") or "run"
+        workflow_arg = args.get("workflow")
+        name = args.get("name")
+        if not name and isinstance(workflow_arg, dict):
+            name = workflow_arg.get("name")
+        suffix = f": {name}" if name else ""
+        return finish(f"{str(action).capitalize()} workflow{suffix}")
+    if tool_name == "cronjob":
+        action = args.get("action") or "manage"
+        return finish(f"Managing scheduled job: {action}")
+    if tool_name == "send_message":
+        return finish(f"Sending message to {args.get('target') or 'destination'}")
+    if tool_name == "clarify":
+        return finish("Asking a clarification")
+
+    preview = build_tool_preview(tool_name, args, max_len=max_len)
+    if preview:
+        return finish(preview)
+    return None
 
 
 def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:

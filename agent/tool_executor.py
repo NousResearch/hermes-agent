@@ -24,6 +24,7 @@ from typing import Any, Optional
 from agent.display import (
     KawaiiSpinner,
     build_tool_preview as _build_tool_preview,
+    build_meaningful_tool_status as _build_meaningful_tool_status,
     get_cute_tool_message as _get_cute_tool_message_impl,
     get_tool_emoji as _get_tool_emoji,
     _detect_tool_failure,
@@ -417,6 +418,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     # ── Logging / callbacks ──────────────────────────────────────────
     tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)
+    tool_statuses = [
+        _build_meaningful_tool_status(name, args) or name
+        for _, name, args, _, _, _ in parsed_calls
+    ]
+    tool_status_str = "; ".join(tool_statuses[:3])
+    if len(tool_statuses) > 3:
+        tool_status_str += f"; +{len(tool_statuses) - 3} more"
     if not agent.quiet_mode:
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
         for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls, 1):
@@ -433,7 +441,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             continue
         if agent.tool_progress_callback:
             try:
-                preview = _build_tool_preview(name, args)
+                preview = _build_meaningful_tool_status(name, args) or _build_tool_preview(name, args)
                 agent.tool_progress_callback("tool.started", name, preview, args)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
@@ -456,8 +464,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     # Touch activity before launching workers so the gateway knows
     # we're executing tools (not stuck).
-    agent._current_tool = tool_names_str
-    agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
+    agent._current_tool = tool_status_str or tool_names_str
+    agent._touch_activity(tool_status_str or f"executing {num_tools} tools concurrently: {tool_names_str}")
 
     def _run_tool(index, tool_call, function_name, function_args, middleware_trace):
         """Worker function executed in a thread."""
@@ -876,8 +884,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
 
         if not _execution_blocked:
-            agent._current_tool = function_name
-            agent._touch_activity(f"executing tool: {function_name}")
+            _status_text = _build_meaningful_tool_status(function_name, function_args) or function_name
+            agent._current_tool = _status_text
+            agent._touch_activity(_status_text)
 
         # Set activity callback for long-running tool execution (terminal
         # commands, etc.) so the gateway's inactivity monitor doesn't kill
@@ -891,7 +900,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if not _execution_blocked and agent.tool_progress_callback:
             try:
-                preview = _build_tool_preview(function_name, function_args)
+                preview = _build_meaningful_tool_status(function_name, function_args) or _build_tool_preview(function_name, function_args)
                 agent.tool_progress_callback("tool.started", function_name, preview, function_args)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")

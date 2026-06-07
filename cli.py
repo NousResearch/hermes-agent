@@ -11207,7 +11207,7 @@ class HermesCLI:
 
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚡")
-        _cprint(f"  ┊ {emoji} preparing {tool_name}…")
+        _cprint(f"  ┊ {emoji} preparing next step…")
 
     # ====================================================================
     # Tool progress callback (audio cues for voice mode)

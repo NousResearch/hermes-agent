@@ -5,6 +5,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from agent.display import (
+    build_meaningful_tool_status,
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,
@@ -276,3 +277,34 @@ class TestEditDiffPreview:
         assert any("a/file2.py" in line for line in rendered)
         assert not any("a/file7.py" in line for line in rendered)
         assert "additional file" in rendered[-1]
+
+class TestMeaningfulToolStatus:
+    def test_terminal_command_maps_to_human_status(self):
+        result = build_meaningful_tool_status("terminal", {"command": "pytest -q tests/agent/test_display.py"})
+        assert result == "Running Python tests"
+        assert "terminal" not in result
+        assert "pytest" not in result
+
+    def test_search_files_maps_to_search_intent(self):
+        result = build_meaningful_tool_status("search_files", {"pattern": "progress_callback", "target": "content"})
+        assert result == 'Searching code for "progress_callback"'
+        assert "search_files" not in result
+
+    def test_read_file_uses_compact_path_not_tool_name(self):
+        result = build_meaningful_tool_status("read_file", {"path": "/Users/claw/.hermes/hermes-agent/agent/display.py"})
+        assert result == "Reading .../hermes-agent/agent/display.py"
+        assert "read_file" not in result
+
+    def test_delegate_parallel_uses_workstream_language(self):
+        result = build_meaningful_tool_status("delegate_task", {"tasks": [{"goal": "a"}, {"goal": "b"}]})
+        assert result == "Delegating 2 parallel workstreams"
+        assert "delegate_task" not in result
+
+    def test_status_respects_explicit_max_len(self):
+        result = build_meaningful_tool_status("search_files", {"pattern": "x" * 100}, max_len=40)
+        assert len(result) <= 40
+        assert result.endswith("...")
+
+    def test_non_dict_args_do_not_crash(self):
+        assert build_meaningful_tool_status("terminal", []) is None
+

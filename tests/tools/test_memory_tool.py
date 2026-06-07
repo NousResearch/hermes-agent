@@ -383,14 +383,36 @@ class TestMemoryStoreSnapshot:
 
         # Add more after load
         store.add("memory", "added later")
+        store._last_prompt_snapshot["memory"] = store._render_live_snapshot("memory")
 
         snapshot = store.format_for_system_prompt("memory")
-        assert isinstance(snapshot, str)
-        assert "MEMORY" in snapshot
-        assert "loaded at start" in snapshot
-        assert "added later" not in snapshot
+        assert snapshot is None
 
     def test_empty_snapshot_returns_none(self, store):
+        snapshot = store.format_for_system_prompt("memory")
+        assert snapshot is None
+
+    def test_format_returns_diff_after_mid_session_write(self, store):
+        store.add("memory", "loaded at start")
+        store.load_from_disk()
+        store._last_prompt_snapshot["memory"] = ""
+
+        first = store.format_for_system_prompt("memory")
+        assert isinstance(first, str)
+        assert "loaded at start" in first
+
+        store.add("memory", "added later")
+        diff = store.format_for_system_prompt("memory")
+        assert isinstance(diff, str)
+        assert "MEMORY UPDATE" in diff
+        assert "+ added later" in diff
+        assert "loaded at start" not in diff
+
+    def test_format_returns_none_when_live_memory_unchanged(self, store):
+        store.add("memory", "loaded at start")
+        store.load_from_disk()
+        store._last_prompt_snapshot["memory"] = store._render_live_snapshot("memory")
+
         assert store.format_for_system_prompt("memory") is None
 
 

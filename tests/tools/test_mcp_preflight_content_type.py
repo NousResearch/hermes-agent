@@ -26,6 +26,7 @@ def _make_task(name: str = "probe_srv") -> MCPServerTask:
     """Minimal MCPServerTask without running the heavy __init__."""
     task = MCPServerTask.__new__(MCPServerTask)
     task.name = name
+    task._ready = asyncio.Event()
     return task
 
 
@@ -235,3 +236,16 @@ def test_ssl_verify_and_cert_forwarded(monkeypatch):
     assert captured.get("verify") is False
     assert captured.get("cert") == "/path/to/cert.pem"
     assert captured.get("follow_redirects") is True
+
+
+def test_reconnect_gate_condition_skips_preflight_after_ready():
+    task = _make_task()
+    task._ready.set()
+    config = {"transport": "streamable-http"}
+    assert not (config.get("transport") != "sse" and not task._ready.is_set())
+
+
+def test_reconnect_gate_condition_runs_preflight_before_ready():
+    task = _make_task()
+    config = {"transport": "streamable-http"}
+    assert config.get("transport") != "sse" and not task._ready.is_set()

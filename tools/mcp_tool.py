@@ -1800,7 +1800,7 @@ class MCPServerTask:
             # before surfacing an opaque CancelledError. Probing here — once,
             # outside the SDK task group — fails fast and non-retryably with
             # an actionable message, mirroring the URL-validation path above.
-            if config.get("transport") != "sse":
+            if config.get("transport") != "sse" and not self._ready.is_set():
                 try:
                     _probe_headers = dict(config.get("headers") or {})
                     await self._preflight_content_type(

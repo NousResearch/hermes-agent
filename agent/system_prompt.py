@@ -306,6 +306,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Volatile tier (changes per session/turn — never cached) ───
     volatile_parts: List[str] = []
 
+    if getattr(agent, "_memory_prompt_initialized", False) is False and agent._memory_store:
+        agent._memory_store._last_prompt_snapshot = {"memory": "", "user": ""}
+        agent._memory_prompt_initialized = True
+
     if agent._memory_store:
         if agent._memory_enabled:
             mem_block = agent._memory_store.format_for_system_prompt("memory")

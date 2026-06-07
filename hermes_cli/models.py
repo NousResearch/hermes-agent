@@ -2576,10 +2576,28 @@ def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:
     return True
 
 
+# Module-level cache for the GitHub Copilot /models catalog.
+# The picker path can ask for it multiple times in one process via:
+#   list_authenticated_providers -> cached_provider_model_ids -> provider_model_ids -> _fetch_github_models
+# and later get_copilot_model_context()/normalize helpers. Cache the raw filtered
+# catalog for a short TTL so we don't pay repeated TLS handshakes on every picker open.
+_github_model_catalog_cache: Optional[list[dict[str, Any]]] = None
+_github_model_catalog_cache_time: float = 0.0
+_GITHUB_MODEL_CATALOG_CACHE_TTL = 300  # 5 minutes
+
+
 def fetch_github_model_catalog(
     api_key: Optional[str] = None, timeout: float = 5.0
 ) -> Optional[list[dict[str, Any]]]:
     """Fetch the live GitHub Copilot model catalog for this account."""
+    global _github_model_catalog_cache, _github_model_catalog_cache_time
+
+    if (
+        _github_model_catalog_cache is not None
+        and (time.time() - _github_model_catalog_cache_time) < _GITHUB_MODEL_CATALOG_CACHE_TTL
+    ):
+        return list(_github_model_catalog_cache)
+
     attempts: list[dict[str, str]] = []
     if api_key:
         attempts.append({
@@ -2605,6 +2623,8 @@ def fetch_github_model_catalog(
                     seen_ids.add(model_id)
                     models.append(item)
                 if models:
+                    _github_model_catalog_cache = list(models)
+                    _github_model_catalog_cache_time = time.time()
                     return models
         except Exception:
             continue

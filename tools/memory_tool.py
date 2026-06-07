@@ -114,9 +114,10 @@ class MemoryStore:
     """
     Bounded curated memory with file persistence. One instance per AIAgent.
 
-    Maintains two parallel states:
-      - _system_prompt_snapshot: frozen at load time, used for system prompt injection.
-        Never mutated mid-session. Keeps prefix cache stable.
+    Maintains three parallel states:
+      - _system_prompt_snapshot: frozen at load time, used on the first prompt build.
+      - _last_prompt_snapshot: most recently injected snapshot, used to compute diff-only
+        system-prompt updates when memory changes mid-session.
       - memory_entries / user_entries: live state, mutated by tool calls, persisted to disk.
         Tool responses always reflect this live state.
     """
@@ -126,8 +127,12 @@ class MemoryStore:
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
-        # Frozen snapshot for system prompt -- set once at load_from_disk()
+        # Frozen snapshot captured at load time and used on the first prompt build.
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        # Last snapshot actually injected into the system prompt. This lets Hermes
+        # emit diff-only memory/profile blocks after mid-session writes without
+        # re-sending identical content every turn.
+        self._last_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
@@ -163,11 +168,12 @@ class MemoryStore:
         sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, "MEMORY.md")
         sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, "USER.md")
 
-        # Capture frozen snapshot for system prompt injection
+        # Capture frozen snapshot for first system prompt injection
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", sanitized_memory),
             "user": self._render_block("user", sanitized_user),
         }
+        self._last_prompt_snapshot = dict(self._system_prompt_snapshot)
 
     @staticmethod
     def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
@@ -442,16 +448,70 @@ class MemoryStore:
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
-        Return the frozen snapshot for system prompt injection.
+        Return the snapshot that should be injected into the system prompt.
 
-        This returns the state captured at load_from_disk() time, NOT the live
-        state. Mid-session writes do not affect this. This keeps the system
-        prompt stable across all turns, preserving the prefix cache.
-
-        Returns None if the snapshot is empty (no entries at load time).
+        First build: returns the frozen snapshot captured at load_from_disk() time.
+        After mid-session writes: returns None if unchanged, otherwise a compact
+        diff-only block so Hermes stops re-injecting identical memory/profile
+        content on every rebuild.
         """
-        block = self._system_prompt_snapshot.get(target, "")
-        return block if block else None
+        current_block = self._render_live_snapshot(target)
+        last_block = self._last_prompt_snapshot.get(target, "")
+
+        if not last_block:
+            self._last_prompt_snapshot[target] = current_block
+            return current_block or None
+
+        if current_block == last_block:
+            return None
+
+        diff_block = self._render_diff_block(target, last_block, current_block)
+        self._last_prompt_snapshot[target] = current_block
+        return diff_block or None
+
+    def _render_live_snapshot(self, target: str) -> str:
+        entries = self._sanitize_entries_for_snapshot(self._entries_for(target), self._path_for(target).name)
+        return self._render_block(target, entries)
+
+    def _parse_snapshot_entries(self, block: str) -> List[str]:
+        if not block:
+            return []
+        lines = block.splitlines()
+        if len(lines) <= 3:
+            return []
+        body = "\n".join(lines[3:]).strip()
+        if not body:
+            return []
+        return [part.strip() for part in body.split(ENTRY_DELIMITER) if part.strip()]
+
+    def _render_diff_block(self, target: str, previous_block: str, current_block: str) -> str:
+        previous_entries = self._parse_snapshot_entries(previous_block)
+        current_entries = self._parse_snapshot_entries(current_block)
+
+        added = [entry for entry in current_entries if entry not in previous_entries]
+        removed = [entry for entry in previous_entries if entry not in current_entries]
+
+        if not added and not removed:
+            return ""
+
+        limit = self._char_limit(target)
+        current = len(ENTRY_DELIMITER.join(current_entries)) if current_entries else 0
+        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
+        if target == "user":
+            header = f"USER PROFILE UPDATE (diff since session start) [{pct}% — {current:,}/{limit:,} chars]"
+        else:
+            header = f"MEMORY UPDATE (diff since session start) [{pct}% — {current:,}/{limit:,} chars]"
+        separator = "═" * 46
+
+        parts: List[str] = []
+        if added:
+            parts.append("Added:")
+            parts.extend(f"+ {entry}" for entry in added)
+        if removed:
+            parts.append("Removed:")
+            parts.extend(f"- {entry}" for entry in removed)
+
+        return f"{separator}\n{header}\n{separator}\n" + "\n".join(parts)
 
     # -- Internal helpers --
 

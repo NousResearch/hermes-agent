@@ -1266,23 +1266,24 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
+        # Full skill details are loaded on demand via skills_list(category=...) + skill_view(name),
+        # keeping the always-included system prompt much smaller.
         index_lines = []
         for category in sorted(skills_by_category.keys()):
             cat_desc = category_descriptions.get(category, "")
-            if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
-            else:
-                index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
+            unique_skills = []
             seen = set()
             for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
                 if name in seen:
                     continue
                 seen.add(name)
-                if desc:
-                    index_lines.append(f"    - {name}: {desc}")
-                else:
-                    index_lines.append(f"    - {name}")
+                unique_skills.append((name, desc))
+
+            count = len(unique_skills)
+            if cat_desc:
+                index_lines.append(f"  {category} ({count} skills): {cat_desc}")
+            else:
+                index_lines.append(f"  {category} ({count} skills)")
 
         result = (
             "## Skills (mandatory)\n"
@@ -1296,6 +1297,8 @@ def build_skills_system_prompt(
             "Skills also encode the user's preferred approach, conventions, and quality standards "
             "for tasks like code review, planning, and testing — load them even for tasks you "
             "already know how to do, because the skill defines how it should be done here.\n"
+            "If a category looks relevant, drill down with skills_list(category=...) before choosing "
+            "which specific skill(s) to load with skill_view(name).\n"
             "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
             "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "

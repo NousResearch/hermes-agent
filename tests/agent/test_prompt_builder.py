@@ -262,9 +262,10 @@ class TestBuildSkillsSystemPrompt:
             "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
         )
         result = build_skills_system_prompt()
-        assert "python-debug" in result
-        assert "Debug Python scripts" in result
+        assert "coding (1 skills)" in result
         assert "available_skills" in result
+        assert "skills_list(category=...)" in result
+        assert "python-debug" not in result.split("<available_skills>", 1)[1]
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -274,8 +275,8 @@ class TestBuildSkillsSystemPrompt:
             d.mkdir(parents=True, exist_ok=True)
             (d / "SKILL.md").write_text("---\ndescription: Search stuff\n---\n")
         result = build_skills_system_prompt()
-        # "search" should appear only once per category
-        assert result.count("- search") == 1
+        assert "tools (1 skills)" in result
+        assert "search" not in result.split("<available_skills>", 1)[1]
 
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""

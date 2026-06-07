@@ -1172,6 +1172,32 @@ class TestBuildAnthropicKwargs:
         assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert kwargs["output_config"] == {"effort": "max"}
 
+    def test_reasoning_config_disabled_sets_thinking_disabled_for_third_party(self):
+        """enabled=False must emit thinking.type=disabled on third-party
+        Anthropic endpoints (MiniMax, Alibaba, etc.) so providers don't
+        default to thinking-on.  See #41379."""
+        kwargs = build_anthropic_kwargs(
+            model="MiniMax-M2.7",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+            base_url="https://api.minimax.io/anthropic",
+        )
+        assert kwargs["thinking"] == {"type": "disabled"}
+
+    def test_reasoning_config_disabled_sets_thinking_disabled_for_native(self):
+        """enabled=False must also emit thinking.type=disabled on native
+        Anthropic endpoints.  See #41379."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+        )
+        assert kwargs["thinking"] == {"type": "disabled"}
+
     def test_opus_4_7_strips_sampling_params(self):
         # Opus 4.7 returns 400 on non-default temperature/top_p/top_k.
         # build_anthropic_kwargs must strip them as a safety net even if an

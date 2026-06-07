@@ -2267,6 +2267,12 @@ def build_anthropic_kwargs(
                 # Anthropic requires temperature=1 when thinking is enabled on older models
                 kwargs["temperature"] = 1
                 kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
+        else:
+            # Explicitly disable thinking on Anthropic-protocol endpoints.
+            # Without this, providers default to thinking-on (MiniMax, Alibaba)
+            # or native Anthropic may also default to thinking-on, silently
+            # ignoring the user's reasoning_effort: "none" / enabled: False.
+            kwargs["thinking"] = {"type": "disabled"}
 
     # ── Strip sampling params on 4.7+ ─────────────────────────────────
     # Opus 4.7 rejects any non-default temperature/top_p/top_k with a 400.

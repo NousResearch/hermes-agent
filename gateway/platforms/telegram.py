@@ -5160,6 +5160,65 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return self._message_matches_mention_patterns(message)
 
+    def _is_user_auth_early(self, message: Message) -> bool:
+        """Check user authorization before building a MessageEvent.
+
+        This rejects messages from removed users at the adapter level,
+        before text batching or event construction can leak prompt content
+        into the agent context (fixes #40863).
+        """
+        user = getattr(message, "from_user", None)
+        if user is None:
+            # Service messages / anonymous admins — let the cold path decide.
+            return True
+        user_id = str(getattr(user, "id", "")).strip()
+        if not user_id:
+            return True
+
+        # Try runner auth first (authoritative).
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                from gateway.session import SessionSource
+                from gateway.config import Platform
+
+                chat = getattr(message, "chat", None)
+                chat_id = str(getattr(chat, "id", user_id))
+                raw_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+                chat_type = "dm"
+                if raw_type in {"group", "supergroup"}:
+                    chat_type = "group"
+                elif raw_type == "channel":
+                    chat_type = "channel"
+                thread_id = getattr(message, "message_thread_id", None)
+                user_name = getattr(user, "username", None) or getattr(user, "first_name", None)
+
+                source = SessionSource(
+                    platform=Platform.TELEGRAM,
+                    chat_id=chat_id,
+                    chat_type=chat_type,
+                    user_id=user_id,
+                    user_name=str(user_name).strip() if user_name else None,
+                    thread_id=str(thread_id) if thread_id is not None else None,
+                )
+                if not auth_fn(source):
+                    logger.debug(
+                        "[Telegram] Rejected message from unauthorized user %s before event construction",
+                        user_id,
+                    )
+                    return False
+                return True
+            except Exception:
+                logger.debug("[Telegram] Early auth check via runner failed, trying env fallback", exc_info=True)
+
+        # Env-based fallback (fail-closed when no allowlist).
+        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+        if not allowed_csv:
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        return "*" in allowed_ids or user_id in allowed_ids
+
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups.
 
@@ -5209,6 +5268,10 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
+        # Reject unauthorized users before event construction / text batching
+        # to prevent prompt injection into agent context (#40863).
+        if not self._is_user_auth_early(msg):
+            return
         await self._ensure_forum_commands(update.message)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
@@ -5222,6 +5285,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not msg or not msg.text:
             return
         if not self._should_process_message(msg, is_command=True):
+            return
+        if not self._is_user_auth_early(msg):
             return
         await self._ensure_forum_commands(msg)
 
@@ -5238,6 +5303,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
+            return
+        if not self._is_user_auth_early(msg):
             return
 
         venue = getattr(msg, "venue", None)
@@ -5428,6 +5495,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._observe_unmentioned_group_message(
                     _m, _event.message_type, update_id=update.update_id, event=_event
                 )
+            return
+        if not self._is_user_auth_early(update.message):
             return
 
         msg = update.message

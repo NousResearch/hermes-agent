@@ -12,6 +12,7 @@ from typing import Any
 from agent import codex_workflow_ledger as ledger
 from agent import codex_workflow_must_fix as must_fix_loop
 from agent import codex_workflow_provenance as provenance
+from agent import codex_workflow_recommender as recommender
 from agent import codex_workflow_verification as verification
 from tools import codex_staged_implement_tool as staged
 from tools.registry import registry
@@ -587,6 +588,15 @@ def _finish_after_staged(
             }
         else:
             result["status"] = "review_failed"
+            if bool(args.get("recommend_next_stage")):
+                result["next_stage_recommendation"] = recommender.build_next_stage_recommendation(
+                    review_result=review_result,
+                    verification_evidence=args.get("verification_evidence"),
+                    candidate=args.get("next_stage_candidate"),
+                    current_allowed_files=normalized.get("allowed_files", []),
+                    current_verify_cmd_ids=normalized.get("verify_cmd_ids", []),
+                    request_advance=bool(args.get("advance_next_stage")),
+                )
             return _json_result(result)
 
         after_review_dirty = staged._dirty_check(repo)
@@ -600,6 +610,15 @@ def _finish_after_staged(
                 post_review_dirty_state_id=after_review_dirty.get("dirty_state_id"),
                 post_review_dirty_check=after_review_dirty,
             )
+            if bool(args.get("recommend_next_stage")):
+                result["next_stage_recommendation"] = recommender.build_next_stage_recommendation(
+                    review_result=result.get("review"),
+                    verification_evidence=args.get("verification_evidence"),
+                    candidate=args.get("next_stage_candidate"),
+                    current_allowed_files=normalized.get("allowed_files", []),
+                    current_verify_cmd_ids=normalized.get("verify_cmd_ids", []),
+                    request_advance=bool(args.get("advance_next_stage")),
+                )
             return _json_result(result)
 
     loop_status = _must_fix_loop_status(args, review_result)
@@ -646,6 +665,15 @@ def _finish_after_staged(
 
     if not post_dirty.get("is_clean") and result.get("review", {}).get("status") != "passed":
         result["leftover_candidate"] = _leftover_candidate(post_dirty, staged_result)
+    if bool(args.get("recommend_next_stage")):
+        result["next_stage_recommendation"] = recommender.build_next_stage_recommendation(
+            review_result=result.get("review"),
+            verification_evidence=args.get("verification_evidence"),
+            candidate=args.get("next_stage_candidate"),
+            current_allowed_files=normalized.get("allowed_files", []),
+            current_verify_cmd_ids=normalized.get("verify_cmd_ids", []),
+            request_advance=bool(args.get("advance_next_stage")),
+        )
     return _json_result(result)
 
 
@@ -1113,6 +1141,9 @@ _SCHEMA = {
             "must_fix_new_secret_or_real_data_risk": {"type": "boolean"},
             "must_fix_codex_flood_timeout_count": {"type": "integer"},
             "must_fix_finding_resolutions": {"type": "array", "items": {"type": "object"}},
+            "recommend_next_stage": {"type": "boolean"},
+            "next_stage_candidate": {"type": "object"},
+            "advance_next_stage": {"type": "boolean"},
             "mode": {"type": "string", "enum": ["execute", "dry_run"]},
         },
         "required": ["workdir", "task"],

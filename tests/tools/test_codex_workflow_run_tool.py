@@ -968,6 +968,67 @@ def test_review_autopilot_uses_existing_packet_and_guard_commands(tmp_path, monk
     assert result["leftover_candidate"]["requires_review"] is False
 
 
+def test_workflow_tool_optionally_outputs_next_stage_recommendation(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\ncandidate\n", encoding="utf-8")
+        return json.dumps({"status": "ready_for_review", "candidate_id": "cand-1", "completion_trusted": False})
+
+    def fake_review_command(argv, *, timeout=workflow._REVIEW_TIMEOUT_SECONDS):
+        if str(workflow._review_packet_script()) in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="# packet\n", stderr="")
+        if str(workflow._review_guard_script()) in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout=_write_guard_final(argv, _passed_guard_json()), stderr="")
+        raise AssertionError(f"unexpected command: {argv}")
+
+    def forbidden_commit(*args, **kwargs):
+        raise AssertionError("recommendation must not checkpoint or advance")
+
+    evidence = {
+        "risk_classes": ["docs_only"],
+        "hermes_verification_commands": [
+            {
+                "cmd_id": "diff-check",
+                "argv": ["git", "diff", "--check"],
+                "exit_code": 0,
+                "stdout": "",
+                "stderr": "",
+                "start_time": "2026-06-07T00:00:00Z",
+                "end_time": "2026-06-07T00:00:01Z",
+                "status": "passed",
+            }
+        ],
+    }
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_review_command", fake_review_command)
+    monkeypatch.setattr(workflow, "_commit_checkpoint", forbidden_commit)
+
+    result = _call(
+        workdir=str(repo),
+        review_autopilot=True,
+        review_autopilot_authorized=True,
+        recommend_next_stage=True,
+        advance_next_stage=True,
+        verification_evidence=evidence,
+        next_stage_candidate={
+            "stage_id": "phase12f-next-stage-recommender",
+            "why": "review and verification passed",
+            "allowed_files": ["agent/codex_workflow_recommender.py"],
+            "verify_cmd_ids": ["workflow-tool-pytest", "py-compile", "diff-check"],
+        },
+    )
+
+    assert result["status"] == "staged_called"
+    assert result["next_stage_recommendation"]["status"] == "recommended"
+    recommendation = result["next_stage_recommendation"]["recommendation"]
+    assert recommendation["authorization_required"] is True
+    assert recommendation["non_goals"] == ["commit", "push", "deploy", "restart", "force-push"]
+    assert result["next_stage_recommendation"]["advance"]["status"] == "blocked"
+    assert "checkpoint" not in result
+
+
 def test_review_unavailable_timeout_is_fail_closed(tmp_path, monkeypatch):
     repo = _clean_repo(tmp_path)
 

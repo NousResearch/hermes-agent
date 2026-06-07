@@ -4,8 +4,10 @@ Provides polite retry + JSON convenience + User-Agent enforcement.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -17,6 +19,44 @@ DEFAULT_UA = (
     "set HERMES_OSINT_UA env var to identify yourself per "
     "Wikimedia / SEC fair-use guidance)"
 )
+
+# CIDR ranges blocked for SSRF protection
+_BLOCKED_RANGES = (
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("0.0.0.0/8"),
+)
+
+
+def _is_blocked_ip(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return any(ip in network for network in _BLOCKED_RANGES)
+
+
+def _check_ssrf(url: str) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    if not parsed.hostname:
+        return
+    try:
+        addr_info = socket.getaddrinfo(parsed.hostname, parsed.port or 0)
+    except socket.gaierror:
+        return
+    for family, _, _, _, sockaddr in addr_info:
+        if family == socket.AF_INET:
+            ip_str = sockaddr[0]
+        elif family == socket.AF_INET6:
+            ip_str = sockaddr[0]
+        else:
+            continue
+        if _is_blocked_ip(ip_str):
+            raise RuntimeError(f"SSRF block: {url} resolves to blocked IP {ip_str}")
 
 
 def get(
@@ -42,6 +82,8 @@ def get(
     if headers:
         h.update(headers)
 
+    _check_ssrf(url)
+
     last_err: Exception | None = None
     for attempt in range(max_retries + 1):
         req = urllib.request.Request(url, headers=h)
@@ -50,8 +92,6 @@ def get(
                 return resp.read()
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                # Surface immediately. Read the body so the caller sees the
-                # provider's actual message ("OVER_RATE_LIMIT" etc.).
                 try:
                     body = e.read(2048).decode("utf-8", errors="replace")
                 except Exception:  # noqa: BLE001

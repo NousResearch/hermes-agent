@@ -39,6 +39,36 @@ def _sanitize_surrogates(text: str) -> str:
     return text
 
 
+# Known prompt-injection directive patterns.  These are matched case-insensitive
+# and stripped from user messages before they enter the model context, reducing
+# the attack surface for conversation-level instruction steering.
+_INJECTION_PATTERNS = [
+    re.compile(r'\[System:', re.IGNORECASE),
+    re.compile(r'\[system\]', re.IGNORECASE),
+    re.compile(r'you\s+are\s+now\s+a', re.IGNORECASE),
+    re.compile(r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', re.IGNORECASE),
+    re.compile(r'disregard\s+(?:your|all|any)\s+(?:instructions|rules|guidelines)', re.IGNORECASE),
+    re.compile(r'do\s+not\s+(?:tell\s+the\s+user|disclose)', re.IGNORECASE),
+    re.compile(r'system\s+prompt\s+override', re.IGNORECASE),
+    re.compile(r'\bjamie\s+but\s+mini\b', re.IGNORECASE),
+    re.compile(r'\bcid\s*:\s*\w+\b', re.IGNORECASE),
+]
+
+
+def _sanitize_prompt_injection(text: str) -> str:
+    """Strip known prompt-injection directive patterns from user text.
+
+    Removes patterns such as ``[System:]``, ``You are now a...``,
+    ``Ignore previous instructions``, and other directive sequences that an
+    attacker might embed in a user message to manipulate model behaviour.
+    Returns the text unchanged if no patterns are found (fast no-op).
+    """
+    for pattern in _INJECTION_PATTERNS:
+        if pattern.search(text):
+            text = pattern.sub('[REDACTED]', text)
+    return text
+
+
 def _sanitize_structure_surrogates(payload: Any) -> bool:
     """Replace surrogate code points in nested dict/list payloads in-place.
 
@@ -430,6 +460,7 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
 
 
 __all__ = [
+    "_INJECTION_PATTERNS",
     "_SURROGATE_RE",
     "_sanitize_surrogates",
     "_sanitize_structure_surrogates",
@@ -441,4 +472,5 @@ __all__ = [
     "_sanitize_tools_non_ascii",
     "_strip_images_from_messages",
     "_sanitize_structure_non_ascii",
+    "_sanitize_prompt_injection",
 ]

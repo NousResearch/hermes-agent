@@ -56,6 +56,28 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+
+# Prompt injection pattern blocklist — matched case-insensitive against resolved
+# webhook payload values before they are embedded in LLM prompts.
+_WEBHOOK_INJECTION_PATTERNS = [
+    re.compile(r'\[System:', re.IGNORECASE),
+    re.compile(r'\[system\]', re.IGNORECASE),
+    re.compile(r'you\s+are\s+now\s+a', re.IGNORECASE),
+    re.compile(r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', re.IGNORECASE),
+    re.compile(r'disregard\s+(?:your|all|any)\s+(?:instructions|rules|guidelines)', re.IGNORECASE),
+    re.compile(r'do\s+not\s+(?:tell\s+the\s+user|disclose)', re.IGNORECASE),
+    re.compile(r'system\s+prompt\s+override', re.IGNORECASE),
+    re.compile(r'\bjamie\s+but\s+mini\b', re.IGNORECASE),
+    re.compile(r'\bcid\s*:\s*\w+\b', re.IGNORECASE),
+]
+
+def _sanitize_webhook_value(text: str) -> str:
+    """Strip known prompt-injection directive patterns from webhook payload values."""
+    for pattern in _WEBHOOK_INJECTION_PATTERNS:
+        if pattern.search(text):
+            text = pattern.sub('[REDACTED]', text)
+    return text
+
 _BUILTIN_DELIVER_PLATFORMS = {
     "telegram", "discord", "slack", "signal", "sms", "whatsapp",
     "matrix", "mattermost", "homeassistant", "email", "dingtalk",
@@ -786,7 +808,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     return f"{{{key}}}"
             if isinstance(value, (dict, list)):
                 return json.dumps(value, indent=2)[:2000]
-            return str(value)
+            return _sanitize_webhook_value(str(value))
 
         return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
 

@@ -113,11 +113,14 @@ Activate with ``/skin <name>`` in the CLI or ``display.skin: <name>`` in config.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
+
+_SKIN_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 logger = logging.getLogger(__name__)
 
@@ -749,9 +752,17 @@ def list_skins() -> List[Dict[str, str]]:
 
 def load_skin(name: str) -> SkinConfig:
     """Load a skin by name. Checks user skins first, then built-in."""
-    # Check user skins directory
+    if not _SKIN_NAME_PATTERN.match(name):
+        logger.warning("Skin '%s' has invalid characters, using default", name)
+        return _build_skin_config(_BUILTIN_SKINS["default"])
+
     skins_path = _skins_dir()
     user_file = skins_path / f"{name}.yaml"
+    resolved_key_path = user_file.resolve()
+    if not str(resolved_key_path).startswith(str(skins_path.resolve())):
+        logger.warning("Skin '%s' path traversal detected, using default", name)
+        return _build_skin_config(_BUILTIN_SKINS["default"])
+
     if user_file.is_file():
         data = _load_skin_from_yaml(user_file)
         if data:

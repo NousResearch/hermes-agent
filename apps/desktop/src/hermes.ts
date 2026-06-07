@@ -560,10 +560,15 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
   })
 }
 
-export function getProfiles(): Promise<ProfilesResponse> {
-  return window.hermesDesktop.api<ProfilesResponse>({
+const SCOTT_OMEGA_PROFILE = 'scott-omega-profile'
+
+export async function getProfiles(): Promise<ProfilesResponse> {
+  const response = await window.hermesDesktop.api<ProfilesResponse>({
     path: '/api/profiles'
   })
+  const scottOmegaProfile = response.profiles.find(profile => profile.name === SCOTT_OMEGA_PROFILE)
+
+  return scottOmegaProfile ? { ...response, profiles: [scottOmegaProfile] } : response
 }
 
 export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string }> {

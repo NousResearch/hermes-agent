@@ -507,3 +507,62 @@ class TestGenerateSummary:
         summary = await tc._generate_summary_async("Turn content", metrics)
 
         assert summary == "[CONTEXT SUMMARY]:"
+
+
+class TestTimeoutPreservesEntry:
+    """A per-trajectory timeout must keep the original entry, not drop it.
+
+    A timeout almost always reflects a slow or rate-limited summarizer rather
+    than an invalid trajectory, so the entry should be carried through to the
+    output uncompressed (as the generic error path already does) instead of
+    being silently deleted from the training set.
+    """
+
+    def test_timed_out_entry_is_preserved_in_output(self, tmp_path):
+        import asyncio
+        import json as _json
+
+        config = CompressionConfig()
+        # Force an (almost) immediate timeout so the wait_for branch fires fast.
+        config.per_trajectory_timeout = 0.05
+        config.metrics_enabled = False
+        config.max_concurrent_requests = 1
+
+        tc = _make_compressor(config)
+
+        # Simulate a slow summarizer: process_entry_async never returns in time,
+        # so asyncio.wait_for inside _process_directory_async raises TimeoutError.
+        async def _hang(entry):
+            await asyncio.sleep(3600)
+
+        tc.process_entry_async = _hang
+
+        input_dir = tmp_path / "in"
+        output_dir = tmp_path / "out"
+        input_dir.mkdir()
+
+        original = {
+            "id": "keep-me",
+            "conversations": [
+                {"from": "human", "value": "hello"},
+                {"from": "gpt", "value": "world"},
+            ],
+        }
+        (input_dir / "batch_0.jsonl").write_text(
+            _json.dumps(original) + "\n", encoding="utf-8"
+        )
+
+        tc.process_directory(input_dir, output_dir)
+
+        out_file = output_dir / "batch_0.jsonl"
+        assert out_file.exists()
+        lines = [
+            ln for ln in out_file.read_text(encoding="utf-8").splitlines() if ln.strip()
+        ]
+        # The timed-out trajectory must still be present (uncompressed), not dropped.
+        assert len(lines) == 1
+        written = _json.loads(lines[0])
+        assert written["id"] == "keep-me"
+        assert written["conversations"] == original["conversations"]
+        # It is still accounted for as a failed/timed-out trajectory.
+        assert tc.aggregate_metrics.trajectories_failed == 1

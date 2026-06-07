@@ -1100,7 +1100,14 @@ def _normalize_codex_response(
                     saw_final_answer_phase = True
             message_text = _extract_responses_message_text(item)
             if message_text:
-                content_parts.append(message_text)
+                # Commentary/analysis phase messages are preamble text
+                # (model's internal planning before tool calls). Route
+                # them to reasoning so they don't leak as visible content
+                # to chat gateways (issue #41293).
+                if normalized_phase in {"commentary", "analysis"}:
+                    reasoning_parts.append(message_text)
+                else:
+                    content_parts.append(message_text)
                 raw_message_item: Dict[str, Any] = {
                     "type": "message",
                     "role": "assistant",

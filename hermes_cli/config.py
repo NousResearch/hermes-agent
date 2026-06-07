@@ -6387,6 +6387,80 @@ def sanitize_env_file() -> int:
     return fixes
 
 
+
+
+def _strip_control_chars(key: str, value: str) -> str:
+    """Strip ASCII control characters (except TAB) from env values.
+
+    On Windows, pressing ESC during an ``input()`` prompt inserts a literal
+    ``\x1b`` character into the returned string.  When this value is persisted
+    to ``~/.hermes/.env`` it silently corrupts URL and API-key fields —
+    e.g. ``SEARXNG_URL=\x1b`` causes every ``web_search`` call to fail with
+    ``Invalid non-printable ASCII character in URL`` (issue #40840).
+
+    No legitimate env value contains control characters: API keys are
+    alphanumeric + punctuation; URLs require ``http://`` or ``https://``.
+    TAB (0x09) is preserved because some tools use it as a delimiter in
+    compound values.
+
+    Returns the cleaned value.  Prints a warning to stderr if any control
+    characters were removed.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+
+    # Fast path: check if any C0 control chars (0x00-0x1F except TAB, plus DEL)
+    # are present before doing string replacement.
+    has_controls = False
+    for ch in value:
+        code = ord(ch)
+        if code <= 0x1F and code != 0x09:  # TAB = 0x09 is allowed
+            has_controls = True
+            break
+        if code == 0x7F:  # DEL
+            has_controls = True
+            break
+
+    if not has_controls:
+        return value
+
+    # Collect details for the warning message
+    bad_chars: list[str] = []
+    for i, ch in enumerate(value):
+        code = ord(ch)
+        if (code <= 0x1F and code != 0x09) or code == 0x7F:
+            char_name = {
+                0x00: "NUL", 0x01: "SOH", 0x02: "STX", 0x03: "ETX",
+                0x04: "EOT", 0x05: "ENQ", 0x06: "ACK", 0x07: "BEL",
+                0x08: "BS", 0x0A: "LF", 0x0B: "VT", 0x0C: "FF",
+                0x0D: "CR", 0x0E: "SO", 0x0F: "SI", 0x10: "DLE",
+                0x11: "DC1", 0x12: "DC2", 0x13: "DC3", 0x14: "DC4",
+                0x15: "NAK", 0x16: "SYN", 0x17: "ETB", 0x18: "CAN",
+                0x19: "EM", 0x1A: "SUB", 0x1B: "ESC", 0x1C: "FS",
+                0x1D: "GS", 0x1E: "RS", 0x1F: "US", 0x7F: "DEL",
+            }.get(code, f"0x{code:02X}")
+            bad_chars.append(f"  position {i}: {char_name} (\\x{code:02x})")
+
+    # Strip control characters
+    cleaned = "".join(
+        ch for ch in value
+        if not ((ord(ch) <= 0x1F and ord(ch) != 0x09) or ord(ch) == 0x7F)
+    )
+
+    print(
+        f"\n  Warning: {key} contains ASCII control characters that will break "
+        f"API requests or URL parsing.\n"
+        f"  This usually happens when ESC or another control key is pressed "
+        f"during input on Windows.\n"
+        f"\n"
+        + "\n".join(f"  {line}" for line in bad_chars[:5])
+        + ("\n  ... and more" if len(bad_chars) > 5 else "")
+        + f"\n\n  The control characters have been stripped automatically.\n"
+        f"  If the value looks wrong, please re-enter it.\n",
+        file=sys.stderr,
+    )
+    return cleaned
+
 def _check_non_ascii_credential(key: str, value: str) -> str:
     """Warn and strip non-ASCII characters from credential values.
 
@@ -6465,6 +6539,10 @@ def save_env_value(key: str, value: str):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     _reject_denylisted_env_var(key)
     value = value.replace("\n", "").replace("\r", "")
+    # Strip ASCII control characters (ESC, BEL, etc.) that corrupt URLs/keys.
+    # On Windows, pressing ESC during input() inserts \x1b as the value
+    # (issue #40840). No legitimate env value contains control characters.
+    value = _strip_control_chars(key, value)
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()

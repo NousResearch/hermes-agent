@@ -115,11 +115,11 @@ class TestEnvLoaderSanitization:
         assert "GEMINI_API_KEY" in first
         assert second == ""  # no repeat warning
 
-    def test_ascii_control_chars_not_stripped(self, monkeypatch, capsys):
-        """ASCII control bytes (e.g. ESC 0x1B from terminal paste) are NOT non-ASCII.
-
-        This is intentional — they're valid ASCII for HTTP headers even if the
-        provider rejects them. Documents the scope of the sanitizer.
+    def test_ascii_control_chars_not_stripped_by_non_ascii_sanitizer(self, monkeypatch, capsys):
+        """ASCII control bytes (e.g. ESC 0x1B) are NOT non-ASCII, so the
+        non-ASCII sanitizer (env_loader._sanitize_loaded_credentials) does
+        not strip them. They ARE now stripped by ``save_env_value`` via
+        ``_strip_control_chars`` — see test_control_char_stripping.py.
         """
         from hermes_cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
 

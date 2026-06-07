@@ -3081,6 +3081,24 @@ def _configure_provider(
                 value = _prompt(f"    {var.get('prompt', var['key'])}", password=True)
 
             if value:
+                # Validate URL-type env vars start with http:// or https://.
+                # Catches corrupted values from terminal control characters
+                # (e.g. ESC \x1b on Windows, issue #40840) and obvious
+                # user mistakes like missing the scheme.
+                _lower_key = var["key"].lower()
+                if _lower_key.endswith("_url") or _lower_key.endswith("_host") or _lower_key.endswith("_endpoint"):
+                    if not value.startswith(("http://", "https://")):
+                        _print_warning(
+                            f"    '{value}' doesn't look like a valid URL — "
+                            f"it should start with http:// or https://"
+                        )
+                        _retry = _prompt(f"    {var.get('prompt', var['key'])} (must start with http:// or https://)", password=True)
+                        if _retry and _retry.startswith(("http://", "https://")):
+                            value = _retry
+                        else:
+                            _print_warning("    Skipped — invalid URL")
+                            all_configured = False
+                            continue
                 save_env_value(var["key"], value)
                 _print_success("    Saved")
             else:

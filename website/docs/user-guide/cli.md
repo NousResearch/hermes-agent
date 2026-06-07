@@ -88,7 +88,16 @@ The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 5
 | Orange | 80–95% | Approaching limit |
 | Red | ≥ 95% | Near overflow — consider `/compress` |
 
-Use `/usage` for a detailed breakdown including per-category costs (input vs output tokens).
+Use `/usage` for a detailed breakdown of the current session: input tokens, cache read/write tokens, output tokens, API calls, context-window state, cost status/source, and account limits when the active provider exposes them. When a provider reports reasoning tokens, Hermes shows them as a subset under output so you can see how much of the completion budget went to hidden reasoning.
+
+Cost status tells you how to read the dollar amount:
+
+| Status | Meaning |
+|--------|---------|
+| `actual` | The provider returned billed cost for the request. |
+| `estimated` | Hermes estimated cost from known model pricing and reported token counts. |
+| `included` | The active auth route is treated as subscription or plan-included usage. |
+| `unknown` | Hermes has token counts, but no reliable pricing entry for this route/model. |
 
 ### Session Resume Display
 

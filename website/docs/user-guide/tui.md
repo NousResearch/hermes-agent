@@ -112,7 +112,7 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | `/model` | Modal model picker grouped by provider, with cost hints |
 | `/skin` | Live preview — theme change applies as you browse |
 | `/details` | Toggle verbose tool-call details (global or per-section) |
-| `/usage` | Rich token / cost / context panel |
+| `/usage` | Rich token / cost / context panel, including cache read/write tokens, reasoning tokens when the provider reports them, and cost status/source |
 | `/agents` (alias `/tasks`) | Observability overlay — live subagent tree with kill/pause controls, per-branch cost / token / file rollups, turn-by-turn history |
 | `/reload` | Re-reads `~/.hermes/.env` into the running TUI process so newly added API keys take effect without a restart |
 | `/mouse [on\|off\|toggle\|wheel\|buttons\|all]` | Pick a mouse tracking preset at runtime (also persists to `display.mouse_tracking` in `config.yaml`). `wheel` (1000+1006) keeps scroll-wheel scrolling without the hover events that make tmux spam "No image in clipboard" over the prompt row; `buttons` adds drag-to-select; `all` is the default with hover-driven UI. |

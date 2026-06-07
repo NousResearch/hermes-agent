@@ -559,6 +559,77 @@ class TelegramAdapter(BasePlatformAdapter):
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or normalized_user_id in allowed_ids
 
+    def _is_user_authorized_from_message(self, message: Message) -> bool:
+        """Check if the sender of a Telegram message is authorized.
+
+        Priority:
+        1. Adapter-level ``allow_from`` config (when set, takes full precedence).
+        2. Adapter-level ``_is_callback_user_authorized`` callback (for tests).
+        3. Runner-level ``_is_user_authorized`` callback (handles GATEWAY_ALLOW_ALL_USERS).
+        4. ``TELEGRAM_ALLOWED_USERS`` env var (global gateway-level allowlist).
+
+        Returns True for messages with no from_user (e.g. channel posts) since
+        chat-level authorization is enforced separately by the gateway runner.
+        """
+        user_id = str(getattr(getattr(message, "from_user", None), "id", "")).strip()
+        if not user_id:
+            return True
+
+        # 1. Adapter-level allow_from: when set, it is the sole authority.
+        adapter_allow_from = self.config.extra.get("allow_from")
+        if adapter_allow_from is not None:
+            allowed = {str(u).strip() for u in adapter_allow_from if str(u).strip()}
+            return user_id in allowed or "*" in allowed
+
+        # 2. Adapter-level callback auth (used by tests and custom setups).
+        callback_auth = getattr(self, "_is_callback_user_authorized", None)
+        if callable(callback_auth):
+            try:
+                return bool(callback_auth(user_id))
+            except Exception:
+                pass
+
+        # 3. Runner-level auth callback (handles GATEWAY_ALLOW_ALL_USERS).
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                from gateway.session import SessionSource
+
+                chat_obj = getattr(message, "chat", None)
+                chat_id = str(getattr(chat_obj, "id", "")).strip()
+                chat_type_raw = str(getattr(chat_obj, "type", "dm")).strip().lower()
+                if chat_type_raw == "private":
+                    chat_type_raw = "dm"
+                elif chat_type_raw == "supergroup":
+                    thread_id = getattr(message, "message_thread_id", None)
+                    chat_type_raw = "forum" if thread_id is not None else "group"
+                user_name = str(getattr(getattr(message, "from_user", None), "username", "") or "").strip() or None
+                thread_id = str(getattr(message, "message_thread_id", "") or "").strip() or None
+
+                source = SessionSource(
+                    platform=Platform.TELEGRAM,
+                    chat_id=chat_id or user_id,
+                    chat_type=chat_type_raw,
+                    user_id=user_id,
+                    user_name=user_name,
+                    thread_id=thread_id,
+                )
+                return bool(auth_fn(source))
+            except Exception:
+                logger.debug(
+                    "[Telegram] Falling back to env-only auth for user %s",
+                    user_id,
+                    exc_info=True,
+                )
+
+        # 4. TELEGRAM_ALLOWED_USERS env var (global gateway-level allowlist).
+        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+        if not allowed_csv:
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        return "*" in allowed_ids or user_id in allowed_ids
+
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
         if not metadata:
@@ -5194,6 +5265,19 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
+
+        # Early user-level auth check: reject unauthorized users before any
+        # text batching, event building, or response generation. This prevents
+        # removed/blocked users from injecting prompts into the agent.
+        if not self._is_user_authorized_from_message(msg):
+            user_id = getattr(getattr(msg, "from_user", None), "id", None)
+            chat_id = getattr(getattr(msg, "chat", None), "id", None)
+            logger.warning(
+                "[Telegram] Blocked unauthorized user %s in chat %s",
+                user_id, chat_id,
+            )
+            return
+
         await self._ensure_forum_commands(update.message)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
@@ -5208,6 +5292,16 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._should_process_message(msg, is_command=True):
             return
+
+        if not self._is_user_authorized_from_message(msg):
+            user_id = getattr(getattr(msg, "from_user", None), "id", None)
+            chat_id = getattr(getattr(msg, "chat", None), "id", None)
+            logger.warning(
+                "[Telegram] Blocked unauthorized user %s in chat %s",
+                user_id, chat_id,
+            )
+            return
+
         await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
@@ -5223,6 +5317,15 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
+            return
+
+        if not self._is_user_authorized_from_message(msg):
+            user_id = getattr(getattr(msg, "from_user", None), "id", None)
+            chat_id = getattr(getattr(msg, "chat", None), "id", None)
+            logger.warning(
+                "[Telegram] Blocked unauthorized user %s in chat %s",
+                user_id, chat_id,
+            )
             return
 
         venue = getattr(msg, "venue", None)

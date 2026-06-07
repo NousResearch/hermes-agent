@@ -216,6 +216,10 @@ fi
 #     the source mtime is newer than dist/ or when HERMES_TUI_FORCE_BUILD
 #     is set) and writes to ui-tui/dist/. Without this chown the new
 #     hermes UID can't write the build output (#28851).
+#   - gateway: Python writes __pycache__ and runtime artifacts beneath the
+#     gateway package on first import. After a UID remap those source-owned
+#     paths still belong to the build-time UID (10000) unless repaired here,
+#     producing EACCES for the supervised gateway (#27221).
 #   - node_modules: root-level dependencies (puppeteer, web tooling)
 #     that runtime code may walk/update.
 # The set mirrors the build-time `chown -R hermes:hermes` line in the
@@ -241,6 +245,7 @@ if [ -n "$venv_owner" ] && [ "$venv_owner" != "$actual_hermes_uid" ]; then
     chown -R hermes:hermes \
         "$INSTALL_DIR/.venv" \
         "$INSTALL_DIR/ui-tui" \
+        "$INSTALL_DIR/gateway" \
         "$INSTALL_DIR/node_modules" \
         2>/dev/null || \
         echo "[stage2] Warning: chown of build trees failed (rootless container?) — continuing"

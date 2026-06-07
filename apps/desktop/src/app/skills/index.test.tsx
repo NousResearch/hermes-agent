@@ -74,6 +74,17 @@ describe('SkillsView toolset management', () => {
     await waitFor(() => expect(toggleToolset).toHaveBeenCalledWith('web', false))
   })
 
+  it('renders toolset titles without leading emoji', async () => {
+    getToolsets.mockResolvedValue([
+      toolset({ name: 'cronjob', label: '⏰ Cron Jobs', description: 'cron tools' })
+    ])
+
+    await renderSkills()
+
+    expect(await screen.findByText('Cron Jobs')).toBeTruthy()
+    expect(screen.queryByText(/⏰/)).toBeNull()
+  })
+
   it('keeps the configured pill alongside the switch', async () => {
     await renderSkills()
 

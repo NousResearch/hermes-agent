@@ -2,10 +2,13 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
+import { BrailleSpinner } from '@/components/ui/braille-spinner'
+import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import {
   $visibleModels,
@@ -24,7 +27,15 @@ interface ModelVisibilityDialogProps {
   sessionId?: string | null
 }
 
-export function ModelVisibilityDialog({ gw, onOpenChange, onOpenProviders, open, sessionId }: ModelVisibilityDialogProps) {
+export function ModelVisibilityDialog({
+  gw,
+  onOpenChange,
+  onOpenProviders,
+  open,
+  sessionId
+}: ModelVisibilityDialogProps) {
+  const { t } = useI18n()
+  const copy = t.modelVisibility
   const [search, setSearch] = useState('')
   const stored = useStore($visibleModels)
 
@@ -69,7 +80,7 @@ export function ModelVisibilityDialog({ gw, onOpenChange, onOpenProviders, open,
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-xs gap-0 overflow-hidden p-0">
         <DialogHeader className="px-3 pb-1 pt-3">
-          <DialogTitle className="text-[0.8125rem]">Models</DialogTitle>
+          <DialogTitle className="text-[0.8125rem]">{copy.title}</DialogTitle>
         </DialogHeader>
 
         <div className="px-3 py-1.5">
@@ -77,7 +88,7 @@ export function ModelVisibilityDialog({ gw, onOpenChange, onOpenProviders, open,
             autoFocus
             className="h-5 w-full bg-transparent text-xs text-foreground placeholder:text-(--ui-text-tertiary) focus:outline-none"
             onChange={event => setSearch(event.target.value)}
-            placeholder="Search models"
+            placeholder={copy.search}
             type="text"
             value={search}
           />
@@ -86,13 +97,11 @@ export function ModelVisibilityDialog({ gw, onOpenChange, onOpenProviders, open,
         <div className="max-h-[55vh] overflow-y-auto pb-1">
           {providers.length === 0 ? (
             <div className="px-3 py-5 text-center text-xs text-muted-foreground">
-              {modelOptions.isPending ? 'Loading…' : 'No authenticated providers.'}
+              {modelOptions.isPending ? <BrailleSpinner className="mx-auto text-sm" /> : copy.noAuthenticatedProviders}
             </div>
           ) : (
             providers.map(provider => {
-              const models = collapseModelFamilies(provider.models ?? []).filter(family =>
-                matches(provider, family.id)
-              )
+              const models = collapseModelFamilies(provider.models ?? []).filter(family => matches(provider, family.id))
 
               if (models.length === 0) {
                 return null
@@ -116,11 +125,7 @@ export function ModelVisibilityDialog({ gw, onOpenChange, onOpenProviders, open,
                           {name}
                           {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
                         </span>
-                        <Switch
-                          checked={visible.has(key)}
-                          className="cursor-pointer"
-                          onCheckedChange={() => toggle(provider, family.id)}
-                        />
+                        <Switch checked={visible.has(key)} onCheckedChange={() => toggle(provider, family.id)} />
                       </label>
                     )
                   })}
@@ -131,16 +136,18 @@ export function ModelVisibilityDialog({ gw, onOpenChange, onOpenProviders, open,
         </div>
 
         <div className="px-3 py-2">
-          <button
-            className="text-xs text-(--ui-text-tertiary) transition-colors hover:text-foreground"
+          <Button
+            className="-ml-2 text-(--ui-text-tertiary)"
             onClick={() => {
               onOpenChange(false)
               onOpenProviders()
             }}
+            size="xs"
             type="button"
+            variant="text"
           >
-            Add provider…
-          </button>
+            {copy.addProvider}
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

@@ -40,6 +40,8 @@ IGNORED_PATTERNS = [
     re.compile(r"^Claude", re.IGNORECASE),
     re.compile(r"^Copilot$", re.IGNORECASE),
     re.compile(r"^Cursor(\s+Agent)?$", re.IGNORECASE),
+    re.compile(r"^Codex$", re.IGNORECASE),
+    re.compile(r"^github-advanced-security(\[bot\])?$", re.IGNORECASE),
     re.compile(r"^GitHub\s*Actions?$", re.IGNORECASE),
     re.compile(r"^github-actions(\[bot\])?$", re.IGNORECASE),
     re.compile(r"^dependabot", re.IGNORECASE),

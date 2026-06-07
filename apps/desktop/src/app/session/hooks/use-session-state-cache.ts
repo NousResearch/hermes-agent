@@ -4,7 +4,8 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $busy, $messages, noteSessionActivity, setSessionWorking } from '@/store/session'
+import { setMutableRef } from '@/lib/mutable-ref'
+import { $busy, $messages, noteSessionActivity, setSessionAttention, setSessionWorking, setTurnStartedAt } from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -38,7 +39,7 @@ export function useSessionStateCache({
   }, [activeSessionId])
 
   useEffect(() => {
-    busyRef.current = busy
+    setMutableRef(busyRef, busy)
   }, [busy, busyRef])
 
   useEffect(() => {
@@ -89,8 +90,12 @@ export function useSessionStateCache({
 
     setMessages(preserveLocalAssistantErrors(pending.state.messages, $messages.get()))
     setBusy(pending.state.busy)
-    busyRef.current = pending.state.busy
+    setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
+    // Mirror the focused session's per-session turn clock into the global
+    // atom the statusbar timer reads. Keeps a backgrounded turn's elapsed
+    // time intact on focus instead of zeroing it (the "timer restarts" bug).
+    setTurnStartedAt(pending.state.turnStartedAt)
   }, [busyRef, setAwaitingResponse, setBusy, setMessages])
 
   const syncSessionStateToView = useCallback(
@@ -152,7 +157,13 @@ export function useSessionStateCache({
         setSessionWorking(previous.storedSessionId, false)
       }
 
+      if (previous.storedSessionId !== next.storedSessionId || !next.needsInput) {
+        setSessionAttention(previous.storedSessionId, false)
+      }
+
       setSessionWorking(next.storedSessionId, next.busy)
+      setSessionAttention(next.storedSessionId, next.needsInput)
+
       // Every state update is effectively a "still alive" heartbeat for
       // streaming events. The session-store watchdog uses this to keep the
       // working flag alive during long-running turns and to clear it once
@@ -160,6 +171,7 @@ export function useSessionStateCache({
       if (next.busy) {
         noteSessionActivity(next.storedSessionId)
       }
+
       syncSessionStateToView(sessionId, next)
 
       return next

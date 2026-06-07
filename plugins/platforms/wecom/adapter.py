@@ -105,6 +105,11 @@ DEDUP_MAX_SIZE = 1000
 STREAM_EXPIRED_ERRCODE = 846608  # >6 min without update — stream is dead
 STREAM_NOT_SUBSCRIBED_ERRCODE = 846609  # ws connection lost the subscription
 MAX_STREAM_CONTENT_LENGTH = 20480  # WeCom server-enforced byte limit per frame
+# Backpressure skip window for intermediate stream frames (seconds).
+# If the previous frame was sent less than this duration ago, the current
+# intermediate frame is dropped.  Cumulative text guarantees no info loss.
+# Mirrors the official plugin's replyStreamNonBlocking skip semantics.
+STREAM_FRAME_SKIP_WINDOW = 0.15  # 150ms — covers network RTT to WeCom
 
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
 VIDEO_MAX_BYTES = 10 * 1024 * 1024
@@ -182,6 +187,13 @@ class StreamTurn:
         self.seeded = False  # True after seed frame sent (prevents double seed)
         self.start_time = time.monotonic()
         self.expired = False
+        # Backpressure: timestamp of last intermediate frame dispatch.
+        # When the next intermediate frame arrives within the skip window,
+        # it is dropped (cumulative text means no information is lost).
+        # Mirrors the official OpenClaw plugin's replyStreamNonBlocking
+        # semantics: skip mid-stream frames when the previous one is likely
+        # still in flight; finalize frames always send unconditionally.
+        self._last_frame_sent_at: float = 0.0
 
 
 class WeComAdapter(BasePlatformAdapter):
@@ -2272,12 +2284,24 @@ class WeComAdapter(BasePlatformAdapter):
                 else:
                     self._cleanup_stream_turn(chat, turn.req_id)
             else:
+                # Backpressure: skip this intermediate frame if the previous
+                # one was dispatched within the skip window.  Cumulative text
+                # means the next frame (or finalize) will carry the full
+                # content — nothing is lost.  This mirrors the official
+                # plugin's replyStreamNonBlocking which drops mid-frames
+                # when the prior one hasn't been acked yet.
+                now = time.monotonic()
+                if turn._last_frame_sent_at and (now - turn._last_frame_sent_at) < STREAM_FRAME_SKIP_WINDOW:
+                    # Still update accumulated_text so finalize has the latest.
+                    turn.accumulated_text = text
+                    return True
                 await self._send_stream_reply(
                     turn.req_id,
                     turn.stream_id,
                     text,
                     finish=False,
                 )
+                turn._last_frame_sent_at = time.monotonic()
                 turn.accumulated_text = text
 
             return True

@@ -1145,7 +1145,8 @@ class TestSendStreamFrame:
 
     @pytest.mark.asyncio
     async def test_first_and_second_call_share_stream_id(self):
-        from gateway.platforms.wecom import WeComAdapter
+        import asyncio
+        from gateway.platforms.wecom import WeComAdapter, STREAM_FRAME_SKIP_WINDOW
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1154,6 +1155,8 @@ class TestSendStreamFrame:
         adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
         await adapter.send_stream_frame("alpha", chat_id="chat-1")
+        # Wait past the skip window so the second frame is not dropped.
+        await asyncio.sleep(STREAM_FRAME_SKIP_WINDOW + 0.01)
         await adapter.send_stream_frame("alpha beta", chat_id="chat-1")
 
         # All fire-and-forget: seed + alpha + alpha beta = 3 calls
@@ -1164,6 +1167,29 @@ class TestSendStreamFrame:
         ]
         assert ids[0] == ids[1] == ids[2]
         assert ids[0].startswith("stream_")
+
+    @pytest.mark.asyncio
+    async def test_intermediate_frame_skipped_within_backpressure_window(self):
+        """Rapid intermediate frames within skip window are dropped (backpressure)."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_json = AsyncMock()
+        adapter._ws = MagicMock(closed=False)
+        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+
+        await adapter.send_stream_frame("alpha", chat_id="chat-1")
+        # Immediately send another — should be skipped by backpressure.
+        ok = await adapter.send_stream_frame("alpha beta", chat_id="chat-1")
+
+        assert ok is True  # returns True (skip is silent success)
+        # Only seed + first content = 2 calls; second was skipped.
+        assert adapter._send_json.await_count == 2
+
+        # accumulated_text still updated despite skip (for finalize).
+        turn = list(adapter._stream_turns.values())[0]
+        assert turn.accumulated_text == "alpha beta"
 
     @pytest.mark.asyncio
     async def test_finalize_sends_finish_true_and_resets_state(self):

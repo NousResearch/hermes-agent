@@ -977,6 +977,24 @@ export const api = {
     fetchJSON<SkillHubScan>(
       `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
+
+  // ── Workflows ───────────────────────────────────────────────────────
+  getWorkflows: () => fetchJSON<{ workflows: string[] }>("/api/workflows"),
+  getWorkflow: (name: string) => fetchJSON<{ name: string; graph: any }>(`/api/workflows/${encodeURIComponent(name)}`),
+  saveWorkflow: (name: string, graph: any) =>
+    fetchJSON<{ ok: boolean }>(`/api/workflows/${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ graph }),
+    }),
+  deleteWorkflow: (name: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/workflows/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
+  executeWorkflow: (name: string) =>
+    fetchJSON<ActionResponse>(`/api/workflows/${encodeURIComponent(name)}/execute`, {
+      method: "POST",
+    }),
 };
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).

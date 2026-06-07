@@ -50,6 +50,7 @@ import {
   Wrench,
   X,
   Zap,
+  GitBranch,
 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
@@ -82,6 +83,7 @@ import ChannelsPage from "@/pages/ChannelsPage";
 import WebhooksPage from "@/pages/WebhooksPage";
 import SystemPage from "@/pages/SystemPage";
 import ChatPage from "@/pages/ChatPage";
+import WorkflowPage from "@/pages/WorkflowPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -129,6 +131,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/logs": LogsPage,
   "/cron": CronPage,
   "/skills": SkillsPage,
+  "/workflow": WorkflowPage,
   "/plugins": PluginsPage,
   "/mcp": McpPage,
   "/pairing": PairingPage,
@@ -171,6 +174,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
+  { path: "/workflow", label: "Workflows", icon: GitBranch },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/mcp", label: "MCP", icon: Plug },
   { path: "/channels", label: "Channels", icon: Radio },
@@ -207,6 +211,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Users,
   Wrench,
   Zap,
+  GitBranch,
   Heart,
   Star,
   Code,

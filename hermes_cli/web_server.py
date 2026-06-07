@@ -7632,6 +7632,130 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
 
 
 # ---------------------------------------------------------------------------
+# Visual Workflow Designer Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/workflows")
+async def get_workflows():
+    workflows_dir = get_hermes_home() / "workflows"
+    workflows_dir.mkdir(parents=True, exist_ok=True)
+    files = sorted(list(workflows_dir.glob("*.json")))
+    return {"workflows": [f.stem for f in files]}
+
+
+@app.get("/api/workflows/{name}")
+async def get_workflow(name: str):
+    workflows_dir = get_hermes_home() / "workflows"
+    path = workflows_dir / f"{name}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            graph = json.load(f)
+        return {"name": name, "graph": graph}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read workflow: {exc}")
+
+
+class WorkflowSaveBody(BaseModel):
+    graph: dict
+
+
+@app.post("/api/workflows/{name}")
+async def save_workflow(name: str, body: WorkflowSaveBody):
+    workflows_dir = get_hermes_home() / "workflows"
+    workflows_dir.mkdir(parents=True, exist_ok=True)
+    path = workflows_dir / f"{name}.json"
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(body.graph, f, indent=2, ensure_ascii=False)
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save workflow: {exc}")
+
+
+@app.delete("/api/workflows/{name}")
+async def delete_workflow(name: str):
+    workflows_dir = get_hermes_home() / "workflows"
+    path = workflows_dir / f"{name}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found")
+    try:
+        path.unlink()
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete workflow: {exc}")
+
+
+class WorkflowThreadShim:
+    def __init__(self, thread, action_name):
+        self.thread = thread
+        self.action_name = action_name
+        self.pid = os.getpid()
+
+    def poll(self):
+        if self.thread.is_alive():
+            return None
+        result = _ACTION_RESULTS.get(self.action_name)
+        return result.get("exit_code", 0) if result else 0
+
+
+@app.post("/api/workflows/{name}/execute")
+async def execute_workflow(name: str):
+    workflows_dir = get_hermes_home() / "workflows"
+    path = workflows_dir / f"{name}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found")
+
+    action_name = f"workflow-{name}"
+    log_file_name = f"action-{action_name}.log"
+    _ACTION_LOG_FILES[action_name] = log_file_name
+
+    _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _ACTION_LOG_DIR / log_file_name
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            graph = json.load(f)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read workflow: {exc}")
+
+    def run_workflow_sync():
+        with open(log_path, "wb", buffering=0) as log_file:
+            log_file.write(
+                f"\n=== Workflow {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
+            )
+            
+            def log_callback(msg: str):
+                log_file.write(f"{msg}\n".encode("utf-8", errors="replace"))
+
+            exit_code = 0
+            try:
+                from tools.workflow_exec import execute_workflow_graph
+                ok = execute_workflow_graph(graph, log_callback=log_callback)
+                if not ok:
+                    exit_code = 1
+            except Exception as e:
+                log_callback(f"[Error] Execution crashed: {e}")
+                exit_code = 1
+                
+            log_file.write(
+                f"\n=== Workflow {name} completed {time.strftime('%Y-%m-%d %H:%M:%S')} (exit={exit_code}) ===\n".encode()
+            )
+        
+        _ACTION_RESULTS[action_name] = {"exit_code": exit_code, "pid": None}
+        _ACTION_PROCS.pop(action_name, None)
+
+    t = threading.Thread(target=run_workflow_sync, daemon=True)
+    t.start()
+
+    shim = WorkflowThreadShim(t, action_name)
+    _ACTION_PROCS[action_name] = shim
+
+    return {"name": action_name, "ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Skills & Tools endpoints
 # ---------------------------------------------------------------------------
 

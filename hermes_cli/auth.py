@@ -229,6 +229,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    # Local-command ACP transport: routes inference to any ACP-compliant agent
+    # via JSON-RPC over stdio. Auth is handled by the spawned binary itself —
+    # no API key is needed at the Hermes layer. acp_command/acp_args are read
+    # from config.yaml (model.acp_command, model.acp_args), set via the
+    # /acp-client-runtime command. Mirrors copilot-acp's external_process shape
+    # but has no inference_base_url (the binary manages the transport endpoint).
+    "acp_client": ProviderConfig(
+        id="acp_client",
+        name="ACP Client (local command)",
+        auth_type="external_process",
+    ),
     "gemini": ProviderConfig(
         id="gemini",
         name="Google AI Studio",
@@ -1499,6 +1510,8 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        # acp-client is the hyphenated config form; canonical key uses underscore
+        "acp-client": "acp_client",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",

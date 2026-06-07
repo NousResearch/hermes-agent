@@ -2705,3 +2705,101 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+# ── acp_client provider resolution tests ─────────────────────────────────────
+
+
+def test_resolve_provider_acp_client_canonical(monkeypatch):
+    """resolve_provider('acp_client') returns 'acp_client' without AuthError.
+
+    The canonical key (underscore) is used after alias normalisation. This is
+    the form that arrives from resolve_runtime_provider, which normalises via
+    _PROVIDER_ALIASES before calling resolve_provider.
+    """
+    monkeypatch.setattr(rp.auth_mod, "_load_auth_store", lambda: {})
+    # Must NOT raise AuthError("Unknown provider 'acp_client'")
+    result = rp.resolve_provider("acp_client")
+    assert result == "acp_client"
+
+
+def test_resolve_provider_acp_client_hyphen_alias(monkeypatch):
+    """resolve_provider('acp-client') resolves via alias to canonical 'acp_client'.
+
+    config.yaml stores provider: acp-client (hyphenated). The alias mapping
+    must normalise it so resolve_provider does not raise.
+    """
+    monkeypatch.setattr(rp.auth_mod, "_load_auth_store", lambda: {})
+    result = rp.resolve_provider("acp-client")
+    assert result == "acp_client"
+
+
+def test_resolve_runtime_provider_acp_client_returns_correct_api_mode(monkeypatch):
+    """resolve_runtime_provider('acp_client') yields api_mode='acp_client'.
+
+    This is the critical assertion: the resolved runtime dict must carry
+    api_mode='acp_client' so the gateway passes it into agent_init, which
+    routes the turn through _run_acp_client_turn instead of a chat_completions
+    HTTP path. A wrong api_mode (e.g. chat_completions) would silently
+    misroute every turn.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "acp_client")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "acp-client",
+            "acp_command": "my-acp-agent",
+            "acp_args": ["--stdio"],
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="acp_client")
+
+    assert resolved["provider"] == "acp_client"
+    assert resolved["api_mode"] == "acp_client"
+    assert resolved["api_key"] == ""
+    assert resolved["base_url"] == ""
+    assert resolved["command"] == "my-acp-agent"
+    assert resolved["args"] == ["--stdio"]
+    assert resolved["source"] == "config"
+
+
+def test_resolve_runtime_provider_acp_client_no_command_raises(monkeypatch):
+    """resolve_runtime_provider raises AuthError when acp_command is missing.
+
+    Without acp_command there is no binary to spawn; a clear error is better
+    than a silent empty-string command or fall-through to OpenRouter.
+    """
+    from hermes_cli.auth import AuthError
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "acp_client")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "acp-client"},
+    )
+
+    with pytest.raises(AuthError, match="acp_command"):
+        rp.resolve_runtime_provider(requested="acp_client")
+
+
+def test_resolve_runtime_provider_acp_client_no_api_key_required(monkeypatch):
+    """acp_client runtime must not require an API key.
+
+    Auth is handled by the spawned binary itself. The returned api_key must be
+    empty so agent_init never tries to validate or forward a credential.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "acp_client")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "acp-client",
+            "acp_command": "hermes-acp-agent",
+            "acp_args": [],
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="acp_client")
+    assert resolved["api_key"] == ""

@@ -128,6 +128,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
+    CommandDef("acp-client-runtime", "Toggle ACP client runtime (route turns to an external ACP agent)",
+               "Configuration", aliases=("acp_client_runtime", "acp-runtime", "acp_runtime"),
+               args_hint="[auto|acp_client|on|off] [<command> [<args>...]]"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
 

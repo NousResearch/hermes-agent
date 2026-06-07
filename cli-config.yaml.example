@@ -53,6 +53,11 @@ model:
   # entra:
   #   scope: "https://ai.azure.com/.default"  # Optional; this is the default.
 
+  # ACP client transport — route inference to any ACP-compliant agent (e.g. @agentclientprotocol/claude-agent-acp)
+  # provider: "acp-client"
+  # acp_command: "claude-agent-acp"   # ACP server binary to spawn
+  # acp_args: []                      # Optional args passed to the binary (list or empty string)
+
   # ── Token limits — two settings, easy to confuse ──────────────────────────
   #
   # context_length: TOTAL context window (input + output tokens combined).

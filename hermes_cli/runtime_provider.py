@@ -248,6 +248,10 @@ _VALID_API_MODES = {
     # `model.openai_runtime == "codex_app_server"` AND provider in
     # {"openai", "openai-codex"}. Default is unchanged.
     "codex_app_server",
+    # Optional opt-in: route inference to any ACP-compliant agent via
+    # JSON-RPC over stdio. Gated behind api_mode == "acp_client" AND
+    # provider == "acp-client" (or explicit api_mode config). Default unchanged.
+    "acp_client",
 }
 
 
@@ -1484,6 +1488,32 @@ def resolve_runtime_provider(
             "command": creds.get("command", ""),
             "args": list(creds.get("args") or []),
             "source": creds.get("source", "process"),
+            "requested_provider": requested_provider,
+        }
+
+    if provider == "acp_client":
+        # Local-command ACP transport: routes inference to any ACP-compliant
+        # agent via JSON-RPC over stdio. Auth is handled by the spawned binary
+        # itself — no API key is needed at the Hermes layer. The command and
+        # args are stored in config.yaml by /acp-client-runtime and forwarded
+        # unchanged to agent_init, which passes them to ACPClientSession.
+        acp_command = str(model_cfg.get("acp_command") or "").strip()
+        acp_args = list(model_cfg.get("acp_args") or [])
+        if not acp_command:
+            raise AuthError(
+                "acp_client provider requires acp_command to be set in config.yaml. "
+                "Run '/acp-client-runtime on <command>' to configure it.",
+                provider="acp_client",
+                code="missing_acp_command",
+            )
+        return {
+            "provider": "acp_client",
+            "api_mode": "acp_client",
+            "base_url": "",
+            "api_key": "",
+            "command": acp_command,
+            "args": acp_args,
+            "source": "config",
             "requested_provider": requested_provider,
         }
 

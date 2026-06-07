@@ -8288,6 +8288,54 @@ class HermesCLI:
         if result.success and result.requires_new_session:
             _cprint("    Tip: `/reset` starts a new session immediately.")
 
+    def _handle_acp_client_runtime(self, cmd_original: str) -> None:
+        """Handle /acp-client-runtime — toggle the ACP client runtime opt-in.
+
+        Usage:
+            /acp-client-runtime                           — show current state
+            /acp-client-runtime auto                      — Hermes default runtime
+            /acp-client-runtime acp_client <cmd> [args]   — route turns to ACP agent
+            /acp-client-runtime on <cmd> [args]           — synonym for acp_client
+            /acp-client-runtime off                       — synonym for auto
+        """
+        from hermes_cli import acp_runtime_switch as ars
+
+        parts = cmd_original.split(None, 2)
+        raw_state = parts[1].strip() if len(parts) > 1 else ""
+        # Remaining tokens after the state keyword: "<command> [<arg>...]"
+        rest = parts[2].strip() if len(parts) > 2 else ""
+        rest_parts = rest.split() if rest else []
+        acp_command = rest_parts[0] if rest_parts else None
+        acp_args = rest_parts[1:] if len(rest_parts) > 1 else None
+
+        new_value, errors = ars.parse_args(raw_state)
+        if errors:
+            for err in errors:
+                _cprint(f"❌ {err}")
+            return
+
+        try:
+            from hermes_cli.config import load_config, save_config
+        except Exception as exc:
+            _cprint(f"❌ could not load config: {exc}")
+            return
+        cfg = load_config()
+
+        result = ars.apply(
+            cfg,
+            new_value,
+            acp_command=acp_command,
+            acp_args=acp_args,
+            persist_callback=(save_config if new_value is not None else None),
+        )
+
+        prefix = "✓" if result.success else "✗"
+        for line in result.message.splitlines():
+            _cprint(f"  {prefix} {line}" if line.startswith("acp_client runtime")
+                    else f"    {line}")
+        if result.success and result.requires_new_session:
+            _cprint("    Tip: `/reset` starts a new session immediately.")
+
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""
         if not text or has_images or not _looks_like_slash_command(text):
@@ -8994,6 +9042,8 @@ class HermesCLI:
             self._handle_model_switch(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
+        elif canonical == "acp-client-runtime":
+            self._handle_acp_client_runtime(cmd_original)
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
 

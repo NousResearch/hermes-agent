@@ -8278,6 +8278,9 @@ class GatewayRunner:
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
 
+        if canonical == "acp-client-runtime":
+            return await self._handle_acp_client_runtime_command(event)
+
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
@@ -11567,6 +11570,57 @@ class GatewayRunner:
                 self._evict_cached_agent(session_key)
             except Exception:
                 logger.debug("could not evict cached agent after codex-runtime change",
+                             exc_info=True)
+
+        prefix = "✓" if result.success else "✗"
+        return f"{prefix} {result.message}"
+
+    async def _handle_acp_client_runtime_command(self, event: MessageEvent) -> str:
+        """Handle /acp-client-runtime command in the gateway.
+
+        Same surface as the CLI handler in cli.py:
+            /acp-client-runtime                           — show current state
+            /acp-client-runtime auto                      — Hermes default runtime
+            /acp-client-runtime acp_client <cmd> [args]   — route to ACP agent
+            /acp-client-runtime on <cmd> [args]           — synonym for acp_client
+            /acp-client-runtime off                       — synonym for auto
+
+        On change, the cached agent for this session is evicted so the next
+        message creates a fresh AIAgent with the new api_mode wired in."""
+        from hermes_cli import acp_runtime_switch as ars
+
+        raw_args = event.get_command_args().strip() if event else ""
+        parts = raw_args.split(None, 1)
+        raw_state = parts[0] if parts else ""
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        rest_parts = rest.split() if rest else []
+        acp_command = rest_parts[0] if rest_parts else None
+        acp_args = rest_parts[1:] if len(rest_parts) > 1 else None
+
+        new_value, errors = ars.parse_args(raw_state)
+        if errors:
+            return "❌ " + "\n❌ ".join(errors)
+
+        try:
+            from hermes_cli.config import load_config, save_config
+        except Exception as exc:
+            return f"❌ Could not load config: {exc}"
+        cfg = load_config()
+
+        result = ars.apply(
+            cfg,
+            new_value,
+            acp_command=acp_command,
+            acp_args=acp_args,
+            persist_callback=(save_config if new_value is not None else None),
+        )
+
+        if result.success and new_value is not None and result.requires_new_session:
+            try:
+                session_key = self._session_key_for_source(event.source)
+                self._evict_cached_agent(session_key)
+            except Exception:
+                logger.debug("could not evict cached agent after acp-client-runtime change",
                              exc_info=True)
 
         prefix = "✓" if result.success else "✗"

@@ -694,6 +694,20 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             )
     except Exception:
         pass
+    # Indicate when the ACP client runtime is active so users can see that
+    # turns are routed to an external ACP agent subprocess.
+    try:
+        from hermes_cli.acp_runtime_switch import get_current_state, get_current_command
+        from hermes_cli.config import load_config as _load_cfg_acp
+        _cfg_acp = _load_cfg_acp()
+        if get_current_state(_cfg_acp) == "acp_client":
+            _acp_cmd = get_current_command(_cfg_acp) or "?"
+            right_lines.append(
+                f"[bold {accent}]Runtime:[/] [{text}]acp-client ({_acp_cmd})[/] "
+                f"[dim {dim}](turns routed to external ACP agent)[/]"
+            )
+    except Exception:
+        pass
     # Show active profile name when not 'default'
     try:
         from hermes_cli.profiles import get_active_profile_name

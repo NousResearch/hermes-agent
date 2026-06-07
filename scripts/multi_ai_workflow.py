@@ -11,7 +11,10 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
+import shlex
+import shutil
 import subprocess
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -840,6 +843,32 @@ def _fill_template_fields(text: str, values: dict[str, str]) -> str:
     return rendered
 
 
+def _agent_env_name(ai_name: str) -> str:
+    key = re.sub(r"[^A-Za-z0-9]+", "_", ai_name).strip("_").upper()
+    return f"HERMES_AI_PAIR_{key}_COMMAND"
+
+
+def resolve_ai_pair_agent_command(ai_name: str, explicit_command: str = "") -> dict[str, Any]:
+    env_name = _agent_env_name(ai_name)
+    command = explicit_command.strip() or os.environ.get(env_name, "").strip()
+    if command:
+        executable = shlex.split(command)[0]
+        return {
+            "ok": shutil.which(executable) is not None or Path(executable).exists(),
+            "ai": ai_name,
+            "env_name": env_name,
+            "command": command,
+            "reason": "configured command found",
+        }
+    return {
+        "ok": False,
+        "ai": ai_name,
+        "env_name": env_name,
+        "command": "",
+        "reason": f"missing runnable adapter command; set {env_name}",
+    }
+
+
 def create_ai_pair_job(
     *,
     project: str | Path,
@@ -913,6 +942,152 @@ def _load_ai_pair_state(project: str | Path, issue_id: str) -> tuple[Path, dict[
     if not state_path.exists():
         raise FileNotFoundError(f"AI Pair state not found: {state_path}")
     return pair_dir, json.loads(state_path.read_text(encoding="utf-8"))
+
+
+def build_ai_pair_coder_plan_prompt(state: dict[str, Any]) -> str:
+    return f"""Use AI Pair
+
+You are the coder AI: {state.get("coder_ai", "")}
+Reviewer AI: {state.get("reviewer_ai", "")} in read-only mode.
+
+Task:
+{state.get("task", "")}
+
+Branch/worktree:
+{state.get("branch", "")}
+
+Rules:
+- Do not edit files.
+- Do not write code.
+- Do not create commits.
+- Read context only as needed.
+- Return a coder plan for owner approval before implementation.
+
+Return the plan in this structure:
+
+# Coder Plan
+
+issue_id: {state.get("issue_id", "")}
+task: {state.get("task", "")}
+coder_ai: {state.get("coder_ai", "")}
+branch: {state.get("branch", "")}
+status: plan_ready_for_owner
+
+## Scope
+
+scope:
+out_of_scope:
+files_likely_touched:
+
+## Plan
+
+implementation_steps:
+
+## Verification
+
+commands:
+localhost_check:
+vps_check:
+
+## Owner Approval
+
+approved_by_owner: no
+approval_note:
+"""
+
+
+def run_ai_pair_coder_plan(
+    *,
+    project: str | Path,
+    issue_id: str,
+    execute: bool = False,
+    coder_command: str = "",
+    timeout_seconds: int = 300,
+) -> dict[str, Any]:
+    root = _project_root(project)
+    pair_dir, state = _load_ai_pair_state(root, issue_id)
+    prompt = build_ai_pair_coder_plan_prompt(state)
+    prompt_path = pair_dir / "coder-plan-prompt.md"
+    prompt_path.write_text(prompt, encoding="utf-8")
+
+    resolved = resolve_ai_pair_agent_command(str(state.get("coder_ai", "")), coder_command)
+    if not resolved["ok"]:
+        state["status"] = "blocked_missing_coder_runtime"
+        state["runtime_error"] = resolved["reason"]
+        _write_ai_pair_state(pair_dir, state)
+        blocker_path = pair_dir / "automation-blocker.md"
+        blocker_path.write_text(
+            "\n".join(
+                [
+                    "# AI Pair Automation Blocked",
+                    "",
+                    f"status: {state['status']}",
+                    f"coder_ai: {state.get('coder_ai', '')}",
+                    f"required_env: {resolved['env_name']}",
+                    f"reason: {resolved['reason']}",
+                    "",
+                    "This job must not fall back to manual prompt forwarding.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "ok": False,
+            "executed": False,
+            "status": state["status"],
+            "reason": resolved["reason"],
+            "required_env": resolved["env_name"],
+            "prompt_path": str(prompt_path),
+            "blocker_path": str(blocker_path),
+        }
+
+    if not execute:
+        return {
+            "ok": True,
+            "executed": False,
+            "status": state.get("status"),
+            "command": resolved["command"],
+            "prompt_path": str(prompt_path),
+        }
+
+    completed = subprocess.run(
+        shlex.split(resolved["command"]),
+        input=prompt,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=str(root),
+        timeout=timeout_seconds,
+        check=False,
+    )
+    output_path = pair_dir / "coder-plan.raw.md"
+    output_path.write_text(completed.stdout, encoding="utf-8")
+    if completed.returncode != 0:
+        state["status"] = "blocked_coder_runtime_failed"
+        state["runtime_error"] = completed.stderr.strip()
+        _write_ai_pair_state(pair_dir, state)
+        return {
+            "ok": False,
+            "executed": True,
+            "status": state["status"],
+            "returncode": completed.returncode,
+            "stderr": completed.stderr.strip(),
+            "output_path": str(output_path),
+        }
+
+    (pair_dir / "coder-plan.md").write_text(completed.stdout, encoding="utf-8")
+    state["status"] = "coder_plan_ready_for_owner"
+    state.pop("runtime_error", None)
+    _write_ai_pair_state(pair_dir, state)
+    return {
+        "ok": True,
+        "executed": True,
+        "status": state["status"],
+        "returncode": completed.returncode,
+        "coder_plan_path": str(pair_dir / "coder-plan.md"),
+        "output_path": str(output_path),
+    }
 
 
 def _markdown_field_value(text: str, field: str) -> str:
@@ -1618,6 +1793,15 @@ def main(argv: list[str] | None = None) -> int:
     ai_pair_init.add_argument("--force", action="store_true")
     ai_pair_init.add_argument("--format", choices=("text", "json"), default="text")
 
+    ai_pair_run = ai_pair_subparsers.add_parser("run", help="Run an AI Pair automation phase.")
+    ai_pair_run.add_argument("phase", choices=("coder-plan",))
+    ai_pair_run.add_argument("--project", default=".")
+    ai_pair_run.add_argument("--issue-id", required=True)
+    ai_pair_run.add_argument("--execute", action="store_true")
+    ai_pair_run.add_argument("--coder-command", default="")
+    ai_pair_run.add_argument("--timeout-seconds", type=int, default=300)
+    ai_pair_run.add_argument("--format", choices=("text", "json"), default="text")
+
     worktree_parser = subparsers.add_parser("worktree", help="Manage issue worktrees.")
     worktree_subparsers = worktree_parser.add_subparsers(dest="worktree_command", required=True)
     worktree_create = worktree_subparsers.add_parser("create", help="Create and claim a git worktree.")
@@ -1779,6 +1963,20 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"{result['status']}: {result['pair_dir']}")
         return 0
+
+    if args.command == "ai-pair" and args.ai_pair_command == "run":
+        result = run_ai_pair_coder_plan(
+            project=args.project,
+            issue_id=args.issue_id,
+            execute=args.execute,
+            coder_command=args.coder_command,
+            timeout_seconds=args.timeout_seconds,
+        )
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"{result['status']}: {result.get('reason', result.get('coder_plan_path', ''))}")
+        return 0 if result["ok"] else 2
 
     if args.command == "worktree" and args.worktree_command == "create":
         result = create_worktree(

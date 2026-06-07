@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shlex
 import socket
 import subprocess
 import sys
@@ -719,6 +720,78 @@ def test_ai_pair_cli_branch_proposal_is_json(tmp_path):
     payload = json.loads(result.stdout)
     assert payload["branch"] == "ai-pair/pair-001-use-ai-pair"
     assert payload["requires_owner_approval"] is True
+
+
+def test_ai_pair_run_blocks_when_coder_runtime_is_missing(tmp_path):
+    cli = _load_cli()
+    cli.init_project(tmp_path, force=False)
+    cli.create_ai_pair_job(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        task="Add Use AI Pair",
+        coder_ai="Codecode",
+        reviewer_ai="Codex",
+        branch="ai-pair/pair-001-use-ai-pair",
+        gitlab_host="https://gitlab.dev.jigsawgroups.work/",
+        force=False,
+    )
+
+    result = cli.run_ai_pair_coder_plan(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        execute=True,
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "blocked_missing_coder_runtime"
+    assert result["required_env"] == "HERMES_AI_PAIR_CODECODE_COMMAND"
+    pair_dir = tmp_path / ".hermes" / "ai-pair" / "pair-001-use-ai-pair"
+    assert (pair_dir / "automation-blocker.md").exists()
+    state = json.loads((pair_dir / "pair-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "blocked_missing_coder_runtime"
+
+
+def test_ai_pair_run_executes_configured_coder_command(tmp_path):
+    cli = _load_cli()
+    cli.init_project(tmp_path, force=False)
+    cli.create_ai_pair_job(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        task="Add Use AI Pair",
+        coder_ai="Codecode",
+        reviewer_ai="Codex",
+        branch="ai-pair/pair-001-use-ai-pair",
+        gitlab_host="https://gitlab.dev.jigsawgroups.work/",
+        force=False,
+    )
+    fake_coder = tmp_path / "fake_coder.py"
+    fake_coder.write_text(
+        "\n".join(
+            [
+                "import sys",
+                "_ = sys.stdin.read()",
+                "print('# Coder Plan')",
+                "print('issue_id: pair-001-use-ai-pair')",
+                "print('status: plan_ready_for_owner')",
+                "print('approved_by_owner: no')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = cli.run_ai_pair_coder_plan(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        execute=True,
+        coder_command=f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_coder))}",
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "coder_plan_ready_for_owner"
+    pair_dir = tmp_path / ".hermes" / "ai-pair" / "pair-001-use-ai-pair"
+    assert "status: plan_ready_for_owner" in (pair_dir / "coder-plan.md").read_text(encoding="utf-8")
+    state = json.loads((pair_dir / "pair-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "coder_plan_ready_for_owner"
 
 
 def test_render_ai_pair_review_packet_includes_read_only_rules(tmp_path):

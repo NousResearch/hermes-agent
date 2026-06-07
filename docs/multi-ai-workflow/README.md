@@ -187,6 +187,24 @@ python3 scripts/multi_ai_workflow.py ai-pair init \
   --gitlab-host https://gitlab.dev.jigsawgroups.work/
 ```
 
+Run the coder-plan phase automatically:
+
+```bash
+python3 scripts/multi_ai_workflow.py ai-pair run coder-plan \
+  --project . \
+  --issue-id pair-001-use-ai-pair \
+  --execute
+```
+
+The selected coder must have a runnable adapter command. For `Codecode`, set:
+
+```bash
+export HERMES_AI_PAIR_CODECODE_COMMAND="your-codecode-command --print"
+```
+
+If the adapter is missing, the pair job is blocked as
+`blocked_missing_coder_runtime`. Do not fall back to manual prompt forwarding.
+
 ## Health Check
 
 ตรวจว่าโปรเจกต์พร้อมสำหรับ multi-AI workflow:

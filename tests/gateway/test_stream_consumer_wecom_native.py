@@ -321,3 +321,72 @@ class TestNativeStreamingFallback:
         assert consumer._use_native_streaming is True
         assert consumer._use_draft_streaming is False
         adapter.send_draft.assert_not_awaited()
+
+
+class TestNativeStreamingSegmentBreak:
+    """Segment breaks should NOT finalize or reset for WeCom native streaming."""
+
+    @pytest.mark.asyncio
+    async def test_segment_break_preserves_cumulative_text(self):
+        """Tool boundary keeps pre+post text in one stream, single finalize."""
+        adapter = _make_native_streaming_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="",
+            edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        # Pre-tool text
+        consumer.on_delta("Pre-tool content. ")
+        # Simulate tool boundary (segment break)
+        consumer.on_segment_break()
+        # Post-tool text
+        consumer.on_delta("Post-tool result.")
+
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        # Should only have ONE finalize frame (the final one)
+        finalize_frames = [f for f in adapter.frames if f.get("finalize")]
+        assert len(finalize_frames) == 1, \
+            f"Should have exactly 1 finalize, got {len(finalize_frames)}"
+
+        # The finalize frame must contain BOTH pre-tool and post-tool text
+        final_text = finalize_frames[0]["text"]
+        assert "Pre-tool content" in final_text, \
+            "Final frame must include pre-tool text (not lost by reset)"
+        assert "Post-tool result" in final_text, \
+            "Final frame must include post-tool text"
+
+    @pytest.mark.asyncio
+    async def test_segment_break_no_extra_finalize(self):
+        """Segment break should NOT produce a finalize frame."""
+        adapter = _make_native_streaming_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="",
+            edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        consumer.on_delta("First part of response. ")
+        consumer.on_segment_break()
+        consumer.on_delta("Second part after tool.")
+
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.1)
+        consumer.finish()
+        await task
+
+        # Count finalize frames — should be exactly 1 (only at finish)
+        finalize_count = sum(1 for f in adapter.frames if f.get("finalize"))
+        assert finalize_count == 1, \
+            f"Expected 1 finalize (only at end), got {finalize_count}"
+
+        # Non-finalize frames should show cumulative growth
+        content_frames = [f for f in adapter.frames if not f.get("finalize") and f["text"]]
+        if len(content_frames) >= 2:
+            # Later frames should be longer (cumulative)
+            assert len(content_frames[-1]["text"]) >= len(content_frames[0]["text"]), \
+                "Content frames should grow cumulatively"

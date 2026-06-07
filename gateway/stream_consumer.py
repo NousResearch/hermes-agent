@@ -1262,8 +1262,10 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
                     self._reset_segment_state()
 
-                # Tool boundary: reset message state so the next text chunk
-                # creates a fresh message below any tool-progress messages.
+                # Tool boundary: for edit-based platforms, reset message state
+                # so the next text chunk creates a fresh message below tool-progress.
+                # For WeCom native streaming: NO reset — stream uses cumulative text,
+                # so resetting would lose pre-boundary content in subsequent frames.
                 #
                 # Exception: when _message_id is "__no_edit__" the platform
                 # never returned a real message ID (e.g. Signal, webhook with

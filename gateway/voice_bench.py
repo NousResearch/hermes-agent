@@ -91,18 +91,14 @@ def _write_payload(path: Path, payload: dict[str, Any]) -> None:
         except OSError:
             pass
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        try:
-            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-            with os.fdopen(fd, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
-        finally:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str) + "\n"
+            )
         _LAST_WRITE_ERROR = None
         _compact_if_needed(path)
-    except OSError as exc:
+    except Exception as exc:
         _LAST_WRITE_ERROR = str(exc)
         _LOGGER.warning("Voice bench telemetry write failed: %s", exc)
         return
@@ -117,15 +113,9 @@ def _compact_if_needed(path: Path, *, max_events: int | None = None) -> None:
             lines = list(deque(fh, maxlen=keep_events))
         tmp_path = path.with_suffix(path.suffix + ".tmp")
         fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.writelines(lines)
-        finally:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.writelines(lines)
         tmp_path.replace(path)
         os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
     except OSError as exc:
@@ -139,7 +129,12 @@ def _writer_loop() -> None:
             if item is None:
                 return
             path, payload = item
-            _write_payload(path, payload)
+            try:
+                _write_payload(path, payload)
+            except Exception as exc:
+                global _LAST_WRITE_ERROR
+                _LAST_WRITE_ERROR = str(exc)
+                _LOGGER.warning("Voice bench telemetry worker failed: %s", exc)
         finally:
             _WRITE_QUEUE.task_done()
 
@@ -182,10 +177,16 @@ def append_event(event: dict[str, Any]) -> None:
         _LOGGER.warning("Voice bench telemetry write queue full; dropping event")
 
 
-def flush_events() -> None:
+def flush_events(timeout: float = 2.0) -> bool:
     """Wait until queued telemetry writes are persisted."""
-    if _WRITE_WORKER_STARTED:
-        _WRITE_QUEUE.join()
+    if not _WRITE_WORKER_STARTED:
+        return True
+    deadline = time.monotonic() + max(0.0, timeout)
+    while getattr(_WRITE_QUEUE, "unfinished_tasks", 0):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+    return True
 
 
 def recent_events(*, platform: str | None = None, chat_id: str | None = None, max_events: int = MAX_EVENTS) -> list[dict[str, Any]]:
@@ -282,7 +283,8 @@ def _stage_item(stage: Any) -> dict[str, Any]:
 
 
 def format_recent(platform: str | None = None, chat_id: str | None = None, *, limit: int = DEFAULT_LIMIT) -> str:
-    flush_events()
+    if not flush_events():
+        return "Voice bench unavailable: telemetry flush timed out."
     if _LAST_WRITE_ERROR:
         return "Voice bench unavailable: telemetry write failed."
     events = recent_events(platform=platform, chat_id=chat_id)

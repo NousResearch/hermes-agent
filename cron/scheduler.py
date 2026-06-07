@@ -1291,10 +1291,18 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
-    return _scan_assembled_cron_prompt("\n".join(parts), job, has_skills=True)
+    return _scan_assembled_cron_prompt(
+        "\n".join(parts), job, has_skills=True, user_prompt=prompt
+    )
 
 
-def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool = False) -> str:
+def _scan_assembled_cron_prompt(
+    assembled: str,
+    job: dict,
+    *,
+    has_skills: bool = False,
+    user_prompt: Optional[str] = None,
+) -> str:
     """Scan the fully-assembled cron prompt for injection patterns. Raises
     ``CronPromptInjectionBlocked`` when a match fires so ``run_job`` can
     surface a clear refusal to the operator.
@@ -1313,15 +1321,31 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
     - When ``has_skills=True`` the assembled prompt includes loaded skill
       markdown — often security docs / runbooks that *describe* attack
       commands in prose. The LOOSER ``_scan_cron_skill_assembled``
-      pattern set is used: only unambiguous prompt-injection directives
-      block; command-shape patterns are dropped and invisible unicode is
-      sanitized (stripped + logged) rather than blocked, to avoid
-      false-positives that permanently kill a job. Skill bodies are
-      vetted at install time by ``skills_guard.py``.
+      pattern set is used on the skill markdown: only unambiguous
+      prompt-injection directives block; command-shape patterns are
+      dropped and invisible unicode is sanitized (stripped + logged)
+      rather than blocked, to avoid false-positives that permanently kill
+      a job. Skill bodies are vetted at install time by ``skills_guard.py``.
+
+    The user-supplied prompt is the actual injection surface, so it is
+    ALWAYS scanned with the strict ``_scan_cron_prompt`` patterns even when
+    a skill is attached. ``user_prompt`` carries that isolated portion;
+    without this pass, attaching any skill would downgrade the user-prompt
+    scan to the loose skill set and let a runtime prompt such as
+    ``cat ~/.hermes/.env`` or a secret-exfil ``curl`` through the
+    defense-in-depth tripwire (a prompt-injected agent can write directly
+    into the on-disk cron store, bypassing the create-time gate).
     """
     from tools.cronjob_tools import _scan_cron_prompt, _scan_cron_skill_assembled
 
     if has_skills:
+        # The user prompt always gets the strict scan — it is the real
+        # injection surface and is small/directive, so command-shape and
+        # exfil patterns there are smoking guns, not prose.
+        if user_prompt:
+            strict_error = _scan_cron_prompt(user_prompt)
+            if strict_error:
+                _raise_cron_injection(job, strict_error)
         # Skill content is install-time vetted by skills_guard.py. Invisible
         # unicode is sanitized (not blocked) so a stray zero-width space in a
         # skill code example can't permanently kill the job; the cleaned
@@ -1331,14 +1355,19 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
     else:
         scan_error = _scan_cron_prompt(assembled)
     if scan_error:
-        job_label = job.get("name") or job.get("id") or "<unknown>"
-        logger.warning(
-            "Cron job '%s': assembled prompt blocked by injection scanner — %s",
-            job_label,
-            scan_error,
-        )
-        raise CronPromptInjectionBlocked(scan_error)
+        _raise_cron_injection(job, scan_error)
     return assembled
+
+
+def _raise_cron_injection(job: dict, scan_error: str) -> None:
+    """Log and raise ``CronPromptInjectionBlocked`` for a scanner hit."""
+    job_label = job.get("name") or job.get("id") or "<unknown>"
+    logger.warning(
+        "Cron job '%s': assembled prompt blocked by injection scanner — %s",
+        job_label,
+        scan_error,
+    )
+    raise CronPromptInjectionBlocked(scan_error)
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:

@@ -1793,6 +1793,44 @@ class TestProfileArg:
         assert "<string>Aqua</string>" in plist
         assert "<string>Background</string>" in plist
 
+    def test_launchd_plist_filters_transient_inherited_path_entries(self, tmp_path, monkeypatch):
+        stable_bin = tmp_path / "stable-bin"
+        stable_bin.mkdir()
+        missing_bin = tmp_path / "missing-bin"
+        codex_arg0 = tmp_path / ".codex" / "tmp" / "arg0" / "codex-arg0abc"
+        codex_arg0.mkdir(parents=True)
+        relative_bin = "relative-bin"
+
+        monkeypatch.setenv(
+            "PATH",
+            os.pathsep.join(
+                [
+                    str(codex_arg0),
+                    "/Applications/Codex.app/Contents/Resources",
+                    str(missing_bin),
+                    "~/.dotnet/tools",
+                    relative_bin,
+                    str(stable_bin),
+                ]
+            ),
+        )
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+
+        plist = gateway_cli.generate_launchd_plist()
+        path_value = (
+            plist.split("<key>PATH</key>", 1)[1]
+            .split("<string>", 1)[1]
+            .split("</string>", 1)[0]
+        )
+        path_entries = path_value.split(os.pathsep)
+
+        assert str(stable_bin) in path_entries
+        assert str(codex_arg0) not in path_entries
+        assert "/Applications/Codex.app/Contents/Resources" not in path_entries
+        assert str(missing_bin) not in path_entries
+        assert "~/.dotnet/tools" not in path_entries
+        assert relative_bin not in path_entries
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)

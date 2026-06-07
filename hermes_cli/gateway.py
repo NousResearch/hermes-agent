@@ -2323,6 +2323,41 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     return candidates
 
 
+def _service_env_path_dirs() -> list[str]:
+    """Return stable inherited PATH dirs suitable for persisted service files."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not _service_path_entry_is_persistable(entry):
+            continue
+        if entry in seen:
+            continue
+        seen.add(entry)
+        result.append(entry)
+    return result
+
+
+def _service_path_entry_is_persistable(entry: str) -> bool:
+    """Reject shell-only and transient launcher PATH entries for service files."""
+    if not entry or entry.startswith("~"):
+        return False
+
+    path = Path(entry)
+    if not path.is_absolute():
+        return False
+
+    raw = str(path)
+    if "/.codex/tmp/" in raw:
+        return False
+    if raw.startswith("/Applications/Codex.app/Contents/Resources"):
+        return False
+
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def _stable_service_working_dir() -> str:
     """Return a WorkingDirectory that will not disappear out from under systemd.
 
@@ -3164,8 +3199,8 @@ def generate_launchd_plist() -> str:
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
     # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
-    # the systemd unit), then capture the user's full shell PATH so every
-    # user-installed tool (node, ffmpeg, …) is reachable.
+    # the systemd unit), then capture stable existing dirs from the user's
+    # shell PATH so services do not persist transient app-launcher shims.
     detected_venv = _detect_venv_dir()
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
     # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
@@ -3178,7 +3213,7 @@ def generate_launchd_plist() -> str:
             priority_dirs.append(resolved_node_dir)
     sane_path = ":".join(
         dict.fromkeys(
-            priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]
+            priority_dirs + _service_env_path_dirs()
         )
     )
 

@@ -12372,6 +12372,76 @@ def _report_dashboard_status() -> int:
     return len(pids)
 
 
+def _probe_dashboard_runtime_import_error() -> "ImportError | None":
+    """Return the dashboard runtime's first import failure, if any.
+
+    ``uvicorn`` can be present but partially broken (for example a corrupt
+    wheel cache can leave ``uvicorn.supervisors`` missing). Probing through
+    ``import_module()`` lets the dashboard distinguish that case from a fully
+    healthy install before it decides whether to self-heal or just print the
+    generic reinstall guidance.
+    """
+    import importlib
+
+    try:
+        importlib.import_module("fastapi")
+        importlib.import_module("uvicorn")
+    except ImportError as exc:
+        return exc
+    return None
+
+
+def _attempt_dashboard_uvicorn_repair(import_error: ImportError) -> bool:
+    """Try a one-shot pip reinstall when the bundled uvicorn install is corrupt."""
+    msg = str(import_error)
+    if "uvicorn" not in msg or "fastapi" in msg:
+        return False
+
+    print(
+        "Detected a broken uvicorn install; attempting a one-time pip repair "
+        "for the dashboard runtime..."
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "uvicorn[standard]==0.41.0",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        print("Automatic uvicorn repair failed.")
+        if result.stderr.strip():
+            print(result.stderr.strip())
+        elif result.stdout.strip():
+            print(result.stdout.strip())
+        return False
+
+    import importlib
+
+    importlib.invalidate_caches()
+    sys.modules.pop("uvicorn", None)
+    sys.modules.pop("uvicorn.supervisors", None)
+    print("✓ Repaired uvicorn; retrying dashboard startup.")
+    return True
+
+
+def _ensure_dashboard_runtime_deps() -> "ImportError | None":
+    """Return the remaining dashboard import error after any safe self-heal."""
+    import_error = _probe_dashboard_runtime_import_error()
+    if import_error is None:
+        return None
+    if _attempt_dashboard_uvicorn_repair(import_error):
+        return _probe_dashboard_runtime_import_error()
+    return import_error
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     # --status: report running dashboards and exit, no deps needed.
@@ -12400,10 +12470,8 @@ def cmd_dashboard(args):
     except Exception:
         pass
 
-    try:
-        import fastapi  # noqa: F401
-        import uvicorn  # noqa: F401
-    except ImportError as e:
+    import_error = _ensure_dashboard_runtime_deps()
+    if import_error is not None:
         print("Web UI dependencies not installed (need fastapi + uvicorn).")
         print(
             f"Re-install the package into this interpreter so metadata updates apply:\n"
@@ -12411,7 +12479,7 @@ def cmd_dashboard(args):
             f"  {sys.executable} -m pip install -e .\n"
             "If `pip` is missing in this venv, use:  uv pip install -e ."
         )
-        print(f"Import error: {e}")
+        print(f"Import error: {import_error}")
         sys.exit(1)
 
     # Seed bundled skills on first dashboard launch so the desktop GUI's

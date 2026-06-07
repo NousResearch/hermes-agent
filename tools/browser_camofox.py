@@ -46,10 +46,40 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-_DEFAULT_TIMEOUT = 30  # seconds per HTTP request
+_DEFAULT_TIMEOUT = 30  # seconds per HTTP request (fallback when config unset)
 _SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
 _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
+
+_cached_command_timeout: Optional[int] = None
+_command_timeout_resolved = False
+
+
+def _get_command_timeout() -> int:
+    """Return the configured browser command timeout from config.yaml.
+
+    Mirrors ``tools.browser_tool._get_command_timeout`` so the Camofox
+    backend honours ``browser.command_timeout`` the same way the default
+    ``agent-browser`` path does.  Reads ``config["browser"]["command_timeout"]``
+    and falls back to ``_DEFAULT_TIMEOUT`` (30s) if unset or unreadable.
+    Floored at 5s to avoid instant kills.  Cached after the first call.
+    """
+    global _cached_command_timeout, _command_timeout_resolved
+    if _command_timeout_resolved:
+        return _cached_command_timeout  # type: ignore[return-value]
+
+    _command_timeout_resolved = True
+    result = _DEFAULT_TIMEOUT
+    try:
+        cfg = load_config()
+        val = cfg_get(cfg, "browser", "command_timeout")
+        if val is not None:
+            result = max(int(val), 5)
+    except Exception as e:
+        logger.debug("Could not read browser.command_timeout from config: %s", e)
+
+    _cached_command_timeout = result
+    return result
 
 
 def get_camofox_url() -> str:
@@ -348,7 +378,7 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
             "sessionKey": session["session_key"],
             "url": url,
         },
-        timeout=_DEFAULT_TIMEOUT,
+        timeout=max(_get_command_timeout(), 60),
     )
     resp.raise_for_status()
     data = resp.json()
@@ -384,34 +414,34 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
-def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def _post(path: str, body: dict, timeout: int | None = None) -> dict:
     """POST JSON to camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.post(url, json=body, timeout=timeout)
+    resp = requests.post(url, json=body, timeout=timeout if timeout is not None else _get_command_timeout())
     resp.raise_for_status()
     return resp.json()
 
 
-def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def _get(path: str, params: dict = None, timeout: int | None = None) -> dict:
     """GET from camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = requests.get(url, params=params, timeout=timeout if timeout is not None else _get_command_timeout())
     resp.raise_for_status()
     return resp.json()
 
 
-def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> requests.Response:
+def _get_raw(path: str, params: dict = None, timeout: int | None = None) -> requests.Response:
     """GET from camofox and return raw response (for binary data)."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = requests.get(url, params=params, timeout=timeout if timeout is not None else _get_command_timeout())
     resp.raise_for_status()
     return resp
 
 
-def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def _delete(path: str, body: dict = None, timeout: int | None = None) -> dict:
     """DELETE to camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.delete(url, json=body, timeout=timeout)
+    resp = requests.delete(url, json=body, timeout=timeout if timeout is not None else _get_command_timeout())
     resp.raise_for_status()
     return resp.json()
 
@@ -434,7 +464,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             data = _post(
                 f"/tabs/{session['tab_id']}/navigate",
                 {"userId": session["user_id"], "url": browser_url},
-                timeout=60,
+                timeout=max(_get_command_timeout(), 60),
             )
         result = {
             "success": True,
@@ -539,6 +569,7 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
         data = _post(
             f"/tabs/{session['tab_id']}/click",
             {"userId": session["user_id"], "ref": clean_ref},
+            timeout=max(_get_command_timeout(), 60),
         )
         return json.dumps({
             "success": True,

@@ -426,3 +426,57 @@ class TestBrowserToolRouting:
         assert check_browser_requirements() is True
 
 
+class TestCamofoxCommandTimeout:
+    """Camofox HTTP calls must honour browser.command_timeout instead of a
+    hardcoded 30s (regression for #40843)."""
+
+    def _reset_cache(self):
+        import tools.browser_camofox as cam
+        cam._cached_command_timeout = None
+        cam._command_timeout_resolved = False
+
+    @patch("tools.browser_camofox.load_config")
+    def test_reads_configured_command_timeout(self, mock_config):
+        self._reset_cache()
+        mock_config.return_value = {"browser": {"command_timeout": 90}}
+        from tools.browser_camofox import _get_command_timeout
+        assert _get_command_timeout() == 90
+
+    @patch("tools.browser_camofox.load_config")
+    def test_falls_back_to_default_when_unset(self, mock_config):
+        self._reset_cache()
+        mock_config.return_value = {"browser": {}}
+        from tools.browser_camofox import _get_command_timeout, _DEFAULT_TIMEOUT
+        assert _get_command_timeout() == _DEFAULT_TIMEOUT
+
+    @patch("tools.browser_camofox.load_config")
+    def test_floors_at_five_seconds(self, mock_config):
+        self._reset_cache()
+        mock_config.return_value = {"browser": {"command_timeout": 1}}
+        from tools.browser_camofox import _get_command_timeout
+        assert _get_command_timeout() == 5
+
+    @patch("tools.browser_camofox.load_config")
+    def test_default_on_unreadable_config(self, mock_config):
+        self._reset_cache()
+        mock_config.side_effect = RuntimeError("boom")
+        from tools.browser_camofox import _get_command_timeout, _DEFAULT_TIMEOUT
+        assert _get_command_timeout() == _DEFAULT_TIMEOUT
+
+    @patch("tools.browser_camofox.get_camofox_url", return_value="http://localhost:9377")
+    @patch("tools.browser_camofox.requests.get")
+    @patch("tools.browser_camofox.load_config")
+    def test_get_helper_uses_configured_timeout(self, mock_config, mock_get, _mock_url):
+        self._reset_cache()
+        mock_config.return_value = {"browser": {"command_timeout": 90}}
+        resp = MagicMock()
+        resp.json.return_value = {"ok": True}
+        resp.raise_for_status.return_value = None
+        mock_get.return_value = resp
+
+        from tools.browser_camofox import _get
+        _get("/tabs")
+
+        assert mock_get.call_args.kwargs["timeout"] == 90
+
+

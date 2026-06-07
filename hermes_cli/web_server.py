@@ -2375,13 +2375,17 @@ async def set_model_assignment(body: ModelAssignment):
             aux = {}
 
         if task == "__reset__":
-            # Reset every slot to provider="auto", model="" — keeps other fields intact.
+            # Reset every slot to provider="auto", model="" and clear
+            # any stale base_url / api_key left from a previous custom
+            # endpoint so the resolver doesn't route to a dead URL.
             for slot in _AUX_TASK_SLOTS:
                 slot_cfg = aux.get(slot)
                 if not isinstance(slot_cfg, dict):
                     slot_cfg = {}
                 slot_cfg["provider"] = "auto"
                 slot_cfg["model"] = ""
+                slot_cfg.pop("base_url", None)
+                slot_cfg.pop("api_key", None)
                 aux[slot] = slot_cfg
             cfg["auxiliary"] = aux
             save_config(cfg)
@@ -2391,6 +2395,7 @@ async def set_model_assignment(body: ModelAssignment):
             raise HTTPException(status_code=400, detail="provider required for auxiliary")
 
         targets = [task] if task else list(_AUX_TASK_SLOTS)
+        is_custom = provider.strip().lower() == "custom"
         for slot in targets:
             if slot not in _AUX_TASK_SLOTS:
                 raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
@@ -2399,6 +2404,13 @@ async def set_model_assignment(body: ModelAssignment):
                 slot_cfg = {}
             slot_cfg["provider"] = provider
             slot_cfg["model"] = model
+            # Clear stale base_url / api_key when switching away from a
+            # custom provider — the runtime resolver would otherwise keep
+            # routing to the old endpoint (matching the main-slot fix in
+            # _apply_main_model_assignment).
+            if not is_custom:
+                slot_cfg.pop("base_url", None)
+                slot_cfg.pop("api_key", None)
             aux[slot] = slot_cfg
 
         cfg["auxiliary"] = aux

@@ -713,6 +713,15 @@ class TestMediaDeliveryPathValidation:
 
         assert filtered == [(str(safe.resolve()), True)]
 
+    def test_default_roots_include_consolidated_generated_image_cache(self):
+        """Generated images are saved under cache/images even on installs that
+        still have legacy image_cache/ directories.  Both layouts must remain
+        deliverable as MEDIA attachments.
+        """
+        import gateway.platforms.base as base
+
+        assert base._HERMES_HOME / "cache" / "images" in base.MEDIA_DELIVERY_SAFE_ROOTS
+
     def test_allows_operator_configured_extra_root(self, tmp_path, monkeypatch):
         extra_root = tmp_path / "operator-media"
         media_file = extra_root / "report.pdf"

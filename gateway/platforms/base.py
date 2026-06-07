@@ -953,6 +953,16 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
     VIDEO_CACHE_DIR,
     DOCUMENT_CACHE_DIR,
     SCREENSHOT_CACHE_DIR,
+    # Always allow both the consolidated cache layout and the legacy cache
+    # layout.  ``get_hermes_dir()`` returns the legacy directory when it
+    # exists, but image generation providers save under cache/images.  Without
+    # the explicit consolidated roots, generated images can be rejected as
+    # unsafe on upgraded installs that still have image_cache/ around.
+    _HERMES_HOME / "cache" / "images",
+    _HERMES_HOME / "cache" / "audio",
+    _HERMES_HOME / "cache" / "videos",
+    _HERMES_HOME / "cache" / "documents",
+    _HERMES_HOME / "cache" / "screenshots",
     _HERMES_HOME / "image_cache",
     _HERMES_HOME / "audio_cache",
     _HERMES_HOME / "video_cache",

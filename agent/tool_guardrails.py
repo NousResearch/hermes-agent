@@ -336,26 +336,6 @@ class ToolCallGuardrailController:
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
 
-        if (
-            self.config.warnings_enabled
-            and signature == self._consecutive_signature
-            and self._consecutive_count >= self.config.consecutive_call_warn_after
-            and self._consecutive_count < self.config.consecutive_call_block_after
-        ):
-            return ToolGuardrailDecision(
-                action="warn",
-                code="consecutive_identical_call_warning",
-                message=(
-                    f"{tool_name} has been called with identical arguments "
-                    f"{self._consecutive_count} times in a row. Whether or not the "
-                    "results differ, this looks like a loop — use what you already "
-                    "have or change your approach."
-                ),
-                tool_name=tool_name,
-                count=self._consecutive_count,
-                signature=signature,
-            )
-
         if failed:
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
             self._exact_failure_counts[signature] = exact_count
@@ -403,14 +383,18 @@ class ToolCallGuardrailController:
                     signature=signature,
                 )
 
-            return ToolGuardrailDecision(tool_name=tool_name, count=exact_count, signature=signature)
+            return self._consecutive_warning(tool_name, signature) or ToolGuardrailDecision(
+                tool_name=tool_name, count=exact_count, signature=signature
+            )
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
-            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+            return self._consecutive_warning(tool_name, signature) or ToolGuardrailDecision(
+                tool_name=tool_name, signature=signature
+            )
 
         result_hash = _result_hash(result)
         previous = self._no_progress.get(signature)
@@ -433,7 +417,31 @@ class ToolCallGuardrailController:
                 signature=signature,
             )
 
-        return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
+        return self._consecutive_warning(tool_name, signature) or ToolGuardrailDecision(
+            tool_name=tool_name, count=repeat_count, signature=signature
+        )
+
+    def _consecutive_warning(self, tool_name: str, signature: "ToolCallSignature") -> "ToolGuardrailDecision | None":
+        if (
+            self.config.warnings_enabled
+            and signature == self._consecutive_signature
+            and self._consecutive_count >= self.config.consecutive_call_warn_after
+            and self._consecutive_count < self.config.consecutive_call_block_after
+        ):
+            return ToolGuardrailDecision(
+                action="warn",
+                code="consecutive_identical_call_warning",
+                message=(
+                    f"{tool_name} has been called with identical arguments "
+                    f"{self._consecutive_count} times in a row. Whether or not the "
+                    "results differ, this looks like a loop — use what you already "
+                    "have or change your approach."
+                ),
+                tool_name=tool_name,
+                count=self._consecutive_count,
+                signature=signature,
+            )
+        return None
 
     def _is_idempotent(self, tool_name: str) -> bool:
         if tool_name in self.config.mutating_tools:

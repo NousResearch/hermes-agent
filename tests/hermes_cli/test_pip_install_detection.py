@@ -48,6 +48,16 @@ def test_stamp_file_takes_precedence(tmp_path):
         assert detect_install_method(project_root=tmp_path) == "docker"
 
 
+def test_invalid_stamp_file_falls_back_to_project_detection(tmp_path):
+    """A corrupt .install_method stamp must not crash update checks."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".install_method").write_bytes(b"\xd0")
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=tmp_path):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=tmp_path) == "git"
+
+
 def test_container_without_stamp_is_not_docker(tmp_path):
     """An unstamped install in a generic container must NOT be flagged as docker.
 

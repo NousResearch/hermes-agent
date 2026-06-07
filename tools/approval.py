@@ -12,6 +12,7 @@ import contextvars
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -365,9 +366,9 @@ def _sudo_stdin_block_result(description: str) -> dict:
 # =========================================================================
 
 DANGEROUS_PATTERNS = [
-    (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
-    (r'\brm\s+-[^\s]*r', "recursive delete"),
-    (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
+    (r'(?<!["\'])\\brm\\s+(-[^\\s]*\\s+)*/', "delete in root path"),
+    (r'(?<!["\'])\\brm\\s+-[^\\s]*r', "recursive delete"),
+    (r'(?<!["\'])\\brm\\s+--recursive\\b', "recursive delete (long flag)"),
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
@@ -540,12 +541,153 @@ def _normalize_command_for_detection(command: str) -> str:
     return command
 
 
+def _detect_dangerous_command_structural(command: str) -> tuple:
+    """Check if a command is dangerous using structural tokenization (shlex).
+
+    This approach parses the actual shell command structure using shlex to 
+    extract the real program names and arguments, preventing bypasses via:
+    - Backslash escaping: r\\m -rf / → 'rm' (shlex unescapes it)
+    - Command substitution: $(echo rm) -rf / → caught by pre-check regex
+    - Parameter expansion: ${0/x/r}m -rf / → caught by pre-check regex
+    - Quoted strings: echo "rm -rf" → correctly parses as 'echo' (not 'rm')
+
+    Also detects dangerous commands in pipes, logical operators, and subshells
+    by splitting on shell operators before tokenizing.
+
+    Returns:
+        (is_dangerous, pattern_key, description) or (False, None, None)
+
+    This acts as the primary defense. It correctly handles the three documented
+    bypass vectors from issue #36847 plus shell pipes and operators.
+    """
+    normalized = _normalize_command_for_detection(command)
+    
+    # Pre-check: detect command substitution and parameter expansion syntax
+    # These MUST be caught before structural tokenization (shlex doesn't evaluate them)
+    substitution_patterns = [
+        r'\$\(',      # $(...)
+        r'`',         # `...`
+        r'\$\{',      # ${...}
+    ]
+    for pattern in substitution_patterns:
+        if re.search(pattern, normalized):
+            # Check if this is a pgrep expansion (common pattern for self-termination)
+            if 'pgrep' in normalized or 'pidof' in normalized:
+                return (True, 'kill process via pgrep expansion', 'kill process via pgrep expansion (self-termination)')
+            return (True, 'command substitution or parameter expansion', 
+                   'Command substitution or parameter expansion detected')
+    
+    # Split on shell operators to handle pipes, logical ops, subshells
+    # These are dangerous if ANY segment contains a dangerous command
+    shell_operators = [r'\|', r'[;&]', r'[(){}]']
+    segments = re.split(r'[\|;&(){}]', normalized)
+    
+    for segment in segments:
+        segment = segment.strip()
+        if not segment:
+            continue
+        
+        try:
+            # Use shlex to tokenize each segment, which respects shell quoting rules
+            tokens = shlex.split(segment)
+            if not tokens:
+                continue
+            
+            # Only check the first token as a potential dangerous command
+            # (subsequent tokens are arguments, not commands, unless preceded by pipe/operator)
+            base_cmd = os.path.basename(tokens[0])
+            
+            # Check dangerous commands that have no safe use cases
+            dangerous_base_commands = {
+                'rm': 'recursive delete',
+                'mkfs': 'format filesystem', 
+                'dd': 'disk copy',
+                'killall': 'force kill processes',
+                'pkill': 'force kill processes',
+                'halt': 'system shutdown',
+                'poweroff': 'system poweroff',
+                'reboot': 'system reboot',
+                'shutdown': 'system shutdown',
+                'init': 'init 0/6',
+                'telinit': 'telinit 0/6',
+            }
+            
+            # Special case: if first token is sudo, check the command AFTER sudo
+            if base_cmd == 'sudo' and len(tokens) > 1:
+                # Find the actual command (skip sudo flags and options)
+                cmd_idx = 1
+                while cmd_idx < len(tokens) and tokens[cmd_idx].startswith('-'):
+                    # Skip flags and their arguments
+                    if tokens[cmd_idx] in ['-u', '-g', '-U', '-p', '-r', '-t', '-C', '-D', '-h', '-k', '-K', '-v', '-b', '-n', '-E', '-H', '-i', '-l', '-P', '-s']:
+                        cmd_idx += 2  # Skip flag and its value
+                    else:
+                        cmd_idx += 1
+                
+                if cmd_idx < len(tokens):
+                    base_cmd = os.path.basename(tokens[cmd_idx])
+            
+            if base_cmd not in dangerous_base_commands:
+                continue
+            
+            # For these commands, check specific dangerous argument patterns
+            # Find the start index of the actual dangerous command
+            cmd_idx = tokens.index(base_cmd) if base_cmd in tokens else 0
+            remaining_args = tokens[cmd_idx+1:]
+            cmd_lower = ' '.join(remaining_args).lower()
+            
+            if base_cmd == 'rm':
+                # Check for recursive flag and dangerous paths
+                if any(arg in remaining_args for arg in ['-r', '-R', '--recursive']):
+                    return (True, 'recursive delete', 'recursive delete')
+                # Check for combined flags containing 'r' like -rf, -fr, -irf, -rfi, etc.
+                if any(arg.startswith('-') and 'r' in arg.lower() for arg in remaining_args):
+                    return (True, 'recursive delete', 'recursive delete')
+                # Check for absolute path targets
+                for arg in remaining_args:
+                    if arg.startswith('/') and arg != '/':
+                        return (True, 'delete in root path', 'delete in root path')
+            
+            elif base_cmd in ('halt', 'poweroff', 'reboot', 'shutdown'):
+                # These should rarely/never be used in agent context
+                return (True, 'system shutdown/reboot', f'{base_cmd}')
+            
+            elif base_cmd in ('dd', 'mkfs'):
+                return (True, dangerous_base_commands[base_cmd], dangerous_base_commands[base_cmd])
+            
+            elif base_cmd in ('killall', 'pkill'):
+                # Check for -9 or -KILL flags
+                if any(flag in ' '.join(remaining_args) for flag in ['-9', '-KILL', '-SIGKILL']):
+                    return (True, 'force kill processes', f'{base_cmd} with SIGKILL')
+            
+            elif base_cmd in ('init', 'telinit'):
+                # Check for 0 or 6 arguments (shutdown/reboot)
+                if any(arg in remaining_args for arg in ['0', '6']):
+                    return (True, 'init 0/6', f'{base_cmd} 0/6')
+        
+        except (ValueError, OSError):
+            # shlex.split() failed (unclosed quote, etc.) - this is suspicious
+            # but don't block on parse error; let it pass
+            pass
+    
+    return (False, None, None)
+
+
 def detect_dangerous_command(command: str) -> tuple:
-    """Check if a command matches any dangerous patterns.
+    """Check if a command is dangerous.
+
+    Uses two complementary approaches for comprehensive detection:
+    1. Structural tokenization (shlex) - primary defense against shell bypasses
+    2. Regex patterns - secondary defense for complex cases (pipes, redirects, git, etc.)
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
+    # Primary defense: structural tokenization (catches shell escape/substitution bypasses)
+    is_dangerous, pattern_key, description = _detect_dangerous_command_structural(command)
+    if is_dangerous:
+        return (is_dangerous, pattern_key, description)
+    
+    # Secondary defense: regex patterns for complex shell constructs
     command_lower = _normalize_command_for_detection(command).lower()
     for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
         if pattern_re.search(command_lower):

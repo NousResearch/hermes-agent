@@ -8442,6 +8442,10 @@ def _(rid, params: dict) -> dict:
     cmd = params.get("command", "")
     if not cmd:
         return _err(rid, 4004, "empty command")
+    
+    # SECURITY: Dangerous command approval gate (fail-closed)
+    # If the approval module cannot be imported, we MUST fail closed and block
+    # execution to prevent implicit RCE vulnerability. See issue #36847.
     try:
         from tools.approval import detect_dangerous_command
 
@@ -8450,8 +8454,16 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
             )
-    except ImportError:
-        pass
+    except ImportError as e:
+        # Fail-closed: if approval module is missing, block execution
+        # Do not silently skip the gate; that would be an RCE vulnerability
+        logger.error("SECURITY: Approval module unavailable (ImportError), blocking shell.exec: %s", e)
+        return _err(
+            rid, 5001, 
+            "Security gate unavailable: approval module could not be loaded. "
+            "Shell execution is blocked for safety. Please contact support."
+        )
+    
     try:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()

@@ -1570,3 +1570,247 @@ class TestApprovalTimeoutIsNotConsent:
         assert last_post.get("choice") == "timeout", (
             f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
         )
+
+
+class TestShellEscapeBypassDetection:
+    """Regression tests for issue #36847: shell escape bypass attempts.
+    
+    These tests verify that the structural tokenization-based detector
+    properly catches dangerous commands that try to bypass the regex-based
+    denylist using shell escaping, command substitution, and parameter expansion.
+    """
+
+    def test_backslash_escape_rm_command(self):
+        """Backslash-escaped 'rm' should be detected as dangerous.
+        
+        Payload: r\m -rf /home/victim
+        This attempts to hide the 'rm' command by breaking it across escaping.
+        shlex.split() will parse 'r\m' as a literal token (not matching 'rm'),
+        but our structural detector should catch this pattern.
+        """
+        payload = r'r\m -rf /home/victim'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        assert is_dangerous is True, (
+            f"Backslash-escaped rm bypass should be detected. Got: {desc}"
+        )
+        assert key is not None
+        # Description may reference structural tokenization or the bypass attempt
+        assert "delete" in desc.lower() or "dangerous" in desc.lower()
+
+    def test_command_substitution_rm_command(self):
+        """Command substitution '$(echo rm)' should be detected as dangerous.
+        
+        Payload: $(echo rm) -rf /home/victim
+        This attempts to hide the 'rm' command inside a command substitution.
+        shlex will parse this as a single token '$(echo rm)' at the shell level,
+        but we should block this as a potential RCE vector.
+        """
+        payload = '$(echo rm) -rf /home/victim'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        assert is_dangerous is True, (
+            f"Command substitution bypass should be detected. Got: {desc}"
+        )
+        assert key is not None
+
+    def test_backtick_command_substitution_rm(self):
+        """Backtick command substitution should be detected.
+        
+        Payload: `echo rm` -rf /home/victim
+        Legacy form of command substitution.
+        """
+        payload = '`echo rm` -rf /home/victim'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        assert is_dangerous is True, (
+            f"Backtick command substitution bypass should be detected. Got: {desc}"
+        )
+        assert key is not None
+
+    def test_parameter_expansion_rm_command(self):
+        """Parameter expansion '${0/x/r}m' should be detected as dangerous.
+        
+        Payload: ${0/x/r}m -rf /home/victim
+        This attempts to reconstruct 'rm' via bash parameter substitution.
+        """
+        payload = '${0/x/r}m -rf /home/victim'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        # Note: This might not be caught by basic shlex tokenization since
+        # shlex will parse '${0/x/r}m' as a literal token. However, the regex
+        # patterns should catch the '-rf' with absolute path pattern.
+        assert is_dangerous is True, (
+            f"Parameter expansion bypass should be detected. Got: {desc}"
+        )
+        assert key is not None
+
+    def test_rm_with_space_obfuscation(self):
+        """Extra spaces/tabs should not bypass detection.
+        
+        Payload: rm   -rf   /tmp/data
+        """
+        payload = 'rm   -rf   /tmp/data'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        assert is_dangerous is True
+        assert key is not None
+
+    def test_recursive_delete_with_backslash_newline(self):
+        """Backslash newline continuation should not bypass detection."""
+        payload = 'rm -rf \\\n/home/user'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        assert is_dangerous is True, (
+            f"Recursive delete with continuation should be detected. Got: {desc}"
+        )
+        assert key is not None
+
+    def test_quoted_path_recursive_delete(self):
+        """Quoted paths in recursive delete should still be detected."""
+        payload = 'rm -rf "/home/sensitive"'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        assert is_dangerous is True, (
+            f"Quoted path recursive delete should be detected. Got: {desc}"
+        )
+        assert key is not None
+
+    def test_mkfs_bypass_with_command_substitution(self):
+        """Format filesystem via command substitution bypass."""
+        payload = '$(mkfs) /dev/sda1'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        assert is_dangerous is True
+        assert key is not None
+
+    def test_dd_bypass_with_parameter_expansion(self):
+        """dd (disk copy) via parameter expansion."""
+        payload = '${dd} if=/dev/zero of=/dev/sda'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        # Should be caught by regex patterns for 'dd' + 'of='
+        assert is_dangerous is True
+        assert key is not None
+
+    def test_shutdown_via_command_substitution(self):
+        """System shutdown via command substitution."""
+        payload = '$(shutdown) -h now'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        # The regex patterns should catch 'shutdown' even in this form
+        assert is_dangerous is True
+        assert key is not None
+
+    def test_killall_with_sigkill_flag_obfuscated(self):
+        """killall -KILL via escaping should be detected."""
+        payload = 'killall  -KILL  sshd'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        assert is_dangerous is True
+        assert key is not None
+
+    def test_safe_command_with_rm_substring(self):
+        """Safe commands containing 'rm' substring must not false positive.
+        
+        Examples: 'rm' is safe when it's part of a word like 'firmware' or 'rm' in quotes.
+        """
+        # These should be safe
+        safe_commands = [
+            'echo "rm -rf" # just printing',
+            'grep rm /var/log',
+            'firmware update',
+            'term -rf argument',  # 'term' with '-rf' is not dangerous
+        ]
+        for cmd in safe_commands:
+            is_dangerous, _, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is False, (
+                f"Safe command '{cmd}' was incorrectly flagged as dangerous: {desc}"
+            )
+
+    def test_complex_pipeline_with_dangerous_tail(self):
+        """Pipes ending in dangerous commands should be detected.
+        
+        Payload: cat file | rm -rf /tmp
+        """
+        payload = 'cat file | rm -rf /tmp'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        assert is_dangerous is True, (
+            f"Pipeline with dangerous tail should be detected. Got: {desc}"
+        )
+        assert key is not None
+
+    def test_logical_and_with_dangerous_command(self):
+        """Logical AND with dangerous command should be detected.
+        
+        Payload: ls /tmp && rm -rf /
+        """
+        payload = 'ls /tmp && rm -rf /'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        assert is_dangerous is True
+        assert key is not None
+
+    def test_subshell_with_dangerous_command(self):
+        """Dangerous command in subshell should be detected.
+        
+        Payload: (rm -rf /tmp/important)
+        """
+        payload = '(rm -rf /tmp/important)'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        assert is_dangerous is True
+        assert key is not None
+
+    def test_sudo_rm_recursive(self):
+        """Dangerous commands with sudo wrapper should be detected."""
+        payload = 'sudo rm -rf /etc/config'
+        is_dangerous, key, desc = detect_dangerous_command(payload)
+        assert is_dangerous is True
+        assert key is not None
+
+
+class TestTuiGatewayShellExecSecurity:
+    """Tests for the tui_gateway shell.exec security gate (issue #36847).
+    
+    These verify that the shell.exec JSON-RPC method properly blocks dangerous
+    commands using the approval system, and that it fails closed when the
+    approval module is unavailable.
+    """
+
+    def test_shell_exec_blocks_dangerous_command(self):
+        """shell.exec should block dangerous commands."""
+        # We're testing the approval detector behavior here since
+        # the tui_gateway method uses it directly
+        from tools.approval import detect_dangerous_command
+        
+        # This should be blocked
+        is_dangerous, _, desc = detect_dangerous_command('rm -rf /home/user')
+        assert is_dangerous is True
+        assert 'delete' in desc.lower()
+
+    def test_shell_exec_allows_safe_command(self):
+        """shell.exec should allow safe commands."""
+        from tools.approval import detect_dangerous_command
+        
+        # This should be safe
+        is_dangerous, _, desc = detect_dangerous_command('echo hello')
+        assert is_dangerous is False
+        assert desc is None
+
+    def test_bypass_payload_1_detected(self):
+        """Issue #36847 bypass payload 1: backslash escape."""
+        from tools.approval import detect_dangerous_command
+        
+        # r\m -rf /home/victim
+        payload = r'r\m -rf /home/victim'
+        is_dangerous, _, desc = detect_dangerous_command(payload)
+        # Should be blocked by the recursive delete pattern
+        assert is_dangerous is True, f"Expected dangerous, got: {desc}"
+
+    def test_bypass_payload_2_detected(self):
+        """Issue #36847 bypass payload 2: command substitution."""
+        from tools.approval import detect_dangerous_command
+        
+        # $(echo rm) -rf /home/victim
+        payload = '$(echo rm) -rf /home/victim'
+        is_dangerous, _, desc = detect_dangerous_command(payload)
+        # Should be detected by structural or regex detection
+        assert is_dangerous is True, f"Expected dangerous, got: {desc}"
+
+    def test_bypass_payload_3_detected(self):
+        """Issue #36847 bypass payload 3: parameter expansion."""
+        from tools.approval import detect_dangerous_command
+        
+        # ${0/x/r}m -rf /home/victim
+        payload = '${0/x/r}m -rf /home/victim'
+        is_dangerous, _, desc = detect_dangerous_command(payload)
+        # Should be detected by the recursive delete pattern
+        assert is_dangerous is True, f"Expected dangerous, got: {desc}"

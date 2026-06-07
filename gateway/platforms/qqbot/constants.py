@@ -22,6 +22,18 @@ API_BASE = "https://api.sgroup.qq.com"
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 GATEWAY_URL_PATH = "/gateway"
 
+# Hosts QQBot adapter contacts. Used by ``resolve_proxy_url(target_hosts=…)``
+# so users can put ``qq.com`` (or specific subdomains) into ``NO_PROXY`` to
+# force direct connection — useful when an upstream proxy mishandles
+# Tencent's WebSocket / TLS upgrade. The WebSocket gateway URL returned by
+# ``/gateway`` is a subdomain of ``api.sgroup.qq.com`` so it is covered by
+# ``NO_PROXY=qq.com`` automatically.
+QQ_PROXY_TARGET_HOSTS: tuple[str, ...] = (
+    "api.sgroup.qq.com",
+    "bots.qq.com",
+    "q.qq.com",
+)
+
 # QR-code onboard endpoints (on the portal host)
 ONBOARD_CREATE_PATH = "/lite/create_bind_task"
 ONBOARD_POLL_PATH = "/lite/poll_bind_result"

@@ -3478,12 +3478,26 @@ class HermesCLI:
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
-    def _invalidate(self, min_interval: float = 0.25) -> None:
-        """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
-        if getattr(self, "_resize_recovery_pending", False):
+    def _invalidate(self, min_interval: float = 0.25, *, force: bool = False) -> None:
+        """Throttled UI repaint — prevents terminal blinking on slow/SSH connections.
+
+        ``force=True`` bypasses BOTH the throttle and the resize-recovery guard.
+        Reserve it for user-blocking modal *entry* paints (approval / clarify /
+        sudo prompts) that must become visible immediately. During the resize
+        debounce window ``_resize_recovery_pending`` normally suppresses repaints
+        so footer/status-bar chrome is not stamped into scrollback mid-reflow,
+        but a modal overlay the user is actively waiting on must not be held
+        hostage to that window — it would otherwise stay invisible for the whole
+        drag-resize and time out unseen (#41098). A modal overlay is live
+        prompt_toolkit chrome, not scrollback output, so painting it slightly
+        early during a resize is harmless; ``_recover_after_resize`` issues its
+        own unconditional ``app.invalidate()`` when the debounce settles, which
+        repaints everything cleanly regardless.
+        """
+        if not force and getattr(self, "_resize_recovery_pending", False):
             return
         now = time.monotonic()
-        if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
+        if hasattr(self, "_app") and self._app and (force or (now - self._last_invalidate) >= min_interval):
             self._last_invalidate = now
             self._app.invalidate()
 
@@ -11801,18 +11815,20 @@ class HermesCLI:
         # Open-ended questions skip straight to freetext input
         self._clarify_freetext = is_open_ended
 
-        # Trigger prompt_toolkit repaint from this (non-main) thread
-        self._invalidate()
+        # Trigger prompt_toolkit repaint from this (non-main) thread.
+        # Bypass the _invalidate() throttle: this modal must paint immediately.
+        # A throttled call can be silently dropped if another UI event
+        # invalidated within the throttle window, and since the idle spinner
+        # repaint was removed (5e92b6780) nothing repaints it afterward — the
+        # panel never renders and the prompt times out unseen (#41098).
+        # force=True also skips the resize-recovery guard so an in-flight resize
+        # can't keep the prompt invisible until it times out.
+        self._invalidate(min_interval=0.0, force=True)
 
         # Poll for the user's response.  The countdown in the hint line
-        # updates on each invalidate — but frequent repaints cause visible
-        # flicker in some terminals (Kitty, ghostty).  We only refresh the
-        # countdown every 5 s; selection changes (↑/↓) trigger instant
-        # Poll for the user's response.  The countdown in the hint line
-        # updates on each invalidate — but frequent repaints cause visible
-        # flicker in some terminals (Kitty, ghostty).  We only refresh the
-        # countdown every 5 s; selection changes (↑/↓) trigger instant
-        # repaints via the key bindings.
+        # updates on each invalidate.  Refresh once a second so the timer
+        # stays visible while we wait; selection changes (↑/↓) trigger
+        # instant repaints via the key bindings.
         _last_countdown_refresh = _time.monotonic()
         while True:
             try:
@@ -11823,20 +11839,16 @@ class HermesCLI:
                 remaining = self._clarify_deadline - _time.monotonic()
                 if remaining <= 0:
                     break
-                # Only repaint every 5 s for the countdown — avoids flicker
                 now = _time.monotonic()
-                if now - _last_countdown_refresh >= 5.0:
+                if now - _last_countdown_refresh >= 1.0:
                     _last_countdown_refresh = now
-                    self._invalidate()
-                if now - _last_countdown_refresh >= 5.0:
-                    _last_countdown_refresh = now
-                    self._invalidate()
+                    self._invalidate(min_interval=0.0)
 
         # Timed out — tear down the UI and let the agent decide
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
-        self._invalidate()
+        self._invalidate(min_interval=0.0)
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
         return (
             "The user did not provide a response within the time limit. "
@@ -11862,7 +11874,13 @@ class HermesCLI:
         }
         self._sudo_deadline = _time.monotonic() + timeout
 
-        self._invalidate()
+        # Bypass the _invalidate() throttle: this modal must paint immediately.
+        # A throttled call can be dropped if another UI event invalidated within
+        # the throttle window, and the idle spinner repaint that used to recover
+        # it was removed (5e92b6780) — so the panel would never render (#41098).
+        # force=True also skips the resize-recovery guard so an in-flight resize
+        # can't keep the prompt invisible until it times out.
+        self._invalidate(min_interval=0.0, force=True)
 
         while True:
             try:
@@ -11870,7 +11888,7 @@ class HermesCLI:
                 self._sudo_state = None
                 self._sudo_deadline = 0
                 self._restore_modal_input_snapshot()
-                self._invalidate()
+                self._invalidate(min_interval=0.0)
                 if result:
                     _cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
                 else:
@@ -11880,12 +11898,12 @@ class HermesCLI:
                 remaining = self._sudo_deadline - _time.monotonic()
                 if remaining <= 0:
                     break
-                self._invalidate()
+                self._invalidate(min_interval=0.0)
 
         self._sudo_state = None
         self._sudo_deadline = 0
         self._restore_modal_input_snapshot()
-        self._invalidate()
+        self._invalidate(min_interval=0.0)
         _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
         return ""
 
@@ -11926,7 +11944,9 @@ class HermesCLI:
             # renders, and the command is denied on timeout without the user ever
             # seeing the prompt (#41098). Every redraw in this loop is forced for
             # the same reason — the countdown must stay visible while we wait.
-            self._invalidate(min_interval=0.0)
+            # force=True also skips the resize-recovery guard so a resize in
+            # flight can't keep the modal invisible until it times out.
+            self._invalidate(min_interval=0.0, force=True)
 
             _last_countdown_refresh = _time.monotonic()
             while True:

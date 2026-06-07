@@ -155,6 +155,137 @@ class TestCliApprovalUi:
         cli._approval_state["response_queue"].put("deny")
         thread.join(timeout=2)
         assert result["value"] == "deny"
+        assert not thread.is_alive()
+
+    def test_clarify_callback_renders_despite_recent_invalidate(self):
+        """Regression for #41098 (mirror modal — clarify).
+
+        The clarify prompt regressed the same way as the approval panel: its
+        initial paint used the throttled _invalidate(), and once the idle
+        spinner repaint was removed (5e92b6780) a dropped paint never recovered,
+        so the prompt timed out unseen. The initial paint must bypass the throttle.
+        """
+        cli = _make_cli_stub()
+        cli._clarify_state = None
+        cli._clarify_freetext = False
+        cli._clarify_deadline = 0
+        cli._invalidate = HermesCLI._invalidate.__get__(cli, HermesCLI)
+        cli._resize_recovery_pending = False
+        app = SimpleNamespace(invalidate=MagicMock(), current_buffer=_FakeBuffer())
+        cli._app = app
+        cli._last_invalidate = time.monotonic()  # recent invalidate, inside throttle window
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._clarify_callback("Pick one", ["a", "b"])
+
+        with patch.object(cli_module, "_cprint"):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+
+            deadline = time.time() + 2
+            while cli._clarify_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            assert cli._clarify_state is not None
+            assert app.invalidate.called, "clarify panel redraw was dropped by the throttle"
+
+            cli._clarify_state["response_queue"].put("a")
+            thread.join(timeout=2)
+
+        assert result["value"] == "a"
+        assert not thread.is_alive()
+
+    def test_sudo_callback_renders_despite_recent_invalidate(self):
+        """Regression for #41098 (mirror modal — sudo password).
+
+        Same dropped-paint regression as approval/clarify. The sudo prompt's
+        initial paint must bypass the throttle so it renders immediately.
+        """
+        cli = _make_cli_stub()
+        cli._invalidate = HermesCLI._invalidate.__get__(cli, HermesCLI)
+        cli._resize_recovery_pending = False
+        app = SimpleNamespace(invalidate=MagicMock(), current_buffer=_FakeBuffer())
+        cli._app = app
+        cli._last_invalidate = time.monotonic()  # recent invalidate, inside throttle window
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._sudo_password_callback()
+
+        with patch.object(cli_module, "_cprint"):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+
+            deadline = time.time() + 2
+            while cli._sudo_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            assert cli._sudo_state is not None
+            assert app.invalidate.called, "sudo panel redraw was dropped by the throttle"
+
+            cli._sudo_state["response_queue"].put("hunter2")
+            thread.join(timeout=2)
+
+        assert result["value"] == "hunter2"
+        assert not thread.is_alive()
+
+    def test_approval_callback_renders_during_resize_recovery(self):
+        """Regression for #41098 (resize-recovery edge case).
+
+        The resize-recovery guard (_resize_recovery_pending) suppresses normal
+        repaints during the ~0.12s debounce after a SIGWINCH so footer chrome is
+        not stamped into scrollback. But a user-blocking modal must still paint —
+        otherwise an in-flight (or held) drag-resize keeps the approval panel
+        invisible until it times out. The modal entry paint uses force=True,
+        which must bypass the resize guard as well as the throttle.
+        """
+        cli = _make_cli_stub()
+        cli._invalidate = HermesCLI._invalidate.__get__(cli, HermesCLI)
+        # A resize is in flight: the debounce guard is set AND a recent
+        # invalidate sits inside the throttle window — both gates active.
+        cli._resize_recovery_pending = True
+        app = SimpleNamespace(invalidate=MagicMock(), current_buffer=_FakeBuffer())
+        cli._app = app
+        cli._last_invalidate = time.monotonic()
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm -rf /tmp/scratch", "danger")
+
+        thread = threading.Thread(target=_run_callback, daemon=True)
+        thread.start()
+
+        deadline = time.time() + 2
+        while cli._approval_state is None and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert cli._approval_state is not None
+        # Despite the active resize-recovery guard, the panel must have painted.
+        assert app.invalidate.called, "approval panel redraw was dropped by the resize-recovery guard"
+
+        cli._approval_state["response_queue"].put("deny")
+        thread.join(timeout=2)
+        assert result["value"] == "deny"
+        assert not thread.is_alive()
+
+    def test_invalidate_force_bypasses_resize_and_throttle_gates(self):
+        """force=True must bypass BOTH the throttle and the resize-recovery guard;
+        a normal (unforced) call must still respect both."""
+        cli = HermesCLI.__new__(HermesCLI)
+        app = SimpleNamespace(invalidate=MagicMock())
+        cli._app = app
+        cli._last_invalidate = time.monotonic()  # inside throttle window
+
+        # Resize pending + recent invalidate: a normal call is suppressed.
+        cli._resize_recovery_pending = True
+        cli._invalidate()
+        assert not app.invalidate.called
+
+        # Forced call paints despite both gates.
+        cli._invalidate(force=True)
+        assert app.invalidate.called
 
     def test_handle_approval_selection_view_expands_in_place(self):
         cli = _make_cli_stub()

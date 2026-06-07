@@ -2260,6 +2260,16 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts=event.get("thread_ts", ""),
         )
         user_id = event.get("user") or assistant_meta.get("user_id", "")
+        # Bot/app posts (incoming webhooks, Slack apps) carry no `user` field —
+        # only a `bot_id`. Derive a stable synthetic user_id from it so the
+        # message clears the gateway's `if not user_id: return False` guard and
+        # can be authorized via the SLACK_ALLOW_BOTS bypass (mirrors how Discord
+        # admits bots through DISCORD_ALLOW_BOTS). Without this, every app post
+        # is silently denied regardless of allow_bots.
+        if not user_id:
+            _bot_id = event.get("bot_id")
+            if _bot_id:
+                user_id = f"bot:{_bot_id}"
         if not channel_id:
             channel_id = assistant_meta.get("channel_id", "")
         team_id = (
@@ -2572,6 +2582,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
 
+        # Flag bot/app-authored messages (bot_id or subtype=bot_message) so the
+        # gateway's SLACK_ALLOW_BOTS bypass can authorize them — bot posts carry
+        # no user_id and would otherwise be denied by the human allowlist.
+        is_bot_source = bool(event.get("bot_id")) or event.get("subtype") == "bot_message"
+
         # Build source
         source = self.build_source(
             chat_id=channel_id,
@@ -2580,6 +2595,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_ts,
+            is_bot=is_bot_source,
         )
 
         # Per-channel ephemeral prompt

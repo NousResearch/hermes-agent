@@ -3198,6 +3198,7 @@ class SessionDB:
         include_archived: bool = False,
         archived_only: bool = False,
         exclude_children: bool = False,
+        exclude_sources: List[str] = None,
     ) -> int:
         """Count sessions, optionally filtered by source.
 
@@ -3207,6 +3208,11 @@ class SessionDB:
         is paired with a ``list_sessions_rich`` page (e.g. sidebar "load more"
         totals) so the total matches the number of listable rows — otherwise the
         raw row count is inflated by children and "load more" never settles.
+
+        Pass ``exclude_sources`` to drop whole source classes from the count
+        (e.g. ``["cron"]`` so the recents "load more" total matches a
+        cron-excluded ``list_sessions_rich`` page and doesn't keep "load more"
+        stuck on for buried scheduler sessions).
         """
         where_clauses = []
         params = []
@@ -3225,6 +3231,10 @@ class SessionDB:
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
+        if exclude_sources:
+            placeholders = ",".join("?" for _ in exclude_sources)
+            where_clauses.append(f"s.source NOT IN ({placeholders})")
+            params.extend(exclude_sources)
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)

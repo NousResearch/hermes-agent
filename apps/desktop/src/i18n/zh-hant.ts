@@ -966,8 +966,6 @@ export const zhHant = defineLocale({
   cron: {
     close: '關閉排程',
     search: '搜尋排程工作…',
-    refresh: '重新整理排程工作',
-    refreshing: '正在重新整理排程工作',
     loading: '正在載入排程工作…',
     states: {
       enabled: '已啟用',
@@ -1020,9 +1018,7 @@ export const zhHant = defineLocale({
     monthlyOnDayAt: (dayOfMonth, time) => `每月 ${dayOfMonth} 日 ${time}`,
     topOfHour: '每個整點',
     everyHourAt: minute => `每小時的 :${minute}`,
-    active: (enabled, total) => `${enabled}/${total} 個啟用`,
     newCron: '新排程工作',
-    createFirst: '建立第一個排程工作',
     emptyDescNew:
       '按 cron 表達式排程一個提示詞。Hermes 會執行它，並將結果傳送至您選擇的目的地。',
     emptyDescSearch: '請嘗試更廣泛的搜尋詞。',
@@ -1030,6 +1026,11 @@ export const zhHant = defineLocale({
     emptyTitleSearch: '無相符項目',
     last: '上次：',
     next: '下次：',
+    noRuns: '尚無執行',
+    manage: '管理',
+    showRuns: '顯示執行記錄',
+    hideRuns: '隱藏執行記錄',
+    runHistory: '執行記錄',
     actionsFor: title => `${title} 的動作`,
     actionsTitle: '排程工作動作',
     resume: '繼續',
@@ -1121,6 +1122,7 @@ export const zhHant = defineLocale({
     results: '結果',
     pinned: '已釘選',
     sessions: '工作階段',
+    cronJobs: '排程任務',
     groupAriaGrouped: '以單一清單顯示工作階段',
     groupAriaUngrouped: '依工作區分組工作階段',
     groupTitleGrouped: '取消分組',

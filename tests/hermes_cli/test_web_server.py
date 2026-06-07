@@ -4264,3 +4264,38 @@ class TestValidateProviderCredential:
     def test_empty_value_rejected(self):
         data = self._post("OPENAI_API_KEY", "   ").json()
         assert data["ok"] is False
+
+
+class TestDesktopCronTicker:
+    """The dashboard backend fires cron jobs itself only when desktop-spawned."""
+
+    def _client(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli.web_server import app
+
+        return TestClient(app)
+
+    def test_ticker_runs_when_desktop(self, monkeypatch, _isolate_hermes_home):
+        import threading
+        import cron.scheduler as sched
+
+        called = threading.Event()
+        monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+
+        with self._client():
+            assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"
+
+    def test_ticker_skipped_without_desktop(self, monkeypatch, _isolate_hermes_home):
+        import threading
+        import cron.scheduler as sched
+
+        called = threading.Event()
+        monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+
+        with self._client():
+            assert not called.wait(0.5), "ticker must not run outside the desktop app"

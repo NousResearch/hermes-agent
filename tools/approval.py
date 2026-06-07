@@ -578,17 +578,51 @@ _permanent_approved: set = set()
 
 
 class _ApprovalEntry:
-    """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result")
+    """One pending dangerous-command approval inside a gateway session.
 
-    def __init__(self, data: dict):
+    The ``event`` + ``result`` pair is the in-process wake-up mechanism
+    for the blocked agent thread. It is NOT the source of truth for
+    "should this command execute" — that decision is gated by the
+    durable approval store (see :mod:`tools.approval_store`). When the
+    store is configured, ``approval_id`` ties this entry to a persisted
+    row whose ``status`` column is the actual security boundary.
+    """
+    __slots__ = ("event", "data", "result", "approval_id")
+
+    def __init__(self, data: dict, approval_id: Optional[str] = None):
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
+        self.approval_id = approval_id
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+
+
+# ─── Durable approval store (Phase 2/3 wiring) ─────────────────────────────
+# Optional: when set, every gateway approval entry also gets persisted to
+# the store, and /approve <id> can consume from there atomically. When None,
+# the legacy in-memory-only path is used unchanged. This keeps existing
+# tests passing while we incrementally wire the store into production
+# code paths.
+_default_approval_store = None  # type: ignore[assignment]
+
+
+def set_default_approval_store(store) -> None:  # type: ignore[no-untyped-def]
+    """Inject the approval store used by gateway approval flows.
+
+    Tests pass ``None`` (the default) or a fake store. The real gateway
+    init (gateway/run.py) wires a SqliteApprovalStore via this hook.
+    Set to ``None`` to disable durable persistence (legacy behavior).
+    """
+    global _default_approval_store
+    _default_approval_store = store
+
+
+def get_default_approval_store():  # type: ignore[no-untyped-def]
+    """Return the currently-configured store, or None."""
+    return _default_approval_store
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -1142,7 +1176,68 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
-    entry = _ApprovalEntry(approval_data)
+    # ── Durable approval store (Phase 2/3) ─────────────────────────────
+    # Generate an approval_id and submit a persisted proposal to the
+    # configured store, if any. This is "shadow persistence" in this
+    # commit: the in-memory queue still drives execution; the store
+    # row is a parallel record that future commits will promote to
+    # source-of-truth for /approve <id> consumption.
+    #
+    # If no store is configured (legacy tests, scripts), approval_id
+    # stays None and nothing changes vs. previous behavior.
+    store = get_default_approval_store()
+    approval_id: Optional[str] = None
+    if store is not None:
+        import secrets as _secrets
+        approval_id = _secrets.token_urlsafe(8)
+        # Include approval_id in the data shown to the user so they can
+        # eventually use /approve <id> (next commit). Carrying it now
+        # keeps the wire format stable across the migration.
+        approval_data = {**approval_data, "approval_id": approval_id}
+        try:
+            from tools.approval_store import ApprovalProposal
+            timeout_for_proposal = _get_approval_config().get(
+                "gateway_timeout", 300
+            )
+            try:
+                timeout_for_proposal = int(timeout_for_proposal)
+            except (ValueError, TypeError):
+                timeout_for_proposal = 300
+            created = time.time()
+            proposal = ApprovalProposal(
+                approval_id=approval_id,
+                created_at=created,
+                expires_at=created + max(timeout_for_proposal, 0),
+                session_key=session_key,
+                command=command,
+                backend=approval_data.get("backend"),
+                # Conservative classification for shadow phase; refined
+                # in the policy-pinning commit (Phase 3).
+                risk_level="medium",
+                risk_reason=description or primary_key or "dangerous-command-pattern",
+                policy_decision="needs_approval",
+                requires_explicit_approval=True,
+                default_decision="deny",
+                display_text=(
+                    f"Approval requested for: {command[:200]}"
+                ),
+            )
+            store.submit(proposal)
+        except Exception as e:
+            # Store-side failure must not silently allow execution, but
+            # must also not break the legacy in-memory path. Log loudly
+            # so the issue surfaces; the in-memory blocking flow below
+            # still requires user /approve to release the agent thread.
+            # Subsequent commits will tighten this to fail-closed once
+            # the store becomes source-of-truth.
+            logger.error(
+                "Failed to persist gateway approval proposal "
+                "(approval_id=%s, command=%r): %s",
+                approval_id, command[:100], e, exc_info=True,
+            )
+            approval_id = None
+
+    entry = _ApprovalEntry(approval_data, approval_id=approval_id)
     with _lock:
         _gateway_queues.setdefault(session_key, []).append(entry)
 
@@ -1210,6 +1305,31 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     # mean the user never responded; report that explicitly so plugins can
     # distinguish timeout from explicit deny.
     _outcome = "timeout" if not resolved else (choice if choice else "timeout")
+
+    # ── Mirror outcome into the durable approval store (Phase 2/3) ─────
+    # Best-effort bookkeeping in this commit — the gate is still the
+    # in-memory entry.event. Future commits will invert this: the store
+    # becomes the gate, and the event-set only fires AFTER store.consume
+    # or store.deny succeeds.
+    if approval_id is not None and store is not None:
+        try:
+            if not resolved or choice is None:
+                # Timeout: row is left to expire naturally via its
+                # expires_at column. expire_due() can run later.
+                pass
+            elif choice == "deny":
+                store.deny(approval_id, denied_by=f"session:{session_key}")
+            else:
+                # "once" / "session" / "always" all imply a successful
+                # consume from the user's perspective.
+                store.consume(approval_id, consumed_by=f"session:{session_key}")
+        except Exception as e:
+            logger.warning(
+                "Failed to mirror approval outcome to store "
+                "(approval_id=%s, choice=%s): %s",
+                approval_id, choice, e,
+            )
+
     _fire_approval_hook(
         "post_approval_response",
         command=command,

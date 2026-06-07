@@ -6920,12 +6920,51 @@ def _web_ui_build_needed(web_dir: Path) -> bool:
     return False
 
 
+def _web_build_env() -> dict[str, str]:
+    """Return an env dict with NODE_OPTIONS capped for low-RAM hosts.
+
+    On devices with ≤ 2 GB total RAM (RPi 3B+, older laptops, small VPS)
+    the default Vite build can exhaust the Node.js heap during its
+    multi-module transform step.  Capping ``--max-old-space-size`` keeps
+    the build under the device's physical limit without affecting normal
+    high-RAM machines where Vite's default is fine.  Issue #41354.
+    """
+    env = os.environ.copy()
+    if "NODE_OPTIONS" in env:
+        return env  # respect user override
+    total_mb = 0
+    try:
+        if sys.platform == "linux":
+            with open("/proc/meminfo") as fh:
+                for line in fh:
+                    if line.startswith("MemTotal:"):
+                        total_mb = int(line.split()[1]) // 1024
+                        break
+        elif sys.platform == "darwin":
+            import subprocess as _sp
+            r = _sp.run(
+                ["sysctl", "-n", "hw.memsize"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                total_mb = int(r.stdout.strip()) // (1024 * 1024)
+    except Exception:
+        pass
+    if total_mb == 0 or total_mb > 2048:
+        return env  # unknown or plenty of RAM — no cap
+    # Leave ~25 % for OS + Python + other processes; cap Node at rest.
+    cap = max(256, int(total_mb * 0.55))
+    env["NODE_OPTIONS"] = f"--max-old-space-size={cap}"
+    return env
+
+
 def _run_with_idle_timeout(
     cmd: list[str],
     cwd: Path,
     *,
     idle_timeout_seconds: int = 180,
     indent: str = "    ",
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a subprocess that streams output, with an idle-output timeout.
 
@@ -6960,6 +6999,7 @@ def _run_with_idle_timeout(
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=env,
         )
     except OSError as exc:
         # E.g. npm not on PATH between the which() check and now.
@@ -7140,13 +7180,14 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # users react by rebooting, which leaves the editable install in a
     # half-state. Streaming + idle-kill makes failures observable AND
     # recoverable (the stale-dist fallback below handles the kill path).
-    r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir)
+    _build_env = _web_build_env()
+    r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=_build_env)
     if r2.returncode != 0:
         # Retry once after a short delay — covers boot-time races on Windows
         # (antivirus scanning Node.js binaries, npm cache not ready, transient
         # I/O when launched via Scheduled Task at logon). See issue #23817.
         _time.sleep(3)
-        r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir)
+        r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=_build_env)
 
     if r2.returncode != 0:
         # _run_with_idle_timeout merges stderr into stdout; older callers

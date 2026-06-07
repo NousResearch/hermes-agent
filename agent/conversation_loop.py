@@ -833,10 +833,27 @@ def run_conversation(
         if agent._budget_grace_call:
             agent._budget_grace_call = False
         elif not agent.iteration_budget.consume():
-            _turn_exit_reason = "budget_exhausted"
+            # Budget exhausted.  Rather than breaking immediately, set the
+            # grace-call flag and let the loop make one final toolless API
+            # call via the normal path.  The flag is consumed at the top of
+            # the next iteration so the loop exits cleanly after that call.
+            #
+            # Running the grace call through the loop (rather than the
+            # post-loop _handle_max_iterations() path) means it inherits all
+            # the normal per-iteration machinery: interrupt detection,
+            # step_callback, checkpoint dedup reset, and activity tracking.
+            # The tools are stripped in _build_api_messages() when
+            # iteration_budget.remaining == 0, so the model cannot keep
+            # looping — it can only produce a final text response.
             if not agent.quiet_mode:
-                agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
-            break
+                agent._safe_print(
+                    f"\n⚠️  Iteration budget exhausted "
+                    f"({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)"
+                    " — requesting summary..."
+                )
+            _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
+            agent._budget_grace_call = True
+            continue
 
         # Fire step_callback for gateway hooks (agent:step event)
         if agent.step_callback is not None:
@@ -4566,10 +4583,11 @@ def run_conversation(
     if final_response is None and (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
-    ):
-        # Budget exhausted — ask the model for a summary via one extra
-        # API call with tools stripped.  _handle_max_iterations injects a
-        # user message and makes a single toolless request.
+    ) and not agent._budget_grace_call:
+        # Budget exhausted and the grace-call loop path did not produce a
+        # final response (e.g. the loop was exited before the grace call ran,
+        # or the grace call itself returned no content).  Fall back to the
+        # direct _handle_max_iterations() summary path.
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         agent._emit_status(
             f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "

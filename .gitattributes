@@ -1,2 +1,8 @@
 # Auto-generated files — collapse diffs and exclude from language stats
 web/package-lock.json linguist-generated=true
+
+# s6-overlay service files must always use LF line endings.
+# Windows CRLF breaks s6-rc-compile inside the container.
+docker/s6-rc.d/**  text eol=lf
+docker/cont-init.d/** text eol=lf
+docker/**/*.sh text eol=lf

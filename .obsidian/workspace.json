@@ -11,10 +11,17 @@
             "id": "cfcbfdc91ecd312f",
             "type": "leaf",
             "state": {
-              "type": "graph",
-              "state": {},
-              "icon": "lucide-git-fork",
-              "title": "Graph view"
+              "type": "canvas",
+              "state": {
+                "file": "Untitled 3.canvas",
+                "viewState": {
+                  "x": 0,
+                  "y": 0,
+                  "zoom": 0
+                }
+              },
+              "icon": "lucide-layout-dashboard",
+              "title": "Untitled 3"
             }
           }
         ]
@@ -37,7 +44,7 @@
               "type": "file-explorer",
               "state": {
                 "sortOrder": "alphabetical",
-                "autoReveal": false
+                "autoReveal": true
               },
               "icon": "lucide-folder-closed",
               "title": "Files"
@@ -70,7 +77,8 @@
               "title": "Bookmarks"
             }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "horizontal",
@@ -178,24 +186,55 @@
   },
   "active": "cfcbfdc91ecd312f",
   "lastOpenFiles": [
-    "tests/hermes_cli/test_signal_handler_kanban_worker.py",
-    "tests/test_hermes_state_compression_locks.py",
-    "tests/cli/test_cli_terminal_shortcuts.py",
-    "tests/cli/test_cli_yolo_toggle.py",
-    "tests/tools/test_env_probe.py",
-    "tests/tools/test_mcp_client_cert.py",
-    "hermes_cli/dashboard_auth/public_paths.py",
-    "hermes_cli/nous_account.py",
-    "hermes_cli/psutil_android.py",
-    "website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-kanban-codex-lane.md",
-    "agent/jiter_preload.py",
-    "website/docs/user-guide/skills/optional/security/security-web-pentest.md",
-    "website/docs/user-guide/skills/bundled/software-development/software-development-hermes-s6-container-supervision.md",
-    "tools/env_probe.py",
-    "docs/security/network-egress-isolation.md",
-    "RELEASE_v0.15.1.md",
-    "RELEASE_v0.15.0.md",
-    "2026-05-29.md",
+    "servers/SECURITY.md",
+    "servers/README.md",
+    "servers/LICENSE",
+    "servers/CONTRIBUTING.md",
+    "servers/CODE_OF_CONDUCT.md",
+    "servers/CLAUDE.md",
+    "servers/ADDITIONAL.md",
+    "servers/tsconfig.json",
+    "servers/src/time/src/mcp_server_time/server.py",
+    "servers/src/time/src/mcp_server_time/__main__.py",
+    "servers/src/time/src/mcp_server_time/__init__.py",
+    "servers/src/git/src/mcp_server_git/__main__.py",
+    "servers/src/git/src/mcp_server_git/__init__.py",
+    "servers/src/git/src/mcp_server_git/server.py",
+    "servers/src/git/src/mcp_server_git/py.typed",
+    "servers/src/fetch/src/mcp_server_fetch/server.py",
+    "servers/src/everything/docs/structure.md",
+    "servers/src/everything/docs/startup.md",
+    "servers/src/everything/docs/instructions.md",
+    "servers/src/everything/docs/how-it-works.md",
+    "servers/src/everything/docs/features.md",
+    "servers/src/everything/docs/extension.md",
+    "servers/src/everything/docs/architecture.md",
+    "servers/src/sequentialthinking/README.md",
+    "servers/src/time/README.md",
+    "servers/src/git/README.md",
+    "servers/src/memory/README.md",
+    "servers/src/filesystem/README.md",
+    "servers/src/fetch/README.md",
+    "servers/src/everything/README.md",
+    "servers/src/everything/AGENTS.md",
+    "optional-skills/mlops/lambda-labs/references/advanced-usage.md",
+    "Untitled 3.canvas",
+    "2026-06-01.md",
+    "Untitled 2.canvas",
+    "jarvis_tradesmen_assistant_knowledge_base/gbrain/test/e2e/fixtures/sources/crustdata-sarah-chen.md",
+    "jarvis_tradesmen_assistant_knowledge_base/Extending the Dashboard  Hermes Agent.md",
+    "claude-howto/01-slash-commands/README.md",
+    "jarvis_tradesmen_assistant_knowledge_base/gbrain/test/fixtures/images/tiny.avif",
+    "jarvis_tradesmen_assistant_knowledge_base/gbrain/docs/images/voice-client.png",
+    "Untitled 1.canvas",
+    "system-prompts-and-models-of-ai-tools/assets/tembo-light.png",
+    "system-prompts-and-models-of-ai-tools/assets/latitude-dark.png",
+    "system-prompts-and-models-of-ai-tools/assets/tembo-dark.png",
+    "system-prompts-and-models-of-ai-tools/Amp/view-thread-yaml.png",
+    "hermes-ecosystem/reports/assets/og-report-q1.png",
+    "hermes-ecosystem/reports/assets/og-report-q1.jpg",
+    "hermes-ecosystem/reports/assets/og-home.png",
+    "hermes-ecosystem/reports/assets/og-home.jpg",
     "Untitled.canvas"
   ]
 }

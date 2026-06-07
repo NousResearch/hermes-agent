@@ -38,39 +38,24 @@ services:
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
-      # To expose the OpenAI-compatible API server beyond localhost,
-      # uncomment BOTH lines (API_SERVER_KEY is mandatory for auth):
+      # Dashboard runs alongside the gateway in the same container via s6.
+      # HERMES_DASHBOARD_HOST=0.0.0.0 makes it reachable from Tailscale/LAN.
+      # HERMES_DASHBOARD_INSECURE=1 skips OAuth (safe for Tailscale-only access).
+      # HERMES_DASHBOARD temporarily disabled for port 8642 isolation test
+      # - HERMES_DASHBOARD=1
+      # - HERMES_DASHBOARD_HOST=0.0.0.0
+      # - HERMES_DASHBOARD_INSECURE=1
+      # Prevents the CMD from delegating gateway start to an s6-supervised child,
+      # which would race with the CMD for port 8642 and cause a deadlock.
+      - HERMES_GATEWAY_NO_SUPERVISE=1
+      # API_SERVER_HOST/KEY are read from ~/.hermes/.env by the gateway process.
+      # Uncomment here only if you need to override the .env file values:
       # - API_SERVER_HOST=0.0.0.0
       # - API_SERVER_KEY=${API_SERVER_KEY}
       # Microsoft Teams — uncomment and fill in to enable Teams gateway.
-      # Register your bot at https://dev.botframework.com/ to get these values.
       # - TEAMS_CLIENT_ID=${TEAMS_CLIENT_ID}
       # - TEAMS_CLIENT_SECRET=${TEAMS_CLIENT_SECRET}
       # - TEAMS_TENANT_ID=${TEAMS_TENANT_ID}
       # - TEAMS_ALLOWED_USERS=${TEAMS_ALLOWED_USERS}
       # - TEAMS_PORT=${TEAMS_PORT:-3978}
-      # Google Chat — uncomment and fill in to enable the Google Chat gateway.
-      # See website/docs/user-guide/messaging/google_chat.md for the full setup.
-      # The SA JSON path must point to a file mounted into the container —
-      # add a volume entry above (e.g. ``- ~/.hermes/google-chat-sa.json:/secrets/google-chat-sa.json:ro``)
-      # then set GOOGLE_CHAT_SERVICE_ACCOUNT_JSON to that mount path.
-      # - GOOGLE_CHAT_PROJECT_ID=${GOOGLE_CHAT_PROJECT_ID}
-      # - GOOGLE_CHAT_SUBSCRIPTION_NAME=${GOOGLE_CHAT_SUBSCRIPTION_NAME}
-      # - GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=${GOOGLE_CHAT_SERVICE_ACCOUNT_JSON}
-      # - GOOGLE_CHAT_ALLOWED_USERS=${GOOGLE_CHAT_ALLOWED_USERS}
     command: ["gateway", "run"]
-
-  dashboard:
-    image: hermes-agent
-    container_name: hermes-dashboard
-    restart: unless-stopped
-    network_mode: host
-    depends_on:
-      - gateway
-    volumes:
-      - ~/.hermes:/opt/data
-    environment:
-      - HERMES_UID=${HERMES_UID:-10000}
-      - HERMES_GID=${HERMES_GID:-10000}
-    # Localhost-only. For remote access, tunnel via `ssh -L 9119:localhost:9119`.
-    command: ["dashboard", "--host", "127.0.0.1", "--no-open"]

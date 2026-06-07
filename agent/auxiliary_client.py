@@ -417,7 +417,9 @@ def _compression_threshold_for_model(
         the global default (the caller passes the config flag through here).
       - gpt-5.3-codex-spark on the Codex OAuth route → 0.70, because the model
         has a native 128K window and the default 50% trigger would compact at
-        ~64K — wasting half the usable context. Gated by the same flag.
+        ~64K — wasting half the usable context. Not gated by the gpt-5.5
+        opt-out flag: 128K is the model's native window, so the raise is
+        unambiguously correct.
 
     Returns a float in (0, 1] to override the global ``compression.threshold``
     config value, or ``None`` to leave the user's config value unchanged.
@@ -426,7 +428,7 @@ def _compression_threshold_for_model(
         return 0.75
     if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(model, provider):
         return _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD
-    if allow_codex_gpt55_autoraise and _is_codex_spark(model, provider):
+    if _is_codex_spark(model, provider):
         return _CODEX_SPARK_COMPACTION_THRESHOLD
     return None
 

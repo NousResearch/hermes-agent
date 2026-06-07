@@ -46,8 +46,6 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
-from tools.thread_context import propagate_context_to_thread
-
 # Availability gate.  On Windows we fall back to loopback TCP for the
 # sandbox RPC transport (AF_UNIX is unreliable on Windows Python) — see
 # ``_use_tcp_rpc`` in ``_execute_local`` below.  That makes execute_code
@@ -935,6 +933,7 @@ def _execute_remote(
         # Wrapped so the thread inherits the turn's approval context + callbacks
         # (see tools.thread_context) — else sandbox RPC tool calls lose approval
         # routing (#33057).
+        from tools.thread_context import propagate_context_to_thread
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_poll_loop),
             args=(
@@ -1200,6 +1199,7 @@ def execute_code(
         # Wrapped so the thread inherits the turn's approval context + callbacks
         # (see tools.thread_context) — else gateway sandbox tool calls silently
         # auto-approve dangerous commands (#33057, #30882).
+        from tools.thread_context import propagate_context_to_thread
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_server_loop),
             args=(

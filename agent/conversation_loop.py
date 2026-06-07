@@ -641,7 +641,8 @@ def run_conversation(
             # Skipped when deferring — a deferred estimate is known to over-count
             # vs the last real provider prompt, so trusting it for the display
             # would re-introduce the very desync we're avoiding.
-            if _preflight_tokens > (_compressor.last_prompt_tokens or 0):
+            _last = _compressor.last_prompt_tokens
+            if _last >= 0 and _preflight_tokens > _last:
                 _compressor.last_prompt_tokens = _preflight_tokens
 
         if _preflight_deferred:

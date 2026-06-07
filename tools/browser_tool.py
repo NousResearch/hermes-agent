@@ -61,27 +61,31 @@ import sys
 import tempfile
 import threading
 import time
-import requests
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
-from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
-from utils import is_truthy_value
-from hermes_cli.config import cfg_get
 
 try:
     from tools.website_policy import check_website_access
 except Exception:
     check_website_access = lambda url: None  # noqa: E731 — fail-open if policy module unavailable
 
-try:
-    from tools.url_safety import (
-        is_safe_url as _is_safe_url,
-        is_always_blocked_url as _is_always_blocked_url,
-    )
-except Exception:
-    _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
-    _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
+
+def _is_safe_url(url: str) -> bool:
+    try:
+        from tools.url_safety import is_safe_url as _impl
+        return bool(_impl(url))
+    except Exception:
+        return False  # fail-closed if safety module unavailable
+
+
+def _is_always_blocked_url(url: str) -> bool:
+    try:
+        from tools.url_safety import is_always_blocked_url as _impl
+        return bool(_impl(url))
+    except Exception:
+        return True  # fail-closed on the always-blocked floor too
+
 # Browser-provider ABC + registry — PR #25214 moved the per-vendor providers
 # (Browserbase / Browser Use / Firecrawl) out of ``tools/browser_providers/``
 # and into ``plugins/browser/<vendor>/``. The dispatcher consults the
@@ -91,25 +95,63 @@ from agent.browser_provider import BrowserProvider as CloudBrowserProvider  # no
 from agent.browser_registry import (  # noqa: F401  (test-patchable surface)
     get_provider as _registry_get_browser_provider,
 )
-from plugins.browser.browserbase.provider import (  # noqa: F401  (legacy import surface)
-    BrowserbaseBrowserProvider as BrowserbaseProvider,
-)
-from plugins.browser.browser_use.provider import (  # noqa: F401
-    BrowserUseBrowserProvider as BrowserUseProvider,
-)
-from plugins.browser.firecrawl.provider import (  # noqa: F401
-    FirecrawlBrowserProvider as FirecrawlProvider,
-)
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
 # Camofox local anti-detection browser backend (optional).
 # When CAMOFOX_URL is set, all browser operations route through the
 # camofox REST API instead of the agent-browser CLI.
-try:
-    from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
-except ImportError:
-    _is_camofox_mode = lambda: False  # noqa: E731
+def _is_camofox_mode() -> bool:
+    try:
+        from tools.browser_camofox import is_camofox_mode as _impl
+        return bool(_impl())
+    except ImportError:
+        return False
 
 logger = logging.getLogger(__name__)
+
+_TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+
+
+def _is_truthy_value(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY_STRINGS
+    return bool(value)
+
+# Lazily-populated legacy provider aliases.  These used to be imported at module
+# import time, which made browser_tool the cold-start heavyweight.  Keep the
+# names patchable for tests/backward-compat, but only import the plugin modules
+# when the browser cloud-provider path actually needs them.
+BrowserbaseProvider = None  # type: ignore[assignment]
+BrowserUseProvider = None  # type: ignore[assignment]
+FirecrawlProvider = None  # type: ignore[assignment]
+
+
+def _load_legacy_browser_provider_aliases() -> None:
+    global BrowserbaseProvider, BrowserUseProvider, FirecrawlProvider
+    if BrowserbaseProvider is None:
+        from plugins.browser.browserbase.provider import (
+            BrowserbaseBrowserProvider as BrowserbaseProvider,
+        )
+    if BrowserUseProvider is None:
+        from plugins.browser.browser_use.provider import (
+            BrowserUseBrowserProvider as BrowserUseProvider,
+        )
+    if FirecrawlProvider is None:
+        from plugins.browser.firecrawl.provider import (
+            FirecrawlBrowserProvider as FirecrawlProvider,
+        )
+
+
+def _get_provider_registry() -> Dict[str, type]:
+    _load_legacy_browser_provider_aliases()
+    return {
+        "browserbase": BrowserbaseProvider,
+        "browser-use": BrowserUseProvider,
+        "firecrawl": FirecrawlProvider,
+    }
 
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
 # Includes Android/Termux and macOS Homebrew locations needed for agent-browser,
@@ -209,7 +251,7 @@ def _get_command_timeout() -> int:
     _command_timeout_resolved = True
     result = DEFAULT_COMMAND_TIMEOUT
     try:
-        from hermes_cli.config import read_raw_config
+        from hermes_cli.config import read_raw_config, cfg_get
         cfg = read_raw_config()
         val = cfg_get(cfg, "browser", "command_timeout")
         if val is not None:
@@ -263,6 +305,7 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         version_url = discovery_url.rstrip("/") + "/json/version"
 
     try:
+        import requests
         response = requests.get(version_url, timeout=10)
         response.raise_for_status()
         payload = response.json()
@@ -418,15 +461,20 @@ def _stop_cdp_supervisor(task_id: str) -> None:
 # wins. This keeps the test surface stable while letting third-party
 # plugins drop in under ``~/.hermes/plugins/browser/<vendor>/``.
 
-_PROVIDER_REGISTRY: Dict[str, type] = {
-    "browserbase": BrowserbaseProvider,
-    "browser-use": BrowserUseProvider,
-    "firecrawl": FirecrawlProvider,
-}
+_PROVIDER_REGISTRY: Dict[str, type] = {}
 # Frozen copy of the import-time _PROVIDER_REGISTRY, used by
 # ``_is_legacy_provider_registry_overridden`` to detect test-time
 # monkeypatching. NEVER mutate this dict.
-_DEFAULT_PROVIDER_REGISTRY: Dict[str, type] = dict(_PROVIDER_REGISTRY)
+_DEFAULT_PROVIDER_REGISTRY: Dict[str, type] = {}
+
+
+def _ensure_default_provider_registry() -> None:
+    global _PROVIDER_REGISTRY, _DEFAULT_PROVIDER_REGISTRY
+    if _DEFAULT_PROVIDER_REGISTRY:
+        return
+    if not _PROVIDER_REGISTRY:
+        _PROVIDER_REGISTRY = _get_provider_registry()
+    _DEFAULT_PROVIDER_REGISTRY = dict(_get_provider_registry())
 
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
@@ -456,6 +504,7 @@ def _is_legacy_provider_registry_overridden() -> bool:
     value against the corresponding canonical class.
     """
     try:
+        _ensure_default_provider_registry()
         for key, default_cls in _DEFAULT_PROVIDER_REGISTRY.items():
             if _PROVIDER_REGISTRY.get(key) is not default_cls:
                 return True
@@ -528,6 +577,7 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
                     if factory is not None:
                         resolved = factory()
                 else:
+                    _ensure_default_provider_registry()
                     # Ensure plugins are discovered so the registry is
                     # populated. Idempotent — cheap on subsequent calls.
                     _ensure_browser_plugins_loaded()
@@ -569,6 +619,7 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
         # mirroring the firecrawl gate documented on
         # :data:`agent.browser_registry._LEGACY_PREFERENCE`.
         try:
+            _load_legacy_browser_provider_aliases()
             fallback_provider = BrowserUseProvider()
             if fallback_provider.is_configured():
                 resolved = fallback_provider
@@ -1123,7 +1174,7 @@ def _allow_private_urls() -> bool:
         cfg = read_raw_config()
         browser_cfg = cfg.get("browser", {})
         if isinstance(browser_cfg, dict):
-            _cached_allow_private_urls = is_truthy_value(
+            _cached_allow_private_urls = _is_truthy_value(
                 browser_cfg.get("allow_private_urls"), default=False
             )
     except Exception as e:
@@ -2243,6 +2294,7 @@ def _extract_relevant_content(
         model = _get_extraction_model()
         if model:
             call_kwargs["model"] = model
+        from agent.auxiliary_client import call_llm
         response = call_llm(**call_kwargs)
         extracted = (response.choices[0].message.content or "").strip() or _truncate_snapshot(snapshot_text)
         # Redact any secrets the auxiliary LLM may have echoed back.
@@ -3284,6 +3336,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         if vision_model:
             call_kwargs["model"] = vision_model
         # Try full-size screenshot; on size-related rejection, downscale and retry.
+        from agent.auxiliary_client import call_llm
         try:
             response = call_llm(**call_kwargs)
         except Exception as _api_err:

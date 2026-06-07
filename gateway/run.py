@@ -1414,6 +1414,54 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
     return normalized in _CONTROL_INTERRUPT_MESSAGES
 
 
+_QUEUE_CONTINUE_TEXT_EXACT = frozenset(
+    {
+        "继续",
+        "继续吧",
+        "继续做",
+        "继续做吧",
+        "继续进行",
+        "继续进行吧",
+        "继续干",
+        "继续干吧",
+        "接着做",
+        "接着干",
+        "继续下去",
+        "不要停",
+        "别停",
+        "接着",
+    }
+)
+
+
+def _is_continue_like_followup(message: Optional[str]) -> bool:
+    """Return True for short follow-ups that mean “keep working”.
+
+    Messaging users often send terse continuations like ``继续`` or ``继续吧``
+    while a task is already running. Treating those as a fresh interrupt tends
+    to derail the run into meta-narration ("I'll keep going") instead of simply
+    letting the current task continue. We therefore map these low-information
+    workflow-control nudges to queue semantics on busy sessions.
+    """
+    if not message:
+        return False
+    normalized = " ".join(str(message).strip().split()).lower()
+    if not normalized:
+        return False
+    if normalized in _QUEUE_CONTINUE_TEXT_EXACT:
+        return True
+    prefixes = (
+        "继续做",
+        "继续干",
+        "继续进行",
+        "接着做",
+        "接着干",
+    )
+    if any(normalized.startswith(prefix) for prefix in prefixes):
+        return len(normalized) <= 12
+    return False
+
+
 def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None]:
     """Derive the /command slug and declared frontmatter name from a SKILL.md.
 
@@ -1605,6 +1653,15 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     elif isinstance(model_cfg, dict):
         return model_cfg.get("default") or model_cfg.get("model") or ""
     return ""
+
+
+def _resolve_gateway_runtime_model() -> str:
+    """Return the current process/session model override when present."""
+    return (
+        os.environ.get("HERMES_MODEL", "")
+        or os.environ.get("HERMES_INFERENCE_MODEL", "")
+        or ""
+    ).strip()
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
@@ -3443,6 +3500,17 @@ class GatewayRunner:
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
+        if (
+            effective_mode == "interrupt"
+            and event.message_type == MessageType.TEXT
+            and _is_continue_like_followup(event.text)
+        ):
+            logger.info(
+                "Demoting continue-like busy follow-up to 'queue' for session %s: %r",
+                session_key,
+                (event.text or "").strip(),
+            )
+            effective_mode = "queue"
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
@@ -9961,7 +10029,9 @@ class GatewayRunner:
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
-        model = _resolve_gateway_model()
+        configured_model = _resolve_gateway_model()
+        runtime_model = _resolve_gateway_runtime_model()
+        model = runtime_model or configured_model
         config_context_length = None
         provider = None
         base_url = None
@@ -10060,10 +10130,14 @@ class GatewayRunner:
             ctx_display = str(context_length)
 
         lines = [
-            f"◆ Model: `{model}`",
+            f"◆ Current model: `{model}`",
+            f"◆ Default model: `{configured_model or model}`",
             f"◆ Provider: {provider or 'openrouter'}",
             f"◆ Context: {ctx_display} tokens ({ctx_source})",
         ]
+
+        if runtime_model and configured_model and runtime_model != configured_model:
+            lines.insert(2, "◆ Session override: active (/model or process env)")
 
         # Show endpoint for local/custom setups
         if base_url and ("localhost" in base_url or "127.0.0.1" in base_url or "0.0.0.0" in base_url):

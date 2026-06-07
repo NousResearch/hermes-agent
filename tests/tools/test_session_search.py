@@ -227,6 +227,16 @@ class TestDiscoverySort:
 
 
 class TestRoleFilter:
+    def test_session_search_strips_ansi_sequences_from_messages(self, db):
+        db.create_session("s_ansi", source="cli")
+        db.append_message("s_ansi", role="user", content="plain")
+        db.append_message("s_ansi", role="assistant", content="\u001b[31mred text\u001b[0m and more")
+        result = json.loads(session_search(session_id="s_ansi", db=db))
+        assert result["success"] is True
+        rendered = [m["content"] for m in result["messages"] if m.get("content")]
+        assert any("red text and more" == text for text in rendered)
+        assert all("\u001b" not in text for text in rendered)
+
     def test_default_excludes_tool_role(self, db):
         db.create_session("s1", source="cli")
         db.append_message("s1", role="user", content="modpack question")

@@ -25,6 +25,8 @@ from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
+_MODULE_REGISTERS_TOOLS_CACHE: Dict[tuple[str, int, int], bool] = {}
+
 
 def _is_registry_register_call(node: ast.AST) -> bool:
     """Return True when *node* is a ``registry.register(...)`` call expression."""
@@ -46,12 +48,25 @@ def _module_registers_tools(module_path: Path) -> bool:
     to call ``registry.register()`` inside a function are not picked up.
     """
     try:
+        stat = module_path.stat()
+        cache_key = (str(module_path), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return False
+
+    cached = _MODULE_REGISTERS_TOOLS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
         source = module_path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(module_path))
     except (OSError, SyntaxError):
         return False
 
-    return any(_is_registry_register_call(stmt) for stmt in tree.body)
+    value = any(_is_registry_register_call(stmt) for stmt in tree.body)
+    _MODULE_REGISTERS_TOOLS_CACHE.clear()
+    _MODULE_REGISTERS_TOOLS_CACHE[cache_key] = value
+    return value
 
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
@@ -350,9 +365,8 @@ class ToolRegistry:
         # same check_fn within one definitions pass without re-reading the
         # TTL clock.
         check_results: Dict[Callable, bool] = {}
-        entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
         for name in sorted(tool_names):
-            entry = entries_by_name.get(name)
+            entry = self.get_entry(name)
             if not entry:
                 continue
             if entry.check_fn:

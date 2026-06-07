@@ -33,6 +33,8 @@ class TestFormatSessionInfo:
         with p1, p2, p3:
             info = runner._format_session_info()
         assert "claude-opus-4.6" in info
+        assert "Current model" in info
+        assert "Default model" in info
 
     def test_includes_provider(self, runner, tmp_path):
         p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: test-model\n  provider: openrouter\n",
@@ -94,7 +96,8 @@ class TestFormatSessionInfo:
                                   {"provider": "openrouter", "base_url": "", "api_key": ""})
         with p1, p2, p3:
             info = runner._format_session_info()
-        assert "Model" in info
+        assert "Current model" in info
+        assert "Default model" in info
         assert "Context" in info
 
     def test_runtime_resolution_failure_doesnt_crash(self, runner, tmp_path):
@@ -107,3 +110,19 @@ class TestFormatSessionInfo:
             info = runner._format_session_info()
         assert "4K" in info
         assert "config" in info
+
+    def test_session_override_is_shown_separately_from_default(self, runner, tmp_path, monkeypatch):
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("model:\n  default: gpt-5.4\n  provider: custom:ciyuanliudong\n  context_length: 1050000\n")
+        monkeypatch.setenv("HERMES_MODEL", "gpt-5.5")
+        monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+                 "provider": "custom",
+                 "base_url": "https://tokenflux.dev/v1",
+                 "api_key": "k",
+             }):
+            info = runner._format_session_info()
+        assert "Current model: `gpt-5.5`" in info
+        assert "Default model: `gpt-5.4`" in info
+        assert "Session override: active" in info

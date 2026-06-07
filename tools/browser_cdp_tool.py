@@ -17,7 +17,6 @@ Method reference: https://chromedevtools.github.io/devtools-protocol/
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -28,18 +27,21 @@ logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
-# ``websockets`` is a transitive dependency of hermes-agent (via fal_client
-# and firecrawl-py) and is already imported by gateway/platforms/feishu.py.
-# Wrap the import so a clean error surfaces if the package is ever absent.
-try:
-    import websockets
-    from websockets.exceptions import WebSocketException
 
-    _WS_AVAILABLE = True
-except ImportError:
-    websockets = None  # type: ignore[assignment]
-    WebSocketException = Exception  # type: ignore[assignment,misc]
-    _WS_AVAILABLE = False
+def _load_asyncio():
+    import asyncio
+
+    return asyncio
+
+
+def _load_websockets():
+    """Import websockets lazily so ordinary tool loading avoids this dependency cost."""
+    try:
+        import websockets
+        from websockets.exceptions import WebSocketException
+        return websockets, WebSocketException, True
+    except ImportError:
+        return None, Exception, False
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +51,7 @@ except ImportError:
 
 def _run_async(coro):
     """Run an async coroutine from a sync handler, safe inside or outside a loop."""
+    asyncio = _load_asyncio()
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -107,7 +110,9 @@ async def _cdp_call(
     works for ``Target.*``, ``Browser.*``, ``Storage.*`` and a few other
     globally-scoped domains.
     """
-    assert websockets is not None  # guarded by _WS_AVAILABLE at call-site
+    asyncio = _load_asyncio()
+    websockets, _, _ = _load_websockets()
+    assert websockets is not None
 
     async with websockets.connect(
         ws_url,
@@ -201,6 +206,7 @@ def _browser_cdp_via_supervisor(
     the supervisor's already-connected WebSocket (using
     ``asyncio.run_coroutine_threadsafe`` onto the supervisor loop).
     """
+    asyncio = _load_asyncio()
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
     except Exception as exc:  # pragma: no cover — defensive
@@ -347,7 +353,8 @@ def browser_cdp(
             cdp_docs=CDP_DOCS_URL,
         )
 
-    if not _WS_AVAILABLE:
+    _, WebSocketException, ws_available = _load_websockets()
+    if not ws_available:
         return tool_error(
             "The 'websockets' Python package is required but not installed. "
             "Install it with: pip install websockets"
@@ -383,6 +390,7 @@ def browser_cdp(
         safe_timeout = 30.0
     safe_timeout = max(1.0, min(safe_timeout, 300.0))
 
+    asyncio = _load_asyncio()
     try:
         result = _run_async(
             _cdp_call(endpoint, method, call_params, target_id, safe_timeout)

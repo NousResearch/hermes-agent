@@ -458,11 +458,15 @@ def bridge_tool_schemas(deferred_count: int) -> List[Dict[str, Any]]:
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Keywords describing the capability you need (e.g. 'create github issue').",
+                            "description": "Keywords describing the capability you need, or '*' to enumerate all deferred tools.",
                         },
                         "limit": {
                             "type": "integer",
                             "description": "Maximum number of results to return. Default 5.",
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Optional pagination offset. Use with query='*' to walk the deferred catalog.",
                         },
                     },
                     "required": ["query"],
@@ -619,8 +623,23 @@ def dispatch_tool_search(args: Dict[str, Any],
     else:
         limit = max(1, min(config.max_search_limit, _safe_int(raw_limit, config.search_default_limit)))
 
+    offset = max(0, _safe_int(args.get("offset"), 0))
+
     _, deferrable = classify_tools(current_tool_defs)
     catalog = build_catalog(deferrable)
+    if query == "*":
+        page = catalog[offset:offset + limit]
+        next_offset = offset + len(page)
+        if next_offset >= len(catalog):
+            next_offset = None
+        return json.dumps({
+            "query": query,
+            "total_available": len(catalog),
+            "offset": offset,
+            "next_offset": next_offset,
+            "matches": [_format_search_hit(h) for h in page],
+        }, ensure_ascii=False)
+
     hits = search_catalog(catalog, query, limit=limit)
     return json.dumps({
         "query": query,

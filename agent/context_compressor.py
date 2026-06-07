@@ -552,6 +552,7 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        self._awaiting_suppression_count = 0
 
     def update_model(
         self,
@@ -653,6 +654,7 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        self._awaiting_suppression_count = 0
 
         self.summary_model = summary_model_override or ""
 
@@ -694,6 +696,7 @@ class ContextCompressor(ContextEngine):
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        self._awaiting_suppression_count = 0
 
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """Return True when a high rough preflight estimate is known-noisy.
@@ -733,6 +736,12 @@ class ContextCompressor(ContextEngine):
         where each pass removes only 1-2 messages.
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
+        if self.awaiting_real_usage_after_compression:
+            self._awaiting_suppression_count += 1
+            if self._awaiting_suppression_count <= 2:
+                return False
+            self.awaiting_real_usage_after_compression = False
+            self._awaiting_suppression_count = 0
         if tokens < self.threshold_tokens:
             return False
         # Anti-thrashing: back off if recent compressions were ineffective

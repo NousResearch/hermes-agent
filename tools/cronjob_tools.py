@@ -19,18 +19,10 @@ logger = logging.getLogger(__name__)
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.jobs import (
-    AmbiguousJobReference,
-    create_job,
-    list_jobs,
-    parse_schedule,
-    pause_job,
-    remove_job,
-    resolve_job_ref,
-    resume_job,
-    trigger_job,
-    update_job,
-)
+
+def _cron_jobs():
+    from cron import jobs as cron_jobs_module
+    return cron_jobs_module
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +475,7 @@ def cronjob(
     del task_id  # unused but kept for handler signature compatibility
 
     try:
+        cron_jobs = _cron_jobs()
         normalized = (action or "").strip().lower()
 
         if normalized == "create":
@@ -517,17 +510,16 @@ def cronjob(
 
             # Validate context_from references existing jobs
             if context_from:
-                from cron.jobs import get_job as _get_job
                 refs = [context_from] if isinstance(context_from, str) else context_from
                 for ref_id in refs:
-                    if not _get_job(ref_id):
+                    if not cron_jobs.get_job(ref_id):
                         return tool_error(
                             f"context_from job '{ref_id}' not found. "
                             "Use cronjob(action='list') to see available jobs.",
                             success=False,
                         )
 
-            job = create_job(
+            job = cron_jobs.create_job(
                 prompt=prompt or "",
                 schedule=schedule,
                 name=name,
@@ -563,15 +555,15 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            jobs = [_format_job(job) for job in cron_jobs.list_jobs(include_disabled=include_disabled)]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
         try:
-            job = resolve_job_ref(job_id)
-        except AmbiguousJobReference as exc:
+            job = cron_jobs.resolve_job_ref(job_id)
+        except cron_jobs.AmbiguousJobReference as exc:
             return json.dumps(
                 {
                     "success": False,
@@ -597,7 +589,7 @@ def cronjob(
         job_id = job["id"]
 
         if normalized == "remove":
-            removed = remove_job(job_id)
+            removed = cron_jobs.remove_job(job_id)
             if not removed:
                 return tool_error(f"Failed to remove job '{job_id}'", success=False)
             return json.dumps(
@@ -614,15 +606,15 @@ def cronjob(
             )
 
         if normalized == "pause":
-            updated = pause_job(job_id, reason=reason)
+            updated = cron_jobs.pause_job(job_id, reason=reason)
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized == "resume":
-            updated = resume_job(job_id)
+            updated = cron_jobs.resume_job(job_id)
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized in {"run", "run_now", "trigger"}:
-            updated = trigger_job(job_id)
+            updated = cron_jobs.trigger_job(job_id)
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized == "update":
@@ -662,9 +654,8 @@ def cronjob(
                 else:
                     refs = [str(j).strip() for j in context_from if str(j).strip()]
                 if refs:
-                    from cron.jobs import get_job as _get_job
                     for ref_id in refs:
-                        if not _get_job(ref_id):
+                        if not cron_jobs.get_job(ref_id):
                             return tool_error(
                                 f"context_from job '{ref_id}' not found. "
                                 "Use cronjob(action='list') to see available jobs.",
@@ -702,7 +693,7 @@ def cronjob(
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
             if schedule is not None:
-                parsed_schedule = parse_schedule(schedule)
+                parsed_schedule = cron_jobs.parse_schedule(schedule)
                 updates["schedule"] = parsed_schedule
                 updates["schedule_display"] = parsed_schedule.get("display", schedule)
                 if job.get("state") != "paused":
@@ -710,7 +701,7 @@ def cronjob(
                     updates["enabled"] = True
             if not updates:
                 return tool_error("No updates provided.", success=False)
-            updated = update_job(job_id, updates)
+            updated = cron_jobs.update_job(job_id, updates)
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)

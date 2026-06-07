@@ -438,6 +438,51 @@ class TestCodexOAuthContextLength:
         assert ctx == 1_000_000, "Non-codex 1M cache entries must be respected"
 
 
+class TestOllamaShowProbeProviderGate:
+    def test_openrouter_skips_ollama_show_probe(self):
+        """Known non-Ollama providers should not pay the /api/show probe tax."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show") as probe, \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=1_050_000), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = get_model_context_length(
+                "gpt-5.4",
+                base_url="https://openrouter.ai/api/v1",
+                provider="openrouter",
+                api_key="dummy",
+            )
+        assert ctx == 1_050_000
+        probe.assert_not_called()
+
+    def test_openai_skips_ollama_show_probe(self):
+        """OpenAI-compatible non-Ollama providers should skip the probe too."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show") as probe, \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=1_050_000), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = get_model_context_length(
+                "gpt-5.4",
+                base_url="https://api.openai.com/v1",
+                provider="openai",
+                api_key="dummy",
+            )
+        assert ctx == 1_050_000
+        probe.assert_not_called()
+
+    def test_ollama_provider_still_uses_ollama_show_probe(self):
+        """Real Ollama providers must still consult /api/show."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=262144) as probe:
+            ctx = get_model_context_length(
+                "llama3.1",
+                base_url="http://127.0.0.1:11434/v1",
+                provider="ollama",
+                api_key="",
+            )
+        assert ctx == 262144
+        probe.assert_called_once()
+
+
 # =========================================================================
 # Nous Portal context-window resolution (provider="nous")
 # =========================================================================

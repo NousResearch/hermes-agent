@@ -64,6 +64,28 @@ class TestGetDefinitions:
         names = {d["function"]["name"] for d in defs}
         assert names == {"t1", "t2"}
 
+    def test_looks_up_only_requested_tool_names(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="wanted", toolset="s1", schema=_make_schema("wanted"), handler=_dummy_handler
+        )
+        reg.register(
+            name="other", toolset="s1", schema=_make_schema("other"), handler=_dummy_handler
+        )
+
+        looked_up = []
+        original_get_entry = reg.get_entry
+
+        def _recording_get_entry(name):
+            looked_up.append(name)
+            return original_get_entry(name)
+
+        reg.get_entry = _recording_get_entry
+        defs = reg.get_definitions({"wanted"})
+
+        assert [d["function"]["name"] for d in defs] == ["wanted"]
+        assert looked_up == ["wanted"]
+
     def test_skips_unavailable_tools(self):
         reg = ToolRegistry()
         reg.register(
@@ -319,6 +341,39 @@ class TestBuiltinDiscovery:
 
         assert imported == ["tools.alpha"]
         mock_import.assert_called_once_with("tools.alpha")
+
+    def test_module_registers_tools_uses_stat_keyed_cache(self, tmp_path):
+        from tools import registry as registry_mod
+
+        mod = tmp_path / "cached_tool.py"
+        mod.write_text(
+            "from tools.registry import registry\n"
+            "registry.register(name='cached', toolset='x', schema={}, handler=lambda *_: None)\n",
+            encoding="utf-8",
+        )
+
+        registry_mod._MODULE_REGISTERS_TOOLS_CACHE.clear()
+        assert _module_registers_tools(mod) is True
+
+        with patch.object(Path, "read_text", side_effect=AssertionError("cache miss")):
+            assert _module_registers_tools(mod) is True
+
+    def test_module_registers_tools_cache_invalidates_on_file_change(self, tmp_path):
+        from tools import registry as registry_mod
+
+        mod = tmp_path / "cached_tool.py"
+        mod.write_text("VALUE = 1\n", encoding="utf-8")
+
+        registry_mod._MODULE_REGISTERS_TOOLS_CACHE.clear()
+        assert _module_registers_tools(mod) is False
+
+        mod.write_text(
+            "from tools.registry import registry\n"
+            "registry.register(name='cached', toolset='x', schema={}, handler=lambda *_: None)\n",
+            encoding="utf-8",
+        )
+
+        assert _module_registers_tools(mod) is True
 
     def test_skips_mcp_tool_even_if_it_registers(self, tmp_path):
         tools_dir = tmp_path / "tools"

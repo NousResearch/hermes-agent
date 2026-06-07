@@ -3,6 +3,7 @@
 import builtins
 import importlib
 import logging
+import shutil
 import sys
 
 import pytest
@@ -261,9 +262,10 @@ class TestBuildSkillsSystemPrompt:
             "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
         )
         result = build_skills_system_prompt()
-        assert "python-debug" in result
-        assert "Debug Python scripts" in result
+        assert "coding (1 skills)" in result
         assert "available_skills" in result
+        assert "skills_list(category=...)" in result
+        assert "python-debug" not in result.split("<available_skills>", 1)[1]
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -273,8 +275,8 @@ class TestBuildSkillsSystemPrompt:
             d.mkdir(parents=True, exist_ok=True)
             (d / "SKILL.md").write_text("---\ndescription: Search stuff\n---\n")
         result = build_skills_system_prompt()
-        # "search" should appear only once per category
-        assert result.count("- search") == 1
+        assert "tools (1 skills)" in result
+        assert "search" not in result.split("<available_skills>", 1)[1]
 
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
@@ -370,6 +372,29 @@ class TestBuildSkillsSystemPrompt:
 
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
+
+    def test_rebuilds_prompt_when_external_skills_change(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_skills = tmp_path / "skills"
+        local_skills.mkdir(parents=True)
+
+        external_root = tmp_path / "external-skills"
+        external_root.mkdir()
+        ext_skill = external_root / "external-only-skill"
+        ext_skill.mkdir()
+        (ext_skill / "SKILL.md").write_text(
+            "---\nname: external-only-skill\ndescription: External version\n---\n"
+        )
+        (tmp_path / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_root}\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "external-only-skill" in first
+
+        shutil.rmtree(ext_skill)
+        second = build_skills_system_prompt()
+        assert "external-only-skill" not in second
 
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

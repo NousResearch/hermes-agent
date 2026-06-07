@@ -2881,6 +2881,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 (
                     f"⚙ *Model Configuration*\n\n"
                     f"Current model: `{current_model or 'unknown'}`\n"
+                    f"Default model: `{current_model or 'unknown'}`\n"
                     f"Provider: {provider_label}\n\n"
                     f"Select a provider:"
                 )
@@ -3207,6 +3208,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     (
                         f"⚙ *Model Configuration*\n\n"
                         f"Current model: `{state['current_model'] or 'unknown'}`\n"
+                        f"Default model: `{state['current_model'] or 'unknown'}`\n"
                         f"Provider: {provider_label}\n\n"
                         f"Select a provider:"
                     )

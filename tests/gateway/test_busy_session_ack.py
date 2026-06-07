@@ -38,8 +38,12 @@ from gateway.platforms.base import (
 
 def _make_event(text="hello", chat_id="123", platform_val="telegram"):
     """Build a minimal MessageEvent."""
+    if isinstance(platform_val, str):
+        platform_obj = MagicMock(value=platform_val)
+    else:
+        platform_obj = platform_val
     source = SessionSource(
-        platform=MagicMock(value=platform_val),
+        platform=platform_obj,
         chat_id=chat_id,
         chat_type="private",
         user_id="user1",
@@ -186,6 +190,34 @@ class TestBusySessionAck:
         assert "Queued for the next turn" in content
         assert "respond once the current task finishes" in content
         assert "Interrupting" not in content
+
+    @pytest.mark.asyncio
+    async def test_continue_like_followup_auto_queues_on_weixin(self):
+        """Short continue nudges on Weixin should not interrupt an active task."""
+        from gateway.config import Platform
+
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter(platform_val="weixin")
+
+        event = _make_event(
+            text="继续吧",
+            platform_val=Platform.WEIXIN,
+        )
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event") as mock_merge:
+            await runner._handle_active_session_busy_message(event, sk)
+
+        agent.interrupt.assert_not_called()
+        mock_merge.assert_called_once()
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queued for the next turn" in content
+        assert "Interrupting current task" not in content
 
     @pytest.mark.asyncio
     async def test_busy_text_mode_queue_delegates_to_adapter_handle_message(self):

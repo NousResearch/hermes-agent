@@ -19,10 +19,14 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
-from tools.browser_supervisor import SUPERVISOR_REGISTRY
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
+
+
+def _get_supervisor_registry():
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    return SUPERVISOR_REGISTRY
 
 
 BROWSER_DIALOG_SCHEMA: Dict[str, Any] = {
@@ -87,7 +91,7 @@ def browser_dialog(
 ) -> str:
     """Respond to a pending dialog on the active task's CDP supervisor."""
     effective_task_id = task_id or "default"
-    supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
+    supervisor = _get_supervisor_registry().get(effective_task_id)
     if supervisor is None:
         return json.dumps(
             {

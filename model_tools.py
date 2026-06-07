@@ -27,6 +27,7 @@ import asyncio
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
@@ -252,6 +253,28 @@ _LEGACY_TOOLSET_MAP = {
 # inner check_fn TTL cache in registry.py handles environment drift (Docker
 # daemon start/stop, env var changes, etc.) on a 30 s horizon.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+_tool_search_cfg_cache: Dict[tuple, tuple] = {}
+
+
+def _get_tool_defs_config_fingerprint() -> Optional[tuple[int, int]]:
+    try:
+        from hermes_cli.config import get_config_path
+        cfg_path = get_config_path()
+        cfg_stat = cfg_path.stat()
+        return (cfg_stat.st_mtime_ns, cfg_stat.st_size)
+    except (FileNotFoundError, OSError, ImportError):
+        return None
+
+
+def _load_tool_search_config_cached(cfg_fp: Optional[tuple[int, int]]):
+    cached = _tool_search_cfg_cache.get(cfg_fp)
+    if cached is not None:
+        return cached
+    from tools.tool_search import load_config as _load_ts_config
+    ts_cfg = _load_ts_config()
+    _tool_search_cfg_cache.clear()
+    _tool_search_cfg_cache[cfg_fp] = ts_cfg
+    return ts_cfg
 
 
 def _clear_tool_defs_cache() -> None:
@@ -259,6 +282,7 @@ def _clear_tool_defs_cache() -> None:
     schema dependencies change (e.g. discord capability cache reset,
     execute_code sandbox reconfigured)."""
     _tool_defs_cache.clear()
+    _tool_search_cfg_cache.clear()
 
 
 def get_tool_definitions(
@@ -294,13 +318,7 @@ def get_tool_definitions(
     # mode, discord action allowlist, etc.) without needing an explicit
     # invalidate hook on every config-writer.
     if quiet_mode:
-        try:
-            from hermes_cli.config import get_config_path
-            cfg_path = get_config_path()
-            cfg_stat = cfg_path.stat()
-            cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
-        except (FileNotFoundError, OSError, ImportError):
-            cfg_fp = None
+        cfg_fp = _get_tool_defs_config_fingerprint()
         cache_key = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
@@ -501,9 +519,9 @@ def _compute_tool_definitions(
     # has already normalized schemas, and the assembly is idempotent in
     # case some caller invokes get_tool_definitions twice.
     try:
-        from tools.tool_search import assemble_tool_defs, load_config as _load_ts_config
-        ts_cfg = _load_ts_config()
+        ts_cfg = _load_tool_search_config_cached(_get_tool_defs_config_fingerprint())
         if not skip_tool_search_assembly and ts_cfg.enabled != "off":
+            from tools.tool_search import assemble_tool_defs
             context_length = _resolve_active_context_length()
             assembly = assemble_tool_defs(
                 filtered_tools,
@@ -538,8 +556,47 @@ def _resolve_active_context_length() -> int:
         model_id = (model_cfg.get("model") or model_cfg.get("default") or "").strip()
         if not model_id:
             return 0
+
+        provider = (model_cfg.get("provider") or "").strip() or None
+        base_url = (model_cfg.get("base_url") or "").strip() or None
+
+        config_context_length = model_cfg.get("context_length")
+        if config_context_length in (None, ""):
+            config_context_length = cfg.get("context_length")
+        try:
+            config_context_length = (
+                int(config_context_length) if config_context_length not in (None, "") else None
+            )
+        except (TypeError, ValueError):
+            config_context_length = None
+
+        if provider and provider.startswith("custom:"):
+            custom_name = provider.split(":", 1)[1]
+            custom_cfg = cfg.get("custom_providers") if isinstance(cfg.get("custom_providers"), dict) else {}
+            if isinstance(custom_cfg, dict):
+                named_cfg = custom_cfg.get(custom_name)
+                if isinstance(named_cfg, dict):
+                    if not base_url:
+                        base_url = (named_cfg.get("base_url") or "").strip() or base_url
+                    if config_context_length is None:
+                        raw_ctx = named_cfg.get("context_length")
+                        try:
+                            config_context_length = (
+                                int(raw_ctx) if raw_ctx not in (None, "") else None
+                            )
+                        except (TypeError, ValueError):
+                            config_context_length = None
+
         from agent.model_metadata import get_model_context_length
-        return int(get_model_context_length(model_id) or 0)
+        return int(
+            get_model_context_length(
+                model_id,
+                base_url=base_url,
+                provider=provider,
+                config_context_length=config_context_length,
+            )
+            or 0
+        )
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)
         return 0

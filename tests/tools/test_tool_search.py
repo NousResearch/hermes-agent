@@ -139,6 +139,80 @@ class TestThresholdGate:
         cfg = ToolSearchConfig.from_raw({"enabled": "off"})
         assert not should_activate(cfg, deferrable_tokens=1_000_000, context_length=200_000)
 
+    def test_resolve_active_context_length_uses_model_config_metadata(self, monkeypatch):
+        import model_tools
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "model": "gpt-5.4",
+                    "provider": "custom:tokenflux",
+                    "base_url": "https://tokenflux.dev/v1",
+                    "context_length": 1_050_000,
+                }
+            },
+        )
+
+        captured = {}
+
+        def _fake_get_model_context_length(model_id, **kwargs):
+            captured["model_id"] = model_id
+            captured.update(kwargs)
+            return 1_050_000
+
+        monkeypatch.setattr(
+            "agent.model_metadata.get_model_context_length",
+            _fake_get_model_context_length,
+        )
+
+        assert model_tools._resolve_active_context_length() == 1_050_000
+        assert captured == {
+            "model_id": "gpt-5.4",
+            "base_url": "https://tokenflux.dev/v1",
+            "provider": "custom:tokenflux",
+            "config_context_length": 1_050_000,
+        }
+
+    def test_resolve_active_context_length_uses_named_custom_provider_metadata(self, monkeypatch):
+        import model_tools
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "default": "gpt-5.4",
+                    "provider": "custom:tokenflux",
+                },
+                "custom_providers": {
+                    "tokenflux": {
+                        "base_url": "https://tokenflux.dev/v1",
+                        "context_length": 1_050_000,
+                    }
+                },
+            },
+        )
+
+        captured = {}
+
+        def _fake_get_model_context_length(model_id, **kwargs):
+            captured["model_id"] = model_id
+            captured.update(kwargs)
+            return 1_050_000
+
+        monkeypatch.setattr(
+            "agent.model_metadata.get_model_context_length",
+            _fake_get_model_context_length,
+        )
+
+        assert model_tools._resolve_active_context_length() == 1_050_000
+        assert captured == {
+            "model_id": "gpt-5.4",
+            "base_url": "https://tokenflux.dev/v1",
+            "provider": "custom:tokenflux",
+            "config_context_length": 1_050_000,
+        }
+
     def test_zero_deferrable_never_activates(self):
         from tools.tool_search import ToolSearchConfig, should_activate
         cfg = ToolSearchConfig.from_raw({"enabled": "on"})
@@ -289,6 +363,36 @@ class TestBridgeDispatch:
         from tools.tool_search import dispatch_tool_search
         result = dispatch_tool_search({}, current_tool_defs=[])
         assert "error" in json.loads(result)
+
+    def test_tool_search_query_star_enumerates_catalog_with_pagination(self):
+        from tools.tool_search import dispatch_tool_search, ToolSearchConfig
+
+        defs = [
+            _td("tool_a", "desc a"),
+            _td("tool_b", "desc b"),
+            _td("tool_c", "desc c"),
+        ]
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("tools.tool_search.classify_tools", lambda current_tool_defs: ([], current_tool_defs))
+            first = json.loads(dispatch_tool_search(
+                {"query": "*", "limit": 2},
+                current_tool_defs=defs,
+                config=ToolSearchConfig.from_raw({"search_default_limit": 5, "max_search_limit": 20}),
+            ))
+            assert first["total_available"] == 3
+            assert first["offset"] == 0
+            assert first["next_offset"] == 2
+            assert [m["name"] for m in first["matches"]] == ["tool_a", "tool_b"]
+
+            second = json.loads(dispatch_tool_search(
+                {"query": "*", "limit": 2, "offset": 2},
+                current_tool_defs=defs,
+                config=ToolSearchConfig.from_raw({"search_default_limit": 5, "max_search_limit": 20}),
+            ))
+            assert second["offset"] == 2
+            assert second["next_offset"] is None
+            assert [m["name"] for m in second["matches"]] == ["tool_c"]
 
     def test_tool_describe_requires_name(self):
         from tools.tool_search import dispatch_tool_describe

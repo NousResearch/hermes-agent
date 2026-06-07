@@ -36,9 +36,17 @@ from toolsets import TOOLSETS
 # not natively known (named custom providers, third-party aggregators, etc.).
 # Must match hermes_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
 _RUNTIME_PROVIDER_CUSTOM = "custom"
-from tools import file_state
-from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
+
+
+def _get_file_state_module():
+    from tools import file_state
+    return file_state
+
+
+def _set_subagent_approval_callback(*args, **kwargs):
+    from tools.terminal_tool import set_approval_callback as _impl
+    return _impl(*args, **kwargs)
 
 
 # Tools that children must never have access to
@@ -63,7 +71,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
 # which deadlocks against the parent's prompt_toolkit TUI that owns stdin.
 #
 # Fix: install a non-interactive callback into every subagent worker thread
-# via ThreadPoolExecutor(initializer=_set_subagent_approval_cb, initargs=(cb,)).
+# via ThreadPoolExecutor(initializer=_set_subagent_approval_callback, initargs=(cb,)).
 # The callback is chosen by the `delegation.subagent_auto_approve` config:
 #   false (default) → _subagent_auto_deny (safe; matches leaf tool blocklist)
 #   true            → _subagent_auto_approve (opt-in YOLO for cron/batch)
@@ -1532,8 +1540,9 @@ def _run_single_child(
         child_task_id = _subagent_id or f"subagent-{task_index}-{_uuid.uuid4().hex[:8]}"
         parent_task_id = getattr(parent_agent, "_current_task_id", None)
         wall_start = time.time()
+        _file_state = _get_file_state_module()
         parent_reads_snapshot = (
-            list(file_state.known_reads(parent_task_id)) if parent_task_id else []
+            list(_file_state.known_reads(parent_task_id)) if parent_task_id else []
         )
 
         # Run child with a hard timeout to prevent indefinite blocking
@@ -1545,7 +1554,7 @@ def _run_single_child(
             # so dangerous-command prompts from the subagent don't fall back to
             # input() and deadlock the parent's prompt_toolkit TUI.
             # Callback (deny vs approve) is governed by delegation.subagent_auto_approve.
-            initializer=_set_subagent_approval_cb,
+            initializer=_set_subagent_approval_callback,
             initargs=(_get_subagent_approval_callback(),),
         )
         # Capture the worker thread so the timeout diagnostic can dump its
@@ -1777,7 +1786,7 @@ def _run_single_child(
         # nested orchestrator→worker chains.
         try:
             if parent_task_id and parent_reads_snapshot:
-                sibling_writes = file_state.writes_since(
+                sibling_writes = _file_state.writes_since(
                     parent_task_id, wall_start, parent_reads_snapshot
                 )
                 if sibling_writes:
@@ -1810,11 +1819,11 @@ def _run_single_child(
         _cost_usd = getattr(child, "session_estimated_cost_usd", None)
         _reasoning_tokens = getattr(child, "session_reasoning_tokens", 0)
         try:
-            _files_read = list(file_state.known_reads(child_task_id))[:40]
+            _files_read = list(_file_state.known_reads(child_task_id))[:40]
         except Exception:
             _files_read = []
         try:
-            _files_written_map = file_state.writes_since(
+            _files_written_map = _file_state.writes_since(
                 "", wall_start, []
             )  # all writes since wall_start
         except Exception:

@@ -191,138 +191,238 @@ class TestBlockingGatewayApproval:
 
 
 # ------------------------------------------------------------------
-# /approve command
+# /approve <id> and /deny <id> — strict-id behaviour (no FIFO).
 # ------------------------------------------------------------------
+#
+# Per spec hermes-gateway-approval-safety: /approve and /deny MUST consume
+# by exact approval_id. No FIFO. No bulk /approve all. The tests below
+# wire an InMemoryApprovalStore (process-bound is fine here — each test
+# is single-process; the durable contract is exercised in
+# tests/tools/test_approval_store_sqlite.py).
 
 
-class TestApproveCommand:
+def _wire_store_with_proposal(approval_id: str, session_key: str,
+                              command: str = "test"):
+    """Create an InMemoryApprovalStore, submit a pending proposal with
+    the given approval_id, return the store. Caller installs the store
+    via set_default_approval_store().
+    """
+    import time as _time
+    from tools.approval_store import ApprovalProposal
+    from tools.approval_store_memory import InMemoryApprovalStore
+    store = InMemoryApprovalStore()
+    proposal = ApprovalProposal(
+        approval_id=approval_id,
+        created_at=_time.time(),
+        expires_at=_time.time() + 300,
+        session_key=session_key,
+        command=command,
+        risk_level="medium",
+        risk_reason="test",
+        policy_decision="needs_approval",
+        requires_explicit_approval=True,
+        default_decision="deny",
+    )
+    store.submit(proposal)
+    return store
+
+
+class TestApproveCommandStrictId:
 
     def setup_method(self):
         _clear_approval_state()
+        from tools.approval import set_default_approval_store
+        set_default_approval_store(None)
+
+    def teardown_method(self):
+        _clear_approval_state()
+        from tools.approval import set_default_approval_store
+        set_default_approval_store(None)
 
     @pytest.mark.asyncio
-    async def test_approve_resolves_blocking_approval(self):
-        """Basic /approve signals the oldest blocked agent thread."""
-        from tools.approval import _ApprovalEntry, _gateway_queues
+    async def test_approve_with_id_resolves_matching_entry(self):
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues, set_default_approval_store,
+        )
 
         runner = _make_runner()
         source = _make_source()
         session_key = runner._session_key_for_source(source)
 
-        entry = _ApprovalEntry({"command": "test"})
+        store = _wire_store_with_proposal("appr-XYZ", session_key)
+        set_default_approval_store(store)
+
+        entry = _ApprovalEntry({"command": "test"}, approval_id="appr-XYZ")
         _gateway_queues[session_key] = [entry]
 
-        result = await runner._handle_approve_command(_make_event("/approve"))
+        result = await runner._handle_approve_command(_make_event("/approve appr-XYZ"))
         assert "approved" in result.lower()
         assert "resuming" in result.lower()
         assert entry.event.is_set()
+        # Store row consumed:
+        assert store.get("appr-XYZ").status == "consumed"
 
     @pytest.mark.asyncio
-    async def test_approve_all_resolves_multiple(self):
-        """/approve all resolves all pending approvals."""
-        from tools.approval import _ApprovalEntry, _gateway_queues
+    async def test_approve_with_id_and_session_choice(self):
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues, set_default_approval_store,
+        )
 
         runner = _make_runner()
         source = _make_source()
         session_key = runner._session_key_for_source(source)
+        store = _wire_store_with_proposal("appr-S", session_key)
+        set_default_approval_store(store)
 
-        e1 = _ApprovalEntry({"command": "cmd1"})
-        e2 = _ApprovalEntry({"command": "cmd2"})
-        _gateway_queues[session_key] = [e1, e2]
+        entry = _ApprovalEntry({"command": "test"}, approval_id="appr-S")
+        _gateway_queues[session_key] = [entry]
 
-        result = await runner._handle_approve_command(_make_event("/approve all"))
-        assert "2 commands" in result
-        assert e1.event.is_set()
-        assert e2.event.is_set()
-
-    @pytest.mark.asyncio
-    async def test_approve_all_session(self):
-        """/approve all session resolves all with session scope."""
-        from tools.approval import _ApprovalEntry, _gateway_queues
-
-        runner = _make_runner()
-        source = _make_source()
-        session_key = runner._session_key_for_source(source)
-
-        e1 = _ApprovalEntry({"command": "cmd1"})
-        e2 = _ApprovalEntry({"command": "cmd2"})
-        _gateway_queues[session_key] = [e1, e2]
-
-        result = await runner._handle_approve_command(_make_event("/approve all session"))
+        result = await runner._handle_approve_command(
+            _make_event("/approve appr-S session")
+        )
         assert "session" in result.lower()
-        assert e1.result == "session"
-        assert e2.result == "session"
+        assert entry.result == "session"
 
     @pytest.mark.asyncio
-    async def test_approve_no_pending(self):
-        """/approve with no pending approval returns helpful message."""
-        runner = _make_runner()
-        result = await runner._handle_approve_command(_make_event("/approve"))
-        assert "No pending command" in result
+    async def test_approve_without_id_returns_error(self):
+        """No id → fail closed with explicit 'id required' message. No FIFO pop."""
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues, set_default_approval_store,
+        )
 
-    @pytest.mark.asyncio
-    async def test_approve_stale_old_style_pending(self):
-        """Old-style _pending_approvals without blocking event reports expired."""
         runner = _make_runner()
         source = _make_source()
         session_key = runner._session_key_for_source(source)
-        runner._pending_approvals[session_key] = {"command": "test"}
+
+        # Even with a pending entry, no-id MUST refuse — this is the key
+        # security guarantee replacing FIFO.
+        entry = _ApprovalEntry({"command": "test"}, approval_id="appr-ANY")
+        _gateway_queues[session_key] = [entry]
 
         result = await runner._handle_approve_command(_make_event("/approve"))
-        assert "expired" in result.lower() or "no longer waiting" in result.lower()
-        assert session_key not in runner._pending_approvals
+        assert "id required" in result.lower() or "<id>" in result
+        assert not entry.event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_approve_wrong_id_does_not_signal_real_entry(self):
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues, set_default_approval_store,
+        )
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        store = _wire_store_with_proposal("appr-REAL", session_key)
+        set_default_approval_store(store)
+
+        entry = _ApprovalEntry({"command": "test"}, approval_id="appr-REAL")
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_approve_command(_make_event("/approve appr-FAKE"))
+        assert "no pending command" in result.lower()
+        assert not entry.event.is_set()
+        # Real proposal still pending — wrong id MUST NOT side-effect.
+        assert store.get("appr-REAL").status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_approve_no_pending_message(self):
+        """No store + valid-looking id → store not configured → no-pending response."""
+        runner = _make_runner()
+        result = await runner._handle_approve_command(_make_event("/approve appr-NONE"))
+        assert "no pending command" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_approve_does_not_special_case_single_pending(self):
+        """Even with exactly ONE pending approval, no-id MUST refuse (per spec)."""
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues, set_default_approval_store,
+        )
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        store = _wire_store_with_proposal("appr-ONE", session_key)
+        set_default_approval_store(store)
+
+        entry = _ApprovalEntry({"command": "test"}, approval_id="appr-ONE")
+        _gateway_queues[session_key] = [entry]
+
+        # With FIFO removed, this MUST NOT execute the lone pending entry.
+        result = await runner._handle_approve_command(_make_event("/approve"))
+        assert "id required" in result.lower() or "<id>" in result
+        assert not entry.event.is_set()
+        assert store.get("appr-ONE").status == "pending"
 
 
-# ------------------------------------------------------------------
-# /deny command
-# ------------------------------------------------------------------
-
-
-class TestDenyCommand:
+class TestDenyCommandStrictId:
 
     def setup_method(self):
         _clear_approval_state()
+        from tools.approval import set_default_approval_store
+        set_default_approval_store(None)
+
+    def teardown_method(self):
+        _clear_approval_state()
+        from tools.approval import set_default_approval_store
+        set_default_approval_store(None)
 
     @pytest.mark.asyncio
-    async def test_deny_resolves_blocking_approval(self):
-        """/deny signals the oldest blocked agent thread with 'deny'."""
-        from tools.approval import _ApprovalEntry, _gateway_queues
+    async def test_deny_with_id_denies_matching_entry(self):
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues, set_default_approval_store,
+        )
 
         runner = _make_runner()
         source = _make_source()
         session_key = runner._session_key_for_source(source)
+        store = _wire_store_with_proposal("appr-D", session_key)
+        set_default_approval_store(store)
 
-        entry = _ApprovalEntry({"command": "test"})
+        entry = _ApprovalEntry({"command": "test"}, approval_id="appr-D")
         _gateway_queues[session_key] = [entry]
 
-        result = await runner._handle_deny_command(_make_event("/deny"))
+        result = await runner._handle_deny_command(_make_event("/deny appr-D"))
         assert "denied" in result.lower()
         assert entry.event.is_set()
         assert entry.result == "deny"
+        assert store.get("appr-D").status == "denied"
 
     @pytest.mark.asyncio
-    async def test_deny_all_resolves_all(self):
-        """/deny all denies all pending approvals."""
-        from tools.approval import _ApprovalEntry, _gateway_queues
+    async def test_deny_without_id_returns_error(self):
+        runner = _make_runner()
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues, set_default_approval_store,
+        )
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "test"}, approval_id="appr-ANY")
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_deny_command(_make_event("/deny"))
+        assert "id required" in result.lower() or "<id>" in result
+        assert not entry.event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_deny_after_approve_returns_no_pending(self):
+        """A consumed approval cannot subsequently be denied."""
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues, set_default_approval_store,
+        )
 
         runner = _make_runner()
         source = _make_source()
         session_key = runner._session_key_for_source(source)
+        store = _wire_store_with_proposal("appr-AD", session_key)
+        set_default_approval_store(store)
 
-        e1 = _ApprovalEntry({"command": "cmd1"})
-        e2 = _ApprovalEntry({"command": "cmd2"})
-        _gateway_queues[session_key] = [e1, e2]
+        entry = _ApprovalEntry({"command": "test"}, approval_id="appr-AD")
+        _gateway_queues[session_key] = [entry]
 
-        result = await runner._handle_deny_command(_make_event("/deny all"))
-        assert "2 commands" in result
-        assert all(e.result == "deny" for e in [e1, e2])
-
-    @pytest.mark.asyncio
-    async def test_deny_no_pending(self):
-        """/deny with no pending approval returns helpful message."""
-        runner = _make_runner()
-        result = await runner._handle_deny_command(_make_event("/deny"))
-        assert "No pending command" in result
+        # Approve first
+        await runner._handle_approve_command(_make_event("/approve appr-AD"))
+        # Now deny — should refuse (already consumed)
+        result = await runner._handle_deny_command(_make_event("/deny appr-AD"))
+        assert "no pending command" in result.lower()
 
 
 # ------------------------------------------------------------------

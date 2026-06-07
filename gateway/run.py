@@ -14940,154 +14940,96 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
-            resolve_gateway_approval_by_id, get_default_approval_store,
+            resolve_gateway_approval_by_id,
         )
 
-        # Keyword tokens recognised by the legacy FIFO path. Any arg
-        # that's NOT one of these (and not "all") is treated as a
-        # potential approval_id when the durable store is wired.
-        _KEYWORDS = {
-            "all", "session", "ses", "always",
+        # Per the security spec: ``/approve <id>`` is the ONLY accepted
+        # form. No FIFO. No "oldest pending item". No bulk /approve all.
+        # If the user wants to approve multiple proposals, each gets its
+        # own /approve <id>. This forces the user to read the id from the
+        # specific approval request rather than blindly approving whatever
+        # happens to be at the head of a queue.
+        _CHOICE_KEYWORDS = {
+            "session", "ses", "always",
             "permanent", "permanently", "once",
         }
 
         args_raw = event.get_command_args().strip().split()
-        args = [a.lower() for a in args_raw]
+        args_lower = [a.lower() for a in args_raw]
 
-        # Per the security spec: when an explicit id is provided, it MUST
-        # be the consume key. No fallback to FIFO. The original-cased arg
-        # is preserved because token_urlsafe ids include base64url chars
-        # whose case matters.
+        # First non-keyword arg = approval_id (case-preserved because
+        # secrets.token_urlsafe ids include case-sensitive base64url chars).
         candidate_id: Optional[str] = None
-        for original, lowered in zip(args_raw, args):
-            if lowered not in _KEYWORDS:
+        for original, lowered in zip(args_raw, args_lower):
+            if lowered not in _CHOICE_KEYWORDS:
                 candidate_id = original
                 break
 
-        # Choice extraction from the keyword tokens (same as before).
-        if any(a in {"always", "permanent", "permanently"} for a in args):
+        if candidate_id is None:
+            # No id given. Refuse — do not silently FIFO-approve anything.
+            return t("gateway.approve.id_required")
+
+        # Choice extraction from any keyword tokens after the id.
+        if any(a in {"always", "permanent", "permanently"} for a in args_lower):
             choice = "always"
-        elif any(a in {"session", "ses"} for a in args):
+        elif any(a in {"session", "ses"} for a in args_lower):
             choice = "session"
         else:
             choice = "once"
 
-        # ── Per-id path (preferred when store configured + id supplied) ──
-        store = get_default_approval_store()
-        if candidate_id is not None and store is not None:
-            count = resolve_gateway_approval_by_id(session_key, candidate_id, choice)
-            if count == 0:
-                # store.get returned None / wrong session / non-pending /
-                # consume lost the race. Fail closed with explicit message.
-                logger.info(
-                    "Gateway /approve %s rejected by store (session=%s)",
-                    candidate_id, session_key,
-                )
-                return t("gateway.approve.no_pending")
-            _adapter = self.adapters.get(source.platform)
-            if _adapter:
-                _adapter.resume_typing_for_chat(source.chat_id)
+        count = resolve_gateway_approval_by_id(session_key, candidate_id, choice)
+        if count == 0:
+            # store.get returned None / wrong session / non-pending /
+            # consume lost the race. Fail closed with explicit message.
             logger.info(
-                "User approved %d command(s) by id %s via /approve (%s)",
-                count, candidate_id, choice,
+                "Gateway /approve %s rejected (session=%s) — not pending",
+                candidate_id, session_key,
             )
-            plural = "plural" if count > 1 else "singular"
-            return t(f"gateway.approve.{choice}_{plural}", count=count)
-
-        # ── Legacy FIFO path (no id supplied, or store not configured) ──
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.approval_expired")
             return t("gateway.approve.no_pending")
 
-        resolve_all = "all" in args
-
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
-        if not count:
-            return t("gateway.approve.no_pending")
-
-        # Resume typing indicator — agent is about to continue processing.
         _adapter = self.adapters.get(source.platform)
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 
-        logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
+        logger.info(
+            "User approved %d command(s) by id %s via /approve (%s)",
+            count, candidate_id, choice,
+        )
         plural = "plural" if count > 1 else "singular"
         return t(f"gateway.approve.{choice}_{plural}", count=count)
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
-        """Handle /deny command — reject pending dangerous command(s).
+        """Handle /deny <id> command — reject a specific pending approval.
 
-        Signals blocked agent thread(s) with a 'deny' result so they receive
-        a definitive BLOCKED message, same as the CLI deny flow.
-
-        ``/deny`` denies the oldest; ``/deny all`` denies everything;
-        ``/deny <id>`` denies a specific proposal by approval_id (when
-        the durable store is configured). Per security spec, an explicit
-        id MUST be the consume key — denying a previously-denied id or
-        an unknown id is a no-op.
+        Mirrors :meth:`_handle_approve_command`: an explicit ``approval_id``
+        is required. No FIFO, no /deny all. Each pending proposal must be
+        addressed by exact id so users cannot deny the wrong command by
+        habit.
         """
         source = event.source
         session_key = self._session_key_for_source(source)
 
-        from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
-            resolve_gateway_approval_by_id, get_default_approval_store,
-        )
-
-        # Same keyword set as /approve handler.
-        _KEYWORDS = {"all"}
+        from tools.approval import resolve_gateway_approval_by_id
 
         args_raw = event.get_command_args().strip().split()
-        args_lower = [a.lower() for a in args_raw]
+        candidate_id: Optional[str] = args_raw[0] if args_raw else None
 
-        candidate_id: Optional[str] = None
-        for original, lowered in zip(args_raw, args_lower):
-            if lowered not in _KEYWORDS:
-                candidate_id = original
-                break
+        if candidate_id is None:
+            return t("gateway.deny.id_required")
 
-        store = get_default_approval_store()
-        if candidate_id is not None and store is not None:
-            count = resolve_gateway_approval_by_id(session_key, candidate_id, "deny")
-            if count == 0:
-                logger.info(
-                    "Gateway /deny %s rejected by store (session=%s)",
-                    candidate_id, session_key,
-                )
-                return t("gateway.deny.no_pending")
-            _adapter = self.adapters.get(source.platform)
-            if _adapter:
-                _adapter.resume_typing_for_chat(source.chat_id)
+        count = resolve_gateway_approval_by_id(session_key, candidate_id, "deny")
+        if count == 0:
             logger.info(
-                "User denied %d command(s) by id %s via /deny",
-                count, candidate_id,
+                "Gateway /deny %s rejected (session=%s) — not pending",
+                candidate_id, session_key,
             )
-            return t("gateway.deny.denied_singular")
-
-        # Legacy FIFO path.
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.deny.stale")
             return t("gateway.deny.no_pending")
 
-        resolve_all = "all" in args_lower
-
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
-        if not count:
-            return t("gateway.deny.no_pending")
-
-        # Resume typing indicator — agent continues (with BLOCKED result).
         _adapter = self.adapters.get(source.platform)
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 
-        logger.info("User denied %d dangerous command(s) via /deny", count)
-        if count > 1:
-            return t("gateway.deny.denied_plural", count=count)
+        logger.info("User denied command id %s via /deny", candidate_id)
         return t("gateway.deny.denied_singular")
 
     # Built-in messaging platforms where the ``/update`` command is allowed.

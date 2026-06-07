@@ -932,7 +932,10 @@ class TestDiscordChannelPromptsConfig:
         from hermes_cli.config import DEFAULT_CONFIG
         assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert raw["discord"]["auto_thread"] is True
-        assert raw["discord"]["channel_prompts"] == {}
+        # channel_prompts is a DEFAULT_CONFIG value that should NOT be expanded
+        # into the user's file — read_raw_config() preserves only what the user
+        # explicitly wrote (fixes #40821: config migration expanding defaults).
+        assert "channel_prompts" not in raw.get("discord", {})
 
 
 class TestUserMessagePreviewConfig:

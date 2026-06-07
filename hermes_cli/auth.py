@@ -708,7 +708,13 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
             "label": detected.get("label", ""),
             "key_hash": key_hash,
         }
-        _save_provider_state(auth_store, "zai", state)
+        with _auth_store_lock():
+            # Reload auth_store under lock to avoid overwriting concurrent changes
+            auth_store = _load_auth_store()
+            state_under_lock = _load_provider_state(auth_store, "zai") or {}
+            state_under_lock["detected_endpoint"] = state["detected_endpoint"]
+            _save_provider_state(auth_store, "zai", state_under_lock)
+            _save_auth_store(auth_store)
         logger.info("Z.AI: auto-detected endpoint %s (%s)", detected["label"], detected["base_url"])
         return detected["base_url"]
 

@@ -1659,6 +1659,8 @@ class AIAgent:
         Current matches:
           * xAI OAuth: "do not have an active Grok subscription" /
             "out of available resources" / "does not have permission" + "grok"
+          * Anthropic OAuth: "OAuth authentication is currently not allowed
+            for this organization"
 
         Disambiguator for xAI (#29344): the same ``code`` text ("The caller
         does not have permission to execute the specified operation") is
@@ -1704,6 +1706,8 @@ class AIAgent:
             return False
         if "oauth2 access token could not be validated" in haystack:
             return False
+        if "oauth authentication is currently not allowed for this organization" in haystack:
+            return True
         if "do not have an active grok subscription" in haystack:
             return True
         if "out of available resources" in haystack and "grok" in haystack:

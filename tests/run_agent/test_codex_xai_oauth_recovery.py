@@ -574,6 +574,86 @@ def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
     assert refresh_calls["n"] == 0, "try_refresh_current must NOT be called on entitlement 403"
 
 
+def test_recover_with_credential_pool_skips_refresh_on_anthropic_org_oauth_403():
+    """Anthropic organization-policy OAuth 403s must not refresh-loop."""
+    from run_agent import AIAgent
+    from agent.error_classifier import FailoverReason
+
+    agent = _make_codex_agent()
+    agent.provider = "anthropic"
+    agent.api_mode = "anthropic_messages"
+
+    refresh_calls = {"n": 0}
+
+    class _FakePool:
+        provider = "anthropic"
+
+        def try_refresh_current(self):
+            refresh_calls["n"] += 1
+            return MagicMock(id="should_not_be_called")
+
+        def mark_exhausted_and_rotate(self, **_kwargs):
+            return None
+
+        def has_available(self):
+            return False
+
+    agent._credential_pool = _FakePool()
+
+    recovered, _retried_429 = agent._recover_with_credential_pool(
+        status_code=403,
+        has_retried_429=False,
+        classified_reason=FailoverReason.auth,
+        error_context={
+            "type": "permission_error",
+            "message": "OAuth authentication is currently not allowed for this organization.",
+        },
+    )
+
+    assert AIAgent._is_entitlement_failure(
+        {"message": "OAuth authentication is currently not allowed for this organization."},
+        403,
+    ) is True
+    assert recovered is False
+    assert refresh_calls["n"] == 0
+
+
+def test_recover_with_credential_pool_skips_refresh_on_anthropic_403_without_body():
+    """Native Anthropic 403s are permanent even when no body context is plumbed."""
+    from agent.error_classifier import FailoverReason
+
+    agent = _make_codex_agent()
+    agent.provider = "anthropic"
+    agent.api_mode = "anthropic_messages"
+
+    refresh_calls = {"n": 0}
+
+    class _FakePool:
+        provider = "anthropic"
+
+        def try_refresh_current(self):
+            refresh_calls["n"] += 1
+            return MagicMock(id="should_not_be_called")
+
+        def mark_exhausted_and_rotate(self, **_kwargs):
+            return None
+
+        def has_available(self):
+            return False
+
+    agent._credential_pool = _FakePool()
+
+    recovered, _retried_429 = agent._recover_with_credential_pool(
+        status_code=403,
+        has_retried_429=False,
+        classified_reason=FailoverReason.auth,
+        error_context=None,
+    )
+
+    assert recovered is False
+    assert refresh_calls["n"] == 0
+
+
 def test_recover_with_credential_pool_skips_refresh_on_bare_403_for_xai_oauth():
     """A bare HTTP 403 from ``xai-oauth`` (no keyword match) must NOT loop refresh.
 

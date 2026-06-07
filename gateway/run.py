@@ -11162,7 +11162,8 @@ class GatewayRunner:
 
             if has_picker:
                 try:
-                    providers = list_picker_providers(
+                    providers = await asyncio.to_thread(
+                        list_picker_providers,
                         current_provider=current_provider,
                         current_base_url=current_base_url,
                         current_model=current_model,
@@ -11311,7 +11312,8 @@ class GatewayRunner:
             lines = [t("gateway.model.current_label", model=current_model or "unknown", provider=provider_label), ""]
 
             try:
-                providers = list_authenticated_providers(
+                providers = await asyncio.to_thread(
+                    list_authenticated_providers,
                     current_provider=current_provider,
                     current_base_url=current_base_url,
                     current_model=current_model,

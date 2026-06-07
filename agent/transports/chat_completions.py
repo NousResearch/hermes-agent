@@ -287,13 +287,16 @@ class ChatCompletionsTransport(ProviderTransport):
         # Reached only when get_provider_profile() returned None.
         # Known providers always go through the profile path above.
 
-        # Developer role swap for GPT-5/Codex models
+        # Developer role swap for GPT-5/Codex models.
+        # Skip for custom providers — their endpoints often use older
+        # OpenAI-compatible protocols that don't support 'developer' role.
         model_lower = params.get("model_lower", (model or "").lower())
         if (
             sanitized
             and isinstance(sanitized[0], dict)
             and sanitized[0].get("role") == "system"
             and any(p in model_lower for p in DEVELOPER_ROLE_MODELS)
+            and not params.get("is_custom_provider")
         ):
             sanitized = list(sanitized)
             sanitized[0] = {**sanitized[0], "role": "developer"}

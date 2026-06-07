@@ -163,6 +163,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 
     # ─── Tools ─────────────────────────────────────────────────────────────
+    # Document reading (read_document tool — PDF/EPUB/XPS text extraction).
+    # Ships eagerly in the image (Dockerfile `--extra documents`); listed here
+    # so older images / non-image installs self-heal on first use.
+    "documents.pymupdf": ("pymupdf==1.27.2.3",),
     # ACP adapter (VS Code / Zed / JetBrains integration)
     "tool.acp": ("agent-client-protocol==0.9.0",),
     # Dashboard (`hermes dashboard`)

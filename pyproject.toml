@@ -171,6 +171,11 @@ youtube = [
 ]
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0"]
+# Document reading (read_document tool — PDF/EPUB/XPS text extraction).
+# pymupdf is a self-contained wheel (bundles mupdf, no Python transitive deps),
+# so it's cheap to lazy-install; kept out of [all] per the lazy-first policy and
+# eager-baked into the production image via the Dockerfile (mirrors `voice`).
+documents = ["pymupdf==1.27.2.3"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every

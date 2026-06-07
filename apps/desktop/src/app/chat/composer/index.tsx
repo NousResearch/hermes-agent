@@ -560,6 +560,15 @@ export function ChatBar({
       return
     }
 
+    // macOS Chinese IME (and some 3rd-party IMEs on Windows) emit Enter with
+    // keyCode 229 (legacy VK_PROCESSKEY) while isComposing is already false.
+    // The compositionend has fired but the keydown still carries 229, signalling
+    // "this Enter is an IME commit, not a user send".  If we let it through,
+    // the message fires before the committed text is fully in the DOM.
+    if (event.key === 'Enter' && event.keyCode === 229) {
+      return
+    }
+
     // Undo/redo before anything else — we own the stack (see useComposerUndo),
     // so these never reach Chromium's native history, which has no record of
     // the Range-based edits the rich editor makes.

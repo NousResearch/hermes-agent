@@ -105,4 +105,87 @@ describe('composer IME composition — send button visibility (#39614)', () => {
       expect(hasPayload).toBe(false)
     }
   })
+
+  it('blocks Enter with keyCode 229 even after compositionend (macOS Chinese IME)', async () => {
+    let submitCount = 0
+    let hasPayload = false
+
+    function KeyDownHarness({ onPayload }: { onPayload: (hasPayload: boolean) => void }) {
+      const editorRef = useRef<HTMLDivElement>(null)
+      const composingRef = useRef(false)
+      const draftRef = useRef('')
+      const [draft, setDraft] = useState('')
+
+      const flushEditorToDraft = (editor: HTMLDivElement) => {
+        const next = editor.textContent ?? ''
+        if (next !== draftRef.current) {
+          draftRef.current = next
+          setDraft(next)
+        }
+      }
+
+      onPayload(draft.trim().length > 0)
+
+      const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (composingRef.current || event.nativeEvent.isComposing) {
+          return
+        }
+        if (event.key === 'Enter' && event.keyCode === 229) {
+          return
+        }
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault()
+          submitCount++
+        }
+      }
+
+      return (
+        <div
+          contentEditable
+          data-testid="editor"
+          onCompositionEnd={event => {
+            composingRef.current = false
+            flushEditorToDraft(event.currentTarget)
+          }}
+          onCompositionStart={() => {
+            composingRef.current = true
+          }}
+          onInput={event => {
+            if (composingRef.current) return
+            flushEditorToDraft(event.currentTarget)
+          }}
+          onKeyDown={handleKeyDown}
+          ref={editorRef}
+          suppressContentEditableWarning
+        />
+      )
+    }
+
+    const { getByTestId } = render(<KeyDownHarness onPayload={p => (hasPayload = p)} />)
+    const editor = getByTestId('editor')
+
+    // Simulate macOS Chinese IME: compositionend fires, then Enter with keyCode 229.
+    await act(async () => {
+      fireEvent.compositionStart(editor)
+      editor.textContent = '测试'
+      fireEvent.input(editor)
+      fireEvent.compositionEnd(editor)
+    })
+
+    expect(hasPayload).toBe(true)
+
+    // This Enter must NOT trigger submit.
+    await act(async () => {
+      fireEvent.keyDown(editor, { key: 'Enter', keyCode: 229 })
+    })
+
+    expect(submitCount).toBe(0)
+
+    // A normal Enter afterwards should still submit.
+    await act(async () => {
+      fireEvent.keyDown(editor, { key: 'Enter', keyCode: 13 })
+    })
+
+    expect(submitCount).toBe(1)
+  })
 })

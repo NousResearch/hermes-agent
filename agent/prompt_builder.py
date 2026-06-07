@@ -1263,6 +1263,13 @@ def build_skills_system_prompt(
         for category in sorted(skills_by_category.keys()):
             cat_desc = category_descriptions.get(category, "")
             if cat_desc:
+                # Category descriptions (from DESCRIPTION.md frontmatter) land
+                # verbatim in the system prompt, so scan them for prompt
+                # injection first — same treatment as every other context
+                # source below (SOUL.md, AGENTS.md, CLAUDE.md, ...).
+                cat_desc = _scan_context_content(
+                    cat_desc, f"skill category '{category}' description"
+                )
                 index_lines.append(f"  {category}: {cat_desc}")
             else:
                 index_lines.append(f"  {category}:")
@@ -1273,6 +1280,13 @@ def build_skills_system_prompt(
                     continue
                 seen.add(name)
                 if desc:
+                    # Skill descriptions come from SKILL.md frontmatter that can
+                    # originate from cloned/third-party repos, auto-curated
+                    # skills, or read-only external dirs (skills.external_dirs).
+                    # They enter the highest-trust region of the prompt on every
+                    # turn, so they get the same prompt-injection scan as the
+                    # other context loaders rather than being injected raw.
+                    desc = _scan_context_content(desc, f"skill '{name}' description")
                     index_lines.append(f"    - {name}: {desc}")
                 else:
                     index_lines.append(f"    - {name}")

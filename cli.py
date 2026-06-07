@@ -7954,6 +7954,17 @@ class HermesCLI:
             f"Adjust your self-identification accordingly.]"
         )
 
+        # Persist the new model to the session DB so the dashboard reflects the
+        # live model. The in-place swap above only updates the running agent;
+        # without this the sessions.model row stays stale (mirrors the gateway
+        # path in gateway/run.py; #34850).
+        _sess_db = getattr(self, "_session_db", None)
+        if _sess_db is not None and getattr(self, "session_id", None):
+            try:
+                _sess_db.update_session_model(self.session_id, result.new_model)
+            except Exception as exc:
+                logger.debug("Failed to persist model switch to DB: %s", exc)
+
         provider_label = result.provider_label or result.target_provider
         _cprint(f"  ✓ Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
@@ -8199,6 +8210,17 @@ class HermesCLI:
             f"via {result.provider_label or result.target_provider}. "
             f"Adjust your self-identification accordingly.]"
         )
+
+        # Persist the new model to the session DB so the dashboard reflects the
+        # live model. The in-place swap above only updates the running agent;
+        # without this the sessions.model row stays stale (mirrors the gateway
+        # path in gateway/run.py; #34850).
+        _sess_db = getattr(self, "_session_db", None)
+        if _sess_db is not None and getattr(self, "session_id", None):
+            try:
+                _sess_db.update_session_model(self.session_id, result.new_model)
+            except Exception as exc:
+                logger.debug("Failed to persist model switch to DB: %s", exc)
 
         # Display confirmation with full metadata
         provider_label = result.provider_label or result.target_provider

@@ -1538,6 +1538,19 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         os.environ["HERMES_TUI_PROVIDER"] = result.target_provider
     if persist_global:
         _persist_model_switch(result)
+
+    # Persist the new model to the session DB so the dashboard reflects the
+    # live model. The in-place agent.switch_model() above only updates the
+    # running agent; without this the sessions.model row stays stale (mirrors
+    # the gateway path in gateway/run.py; #34850).
+    _sess_db = _get_db()
+    _skey = session.get("session_key")
+    if _sess_db is not None and _skey:
+        try:
+            _sess_db.update_session_model(_skey, result.new_model)
+        except Exception as exc:
+            logger.debug("Failed to persist model switch to DB: %s", exc)
+
     return {"value": result.new_model, "warning": result.warning_message or ""}
 
 

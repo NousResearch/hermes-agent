@@ -45,6 +45,7 @@ def isolated_hermes_home(tmp_path, monkeypatch):
         "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
         "ZAI_API_KEY", "DEEPSEEK_API_KEY", "ANTHROPIC_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_BASE_URL",
+        "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
     ]:
         monkeypatch.delenv(key, raising=False)
 
@@ -123,6 +124,46 @@ class TestAuthResolvesFromDotEnv:
         )
         assert key == "sk-dotenv-resolve-789"
         assert source == "DEEPSEEK_API_KEY"
+
+
+class TestAuthProviderConfigKeyEnvOverride:
+    """_resolve_api_key_provider_secret must honor providers.<name>.key_env/api_key_env overrides."""
+
+    def test_key_env_override_reads_dotenv_from_config(self, isolated_hermes_home):
+        """Provider config key_env should win over registry defaults when loading from .env."""
+        _write_env_file(isolated_hermes_home, OPENCODE_GO_API_KEY="sk-go...override")
+        (isolated_hermes_home / "config.yaml").write_text(
+            "providers:\n"
+            "  opencode-zen:\n"
+            "    key_env: OPENCODE_GO_API_KEY\n",
+            encoding="utf-8",
+        )
+
+        from hermes_cli.auth import _resolve_api_key_provider_secret
+        key, source = _resolve_api_key_provider_secret(
+            provider_id="opencode-zen",
+            pconfig=_make_pconfig("opencode-zen", ["OPENCODE_ZEN_API_KEY"]),
+        )
+        assert key == "sk-go...override"
+        assert source == "OPENCODE_GO_API_KEY"
+
+    def test_api_key_env_override_alias_also_works(self, isolated_hermes_home):
+        """Legacy api_key_env alias should behave the same as key_env."""
+        _write_env_file(isolated_hermes_home, OPENCODE_GO_API_KEY="sk-go...alias")
+        (isolated_hermes_home / "config.yaml").write_text(
+            "providers:\n"
+            "  opencode-zen:\n"
+            "    api_key_env: OPENCODE_GO_API_KEY\n",
+            encoding="utf-8",
+        )
+
+        from hermes_cli.auth import _resolve_api_key_provider_secret
+        key, source = _resolve_api_key_provider_secret(
+            provider_id="opencode-zen",
+            pconfig=_make_pconfig("opencode-zen", ["OPENCODE_ZEN_API_KEY"]),
+        )
+        assert key == "sk-go...alias"
+        assert source == "OPENCODE_GO_API_KEY"
 
 
 class TestAuthCredentialPoolFallback:

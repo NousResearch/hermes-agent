@@ -577,8 +577,21 @@ def _resolve_api_key_provider_secret(
             pass
         return "", ""
 
-    from hermes_cli.config import get_env_value
-    for env_var in pconfig.api_key_env_vars:
+    from hermes_cli.config import get_env_value, load_config_readonly
+
+    env_vars = list(pconfig.api_key_env_vars)
+    try:
+        cfg = load_config_readonly()
+        providers_cfg = cfg.get("providers", {}) if isinstance(cfg, dict) else {}
+        provider_cfg = providers_cfg.get(provider_id, {}) if isinstance(providers_cfg, dict) else {}
+        if isinstance(provider_cfg, dict):
+            override_env = str(provider_cfg.get("key_env") or provider_cfg.get("api_key_env") or "").strip()
+            if override_env:
+                env_vars = [override_env, *[v for v in env_vars if v != override_env]]
+    except Exception:
+        pass
+
+    for env_var in env_vars:
         # Check both os.environ and ~/.hermes/.env file
         val = (get_env_value(env_var) or "").strip()
         if has_usable_secret(val):
@@ -599,6 +612,7 @@ def _resolve_api_key_provider_secret(
         pass
 
     return "", ""
+
 
 
 # =============================================================================

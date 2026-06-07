@@ -142,6 +142,49 @@ async def test_runner_records_connected_platform_state_on_success(monkeypatch, t
 
 
 @pytest.mark.asyncio
+async def test_runner_refuses_start_for_stale_systemd_timeout_mismatch(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    stop_calls = []
+
+    monkeypatch.setattr(
+        "gateway.shutdown_forensics.check_systemd_timing_alignment",
+        lambda drain_timeout: {
+            "unit": "hermes-gateway.service",
+            "scope": "user",
+            "timeout_stop_sec": 90.0,
+            "drain_timeout": 180.0,
+            "expected_min": 210.0,
+            "mismatch": True,
+            "repair_command": "hermes gateway install",
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.shutdown_forensics.stop_systemd_unit",
+        lambda unit_name, scope: stop_calls.append((unit_name, scope)) or True,
+    )
+
+    ok = await runner.start()
+
+    assert ok is True
+    assert runner.should_exit_cleanly is True
+    assert "Refusing to start because systemd may SIGKILL the gateway mid-drain." in runner.exit_reason
+    assert "Run `hermes gateway install`" in runner.exit_reason
+    assert stop_calls == [("hermes-gateway.service", "user")]
+    state = read_runtime_status()
+    assert state["gateway_state"] == "startup_failed"
+
+
+@pytest.mark.asyncio
 async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, tmp_path):
     """Verbosity != None must not crash with NameError on RedactingFormatter (#8044)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

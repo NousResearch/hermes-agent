@@ -364,6 +364,7 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
     # on which manager actually owns the unit.  Try user first since
     # that's the common case for hermes.
     timeout_us: Optional[int] = None
+    scope = "system"
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
@@ -384,6 +385,7 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
                 else:
                     timeout_us = _parse_systemd_duration_to_us(value)
                 if timeout_us is not None:
+                    scope = "user" if flag else "system"
                     break
         if timeout_us is not None:
             break
@@ -399,11 +401,37 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
     expected = drain_timeout + headroom
     return {
         "unit": unit_name,
+        "scope": scope,
         "timeout_stop_sec": timeout_stop_sec,
         "drain_timeout": drain_timeout,
         "expected_min": expected,
         "mismatch": timeout_stop_sec < expected,
+        "repair_command": (
+            "hermes gateway install"
+            if scope == "user"
+            else "sudo hermes gateway install --system"
+        ),
     }
+
+
+def stop_systemd_unit(unit_name: str, scope: str) -> bool:
+    """Best-effort stop for the current systemd unit."""
+    if not unit_name:
+        return False
+    cmd = ["systemctl"]
+    if scope == "user":
+        cmd.append("--user")
+    cmd.extend(["stop", unit_name])
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
 
 
 def _parse_systemd_duration_to_us(raw: str) -> Optional[int]:

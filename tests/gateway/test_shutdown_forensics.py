@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 import time
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -248,3 +249,48 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+    def test_returns_scope_and_repair_command_for_user_units(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+
+        def fake_open(path, encoding="utf-8"):
+            assert path == "/proc/self/cgroup"
+            return StringIO(
+                "0::/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service\n"
+            )
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=2.0):
+            assert cmd[:3] == ["systemctl", "--user", "show"]
+            return type(
+                "Result",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "TimeoutStopUSec=90s\n",
+                },
+            )()
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result is not None
+        assert result["unit"] == "hermes-gateway.service"
+        assert result["scope"] == "user"
+        assert result["repair_command"] == "hermes gateway install"
+        assert result["mismatch"] is True
+
+
+class TestStopSystemdUnit:
+    def test_uses_user_scope_flag(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=3.0):
+            calls.append(cmd)
+            return type("Result", (), {"returncode": 0})()
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        assert sf.stop_systemd_unit("hermes-gateway.service", "user") is True
+        assert calls == [["systemctl", "--user", "stop", "hermes-gateway.service"]]

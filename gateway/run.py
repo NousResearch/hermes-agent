@@ -4323,19 +4323,54 @@ class GatewayRunner:
         # default — in which case SIGKILL hits mid-drain and looks like
         # a phantom kill in the journal.  Best-effort, never raises.
         try:
-            from gateway.shutdown_forensics import check_systemd_timing_alignment
+            from gateway.shutdown_forensics import (
+                check_systemd_timing_alignment,
+                stop_systemd_unit,
+            )
             _alignment = check_systemd_timing_alignment(self._restart_drain_timeout)
             if _alignment is not None and _alignment.get("mismatch"):
-                logger.warning(
-                    "Stale systemd unit detected: %s has TimeoutStopSec=%.0fs but "
-                    "drain_timeout=%.0fs (expected >=%.0fs). systemd may SIGKILL the "
-                    "gateway mid-drain. Run `hermes gateway service install --replace` "
-                    "to regenerate the unit, or shorten agent.restart_drain_timeout.",
-                    _alignment.get("unit", "(unknown)"),
-                    _alignment["timeout_stop_sec"],
-                    _alignment["drain_timeout"],
-                    _alignment["expected_min"],
+                _repair_cmd = str(
+                    _alignment.get("repair_command") or "hermes gateway install"
                 )
+                _reason = (
+                    "Stale systemd unit detected: "
+                    f"{_alignment.get('unit', '(unknown)')} has "
+                    f"TimeoutStopSec={_alignment['timeout_stop_sec']:.0f}s but "
+                    f"drain_timeout={_alignment['drain_timeout']:.0f}s "
+                    f"(expected >={_alignment['expected_min']:.0f}s). "
+                    "Refusing to start because systemd may SIGKILL the gateway "
+                    f"mid-drain. Run `{_repair_cmd}` to repair the unit, or "
+                    "shorten agent.restart_drain_timeout."
+                )
+                logger.error("%s", _reason)
+                print(_reason, file=sys.stderr, flush=True)
+                try:
+                    _stopped = stop_systemd_unit(
+                        str(_alignment.get("unit") or ""),
+                        str(_alignment.get("scope") or "system"),
+                    )
+                    if not _stopped:
+                        logger.warning(
+                            "Failed to stop misaligned systemd unit %s automatically; "
+                            "the service manager may retry until the unit is repaired.",
+                            _alignment.get("unit", "(unknown)"),
+                        )
+                except Exception as _stop_err:
+                    logger.warning(
+                        "Failed to stop misaligned systemd unit %s automatically: %s",
+                        _alignment.get("unit", "(unknown)"),
+                        _stop_err,
+                    )
+                try:
+                    from gateway.status import write_runtime_status
+                    write_runtime_status(
+                        gateway_state="startup_failed",
+                        exit_reason=_reason,
+                    )
+                except Exception:
+                    pass
+                self._request_clean_exit(_reason)
+                return True
         except Exception as _e:
             logger.debug("check_systemd_timing_alignment failed: %s", _e)
         # Log the resolved max_iterations budget so operators can verify the

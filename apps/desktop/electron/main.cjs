@@ -1982,13 +1982,21 @@ function createPythonBackend(root, label, dashboardArgs, options = {}) {
   const python = findPythonForRoot(root)
   if (!python) return null
 
+  // Extend PATH so the Python child can find binaries installed by Hermes's
+  // own Node (e.g. codex at ~/.hermes/node/bin) even when the desktop app is
+  // launched from Finder/Dock with a minimal macOS PATH.  (#41385)
+  const extraPath = [path.join(HERMES_HOME, 'node', 'bin')]
+  const venvBin = path.join(root, 'venv', 'bin')
+  if (fileExists(venvBin)) extraPath.push(venvBin)
+
   return {
     kind: 'python',
     label,
     command: python,
     args: ['-m', 'hermes_cli.main', ...dashboardArgs],
     env: {
-      PYTHONPATH: [root, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+      PYTHONPATH: [root, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+      PATH: [...extraPath, process.env.PATH].filter(Boolean).join(path.delimiter)
     },
     root,
     bootstrap: Boolean(options.bootstrap),
@@ -2003,13 +2011,21 @@ function createPythonBackend(root, label, dashboardArgs, options = {}) {
 function createActiveBackend(dashboardArgs) {
   const venvPython = getVenvPython(VENV_ROOT)
 
+  // Extend PATH so the Python child can find binaries installed by Hermes's
+  // own Node (e.g. codex at ~/.hermes/node/bin) even when the desktop app is
+  // launched from Finder/Dock with a minimal macOS PATH.  (#41385)
+  const extraPath = [path.join(HERMES_HOME, 'node', 'bin')]
+  const venvBin = path.join(VENV_ROOT, 'bin')
+  if (fileExists(venvBin)) extraPath.push(venvBin)
+
   return {
     kind: 'python',
     label: `Hermes at ${ACTIVE_HERMES_ROOT}`,
     command: fileExists(venvPython) ? venvPython : findSystemPython(),
     args: ['-m', 'hermes_cli.main', ...dashboardArgs],
     env: {
-      PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+      PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+      PATH: [...extraPath, process.env.PATH].filter(Boolean).join(path.delimiter)
     },
     root: ACTIVE_HERMES_ROOT,
     bootstrap: true,

@@ -246,7 +246,7 @@ class TestRunJobProfileContext:
             "schedule_display": "manual",
         }
 
-        success, _output, response, error = sched.run_job(job)
+        success, _output, response, error, _executed_model, _fallback_from = sched.run_job(job)
 
         assert success is True, f"run_job failed: error={error!r} response={response!r}"
         assert observed["dotenv_paths"] == [str(profile_home / ".env")]
@@ -288,7 +288,7 @@ class TestRunJobProfileContext:
             "schedule_display": "manual",
         }
 
-        success, _output, _response, error = sched.run_job(job)
+        success, _output, _response, error, _executed_model, _fallback_from = sched.run_job(job)
 
         assert success is True, error
         assert observed["dotenv_paths"] == [str(profile_home / ".env")]
@@ -324,7 +324,7 @@ class TestRunJobProfileContext:
             "no_agent": True,
         }
 
-        success, _doc, response, error = sched.run_job(job)
+        success, _doc, response, error, _executed_model, _fallback_from = sched.run_job(job)
 
         assert success is True, error
         assert response.strip() == str(profile_home.resolve())
@@ -370,7 +370,7 @@ class TestRunJobProfileContext:
         }
 
         # Should succeed with fallback, not raise
-        success, _output, response, error = sched.run_job(job)
+        success, _output, response, error, _executed_model, _fallback_from = sched.run_job(job)
 
         assert success is True, f"run_job should fallback, not fail: error={error!r}"
         # Verify it used the default home, not the missing profile
@@ -397,7 +397,7 @@ class TestTickProfilePartition:
             "schedule_display": "manual",
         }
 
-        success, _output, _response, error = sched.run_job(job)
+        success, _output, _response, error, _executed_model, _fallback_from = sched.run_job(job)
 
         assert success is True, error
         assert observed["hermes_home_during_init"] == str(profile_home.resolve())
@@ -424,7 +424,7 @@ class TestTickProfilePartition:
         def fake_run_job(job):
             with order_lock:
                 calls.append((job["id"], threading.current_thread().name))
-            return True, "output", "response", None
+            return True, "output", "response", None, "gpt-4o", None
 
         monkeypatch.setattr(sched, "run_job", fake_run_job)
         monkeypatch.setattr(sched, "save_job_output", lambda _jid, _o: None)

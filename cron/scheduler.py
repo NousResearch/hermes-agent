@@ -1424,7 +1424,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str], Optional[st
                 f"**Status:** script failed\n\n"
                 f"{output}\n"
             )
-            return False, doc, alert, output
+            return False, doc, alert, output, None, None
 
         # Honour the wakeAgent gate as a silent signal — `wakeAgent: false`
         # means "nothing to report this tick", same as empty stdout.
@@ -1460,7 +1460,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str], Optional[st
             f"---\n\n"
             f"{output}\n"
         )
-        return True, doc, output, None
+        return True, doc, output, None, None, None
 
     # ---------------------------------------------------------------
     # Default (LLM) path — import and construct the agent machinery now

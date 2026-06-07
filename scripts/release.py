@@ -1468,6 +1468,7 @@ AUTHOR_MAP = {
     "leonard@sellem.me": "leonardsellem",  # PR #37405 (desktop WS origin guard on remote/Tailscale binds)
     "42903577+ohMyJason@users.noreply.github.com": "ohMyJason",  # PR #29810 (discover_models in custom_providers section 4)
     "singhsanidhya741@gmail.com": "sanidhyasin",  # PR #40403 salvage (model.default_headers for custom OpenAI-compatible providers, #40033)
+    "290877921+pprism13@users.noreply.github.com": "pprism13",  # _featured_skills honors limit=0 (skills.sh sitemap fallback)
 }
 
 

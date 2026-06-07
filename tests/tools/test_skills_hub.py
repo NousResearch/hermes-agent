@@ -330,6 +330,78 @@ class TestSkillsShSource:
         ]
         assert all(r.source == "skills.sh" for r in results)
 
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_empty_search_limit_zero_returns_all_featured_fallback(
+        self, mock_get, _mock_read_cache, _mock_write_cache
+    ):
+        """``search("", limit=0)`` is the bulk-dump convention build_skills_index
+        uses (0 = no cap). When the sitemap index has no per-skill maps, the
+        flow falls back to ``_featured_skills``, which must honour limit=0 and
+        return the *whole* featured list — not bail out after a single entry.
+        """
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text='''
+                <a href="/vercel-labs/agent-skills/vercel-react-best-practices">React</a>
+                <a href="/anthropics/skills/pdf">PDF</a>
+                <a href="/anthropics/skills/docx">DOCX</a>
+            ''',
+        )
+
+        results = self._source().search("", limit=0)
+
+        # With the old ``len(results) >= limit`` check, limit=0 made the loop
+        # break after the first append, returning a single skill. All three
+        # featured entries must come back instead.
+        assert [r.identifier for r in results] == [
+            "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices",
+            "skills-sh/anthropics/skills/pdf",
+            "skills-sh/anthropics/skills/docx",
+        ]
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub.httpx.get")
+    def test_featured_skills_limit_zero_returns_all_from_cache(
+        self, _mock_get, _mock_write_cache
+    ):
+        """The cached branch of ``_featured_skills`` must not slice with
+        ``[:0]`` when limit=0 — that would truncate the entire featured list
+        to an empty result.
+        """
+        cached = [
+            _skill_meta_to_dict(
+                SkillMeta(
+                    name="pdf",
+                    description="Featured on skills.sh from anthropics/skills",
+                    source="skills.sh",
+                    identifier="skills-sh/anthropics/skills/pdf",
+                    trust_level="trusted",
+                    repo="anthropics/skills",
+                    path="pdf",
+                )
+            ),
+            _skill_meta_to_dict(
+                SkillMeta(
+                    name="docx",
+                    description="Featured on skills.sh from anthropics/skills",
+                    source="skills.sh",
+                    identifier="skills-sh/anthropics/skills/docx",
+                    trust_level="trusted",
+                    repo="anthropics/skills",
+                    path="docx",
+                )
+            ),
+        ]
+        with patch("tools.skills_hub._read_index_cache", return_value=cached):
+            results = self._source()._featured_skills(0)
+
+        assert [r.identifier for r in results] == [
+            "skills-sh/anthropics/skills/pdf",
+            "skills-sh/anthropics/skills/docx",
+        ]
+
     @patch.object(GitHubSource, "fetch")
     def test_fetch_delegates_to_github_source_and_relabels_bundle(self, mock_fetch):
         mock_fetch.return_value = SkillBundle(

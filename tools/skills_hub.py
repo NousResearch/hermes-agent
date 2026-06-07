@@ -1488,7 +1488,11 @@ class SkillsShSource(SkillSource):
         cache_key = "skills_sh_featured"
         cached = _read_index_cache(cache_key)
         if cached is not None:
-            return [SkillMeta(**item) for item in cached][:limit]
+            metas = [SkillMeta(**item) for item in cached]
+            # ``limit <= 0`` means "no cap" (matches ``_sitemap_catalog`` and
+            # the bulk dump in build_skills_index.py). ``[:0]`` would truncate
+            # the whole featured list to nothing, so only slice when capping.
+            return metas[:limit] if limit > 0 else metas
 
         try:
             resp = httpx.get(self.BASE_URL, timeout=20)
@@ -1518,7 +1522,11 @@ class SkillsShSource(SkillSource):
                 repo=repo,
                 path=skill_path,
             ))
-            if len(results) >= limit:
+            # ``limit <= 0`` means "no cap": keep walking the whole featured
+            # list. With the old unconditional check, ``limit == 0`` made
+            # ``len(results) >= 0`` true after the first append and the loop
+            # bailed out with a single skill — defeating the sitemap fallback.
+            if limit > 0 and len(results) >= limit:
                 break
 
         _write_index_cache(cache_key, [_skill_meta_to_dict(item) for item in results])

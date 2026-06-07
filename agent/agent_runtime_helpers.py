@@ -1787,6 +1787,24 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     elif function_name == "delegate_task":
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
+    elif function_name == "workflow":
+        def _execute(next_args: dict) -> Any:
+            from tools.workflow_tool import workflow_tool as _workflow_tool
+            return _finish_agent_tool(
+                _workflow_tool(
+                    action=next_args.get("action", "run"),
+                    workflow=next_args.get("workflow"),
+                    name=next_args.get("name"),
+                    objective=next_args.get("objective"),
+                    phases=next_args.get("phases"),
+                    save=bool(next_args.get("save", False)),
+                    run_id=next_args.get("run_id"),
+                    resume=bool(next_args.get("resume", False)),
+                    max_total_tasks=int(next_args.get("max_total_tasks") or 100),
+                    parent_agent=agent,
+                ),
+                next_args,
+            )
     else:
         def _execute(next_args: dict) -> Any:
             return _ra().handle_function_call(

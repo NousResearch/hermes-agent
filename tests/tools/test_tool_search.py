@@ -96,7 +96,7 @@ class TestClassification:
         for core_name in ["terminal", "read_file", "write_file", "patch",
                           "search_files", "todo", "memory", "browser_navigate",
                           "web_search", "session_search", "clarify",
-                          "execute_code", "delegate_task", "send_message"]:
+                          "execute_code", "delegate_task", "workflow", "send_message"]:
             assert not is_deferrable_tool_name(core_name), (
                 f"Core tool '{core_name}' must NEVER be deferrable"
             )

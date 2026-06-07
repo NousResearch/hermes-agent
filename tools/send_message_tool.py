@@ -409,6 +409,23 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
+    # WhatsApp-specific parsing: handle both suffixed JIDs and bare digit formats.
+    # Suffixed JIDs: <digits>@g.us (group), <digits>@s.whatsapp.net (DM full form), <digits>@lid (LID)
+    if platform_name == "whatsapp":
+        import re as _re
+        candidate = target_ref.strip()
+        # Check for suffixed JIDs
+        if _re.fullmatch(r"\d+@(g\.us|s\.whatsapp\.net|lid)", candidate):
+            return candidate, None, True
+        # Bare digits — auto-classify by length.
+        # 17+ digits → group ID, 7-15 digits → phone number (E.164 max is 15).
+        # 16 is ambiguous; let the fallback all-digits branch handle it.
+        if candidate.lstrip("+").isdigit():
+            bare = candidate.lstrip("+")
+            if len(bare) >= 17:
+                return f"{bare}@g.us", None, True
+            if 7 <= len(bare) <= 15:
+                return f"{bare}@s.whatsapp.net", None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit

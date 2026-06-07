@@ -15,6 +15,7 @@ Both fixed together by:
 
 import threading
 
+import pytest
 
 
 class TestThreadLocalApprovalCallback:
@@ -241,3 +242,90 @@ class TestAcpExecAskGate:
             "GHSA-96vc-wcxf-jjff"
         )
         assert result["approved"] is True
+
+
+class TestAcpInteractiveFlagSetOnce:
+    """HERMES_INTERACTIVE must be set once at server startup, never toggled
+    per prompt.
+
+    ``os.environ`` is process-global and is *not* isolated by the
+    ``contextvars.copy_context()`` that wraps each executor run. The old code
+    set the flag at the start of every ``_run_agent`` and popped it in a
+    ``finally`` block; with concurrent sessions on the bounded executor, one
+    session finishing could clear the flag while another was still mid-run,
+    sending ``tools.approval`` back down the non-interactive auto-approve path
+    and silently executing a dangerous command without a permission prompt
+    (a regression of GHSA-96vc-wcxf-jjff). Setting it once in ``__init__`` and
+    never clearing it removes the race entirely.
+    """
+
+    def _make_agent(self, agent_factory=None):
+        from unittest.mock import MagicMock
+
+        from acp_adapter.server import HermesACPAgent
+        from acp_adapter.session import SessionManager
+
+        factory = agent_factory or (lambda: MagicMock(name="MockAIAgent"))
+        return HermesACPAgent(session_manager=SessionManager(agent_factory=factory))
+
+    def test_construction_marks_process_interactive(self, monkeypatch):
+        """Constructing the ACP agent marks the whole process interactive,
+        even when the flag was previously absent."""
+        import os
+
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        self._make_agent()
+        assert os.environ.get("HERMES_INTERACTIVE") == "1"
+
+    @pytest.mark.asyncio
+    async def test_completed_prompt_keeps_interactive_flag_for_next_session(
+        self, monkeypatch
+    ):
+        """A finished prompt must not clear HERMES_INTERACTIVE: the next
+        session (or an overlapping one) still has to take the interactive
+        approval path."""
+        import os
+        from unittest.mock import AsyncMock, MagicMock
+
+        import acp
+        from acp.schema import TextContentBlock
+
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        agent = self._make_agent()
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        # First session runs to completion. Under the old per-prompt
+        # save/restore this would pop the flag back to "absent".
+        first = await agent.new_session(cwd=".")
+        first_state = agent.session_manager.get_session(first.session_id)
+        first_state.agent.run_conversation = MagicMock(
+            return_value={"final_response": "done", "messages": []}
+        )
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="first")],
+            session_id=first.session_id,
+        )
+
+        # A subsequent session observes the flag from inside its own run.
+        observed: dict[str, str | None] = {}
+
+        def _capture(**_kwargs):
+            observed["flag"] = os.environ.get("HERMES_INTERACTIVE")
+            return {"final_response": "done", "messages": []}
+
+        second = await agent.new_session(cwd=".")
+        second_state = agent.session_manager.get_session(second.session_id)
+        second_state.agent.run_conversation = MagicMock(side_effect=_capture)
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="second")],
+            session_id=second.session_id,
+        )
+
+        assert observed["flag"] == "1", (
+            "a completed ACP session left HERMES_INTERACTIVE cleared, which "
+            "would drop the next session onto the non-interactive "
+            "auto-approve path"
+        )

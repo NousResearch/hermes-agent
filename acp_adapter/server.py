@@ -517,6 +517,18 @@ class HermesACPAgent(acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        # Mark the whole process as interactive once, at startup. ACP is always
+        # interactive (every dangerous command is routed through
+        # conn.request_permission), so tools.approval must always take the
+        # interactive path rather than the non-interactive auto-approve branch
+        # (GHSA-96vc-wcxf-jjff). This used to be toggled per prompt inside the
+        # executor, but os.environ is process-global and not isolated by the
+        # contextvars.copy_context() guarding each run: with concurrent sessions
+        # on the bounded executor, one session's restore could pop the flag
+        # while another session was still mid-run, silently re-enabling
+        # auto-approve. Setting it once and never clearing it is race-free and
+        # matches the other interactive surfaces (cli.py, tui_gateway).
+        os.environ["HERMES_INTERACTIVE"] = "1"
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -1397,20 +1409,19 @@ class HermesACPAgent(acp.Agent):
         # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
         # Set it INSIDE _run_agent so the TLS write happens in the executor
         # thread — setting it here would write to the event-loop thread's TLS,
-        # not the executor's. Also set HERMES_INTERACTIVE so approval.py
-        # takes the CLI-interactive path (which calls the registered
-        # callback via prompt_dangerous_approval) instead of the
-        # non-interactive auto-approve branch (GHSA-96vc-wcxf-jjff).
-        # ACP's conn.request_permission maps cleanly to the interactive
-        # callback shape — not the gateway-queue HERMES_EXEC_ASK path,
-        # which requires a notify_cb registered in _gateway_notify_cbs.
+        # not the executor's. HERMES_INTERACTIVE (which keeps approval.py on the
+        # CLI-interactive path instead of the non-interactive auto-approve
+        # branch, GHSA-96vc-wcxf-jjff) is set once in __init__ rather than here,
+        # because os.environ is process-global and racy across concurrent
+        # sessions. ACP's conn.request_permission maps cleanly to the
+        # interactive callback shape — not the gateway-queue HERMES_EXEC_ASK
+        # path, which requires a notify_cb registered in _gateway_notify_cbs.
         previous_approval_cb = None
-        previous_interactive = None
         edit_approval_token = None
         previous_session_id = None
 
         def _run_agent() -> dict:
-            nonlocal previous_approval_cb, previous_interactive, edit_approval_token, previous_session_id
+            nonlocal previous_approval_cb, edit_approval_token, previous_session_id
             # Bind HERMES_SESSION_KEY for this session so per-session caches
             # (e.g. the interactive sudo password cache in tools.terminal_tool)
             # scope to the ACP session rather than leaking across sessions
@@ -1441,10 +1452,6 @@ class HermesACPAgent(acp.Agent):
                     edit_approval_token = set_edit_approval_requester(edit_approval_requester)
                 except Exception:
                     logger.debug("Could not set ACP edit approval requester", exc_info=True)
-            # Signal to tools.approval that we have an interactive callback
-            # and the non-interactive auto-approve path must not fire.
-            previous_interactive = os.environ.get("HERMES_INTERACTIVE")
-            os.environ["HERMES_INTERACTIVE"] = "1"
             # Propagate the originating ACP session id to tools that want to
             # tag side-effects with it (e.g. ``kanban_create`` stamps it on
             # the new task so clients can render a per-session board). Save
@@ -1464,11 +1471,6 @@ class HermesACPAgent(acp.Agent):
                 logger.exception("Agent error in session %s", session_id)
                 return {"final_response": f"Error: {e}", "messages": state.history}
             finally:
-                # Restore HERMES_INTERACTIVE.
-                if previous_interactive is None:
-                    os.environ.pop("HERMES_INTERACTIVE", None)
-                else:
-                    os.environ["HERMES_INTERACTIVE"] = previous_interactive
                 # Restore HERMES_SESSION_ID symmetrically.
                 if previous_session_id is None:
                     os.environ.pop("HERMES_SESSION_ID", None)

@@ -243,6 +243,69 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    # ── Dashboard font override ─────────────────────────────────────────
+
+    def test_get_dashboard_font_defaults_to_theme(self):
+        """With no override persisted, the active font is the theme sentinel."""
+        resp = self.client.get("/api/dashboard/font")
+        assert resp.status_code == 200
+        assert resp.json() == {"font": "theme"}
+
+    def test_set_dashboard_font_persists_valid_choice(self):
+        """A valid catalog id is accepted, persisted, and read back."""
+        from hermes_cli.config import load_config
+
+        resp = self.client.put("/api/dashboard/font", json={"font": "inter"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "font": "inter"}
+
+        # Persisted to config.yaml under dashboard.font.
+        config = load_config()
+        assert config["dashboard"]["font"] == "inter"
+
+        # And reflected by the GET endpoint.
+        assert self.client.get("/api/dashboard/font").json() == {"font": "inter"}
+
+    def test_set_dashboard_font_clears_with_theme_sentinel(self):
+        """Setting 'theme' clears any prior override."""
+        self.client.put("/api/dashboard/font", json={"font": "fraunces"})
+        resp = self.client.put("/api/dashboard/font", json={"font": "theme"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "font": "theme"}
+        assert self.client.get("/api/dashboard/font").json() == {"font": "theme"}
+
+    def test_set_dashboard_font_rejects_unknown_id(self):
+        """An id not in the curated catalog coerces to the theme sentinel,
+        so a stale/hostile client can't inject an arbitrary font id."""
+        resp = self.client.put(
+            "/api/dashboard/font", json={"font": "../../etc/passwd"}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "font": "theme"}
+
+    def test_get_dashboard_font_coerces_stale_persisted_value(self):
+        """A config value no longer in the catalog reads back as 'theme'."""
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        config.setdefault("dashboard", {})["font"] = "retired-font-id"
+        save_config(config)
+
+        assert self.client.get("/api/dashboard/font").json() == {"font": "theme"}
+
+    def test_dashboard_font_override_independent_of_theme(self):
+        """The font override and the theme are stored separately — setting
+        one must not disturb the other."""
+        from hermes_cli.config import load_config
+
+        self.client.put("/api/dashboard/theme", json={"name": "ember"})
+        self.client.put("/api/dashboard/font", json={"font": "jetbrains-mono"})
+
+        config = load_config()
+        assert config["dashboard"]["theme"] == "ember"
+        assert config["dashboard"]["font"] == "jetbrains-mono"
+
+
     def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
         """Session rows without persisted cwd must not inherit TERMINAL_CWD.
 

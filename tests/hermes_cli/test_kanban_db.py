@@ -139,6 +139,7 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     - ``tasks.session_id``       -> ``idx_tasks_session_id``    (#28447)
     - ``tasks.tenant``           -> ``idx_tasks_tenant``        (#16081)
     - ``tasks.idempotency_key``  -> ``idx_tasks_idempotency``   (#17805)
+    - ``tasks.model_override``   -> per-task worker model routing
     - ``task_events.run_id``     -> ``idx_events_run``          (#17805)
     """
     db_path = tmp_path / "legacy-kanban.db"
@@ -195,17 +196,27 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type = 'index'"
             )
         }
+        routed_tid = kb.create_task(
+            migrated,
+            title="legacy board routed task",
+            assignee="worker",
+            model_override="gpt-5.4-mini",
+        )
+        routed_task = kb.get_task(migrated, routed_tid)
 
     # Additive columns added by migration:
     assert "session_id" in task_columns
     assert "tenant" in task_columns
     assert "idempotency_key" in task_columns
+    assert "model_override" in task_columns
     assert "run_id" in event_columns
     # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes
     assert "idx_tasks_tenant" in indexes
     assert "idx_tasks_idempotency" in indexes
     assert "idx_events_run" in indexes
+    assert routed_task is not None
+    assert routed_task.model_override == "gpt-5.4-mini"
 
 
 # ---------------------------------------------------------------------------

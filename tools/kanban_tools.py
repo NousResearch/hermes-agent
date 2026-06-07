@@ -874,6 +874,9 @@ def _handle_create(args: dict, **kw) -> str:
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
     skills = args.get("skills")
+    model_override = args.get("model_override")
+    if model_override is not None:
+        model_override = str(model_override).strip() or None
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
         skills = [skills]
@@ -926,6 +929,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                model_override=model_override,
                 goal_mode=goal_mode,
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
@@ -940,6 +944,7 @@ def _handle_create(args: dict, **kw) -> str:
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
                 subscribed=subscribed,
+                model_override=new_task.model_override if new_task else model_override,
             )
         finally:
             conn.close()
@@ -1516,6 +1521,15 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "model_override": {
+                "type": "string",
+                "description": (
+                    "Optional per-task model slug passed to the worker "
+                    "as -m <model>. Omit to use the assignee profile's "
+                    "default model. Use only with a model verified for "
+                    "the assignee profile's configured provider."
                 ),
             },
             "goal_mode": {

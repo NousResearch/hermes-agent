@@ -79,6 +79,43 @@ def test_idempotency_key_ignored_for_archived(kanban_home):
         conn.close()
 
 
+def test_create_task_persists_model_override(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="simple extraction",
+            assignee="worker",
+            model_override="gpt-5.4-mini",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.model_override == "gpt-5.4-mini"
+    finally:
+        conn.close()
+
+
+def test_dispatch_spawn_receives_task_model_override(kanban_home, all_assignees_spawnable):
+    seen = []
+
+    def _capture_spawn(task, ws):
+        seen.append(task.model_override)
+        return 99999
+
+    conn = kb.connect()
+    try:
+        kb.create_task(
+            conn,
+            title="format rows",
+            assignee="worker",
+            model_override="gpt-5.4-mini",
+        )
+        kb.dispatch_once(conn, spawn_fn=_capture_spawn)
+        assert seen == ["gpt-5.4-mini"]
+    finally:
+        conn.close()
+
+
 def test_no_idempotency_key_never_collides(kanban_home):
     conn = kb.connect()
     try:

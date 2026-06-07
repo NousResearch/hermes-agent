@@ -167,6 +167,12 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+def test_run_slash_create_model_override_json(kanban_home):
+    out = kc.run_slash("create 'cheap task' --assignee alice --model gpt-5.4-mini --json")
+    payload = json.loads(out)
+    assert payload["model_override"] == "gpt-5.4-mini"
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")

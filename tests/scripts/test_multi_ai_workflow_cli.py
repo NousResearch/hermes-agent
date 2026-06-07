@@ -854,6 +854,95 @@ def test_evaluate_desktop_seats_blocks_unbound_windows(tmp_path):
     assert report["roles"]["reviewer"]["ok"] is False
 
 
+def test_prepare_desktop_handoff_queues_when_seat_is_not_bound(tmp_path):
+    cli = _load_cli()
+    cli.init_project(tmp_path, force=False)
+    cli.create_ai_pair_job(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        task="Add Use AI Pair",
+        coder_ai="Cursor/Qwen",
+        reviewer_ai="Codex",
+        branch="ai-pair/pair-001-use-ai-pair",
+        gitlab_host="https://gitlab.dev.jigsawgroups.work/",
+        force=False,
+    )
+    pair_dir = tmp_path / ".hermes" / "ai-pair" / "pair-001-use-ai-pair"
+    state_path = pair_dir / "pair-state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["runtime_error"] = "missing runnable adapter command"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    (pair_dir / "desktop-audit.json").write_text(
+        json.dumps(
+            {
+                "ok": False,
+                "roles": {
+                    "coder": {"ok": True, "ai": "Cursor/Qwen"},
+                    "reviewer": {"ok": False, "ai": "Codex"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = cli.prepare_ai_pair_desktop_handoff(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        role="reviewer",
+        phase="review",
+        prompt_text="Review this packet.",
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "queued_waiting_for_seat"
+    assert Path(result["prompt_path"]).read_text(encoding="utf-8") == "Review this packet."
+    queue = json.loads((pair_dir / "desktop-handoff-queue.json").read_text(encoding="utf-8"))
+    assert queue["items"][0]["role"] == "reviewer"
+    assert queue["items"][0]["seat_ok"] is False
+    state = json.loads((pair_dir / "pair-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "desktop_handoff_queued"
+    assert state["desktop_handoff_queue_ok"] is True
+    assert "runtime_error" not in state
+
+
+def test_record_ai_pair_review_result_pass_and_changes_requested(tmp_path):
+    cli = _load_cli()
+    cli.init_project(tmp_path, force=False)
+    cli.create_ai_pair_job(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        task="Add Use AI Pair",
+        coder_ai="Cursor/Qwen",
+        reviewer_ai="Codex",
+        branch="ai-pair/pair-001-use-ai-pair",
+        gitlab_host="https://gitlab.dev.jigsawgroups.work/",
+        force=False,
+    )
+
+    changes = cli.record_ai_pair_review_result(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        review_text="# Review\n\ndecision: changes_requested\n\nrequired_changes: fix tests\n",
+    )
+
+    assert changes["decision"] == "changes_requested"
+    assert changes["status"] == "changes_requested_to_coder"
+    state_path = tmp_path / ".hermes" / "ai-pair" / "pair-001-use-ai-pair" / "pair-state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["retry_count"] == 1
+
+    passed = cli.record_ai_pair_review_result(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        review_text="# Review\n\ndecision: pass\n\nsummary: approved\n",
+    )
+
+    assert passed["decision"] == "pass"
+    assert passed["status"] == "review_passed"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["status"] == "review_passed"
+
+
 def test_render_ai_pair_review_packet_includes_read_only_rules(tmp_path):
     cli = _load_cli()
     cli.init_project(tmp_path, force=False)

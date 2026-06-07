@@ -1273,6 +1273,127 @@ def audit_ai_pair_desktop(
     return report
 
 
+def _ai_pair_role_name(state: dict[str, Any], role: str) -> str:
+    if role == "coach":
+        return str(state.get("coach_ai", ""))
+    if role == "coder":
+        return str(state.get("coder_ai", ""))
+    if role == "reviewer":
+        return str(state.get("reviewer_ai", ""))
+    return role
+
+
+def _load_desktop_audit(pair_dir: Path) -> dict[str, Any]:
+    audit_path = pair_dir / "desktop-audit.json"
+    if not audit_path.exists():
+        return {"ok": False, "roles": {}}
+    return json.loads(audit_path.read_text(encoding="utf-8"))
+
+
+def prepare_ai_pair_desktop_handoff(
+    *,
+    project: str | Path,
+    issue_id: str,
+    role: str,
+    phase: str,
+    prompt_text: str,
+) -> dict[str, Any]:
+    root = _project_root(project)
+    pair_dir, state = _load_ai_pair_state(root, issue_id)
+    normalized_role = role.strip().lower()
+    if normalized_role not in {"coach", "coder", "reviewer"}:
+        raise ValueError("role must be one of: coach, coder, reviewer")
+    normalized_phase = re.sub(r"[^a-zA-Z0-9_.-]+", "-", phase.strip()).strip("-") or "handoff"
+    audit = _load_desktop_audit(pair_dir)
+    role_audit = dict(audit.get("roles", {}).get(normalized_role, {}))
+    seat_ok = bool(role_audit.get("ok"))
+    status = "ready_for_desktop_send" if seat_ok else "queued_waiting_for_seat"
+
+    handoff_dir = pair_dir / "desktop-handoffs"
+    handoff_dir.mkdir(parents=True, exist_ok=True)
+    queue_path = pair_dir / "desktop-handoff-queue.json"
+    if queue_path.exists():
+        queue = json.loads(queue_path.read_text(encoding="utf-8"))
+    else:
+        queue = {"version": 1, "issue_id": issue_id, "items": []}
+    sequence = len(queue.get("items", [])) + 1
+    handoff_id = f"{sequence:03d}-{normalized_phase}-{normalized_role}"
+    prompt_path = handoff_dir / f"{handoff_id}-prompt.md"
+    response_path = handoff_dir / f"{handoff_id}-response.md"
+    prompt_path.write_text(prompt_text, encoding="utf-8")
+
+    item = {
+        "id": handoff_id,
+        "role": normalized_role,
+        "phase": normalized_phase,
+        "ai": role_audit.get("ai") or _ai_pair_role_name(state, normalized_role),
+        "status": status,
+        "seat_ok": seat_ok,
+        "prompt_path": str(prompt_path),
+        "response_path": str(response_path),
+        "created_at": _now_iso(),
+    }
+    queue.setdefault("items", []).append(item)
+    queue["updated_at"] = _now_iso()
+    queue_path.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    state["status"] = "desktop_handoff_ready" if seat_ok else "desktop_handoff_queued"
+    state["last_desktop_handoff_id"] = handoff_id
+    state["desktop_handoff_queue_ok"] = True
+    state.pop("runtime_error", None)
+    _write_ai_pair_state(pair_dir, state)
+    return {
+        "ok": True,
+        "status": status,
+        "seat_ok": seat_ok,
+        "handoff_id": handoff_id,
+        "queue_path": str(queue_path),
+        "prompt_path": str(prompt_path),
+        "response_path": str(response_path),
+    }
+
+
+def _review_decision(review_text: str) -> str:
+    decision = _markdown_field_value(review_text, "decision").strip().lower()
+    normalized = decision.replace(" ", "_").replace("-", "_")
+    if normalized in {"pass", "passed", "approved", "approve"}:
+        return "pass"
+    if normalized in {"changes_requested", "change_requested", "needs_changes", "failed"}:
+        return "changes_requested"
+    if normalized == "blocked":
+        return "blocked"
+    return normalized or "blocked"
+
+
+def record_ai_pair_review_result(
+    *,
+    project: str | Path,
+    issue_id: str,
+    review_text: str,
+) -> dict[str, Any]:
+    pair_dir, state = _load_ai_pair_state(project, issue_id)
+    decision = _review_decision(review_text)
+    result_path = pair_dir / "review-result.md"
+    result_path.write_text(review_text, encoding="utf-8")
+    if decision == "pass":
+        status = "review_passed"
+    elif decision == "changes_requested":
+        status = "changes_requested_to_coder"
+        state["retry_count"] = int(state.get("retry_count") or 0) + 1
+    else:
+        status = "review_blocked"
+    state["status"] = status
+    state["last_review_decision"] = decision
+    _write_ai_pair_state(pair_dir, state)
+    return {
+        "ok": decision in {"pass", "changes_requested"},
+        "decision": decision,
+        "status": status,
+        "review_result_path": str(result_path),
+        "retry_count": int(state.get("retry_count") or 0),
+    }
+
+
 def _markdown_field_value(text: str, field: str) -> str:
     prefix = f"{field}:"
     for line in text.splitlines():
@@ -1985,6 +2106,15 @@ def main(argv: list[str] | None = None) -> int:
     ai_pair_run.add_argument("--timeout-seconds", type=int, default=300)
     ai_pair_run.add_argument("--format", choices=("text", "json"), default="text")
 
+    ai_pair_review_result = ai_pair_subparsers.add_parser(
+        "review-result", help="Record an AI Pair reviewer result and update retry state."
+    )
+    ai_pair_review_result.add_argument("--project", default=".")
+    ai_pair_review_result.add_argument("--issue-id", required=True)
+    ai_pair_review_result.add_argument("--review-file", default="")
+    ai_pair_review_result.add_argument("--review-text", default="")
+    ai_pair_review_result.add_argument("--format", choices=("text", "json"), default="text")
+
     ai_pair_desktop = ai_pair_subparsers.add_parser("desktop", help="Audit AI Pair desktop app seats.")
     ai_pair_desktop_subparsers = ai_pair_desktop.add_subparsers(
         dest="ai_pair_desktop_command", required=True
@@ -1999,6 +2129,16 @@ def main(argv: list[str] | None = None) -> int:
     ai_pair_desktop_audit.add_argument("--reviewer-ai", default="")
     ai_pair_desktop_audit.add_argument("--cua-driver", default="cua-driver")
     ai_pair_desktop_audit.add_argument("--format", choices=("text", "json"), default="text")
+    ai_pair_desktop_handoff = ai_pair_desktop_subparsers.add_parser(
+        "handoff", help="Queue a desktop handoff prompt for a specific AI role."
+    )
+    ai_pair_desktop_handoff.add_argument("--project", default=".")
+    ai_pair_desktop_handoff.add_argument("--issue-id", required=True)
+    ai_pair_desktop_handoff.add_argument("--role", choices=("coach", "coder", "reviewer"), required=True)
+    ai_pair_desktop_handoff.add_argument("--phase", required=True)
+    ai_pair_desktop_handoff.add_argument("--prompt-file", default="")
+    ai_pair_desktop_handoff.add_argument("--prompt-text", default="")
+    ai_pair_desktop_handoff.add_argument("--format", choices=("text", "json"), default="text")
 
     worktree_parser = subparsers.add_parser("worktree", help="Manage issue worktrees.")
     worktree_subparsers = worktree_parser.add_subparsers(dest="worktree_command", required=True)
@@ -2176,27 +2316,68 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{result['status']}: {result.get('reason', result.get('coder_plan_path', ''))}")
         return 0 if result["ok"] else 2
 
-    if args.command == "ai-pair" and args.ai_pair_command == "desktop":
-        result = audit_ai_pair_desktop(
+    if args.command == "ai-pair" and args.ai_pair_command == "review-result":
+        review_text = args.review_text
+        if args.review_file:
+            review_path = Path(args.review_file).expanduser()
+            if not review_path.is_absolute():
+                review_path = (_project_root(args.project) / review_path).resolve()
+            review_text = review_path.read_text(encoding="utf-8")
+        if not review_text.strip():
+            raise ValueError("--review-text or --review-file is required")
+        result = record_ai_pair_review_result(
             project=args.project,
             issue_id=args.issue_id,
-            coach_ai=args.coach_ai,
-            coder_ai=args.coder_ai,
-            reviewer_ai=args.reviewer_ai,
-            cua_driver=args.cua_driver,
+            review_text=review_text,
         )
         if args.format == "json":
             print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
-            status = "OK" if result["ok"] else "BLOCKED"
-            print(f"Desktop seat audit: {status}")
-            for role, detail in result["roles"].items():
-                print(
-                    f"- {role}: {detail['ai']} running={detail['running']} "
-                    f"usable_windows={detail['usable_window_count']} "
-                    f"project_windows={detail['project_window_count']} ok={detail['ok']}"
-                )
+            print(f"{result['status']}: {result['decision']}")
         return 0 if result["ok"] else 2
+
+    if args.command == "ai-pair" and args.ai_pair_command == "desktop":
+        if args.ai_pair_desktop_command == "audit":
+            result = audit_ai_pair_desktop(
+                project=args.project,
+                issue_id=args.issue_id,
+                coach_ai=args.coach_ai,
+                coder_ai=args.coder_ai,
+                reviewer_ai=args.reviewer_ai,
+                cua_driver=args.cua_driver,
+            )
+            if args.format == "json":
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                status = "OK" if result["ok"] else "BLOCKED"
+                print(f"Desktop seat audit: {status}")
+                for role, detail in result["roles"].items():
+                    print(
+                        f"- {role}: {detail['ai']} running={detail['running']} "
+                        f"usable_windows={detail['usable_window_count']} "
+                        f"project_windows={detail['project_window_count']} ok={detail['ok']}"
+                    )
+            return 0 if result["ok"] else 2
+        prompt_text = args.prompt_text
+        if args.prompt_file:
+            prompt_path = Path(args.prompt_file).expanduser()
+            if not prompt_path.is_absolute():
+                prompt_path = (_project_root(args.project) / prompt_path).resolve()
+            prompt_text = prompt_path.read_text(encoding="utf-8")
+        if not prompt_text.strip():
+            raise ValueError("--prompt-text or --prompt-file is required")
+        result = prepare_ai_pair_desktop_handoff(
+            project=args.project,
+            issue_id=args.issue_id,
+            role=args.role,
+            phase=args.phase,
+            prompt_text=prompt_text,
+        )
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"{result['status']}: {result['prompt_path']}")
+        return 0
 
     if args.command == "worktree" and args.worktree_command == "create":
         result = create_worktree(

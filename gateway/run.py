@@ -5468,6 +5468,7 @@ class GatewayRunner:
         auth_user_id = user_id
         if source.platform == Platform.WECOM_CALLBACK and source.chat_id:
             auth_user_id = source.chat_id
+        team_id = ""
         pairing_check_ids = [auth_user_id]
         if team_id:
             pairing_check_ids.insert(0, f"{team_id}:{auth_user_id}")

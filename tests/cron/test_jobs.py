@@ -502,6 +502,35 @@ class TestMarkJobRun:
         assert updated["last_error"] == "model timeout"
         assert updated["last_delivery_error"] == "platform 'discord' not enabled"
 
+    def test_executed_model_recorded_on_success(self, tmp_cron_dir):
+        """mark_job_run records the model that actually executed."""
+        job = create_job(prompt="Test", schedule="every 1h",
+                         model="nousresearch/hermes-4-70b")
+        mark_job_run(job["id"], success=True,
+                     executed_model="google/gemini-2.5-flash-lite",
+                     fallback_from="nousresearch/hermes-4-70b")
+        updated = get_job(job["id"])
+        assert updated["last_executed_model"] == "google/gemini-2.5-flash-lite"
+        assert updated["last_fallback_from"] == "nousresearch/hermes-4-70b"
+
+    def test_executed_model_none_when_no_fallback(self, tmp_cron_dir):
+        """When no fallback occurs, last_fallback_from is None."""
+        job = create_job(prompt="Test", schedule="every 1h",
+                         model="gpt-4o")
+        mark_job_run(job["id"], success=True, executed_model="gpt-4o")
+        updated = get_job(job["id"])
+        assert updated["last_executed_model"] == "gpt-4o"
+        assert updated["last_fallback_from"] is None
+
+    def test_executed_model_none_on_error(self, tmp_cron_dir):
+        """On error, model fields are None (run_job passes None)."""
+        job = create_job(prompt="Test", schedule="every 1h")
+        mark_job_run(job["id"], success=False, error="timeout",
+                     executed_model=None, fallback_from=None)
+        updated = get_job(job["id"])
+        assert updated["last_executed_model"] is None
+        assert updated["last_fallback_from"] is None
+
     def test_recurring_cron_not_disabled_when_croniter_missing(self, tmp_cron_dir, monkeypatch):
         """Regression test for issue #16265.
 

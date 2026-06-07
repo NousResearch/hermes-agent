@@ -1341,19 +1341,20 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
     return assembled
 
 
-def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+def run_job(job: dict) -> tuple[bool, str, str, Optional[str], Optional[str], Optional[str]]:
     """Execute a single cron job, applying any per-job profile override."""
     job_id = job["id"]
     with _job_profile_context(job_id, job.get("profile")):
         return _run_job_impl(job)
 
 
-def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
+def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str], Optional[str], Optional[str]]:
     """
     Execute a single cron job.
     
     Returns:
-        Tuple of (success, full_output_doc, final_response, error_message)
+        Tuple of (success, full_output_doc, final_response, error_message,
+        executed_model, fallback_from)
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
@@ -1935,7 +1936,14 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
-        return True, output, final_response, None
+        executed_model = result.get("model")
+        configured_model = job.get("model")
+        fallback_from = (
+            configured_model
+            if executed_model and configured_model and executed_model != configured_model
+            else None
+        )
+        return True, output, final_response, None, executed_model, fallback_from
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
@@ -1957,7 +1965,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 {error_msg}
 ```
 """
-        return False, output, "", error_msg
+        return False, output, "", error_msg, None, None
 
     finally:
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
@@ -2093,7 +2101,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
             try:
-                success, output, final_response, error = run_job(job)
+                success, output, final_response, error, executed_model, fallback_from = run_job(job)
 
                 output_file = save_job_output(job["id"], output)
                 if verbose:
@@ -2126,7 +2134,12 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                mark_job_run(
+                    job["id"], success, error,
+                    delivery_error=delivery_error,
+                    executed_model=executed_model,
+                    fallback_from=fallback_from,
+                )
                 return True
 
             except Exception as e:

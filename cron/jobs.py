@@ -697,6 +697,8 @@ def create_job(
         "last_status": None,
         "last_error": None,
         "last_delivery_error": None,
+        "last_executed_model": None,
+        "last_fallback_from": None,
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
@@ -908,7 +910,9 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None,
+                 executed_model: Optional[str] = None,
+                 fallback_from: Optional[str] = None):
     """
     Mark a job as having been run.
     
@@ -917,6 +921,10 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
 
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
+
+    ``executed_model`` records the model that actually ran (may differ from
+    the configured model when fallback occurs).  ``fallback_from`` records
+    the original configured model when a fallback swap happened.
     """
     with _jobs_file_lock:
         jobs = load_jobs()
@@ -928,6 +936,10 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+                # Track the model that actually executed (may differ from
+                # configured model when provider-level fallback activates).
+                job["last_executed_model"] = executed_model
+                job["last_fallback_from"] = fallback_from
                 
                 # Increment completed count
                 if job.get("repeat"):

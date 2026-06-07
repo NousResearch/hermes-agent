@@ -1060,9 +1060,10 @@ function Install-Repository {
         # directory OR a symlink OR a submodule-style gitfile -- and also when
         # it's a broken stub left over from a failed previous install (e.g.
         # a partial Remove-Item that couldn't delete a locked index.lock).
-        # Validate the repo properly by asking git itself.  Two checks
-        # belt-and-braces: rev-parse AND git status.  If either fails the
-        # repo is broken and we fall through to a fresh clone.
+        # Validate the repo properly by asking git itself.  Three checks
+        # belt-and-braces: rev-parse (work tree), git status, and a resolvable
+        # HEAD (an initial commit).  If any fails the repo is broken and we
+        # fall through to a fresh clone.
         $repoValid = $false
         if (Test-Path "$InstallDir\.git") {
             Push-Location $InstallDir
@@ -1077,7 +1078,17 @@ function Install-Repository {
                 $null = & git -c windows.appendAtomically=false status --short 2>&1
                 $statusOk = ($LASTEXITCODE -eq 0)
 
-                if ($revParseOk -and $statusOk) {
+                # An interrupted previous clone leaves a repo with NO initial
+                # commit. rev-parse/status still succeed there, but the update
+                # path's `git stash` (and later `git checkout`) abort with
+                # "You do not have the initial commit yet" and fail the install
+                # (#40998). Require a resolvable HEAD so such partial checkouts
+                # are treated as broken and re-cloned fresh below.
+                $global:LASTEXITCODE = 0
+                $null = & git -c windows.appendAtomically=false rev-parse --verify HEAD 2>&1
+                $hasCommit = ($LASTEXITCODE -eq 0)
+
+                if ($revParseOk -and $statusOk -and $hasCommit) {
                     $repoValid = $true
                 }
             } catch {}

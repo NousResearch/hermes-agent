@@ -1092,6 +1092,15 @@ show_manual_install_hint() {
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
 
+    # An interrupted previous clone leaves a .git with no initial commit, where
+    # the update path's `git stash` / `git checkout` abort with "You do not
+    # have the initial commit yet" and fail the install (#40998). Drop such a
+    # partial checkout so the fresh-clone path below handles it cleanly.
+    if [ -d "$INSTALL_DIR/.git" ] && ! git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+        log_warn "Existing checkout at $INSTALL_DIR has no commits (interrupted clone) -- replacing it."
+        rm -rf "$INSTALL_DIR"
+    fi
+
     if [ -d "$INSTALL_DIR" ]; then
         if [ -d "$INSTALL_DIR/.git" ]; then
             log_info "Existing installation found, updating..."

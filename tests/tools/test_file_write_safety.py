@@ -106,6 +106,12 @@ class TestCheckSensitivePathMacOSBypass:
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
+    def test_active_tempdir_under_private_var_allowed(self, tmp_path: Path):
+        # pytest's tmp_path lives under the OS temp dir, which on macOS resolves
+        # to /private/var/folders/... -- it must not trip the /private/var guard.
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path(str(tmp_path / "safe.txt")) is None
+
 
 class TestAtomicWrite:
     """write_file / patch land via a temp-file + atomic rename.

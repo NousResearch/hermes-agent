@@ -3034,6 +3034,32 @@ class TestVoiceTTSPlayback:
 
         assert route["max_iterations"] == 1
 
+    def test_voice_fast_reply_route_ignores_configured_toolsets(self, monkeypatch):
+        """Fast spoken replies stay tool-free even if config tries to enable tools."""
+        from hermes_cli import runtime_provider
+        runner = self._make_runner()
+
+        monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **_: {
+            "api_key": "key",
+            "base_url": "https://example.invalid/v1",
+            "provider": "google-gemini-cli",
+            "api_mode": "openai",
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+        })
+
+        route = runner._voice_fast_reply_route({
+            "voice": {
+                "fast_reply": {
+                    "enabled": True,
+                    "enabled_toolsets": ["terminal", "web"],
+                }
+            }
+        })
+
+        assert route["enabled_toolsets"] == []
+
 
 class TestUDPKeepalive:
     """UDP keepalive prevents Discord from dropping the voice session."""

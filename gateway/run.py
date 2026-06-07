@@ -12702,9 +12702,11 @@ class GatewayRunner:
         if max_tokens > 0:
             runtime_kwargs["max_tokens"] = max_tokens
 
-        enabled_toolsets = fast_cfg.get("enabled_toolsets", [])
-        if enabled_toolsets is None or not isinstance(enabled_toolsets, list):
-            enabled_toolsets = []
+        if fast_cfg.get("enabled_toolsets"):
+            logger.warning(
+                "voice.fast_reply enabled_toolsets is ignored; fast voice replies are tool-free"
+            )
+        enabled_toolsets = []
 
         disabled_toolsets = fast_cfg.get("disabled_toolsets", [])
         if disabled_toolsets is not None and not isinstance(disabled_toolsets, list):

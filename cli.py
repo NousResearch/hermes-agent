@@ -9081,7 +9081,7 @@ class HermesCLI:
         prompt caching intact.
         """
         try:
-            from agent.skill_commands import reload_skills
+            from agent.skill_commands import reload_skills, sanitize_reload_description
 
             if not self._command_running:
                 print("🔄 Reloading skills...")
@@ -9098,7 +9098,7 @@ class HermesCLI:
 
             def _fmt_line(item: dict) -> str:
                 nm = item.get("name", "")
-                desc = item.get("description", "")
+                desc = sanitize_reload_description(item.get("description", ""))
                 return f"    - {nm}: {desc}" if desc else f"    - {nm}"
 
             if added:

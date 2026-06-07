@@ -11938,7 +11938,7 @@ class GatewayRunner:
         """
         loop = asyncio.get_running_loop()
         try:
-            from agent.skill_commands import reload_skills
+            from agent.skill_commands import reload_skills, sanitize_reload_description
 
             result = await loop.run_in_executor(None, reload_skills)
             added = result.get("added", [])      # [{"name", "description"}, ...]
@@ -11975,7 +11975,7 @@ class GatewayRunner:
 
             def _fmt_line(item: dict) -> str:
                 nm = item.get("name", "")
-                desc = item.get("description", "")
+                desc = sanitize_reload_description(item.get("description", ""))
                 if desc:
                     return t("gateway.reload_skills.item_with_desc", name=nm, desc=desc)
                 return t("gateway.reload_skills.item_no_desc", name=nm)

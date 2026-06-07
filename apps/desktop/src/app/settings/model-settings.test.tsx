@@ -1,28 +1,52 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// Radix Select calls scrollIntoView on its items when the content opens; jsdom
+// doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
+// them to let the dropdown open in tests.
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn()
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.releasePointerCapture = vi.fn()
+})
 
 const getGlobalModelInfo = vi.fn()
 const getGlobalModelOptions = vi.fn()
 const getAuxiliaryModels = vi.fn()
 const setModelAssignment = vi.fn()
+const getRecommendedDefaultModel = vi.fn()
+const setEnvVar = vi.fn()
+const startManualProviderOAuth = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: () => getGlobalModelInfo(),
   getGlobalModelOptions: () => getGlobalModelOptions(),
   getAuxiliaryModels: () => getAuxiliaryModels(),
-  setModelAssignment: (body: unknown) => setModelAssignment(body)
+  setModelAssignment: (body: unknown) => setModelAssignment(body),
+  getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
+  setEnvVar: (key: string, value: string) => setEnvVar(key, value)
+}))
+
+vi.mock('@/store/onboarding', () => ({
+  startManualProviderOAuth: (slug: string) => startManualProviderOAuth(slug)
 }))
 
 beforeEach(() => {
   getGlobalModelInfo.mockResolvedValue({ provider: 'nous', model: 'hermes-4' })
   getGlobalModelOptions.mockResolvedValue({
-    providers: [{ name: 'Nous', slug: 'nous', models: ['hermes-4', 'hermes-4-mini'] }]
+    providers: [
+      { name: 'Nous', slug: 'nous', models: ['hermes-4', 'hermes-4-mini'], authenticated: true },
+      // An unconfigured api_key provider — surfaced by the full-universe payload.
+      { name: 'DeepSeek', slug: 'deepseek', models: [], authenticated: false, auth_type: 'api_key', key_env: 'DEEPSEEK_API_KEY' }
+    ]
   })
   getAuxiliaryModels.mockResolvedValue({
     main: { provider: 'nous', model: 'hermes-4' },
     tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
   })
   setModelAssignment.mockResolvedValue({ provider: 'nous', model: 'hermes-4', gateway_tools: [] })
+  getRecommendedDefaultModel.mockResolvedValue({ provider: 'deepseek', model: 'deepseek-chat', free_tier: null })
+  setEnvVar.mockResolvedValue({ ok: true })
 })
 
 afterEach(() => {
@@ -37,7 +61,7 @@ async function renderModelSettings() {
 }
 
 describe('ModelSettings', () => {
-  it('loads and shows the current main model', async () => {
+  it('loads the current main model and lists the full provider universe', async () => {
     await renderModelSettings()
 
     await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
@@ -66,5 +90,36 @@ describe('ModelSettings', () => {
         task: 'vision'
       })
     )
+  })
+
+  it('warns when a main switch leaves auxiliary tasks pinned to another provider', async () => {
+    setModelAssignment.mockResolvedValueOnce({
+      provider: 'openrouter',
+      model: 'anthropic/claude-opus-4.7',
+      gateway_tools: [],
+      stale_aux: [{ task: 'compression', provider: 'nous', model: 'hermes-4' }]
+    })
+
+    await renderModelSettings()
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
+
+    const applyButton = await screen.findByRole('button', { name: 'Apply' })
+    fireEvent.click(applyButton)
+
+    // The switch-time notice names the pinned provider and offers a reset.
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
+    expect(screen.getByText('nous')).toBeTruthy()
+  })
+
+  it('shows a persistent banner when a loaded aux slot mismatches the main provider', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'curator', provider: 'openrouter', model: 'anthropic/claude-opus-4.7', base_url: '' }]
+    })
+
+    await renderModelSettings()
+
+    // Banner present on load, no switch required.
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
   })
 })

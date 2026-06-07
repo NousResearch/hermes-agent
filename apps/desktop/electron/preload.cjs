@@ -117,6 +117,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
   },
   getVersion: () => ipcRenderer.invoke('hermes:version'),
+  uninstall: {
+    summary: () => ipcRenderer.invoke('hermes:uninstall:summary'),
+    run: mode => ipcRenderer.invoke('hermes:uninstall:run', { mode })
+  },
   updates: {
     check: () => ipcRenderer.invoke('hermes:updates:check'),
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),

@@ -18,7 +18,7 @@ export function ActionStatus({
 }) {
   return (
     <>
-      {state === 'saving' ? <Loader2 className="size-4 animate-spin" /> : state === 'done' ? <Check /> : idleIcon}
+      {state === 'saving' ? <Loader2 className="animate-spin" /> : state === 'done' ? <Check /> : idleIcon}
       {state === 'saving' ? busy : state === 'done' ? done : idle}
     </>
   )

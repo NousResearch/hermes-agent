@@ -352,9 +352,212 @@ class TestSkillsHubSearchEndpoint:
         self.client, _ = _client()
 
     def test_empty_query_returns_empty(self):
-        # Empty query short-circuits (no network) and returns no results.
+        # Empty query short-circuits (no network) and returns the enriched
+        # empty shape (results + per-source counts + timeouts + installed map).
         r = self.client.get("/api/skills/hub/search?q=")
-        assert r.status_code == 200 and r.json() == {"results": []}
+        assert r.status_code == 200
+        body = r.json()
+        assert body["results"] == []
+        assert body["source_counts"] == {}
+        assert body["timed_out"] == []
+        assert body["installed"] == {}
+
+
+class _FakeMeta:
+    """Minimal SkillMeta stand-in for monkeypatched source search."""
+
+    def __init__(self, identifier, trust_level="community", source="github"):
+        self.name = identifier.rsplit("/", 1)[-1]
+        self.description = "desc"
+        self.source = source
+        self.identifier = identifier
+        self.trust_level = trust_level
+        self.repo = "owner/repo"
+        self.tags = ["a", "b"]
+        # Used by the preview endpoint's getattr() fallbacks.
+        self.files = {}
+
+
+class _FakeBundle:
+    def __init__(self, identifier, source="github", trust_level="community"):
+        self.name = identifier.rsplit("/", 1)[-1]
+        self.identifier = identifier
+        self.source = source
+        self.trust_level = trust_level
+        self.description = "desc"
+        self.repo = "owner/repo"
+        self.tags = ["a", "b"]
+        # Mix str + bytes to exercise the decode-or-placeholder branch.
+        self.files = {
+            "SKILL.md": b"---\nname: x\n---\nbody text",
+            "icon.png": b"\xff\xd8\xff\xe0binary",
+            "notes.txt": "plain string content",
+        }
+        self.metadata = {}
+
+
+class TestSkillsHubSourcesEndpoint:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_sources_lists_configured_hubs(self, monkeypatch):
+        # The endpoint should enumerate the configured hub sources without
+        # requiring any live network — monkeypatch the router.
+        class _Src:
+            is_available = False
+
+            def __init__(self, sid):
+                self._sid = sid
+
+            def source_id(self):
+                return self._sid
+
+            def search(self, q, limit=10):
+                return [_FakeMeta("hermes-index/featured-skill", "trusted")]
+
+        def _fake_router():
+            srcs = [_Src("official"), _Src("github")]
+            # hermes-index source advertises availability + featured search.
+            idx = _Src("hermes-index")
+            idx.is_available = True
+            srcs.insert(1, idx)
+            return srcs
+
+        monkeypatch.setattr(
+            "tools.skills_hub.create_source_router", _fake_router
+        )
+        r = self.client.get("/api/skills/hub/sources")
+        assert r.status_code == 200
+        body = r.json()
+        ids = {s["id"] for s in body["sources"]}
+        assert {"official", "github", "hermes-index"} <= ids
+        # Every source carries a human label.
+        assert all(s.get("label") for s in body["sources"])
+        assert body["index_available"] is True
+        # Featured pulled from the index (zero extra API calls).
+        assert len(body["featured"]) == 1
+        assert body["featured"][0]["trust_level"] == "trusted"
+        assert isinstance(body["installed"], dict)
+
+
+class TestSkillsHubPreviewEndpoint:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_preview_requires_identifier(self):
+        r = self.client.get("/api/skills/hub/preview?identifier=")
+        assert r.status_code == 400
+
+    def test_preview_returns_skill_md_text(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.skills_hub.create_source_router", lambda: []
+        )
+        bundle = _FakeBundle("github/owner/repo/x")
+        meta = _FakeMeta("github/owner/repo/x")
+        monkeypatch.setattr(
+            "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
+            lambda ident, sources: (meta, bundle, None),
+        )
+        r = self.client.get(
+            "/api/skills/hub/preview?identifier=github/owner/repo/x"
+        )
+        assert r.status_code == 200
+        body = r.json()
+        # Bytes-stored SKILL.md decodes to text.
+        assert "body text" in body["skill_md"]
+        # Binary file is masked, text files decode.
+        assert "icon.png" in body["files"]
+        assert sorted(body["files"]) == ["SKILL.md", "icon.png", "notes.txt"]
+
+    def test_preview_404_when_unresolved(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.skills_hub.create_source_router", lambda: []
+        )
+        monkeypatch.setattr(
+            "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
+            lambda ident, sources: (None, None, None),
+        )
+        r = self.client.get("/api/skills/hub/preview?identifier=nope/x")
+        assert r.status_code == 404
+
+
+class TestSkillsHubScanEndpoint:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_scan_requires_identifier(self):
+        r = self.client.get("/api/skills/hub/scan?identifier=")
+        assert r.status_code == 400
+
+    def test_scan_returns_verdict_and_policy(self, monkeypatch):
+        from tools.skills_guard import ScanResult, Finding
+
+        monkeypatch.setattr(
+            "tools.skills_hub.create_source_router", lambda: []
+        )
+        bundle = _FakeBundle("github/owner/repo/x", trust_level="community")
+        monkeypatch.setattr(
+            "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
+            lambda ident, sources: (None, bundle, None),
+        )
+
+        from pathlib import Path
+
+        monkeypatch.setattr(
+            "tools.skills_hub.quarantine_bundle", lambda b: Path("/tmp/_fake_q")
+        )
+
+        fake_result = ScanResult(
+            skill_name="x",
+            source="github/owner/repo/x",
+            trust_level="community",
+            verdict="caution",
+            findings=[
+                Finding(
+                    pattern_id="p",
+                    severity="high",
+                    category="exfiltration",
+                    file="SKILL.md",
+                    line=10,
+                    match="m",
+                    description="leaks data",
+                )
+            ],
+            summary="s",
+        )
+        monkeypatch.setattr(
+            "tools.skills_guard.scan_skill",
+            lambda path, source="community": fake_result,
+        )
+        # Avoid touching the filesystem during cleanup.
+        monkeypatch.setattr("shutil.rmtree", lambda *a, **k: None)
+
+        r = self.client.get(
+            "/api/skills/hub/scan?identifier=github/owner/repo/x"
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["verdict"] == "caution"
+        assert body["trust_level"] == "community"
+        # community + caution => blocked by install policy.
+        assert body["policy"] == "block"
+        assert body["severity_counts"]["high"] == 1
+        assert body["findings"][0]["category"] == "exfiltration"
+        assert body["findings"][0]["file"] == "SKILL.md"
+
+    def test_scan_404_when_no_bundle(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.skills_hub.create_source_router", lambda: []
+        )
+        monkeypatch.setattr(
+            "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
+            lambda ident, sources: (None, None, None),
+        )
+        r = self.client.get("/api/skills/hub/scan?identifier=nope/x")
+        assert r.status_code == 404
 
 
 

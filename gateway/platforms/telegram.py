@@ -5170,6 +5170,59 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, e)
 
+    def _is_message_sender_authorized(self, message: Message) -> bool:
+        """Check if the sender of a Telegram message is authorized.
+        
+        This check happens at the adapter level, BEFORE text batching or
+        MessageEvent construction, preventing unauthorized users from injecting
+        prompts into the agent's context.
+        
+        Returns True if the sender is authorized, False otherwise.
+        """
+        user = message.from_user
+        chat = message.chat
+        
+        if not user:
+            # Messages without a user (service messages, anonymous posts, etc.)
+            # are handled by the gateway's broader authorization logic.
+            return True
+        
+        user_id = str(user.id)
+        user_name = user.full_name if user else None
+        chat_id = str(chat.id) if chat else user_id
+        chat_type = str(getattr(chat, "type", "private")).split(".")[-1].lower() or "private"
+        
+        # Normalize chat type (telegram uses 'private', gateway uses 'dm')
+        if chat_type == "private":
+            chat_type = "dm"
+        elif chat_type == "supergroup":
+            # Determine if forum or regular group based on thread_id presence
+            thread_id = getattr(message, "message_thread_id", None)
+            is_topic_message = bool(getattr(message, "is_topic_message", False))
+            is_forum_group = getattr(chat, "is_forum", False) is True
+            chat_type = "forum" if ((thread_id is not None and (is_topic_message or is_forum_group)) or is_forum_group) else "group"
+        
+        thread_id = None
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        is_topic_message = bool(getattr(message, "is_topic_message", False))
+        is_forum_group = getattr(chat, "is_forum", False) is True if chat else False
+        
+        if thread_id_raw is not None:
+            if chat_type == "group" and (is_topic_message or is_forum_group):
+                thread_id = str(thread_id_raw)
+            elif chat_type == "dm" and is_topic_message:
+                thread_id = str(thread_id_raw)
+        
+        # Use the existing callback auth check which delegates to the runner's
+        # _is_user_authorized if available, or falls back to env-based allowlist
+        return self._is_callback_user_authorized(
+            user_id=user_id,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            thread_id=thread_id,
+            user_name=user_name,
+        )
+
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Return the message-like payload for normal messages and channel posts.
 
@@ -5194,6 +5247,17 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
+        
+        # Authorization check at adapter level (before text batching/MessageEvent construction)
+        # to prevent unauthorized users from injecting prompts into the agent's context.
+        if not self._is_message_sender_authorized(msg):
+            logger.debug(
+                "[Telegram] Rejecting message from unauthorized user %s in chat %s",
+                msg.from_user.id if msg.from_user else "unknown",
+                msg.chat.id if msg.chat else "unknown",
+            )
+            return
+        
         await self._ensure_forum_commands(update.message)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
@@ -5208,6 +5272,16 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._should_process_message(msg, is_command=True):
             return
+        
+        # Authorization check at adapter level (before MessageEvent construction)
+        if not self._is_message_sender_authorized(msg):
+            logger.debug(
+                "[Telegram] Rejecting command from unauthorized user %s in chat %s",
+                msg.from_user.id if msg.from_user else "unknown",
+                msg.chat.id if msg.chat else "unknown",
+            )
+            return
+        
         await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
@@ -5223,6 +5297,15 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
+            return
+        
+        # Authorization check at adapter level (before MessageEvent construction)
+        if not self._is_message_sender_authorized(msg):
+            logger.debug(
+                "[Telegram] Rejecting location message from unauthorized user %s in chat %s",
+                msg.from_user.id if msg.from_user else "unknown",
+                msg.chat.id if msg.chat else "unknown",
+            )
             return
 
         venue = getattr(msg, "venue", None)
@@ -5413,6 +5496,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._observe_unmentioned_group_message(
                     _m, _event.message_type, update_id=update.update_id, event=_event
                 )
+            return
+        
+        # Authorization check at adapter level (before batching/MessageEvent construction)
+        if not self._is_message_sender_authorized(update.message):
+            logger.debug(
+                "[Telegram] Rejecting media message from unauthorized user %s in chat %s",
+                update.message.from_user.id if update.message.from_user else "unknown",
+                update.message.chat.id if update.message.chat else "unknown",
+            )
             return
 
         msg = update.message

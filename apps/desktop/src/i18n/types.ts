@@ -1370,11 +1370,15 @@ export interface Translations {
     resumeFailed: string
     nothingToBranch: string
     branchNeedsChat: string
+    branchNoStoredMessage: string
     sessionBusy: string
     branchStopCurrent: string
     branchNoText: string
     branchTitle: string
     branchFailed: string
+    branchMessageUnavailable: string
+    branchMessageNotStored: string
+    branchMessageNotMapped: string
     deleteFailed: string
     archived: string
     archiveFailed: string

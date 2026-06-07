@@ -42,7 +42,7 @@ dependencies = [
   # extra and gets lazy-installed via `tools/lazy_deps.py` when the
   # user picks that backend. Smaller `dependencies` = smaller blast
   # radius for the next supply-chain attack.
-  "openai==2.24.0",
+  "openai==2.41.0",
   "python-dotenv==1.2.2",
   "fire==0.7.1",
   "httpx[socks]==0.28.1",
@@ -136,7 +136,7 @@ livekit = [
   # is explicitly installed.
   "livekit==1.1.8",
   "livekit-api==1.1.0",
-  "livekit-agents==1.5.17",
+  "livekit-agents[openai]==1.5.17",
 ]
 pty = [
   # Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now

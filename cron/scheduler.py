@@ -721,6 +721,20 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _raw_response_get(raw_response, key: str):
+    """Safely read optional metadata from adapter raw_response objects.
+
+    Some gateway adapters return SDK response objects as ``SendResult.raw_response``
+    (for example Feishu/Lark ``ReplyMessageResponse``) rather than dictionaries.
+    Cron delivery uses this metadata only for best-effort diagnostics, so a
+    non-mapping raw response must not turn an already-successful live-adapter
+    send into a fallback send that duplicates the message.
+    """
+    if isinstance(raw_response, dict):
+        return raw_response.get(key)
+    return None
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -852,9 +866,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             send_result
                             and thread_id
                             and getattr(send_result, "raw_response", None)
-                            and send_result.raw_response.get("thread_fallback")
+                            and _raw_response_get(send_result.raw_response, "thread_fallback")
                         ):
-                            requested_thread_id = send_result.raw_response.get("requested_thread_id") or thread_id
+                            requested_thread_id = _raw_response_get(send_result.raw_response, "requested_thread_id") or thread_id
                             msg = (
                                 f"configured thread_id {requested_thread_id} for "
                                 f"{platform_name}:{chat_id} was not found; delivered without thread_id"

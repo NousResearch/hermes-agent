@@ -12709,6 +12709,11 @@ class GatewayRunner:
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
+                # Security: Skip memory auto-injection on customer-facing platforms.
+                # Prevents operator-level memory context from leaking to customers.
+                # Memory tools remain available for legitimate internal use.
+                if platform_key in {'telegram', 'discord', 'slack', 'whatsapp', 'signal', 'matrix'}:
+                    agent._skip_memory_injection = True
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,

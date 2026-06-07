@@ -60,6 +60,8 @@ If the user invokes `Use Act-As`, `Use Comply`, `Use Summary`, `Use Scan Feature
 
 Before saying work is complete, the AI must run or explicitly account for the verification commands, state whether localhost/VPS checks apply, report remaining risk in Thai, and give one recommended next step. Do not claim 100% completion without concrete evidence.
 
+For Hermes Agent repo work, use `hermes work closeout --cwd <worktree> --project hermes-agent --service hermes-dashboard.service --url <verified-url> --remote <remote> --branch <branch> --push --json` when VPS/link/git checks apply. This command is the concrete closeout gate: it checks the git worktree, service state, URL health, and push result before any 100% claim.
+
 ## Development Environment
 
 ```bash

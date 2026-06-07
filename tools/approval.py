@@ -537,6 +537,14 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    # Collapse shell line continuations (backslash-newline). The shell removes
+    # BOTH characters and joins the tokens, so `rm -rf \<newline>/` executes as
+    # `rm -rf /`. This must run BEFORE the generic backslash-escape strip below,
+    # whose [^\n] class deliberately skips newlines and would otherwise leave
+    # the dangling backslash wedged between tokens — defeating the structured
+    # rm/mkfs/dd patterns (notably the HARDLINE root-delete floor, which cannot
+    # be bypassed even with yolo). Handles both \n and \r\n line endings.
+    command = re.sub(r'\\\r?\n', '', command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r""m → rm.

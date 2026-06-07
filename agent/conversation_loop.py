@@ -565,6 +565,12 @@ def run_conversation(
     # Track memory nudge trigger (turn-based, checked here).
     # Skill trigger is checked AFTER the agent loop completes, based on
     # how many tool iterations THIS turn used.
+    # NOTE: do NOT reset _turns_since_memory here even when the threshold is
+    # reached.  The review is only spawned when the turn completes without
+    # interruption (see the guard below).  Resetting the counter early would
+    # swallow a full nudge interval if the turn is interrupted — the review
+    # would be silently skipped and the counter already zeroed.  The reset
+    # is deferred to the spawn site below.
     _should_review_memory = False
     if (agent._memory_nudge_interval > 0
             and "memory" in agent.valid_tool_names
@@ -572,7 +578,6 @@ def run_conversation(
         agent._turns_since_memory += 1
         if agent._turns_since_memory >= agent._memory_nudge_interval:
             _should_review_memory = True
-            agent._turns_since_memory = 0
 
     # Add user message
     user_msg = {"role": "user", "content": user_message}
@@ -4910,8 +4915,15 @@ def run_conversation(
                 review_memory=_should_review_memory,
                 review_skills=_should_review_skills,
             )
+            # Reset the counter only after the review is successfully spawned.
+            # Resetting at threshold-detection time (earlier in this function)
+            # caused the counter to be zeroed even on interrupted turns where
+            # the review was never actually spawned, silently losing one full
+            # nudge interval worth of turns before the next review attempt.
+            if _should_review_memory:
+                agent._turns_since_memory = 0
         except Exception:
-            pass  # Background review is best-effort
+            pass  # Background review is best-effort; counter preserved for retry
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in

@@ -803,7 +803,9 @@ def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optio
     try:
         parsed_result = json.loads(result) if isinstance(result, str) else result
         if isinstance(parsed_result, dict) and parsed_result.get("error"):
-            return "error", "tool_error", str(parsed_result.get("error"))
+            # Use classified error_type if available (from tool_error_classifier)
+            error_type = parsed_result.get("error_type", "tool_error")
+            return "error", str(error_type), str(parsed_result.get("error"))
     except Exception:
         pass
     return "ok", None, None
@@ -1184,7 +1186,19 @@ def handle_function_call(
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
-        return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
+        sanitized = _sanitize_tool_error(error_msg)
+        # Classify the error for smarter recovery guidance
+        try:
+            from agent.tool_error_classifier import classify_tool_error
+            classified = classify_tool_error(str(e), tool_name=function_name, exception=e)
+            return json.dumps({
+                "error": sanitized,
+                "error_type": classified.error_type,
+                "recovery_hint": classified.recovery_hint,
+            }, ensure_ascii=False)
+        except Exception:
+            # Classifier itself failed — fall back to plain error
+            return json.dumps({"error": sanitized}, ensure_ascii=False)
 
 
 # =============================================================================

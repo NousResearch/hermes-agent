@@ -151,10 +151,31 @@ def _is_gateway_approval_context() -> bool:
     return bool(_get_session_platform())
 
 # Sensitive write targets that should trigger approval even when referenced
-# via shell expansions like $HOME or $HERMES_HOME.
+# via shell expansions like $HOME or $HERMES_HOME, or by the resolved absolute
+# active profile home path such as /home/hermes/.hermes/config.yaml.
 _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
+
+
+def _resolved_hermes_home_path_pattern() -> str:
+    try:
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home().expanduser()
+        candidates = [
+            str(home).rstrip("/"),
+            str(home.resolve(strict=False)).rstrip("/"),
+        ]
+    except Exception:
+        candidates = []
+    escaped = [re.escape(path) for path in dict.fromkeys(candidates) if path]
+    if not escaped:
+        return r"(?!)"
+    return r"(?:" + "|".join(escaped) + r")/"
+
+
+_RESOLVED_HERMES_HOME_PATH = _resolved_hermes_home_path_pattern()
 _HERMES_ENV_PATH = (
     r'(?:~\/\.hermes/|'
+    rf'{_RESOLVED_HERMES_HOME_PATH}|'
     r'(?:\$home|\$\{home\})/\.hermes/|'
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'\.env\b'
@@ -169,6 +190,7 @@ _HERMES_ENV_PATH = (
 # well as ~/.hermes/.
 _HERMES_CONFIG_PATH = (
     r'(?:~\/\.hermes/|'
+    rf'{_RESOLVED_HERMES_HOME_PATH}|'
     r'(?:\$home|\$\{home\})/\.hermes/|'
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'config\.yaml\b'

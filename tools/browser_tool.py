@@ -66,7 +66,7 @@ from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
-from utils import is_truthy_value
+from utils import env_int, is_truthy_value
 from hermes_cli.config import cfg_get
 
 try:
@@ -1178,7 +1178,7 @@ _cleanup_done = False
 # Session inactivity timeout (seconds) - cleanup if no activity for this long
 # Default: 5 minutes. Needs headroom for LLM reasoning between browser commands,
 # especially when subagents are doing multi-step browser tasks.
-BROWSER_SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "300"))
+BROWSER_SESSION_INACTIVITY_TIMEOUT = env_int("BROWSER_INACTIVITY_TIMEOUT", 300)
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}

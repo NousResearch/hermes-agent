@@ -2295,6 +2295,13 @@ class GatewayStreamConsumer:
                     self._use_native_streaming = False
 
         if self._use_native_streaming:
+            # For WeCom native streaming: segment breaks should NOT finalize
+            # the stream. WeCom renders each finalize as a separate message bubble.
+            # Only turn-final (got_done) and approval boundary should close the stream.
+            # Tool boundary segment breaks just continue accumulating in the same stream.
+            if finalize and not is_turn_final:
+                finalize = False
+
             _MIN_NEW_VISIBLE_CHARS = 60
             new_visible_chars = len(text) - self._native_last_pushed_len
             if (

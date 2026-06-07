@@ -1909,7 +1909,24 @@ class WeComAdapter(BasePlatformAdapter):
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
             if reply_req_id:
-                response = await self._send_reply_markdown(reply_req_id, content)
+                try:
+                    response = await self._send_reply_markdown(reply_req_id, content)
+                except (asyncio.TimeoutError, RuntimeError) as passive_err:
+                    # Passive reply failed (req_id may be stale after WS reconnect).
+                    # Fall back to proactive aibot_send_msg which doesn't depend
+                    # on any prior req_id.
+                    logger.warning(
+                        "[%s] Passive reply failed (%s), falling back to proactive send",
+                        self.name, passive_err,
+                    )
+                    response = await self._send_request(
+                        APP_CMD_SEND,
+                        {
+                            "chatid": chat_id,
+                            "msgtype": "markdown",
+                            "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
+                        },
+                    )
             else:
                 response = await self._send_request(
                     APP_CMD_SEND,

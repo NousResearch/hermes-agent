@@ -6,10 +6,12 @@ import {
   ChevronRight,
   Clock3,
   Columns2,
+  Copy,
   Edit3,
   Eye,
   FileText,
   Folder,
+  FolderOpen,
   GitBranch,
   Link as LinkIcon,
   ListTree,
@@ -135,6 +137,7 @@ export default function KnowledgePage() {
   const [backlinks, setBacklinks] = useState<KnowledgeBacklinkItem[]>([]);
   const [graph, setGraph] = useState<KnowledgeGraphResponse | null>(null);
   const [query, setQuery] = useState("");
+  const [searchedQuery, setSearchedQuery] = useState("");
   const [results, setResults] = useState<KnowledgeSearchItem[]>([]);
   const [recentNotes, setRecentNotes] = useState<StoredNote[]>(() => readStoredNotes(RECENT_STORAGE_KEY));
   const [pinnedNotes, setPinnedNotes] = useState<StoredNote[]>(() => readStoredNotes(PINNED_STORAGE_KEY));
@@ -145,6 +148,7 @@ export default function KnowledgePage() {
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [fileLoading, setFileLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -170,6 +174,8 @@ export default function KnowledgePage() {
     () => Object.entries(selectedFile?.frontmatter ?? {}),
     [selectedFile?.frontmatter],
   );
+  const writeStatusLabel = writeEnabled ? "WRITE ENABLED" : "READ ONLY";
+  const searchEmpty = Boolean(searchedQuery && !searching && results.length === 0);
 
   const loadTree = useCallback((path: string) => {
     setLoading(true);
@@ -211,6 +217,7 @@ export default function KnowledgePage() {
           url.searchParams.set("note", file.path);
           window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
         }
+        void loadTree(parentPath(file.path));
         return Promise.all([
           api.getKnowledgeBacklinks(file.path).then((resp) => setBacklinks(resp.items)),
           api.getKnowledgeGraph(file.path).then(setGraph),
@@ -218,15 +225,16 @@ export default function KnowledgePage() {
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setFileLoading(false));
-  }, []);
+  }, [loadTree]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadStatus();
-      void loadTree(ROOT_PATH);
       const initialNote = new URLSearchParams(window.location.search).get("note");
       if (initialNote) {
         openFile(initialNote, { syncUrl: false });
+      } else {
+        void loadTree(ROOT_PATH);
       }
     }, 0);
     return () => window.clearTimeout(timer);
@@ -248,17 +256,21 @@ export default function KnowledgePage() {
   const onSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const term = query.trim();
+    setSearchedQuery(term);
     if (!term) {
       setResults([]);
       return;
     }
-    setLoading(true);
+    setSearching(true);
     setError(null);
     api
       .searchKnowledge(term)
       .then((resp) => setResults(resp.items))
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        setResults([]);
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => setSearching(false));
   };
 
   const openLinkedNote = (link: string) => {
@@ -284,6 +296,25 @@ export default function KnowledgePage() {
     setRecentNotes([]);
     writeStoredNotes(RECENT_STORAGE_KEY, []);
   };
+
+  const clearSearch = () => {
+    setQuery("");
+    setSearchedQuery("");
+    setResults([]);
+  };
+
+  const copySelectedPath = useCallback(() => {
+    if (!selectedFile) return;
+    const text = selectedFile.path;
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard
+        .writeText(text)
+        .then(() => setSaveMessage("Path copied"))
+        .catch(() => setSaveMessage(text));
+      return;
+    }
+    setSaveMessage(text);
+  }, [selectedFile]);
 
   const closeTab = (path: string) => {
     setOpenTabs((current) => current.filter((note) => note.path !== path));
@@ -336,9 +367,9 @@ export default function KnowledgePage() {
 
       <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <Badge tone="success" className="gap-1 text-[10px]">
+          <Badge tone={writeEnabled ? "warning" : "success"} className="gap-1 text-[10px]">
             <ShieldCheck className="h-3 w-3" />
-            READ ONLY
+            {writeStatusLabel}
           </Badge>
           {status ? (
             <Badge tone="secondary" className="max-w-full truncate text-[10px]">
@@ -360,10 +391,15 @@ export default function KnowledgePage() {
             placeholder="Search vault"
             className="min-w-0"
           />
-          <Button type="submit" size="sm" className="shrink-0 gap-2" disabled={loading}>
-            {loading ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
+          <Button type="submit" size="sm" className="shrink-0 gap-2" disabled={searching}>
+            {searching ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
             Search
           </Button>
+          {(searchedQuery || results.length > 0) ? (
+            <Button type="button" ghost size="icon" onClick={clearSearch} aria-label="Clear search">
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          ) : null}
         </form>
       </div>
 
@@ -405,6 +441,9 @@ export default function KnowledgePage() {
                 <span className="min-w-0 truncate normal-case">{item.name}</span>
               </button>
             ))}
+            {!loading && directoryItems.length === 0 && fileItems.length === 0 ? (
+              <EmptyLine label="No notes in this folder" />
+            ) : null}
           </div>
         </aside>
 
@@ -416,6 +455,15 @@ export default function KnowledgePage() {
             </div>
             {selectedFile ? (
               <div className="ml-auto flex shrink-0 items-center gap-1">
+                <Button ghost size="icon" onClick={() => void loadTree(parentPath(selectedFile.path))} aria-label="Open parent folder">
+                  <FolderOpen className="h-3.5 w-3.5" />
+                </Button>
+                <Button ghost size="icon" onClick={() => openFile(selectedFile.path)} aria-label="Reload note">
+                  <RefreshCw className="h-3.5 w-3.5" />
+                </Button>
+                <Button ghost size="icon" onClick={copySelectedPath} aria-label="Copy note path">
+                  <Copy className="h-3.5 w-3.5" />
+                </Button>
                 <ModeButton active={viewMode === "preview"} label="Preview" onClick={() => setViewMode("preview")} icon={Eye} />
                 <ModeButton active={viewMode === "edit"} label="Edit" onClick={() => setViewMode("edit")} icon={Edit3} />
                 <ModeButton active={viewMode === "split"} label="Split" onClick={() => setViewMode("split")} icon={Columns2} />
@@ -530,9 +578,9 @@ export default function KnowledgePage() {
             </section>
           ) : null}
 
-          {results.length > 0 ? (
+          {results.length > 0 || searchedQuery ? (
             <section className="border border-current/20 bg-background-base/35">
-              <PanelHeader icon={Search} title="Search results" meta={`${results.length}`} />
+              <PanelHeader icon={Search} title="Search results" meta={`${results.length}`} action={clearSearch} />
               <div className="max-h-64 overflow-auto p-2">
                 {results.map((item) => (
                   <SideButton
@@ -543,6 +591,7 @@ export default function KnowledgePage() {
                     onClick={() => openFile(item.path)}
                   />
                 ))}
+                {searchEmpty ? <EmptyLine label={`No results for ${searchedQuery}`} /> : null}
               </div>
             </section>
           ) : null}

@@ -35,6 +35,10 @@ IDEMPOTENT_TOOL_NAMES = frozenset(
         "mcp_filesystem_directory_tree",
         "mcp_filesystem_get_file_info",
         "mcp_filesystem_search_files",
+        "honcho_profile",
+        "honcho_search",
+        "honcho_reasoning",
+        "honcho_context",
     }
 )
 
@@ -77,6 +81,8 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    consecutive_call_warn_after: int = 3
+    consecutive_call_block_after: int = 6
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -109,6 +115,10 @@ class ToolCallGuardrailConfig:
                 warn_after.get("idempotent_no_progress", data.get("no_progress_warn_after")),
                 defaults.no_progress_warn_after,
             ),
+            consecutive_call_warn_after=_positive_int(
+                warn_after.get("consecutive_call", data.get("consecutive_call_warn_after")),
+                defaults.consecutive_call_warn_after,
+            ),
             exact_failure_block_after=_positive_int(
                 hard_stop_after.get("exact_failure", data.get("exact_failure_block_after")),
                 defaults.exact_failure_block_after,
@@ -120,6 +130,10 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            consecutive_call_block_after=_positive_int(
+                hard_stop_after.get("consecutive_call", data.get("consecutive_call_block_after")),
+                defaults.consecutive_call_block_after,
             ),
         )
 
@@ -232,6 +246,8 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._consecutive_signature: ToolCallSignature | None = None
+        self._consecutive_count: int = 0
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -240,8 +256,33 @@ class ToolCallGuardrailController:
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+
+        if signature == self._consecutive_signature:
+            self._consecutive_count += 1
+        else:
+            self._consecutive_signature = signature
+            self._consecutive_count = 1
+        consecutive_count = self._consecutive_count
+
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+
+        if consecutive_count >= self.config.consecutive_call_block_after:
+            decision = ToolGuardrailDecision(
+                action="block",
+                code="consecutive_identical_call_block",
+                message=(
+                    f"Blocked {tool_name}: called with identical arguments "
+                    f"{consecutive_count} times in a row, regardless of what each "
+                    "call returned. The pattern itself is the problem — stop "
+                    "repeating this call; change strategy or explain the blocker."
+                ),
+                tool_name=tool_name,
+                count=consecutive_count,
+                signature=signature,
+            )
+            self._halt_decision = decision
+            return decision
 
         exact_count = self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
@@ -294,6 +335,26 @@ class ToolCallGuardrailController:
         signature = ToolCallSignature.from_call(tool_name, args)
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
+
+        if (
+            self.config.warnings_enabled
+            and signature == self._consecutive_signature
+            and self._consecutive_count >= self.config.consecutive_call_warn_after
+            and self._consecutive_count < self.config.consecutive_call_block_after
+        ):
+            return ToolGuardrailDecision(
+                action="warn",
+                code="consecutive_identical_call_warning",
+                message=(
+                    f"{tool_name} has been called with identical arguments "
+                    f"{self._consecutive_count} times in a row. Whether or not the "
+                    "results differ, this looks like a loop — use what you already "
+                    "have or change your approach."
+                ),
+                tool_name=tool_name,
+                count=self._consecutive_count,
+                signature=signature,
+            )
 
         if failed:
             exact_count = self._exact_failure_counts.get(signature, 0) + 1

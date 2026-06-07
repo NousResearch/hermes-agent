@@ -1566,6 +1566,97 @@ class TestCuaDriverSessionReconnect:
         assert "7 elements" in out["data"]
 
 
+class TestCaptureEmptyResultClipFallback:
+    """When the MCP bridge returns a degenerate/empty get_window_state result
+    (no screenshot, no parseable tree) WITHOUT raising, capture() must re-fetch
+    over the CLI transport rather than surfacing a silent 0x0 capture."""
+
+    def test_capture_refetches_via_cli_on_empty_gws(self):
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        windows = [{
+            "app_name": "Finder", "pid": 1208, "window_id": 1500,
+            "is_on_screen": True, "z_index": 0, "title": "Desktop",
+        }]
+
+        # A valid 1x1 PNG, base64-encoded.
+        png = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+               b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00"
+               b"\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+        png_b64 = base64.b64encode(png).decode("ascii")
+
+        backend = CuaDriverBackend()
+        sess = MagicMock()
+
+        # MCP path: list_windows OK, but get_window_state returns EMPTY (no
+        # images, blank data) — the silent-failure mode.
+        def mcp_call(name, args, timeout=30.0):
+            if name == "list_windows":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": {"windows": windows}}
+            if name == "get_window_state":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": None}
+            return {"data": "", "images": [], "isError": False, "structuredContent": None}
+        sess.call_tool.side_effect = mcp_call
+
+        # CLI re-fetch returns a real screenshot + tree.
+        cli_calls = []
+        def cli_call(name, args, timeout):
+            cli_calls.append(name)
+            return {"data": "5 elements\n- [0] AXButton 'OK'", "images": [png_b64],
+                    "structuredContent": {"element_count": 5}, "isError": False}
+        sess._call_tool_via_cli.side_effect = cli_call
+
+        backend._session = cast(Any, sess)
+        cap = backend.capture(mode="som", app="Finder")
+
+        # The empty MCP gws result triggered a CLI re-fetch that supplied the PNG.
+        assert "get_window_state" in cli_calls
+        assert cap.png_b64 == png_b64
+        assert cap.width == 1 and cap.height == 1
+        assert len(cap.elements) >= 1
+
+    def test_capture_refetches_windows_via_cli_when_mcp_empty(self):
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        windows = [{
+            "app_name": "Finder", "pid": 1208, "window_id": 1500,
+            "is_on_screen": True, "z_index": 0, "title": "Desktop",
+        }]
+        backend = CuaDriverBackend()
+        sess = MagicMock()
+
+        # MCP list_windows returns NO windows (flaky session); gws would work but
+        # we never reach it unless the window list is recovered via CLI.
+        def mcp_call(name, args, timeout=30.0):
+            if name == "list_windows":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": {"windows": []}}
+            return {"data": "3 elements\n- [0] AXButton", "images": [], "isError": False,
+                    "structuredContent": None}
+        sess.call_tool.side_effect = mcp_call
+
+        cli_calls = []
+        def cli_call(name, args, timeout):
+            cli_calls.append(name)
+            if name == "list_windows":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": {"windows": windows}}
+            return {"data": "3 elements\n- [0] AXButton", "images": [], "isError": False,
+                    "structuredContent": None}
+        sess._call_tool_via_cli.side_effect = cli_call
+
+        backend._session = cast(Any, sess)
+        cap = backend.capture(mode="ax", app="Finder")
+
+        # CLI recovered the window list; capture resolved the Finder window.
+        assert "list_windows" in cli_calls
+        assert cap.app == "Finder"
+
+
 class TestCaptureAppFilterNoMatch:
     """capture(app=X) must not silently fall back to the frontmost window
     when X matches nothing — on a non-English macOS, list_windows returns

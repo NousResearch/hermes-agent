@@ -1235,10 +1235,33 @@ class CuaDriverBackend(ComputerUseBackend):
             "list_windows",
             {"on_screen_only": True, "session": self._session_id},
         )
-        raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = _ingest_windows(raw_windows)
-        # Sort by z_index descending (lowest z_index = frontmost on macOS).
-        windows.sort(key=lambda w: w["z_index"])
+
+        def _windows_from(out: Dict[str, Any]) -> List[Dict[str, Any]]:
+            raw_ = (out.get("structuredContent") or {}).get("windows") or []
+            wins_ = _ingest_windows(raw_)
+            # Sort by z_index descending (lowest z_index = frontmost on macOS).
+            wins_.sort(key=lambda w: w["z_index"])
+            return wins_
+
+        windows = _windows_from(lw_out)
+
+        # If the MCP bridge returned an empty/degenerate window list (flaky
+        # session), re-fetch over the CLI transport before giving up — otherwise
+        # the caller sees a silent 0x0 capture even though windows exist.
+        if not windows:
+            logger.warning(
+                "cua-driver list_windows returned no windows over MCP; "
+                "re-fetching via CLI transport",
+            )
+            try:
+                cli_lw = self._session._call_tool_via_cli(
+                    "list_windows",
+                    {"on_screen_only": True, "session": self._session_id},
+                    20.0,
+                )
+                windows = _windows_from(cli_lw)
+            except Exception as cli_exc:
+                logger.error("cua-driver CLI re-fetch for list_windows failed: %s", cli_exc)
 
         if not windows:
             return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
@@ -1374,6 +1397,33 @@ class CuaDriverBackend(ComputerUseBackend):
                 wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
                 if wt:
                     window_title = wt.group(1)
+
+            if not png_b64:
+                # Both MCP attempts came back imageless without raising (flaky
+                # bridge dropping the heavy payload) — re-fetch the window
+                # state over the CLI transport, which embeds a screenshot.
+                logger.warning(
+                    "cua-driver vision capture returned no image over MCP "
+                    "(window_id=%s); re-fetching via CLI transport",
+                    self._active_window_id,
+                )
+                try:
+                    cli_out = self._session._call_tool_via_cli(
+                        "get_window_state",
+                        {
+                            "pid": self._active_pid,
+                            "window_id": self._active_window_id,
+                            "session": self._session_id,
+                        },
+                        30.0,
+                    )
+                    if cli_out.get("images"):
+                        png_b64 = cli_out["images"][0]
+                        image_mime_type = "image/png"
+                except Exception as cli_exc:
+                    logger.error(
+                        "cua-driver CLI re-fetch for vision screenshot failed: %s", cli_exc,
+                    )
         else:
             # get_window_state: AX tree + screenshot.
             gws_out = self._session.call_tool(
@@ -1384,6 +1434,51 @@ class CuaDriverBackend(ComputerUseBackend):
                     "session": self._session_id,
                 },
             )
+            # The persistent MCP session can return a degenerate result —
+            # empty/partial data with NO exception — when the bridge is flaky
+            # (e.g. it reconnected mid-call and dropped the heavy
+            # get_window_state payload). That surfaces to the model as a silent
+            # 0x0 capture. Detect "no screenshot AND no parseable tree" and
+            # force a one-shot CLI-transport re-fetch, which talks to the daemon
+            # over a different socket and returns the full result. This is
+            # distinct from the EAGAIN McpError path (handled in call_tool);
+            # here the MCP call "succeeded" but gave us nothing usable.
+            def _gws_is_empty(out: Dict[str, Any]) -> bool:
+                if out.get("images"):
+                    return False
+                sc_ = out.get("structuredContent") or {}
+                # Modern drivers carry the payload in structuredContent
+                # (elements array / embedded screenshot) with no markdown
+                # tree — that is NOT an empty result.
+                if sc_.get("elements") or sc_.get("screenshot_png_b64"):
+                    return False
+                txt = out.get("data") if isinstance(out.get("data"), str) else ""
+                _, tr = _split_tree_text(txt or "")
+                return not (tr and tr.strip())
+
+            if _gws_is_empty(gws_out):
+                logger.warning(
+                    "cua-driver get_window_state returned an empty result over MCP "
+                    "(pid=%s window_id=%s); re-fetching via CLI transport",
+                    self._active_pid, self._active_window_id,
+                )
+                try:
+                    cli_out = self._session._call_tool_via_cli(
+                        "get_window_state",
+                        {
+                            "pid": self._active_pid,
+                            "window_id": self._active_window_id,
+                            "session": self._session_id,
+                        },
+                        30.0,
+                    )
+                    if not _gws_is_empty(cli_out):
+                        gws_out = cli_out
+                except Exception as cli_exc:
+                    logger.error(
+                        "cua-driver CLI re-fetch for get_window_state failed: %s", cli_exc,
+                    )
+
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)
 

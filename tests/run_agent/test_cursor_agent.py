@@ -186,3 +186,22 @@ def test_run_cursor_turn_passes_agent_interrupt_event(monkeypatch):
     )
 
     assert captured["interrupt_event"] is interrupt_event
+
+
+def test_cursor_agent_transport_normalize_response():
+    from agent.transports import get_transport
+
+    transport = get_transport("cursor_agent")
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content="CURSOR_OK", tool_calls=None),
+            )
+        ],
+        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+    )
+    nr = transport.normalize_response(response)
+    assert nr.content == "CURSOR_OK"
+    assert nr.finish_reason == "stop"
+    assert nr.tool_calls is None

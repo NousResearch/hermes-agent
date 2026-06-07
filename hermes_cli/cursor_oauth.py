@@ -29,12 +29,13 @@ def generate_cursor_auth_params() -> Dict[str, str]:
     verifier = _b64url_no_padding(secrets.token_bytes(32))
     challenge = _b64url_no_padding(hashlib.sha256(verifier.encode("utf-8")).digest())
     auth_uuid = str(uuid.uuid4())
-    login_url = f"{CURSOR_LOGIN_URL}?{urlencode({
-        'challenge': challenge,
-        'uuid': auth_uuid,
-        'mode': 'login',
-        'redirectTarget': 'cli',
-    })}"
+    query = urlencode({
+        "challenge": challenge,
+        "uuid": auth_uuid,
+        "mode": "login",
+        "redirectTarget": "cli",
+    })
+    login_url = f"{CURSOR_LOGIN_URL}?{query}"
     return {
         "verifier": verifier,
         "challenge": challenge,

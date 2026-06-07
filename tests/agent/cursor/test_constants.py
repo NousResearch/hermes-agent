@@ -9,6 +9,15 @@ from agent.cursor import (
 )
 
 
+from agent.cursor.constants import normalize_cursor_model_id
+
+
+def test_normalize_cursor_model_id_maps_legacy_composer_names() -> None:
+    assert normalize_cursor_model_id("cursor-composer-2.5") == "composer-2.5"
+    assert normalize_cursor_model_id("composer-2.5") == "composer-2.5"
+    assert normalize_cursor_model_id("claude-4.6-opus-high") == "claude-4.6-opus-high"
+
+
 def test_cursor_constants_exist() -> None:
     assert CURSOR_API_URL == "https://api2.cursor.sh"
     assert CURSOR_CLIENT_VERSION == "cli-2026.01.09-231024f"

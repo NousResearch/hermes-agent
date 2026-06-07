@@ -213,10 +213,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "openai-codex": _codex_curated_models(),
     "cursor": [
+        "default",
+        "composer-2.5",
         "claude-4.6-opus-high",
         "claude-4.5-sonnet",
-        "gpt-5.4",
-        "cursor-composer-2.5",
+        "gpt-5.4-medium",
     ],
     "xai-oauth": _xai_curated_models(),
     "copilot-acp": [
@@ -2105,6 +2106,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "xai-oauth":
         return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
     if normalized == "cursor":
+        try:
+            from hermes_cli.auth import resolve_cursor_runtime_credentials
+            from providers import get_provider_profile
+
+            creds = resolve_cursor_runtime_credentials(refresh_if_expiring=True)
+            api_key = str(creds.get("api_key") or "").strip()
+            profile = get_provider_profile("cursor")
+            if profile and api_key:
+                live = profile.fetch_models(api_key=api_key)
+                if live:
+                    return live
+        except Exception:
+            pass
         return list(_PROVIDER_MODELS.get("cursor", []))
     if normalized in {"copilot", "copilot-acp"}:
         try:

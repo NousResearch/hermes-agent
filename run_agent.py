@@ -1133,6 +1133,10 @@ class AIAgent:
             return float("inf")
 
         from agent.chat_completion_helpers import estimate_request_context_tokens
+        if getattr(self, "api_mode", None) == "cursor_agent":
+            # Cursor Agent API turns include HTTP/2 exec/KV roundtrips that can
+            # exceed the default 90s stale threshold, especially with tools.
+            return max(stale_base, 300.0)
         est_tokens = estimate_request_context_tokens(api_payload)
         if est_tokens > 100_000:
             return max(stale_base, 240.0)

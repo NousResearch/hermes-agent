@@ -11,6 +11,7 @@ import hashlib
 import json
 import uuid
 
+from agent.cursor.constants import normalize_cursor_model_id
 from agent.cursor.proto import agent_pb2
 
 
@@ -276,6 +277,19 @@ def build_mcp_tool_definitions(tools: list[dict] | None) -> list[dict]:
     return definitions
 
 
+def encode_tool_input_schema(schema: dict | None) -> bytes:
+    """Serialize a JSON Schema dict as protobuf ``google.protobuf.Value`` bytes."""
+    from google.protobuf import json_format
+    from google.protobuf import struct_pb2
+
+    value = struct_pb2.Value()
+    json_format.ParseDict(
+        schema or {"type": "object", "properties": {}, "required": []},
+        value,
+    )
+    return value.SerializeToString()
+
+
 def build_grpc_request(
     *,
     messages: list[dict],
@@ -286,6 +300,7 @@ def build_grpc_request(
     cached_conversation_state: agent_pb2.ConversationStateStructure | None = None,
     custom_system_prompt: str | None = None,
 ) -> tuple[bytes, agent_pb2.ConversationStateStructure, dict[str, bytes]]:
+    model_id = normalize_cursor_model_id(model_id)
     blob_store: dict[str, bytes] = {}
 
     system_prompt_ids = [
@@ -347,8 +362,9 @@ def build_grpc_request(
             display_name=model_id,
         ),
         conversation_id=conversation_id,
-        custom_system_prompt=custom_system_prompt or "",
     )
+    if custom_system_prompt:
+        run_request.custom_system_prompt = custom_system_prompt
     client_message = agent_pb2.AgentClientMessage(run_request=run_request)
     return client_message.SerializeToString(), conversation_state, blob_store
 

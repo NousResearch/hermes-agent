@@ -543,6 +543,30 @@ class TestResolveProviderClientUniversalModelFallback:
         # string the caller passed.
         assert mock_build.call_args.args[0] == "grok-4.3"
 
+    def test_empty_model_for_cursor_falls_back_to_main_model(self):
+        """cursor: no catalog default required — uses main model like xai-oauth."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        with (
+            patch(
+                "agent.auxiliary_client._read_main_model",
+                return_value="claude-4-sonnet",
+            ),
+            patch(
+                "agent.auxiliary_client._get_aux_model_for_provider",
+                return_value="",
+            ),
+            patch(
+                "agent.auxiliary_client._build_cursor_aux_client",
+                return_value=(MagicMock(), "claude-4-sonnet"),
+            ) as mock_build,
+        ):
+            client, model = resolve_provider_client("cursor", "")
+
+        assert client is not None
+        assert model == "claude-4-sonnet"
+        assert mock_build.call_args.args[0] == "claude-4-sonnet"
+
     def test_empty_model_for_codex_also_uses_main_model(self):
         """openai-codex: symmetric with xai-oauth — same universal fallback."""
         from agent.auxiliary_client import resolve_provider_client

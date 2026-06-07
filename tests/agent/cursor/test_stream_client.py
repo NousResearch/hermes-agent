@@ -270,3 +270,71 @@ def test_encode_client_message_wraps_proto_bytes():
     parsed = agent_pb2.AgentClientMessage()
     parsed.ParseFromString(payload)
     assert parsed.WhichOneof("message") == "client_heartbeat"
+
+
+def test_consume_connect_stream_responds_to_kv_set_blob_requests():
+    blob_id = b"\x03" * 32
+    writes: list[bytes] = []
+    frames = [
+        _server_frame(
+            agent_pb2.AgentServerMessage(
+                kv_server_message=agent_pb2.KvServerMessage(
+                    id=9,
+                    set_blob_args=agent_pb2.SetBlobArgs(
+                        blob_id=blob_id,
+                        blob_data=b"stored-by-server",
+                    ),
+                )
+            )
+        ),
+        _interaction_frame(turn_ended=agent_pb2.TurnEndedUpdate()),
+    ]
+    blob_store: dict[str, bytes] = {}
+
+    _consume_connect_stream(
+        frames,
+        blob_store=blob_store,
+        request_context_tools=[],
+        send_client_frame=writes.append,
+    )
+
+    assert blob_store[blob_id.hex()] == b"stored-by-server"
+    assert writes
+    _, payload = list(parse_connect_frames(bytearray(writes[0])))[0]
+    client_message = agent_pb2.AgentClientMessage()
+    client_message.ParseFromString(payload)
+    assert client_message.WhichOneof("message") == "kv_client_message"
+    assert client_message.kv_client_message.id == 9
+    assert client_message.kv_client_message.WhichOneof("message") == "set_blob_result"
+
+
+def test_consume_connect_stream_responds_to_list_mcp_resources_exec():
+    writes: list[bytes] = []
+    frames = [
+        _server_frame(
+            agent_pb2.AgentServerMessage(
+                exec_server_message=agent_pb2.ExecServerMessage(
+                    id=11,
+                    exec_id="exec-mcp-list",
+                    list_mcp_resources_exec_args=agent_pb2.ListMcpResourcesExecArgs(),
+                )
+            )
+        ),
+        _interaction_frame(turn_ended=agent_pb2.TurnEndedUpdate()),
+    ]
+
+    _consume_connect_stream(
+        frames,
+        blob_store={},
+        request_context_tools=[],
+        send_client_frame=writes.append,
+    )
+
+    _, payload = list(parse_connect_frames(bytearray(writes[0])))[0]
+    client_message = agent_pb2.AgentClientMessage()
+    client_message.ParseFromString(payload)
+    exec_message = client_message.exec_client_message
+    assert exec_message.id == 11
+    assert (
+        exec_message.list_mcp_resources_exec_result.WhichOneof("result") == "success"
+    )

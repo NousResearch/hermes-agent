@@ -21,10 +21,15 @@ from agent.cursor.constants import (
     CURSOR_AGENT_RUN_PATH,
     CURSOR_API_URL,
     CURSOR_CLIENT_VERSION,
+    normalize_cursor_model_id,
 )
 from agent.cursor.exec_handlers import CursorExecHandlers
 from agent.cursor.proto import agent_pb2
-from agent.cursor.request_builder import build_mcp_tool_definitions, build_run_request_bytes
+from agent.cursor.request_builder import (
+    build_mcp_tool_definitions,
+    build_run_request_bytes,
+    encode_tool_input_schema,
+)
 
 
 ToolHandler = Callable[[Any], Any]
@@ -104,12 +109,15 @@ def _build_request_context_result(
 
 def _build_rejected_exec_message(
     exec_msg: agent_pb2.ExecServerMessage,
+    request_context_tools: list[agent_pb2.McpToolDefinition] | None = None,
 ) -> agent_pb2.ExecClientMessage:
     message_case = exec_msg.WhichOneof("message")
     client = agent_pb2.ExecClientMessage(id=exec_msg.id, exec_id=exec_msg.exec_id)
 
     if message_case == "request_context_args":
-        client.request_context_result.CopyFrom(_build_request_context_result())
+        client.request_context_result.CopyFrom(
+            _build_request_context_result(request_context_tools)
+        )
         return client
 
     if message_case == "read_args":
@@ -148,6 +156,23 @@ def _build_rejected_exec_message(
     elif message_case == "mcp_args":
         client.mcp_result.rejected.reason = "Tool not available"
         client.mcp_result.rejected.is_readonly = False
+    elif message_case == "ls_args":
+        client.ls_result.rejected.path = exec_msg.ls_args.path
+        client.ls_result.rejected.reason = "Tool not available"
+    elif message_case == "grep_args":
+        client.grep_result.rejected.reason = "Tool not available"
+    elif message_case == "list_mcp_resources_exec_args":
+        client.list_mcp_resources_exec_result.success.CopyFrom(
+            agent_pb2.ListMcpResourcesSuccess(resources=[])
+        )
+    elif message_case == "read_mcp_resource_exec_args":
+        client.read_mcp_resource_exec_result.not_found.uri = (
+            exec_msg.read_mcp_resource_exec_args.uri
+        )
+    elif message_case == "record_screen_args":
+        client.record_screen_result.failure.error = "Not implemented"
+    elif message_case == "computer_use_args":
+        client.computer_use_result.error.error = "Not implemented"
     else:
         return client
 
@@ -166,10 +191,13 @@ def _build_kv_response(
         blob_data = blob_store.get(blob_id.hex())
         if blob_data is not None:
             client.get_blob_result.blob_data = blob_data
+        else:
+            client.get_blob_result.CopyFrom(agent_pb2.GetBlobResult())
         return client
 
     if message_case == "set_blob_args":
         blob_store[kv_msg.set_blob_args.blob_id.hex()] = kv_msg.set_blob_args.blob_data
+        client.set_blob_result.CopyFrom(agent_pb2.SetBlobResult())
         return client
 
     return client
@@ -179,7 +207,7 @@ def _default_exec_handler(
     exec_msg: agent_pb2.ExecServerMessage,
     request_context_tools: list[agent_pb2.McpToolDefinition],
 ) -> agent_pb2.ExecClientMessage:
-    client = _build_rejected_exec_message(exec_msg)
+    client = _build_rejected_exec_message(exec_msg, request_context_tools)
     if exec_msg.WhichOneof("message") == "request_context_args":
         client.request_context_result.CopyFrom(
             _build_request_context_result(request_context_tools)
@@ -427,6 +455,11 @@ def _process_connect_payload(
             text_parts.append(delta)
             if on_text_delta:
                 on_text_delta(delta)
+        elif update_case == "thinking_delta":
+            delta = update.thinking_delta.text
+            text_parts.append(delta)
+            if on_text_delta:
+                on_text_delta(delta)
         elif update_case == "tool_call_started":
             started = update.tool_call_started
             tool_call = started.tool_call
@@ -494,7 +527,7 @@ def _process_connect_payload(
         elif update_case == "token_delta":
             saw_token_delta = True
             completion_tokens += update.token_delta.tokens
-        elif update_case == "turn_ended":
+        elif update_case in {"turn_ended", "step_completed"}:
             finish_reason = "tool_calls" if tool_calls else "stop"
             turn_ended = True
     elif message_case == "conversation_checkpoint_update":
@@ -530,6 +563,7 @@ def _build_stream_state() -> dict[str, Any]:
         "saw_token_delta": False,
         "completion_tokens": 0,
         "finish_reason": "stop",
+        "turn_completed": False,
     }
 
 
@@ -563,6 +597,8 @@ def _apply_connect_payload(
         completion_tokens=state["completion_tokens"],
         finish_reason=state["finish_reason"],
     )
+    if turn_ended:
+        state["turn_completed"] = True
     return turn_ended
 
 
@@ -599,7 +635,7 @@ def _consume_connect_stream(
         for flags, payload in parse_connect_frames(bytearray(frame_bytes)):
             if flags & CONNECT_END_STREAM_FLAG:
                 error = parse_connect_end_stream(payload)
-                if error:
+                if error and not state.get("turn_completed"):
                     raise error
                 continue
             turn_ended = _apply_connect_payload(
@@ -642,6 +678,8 @@ def run_cursor_agent_turn(
     if blob_store is None:
         blob_store = {}
 
+    model_id = normalize_cursor_model_id(model_id)
+
     request_bytes, next_conversation_state, blob_store = build_run_request_bytes(
         messages=messages,
         system_prompt=system_prompt,
@@ -661,7 +699,7 @@ def run_cursor_agent_turn(
                 description=tool_def["description"],
                 provider_identifier=tool_def["providerIdentifier"],
                 tool_name=tool_def["toolName"],
-                input_schema=json.dumps(tool_def["inputSchema"]).encode("utf-8"),
+                input_schema=encode_tool_input_schema(tool_def["inputSchema"]),
             )
         )
 
@@ -717,7 +755,12 @@ def run_cursor_agent_turn(
     try:
         sock = __import__("socket").create_connection((host, port))
         context = ssl.create_default_context()
+        context.set_alpn_protocols(["h2"])
         ssl_sock = context.wrap_socket(sock, server_hostname=host)
+        if ssl_sock.selected_alpn_protocol() != "h2":
+            raise RuntimeError(
+                "Cursor Agent API requires HTTP/2, but TLS ALPN did not negotiate h2"
+            )
 
         connection.initiate_connection()
         with send_lock:
@@ -792,7 +835,9 @@ def run_cursor_agent_turn(
                     for flags, payload in parse_connect_frames(read_buffer):
                         if flags & CONNECT_END_STREAM_FLAG:
                             error = parse_connect_end_stream(payload)
-                            if error:
+                            if error and not (
+                                stream_ended or stream_state.get("turn_completed")
+                            ):
                                 raise error
                             continue
                         turn_ended = _apply_connect_payload(

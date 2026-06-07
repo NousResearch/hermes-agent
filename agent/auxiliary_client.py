@@ -159,6 +159,8 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    "cursor-agent": "cursor",
+    "cursor_subscription": "cursor",
 }
 
 
@@ -266,7 +268,7 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "kimi-coding-cn": "kimi-k2-turbo-preview",
     "gmi": "google/gemini-3.1-flash-lite-preview",
     "anthropic": "claude-haiku-4-5-20251001",
-    "cursor": "cursor-composer-2.5",
+    "cursor": "composer-2.5",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
@@ -1092,6 +1094,108 @@ class AsyncAnthropicAuxiliaryClient:
         self._real_client = sync_wrapper._real_client
 
 
+class _CursorCompletionsAdapter:
+    """OpenAI-client-compatible adapter for the Cursor Agent API."""
+
+    def __init__(self, api_key: str, model: str, base_url: str):
+        self._api_key = api_key
+        self._model = model
+        self._base_url = base_url
+
+    def create(self, **kwargs) -> Any:
+        import uuid
+
+        from agent.cursor.stream_client import run_cursor_agent_turn
+
+        system_prompt: list[str] = []
+        messages: list[dict[str, Any]] = []
+        for msg in kwargs.get("messages") or []:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role == "system":
+                if isinstance(content, str) and content.strip():
+                    system_prompt.append(content)
+                continue
+            if role in {"user", "assistant"}:
+                messages.append({"role": role, "content": content})
+
+        model = kwargs.get("model") or self._model
+        response = run_cursor_agent_turn(
+            api_key=self._api_key,
+            base_url=self._base_url,
+            model_id=model,
+            messages=messages,
+            system_prompt=system_prompt or None,
+            tools=None,
+            conversation_id=str(uuid.uuid4()),
+            exec_handlers=None,
+        )
+
+        choice = response.choices[0]
+        message = choice.message
+        usage = getattr(response, "usage", None)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    index=0,
+                    message=SimpleNamespace(
+                        role=getattr(message, "role", "assistant"),
+                        content=getattr(message, "content", None),
+                        tool_calls=getattr(message, "tool_calls", None),
+                    ),
+                    finish_reason=getattr(choice, "finish_reason", "stop"),
+                )
+            ],
+            model=getattr(response, "model", model) or model,
+            usage=usage,
+        )
+
+
+class _CursorChatShim:
+    def __init__(self, adapter: _CursorCompletionsAdapter):
+        self.completions = adapter
+
+
+class CursorAuxiliaryClient:
+    """OpenAI-client-compatible wrapper for Cursor Agent API auxiliary calls."""
+
+    def __init__(self, api_key: str, model: str, base_url: str):
+        self.api_key = api_key
+        self.base_url = base_url
+        self._real_client = None
+        adapter = _CursorCompletionsAdapter(api_key, model, base_url)
+        self.chat = _CursorChatShim(adapter)
+
+    def close(self):
+        return None
+
+
+class _AsyncCursorCompletionsAdapter:
+    def __init__(self, sync_adapter: _CursorCompletionsAdapter):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncCursorChatShim:
+    def __init__(self, adapter: _AsyncCursorCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncCursorAuxiliaryClient:
+    def __init__(self, sync_wrapper: "CursorAuxiliaryClient"):
+        sync_adapter = sync_wrapper.chat.completions
+        async_adapter = _AsyncCursorCompletionsAdapter(sync_adapter)
+        self.chat = _AsyncCursorChatShim(async_adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
+        self._real_client = sync_wrapper._real_client
+
+
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     """True if the endpoint at ``base_url`` speaks the Anthropic Messages
     protocol instead of OpenAI chat.completions.
@@ -1386,6 +1490,19 @@ def _read_codex_access_token() -> Optional[str]:
         return access_token.strip()
     except Exception as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
+        return None
+
+
+def _read_cursor_access_token() -> Optional[str]:
+    """Read a valid Cursor OAuth access token from Hermes auth store."""
+    try:
+        from hermes_cli.auth import resolve_cursor_runtime_credentials
+
+        creds = resolve_cursor_runtime_credentials(refresh_if_expiring=True)
+        token = str(creds.get("api_key") or "").strip()
+        return token or None
+    except Exception as exc:
+        logger.debug("Could not read Cursor auth for auxiliary client: %s", exc)
         return None
 
 
@@ -1933,6 +2050,29 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
     real_client = OpenAI(api_key=api_key, base_url=base_url)
     return CodexAuxiliaryClient(real_client, model), model
+
+
+def _build_cursor_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+    """Build a CursorAuxiliaryClient for auxiliary tasks (title gen, compression, etc.)."""
+    if not model:
+        logger.warning(
+            "Auxiliary client: cursor requested without a model; "
+            "pass model explicitly (model.model in config.yaml)."
+        )
+        return None, None
+    token = _read_cursor_access_token()
+    if not token:
+        logger.warning(
+            "resolve_provider_client: cursor requested but no Cursor OAuth token "
+            "found (run: hermes auth add cursor)"
+        )
+        return None, None
+    try:
+        from hermes_cli.auth import DEFAULT_CURSOR_BASE_URL
+    except ImportError:
+        DEFAULT_CURSOR_BASE_URL = "https://api2.cursor.sh"
+    logger.debug("Auxiliary client: Cursor Agent API (%s)", model)
+    return CursorAuxiliaryClient(token, model, DEFAULT_CURSOR_BASE_URL), model
 
 
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -3202,6 +3342,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
 
     if isinstance(sync_client, CodexAuxiliaryClient):
         return AsyncCodexAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, CursorAuxiliaryClient):
+        return AsyncCursorAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
     try:
@@ -3489,6 +3631,15 @@ def resolve_provider_client(
                 "resolve_provider_client: xai-oauth requested but no xAI "
                 "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)"
             )
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    # ── Cursor subscription (OAuth → Agent API) ───────────────────────
+    if provider == "cursor":
+        client, default = _build_cursor_aux_client(model)
+        if client is None:
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -3894,6 +4045,8 @@ def resolve_provider_client(
             return resolve_provider_client("openai-codex", model, async_mode)
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
+        if provider == "cursor":
+            return resolve_provider_client("cursor", model, async_mode)
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)

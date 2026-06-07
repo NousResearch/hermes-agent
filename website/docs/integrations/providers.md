@@ -122,6 +122,7 @@ hermes chat --provider cursor --model claude-4.6-opus-high
 
 - Requires an active Cursor subscription.
 - `hermes auth add cursor` launches Cursor's browser OAuth flow and stores the resulting credentials in Hermes' auth store.
+- Model IDs are fetched live from Cursor's `GetUsableModels` API (typically 100+ models per account). Use `/model` in chat or `hermes model` to browse them.
 - `CURSOR_ACCESS_TOKEN` is supported as a direct override for environments where you want to inject the token manually.
 
 

@@ -206,3 +206,23 @@ def test_blob_ids_are_deterministic_for_same_content():
     assert first == second
     assert len(first) == 32
 
+
+def test_encode_tool_input_schema_uses_protobuf_value_bytes():
+    from google.protobuf import json_format
+    from google.protobuf import struct_pb2
+
+    from agent.cursor.request_builder import encode_tool_input_schema
+
+    schema = {
+        "type": "object",
+        "properties": {"command": {"type": "string"}},
+        "required": ["command"],
+    }
+    encoded = encode_tool_input_schema(schema)
+    value = struct_pb2.Value()
+    value.ParseFromString(encoded)
+    round_trip = json_format.MessageToDict(value)
+    assert round_trip["type"] == "object"
+    assert round_trip["properties"]["command"]["type"] == "string"
+    assert round_trip["required"] == ["command"]
+

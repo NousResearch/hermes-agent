@@ -42,6 +42,16 @@ REQUIRED_HANDOFF_FIELDS = (
     "remaining_risk:",
 )
 
+REQUIRED_AI_PAIR_CODER_BRIEF_FIELDS = (
+    "review_focus:",
+    "commands_run:",
+)
+
+REQUIRED_AI_PAIR_REVIEW_RESULT_FIELDS = (
+    "decision:",
+    "required_changes:",
+)
+
 
 def _read_text(path: Path, max_bytes: int = 80_000) -> str:
     try:
@@ -88,8 +98,12 @@ def inspect_project(project: str | Path) -> dict[str, Any]:
     cursor_rules = root / ".cursor" / "rules"
     hermes = root / ".hermes"
     issues = hermes / "issues"
+    ai_pair = hermes / "ai-pair"
     issue_template = root / "docs" / "multi-ai-workflow" / "templates" / "issue.md"
     handoff_template = root / "docs" / "multi-ai-workflow" / "templates" / "handoff.md"
+    ai_pair_templates = root / "docs" / "multi-ai-workflow" / "templates" / "ai-pair"
+    coder_brief_template = ai_pair_templates / "coder-brief.md"
+    review_result_template = ai_pair_templates / "review-result.md"
 
     checks.append(
         _check(
@@ -177,6 +191,14 @@ def inspect_project(project: str | Path) -> dict[str, Any]:
             str(issues),
         )
     )
+    checks.append(
+        _check(
+            "ai-pair-registry-present",
+            ai_pair.exists() and (ai_pair / "README.md").exists(),
+            ".hermes/ai-pair/ exists with README.md.",
+            str(ai_pair),
+        )
+    )
 
     issue_text = _read_text(issue_template)
     issue_missing = _missing_fields(issue_text, REQUIRED_ISSUE_FIELDS)
@@ -197,6 +219,28 @@ def inspect_project(project: str | Path) -> dict[str, Any]:
             handoff_template.exists() and not handoff_missing,
             "Handoff template includes continuation and verification fields.",
             ", ".join(handoff_missing) if handoff_missing else str(handoff_template),
+        )
+    )
+
+    coder_brief_text = _read_text(coder_brief_template)
+    coder_brief_missing = _missing_fields(coder_brief_text, REQUIRED_AI_PAIR_CODER_BRIEF_FIELDS)
+    checks.append(
+        _check(
+            "ai-pair-coder-template-fields",
+            coder_brief_template.exists() and not coder_brief_missing,
+            "AI Pair coder brief template includes review focus and verification fields.",
+            ", ".join(coder_brief_missing) if coder_brief_missing else str(coder_brief_template),
+        )
+    )
+
+    review_result_text = _read_text(review_result_template)
+    review_result_missing = _missing_fields(review_result_text, REQUIRED_AI_PAIR_REVIEW_RESULT_FIELDS)
+    checks.append(
+        _check(
+            "ai-pair-review-template-fields",
+            review_result_template.exists() and not review_result_missing,
+            "AI Pair review result template includes decision and required changes fields.",
+            ", ".join(review_result_missing) if review_result_missing else str(review_result_template),
         )
     )
 

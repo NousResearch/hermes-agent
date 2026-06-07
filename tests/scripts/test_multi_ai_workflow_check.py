@@ -34,12 +34,15 @@ def _write_ready_project(root: Path) -> None:
 
     hermes = root / ".hermes"
     issues = hermes / "issues"
+    ai_pair = hermes / "ai-pair"
     issues.mkdir(parents=True)
+    ai_pair.mkdir(parents=True)
     (hermes / "context.md").write_text("# Context\n", encoding="utf-8")
     (hermes / "active.md").write_text("# Active\n", encoding="utf-8")
     (hermes / "decisions.md").write_text("# Decisions\n", encoding="utf-8")
     (hermes / "handoff.md").write_text("# Handoff\n", encoding="utf-8")
     (issues / "README.md").write_text("# Issues\n", encoding="utf-8")
+    (ai_pair / "README.md").write_text("# AI Pair Jobs\n", encoding="utf-8")
 
     templates = root / "docs" / "multi-ai-workflow" / "templates"
     templates.mkdir(parents=True)
@@ -80,6 +83,16 @@ def _write_ready_project(root: Path) -> None:
             ]
         )
         + "\n",
+        encoding="utf-8",
+    )
+    ai_pair_templates = templates / "ai-pair"
+    ai_pair_templates.mkdir(parents=True)
+    (ai_pair_templates / "coder-brief.md").write_text(
+        "review_focus:\ncommands_run:\n",
+        encoding="utf-8",
+    )
+    (ai_pair_templates / "review-result.md").write_text(
+        "decision:\nrequired_changes:\n",
         encoding="utf-8",
     )
 
@@ -147,3 +160,31 @@ def test_json_report_is_machine_readable(tmp_path):
 
     assert parsed["project"] == str(tmp_path)
     assert parsed["ok"] is True
+
+
+def test_ai_pair_templates_are_required_for_readiness(tmp_path):
+    module = _load_module()
+    _write_ready_project(tmp_path)
+
+    report = module.inspect_project(tmp_path)
+
+    assert report["ok"] is True
+    codes = {check["code"] for check in report["checks"]}
+    assert "ai-pair-registry-present" in codes
+    assert "ai-pair-coder-template-fields" in codes
+    assert "ai-pair-review-template-fields" in codes
+
+
+def test_missing_ai_pair_template_reports_failure(tmp_path):
+    module = _load_module()
+    _write_ready_project(tmp_path)
+    (tmp_path / "docs" / "multi-ai-workflow" / "templates" / "ai-pair" / "coder-brief.md").write_text(
+        "review_focus:\n",
+        encoding="utf-8",
+    )
+
+    report = module.inspect_project(tmp_path)
+
+    assert report["ok"] is False
+    failed_codes = {check["code"] for check in report["checks"] if not check["ok"]}
+    assert "ai-pair-coder-template-fields" in failed_codes

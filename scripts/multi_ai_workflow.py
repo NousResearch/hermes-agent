@@ -279,6 +279,161 @@ Write the plan here.
 List required tests, localhost checks, VPS checks, or file checks.
 """
 
+AI_PAIR_README_TEMPLATE = """# AI Pair Jobs
+
+This folder stores active `Use AI Pair` state.
+
+Rules:
+
+- One pair job per issue folder.
+- Coder may edit only after owner-approved plan.
+- Reviewer is read-only by default.
+- Do not store secrets, token values, runtime databases, logs, or cache output.
+"""
+
+PAIR_STATE_TEMPLATE = {
+    "version": 1,
+    "status": "pair_selected",
+    "issue_id": "",
+    "task": "",
+    "coder_ai": "",
+    "reviewer_ai": "",
+    "reviewer_mode": "read_only",
+    "branch": "",
+    "gitlab_host": "",
+    "vps_status": "waiting-runtime",
+    "created_at": "",
+    "updated_at": "",
+    "retry_count": 0,
+    "max_review_rounds": 2,
+}
+
+CODER_PLAN_TEMPLATE = """# Coder Plan
+
+issue_id:
+task:
+coder_ai:
+branch:
+status: plan_requested
+
+## Scope
+
+scope:
+out_of_scope:
+files_likely_touched:
+
+## Plan
+
+implementation_steps:
+
+## Verification
+
+commands:
+localhost_check:
+vps_check:
+
+## Owner Approval
+
+approved_by_owner: no
+approval_note:
+"""
+
+CODER_BRIEF_TEMPLATE = """# Coder Brief
+
+issue_id:
+task:
+coder_ai:
+branch:
+
+## Summary
+
+diff_summary:
+files_changed:
+
+## Verification
+
+commands_run:
+results:
+localhost_result:
+vps_result:
+
+## Review Request
+
+review_focus:
+known_risks:
+out_of_scope:
+"""
+
+REVIEW_PACKET_TEMPLATE = """# Review Packet
+
+issue_id:
+reviewer_ai:
+reviewer_mode: read_only
+decision_expected: pass | changes_requested | blocked
+
+## Inputs
+
+approved_plan:
+coder_brief:
+diff_summary:
+verification_evidence:
+
+## Rules
+
+- Reviewer must not edit files.
+- Reviewer checks only this packet unless owner approves more context.
+- Reviewer returns pass, changes_requested, or blocked.
+"""
+
+REVIEW_RESULT_TEMPLATE = """# Review Result
+
+issue_id:
+reviewer_ai:
+reviewer_mode: read_only
+decision:
+
+## Summary
+
+summary:
+
+## Findings
+
+findings:
+
+## Required Changes
+
+required_changes:
+
+## Evidence Checked
+
+evidence_checked:
+
+## Owner Attention
+
+should_owner_inspect_manually:
+"""
+
+GITLAB_GATE_TEMPLATE = """# GitLab Gate
+
+issue_id:
+gitlab_host:
+project_path:
+merge_request_url:
+pipeline_url:
+pipeline_status:
+
+## Evidence
+
+diff_source:
+artifacts_checked:
+ci_result:
+
+## Merge Rule
+
+owner_merge_required: yes
+auto_merge_allowed: no
+"""
+
 FIELD_RE = re.compile(r"^([A-Za-z0-9_]+):\s*(.*)$")
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -379,12 +534,15 @@ def init_project(project: str | Path, force: bool = False) -> dict[str, Any]:
         root / ".hermes" / "decisions.md": HERMES_DECISIONS_TEMPLATE,
         root / ".hermes" / "handoff.md": HERMES_HANDOFF_TEMPLATE,
         root / ".hermes" / "issues" / "README.md": ISSUES_README_TEMPLATE,
+        root / ".hermes" / "ai-pair" / "README.md": AI_PAIR_README_TEMPLATE,
         root / ".hermes" / "plans" / "README.md": PLANS_README_TEMPLATE,
         root / ".hermes" / "routes" / "README.md": ROUTES_README_TEMPLATE,
         root / "docs" / "multi-ai-workflow" / "README.md": PROTOCOL_README,
         root / "docs" / "multi-ai-workflow" / "templates" / "issue.md": ISSUE_TEMPLATE,
         root / "docs" / "multi-ai-workflow" / "templates" / "handoff.md": HANDOFF_TEMPLATE,
         root / "docs" / "multi-ai-workflow" / "templates" / "opus-plan.md": OPUS_PLAN_TEMPLATE,
+        root / "docs" / "multi-ai-workflow" / "templates" / "ai-pair" / "coder-brief.md": CODER_BRIEF_TEMPLATE,
+        root / "docs" / "multi-ai-workflow" / "templates" / "ai-pair" / "review-result.md": REVIEW_RESULT_TEMPLATE,
     }
     created: list[str] = []
     skipped: list[str] = []
@@ -407,6 +565,17 @@ def _issue_path(project: str | Path, issue_id: str) -> Path:
     if not safe_id or "/" in safe_id or safe_id in {".", ".."}:
         raise ValueError("issue_id must be a non-empty filename-safe value")
     return _project_root(project) / ".hermes" / "issues" / f"{safe_id}.md"
+
+
+def _ai_pair_path(project: str | Path, issue_id: str) -> Path:
+    safe_id = issue_id.strip()
+    if not safe_id or "/" in safe_id or safe_id in {".", ".."}:
+        raise ValueError("issue_id must be a non-empty filename-safe value")
+    return _project_root(project) / ".hermes" / "ai-pair" / safe_id
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def _join_commands(commands: list[str]) -> str:
@@ -616,6 +785,234 @@ def _run_command(cmd: list[str], cwd: Path) -> dict[str, Any]:
         "cwd": str(cwd),
         "returncode": proc.returncode,
         "output": proc.stdout,
+    }
+
+
+def _git_status_short(root: Path) -> str:
+    result = _run_command(["git", "status", "--short", "--untracked-files=no"], root)
+    return result["output"].strip()
+
+
+def _safe_branch_slug(issue_id: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", issue_id.strip()).strip("-").lower()
+    if not slug:
+        raise ValueError("issue_id must produce a non-empty branch slug")
+    return slug
+
+
+def propose_ai_pair_branch(
+    *,
+    project: str | Path,
+    issue_id: str,
+    task: str,
+) -> dict[str, Any]:
+    root = _project_root(project)
+    status = _git_status_short(root)
+    branch = f"ai-pair/{_safe_branch_slug(issue_id)}"
+    dirty = bool(status)
+    if dirty:
+        return {
+            "project": str(root),
+            "ok": False,
+            "dirty": True,
+            "status": status,
+            "branch": branch,
+            "task": task,
+            "requires_owner_approval": True,
+            "reason": "worktree has uncommitted changes; owner must approve before creating or switching branch",
+        }
+    return {
+        "project": str(root),
+        "ok": True,
+        "dirty": False,
+        "status": "",
+        "branch": branch,
+        "task": task,
+        "requires_owner_approval": True,
+        "reason": "clean worktree; branch proposal is ready for owner approval",
+    }
+
+
+def _fill_template_fields(text: str, values: dict[str, str]) -> str:
+    rendered = text
+    for key, value in values.items():
+        rendered = rendered.replace(f"{key}:", f"{key}: {value}", 1)
+    return rendered
+
+
+def create_ai_pair_job(
+    *,
+    project: str | Path,
+    issue_id: str,
+    task: str,
+    coder_ai: str,
+    reviewer_ai: str,
+    branch: str,
+    gitlab_host: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    root = _project_root(project)
+    pair_dir = _ai_pair_path(root, issue_id)
+    if pair_dir.exists() and not force:
+        raise FileExistsError(f"AI Pair job already exists: {pair_dir}")
+    pair_dir.mkdir(parents=True, exist_ok=True)
+    now = _now_iso()
+    state = dict(PAIR_STATE_TEMPLATE)
+    state.update(
+        {
+            "issue_id": issue_id,
+            "task": task,
+            "coder_ai": coder_ai,
+            "reviewer_ai": reviewer_ai,
+            "branch": branch,
+            "gitlab_host": gitlab_host,
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    (pair_dir / "pair-state.json").write_text(
+        json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    values = {
+        "issue_id": issue_id,
+        "task": task,
+        "coder_ai": coder_ai,
+        "reviewer_ai": reviewer_ai,
+        "branch": branch,
+        "gitlab_host": gitlab_host,
+    }
+    files = {
+        "coder-plan.md": CODER_PLAN_TEMPLATE,
+        "coder-brief.md": CODER_BRIEF_TEMPLATE,
+        "review-packet.md": REVIEW_PACKET_TEMPLATE,
+        "review-result.md": REVIEW_RESULT_TEMPLATE,
+        "gitlab-gate.md": GITLAB_GATE_TEMPLATE,
+        "handoff.md": HANDOFF_TEMPLATE,
+    }
+    for filename, template in files.items():
+        (pair_dir / filename).write_text(
+            _fill_template_fields(template, values),
+            encoding="utf-8",
+        )
+    return {
+        "project": str(root),
+        "issue_id": issue_id,
+        "pair_dir": str(pair_dir),
+        "status": state["status"],
+        "coder_ai": coder_ai,
+        "reviewer_ai": reviewer_ai,
+        "branch": branch,
+        "gitlab_host": gitlab_host,
+    }
+
+
+def _load_ai_pair_state(project: str | Path, issue_id: str) -> tuple[Path, dict[str, Any]]:
+    pair_dir = _ai_pair_path(project, issue_id)
+    state_path = pair_dir / "pair-state.json"
+    if not state_path.exists():
+        raise FileNotFoundError(f"AI Pair state not found: {state_path}")
+    return pair_dir, json.loads(state_path.read_text(encoding="utf-8"))
+
+
+def render_ai_pair_review_packet(
+    *,
+    project: str | Path,
+    issue_id: str,
+    diff_summary: str,
+    verification_evidence: str,
+) -> Path:
+    pair_dir, state = _load_ai_pair_state(project, issue_id)
+    plan_text = (pair_dir / "coder-plan.md").read_text(encoding="utf-8")
+    brief_text = (pair_dir / "coder-brief.md").read_text(encoding="utf-8")
+    packet = f"""# Review Packet
+
+issue_id: {issue_id}
+reviewer_ai: {state.get("reviewer_ai", "")}
+reviewer_mode: read_only
+decision_expected: pass | changes_requested | blocked
+
+## Inputs
+
+approved_plan:
+{plan_text.strip()}
+
+coder_brief:
+{brief_text.strip()}
+
+diff_summary:
+{diff_summary}
+
+verification_evidence:
+{verification_evidence}
+
+## Rules
+
+- Reviewer must not edit files.
+- Reviewer checks only this packet unless owner approves more context.
+- Reviewer returns pass, changes_requested, or blocked.
+"""
+    packet_path = pair_dir / "review-packet.md"
+    packet_path.write_text(packet, encoding="utf-8")
+    state["status"] = "review_packet_ready"
+    state["updated_at"] = _now_iso()
+    (pair_dir / "pair-state.json").write_text(
+        json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return packet_path
+
+
+def gitlab_gate_dry_run(
+    *,
+    project: str | Path,
+    issue_id: str,
+    project_path: str,
+    merge_request_iid: str,
+    token_env: str = "GITLAB_TOKEN",
+) -> dict[str, Any]:
+    pair_dir, state = _load_ai_pair_state(project, issue_id)
+    gitlab_host = str(state.get("gitlab_host", ""))
+    endpoint_host = gitlab_host.rstrip("/")
+    encoded_project = project_path.replace("/", "%2F")
+    endpoints = {
+        "merge_request": f"{endpoint_host}/api/v4/projects/{encoded_project}/merge_requests/{merge_request_iid}",
+        "diffs": f"{endpoint_host}/api/v4/projects/{encoded_project}/merge_requests/{merge_request_iid}/diffs",
+        "pipelines": f"{endpoint_host}/api/v4/projects/{encoded_project}/merge_requests/{merge_request_iid}/pipelines",
+    }
+    gate_path = pair_dir / "gitlab-gate.md"
+    gate_path.write_text(
+        f"""# GitLab Gate
+
+issue_id: {issue_id}
+gitlab_host: {gitlab_host}
+project_path: {project_path}
+merge_request_iid: {merge_request_iid}
+token_env: {token_env}
+executed: no
+
+## Dry Run Endpoints
+
+merge_request: {endpoints["merge_request"]}
+diffs: {endpoints["diffs"]}
+pipelines: {endpoints["pipelines"]}
+
+## Secret Policy
+
+Token values must never be written to workflow files or AI prompts.
+""",
+        encoding="utf-8",
+    )
+    return {
+        "project": str(_project_root(project)),
+        "issue_id": issue_id,
+        "gitlab_host": gitlab_host,
+        "project_path": project_path,
+        "merge_request_iid": merge_request_iid,
+        "token_env": token_env,
+        "endpoints": endpoints,
+        "executed": False,
+        "gate_path": str(gate_path),
     }
 
 
@@ -1150,6 +1547,25 @@ def main(argv: list[str] | None = None) -> int:
     compact_parser.add_argument("--execute", action="store_true")
     compact_parser.add_argument("--format", choices=("text", "json"), default="text")
 
+    ai_pair_parser = subparsers.add_parser("ai-pair", help="Manage Use AI Pair workflow state.")
+    ai_pair_subparsers = ai_pair_parser.add_subparsers(dest="ai_pair_command", required=True)
+
+    ai_pair_branch = ai_pair_subparsers.add_parser("branch", help="Propose an AI Pair branch.")
+    ai_pair_branch.add_argument("--project", default=".")
+    ai_pair_branch.add_argument("--issue-id", required=True)
+    ai_pair_branch.add_argument("--task", required=True)
+
+    ai_pair_init = ai_pair_subparsers.add_parser("init", help="Create an AI Pair job state folder.")
+    ai_pair_init.add_argument("--project", default=".")
+    ai_pair_init.add_argument("--issue-id", required=True)
+    ai_pair_init.add_argument("--task", required=True)
+    ai_pair_init.add_argument("--coder-ai", required=True)
+    ai_pair_init.add_argument("--reviewer-ai", required=True)
+    ai_pair_init.add_argument("--branch", required=True)
+    ai_pair_init.add_argument("--gitlab-host", required=True)
+    ai_pair_init.add_argument("--force", action="store_true")
+    ai_pair_init.add_argument("--format", choices=("text", "json"), default="text")
+
     worktree_parser = subparsers.add_parser("worktree", help="Manage issue worktrees.")
     worktree_subparsers = worktree_parser.add_subparsers(dest="worktree_command", required=True)
     worktree_create = worktree_subparsers.add_parser("create", help="Create and claim a git worktree.")
@@ -1283,6 +1699,33 @@ def main(argv: list[str] | None = None) -> int:
         else:
             mode = "executed" if result["executed"] else "dry-run"
             print(f"{mode}: {result['archived_count']} files -> {result['archive_path']}")
+        return 0
+
+    if args.command == "ai-pair" and args.ai_pair_command == "branch":
+        print(
+            json.dumps(
+                propose_ai_pair_branch(project=args.project, issue_id=args.issue_id, task=args.task),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.command == "ai-pair" and args.ai_pair_command == "init":
+        result = create_ai_pair_job(
+            project=args.project,
+            issue_id=args.issue_id,
+            task=args.task,
+            coder_ai=args.coder_ai,
+            reviewer_ai=args.reviewer_ai,
+            branch=args.branch,
+            gitlab_host=args.gitlab_host,
+            force=args.force,
+        )
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"{result['status']}: {result['pair_dir']}")
         return 0
 
     if args.command == "worktree" and args.worktree_command == "create":

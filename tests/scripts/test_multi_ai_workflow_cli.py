@@ -592,3 +592,192 @@ def test_compact_workflow_archives_completed_files(tmp_path):
     assert not issue_path.exists()
     assert not plan_path.exists()
     assert not route_path.exists()
+
+
+def test_create_ai_pair_job_writes_state_and_templates(tmp_path):
+    cli = _load_cli()
+    cli.init_project(tmp_path, force=False)
+
+    result = cli.create_ai_pair_job(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        task="Add Use AI Pair shortcut",
+        coder_ai="Codecode",
+        reviewer_ai="Codex",
+        branch="ai-pair/use-ai-pair",
+        gitlab_host="https://gitlab.dev.jigsawgroups.work/",
+        force=False,
+    )
+
+    pair_dir = tmp_path / ".hermes" / "ai-pair" / "pair-001-use-ai-pair"
+    assert result["pair_dir"] == str(pair_dir)
+    assert result["status"] == "pair_selected"
+    assert (pair_dir / "pair-state.json").exists()
+    assert (pair_dir / "coder-plan.md").exists()
+    assert (pair_dir / "coder-brief.md").exists()
+    assert (pair_dir / "review-packet.md").exists()
+    assert (pair_dir / "review-result.md").exists()
+    assert (pair_dir / "gitlab-gate.md").exists()
+    state = json.loads((pair_dir / "pair-state.json").read_text(encoding="utf-8"))
+    assert state["coder_ai"] == "Codecode"
+    assert state["reviewer_ai"] == "Codex"
+    assert state["reviewer_mode"] == "read_only"
+    assert state["gitlab_host"] == "https://gitlab.dev.jigsawgroups.work/"
+
+
+def test_propose_ai_pair_branch_returns_safe_branch_for_clean_repo(tmp_path):
+    cli = _load_cli()
+    _init_git_repo(tmp_path)
+
+    result = cli.propose_ai_pair_branch(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        task="Use AI Pair shortcut",
+    )
+
+    assert result["ok"] is True
+    assert result["dirty"] is False
+    assert result["branch"] == "ai-pair/pair-001-use-ai-pair"
+    assert result["requires_owner_approval"] is True
+
+
+def test_propose_ai_pair_branch_blocks_dirty_repo(tmp_path):
+    cli = _load_cli()
+    _init_git_repo(tmp_path)
+    (tmp_path / "README.md").write_text("# Demo\nchanged\n", encoding="utf-8")
+
+    result = cli.propose_ai_pair_branch(
+        project=tmp_path,
+        issue_id="pair-002-dirty",
+        task="Dirty repo task",
+    )
+
+    assert result["ok"] is False
+    assert result["dirty"] is True
+    assert "worktree has uncommitted changes" in result["reason"]
+
+
+def test_ai_pair_cli_init_creates_job(tmp_path):
+    cli = _load_cli()
+    cli.init_project(tmp_path, force=False)
+
+    result = _run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "ai-pair",
+            "init",
+            "--project",
+            str(tmp_path),
+            "--issue-id",
+            "pair-001-use-ai-pair",
+            "--task",
+            "Add Use AI Pair",
+            "--coder-ai",
+            "Codecode",
+            "--reviewer-ai",
+            "Codex",
+            "--branch",
+            "ai-pair/pair-001-use-ai-pair",
+            "--gitlab-host",
+            "https://gitlab.dev.jigsawgroups.work/",
+            "--format",
+            "json",
+        ],
+        tmp_path,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "pair_selected"
+    assert payload["coder_ai"] == "Codecode"
+    assert payload["reviewer_ai"] == "Codex"
+
+
+def test_ai_pair_cli_branch_proposal_is_json(tmp_path):
+    _init_git_repo(tmp_path)
+
+    result = _run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "ai-pair",
+            "branch",
+            "--project",
+            str(tmp_path),
+            "--issue-id",
+            "pair-001-use-ai-pair",
+            "--task",
+            "Add Use AI Pair",
+        ],
+        tmp_path,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["branch"] == "ai-pair/pair-001-use-ai-pair"
+    assert payload["requires_owner_approval"] is True
+
+
+def test_render_ai_pair_review_packet_includes_read_only_rules(tmp_path):
+    cli = _load_cli()
+    cli.init_project(tmp_path, force=False)
+    cli.create_ai_pair_job(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        task="Add Use AI Pair",
+        coder_ai="Codecode",
+        reviewer_ai="Codex",
+        branch="ai-pair/pair-001-use-ai-pair",
+        gitlab_host="https://gitlab.dev.jigsawgroups.work/",
+        force=False,
+    )
+    pair_dir = tmp_path / ".hermes" / "ai-pair" / "pair-001-use-ai-pair"
+    (pair_dir / "coder-plan.md").write_text("# Plan\napproved\n", encoding="utf-8")
+    (pair_dir / "coder-brief.md").write_text("# Brief\nchanged prompt registry\n", encoding="utf-8")
+
+    packet_path = cli.render_ai_pair_review_packet(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        diff_summary="Modified prompt shortcut files only.",
+        verification_evidence="pytest passed 22/22",
+    )
+
+    text = packet_path.read_text(encoding="utf-8")
+    assert "reviewer_ai: Codex" in text
+    assert "reviewer_mode: read_only" in text
+    assert "Reviewer must not edit files." in text
+    assert "Modified prompt shortcut files only." in text
+    assert "pytest passed 22/22" in text
+
+
+def test_gitlab_gate_dry_run_never_prints_token(tmp_path):
+    cli = _load_cli()
+    cli.init_project(tmp_path, force=False)
+    cli.create_ai_pair_job(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        task="Add Use AI Pair",
+        coder_ai="Codecode",
+        reviewer_ai="Codex",
+        branch="ai-pair/pair-001-use-ai-pair",
+        gitlab_host="https://gitlab.dev.jigsawgroups.work/",
+        force=False,
+    )
+
+    result = cli.gitlab_gate_dry_run(
+        project=tmp_path,
+        issue_id="pair-001-use-ai-pair",
+        project_path="tools/hermes-agent",
+        merge_request_iid="7",
+        token_env="GITLAB_TOKEN",
+    )
+
+    assert result["executed"] is False
+    assert result["gitlab_host"] == "https://gitlab.dev.jigsawgroups.work/"
+    assert result["project_path"] == "tools/hermes-agent"
+    assert result["merge_request_iid"] == "7"
+    rendered = json.dumps(result)
+    assert "PRIVATE-TOKEN" not in rendered
+    assert "token-value" not in rendered
+    assert "GITLAB_TOKEN" in rendered

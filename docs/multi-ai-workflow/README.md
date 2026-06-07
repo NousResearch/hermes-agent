@@ -124,6 +124,61 @@ git worktree add ../worktrees/hermes-agent/phase-001-codex -b ai/phase-001-codex
 | สรุป handoff | รุ่นที่ประหยัดกว่าได้ ถ้ามี template ชัด |
 | ตรวจ localhost/VPS | ตัวที่มี shell/browser access |
 
+## Use AI Pair
+
+`Use AI Pair` จับคู่ AI หนึ่งตัวเป็น coder และอีกตัวเป็น reviewer แบบ read-only
+โดยมี Hermes หรือ VPS เป็นตัวกลางคุม flow ไม่ให้ AI คุยกันเองแบบไม่มีสมุดงานกลาง
+
+Hermes Agent pilot defaults:
+
+| Role | AI |
+|---|---|
+| Coder | Codecode |
+| Reviewer | Codex |
+
+Required flow:
+
+1. Owner chooses coder and reviewer.
+2. Hermes proposes a branch.
+3. Owner approves branch.
+4. Coder writes a plan before code.
+5. Owner approves plan.
+6. Coder implements and verifies.
+7. Coder writes a reviewer brief.
+8. Hermes/VPS prepares a review packet from diff, brief, and evidence.
+9. Reviewer checks read-only.
+10. Passing review moves to GitLab Merge Request / CI gate.
+
+Private GitLab host:
+
+```text
+https://gitlab.dev.jigsawgroups.work/
+```
+
+Do not send whole private repositories or token values to reviewer prompts.
+
+Propose a branch:
+
+```bash
+python3 scripts/multi_ai_workflow.py ai-pair branch \
+  --project . \
+  --issue-id pair-001-use-ai-pair \
+  --task "Add Use AI Pair"
+```
+
+Create pair state:
+
+```bash
+python3 scripts/multi_ai_workflow.py ai-pair init \
+  --project . \
+  --issue-id pair-001-use-ai-pair \
+  --task "Add Use AI Pair" \
+  --coder-ai Codecode \
+  --reviewer-ai Codex \
+  --branch ai-pair/pair-001-use-ai-pair \
+  --gitlab-host https://gitlab.dev.jigsawgroups.work/
+```
+
 ## Health Check
 
 ตรวจว่าโปรเจกต์พร้อมสำหรับ multi-AI workflow:

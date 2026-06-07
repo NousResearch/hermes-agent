@@ -171,6 +171,23 @@ class TestFindStaleDashboardPids:
         assert 99999 not in pids
         assert 12345 in pids
 
+    def test_shell_wrapper_status_command_is_not_matched(self):
+        """The terminal tool runs commands through bash -c; that wrapper may
+        contain the text `hermes dashboard --status` but is not the dashboard.
+        """
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(22222, "/usr/bin/bash -c eval 'hermes dashboard --status'"),
+                    _ps_line(12345, "hermes dashboard --port 9119"),
+                ]) + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids()
+        assert 22222 not in pids
+        assert pids == [12345]
+
     def test_invalid_pid_lines_skipped(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
@@ -267,7 +284,7 @@ class TestKillStaleDashboardPosix:
         assert "Stopping 2 dashboard" in out
         assert "✓ stopped PID 12345" in out
         assert "✓ stopped PID 12346" in out
-        assert "Restart the dashboard" in out
+        assert "Restart any dashboard not auto-restarted" in out
 
     def test_sigkill_fallback_for_survivors(self, capsys):
         """If a process survives SIGTERM + the grace window, SIGKILL is sent."""
@@ -332,6 +349,97 @@ class TestKillStaleDashboardPosix:
         assert "✓ stopped PID 12345" in out
         assert "failed to stop" not in out
 
+    def test_restart_true_preserves_and_restarts_original_dashboard_command(self, capsys):
+        """`hermes update` should stop stale dashboards then auto-relaunch them
+        with the same port/host args instead of printing only a manual hint.
+        """
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[12345]), \
+             patch("hermes_cli.main._dashboard_cmdline_for_pid",
+                   return_value=["hermes", "dashboard", "--port", "9123", "--host", "0.0.0.0", "--insecure"]), \
+             patch("hermes_cli.main._restart_dashboard_processes", return_value=False) as mock_restart, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart=True)
+
+        mock_restart.assert_called_once_with([
+            ["hermes", "dashboard", "--port", "9123", "--host", "0.0.0.0", "--insecure"]
+        ])
+        out = capsys.readouterr().out
+        assert "✓ stopped PID 12345" in out
+        assert "Restart any dashboard not auto-restarted" not in out
+
+    def test_restart_true_falls_back_to_manual_hint_when_cmdline_unavailable(self, capsys):
+        """If /proc argv recovery fails, keep the old safe behavior."""
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[12345]), \
+             patch("hermes_cli.main._dashboard_cmdline_for_pid", return_value=None), \
+             patch("hermes_cli.main._restart_dashboard_processes", return_value=False) as mock_restart, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart=True)
+
+        mock_restart.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Restart any dashboard not auto-restarted" in out
+        assert "hermes dashboard --port <port>" in out
+
+    def test_restart_true_prints_manual_hint_for_mixed_recovered_and_unrecovered(self, capsys):
+        """If one dashboard relaunches but another argv is unavailable, still
+        print fallback guidance for the unrecovered killed dashboard.
+        """
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        def fake_cmdline(pid):
+            if pid == 12345:
+                return ["hermes", "dashboard", "--port", "9123"]
+            return None
+
+        with patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[12345, 12346]), \
+             patch("hermes_cli.main._dashboard_cmdline_for_pid", side_effect=fake_cmdline), \
+             patch("hermes_cli.main._restart_dashboard_processes", return_value=False) as mock_restart, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart=True)
+
+        mock_restart.assert_called_once_with([["hermes", "dashboard", "--port", "9123"]])
+        out = capsys.readouterr().out
+        assert "✓ stopped PID 12345" in out
+        assert "✓ stopped PID 12346" in out
+        assert "Restart any dashboard not auto-restarted" in out
+        assert "hermes dashboard --port <port>" in out
+
+    def test_restart_true_prints_manual_hint_when_recovered_restart_fails(self, capsys):
+        """If argv is recovered but relaunch fails, print fallback guidance."""
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[12345]), \
+             patch("hermes_cli.main._dashboard_cmdline_for_pid",
+                   return_value=["hermes", "dashboard", "--port", "9123"]), \
+             patch("hermes_cli.main._restart_dashboard_processes", return_value=True) as mock_restart, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart=True)
+
+        mock_restart.assert_called_once_with([["hermes", "dashboard", "--port", "9123"]])
+        out = capsys.readouterr().out
+        assert "Restart any dashboard not auto-restarted" in out
+        assert "hermes dashboard --port <port>" in out
+
 
 class TestKillStaleDashboardWindows:
     """Kill path on Windows: taskkill /F."""
@@ -394,7 +502,7 @@ class TestWindowsWmicEncoding:
     def test_wmic_invoked_with_utf8_ignore_errors(self, monkeypatch):
         """The wmic subprocess.run call must pass encoding='utf-8' and
         errors='ignore' so the subprocess reader thread cannot raise
-        UnicodeDecodeError on non-UTF-8 wmic output."""
+        UnicodeDecodeError on non-UTF-8 locales."""
         monkeypatch.setattr(sys, "platform", "win32")
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
@@ -420,6 +528,22 @@ class TestWindowsWmicEncoding:
             "errors kwarg must be 'ignore' so undecodable bytes don't take "
             "down the reader thread (#17049)."
         )
+
+    def test_wmic_quoted_hermes_exe_with_spaces_is_matched(self, monkeypatch):
+        """Windows installs commonly quote Program Files paths; quoted
+        hermes.exe argv must still be detected as a stale dashboard.
+        """
+        monkeypatch.setattr(sys, "platform", "win32")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=(
+                    'CommandLine="C:\\Program Files\\Hermes\\hermes.exe" dashboard --port 9119\n'
+                    "ProcessId=12345\n"
+                ),
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [12345]
 
     def test_wmic_returns_none_stdout_does_not_crash(self, monkeypatch):
         """If subprocess.run returns successfully but stdout is None — which

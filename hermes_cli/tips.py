@@ -105,6 +105,7 @@ TIPS = [
     "hermes models routes vision, compression, and aux tasks to cheaper models — cuts background token cost 85%+ without downgrading your main chat model.",
 
     # --- Configuration ---
+    "Auxiliary LLM providers handle vision, compression, and web extraction — set OPENROUTER_API_KEY in your .env or run `hermes setup` to enable these features.",
     "Set display.bell_on_complete: true in config.yaml to hear a bell when long tasks finish.",
     "Set display.streaming: true to see tokens appear in real time as the model generates.",
     "Set display.show_reasoning: true to watch the model's chain-of-thought reasoning.",

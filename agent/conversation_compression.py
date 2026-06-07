@@ -112,13 +112,17 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 msg = (
                     "⚠ No auxiliary LLM provider configured — context "
                     "compression will drop middle turns without a summary. "
-                    "Run `hermes setup` or set OPENROUTER_API_KEY."
+                    "Auxiliary models handle vision, extraction, and "
+                    "compression. Set OPENROUTER_API_KEY in your .env or "
+                    "run `hermes setup` to configure one."
                 )
             agent._compression_warning = msg
             agent._emit_status(msg)
             logger.warning(
-                "No auxiliary LLM provider for compression — "
-                "summaries will be unavailable."
+                "No auxiliary LLM provider configured — "
+                "context compression and vision tasks are "
+                "unavailable. Set OPENROUTER_API_KEY or run "
+                "`hermes setup` to enable these features."
             )
             return
 

@@ -1410,9 +1410,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # No provider configured — long cooldown, unlikely to self-resolve
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
             self._last_summary_error = "no auxiliary LLM provider configured"
-            logger.warning("Context compression: no provider available for "
-                            "summary. Middle turns will be dropped without summary "
-                            "for %d seconds.",
+            logger.warning("Context compression: no auxiliary LLM provider configured — "
+                            "summary unavailable. Middle turns will be dropped without "
+                            "summary for %d seconds. Set OPENROUTER_API_KEY or run "
+                            "`hermes setup` to configure one.",
                             _SUMMARY_FAILURE_COOLDOWN_SECONDS)
             return None
         except Exception as e:

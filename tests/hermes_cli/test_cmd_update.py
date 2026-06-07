@@ -269,8 +269,6 @@ class TestCmdUpdateBranchFallback:
             (ws_flags, PROJECT_ROOT),
         ]
         if len(npm_calls) > 2:
-            # The web/ install runs from the workspace root when the root
-            # lockfile exists (npm workspaces hoist node_modules upward).
             assert npm_calls[2:] == [
                 (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT),
             ]

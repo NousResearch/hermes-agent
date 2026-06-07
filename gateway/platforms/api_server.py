@@ -2141,6 +2141,31 @@ class APIServerAdapter(BasePlatformAdapter):
                     await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
                 return time.monotonic()
 
+            def _agent_error_payload(exc: Exception) -> Dict[str, Any]:
+                raw_message = str(exc) or exc.__class__.__name__
+                lowered = raw_message.lower()
+                auth_failed = (
+                    "401" in raw_message
+                    or "unauthorized" in lowered
+                    or "invalid api key" in lowered
+                    or "authentication" in lowered
+                )
+                if auth_failed:
+                    return {
+                        "error": {
+                            "type": "upstream_auth_failed",
+                            "code": 401,
+                            "message": "Upstream provider authentication failed.",
+                        }
+                    }
+                return {
+                    "error": {
+                        "type": "sidecar_agent_error",
+                        "code": "agent_task_failed",
+                        "message": "Hermes agent failed before completing the stream.",
+                    }
+                }
+
             # Stream content chunks as they arrive from the agent
             loop = asyncio.get_running_loop()
             while True:
@@ -2174,7 +2199,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
             except Exception as exc:
-                logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
+                logger.warning("Agent task %s failed before SSE completion: %s", completion_id, exc)
+                error_payload = _agent_error_payload(exc)
+                await response.write(f"data: {json.dumps(error_payload)}\n\n".encode())
+                error_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
+                    "usage": {
+                        "prompt_tokens": usage.get("input_tokens", 0),
+                        "completion_tokens": usage.get("output_tokens", 0),
+                        "total_tokens": usage.get("total_tokens", 0),
+                    },
+                }
+                await response.write(f"data: {json.dumps(error_chunk)}\n\n".encode())
+                await response.write(b"data: [DONE]\n\n")
+                return response
 
             # Finish chunk
             finish_chunk = {

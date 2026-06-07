@@ -7,6 +7,7 @@ task wrapper is cancelled.
 """
 
 import asyncio
+import json
 import queue
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -121,6 +122,62 @@ class TestSSEAgentCancelOnDisconnect:
             # Agent should have completed normally, not been cancelled
             assert agent_task.done()
             assert not agent_task.cancelled()
+
+        asyncio.run(run())
+
+    def test_agent_task_auth_failure_emits_error_not_successful_stop(self):
+        """Agent exceptions must surface as SSE errors instead of empty success streams."""
+        adapter = _make_adapter()
+
+        stream_q = queue.Queue()
+        stream_q.put(None)
+
+        async def fake_agent():
+            raise RuntimeError("401 Unauthorized")
+
+        async def run():
+            from aiohttp import web
+
+            agent_task = asyncio.ensure_future(fake_agent())
+            await asyncio.sleep(0)
+
+            writes: list[str] = []
+            mock_response = AsyncMock(spec=web.StreamResponse)
+
+            async def write_side_effect(data):
+                writes.append(data.decode() if isinstance(data, bytes) else str(data))
+
+            mock_response.write = AsyncMock(side_effect=write_side_effect)
+            mock_response.prepare = AsyncMock()
+
+            with patch(
+                "gateway.platforms.api_server.web.StreamResponse",
+                return_value=mock_response,
+            ):
+                await adapter._write_sse_chat_completion(
+                    _make_request(), "cmpl-auth", "gpt-4", 1234567890,
+                    stream_q, agent_task,
+                )
+
+            data_frames = [
+                line.removeprefix("data: ")
+                for chunk in writes
+                for line in chunk.splitlines()
+                if line.startswith("data: ") and line != "data: [DONE]"
+            ]
+            parsed_frames = [json.loads(frame) for frame in data_frames]
+            assert any(
+                frame.get("error", {}).get("type") == "upstream_auth_failed"
+                and frame.get("error", {}).get("code") == 401
+                for frame in parsed_frames
+            )
+            finish_reasons = [
+                choice.get("finish_reason")
+                for frame in parsed_frames
+                for choice in frame.get("choices", [])
+            ]
+            assert "error" in finish_reasons
+            assert "stop" not in finish_reasons
 
         asyncio.run(run())
 

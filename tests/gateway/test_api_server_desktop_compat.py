@@ -158,6 +158,47 @@ def test_agente_desktop_handlers_accept_registry_context_kwargs(monkeypatch):
         assert parsed == {"ok": True, "tool_name": tool_name, "args": args}
 
 
+@pytest.mark.asyncio
+async def test_api_tools_list_does_not_require_adapter_registry_loader(monkeypatch):
+    import tools.registry as registry_mod
+
+    class _Entry:
+        toolset = "agente-desktop"
+        label_he = "probe"
+        category = "test"
+
+    class _Registry:
+        def get_all_tool_names(self) -> list[str]:
+            return ["probe_tool"]
+
+        def get_definitions(self, names: set[str], quiet: bool = False) -> list[dict[str, Any]]:  # noqa: ARG002
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "probe_tool",
+                        "description": "Probe tool",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ]
+
+        def get_entry(self, name: str) -> _Entry | None:
+            return _Entry() if name == "probe_tool" else None
+
+    class _AdapterWithoutLoader:
+        def _check_auth(self, request: Any) -> None:  # noqa: ARG002
+            return None
+
+    monkeypatch.setattr(registry_mod, "registry", _Registry())
+
+    response = await tool_discovery._handle_list_tools(object(), _AdapterWithoutLoader())
+    assert response.status == 200
+    payload = json.loads(response.text)
+    assert payload["tools"][0]["name"] == "probe_tool"
+    assert payload["tools"][0]["toolset"] == "agente-desktop"
+
+
 def test_evaluate_triage_rules_schema_present():
     schema = TOOL_SCHEMAS.get("evaluate_triage_rules")
     assert schema is not None, "evaluate_triage_rules missing"

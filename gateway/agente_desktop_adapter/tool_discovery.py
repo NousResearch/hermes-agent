@@ -756,6 +756,16 @@ def _json_safe_metadata(value: Any) -> Any:
     return str(value)
 
 
+def _get_tool_registry(adapter: Any) -> Any:
+    loader = getattr(adapter, "_ensure_tool_registry_loaded", None)
+    if callable(loader):
+        return loader()
+
+    from tools.registry import registry as _tool_registry
+
+    return _tool_registry
+
+
 # --- route handlers (moved from api_server.py _handle_list_tools / _handle_dispatch_tool) ---
 
 async def _handle_list_tools(request: "web.Request", adapter: Any) -> "web.Response":
@@ -767,7 +777,7 @@ async def _handle_list_tools(request: "web.Request", adapter: Any) -> "web.Respo
         return auth_err
 
     try:
-        registry = adapter._ensure_tool_registry_loaded()
+        registry = _get_tool_registry(adapter)
         definitions = registry.get_definitions(set(registry.get_all_tool_names()), quiet=True)
         tools: List[Dict[str, Any]] = []
         for definition in definitions:
@@ -844,7 +854,7 @@ async def _handle_dispatch_tool(request: "web.Request", adapter: Any) -> "web.Re
         )
 
     try:
-        registry = adapter._ensure_tool_registry_loaded()
+        registry = _get_tool_registry(adapter)
         if registry.get_entry(tool_name) is None:
             return web.json_response(
                 {"error": {"message": f"Unknown tool: {tool_name}", "code": "unknown_tool"}},

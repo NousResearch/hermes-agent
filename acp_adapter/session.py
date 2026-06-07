@@ -177,7 +177,10 @@ class SessionState:
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
-    queued_prompts: List[str] = field(default_factory=list)
+    # Each entry is either a plain string (text-only, from /steer and /queue)
+    # or the original ACP content block list of a regular prompt queued while a
+    # turn was running (preserving images and other non-text attachments).
+    queued_prompts: List[Any] = field(default_factory=list)
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""

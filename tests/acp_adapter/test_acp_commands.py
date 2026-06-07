@@ -2,7 +2,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from acp.schema import TextContentBlock
+from acp.schema import ImageContentBlock, TextContentBlock
 
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
@@ -196,3 +196,72 @@ async def test_acp_prompt_drains_queued_turns_after_current_run():
     assert state.queued_prompts == []
     agent_messages = [u for _sid, u in conn.updates if getattr(u, "session_update", None) == "agent_message_chunk"]
     assert len(agent_messages) >= 2
+
+
+@pytest.mark.asyncio
+async def test_acp_busy_prompt_queues_full_content_blocks_not_just_text():
+    # A regular prompt sent while the turn is running must be queued with its
+    # full ACP content blocks (including images), not collapsed to text.
+    # Otherwise an attached image is silently dropped and a caption-less image
+    # would later replay as the literal placeholder "[Image attachment]".
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    state.is_running = True
+
+    text_block = TextContentBlock(type="text", text="what is in this image?")
+    image_block = ImageContentBlock(type="image", data="aGVsbG8=", mimeType="image/png")
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[text_block, image_block],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.runs == []  # busy turn — nothing ran yet
+    # The original blocks are queued verbatim, not a "[Image attachment]" string.
+    assert state.queued_prompts == [[text_block, image_block]]
+
+
+@pytest.mark.asyncio
+async def test_acp_drained_queued_prompt_preserves_image_attachment():
+    # When the running turn finishes, a queued multimodal prompt drains through
+    # the agent with its image intact (as OpenAI-style image_url content),
+    # instead of being reduced to text.
+    acp_agent, state, fake, _conn = make_agent_and_state()
+
+    text_block = TextContentBlock(type="text", text="describe this")
+    image_block = ImageContentBlock(type="image", data="aGVsbG8=", mimeType="image/png")
+    state.queued_prompts.append([text_block, image_block])
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="first turn")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    # The typed prompt runs first, then the queued multimodal prompt drains.
+    assert fake.runs[0] == "first turn"
+    drained = fake.runs[1]
+    assert isinstance(drained, list)
+    assert {"type": "text", "text": "describe this"} in drained
+    assert any(
+        part.get("type") == "image_url"
+        and part["image_url"]["url"] == "data:image/png;base64,aGVsbG8="
+        for part in drained
+    )
+
+
+@pytest.mark.asyncio
+async def test_acp_queue_slash_command_still_replays_as_text():
+    # /queue stores a plain string; the drain must still replay it faithfully
+    # as a text prompt (the heterogeneous-queue normalization path).
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    state.queued_prompts.append("run the tests")
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="build it")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.runs == ["build it", "run the tests"]
+    assert state.queued_prompts == []

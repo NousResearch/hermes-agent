@@ -14941,25 +14941,68 @@ class GatewayRunner:
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
+            resolve_gateway_approval_by_id, get_default_approval_store,
         )
 
+        # Keyword tokens recognised by the legacy FIFO path. Any arg
+        # that's NOT one of these (and not "all") is treated as a
+        # potential approval_id when the durable store is wired.
+        _KEYWORDS = {
+            "all", "session", "ses", "always",
+            "permanent", "permanently", "once",
+        }
+
+        args_raw = event.get_command_args().strip().split()
+        args = [a.lower() for a in args_raw]
+
+        # Per the security spec: when an explicit id is provided, it MUST
+        # be the consume key. No fallback to FIFO. The original-cased arg
+        # is preserved because token_urlsafe ids include base64url chars
+        # whose case matters.
+        candidate_id: Optional[str] = None
+        for original, lowered in zip(args_raw, args):
+            if lowered not in _KEYWORDS:
+                candidate_id = original
+                break
+
+        # Choice extraction from the keyword tokens (same as before).
+        if any(a in {"always", "permanent", "permanently"} for a in args):
+            choice = "always"
+        elif any(a in {"session", "ses"} for a in args):
+            choice = "session"
+        else:
+            choice = "once"
+
+        # ── Per-id path (preferred when store configured + id supplied) ──
+        store = get_default_approval_store()
+        if candidate_id is not None and store is not None:
+            count = resolve_gateway_approval_by_id(session_key, candidate_id, choice)
+            if count == 0:
+                # store.get returned None / wrong session / non-pending /
+                # consume lost the race. Fail closed with explicit message.
+                logger.info(
+                    "Gateway /approve %s rejected by store (session=%s)",
+                    candidate_id, session_key,
+                )
+                return t("gateway.approve.no_pending")
+            _adapter = self.adapters.get(source.platform)
+            if _adapter:
+                _adapter.resume_typing_for_chat(source.chat_id)
+            logger.info(
+                "User approved %d command(s) by id %s via /approve (%s)",
+                count, candidate_id, choice,
+            )
+            plural = "plural" if count > 1 else "singular"
+            return t(f"gateway.approve.{choice}_{plural}", count=count)
+
+        # ── Legacy FIFO path (no id supplied, or store not configured) ──
         if not has_blocking_approval(session_key):
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.approval_expired")
             return t("gateway.approve.no_pending")
 
-        # Parse args: support "all", "all session", "all always", "session", "always"
-        args = event.get_command_args().strip().lower().split()
         resolve_all = "all" in args
-        remaining = [a for a in args if a != "all"]
-
-        if any(a in {"always", "permanent", "permanently"} for a in remaining):
-            choice = "always"
-        elif any(a in {"session", "ses"} for a in remaining):
-            choice = "session"
-        else:
-            choice = "once"
 
         count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
         if not count:
@@ -14980,23 +15023,58 @@ class GatewayRunner:
         Signals blocked agent thread(s) with a 'deny' result so they receive
         a definitive BLOCKED message, same as the CLI deny flow.
 
-        ``/deny`` denies the oldest; ``/deny all`` denies everything.
+        ``/deny`` denies the oldest; ``/deny all`` denies everything;
+        ``/deny <id>`` denies a specific proposal by approval_id (when
+        the durable store is configured). Per security spec, an explicit
+        id MUST be the consume key — denying a previously-denied id or
+        an unknown id is a no-op.
         """
         source = event.source
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
+            resolve_gateway_approval_by_id, get_default_approval_store,
         )
 
+        # Same keyword set as /approve handler.
+        _KEYWORDS = {"all"}
+
+        args_raw = event.get_command_args().strip().split()
+        args_lower = [a.lower() for a in args_raw]
+
+        candidate_id: Optional[str] = None
+        for original, lowered in zip(args_raw, args_lower):
+            if lowered not in _KEYWORDS:
+                candidate_id = original
+                break
+
+        store = get_default_approval_store()
+        if candidate_id is not None and store is not None:
+            count = resolve_gateway_approval_by_id(session_key, candidate_id, "deny")
+            if count == 0:
+                logger.info(
+                    "Gateway /deny %s rejected by store (session=%s)",
+                    candidate_id, session_key,
+                )
+                return t("gateway.deny.no_pending")
+            _adapter = self.adapters.get(source.platform)
+            if _adapter:
+                _adapter.resume_typing_for_chat(source.chat_id)
+            logger.info(
+                "User denied %d command(s) by id %s via /deny",
+                count, candidate_id,
+            )
+            return t("gateway.deny.denied_singular")
+
+        # Legacy FIFO path.
         if not has_blocking_approval(session_key):
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.deny.stale")
             return t("gateway.deny.no_pending")
 
-        args = event.get_command_args().strip().lower()
-        resolve_all = "all" in args
+        resolve_all = "all" in args_lower
 
         count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
         if not count:

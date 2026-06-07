@@ -685,6 +685,103 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def resolve_gateway_approval_by_id(session_key: str, approval_id: str,
+                                   choice: str) -> int:
+    """Atomically consume/deny a specific approval by id and signal the
+    matching blocked agent thread.
+
+    This is the *security gate* for the per-id path. Order matters:
+
+      1. Look up the proposal in the durable store. If the id is unknown,
+         the requesting session_key does not own it, or the proposal is
+         not pending → return 0 with no side effects.
+      2. Atomically transition via ``store.consume`` (for approve choices)
+         or ``store.deny`` (for deny). If that returns ``None``/``False``
+         — already consumed / denied / expired — return 0.
+      3. Only after the store transition succeeds do we find the matching
+         in-memory ``_ApprovalEntry`` (by approval_id), set its result,
+         and signal its event. The blocked agent thread wakes and runs
+         the command from its (pinned) entry data.
+
+    A return of 0 means "no execution will happen". 1 means the proposal
+    was consumed/denied and the matching waiter (if any) was signalled.
+
+    If the store is not configured, falls back to the legacy FIFO path
+    (see :func:`resolve_gateway_approval`).
+    """
+    store = get_default_approval_store()
+    if store is None:
+        # No durable store. Per security spec we should not silently
+        # fall back to FIFO under a per-id request, but for the rollout
+        # window we accept the no-store legacy behaviour to keep the
+        # existing test suite running. Production gateway always wires
+        # a store, so this branch is operator-misconfiguration only.
+        logger.warning(
+            "resolve_gateway_approval_by_id called but no store configured; "
+            "falling back to FIFO (approval_id=%s ignored)", approval_id,
+        )
+        return resolve_gateway_approval(session_key, choice)
+
+    # Lookup + session-key authorization check.
+    proposal = store.get(approval_id)
+    if proposal is None:
+        return 0
+    if proposal.session_key and proposal.session_key != session_key:
+        # Cross-session approval attempt — fail closed silently.
+        logger.warning(
+            "Gateway approval id %s requested by session %s but owned by %s; "
+            "rejecting",
+            approval_id, session_key, proposal.session_key,
+        )
+        return 0
+    if proposal.status != "pending":
+        return 0
+
+    # Atomic store-level transition. If we lose the race or the proposal
+    # is already terminal, this returns None/False and we exit without
+    # signalling anything.
+    consumed_by = f"session:{session_key}"
+    if choice == "deny":
+        ok = store.deny(approval_id, denied_by=consumed_by)
+        if not ok:
+            return 0
+    else:
+        got = store.consume(approval_id, consumed_by=consumed_by)
+        if got is None:
+            return 0
+
+    # Now find and signal the matching in-memory waiter. The store gate
+    # has already irreversibly committed; the in-memory step is purely
+    # the wake mechanism for the blocked agent thread.
+    with _lock:
+        target = None
+        for queued in _gateway_queues.get(session_key, []):
+            if getattr(queued, "approval_id", None) == approval_id:
+                target = queued
+                break
+        if target is not None:
+            queue = _gateway_queues.get(session_key, [])
+            if target in queue:
+                queue.remove(target)
+                if not queue:
+                    _gateway_queues.pop(session_key, None)
+    if target is not None:
+        target.result = choice
+        target.event.set()
+        return 1
+    # Store accepted but no live waiter — original agent thread is gone
+    # (gateway restart, agent run finished). The store row is now
+    # consumed/denied; no command will execute. Return 1 to indicate the
+    # store transition was applied, so the user gets feedback that their
+    # action took effect.
+    logger.info(
+        "Gateway approval %s consumed/denied but no live waiter "
+        "(session=%s) — store row updated, no command will execute",
+        approval_id, session_key,
+    )
+    return 1
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:

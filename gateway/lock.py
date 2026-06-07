@@ -1,5 +1,7 @@
 ﻿import os
+from .lock import FileLock
 import portalocker
+
 
 class FileLock:
     def __init__(self, lock_file):

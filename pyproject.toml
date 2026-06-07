@@ -666,4 +666,3 @@ select = ["PLW1514"]
 "skills/**" = ["PLW1514"]
 "optional-skills/**" = ["PLW1514"]
 "plugins/**" = ["PLW1514"]
- c9863772368720a892faaa6e1f3402dbea72f4bf

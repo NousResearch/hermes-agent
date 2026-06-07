@@ -1049,6 +1049,15 @@ class HonchoSessionManager:
         if not candidate:
             return session.user_peer_id
 
+        # Consult user_peer_aliases before sanitizing, so platform-native
+        # identifiers (MXIDs, Discord IDs, etc.) resolve to their configured
+        # canonical peer IDs.  Mirrors the lookup in _resolve_user_peer_id.
+        aliases = getattr(self._config, "user_peer_aliases", {}) if self._config else {}
+        if isinstance(aliases, dict) and candidate in aliases:
+            alias_target = aliases[candidate]
+            if isinstance(alias_target, str) and alias_target.strip():
+                return self._sanitize_id(alias_target.strip())
+
         normalized = self._sanitize_id(candidate)
         if normalized == self._sanitize_id("user"):
             return session.user_peer_id

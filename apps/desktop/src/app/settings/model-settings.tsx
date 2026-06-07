@@ -19,6 +19,8 @@ import { startManualProviderOAuth } from '@/store/onboarding'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, LoadingState, Pill, SectionHeading } from './primitives'
+import { useStore } from 'nanostores'
+import { addCustomModel, getCustomModelsForProvider } from '@/store/custom-models'
 
 // A provider row is "ready" to pick a model from when it reports models. The
 // backend now surfaces the full `hermes model` universe (every canonical

@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
+import { useStore } from 'nanostores'
 import { useState } from 'react'
 
+import { addCustomModel, $customModels, getCustomModelsForProvider } from '@/store/custom-models'
 import { useI18n } from '@/i18n'
 import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/types/hermes'
 
@@ -14,6 +16,7 @@ import { Button } from './ui/button'
 import { Checkbox } from './ui/checkbox'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './ui/command'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
+import { Input } from './ui/input'
 import { Skeleton } from './ui/skeleton'
 
 interface ModelPickerDialogProps {
@@ -52,6 +55,10 @@ export function ModelPickerDialog({
   // it and do a plain substring filter that preserves array order — matching
   // the `hermes model` CLI picker, which shows the curated list verbatim.
   const [search, setSearch] = useState('')
+  const [customModelDraft, setCustomModelDraft] = useState('')
+  const [showCustomInput, setShowCustomInput] = useState(false)
+  const [selectedProviderForCustom, setSelectedProviderForCustom] = useState<string | null>(null)
+  const customModels = useStore($customModels)
 
   const modelOptions = useQuery({
     queryKey: ['model-options', sessionId || 'global'],
@@ -96,6 +103,29 @@ export function ModelPickerDialog({
     onOpenChange(false)
   }
 
+  const handleAddCustomModel = () => {
+    if (!selectedProviderForCustom || !customModelDraft.trim()) {
+      return
+    }
+
+    const model = customModelDraft.trim()
+    addCustomModel(selectedProviderForCustom, model)
+
+    const provider = providers.find(p => p.slug === selectedProviderForCustom)
+    if (provider) {
+      onSelect({
+        provider: selectedProviderForCustom,
+        model,
+        persistGlobal: persistGlobal || !sessionId
+      })
+    }
+
+    setCustomModelDraft('')
+    setShowCustomInput(false)
+    setSelectedProviderForCustom(null)
+    onOpenChange(false)
+  }
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className={cn('max-h-[85vh] max-w-2xl gap-0 overflow-hidden p-0', contentClassName)}>
@@ -107,26 +137,73 @@ export function ModelPickerDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <Command className="rounded-none bg-card" shouldFilter={false}>
-          <CommandInput
-            autoFocus
-            onValueChange={setSearch}
-            placeholder={copy.search}
-            value={search}
-          />
-          <CommandList className="max-h-96">
-            {!loading && !error && <CommandEmpty>{copy.noModels}</CommandEmpty>}
-            <ModelResults
-              currentModel={optionsModel || currentModel}
-              currentProvider={optionsProvider || currentProvider}
-              error={error}
-              loading={loading}
-              onSelectModel={selectModel}
-              providers={providers}
-              search={search}
-            />
-          </CommandList>
-        </Command>
+        {showCustomInput ? (
+          <div className="border-b border-border px-4 py-3 space-y-3">
+            <div>
+              <label className="text-xs text-muted-foreground">Select provider</label>
+              <div className="flex flex-wrap gap-2 mt-2">
+                {providers.map(provider => (
+                  <Button
+                    key={provider.slug}
+                    onClick={() => setSelectedProviderForCustom(provider.slug)}
+                    variant={selectedProviderForCustom === provider.slug ? 'default' : 'outline'}
+                    size="sm"
+                    className="text-xs"
+                  >
+                    {provider.name}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground">Model ID</label>
+              <div className="flex gap-2 mt-2">
+                <Input
+                  autoFocus
+                  placeholder="e.g., claude-opus-4.6"
+                  value={customModelDraft}
+                  onChange={e => setCustomModelDraft(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      handleAddCustomModel()
+                    }
+                  }}
+                  disabled={!selectedProviderForCustom}
+                />
+                <Button onClick={handleAddCustomModel} disabled={!selectedProviderForCustom || !customModelDraft.trim()} size="sm">
+                  Add
+                </Button>
+                <Button onClick={() => setShowCustomInput(false)} variant="outline" size="sm">
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            <Command className="rounded-none bg-card" shouldFilter={false}>
+              <CommandInput
+                autoFocus
+                onValueChange={setSearch}
+                placeholder={copy.search}
+                value={search}
+              />
+              <CommandList className="max-h-96">
+                {!loading && !error && <CommandEmpty>{copy.noModels}</CommandEmpty>}
+                <ModelResults
+                  currentModel={optionsModel || currentModel}
+                  currentProvider={optionsProvider || currentProvider}
+                  customModels={customModels}
+                  error={error}
+                  loading={loading}
+                  onSelectModel={selectModel}
+                  providers={providers}
+                  search={search}
+                />
+              </CommandList>
+            </Command>
+          </>
+        )}
 
         <DialogFooter className="flex-row items-center justify-between gap-3 bg-card p-3 sm:justify-between">
           <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground">
@@ -139,6 +216,11 @@ export function ModelPickerDialog({
           </label>
 
           <div className="flex items-center gap-2">
+            {!showCustomInput && (
+              <Button onClick={() => setShowCustomInput(true)} variant="ghost">
+                + Custom model
+              </Button>
+            )}
             <Button onClick={addProvider} variant="ghost">
               {copy.addProvider}
             </Button>
@@ -159,7 +241,8 @@ function ModelResults({
   currentModel,
   currentProvider,
   onSelectModel,
-  search
+  search,
+  customModels
 }: {
   loading: boolean
   error: string | null
@@ -168,6 +251,7 @@ function ModelResults({
   currentProvider: string
   onSelectModel: (provider: ModelOptionProvider, model: string) => void
   search: string
+  customModels: Record<string, string[]>
 }) {
   const { t } = useI18n()
   const copy = t.modelPicker
@@ -206,10 +290,12 @@ function ModelResults({
   return (
     <>
       {configured.map(provider => {
-        // Preserve the backend's curated order — filter in place, no re-sort.
-        const models = (provider.models ?? []).filter(m => matches(provider, m))
+        // Merge backend models with user-added custom models
+        const backendModels = (provider.models ?? []).filter(m => matches(provider, m))
+        const customForProvider = getCustomModelsForProvider(provider.slug).filter(m => matches(provider, m))
+        const allModels = [...backendModels, ...customForProvider]
 
-        if (models.length === 0) {
+        if (allModels.length === 0) {
           return null
         }
 
@@ -224,7 +310,7 @@ function ModelResults({
                 </InlineNotice>
               </div>
             )}
-            {models.map(model => {
+            {backendModels.map(model => {
               const isCurrent = model === currentModel && provider.slug === currentProvider
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
@@ -252,6 +338,32 @@ function ModelResults({
                 </CommandItem>
               )
             })}
+            {customForProvider.length > 0 && (
+              <>
+                {backendModels.length > 0 && <div className="px-4 py-1 text-[0.62rem] text-muted-foreground">Custom</div>}
+                {customForProvider.map(model => {
+                  const isCurrent = model === currentModel && provider.slug === currentProvider
+
+                  return (
+                    <CommandItem
+                      className={cn(
+                        'flex items-center gap-2 pl-6 font-mono',
+                        isCurrent &&
+                          'bg-primary text-primary-foreground data-[selected=true]:bg-primary data-[selected=true]:text-primary-foreground'
+                      )}
+                      key={`${provider.slug}:${model}:custom`}
+                      onSelect={() => onSelectModel(provider, model)}
+                      value={`${provider.slug}:${model}:custom`}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{model}</span>
+                      <span className="shrink-0 rounded-sm bg-muted px-1 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                        custom
+                      </span>
+                    </CommandItem>
+                  )
+                })}
+              </>
+            )}
             {unavailable.size > 0 && (
               <div className="px-6 pb-2 pt-1 text-[0.62rem] leading-relaxed text-muted-foreground">
                 {copy.proNeedsSubscription}

@@ -1151,6 +1151,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     _reply_anchor_for_event,
     merge_pending_message_event,
 )
@@ -3491,6 +3492,45 @@ class GatewayRunner:
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
+            else:
+                # A successful steer does not go through BasePlatformAdapter's
+                # normal _process_message_background path, so lifecycle hooks
+                # (Telegram/Discord reactions, etc.) would otherwise be skipped
+                # for this user message. Mark it as in-progress now and defer
+                # the success reaction until the active run delivers its final
+                # response.
+                try:
+                    hook = getattr(adapter, "_run_processing_hook", None)
+                    if callable(hook):
+                        await hook("on_processing_start", event)
+
+                        async def _complete_steered_event() -> None:
+                            await hook(
+                                "on_processing_complete",
+                                event,
+                                ProcessingOutcome.SUCCESS,
+                            )
+
+                        register_cb = getattr(adapter, "register_post_delivery_callback", None)
+                        if callable(register_cb):
+                            generation = None
+                            active = getattr(adapter, "_active_sessions", {}).get(session_key)
+                            if active is not None:
+                                generation = getattr(active, "_hermes_run_generation", None)
+                            register_cb(
+                                session_key,
+                                _complete_steered_event,
+                                generation=generation,
+                            )
+                        else:
+                            await _complete_steered_event()
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to run busy-steer lifecycle hooks for %s: %s",
+                        session_key,
+                        exc,
+                        exc_info=True,
+                    )
 
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
@@ -5295,6 +5335,22 @@ class GatewayRunner:
         # consecutive send failures the sub is dropped so we don't spin
         # against a dead chat every 5 seconds forever.
         MAX_SEND_FAILURES = 3
+        try:
+            from hermes_cli.config import load_config as _load_config
+            cfg = _load_config()
+            kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        except Exception:
+            kanban_cfg = {}
+        notification_language = str(
+            kanban_cfg.get("notification_language")
+            or kanban_cfg.get("notifier_language")
+            or "en"
+        ).strip().lower()
+        simple_russian = notification_language in {"ru", "rus", "russian", "русский"}
+        telegram_approval_cards = self._kanban_truthy(
+            kanban_cfg.get("telegram_approval_cards")
+            or kanban_cfg.get("approval_cards")
+        )
         sub_fail_counts: dict[tuple, int] = getattr(
             self, "_kanban_sub_fail_counts", {}
         )
@@ -5443,57 +5499,22 @@ class GatewayRunner:
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
-                        if kind == "completed":
-                            # Prefer the run's summary (the worker's
-                            # intentional human-facing handoff, carried
-                            # in the event payload), then fall back to
-                            # task.result for legacy rows written before
-                            # runs shipped.
-                            handoff = ""
-                            payload_summary = None
-                            if ev.payload and ev.payload.get("summary"):
-                                payload_summary = str(ev.payload["summary"])
-                            if payload_summary:
-                                lines = payload_summary.strip().splitlines()
-                                h = lines[0][:200] if lines else payload_summary[:200]
-                                handoff = f"\n{h}"
-                            elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
-                                handoff = f"\n{r}"
-                            msg = (
-                                f"✔ {tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
-                            )
-                        elif kind == "blocked":
-                            reason = ""
-                            if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
-                        elif kind == "gave_up":
-                            err = ""
-                            if ev.payload and ev.payload.get("error"):
-                                err = f"\n{str(ev.payload['error'])[:200]}"
-                            msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
-                            )
-                        elif kind == "crashed":
-                            msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
-                            )
-                        elif kind == "timed_out":
-                            limit = 0
-                            if ev.payload and ev.payload.get("limit_seconds"):
-                                limit = int(ev.payload["limit_seconds"])
-                            msg = (
-                                f"⏱ {tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
-                            )
-                        else:
+                        msg, extra_metadata = self._format_kanban_terminal_notification(
+                            kind=kind,
+                            task_id=sub["task_id"],
+                            title=title,
+                            task=task,
+                            event_payload=getattr(ev, "payload", None),
+                            tag=tag,
+                            simple_russian=simple_russian,
+                            telegram_approval_cards=(
+                                telegram_approval_cards and platform_str == "telegram"
+                            ),
+                            board_slug=board_slug or "default",
+                        )
+                        if not msg:
                             continue
-                        metadata: dict[str, Any] = {}
+                        metadata: dict[str, Any] = dict(extra_metadata or {})
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
                         sub_key = (
@@ -5588,6 +5609,191 @@ class GatewayRunner:
                 if not self._running:
                     return
                 await asyncio.sleep(1)
+
+    @staticmethod
+    def _kanban_truthy(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"1", "true", "yes", "on", "y", "да"}
+
+    @staticmethod
+    def _kanban_handoff_text(event_payload: Optional[dict], task) -> str:
+        payload_summary = None
+        if isinstance(event_payload, dict) and event_payload.get("summary"):
+            payload_summary = str(event_payload["summary"])
+        if payload_summary:
+            return payload_summary.strip().splitlines()[0]
+        if task and getattr(task, "result", None):
+            return str(task.result).strip().splitlines()[0]
+        return ""
+
+    @staticmethod
+    def _kanban_reviewer_pass(task, event_payload: Optional[dict]) -> bool:
+        if not task or (getattr(task, "assignee", None) or "").lower() != "reviewer":
+            return False
+        summary = ""
+        if isinstance(event_payload, dict):
+            summary = str(event_payload.get("summary") or "")
+        if not summary and getattr(task, "result", None):
+            summary = str(task.result)
+        return (
+            re.search(r"\bPASS\b", summary, flags=re.IGNORECASE) is not None
+            and re.search(r"\bFAIL(?:ED|URE)?\b", summary, flags=re.IGNORECASE) is None
+            and re.search(r"\bBLOCK(?:ED|ER|ING)?\b", summary, flags=re.IGNORECASE) is None
+        )
+
+    @staticmethod
+    def _kanban_clean_reviewer_summary(summary: str) -> str:
+        cleaned = re.sub(r"^\s*PASS\s*[—:;,-]*\s*", "", summary.strip(), flags=re.IGNORECASE)
+        return cleaned.strip() or "Ревью пройдено, задача готова к твоей проверке."
+
+    @staticmethod
+    def _kanban_urls_from_payload(event_payload: Optional[dict], summary: str) -> list[str]:
+        urls: list[str] = []
+        if isinstance(event_payload, dict):
+            for key in ("pr_url", "preview_url", "dashboard_url", "check_url"):
+                value = event_payload.get(key)
+                if value:
+                    urls.append(str(value).strip())
+        urls.extend(re.findall(r"https?://[^\s)>,]+", summary or ""))
+        out: list[str] = []
+        seen: set[str] = set()
+        for url in urls:
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            out.append(url)
+        return out
+
+    def _format_kanban_approval_card(
+        self,
+        *,
+        task_id: str,
+        title: str,
+        task,
+        event_payload: Optional[dict],
+        board_slug: str,
+    ) -> tuple[str, dict[str, Any]]:
+        summary = self._kanban_handoff_text(event_payload, task)
+        short = self._kanban_clean_reviewer_summary(
+            str((event_payload or {}).get("human_summary") or summary)
+            if isinstance(event_payload, dict)
+            else summary
+        )[:500]
+        checklist: list[str] = []
+        if isinstance(event_payload, dict):
+            raw_checklist = event_payload.get("petro_checklist")
+            if isinstance(raw_checklist, (list, tuple)):
+                checklist = [str(item).strip() for item in raw_checklist if str(item).strip()]
+            elif raw_checklist:
+                checklist = [str(raw_checklist).strip()]
+        urls = self._kanban_urls_from_payload(event_payload, summary)
+        check_lines: list[str] = []
+        for url in urls[:3]:
+            check_lines.append(url)
+        for item in checklist:
+            if item not in check_lines:
+                check_lines.append(item)
+        if not check_lines:
+            check_lines.append("Открой карточку/PR и проверь сценарий, описанный в задаче.")
+        rendered_checks = "\n".join(
+            f"{idx}. {line}" for idx, line in enumerate(check_lines[:5], start=1)
+        )
+        risk = ""
+        if isinstance(event_payload, dict) and event_payload.get("risk_level"):
+            risk = f"\nРиск: {str(event_payload['risk_level']).strip()[:120]}"
+        msg = (
+            "✅ Всё готово\n\n"
+            f"Карточка: {title} ({task_id})\n"
+            f"Коротко: {short}\n\n"
+            f"Что проверить:\n{rendered_checks}\n\n"
+            f"Статус: ревью пройдено.{risk}\n\n"
+            "Если всё ок — нажми Approve. Если что-то не работает — нажми «Отклонить» и напиши, что поправить."
+        )
+        metadata = {
+            "inline_keyboard": [[
+                {"text": "✅ Approve", "callback_data": f"kb:a:{board_slug}:{task_id}"},
+                {"text": "❌ Отклонить и внести правки", "callback_data": f"kb:r:{board_slug}:{task_id}"},
+            ]]
+        }
+        return msg, metadata
+
+    def _format_kanban_terminal_notification(
+        self,
+        *,
+        kind: str,
+        task_id: str,
+        title: str,
+        task,
+        event_payload: Optional[dict],
+        tag: str,
+        simple_russian: bool,
+        telegram_approval_cards: bool,
+        board_slug: str,
+    ) -> tuple[str, dict[str, Any]]:
+        if (
+            kind == "completed"
+            and telegram_approval_cards
+            and self._kanban_reviewer_pass(task, event_payload)
+        ):
+            return self._format_kanban_approval_card(
+                task_id=task_id,
+                title=title,
+                task=task,
+                event_payload=event_payload,
+                board_slug=board_slug,
+            )
+
+        if not simple_russian:
+            if kind == "completed":
+                handoff = ""
+                h = self._kanban_handoff_text(event_payload, task)
+                if h:
+                    handoff = f"\n{h[:200]}"
+                return f"✔ {tag}Kanban {task_id} done — {title}{handoff}", {}
+            if kind == "blocked":
+                reason = ""
+                if isinstance(event_payload, dict) and event_payload.get("reason"):
+                    reason = f": {str(event_payload['reason'])[:160]}"
+                return f"⏸ {tag}Kanban {task_id} blocked{reason}", {}
+            if kind == "gave_up":
+                err = ""
+                if isinstance(event_payload, dict) and event_payload.get("error"):
+                    err = f"\n{str(event_payload['error'])[:200]}"
+                return f"✖ {tag}Kanban {task_id} gave up after repeated spawn failures{err}", {}
+            if kind == "crashed":
+                return f"✖ {tag}Kanban {task_id} worker crashed (pid gone); dispatcher will retry", {}
+            if kind == "timed_out":
+                limit = 0
+                if isinstance(event_payload, dict) and event_payload.get("limit_seconds"):
+                    limit = int(event_payload["limit_seconds"])
+                return f"⏱ {tag}Kanban {task_id} timed out (max_runtime={limit}s); will retry", {}
+            return "", {}
+
+        if kind == "completed":
+            handoff = self._kanban_handoff_text(event_payload, task)
+            details = f"\nКоротко: {handoff[:220]}" if handoff else ""
+            return f"✅ Готово: {title}\nКарточка: {task_id}{details}", {}
+        if kind == "blocked":
+            reason = ""
+            if isinstance(event_payload, dict) and event_payload.get("reason"):
+                reason = f"\nЧто нужно: {str(event_payload['reason'])[:220]}"
+            return f"⏸ Нужна помощь: {title}\nКарточка: {task_id}{reason}", {}
+        if kind == "gave_up":
+            err = ""
+            if isinstance(event_payload, dict) and event_payload.get("error"):
+                err = f"\nОшибка: {str(event_payload['error'])[:220]}"
+            return f"❌ Не получилось запустить задачу: {title}\nКарточка: {task_id}{err}", {}
+        if kind == "crashed":
+            return f"❌ Исполнитель упал: {title}\nКарточка: {task_id}\nЯ попробую перезапустить задачу.", {}
+        if kind == "timed_out":
+            limit = 0
+            if isinstance(event_payload, dict) and event_payload.get("limit_seconds"):
+                limit = int(event_payload["limit_seconds"])
+            return f"⏱ Задача не успела завершиться: {title}\nКарточка: {task_id}\nЛимит: {limit} сек. Я попробую перезапустить.", {}
+        return "", {}
 
     def _kanban_advance(
         self, sub: dict, cursor: int, board: Optional[str] = None,

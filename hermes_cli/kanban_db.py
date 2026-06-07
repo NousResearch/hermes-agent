@@ -2280,6 +2280,18 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if task_status == "blocked":
+                    # `recompute_ready()` treats a blocked task as sticky only
+                    # when the task has a real `blocked` event. Initial
+                    # blocked cards are human-gated by definition, so emit the
+                    # same event shape as an operator block while still
+                    # preserving the original `created` audit event.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "initial status blocked"},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -3696,6 +3708,22 @@ def complete_task(
         # ``metadata["artifacts"]`` — we promote it onto the event so
         # consumers don't have to fetch the run row to find it.
         if isinstance(metadata, dict):
+            # Promote selected human-facing metadata onto the completed event so
+            # gateway notifiers can render useful approval cards without an
+            # extra SQL lookup. Keep this deliberately small: rich/raw details
+            # still belong on the run row.
+            for key in (
+                "pr_url",
+                "preview_url",
+                "dashboard_url",
+                "check_url",
+                "tests",
+                "risk_level",
+                "petro_checklist",
+                "human_summary",
+            ):
+                if metadata.get(key):
+                    completed_payload[key] = metadata[key]
             md_artifacts = metadata.get("artifacts")
             if isinstance(md_artifacts, (list, tuple)):
                 cleaned_artifacts = [

@@ -43,12 +43,18 @@ def _make_runner(adapter):
     return runner
 
 
-def _create_completed_subscription(summary="done once"):
+def _create_completed_subscription(
+    summary="done once",
+    *,
+    title="notify once",
+    assignee="worker",
+    metadata=None,
+):
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="notify once", assignee="worker")
+        tid = kb.create_task(conn, title=title, assignee=assignee)
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
-        kb.complete_task(conn, tid, summary=summary)
+        kb.complete_task(conn, tid, summary=summary, metadata=metadata)
         return tid
     finally:
         conn.close()
@@ -103,6 +109,106 @@ def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatc
 
     assert len(adapter1.sent) == 1
     assert adapter2.sent == []
+
+
+def test_kanban_notifier_can_render_simple_russian_messages(tmp_path, monkeypatch):
+    """Petro-facing queues can opt into Russian, non-technical alerts."""
+    db_path = tmp_path / "russian-notifier.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"notification_language": "ru"}},
+    )
+
+    tid = _create_completed_subscription(
+        summary="Исправили ошибку с бюджетами Google Ads",
+        title="Исправить ошибку Google Ads с бюджетами",
+        assignee="ultracode",
+    )
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "Готово" in text
+    assert "Исправить ошибку Google Ads с бюджетами" in text
+    assert tid in text
+    assert "Kanban" not in text
+    assert "done" not in text.lower()
+
+
+def test_kanban_notifier_sends_reviewer_pass_approval_buttons(tmp_path, monkeypatch):
+    """Reviewer PASS should produce a Paperclip-style approval card."""
+    db_path = tmp_path / "approval-card.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "kanban": {
+                "notification_language": "ru",
+                "telegram_approval_cards": True,
+            }
+        },
+    )
+
+    tid = _create_completed_subscription(
+        summary="PASS — PR https://github.com/acme/demo/pull/123, тесты прошли",
+        title="Проверить исправление Google Ads",
+        assignee="reviewer",
+        metadata={
+            "pr_url": "https://github.com/acme/demo/pull/123",
+            "petro_checklist": ["Открыть PR", "Проверить сценарий в админке"],
+            "risk_level": "низкий",
+        },
+    )
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    sent = adapter.sent[0]
+    assert "Всё готово" in sent["text"]
+    assert "Что проверить" in sent["text"]
+    assert "https://github.com/acme/demo/pull/123" in sent["text"]
+    assert sent["metadata"]["inline_keyboard"] == [
+        [
+            {"text": "✅ Approve", "callback_data": f"kb:a:default:{tid}"},
+            {"text": "❌ Отклонить и внести правки", "callback_data": f"kb:r:default:{tid}"},
+        ]
+    ]
+
+
+def test_kanban_notifier_does_not_treat_bypass_as_reviewer_pass(tmp_path, monkeypatch):
+    """PASS detection should match a verdict word, not substrings like BYPASS."""
+    db_path = tmp_path / "approval-card-bypass.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "kanban": {
+                "notification_language": "ru",
+                "telegram_approval_cards": True,
+            }
+        },
+    )
+
+    tid = _create_completed_subscription(
+        summary="BYPASS — not a reviewer verdict",
+        title="No approval card",
+        assignee="reviewer",
+    )
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert "Всё готово" not in adapter.sent[0]["text"]
+    assert "inline_keyboard" not in adapter.sent[0]["metadata"]
+    assert tid in adapter.sent[0]["text"]
 
 
 def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypatch):

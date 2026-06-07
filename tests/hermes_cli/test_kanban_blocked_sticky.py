@@ -49,6 +49,31 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Initial blocked tasks are human-gated too
+# ---------------------------------------------------------------------------
+
+
+def test_initial_blocked_task_is_sticky(kanban_home: Path) -> None:
+    """`hermes kanban create --initial-status blocked` is used for
+    immediate human gates. It must emit a blocked event so the dispatcher
+    does not auto-promote a parent-free blocked task on the next tick."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="wait for human", initial_status="blocked")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+
+        events = [ev.kind for ev in kb.list_events(conn, tid)]
+        assert events == ["created", "blocked"]
+
+        for _ in range(3):
+            assert kb.recompute_ready(conn) == 0
+            task = kb.get_task(conn, tid)
+            assert task is not None
+            assert task.status == "blocked"
+
+
+# ---------------------------------------------------------------------------
 # Worker-initiated kanban_block must be sticky
 # ---------------------------------------------------------------------------
 

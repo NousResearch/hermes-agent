@@ -2044,6 +2044,14 @@ DEFAULT_CONFIG = {
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.
         "auto_decompose_per_tick": 3,
+        # User-facing notifier copy. "en" preserves the generic upstream
+        # wording; "ru" renders short, simple Russian alerts for Petro-style
+        # human-in-the-loop queues.
+        "notification_language": "en",
+        # When true, a reviewer PASS completion sent to Telegram is rendered as
+        # a Paperclip-style approval card with Approve / Reject buttons. The
+        # buttons only record human intent in Kanban; they do not merge/deploy.
+        "telegram_approval_cards": False,
         # Stale detection: running tasks that have exceeded this many
         # seconds without a heartbeat (since ``last_heartbeat_at``) are
         # auto-reclaimed to ``ready`` on the next dispatcher tick. The

@@ -48,6 +48,7 @@ _ensure_telegram_mock()
 
 from gateway.platforms.telegram import TelegramAdapter
 from gateway.config import Platform, PlatformConfig
+from hermes_cli import kanban_db as kb
 
 
 def _make_adapter(extra=None):
@@ -193,6 +194,30 @@ class TestTelegramExecApproval:
             kwargs.get("disable_web_page_preview") is True
             or kwargs.get("link_preview_options") is not None
         )
+
+    @pytest.mark.asyncio
+    async def test_send_uses_inline_keyboard_metadata(self):
+        adapter = _make_adapter()
+        adapter.send_typing = AsyncMock()
+        assert adapter._bot is not None
+        mock_msg = MagicMock()
+        mock_msg.message_id = 77
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send(
+            "12345",
+            "Approval card",
+            metadata={
+                "inline_keyboard": [[
+                    {"text": "✅ Approve", "callback_data": "kb:a:default:t_12345678"},
+                    {"text": "❌ Reject", "callback_data": "kb:r:default:t_12345678"},
+                ]]
+            },
+        )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert kwargs["reply_markup"] is not None
 
     @pytest.mark.asyncio
     async def test_send_update_prompt_escapes_dynamic_prompt(self):
@@ -529,6 +554,113 @@ class TestTelegramApprovalCallback:
         assert "not authorized" in query.answer.call_args[1]["text"].lower()
         query.edit_message_text.assert_not_called()
         assert not (tmp_path / ".update_response").exists()
+
+    @pytest.mark.asyncio
+    async def test_kanban_approval_callback_is_idempotent(self, tmp_path, monkeypatch):
+        """Double-clicking Approve should not create duplicate Kanban decisions."""
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+        kb.init_db()
+        with kb.connect() as conn:
+            task_id = kb.create_task(
+                conn,
+                title="approval idempotency",
+                assignee="reviewer",
+                initial_status="blocked",
+            )
+
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.from_user = MagicMock()
+        query.from_user.id = "12345"
+        query.from_user.first_name = "Petro"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_thread_id = None
+        query.message.text = "✅ Всё готово"
+        query.answer = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_kanban_callback(
+                query,
+                f"kb:a:default:{task_id}",
+                query_chat_id="12345",
+                query_chat_type="private",
+            )
+            await adapter._handle_kanban_callback(
+                query,
+                f"kb:a:default:{task_id}",
+                query_chat_id="12345",
+                query_chat_type="private",
+            )
+
+        with kb.connect() as conn:
+            rows = conn.execute(
+                "SELECT body FROM task_comments WHERE task_id=? AND author='telegram'",
+                (task_id,),
+            ).fetchall()
+        assert [r["body"] for r in rows] == [
+            "✅ Одобрено через Telegram пользователем Petro. Merge/deploy не запускались автоматически."
+        ]
+        assert query.answer.call_args_list[-1][1]["text"] == "Решение уже записано."
+
+    @pytest.mark.asyncio
+    async def test_kanban_reject_captures_next_text_feedback(self, tmp_path, monkeypatch):
+        """Reject should record the decision and capture the user's next text."""
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+        kb.init_db()
+        with kb.connect() as conn:
+            task_id = kb.create_task(
+                conn,
+                title="reject feedback",
+                assignee="reviewer",
+                initial_status="blocked",
+            )
+
+        adapter = _make_adapter()
+        adapter._send_message_with_thread_fallback = AsyncMock()
+        query = AsyncMock()
+        query.from_user = MagicMock()
+        query.from_user.id = "12345"
+        query.from_user.first_name = "Petro"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_thread_id = 99
+        query.message.text = "✅ Всё готово"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_kanban_callback(
+                query,
+                f"kb:r:default:{task_id}",
+                query_chat_id="12345",
+                query_chat_type="supergroup",
+                query_thread_id="99",
+            )
+
+        msg = MagicMock()
+        msg.chat_id = 12345
+        msg.message_thread_id = 99
+        msg.message_id = 777
+        msg.text = "тестовая правка"
+        msg.from_user = MagicMock()
+        msg.from_user.id = "12345"
+        msg.from_user.first_name = "Petro"
+
+        assert await adapter._maybe_capture_kanban_feedback(msg) is True
+
+        with kb.connect() as conn:
+            rows = conn.execute(
+                "SELECT body FROM task_comments WHERE task_id=? AND author='telegram' ORDER BY id",
+                (task_id,),
+            ).fetchall()
+        assert [r["body"] for r in rows] == [
+            "❌ Отклонено через Telegram пользователем Petro. Ожидаю текст с описанием, что нужно поправить.",
+            "Правки от Petro: тестовая правка",
+        ]
+        adapter._send_message_with_thread_fallback.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_update_prompt_callback_rejects_user_blocked_by_global_allowlist(self, tmp_path):

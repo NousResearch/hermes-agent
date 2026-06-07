@@ -478,6 +478,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Kanban approval-card reject flow: (chat_id, thread_id, user_id) →
+        # task metadata. The next text message from that user is captured as
+        # free-form feedback and written to the Kanban card comments.
+        self._kanban_feedback_state: Dict[tuple[str, str, str], Dict[str, str]] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -506,6 +510,57 @@ class TelegramAdapter(BasePlatformAdapter):
         if (metadata or {}).get("notify"):
             return {}
         return {"disable_notification": True}
+
+    def _inline_keyboard_from_metadata(
+        self, metadata: Optional[Dict[str, Any]]
+    ) -> Optional[Any]:
+        """Build a Telegram inline keyboard from send metadata.
+
+        Shape: ``metadata["inline_keyboard"]`` is a list of rows; each button
+        is either ``{"text": "Label", "callback_data": "prefix:..."}`` or a
+        ``(text, callback_data)`` pair. Invalid/empty buttons are ignored.
+        """
+        if not metadata:
+            return None
+        raw_rows = metadata.get("inline_keyboard")
+        if not raw_rows:
+            return None
+        rows: list[list[Any]] = []
+        try:
+            iterable_rows = list(raw_rows)
+        except TypeError:
+            return None
+        for raw_row in iterable_rows:
+            try:
+                iterable_buttons = list(raw_row)
+            except TypeError:
+                iterable_buttons = [raw_row]
+            row: list[Any] = []
+            for button in iterable_buttons:
+                text = callback_data = None
+                if isinstance(button, dict):
+                    text = button.get("text")
+                    callback_data = button.get("callback_data")
+                elif isinstance(button, (list, tuple)) and len(button) >= 2:
+                    text, callback_data = button[0], button[1]
+                if not text or not callback_data:
+                    continue
+                callback_data = str(callback_data)
+                if len(callback_data.encode("utf-8")) > 64:
+                    logger.warning("[%s] inline keyboard callback_data too long; skipping button", self.name)
+                    continue
+                row.append(InlineKeyboardButton(str(text), callback_data=callback_data))
+            if row:
+                rows.append(row)
+        return InlineKeyboardMarkup(rows) if rows else None
+
+    def _kanban_feedback_key(
+        self,
+        chat_id: Optional[Any],
+        thread_id: Optional[Any],
+        user_id: Optional[Any],
+    ) -> tuple[str, str, str]:
+        return (str(chat_id or ""), str(thread_id or ""), str(user_id or ""))
 
     def _is_callback_user_authorized(
         self,
@@ -1862,6 +1917,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             # Format and split message if needed
             formatted = self.format_message(content)
+            inline_keyboard = self._inline_keyboard_from_metadata(metadata)
             chunks = self.truncate_message(
                 formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
             )
@@ -1947,6 +2003,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
+                                reply_markup=inline_keyboard if i == 0 else None,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -1961,6 +2018,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
+                                    reply_markup=inline_keyboard if i == 0 else None,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
@@ -3229,6 +3287,130 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    async def _handle_kanban_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id=None,
+        query_chat_type=None,
+        query_thread_id=None,
+        query_user_name=None,
+    ) -> None:
+        """Handle Kanban approval-card buttons.
+
+        v1 safety: Approve/Reject only writes comments to Kanban. It never
+        merges PRs, deploys, mutates production, or spends money.
+        """
+        parts = data.split(":", 3)
+        if len(parts) != 4:
+            await query.answer(text="Некорректная кнопка Kanban.")
+            return
+        _, choice, board_slug, task_id = parts
+        if choice not in {"a", "r"} or not task_id:
+            await query.answer(text="Некорректная кнопка Kanban.")
+            return
+
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ У тебя нет доступа к этой кнопке.")
+            return
+
+        user_display = getattr(query.from_user, "first_name", None) or query_user_name or "Пользователь"
+        board_slug = board_slug or "default"
+        try:
+            from hermes_cli import kanban_db as _kb
+            conn = _kb.connect(board=board_slug)
+            try:
+                task = _kb.get_task(conn, task_id)
+                if not task:
+                    await query.answer(text="Карточка не найдена.")
+                    return
+                existing_decision = conn.execute(
+                    """
+                    SELECT body FROM task_comments
+                     WHERE task_id = ? AND author = 'telegram'
+                       AND (body LIKE '✅ Одобрено через Telegram%'
+                            OR body LIKE '❌ Отклонено через Telegram%')
+                     ORDER BY id ASC LIMIT 1
+                    """,
+                    (task_id,),
+                ).fetchone()
+                if existing_decision:
+                    await query.answer(text="Решение уже записано.")
+                    try:
+                        await query.edit_message_reply_markup(reply_markup=None)
+                    except Exception:
+                        pass
+                    return
+                if choice == "a":
+                    _kb.add_comment(
+                        conn,
+                        task_id,
+                        "telegram",
+                        f"✅ Одобрено через Telegram пользователем {user_display}. Merge/deploy не запускались автоматически.",
+                    )
+                    await query.answer(text="Одобрение записано.")
+                    try:
+                        await query.edit_message_reply_markup(reply_markup=None)
+                    except Exception:
+                        pass
+                    try:
+                        await query.edit_message_text(
+                            text=f"✅ Одобрено\n\n{query.message.text or ''}",
+                            parse_mode=None,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
+                    logger.info("Telegram Kanban approval recorded for %s by %s", task_id, caller_id)
+                    return
+
+                _kb.add_comment(
+                    conn,
+                    task_id,
+                    "telegram",
+                    f"❌ Отклонено через Telegram пользователем {user_display}. Ожидаю текст с описанием, что нужно поправить.",
+                )
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.error("[%s] Kanban callback failed: %s", self.name, exc, exc_info=True)
+            await query.answer(text="Не смог записать решение в Kanban.")
+            return
+
+        # Reject path: capture the next text message from the same user/chat/topic.
+        query_message = getattr(query, "message", None)
+        chat_id = getattr(query_message, "chat_id", query_chat_id)
+        thread_id = getattr(query_message, "message_thread_id", query_thread_id)
+        state = getattr(self, "_kanban_feedback_state", None)
+        if state is None:
+            state = {}
+            self._kanban_feedback_state = state
+        state[self._kanban_feedback_key(chat_id, thread_id, caller_id)] = {
+            "board": board_slug,
+            "task_id": task_id,
+            "user": str(user_display),
+        }
+        await query.answer(text="Напиши в чат, что именно не работает.")
+        try:
+            await query.edit_message_text(
+                text=(
+                    f"❌ Отклонено\n\n{query.message.text or ''}\n\n"
+                    "Напиши следующим сообщением, что именно не работает — я запишу это в карточку."
+                ),
+                parse_mode=None,
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -3254,6 +3436,18 @@ class TelegramAdapter(BasePlatformAdapter):
         # --- Gmail-triage callbacks (gt:verb:arg) ---
         if data.startswith("gt:"):
             await self._handle_gmail_triage_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
+
+        # --- Kanban approval-card callbacks (kb:<a|r>:<board>:<task_id>) ---
+        if data.startswith("kb:"):
+            await self._handle_kanban_callback(
                 query,
                 data,
                 query_chat_id=query_chat_id,
@@ -5180,6 +5374,72 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    async def _maybe_capture_kanban_feedback(self, msg) -> bool:
+        """Capture free-text feedback after a Kanban Reject button.
+
+        This runs before the normal group mention filter so Petro can press
+        Reject and then simply type what is broken in the same topic.
+        """
+        state = getattr(self, "_kanban_feedback_state", None)
+        if not state:
+            return False
+        from_user = getattr(msg, "from_user", None)
+        user_id = str(getattr(from_user, "id", "") or "")
+        key = self._kanban_feedback_key(
+            getattr(msg, "chat_id", None),
+            getattr(msg, "message_thread_id", None),
+            user_id,
+        )
+        pending = state.pop(key, None)
+        if not pending:
+            return False
+        feedback = (getattr(msg, "text", None) or "").strip()
+        if not feedback:
+            return True
+        board_slug = pending.get("board") or "default"
+        task_id = pending.get("task_id") or ""
+        user_display = pending.get("user") or getattr(from_user, "first_name", None) or "Пользователь"
+        try:
+            from hermes_cli import kanban_db as _kb
+            conn = _kb.connect(board=board_slug)
+            try:
+                _kb.add_comment(
+                    conn,
+                    task_id,
+                    "telegram",
+                    f"Правки от {user_display}: {feedback}",
+                )
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.error("[%s] Failed to record Kanban reject feedback: %s", self.name, exc, exc_info=True)
+            return False
+
+        if self._bot:
+            try:
+                thread_id = getattr(msg, "message_thread_id", None)
+                reply_to_id = getattr(msg, "message_id", None)
+                send_kwargs: Dict[str, Any] = {
+                    "chat_id": int(getattr(msg, "chat_id")),
+                    "text": "Принял. Записал, что нужно поправить, в Kanban-карточку.",
+                    "parse_mode": None,
+                    "reply_to_message_id": reply_to_id,
+                    **self._link_preview_kwargs(),
+                }
+                send_kwargs.update(
+                    self._thread_kwargs_for_send(
+                        str(getattr(msg, "chat_id")),
+                        str(thread_id) if thread_id is not None else None,
+                        {"thread_id": str(thread_id)} if thread_id is not None else None,
+                        reply_to_message_id=reply_to_id,
+                        reply_to_mode=self._reply_to_mode,
+                    )
+                )
+                await self._send_message_with_thread_fallback(**send_kwargs)
+            except Exception:
+                logger.debug("[%s] Failed to send Kanban feedback ack", self.name, exc_info=True)
+        return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -5189,6 +5449,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
+            return
+        if await self._maybe_capture_kanban_feedback(msg):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
@@ -6053,29 +6315,15 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._set_reaction(chat_id, message_id, "\U0001f440")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction.
+        """Clear the in-progress reaction when processing finishes.
 
-        Unlike Discord (additive reactions), Telegram's set_message_reaction
-        replaces all existing reactions in one call — no remove step needed.
-
-        On CANCELLED outcomes (e.g. the user runs ``/stop``, or a session is
-        interrupted mid-flight), we explicitly clear the 👀 in-progress
-        reaction so it doesn't linger on the user's message indefinitely.
-        Without this clear, the only way to remove the 👀 was to wait for
-        another agent run to swap it to 👍/👎 — which never happens if the
-        cancellation was the last activity in the chat.
+        Petro prefers Telegram reactions to be a transient lifecycle indicator:
+        👀 means "taken into work" while the agent is processing, then the
+        reaction is removed when the run finishes.  Do not swap it to 👍/👎.
         """
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
-        if not (chat_id and message_id):
-            return
-        if outcome == ProcessingOutcome.CANCELLED:
+        if chat_id and message_id:
             await self._clear_reactions(chat_id, message_id)
-        else:
-            await self._set_reaction(
-                chat_id,
-                message_id,
-                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
-            )

@@ -4,6 +4,7 @@ Verifies that users get an immediate status response instead of total silence
 when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
 import time
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,6 +28,7 @@ sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SessionSource,
     build_session_key,
 )
@@ -79,7 +81,10 @@ def _make_adapter(platform_val="telegram"):
     """Build a minimal adapter mock."""
     adapter = MagicMock()
     adapter._pending_messages = {}
+    adapter._active_sessions = {}
     adapter._send_with_retry = AsyncMock()
+    adapter._run_processing_hook = AsyncMock()
+    adapter.register_post_delivery_callback = MagicMock()
     adapter.config = MagicMock()
     adapter.config.extra = {}
     adapter.platform = MagicMock(value=platform_val)
@@ -244,6 +249,48 @@ class TestBusySessionAck:
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Steered" in content or "steer" in content.lower()
         assert "Interrupting" not in content
+
+    @pytest.mark.asyncio
+    async def test_steer_mode_runs_processing_lifecycle_hooks(self):
+        """Successful busy-mode steer should still trigger lifecycle hooks.
+
+        The steered message is injected into the active agent run rather than
+        replayed through BasePlatformAdapter._process_message_background, so
+        reaction adapters need an explicit 👀 start hook plus a deferred
+        completion hook that clears it after final delivery.
+        """
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="also check reactions")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        active_guard = asyncio.Event()
+        setattr(active_guard, "_hermes_run_generation", 7)
+        adapter._active_sessions[sk] = active_guard
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        adapter._run_processing_hook.assert_any_await("on_processing_start", event)
+        adapter.register_post_delivery_callback.assert_called_once()
+        call_args = adapter.register_post_delivery_callback.call_args
+        assert call_args.args[0] == sk
+        assert call_args.kwargs.get("generation") == 7
+
+        complete_cb = call_args.args[1]
+        assert callable(complete_cb)
+        await complete_cb()
+        adapter._run_processing_hook.assert_any_await(
+            "on_processing_complete",
+            event,
+            ProcessingOutcome.SUCCESS,
+        )
 
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):

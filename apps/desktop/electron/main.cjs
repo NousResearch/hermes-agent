@@ -236,6 +236,7 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+const DESKTOP_ZOOM_CONFIG_PATH = path.join(app.getPath('userData'), 'zoom-level.json')
 // active-profile.json records which Hermes profile the desktop launches its
 // local backend as. When set, startHermes() passes `hermes --profile <name>
 // dashboard …`, which deterministically pins HERMES_HOME (see
@@ -1237,6 +1238,41 @@ function writeFileAtomic(targetPath, data, encoding) {
   const tmp = targetPath + '.tmp'
   fs.writeFileSync(tmp, data, encoding)
   fs.renameSync(tmp, targetPath)
+}
+
+function clampZoomLevel(value) {
+  if (!Number.isFinite(value)) return 0
+  return Math.min(Math.max(value, -9), 9)
+}
+
+function readDesktopZoomLevel() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DESKTOP_ZOOM_CONFIG_PATH, 'utf8'))
+    return clampZoomLevel(Number(parsed?.zoomLevel))
+  } catch {
+    return 0
+  }
+}
+
+function writeDesktopZoomLevel(zoomLevel) {
+  try {
+    fs.mkdirSync(path.dirname(DESKTOP_ZOOM_CONFIG_PATH), { recursive: true })
+    writeFileAtomic(DESKTOP_ZOOM_CONFIG_PATH, JSON.stringify({ zoomLevel: clampZoomLevel(zoomLevel) }, null, 2))
+  } catch (error) {
+    rememberLog(`[zoom] write failed: ${error?.message || error}`)
+  }
+}
+
+function applyPersistedZoomLevel(window) {
+  if (!window || window.isDestroyed()) return
+  window.webContents.setZoomLevel(readDesktopZoomLevel())
+}
+
+function setAndPersistZoomLevel(window, zoomLevel) {
+  if (!window || window.isDestroyed()) return
+  const next = clampZoomLevel(zoomLevel)
+  window.webContents.setZoomLevel(next)
+  writeDesktopZoomLevel(next)
 }
 
 function writeDesktopUpdateConfig(config) {
@@ -3137,7 +3173,7 @@ function buildApplicationMenu() {
         label: 'Actual Size',
         accelerator: 'CommandOrControl+0',
         click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setZoomLevel(0)
+          setAndPersistZoomLevel(mainWindow, 0)
         }
       },
       {
@@ -3146,7 +3182,7 @@ function buildApplicationMenu() {
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
             const next = Math.min(mainWindow.webContents.getZoomLevel() + 0.1, 9)
-            mainWindow.webContents.setZoomLevel(next)
+            setAndPersistZoomLevel(mainWindow, next)
           }
         }
       },
@@ -3156,7 +3192,7 @@ function buildApplicationMenu() {
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
             const next = Math.max(mainWindow.webContents.getZoomLevel() - 0.1, -9)
-            mainWindow.webContents.setZoomLevel(next)
+            setAndPersistZoomLevel(mainWindow, next)
           }
         }
       },
@@ -3231,15 +3267,15 @@ function installZoomShortcuts(window) {
     const key = input.key
     if (key === '0') {
       event.preventDefault()
-      window.webContents.setZoomLevel(0)
+      setAndPersistZoomLevel(window, 0)
     } else if (key === '=' || key === '+') {
       event.preventDefault()
       const next = Math.min(window.webContents.getZoomLevel() + ZOOM_STEP, 9)
-      window.webContents.setZoomLevel(next)
+      setAndPersistZoomLevel(window, next)
     } else if (key === '-') {
       event.preventDefault()
       const next = Math.max(window.webContents.getZoomLevel() - ZOOM_STEP, -9)
-      window.webContents.setZoomLevel(next)
+      setAndPersistZoomLevel(window, next)
     }
   })
 }
@@ -4655,6 +4691,7 @@ function createWindow() {
     }
   }
 
+  applyPersistedZoomLevel(mainWindow)
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('will-leave-full-screen', () => sendWindowStateChanged(false))
@@ -4730,6 +4767,7 @@ function createWindow() {
   }
 
   mainWindow.webContents.once('did-finish-load', () => {
+    applyPersistedZoomLevel(mainWindow)
     broadcastBootProgress()
     sendWindowStateChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))

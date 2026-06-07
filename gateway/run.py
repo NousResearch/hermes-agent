@@ -8352,6 +8352,9 @@ class GatewayRunner:
         if canonical == "resume":
             return await self._handle_resume_command(event)
 
+        if canonical == "sessions":
+            return await self._handle_sessions_command(event)
+
         if canonical == "branch":
             return await self._handle_branch_command(event)
 
@@ -14041,6 +14044,27 @@ class GatewayRunner:
         if msg_count == 1:
             return t("gateway.resume.resumed_one", title=title, count=msg_count)
         return t("gateway.resume.resumed_many", title=title, count=msg_count)
+
+    async def _handle_sessions_command(self, event: MessageEvent) -> str:
+        """Handle /sessions [list|<id_or_title>] natively in the gateway.
+
+        Mirrors the CLI behavior by reusing the existing /resume logic:
+        bare /sessions (and explicit list aliases) render the recent-session
+        browser, while /sessions <target> resolves and switches to that
+        session without involving the model.
+        """
+        original_text = event.text
+        args = event.get_command_args().strip()
+        subcommand = args.lower()
+        if not args or subcommand in {"list", "ls", "browse"}:
+            rewritten = "/resume"
+        else:
+            rewritten = f"/resume {args}"
+        try:
+            event.text = rewritten
+            return await self._handle_resume_command(event)
+        finally:
+            event.text = original_text
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.

@@ -4,13 +4,15 @@ Tests the _handle_resume_command handler (switch to a previously-named session)
 across gateway messenger platforms.
 """
 
-from unittest.mock import MagicMock
+from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 def _make_event(text="/resume", platform=Platform.TELEGRAM,
@@ -52,6 +54,93 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     mock_store.load_transcript.return_value = []
     mock_store.switch_session.return_value = mock_session_entry
     runner.session_store = mock_store
+
+    return runner
+
+
+def _make_dispatch_runner(session_db=None, current_session_id="current_session_001"):
+    """Create a GatewayRunner ready to dispatch slash commands via _handle_message."""
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+    )
+    adapter = MagicMock()
+    adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(
+        emit=AsyncMock(),
+        emit_collect=AsyncMock(return_value=[]),
+        loaded_hooks=False,
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="12345",
+        chat_id="67890",
+        user_name="testuser",
+        chat_type="dm",
+    )
+    session_entry = SessionEntry(
+        session_key=build_session_key(source),
+        session_id=current_session_id,
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store.load_transcript.return_value = []
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.append_to_transcript = MagicMock()
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.update_session = MagicMock()
+    runner._session_db = session_db
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._agent_cache = {}
+    runner._agent_cache_lock = None
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._reasoning_config = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._show_reasoning = False
+    runner._busy_input_mode = "interrupt"
+    runner._draining = False
+    runner._restart_requested = False
+    runner._shutdown_event = MagicMock()
+    runner._running_agents_generation = {}
+    runner._session_model_overrides = {}
+    runner._failed_platforms = {}
+    runner._exit_cleanly = False
+    runner._exit_reason = None
+    runner._active_sessions = {}
+    runner._session_tasks = {}
+    runner._pending_restart_inputs = {}
+    runner._pending_drain_events = {}
+    runner._status_verbosity = "normal"
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._should_send_voice_reply = lambda *_args, **_kwargs: False
+    runner._send_voice_reply = AsyncMock()
+    runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
+    runner._emit_gateway_run_progress = AsyncMock()
+    runner._release_running_agent_state = MagicMock()
+    runner._clear_session_boundary_security_state = MagicMock()
+    runner._evict_cached_agent = MagicMock()
+    runner._queue_or_replace_pending_event = MagicMock()
+    runner._agent_has_active_subagents = MagicMock(return_value=False)
+    runner._check_slash_access = MagicMock(return_value=None)
+    runner._handle_message_with_agent = AsyncMock(
+        side_effect=AssertionError("/sessions must not fall through to the agent")
+    )
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/sessions must not call _run_agent")
+    )
 
     return runner
 
@@ -357,4 +446,85 @@ class TestHandleResumeCommand:
         assert "not found" not in str(result).lower(), (
             f"session-id lookup failed: {result!r}"
         )
+        db.close()
+
+
+class TestHandleSessionsCommand:
+    """Tests for native gateway /sessions support."""
+
+    @pytest.mark.asyncio
+    async def test_no_args_lists_recent_sessions(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_001", "telegram")
+        db.create_session("sess_002", "telegram")
+        db.set_session_title("sess_001", "Research")
+        db.set_session_title("sess_002", "Coding")
+
+        event = _make_event(text="/sessions")
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_sessions_command(event)
+
+        assert "Named Sessions" in result
+        assert "Research" in result
+        assert "Coding" in result
+        assert "/resume 1" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_list_alias_uses_recent_sessions_view(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_001", "telegram")
+        db.set_session_title("sess_001", "Research")
+
+        event = _make_event(text="/sessions list")
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_sessions_command(event)
+
+        assert "Named Sessions" in result
+        assert "Research" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_target_delegates_to_resume_behavior(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session_abc", "telegram")
+        db.set_session_title("old_session_abc", "My Project")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/sessions My Project")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        result = await runner._handle_sessions_command(event)
+
+        assert "Resumed" in result
+        runner.session_store.switch_session.assert_called_once()
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "old_session_abc"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_handles_sessions_natively(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_001", "telegram")
+        db.set_session_title("sess_001", "Research")
+
+        runner = _make_dispatch_runner(session_db=db)
+        result = await runner._handle_message(_make_event("/sessions"))
+
+        assert result is not None
+        assert "Named Sessions" in result
+        assert "Research" in result
+        runner._run_agent.assert_not_called()
+        runner._handle_message_with_agent.assert_not_called()
         db.close()

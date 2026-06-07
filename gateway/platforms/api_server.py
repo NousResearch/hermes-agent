@@ -969,6 +969,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self,
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        model_override: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -996,7 +997,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
+        model = model_override or _resolve_gateway_model()
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -1027,6 +1028,24 @@ class APIServerAdapter(BasePlatformAdapter):
             gateway_session_key=gateway_session_key,
         )
         return agent
+
+    def _resolve_chat_completion_model(self, body: dict[str, Any]) -> str:
+        """Resolve the model for a Chat Completions request.
+
+        Request-level ``model`` must take precedence for the OpenAI-compatible
+        API. If it is absent, fall back to the configured Hermes default. Do not
+        create a Codex agent with an empty model because the provider then fails
+        with a less actionable error.
+        """
+        request_model = str(body.get("model") or "").strip()
+        if request_model:
+            return request_model
+        try:
+            from gateway.run import _resolve_gateway_model
+
+            return str(_resolve_gateway_model() or "").strip()
+        except Exception:
+            return ""
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -1795,7 +1814,16 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", self._model_name)
+        model_name = self._resolve_chat_completion_model(body)
+        if not model_name:
+            return web.json_response(
+                _openai_error(
+                    "Missing model. Provide request.model or configure Hermes model.default.",
+                    param="model",
+                    code="missing_model",
+                ),
+                status=400,
+            )
         created = int(time.time())
 
         if stream:
@@ -1875,6 +1903,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                model_name=model_name,
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
@@ -1898,6 +1927,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                model_name=model_name,
                 gateway_session_key=gateway_session_key,
             )
 
@@ -3441,6 +3471,7 @@ class APIServerAdapter(BasePlatformAdapter):
         conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        model_name: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -3465,6 +3496,7 @@ class APIServerAdapter(BasePlatformAdapter):
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
+                model_override=model_name,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,

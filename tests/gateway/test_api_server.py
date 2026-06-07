@@ -860,6 +860,47 @@ class TestChatCompletionsEndpoint:
             resp = await cli.post("/v1/chat/completions", json={"model": "test", "messages": []})
             assert resp.status == 400
 
+    def test_resolve_chat_completion_model_prefers_request_model(self, adapter):
+        with patch("gateway.run._resolve_gateway_model", return_value="configured-default"):
+            model = adapter._resolve_chat_completion_model({"model": "gpt-5.3-codex"})
+
+        assert model == "gpt-5.3-codex"
+
+    @pytest.mark.asyncio
+    async def test_missing_request_model_without_config_returns_400(self, adapter):
+        app = _create_app(adapter)
+        with patch("gateway.run._resolve_gateway_model", return_value=""):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"messages": [{"role": "user", "content": "Hello"}]},
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["code"] == "missing_model"
+        assert "request.model" in data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_missing_request_model_uses_configured_default(self, adapter):
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        with (
+            patch("gateway.run._resolve_gateway_model", return_value="gpt-5.3-codex"),
+            patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"messages": [{"role": "user", "content": "Hello"}]},
+                )
+                data = await resp.json()
+
+        assert resp.status == 200
+        assert data["model"] == "gpt-5.3-codex"
+        assert mock_run.call_args.kwargs["model_name"] == "gpt-5.3-codex"
+
     @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):
         """stream=true returns SSE format with the full response."""

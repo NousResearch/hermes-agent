@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.platforms.discord import _serialize_embeds
+from plugins.platforms.discord.adapter import _serialize_embeds
 
 
 # ---------------------------------------------------------------------------

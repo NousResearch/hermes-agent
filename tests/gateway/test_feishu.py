@@ -1213,6 +1213,76 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_group_attachment_message_without_mention_is_allowed(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                extra={
+                    "default_group_policy": "open",
+                    "require_mention": True,
+                }
+            )
+        )
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_name = "Hermes"
+
+        sender = SimpleNamespace(
+            sender_type="user",
+            sender_id=SimpleNamespace(open_id="ou_user", user_id="u_user", union_id=None),
+        )
+        cases = [
+            ("image", '{"image_key":"img_123"}'),
+            ("file", '{"file_key":"file_123","file_name":"spec.pdf"}'),
+            ("audio", '{"file_key":"audio_123","file_name":"note.ogg"}'),
+            ("video", '{"file_key":"video_123","file_name":"clip.mp4"}'),
+            ("media", '{"file_key":"media_123","file_name":"clip.mp4"}'),
+        ]
+
+        for message_type, content in cases:
+            with self.subTest(message_type=message_type):
+                message = SimpleNamespace(
+                    chat_type="group",
+                    chat_id="oc_chat_group",
+                    message_type=message_type,
+                    content=content,
+                    mentions=[],
+                )
+
+                self.assertIsNone(adapter._admit(sender, message))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_group_text_message_without_mention_is_rejected(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                extra={
+                    "default_group_policy": "open",
+                    "require_mention": True,
+                }
+            )
+        )
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_name = "Hermes"
+
+        sender = SimpleNamespace(
+            sender_type="user",
+            sender_id=SimpleNamespace(open_id="ou_user", user_id="u_user", union_id=None),
+        )
+        message = SimpleNamespace(
+            chat_type="group",
+            chat_id="oc_chat_group",
+            message_type="text",
+            content='{"text":"hello"}',
+            mentions=[],
+        )
+
+        self.assertEqual(adapter._admit(sender, message), "group_policy_rejected")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_extract_merge_forward_message_as_text_summary(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -1759,6 +1829,60 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.media_urls, ["/tmp/a.png", "/tmp/b.png"])
         self.assertIn("第一张", event.text)
         self.assertIn("第二张", event.text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_text_followup_absorbs_pending_document_message(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.session import SessionSource
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu Group",
+            chat_type="group",
+            user_id="ou_user",
+            user_name="张三",
+        )
+
+        async def _sleep(_delay):
+            return None
+
+        async def _run() -> None:
+            with patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep):
+                await adapter._dispatch_inbound_event(
+                    MessageEvent(
+                        text="",
+                        message_type=MessageType.DOCUMENT,
+                        source=source,
+                        message_id="om_file",
+                        media_urls=["/tmp/prd.pdf"],
+                        media_types=["application/pdf"],
+                    )
+                )
+                await adapter._dispatch_inbound_event(
+                    MessageEvent(
+                        text="解析这个 prd",
+                        message_type=MessageType.TEXT,
+                        source=source,
+                        message_id="om_text",
+                    )
+                )
+                pending = list(adapter._pending_text_batch_tasks.values())
+                self.assertEqual(len(pending), 1)
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        asyncio.run(_run())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        self.assertEqual(event.text, "解析这个 prd")
+        self.assertEqual(event.message_type, MessageType.DOCUMENT)
+        self.assertEqual(event.media_urls, ["/tmp/prd.pdf"])
+        self.assertEqual(event.media_types, ["application/pdf"])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_image_downloads_then_uses_native_image_send(self):

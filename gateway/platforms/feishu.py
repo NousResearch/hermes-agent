@@ -175,6 +175,7 @@ _FEISHU_IMAGE_UPLOAD_TYPE = "message"
 _FEISHU_FILE_UPLOAD_TYPE = "stream"
 _FEISHU_OPUS_UPLOAD_EXTENSIONS = {".ogg", ".opus"}
 _FEISHU_MEDIA_UPLOAD_EXTENSIONS = {".mp4", ".mov", ".avi", ".m4v"}
+_FEISHU_ATTACHMENT_MESSAGE_TYPES = frozenset({"image", "file", "audio", "video", "media"})
 _FEISHU_DOC_UPLOAD_TYPES = {
     ".pdf": "pdf",
     ".doc": "doc",
@@ -853,7 +854,7 @@ def normalize_feishu_message(
             relation_kind="image",
             mentions=mention_refs,
         )
-    if normalized_type in {"file", "audio", "media"}:
+    if normalized_type in {"file", "audio", "video", "media"}:
         media_ref = _build_media_ref_from_payload(payload, resource_type=normalized_type)
         placeholder = _attachment_placeholder(media_ref.file_name)
         return FeishuNormalizedMessage(
@@ -873,6 +874,14 @@ def normalize_feishu_message(
         return _normalize_interactive_message(normalized_type, payload)
 
     return FeishuNormalizedMessage(raw_type=normalized_type, text_content="")
+
+
+def _is_feishu_attachment_message(normalized: FeishuNormalizedMessage) -> bool:
+    return (
+        normalized.relation_kind in _FEISHU_ATTACHMENT_MESSAGE_TYPES
+        or bool(normalized.media_refs)
+        or bool(normalized.image_keys)
+    )
 
 
 def _load_feishu_payload(raw_content: str) -> Dict[str, Any]:
@@ -3456,6 +3465,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Debounce rapid Feishu text bursts into a single MessageEvent."""
         key = self._text_batch_key(event)
+        self._attach_pending_media_to_text(key, event)
         chunk_len = len(event.text or "")
         existing = self._pending_text_batches.get(key)
         if existing is None:
@@ -3544,6 +3554,29 @@ class FeishuAdapter(BasePlatformAdapter):
             len(event.text or ""),
         )
         await self._handle_message_with_guards(event)
+
+    def _attach_pending_media_to_text(self, key: str, event: MessageEvent) -> None:
+        media_keys = [
+            media_key for media_key in self._pending_media_batches
+            if media_key.startswith(f"{key}:media:")
+        ]
+        if not media_keys:
+            return
+        for media_key in media_keys:
+            pending_media = self._pending_media_batches.pop(media_key, None)
+            if pending_media is None:
+                continue
+            task = self._pending_media_batch_tasks.pop(media_key, None)
+            if task and not task.done():
+                task.cancel()
+            event.media_urls = list(pending_media.media_urls) + list(event.media_urls)
+            event.media_types = list(pending_media.media_types) + list(event.media_types)
+            if pending_media.text:
+                event.text = self._merge_caption(pending_media.text, event.text)
+            if pending_media.message_type != MessageType.TEXT:
+                event.message_type = pending_media.message_type
+            if not event.message_id:
+                event.message_id = pending_media.message_id
 
     # =========================================================================
     # Message content extraction and resource download
@@ -4074,7 +4107,14 @@ class FeishuAdapter(BasePlatformAdapter):
         ):
             return "group_policy_rejected"
         if require_mention and not self._mentions_self(message):
-            return "group_policy_rejected"
+            normalized = normalize_feishu_message(
+                message_type=getattr(message, "message_type", "") or "",
+                raw_content=getattr(message, "content", "") or "",
+                mentions=getattr(message, "mentions", None),
+                bot=self._bot_identity(),
+            )
+            if not _is_feishu_attachment_message(normalized):
+                return "group_policy_rejected"
         return None
 
     def _require_mention_for(self, chat_id: str) -> bool:

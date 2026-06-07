@@ -3220,23 +3220,27 @@ function installPreviewShortcut(window) {
 
 function installZoomShortcuts(window) {
   // Override Ctrl/Cmd + +/-/0 with half the default zoom step (0.1 vs 0.2).
-  // The menu items handle this on macOS (where the menu is always present),
-  // but on Linux/Windows the menu is null and Chromium's default handler
-  // would use the full 0.2 step, so we intercept here for consistency.
+  // On Japanese/JIS keyboards, typing "+" normally includes Shift, and Electron
+  // may surface the physical key as "+", "=", ";", or ":" depending on layout.
+  // Do not reject Shift globally; only require it to be absent for reset/zoom-out.
   const ZOOM_STEP = 0.1
   window.webContents.on('before-input-event', (event, input) => {
     const mod = IS_MAC ? input.meta : input.control
-    if (!mod || input.alt || input.shift) return
+    if (!mod || input.alt) return
 
-    const key = input.key
-    if (key === '0') {
+    const key = String(input.key || '')
+    const isZoomReset = key === '0' && !input.shift
+    const isZoomIn = key === '=' || key === '+' || key === 'Add' || (input.shift && (key === ';' || key === ':'))
+    const isZoomOut = key === '-' && !input.shift
+
+    if (isZoomReset) {
       event.preventDefault()
       window.webContents.setZoomLevel(0)
-    } else if (key === '=' || key === '+') {
+    } else if (isZoomIn) {
       event.preventDefault()
       const next = Math.min(window.webContents.getZoomLevel() + ZOOM_STEP, 9)
       window.webContents.setZoomLevel(next)
-    } else if (key === '-') {
+    } else if (isZoomOut) {
       event.preventDefault()
       const next = Math.max(window.webContents.getZoomLevel() - ZOOM_STEP, -9)
       window.webContents.setZoomLevel(next)

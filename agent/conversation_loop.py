@@ -63,6 +63,19 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+# Azure Foundry endpoints fronted by Azure API Management have been observed
+# to intermittently return a spurious ``401 Invalid token`` for a fully valid
+# static API key (empirically ~20% of identical requests on some resources),
+# and the failures arrive in correlated bursts lasting several seconds where
+# concurrent requests all fail at once.  A single transient 401 would
+# otherwise abort the turn AND mark the sole credential ``exhausted`` in the
+# pool.  We retry the same key in-place a bounded number of times, with a
+# backoff window wide enough to outlast a typical burst, before falling
+# through to normal (terminal) auth handling — so a genuinely-invalid key
+# still fails, just after a few retries.
+AZURE_FOUNDRY_TRANSIENT_401_MAX_RETRIES = 6
+AZURE_FOUNDRY_TRANSIENT_401_MAX_BACKOFF = 10.0
+
 
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
@@ -1159,6 +1172,7 @@ def run_conversation(
         nous_auth_retry_attempted=False
         nous_paid_entitlement_refresh_attempted=False
         copilot_auth_retry_attempted=False
+        azure_foundry_transient_401_retries = 0
         thinking_sig_retry_attempted = False
         invalid_encrypted_content_retry_attempted = False
         image_shrink_retry_attempted = False
@@ -2408,6 +2422,78 @@ def run_conversation(
                             "refreshed runtime credentials and retrying request...",
                             force=True,
                         )
+                        continue
+
+                # ── Azure Foundry transient 401 retry ─────────────────
+                # Some Azure-API-Management-fronted Foundry endpoints
+                # intermittently reject a valid static API key with a
+                # spurious ``401 Invalid token``.  Retry the SAME key
+                # in-place (the already-built client) BEFORE the credential
+                # pool can mark the sole credential ``exhausted``.  Excludes
+                # Entra ID auth (a callable token provider) — there a 401 is
+                # a real RBAC/token failure that retrying won't fix.  When a
+                # multi-credential pool exists we only retry once before
+                # falling through to normal rotation, preserving pool
+                # semantics for genuinely-bad keys.
+                if (
+                    status_code == 401
+                    and classified.is_auth
+                    and (agent.provider or "") == "azure-foundry"
+                    and agent.api_mode == "chat_completions"
+                    and isinstance(agent.api_key, str)
+                    and agent.api_key.strip()
+                ):
+                    _t401_pool = getattr(agent, "_credential_pool", None)
+                    _t401_multi = bool(
+                        _t401_pool is not None and len(_t401_pool.entries()) > 1
+                    )
+                    _t401_max = 1 if _t401_multi else AZURE_FOUNDRY_TRANSIENT_401_MAX_RETRIES
+                    if azure_foundry_transient_401_retries < _t401_max:
+                        azure_foundry_transient_401_retries += 1
+                        wait_time = min(
+                            jittered_backoff(
+                                azure_foundry_transient_401_retries,
+                                base_delay=0.5,
+                                max_delay=AZURE_FOUNDRY_TRANSIENT_401_MAX_BACKOFF,
+                            ),
+                            AZURE_FOUNDRY_TRANSIENT_401_MAX_BACKOFF,
+                        )
+                        agent._buffer_vprint(
+                            f"🔁 Azure Foundry returned a transient 401 "
+                            f"(attempt {azure_foundry_transient_401_retries}/{_t401_max}) — "
+                            f"retrying the same key in {wait_time:.1f}s..."
+                        )
+                        logger.warning(
+                            "Azure Foundry transient 401 (attempt %s/%s) — retrying in-place; "
+                            "provider=%s base_url=%s model=%s",
+                            azure_foundry_transient_401_retries, _t401_max,
+                            agent.provider, getattr(agent, "base_url", ""), getattr(agent, "model", ""),
+                        )
+                        # Sleep in small increments to stay responsive to interrupts.
+                        sleep_end = time.time() + wait_time
+                        _t401_touch_counter = 0
+                        while time.time() < sleep_end:
+                            if agent._interrupt_requested:
+                                agent._vprint(
+                                    f"{agent.log_prefix}⚡ Interrupt detected during Azure 401 retry wait, aborting.",
+                                    force=True,
+                                )
+                                agent._persist_session(messages, conversation_history)
+                                agent.clear_interrupt()
+                                return {
+                                    "final_response": "Operation interrupted during Azure Foundry 401 retry.",
+                                    "messages": messages,
+                                    "api_calls": api_call_count,
+                                    "completed": False,
+                                    "interrupted": True,
+                                }
+                            time.sleep(0.2)
+                            _t401_touch_counter += 1
+                            if _t401_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
+                                agent._touch_activity(
+                                    f"Azure Foundry 401 retry "
+                                    f"({azure_foundry_transient_401_retries}/{_t401_max})"
+                                )
                         continue
 
                 recovered_with_pool, has_retried_429 = agent._recover_with_credential_pool(

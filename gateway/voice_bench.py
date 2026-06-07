@@ -39,6 +39,9 @@ _SECRET_PATTERNS = (
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{8,}\b"),
 )
+_SECRET_KEY_RE = re.compile(
+    r"(?i)(api[_-]?key|token|secret|password|passwd|authorization|auth|credential)"
+)
 
 
 def new_turn_id() -> str:
@@ -79,7 +82,21 @@ def _safe_event(event: dict[str, Any]) -> dict[str, Any]:
                 safe[preview_key] = preview
     if "error" in safe:
         safe["error"] = _redact_text(safe.get("error"), limit=240)
+    for key, value in list(safe.items()):
+        safe[key] = _safe_value(key, value)
     return safe
+
+
+def _safe_value(key: str, value: Any) -> Any:
+    if _SECRET_KEY_RE.search(str(key)):
+        return "[REDACTED]"
+    if isinstance(value, str):
+        return _redact_text(value, limit=240)
+    if isinstance(value, dict):
+        return {str(k): _safe_value(str(k), v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_safe_value(key, item) for item in value]
+    return value
 
 
 def _write_payload(path: Path, payload: dict[str, Any]) -> None:

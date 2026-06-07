@@ -137,6 +137,7 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
 )
 
 _GATEWAY_SECRET_PATTERNS = (
+    re.compile(r"(?i)\b(api[_-]?key|token|secret|password|passwd|authorization)\s*[:=]\s*([^\s,;]+)"),
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{20,}\b"),
@@ -234,7 +235,14 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     """Best-effort secret redaction before text can leave the gateway."""
     redacted = str(text or "")
     for pattern in _GATEWAY_SECRET_PATTERNS:
-        redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
+        redacted = pattern.sub(
+            lambda m: (
+                f"{m.group(1)}=[REDACTED]"
+                if m.lastindex == 2
+                else (m.group(1) if m.lastindex else "") + "[REDACTED]"
+            ),
+            redacted,
+        )
     return redacted
 
 
@@ -1374,8 +1382,13 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
                     return frames / float(rate)
             secs = await asyncio.to_thread(_wav_duration)
             return _format_duration(secs)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Discord voice transcript mirror send failed: guild=%s user=%s error=%s",
+                guild_id,
+                user_id,
+                exc,
+            )
 
     if ext in (".ogg", ".opus", ".oga"):
         try:
@@ -12239,7 +12252,8 @@ class GatewayRunner:
         artifacts = metrics.get("artifacts") if isinstance(metrics.get("artifacts"), dict) else {}
         lines = [f"Voice smoke {'PASS' if passed else 'FAIL'}"]
         if metrics.get("error"):
-            lines.append(f"Error: {str(metrics.get('error'))[:180]}")
+            error = _redact_gateway_user_facing_secrets(str(metrics.get("error")))
+            lines.append(f"Error: {error[:180]}")
         if latency:
             parts = []
             for label, key in (

@@ -152,6 +152,15 @@ class TestHandleVoiceCommand:
         assert "brain_stream=76.2ms first, 123.0ms done" in result
         assert "Output: response.wav" in result
 
+    def test_voice_smoke_formatter_redacts_error_text(self, runner):
+        result = runner._format_voice_smoke_result({
+            "passed": False,
+            "error": "provider failed api_key=sk-test-secret",
+        })
+
+        assert "sk-test-secret" not in result
+        assert "api_key=[REDACTED]" in result
+
     @pytest.mark.asyncio
     async def test_voice_bench_reports_current_chat(self, runner, monkeypatch):
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "user1")

@@ -379,7 +379,22 @@ class ChatCompletionsTransport(ProviderTransport):
         # extra_body assembly
         extra_body: dict[str, Any] = {}
 
-        # Ollama-specific handling for all models using local Ollama backend.
+        # === Local Ollama Backend Configuration ===
+        # When connecting to a local Ollama instance (default port 11434), we apply
+        # specific defaults to ensure large-model outputs can complete successfully:
+        #
+        # 1. max_tokens floor of 16384 — Ollama's API may silently cap lower values,
+        #    so we enforce a minimum that accommodates most long-form generation needs.
+        #
+        # 2. num_predict=-1 (unlimited) — Enables streaming until completion or context
+        #    exhaustion without artificial truncation from the client side. This allows
+        #    multi-thousand-token responses to flow fully, matching user expectations for
+        #    local development workflows where max token limits are typically managed by
+        #    model capacity rather than explicit API constraints.
+        #
+        # 3. Conditional application — We only set num_predict=-1 if the user hasn't
+        #    already provided a value via extra_body. This respects explicit user
+        #    configuration and prevents silent overrides of intentional settings.
         _base_url_str = str(params.get("base_url") or "")
         if urlparse(_base_url_str).port == 11434:  # Local Ollama default port
             api_kwargs["max_tokens"] = max(

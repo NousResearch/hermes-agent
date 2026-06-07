@@ -29,4 +29,4 @@ Before ending meaningful work, close out in the user's language with: what chang
 
 ## Prompt Shortcuts
 
-When the user invokes `Use Act-As`, `Use Comply`, `Use Summary`, `Use Scan Feature`, `Use Opus Plan`, `Use Business Plan`, `Use Viber Structure`, `Use Viber Audit`, `Use Impeccable`, `Use Flow Guardian`, `Use New Chat`, `Use WOW Resource`, `Go to Sleep`, `Review Chat`, or an alias, read `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/prompt-shortcut-registry.md` and then open the mapped prompt file. Do not guess or summarize the shortcut from memory.
+When the user invokes `Use Act-As`, `Use Comply`, `Use Summary`, `Use Scan Feature`, `Use Opus Plan`, `Use AI Pair`, `Use Business Plan`, `Use Viber Structure`, `Use Viber Audit`, `Use Impeccable`, `Use Blog Auto`, `Use WOW Resource`, `Use Flow Guardian`, `Use New Chat`, `Go to Sleep`, `Review Chat`, or an alias, read `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/prompt-shortcut-registry.md` and then open the mapped prompt file. Do not guess or summarize the shortcut from memory.

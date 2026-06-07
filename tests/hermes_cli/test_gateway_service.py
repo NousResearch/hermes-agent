@@ -289,6 +289,48 @@ class TestSystemdServiceRefresh:
             "daemon-reload" in str(c) for c in ran
         ), "daemon-reload must not run when write was refused"
 
+    def test_refresh_skips_units_that_only_differ_by_unsupported_restart_backoff_keys(
+        self, tmp_path, monkeypatch
+    ):
+        unit_path = tmp_path / "hermes-gateway.service"
+        installed = (
+            "[Service]\n"
+            "Restart=always\n"
+            "RestartSec=5\n"
+            "RestartMaxDelaySec=300\n"
+            "RestartSteps=5\n"
+            "RestartForceExitStatus=75\n"
+        )
+        expected = (
+            "[Service]\n"
+            "Restart=always\n"
+            "RestartSec=5\n"
+            "RestartForceExitStatus=75\n"
+        )
+        unit_path.write_text(installed, encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "_supports_systemd_restart_backoff_directives", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: expected,
+        )
+
+        ran = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            ran.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        result = gateway_cli.refresh_systemd_unit_if_needed(system=False)
+
+        assert result is False
+        assert unit_path.read_text(encoding="utf-8") == installed
+        assert ran == []
+
 
 class TestRequireServiceInstalled:
     def test_exits_with_install_hint_when_unit_missing(self, tmp_path, monkeypatch, capsys):
@@ -315,6 +357,17 @@ class TestGeneratedSystemdUnits:
     def _expected_timeout_stop_sec(self) -> str:
         timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT) + 30)
         return f"TimeoutStopSec={timeout}"
+
+    def test_restart_backoff_directives_require_systemd_v254_or_newer(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_systemd_version_number", lambda: 253)
+        assert gateway_cli._supports_systemd_restart_backoff_directives() is False
+
+        monkeypatch.setattr(gateway_cli, "_systemd_version_number", lambda: 254)
+        assert gateway_cli._supports_systemd_restart_backoff_directives() is True
+
+    def test_restart_backoff_directives_default_off_when_version_unknown(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_systemd_version_number", lambda: None)
+        assert gateway_cli._supports_systemd_restart_backoff_directives() is False
 
     def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
         monkeypatch.setattr(
@@ -394,6 +447,24 @@ class TestGeneratedSystemdUnits:
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
         assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
+
+    def test_user_unit_omits_restart_backoff_directives_when_systemd_is_too_old(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_supports_systemd_restart_backoff_directives", lambda: False)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "Restart=always" in unit
+        assert "RestartSec=5" in unit
+        assert "RestartMaxDelaySec=" not in unit
+        assert "RestartSteps=" not in unit
+
+    def test_user_unit_keeps_restart_backoff_directives_when_systemd_supports_them(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_supports_systemd_restart_backoff_directives", lambda: True)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "RestartMaxDelaySec=300" in unit
+        assert "RestartSteps=5" in unit
 
 
 class TestGatewayStopCleanup:

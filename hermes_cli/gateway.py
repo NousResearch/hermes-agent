@@ -7,12 +7,14 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import textwrap
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -2351,6 +2353,49 @@ def _stable_service_working_dir() -> str:
     return str(PROJECT_ROOT)
 
 
+@lru_cache(maxsize=1)
+def _systemd_version_number() -> int | None:
+    """Return the host systemd major version, or ``None`` when unknown."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return None
+
+    header = (result.stdout or "").splitlines()
+    if not header:
+        return None
+
+    match = re.search(r"\bsystemd\s+(\d+)\b", header[0])
+    if not match:
+        return None
+
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _supports_systemd_restart_backoff_directives() -> bool:
+    """Return True when the host systemd understands RestartSteps/MaxDelay."""
+    version = _systemd_version_number()
+    # RestartSteps=/RestartMaxDelaySec= were added in systemd v254.
+    # If probing fails, prefer the older-compatible unit shape over emitting
+    # directives an older host might ignore and then report as stale forever.
+    return version is not None and version >= 254
+
+
+def _systemd_restart_backoff_lines() -> str:
+    if not _supports_systemd_restart_backoff_directives():
+        return ""
+
+    return "RestartMaxDelaySec=300\nRestartSteps=5\n"
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
@@ -2380,6 +2425,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     # (#8202). 30s of headroom covers the worst case we've observed.
     _drain_timeout = int(_get_restart_drain_timeout() or 0)
     restart_timeout = max(60, _drain_timeout) + 30
+    restart_backoff = _systemd_restart_backoff_lines()
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -2419,9 +2465,7 @@ Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
-RestartMaxDelaySec=300
-RestartSteps=5
-RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
+{restart_backoff}RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
@@ -2454,9 +2498,7 @@ Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
-RestartMaxDelaySec=300
-RestartSteps=5
-RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
+{restart_backoff}RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
@@ -2471,6 +2513,22 @@ WantedBy=default.target
 
 def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+def _normalize_systemd_unit_for_comparison(text: str) -> str:
+    normalized = _normalize_service_definition(text)
+    if "RestartMaxDelaySec=" not in normalized and "RestartSteps=" not in normalized:
+        return normalized
+
+    if _supports_systemd_restart_backoff_directives():
+        return normalized
+
+    filtered_lines = [
+        line
+        for line in normalized.splitlines()
+        if not line.startswith("RestartMaxDelaySec=") and not line.startswith("RestartSteps=")
+    ]
+    return "\n".join(filtered_lines)
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
@@ -2500,7 +2558,7 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     installed = unit_path.read_text(encoding="utf-8")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
-    return _normalize_service_definition(installed) == _normalize_service_definition(
+    return _normalize_systemd_unit_for_comparison(installed) == _normalize_systemd_unit_for_comparison(
         expected
     )
 

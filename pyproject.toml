@@ -1,4 +1,4 @@
-# PEP 639 SPDX license expression (`license = "MIT"` below) requires
+﻿# PEP 639 SPDX license expression (`license = "MIT"` below) requires
 # setuptools>=77. Keep this floor in lockstep with the `license` form in
 # [project]; an older build backend rejects the string form.
 [build-system]
@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hermes-agent"
 version = "0.16.0"
-description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
+description = "The self-improving AI agent â€” creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
 # Python from `requires-python`, and an inherited `UV_PYTHON` env var (or a
@@ -21,9 +21,9 @@ requires-python = ">=3.11,<3.14"
 authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]
-dependencies = [
+dependencies = ["portalocker>=3.2.0",
   "portalocker>=3.2.0",
-  # Core — every direct dep is exact-pinned to ==X.Y.Z (no ranges).
+  # Core â€” every direct dep is exact-pinned to ==X.Y.Z (no ranges).
   # Rationale: ranges allow PyPI to ship a fresh version of a transitive
   # at any time without a code review on our side. Exact pins mean the
   # only way a new package version reaches a user is via an intentional
@@ -60,7 +60,7 @@ dependencies = [
   "pydantic==2.13.4",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit==3.0.52",
-  # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
+  # Cron scheduler (built-in feature â€” scheduled cron/interval jobs use croniter).
   "croniter==6.0.0",
   # Markdown -> HTML conversion for rich message delivery (Matrix
   # `formatted_body`, and the `send_message` tool's HTML path). Now on the
@@ -69,10 +69,10 @@ dependencies = [
   # back to plain text, so cron/agent deliveries render raw `##`/`**`/tables
   # in clients like Element (see #32486). Pure-Python py3-none-any wheel
   # (~108KB, no compiled extensions, no platform constraints), so unlike the
-  # matrix extra's `mautrix`/`python-olm` it's safe to ship everywhere — keeps
+  # matrix extra's `mautrix`/`python-olm` it's safe to ship everywhere â€” keeps
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2",
-  # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
+  # Skills Hub (GitHub App JWT auth â€” optional, only needed for bot identity)
   "PyJWT[crypto]==2.12.1",  # CVE-2026-32597
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
@@ -83,7 +83,7 @@ dependencies = [
   # Cross-platform process / PID management.  `psutil` is the canonical
   # answer for "is this PID alive" and process-tree walking across Linux,
   # macOS and Windows.  It replaces POSIX-only idioms like `os.kill(pid, 0)`
-  # (which is a silent killer on Windows — see CONTRIBUTING.md) and
+  # (which is a silent killer on Windows â€” see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
   "psutil==7.2.2",
   # .gitignore-aware file matching for desktop build stamp.
@@ -95,17 +95,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Native Anthropic provider — only needed when provider=anthropic (not via
+# Native Anthropic provider â€” only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.86.0"]
-# Web search backends — each only loaded when the user picks it as their
+# Web search backends â€” each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]
 firecrawl = ["firecrawl-py==4.17.0"]
 parallel-web = ["parallel-web==0.4.2"]
 # Image generation backends
 fal = ["fal-client==0.13.1"]
-# Edge TTS — default TTS provider but still optional (users can pick
+# Edge TTS â€” default TTS provider but still optional (users can pick
 # ElevenLabs / OpenAI / MiniMax instead).
 edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
@@ -116,7 +116,7 @@ messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", 
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.3"]
 matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0"]
-# WeCom callback-mode adapter — parses untrusted XML POST bodies from
+# WeCom callback-mode adapter â€” parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
 # replacement for stdlib xml.etree.ElementTree) to block billion-laughs
 # and XXE. aiohttp/httpx are already in [messaging]; defusedxml lands
@@ -132,7 +132,7 @@ voice = [
   "numpy==2.4.3",
 ]
 pty = [
-  # Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now
+  # Kept as a no-op back-compat alias â€” `ptyprocess` and `pywinpty` are now
   # in the main `dependencies` list (with the same platform markers), so
   # any existing `pip install hermes-agent[pty]` invocations resolve cleanly
   # without pulling in extra packages.
@@ -157,7 +157,7 @@ mcp = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
 nemo-relay = ["nemo-relay==0.3"]
 homeassistant = ["aiohttp==3.13.3"]
 sms = ["aiohttp==3.13.3"]
-# Computer use — macOS background desktop control via cua-driver (MCP stdio).
+# Computer use â€” macOS background desktop control via cua-driver (MCP stdio).
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
 # to it, which is already provided by the `mcp` extra.
@@ -168,7 +168,7 @@ acp = ["agent-client-protocol==0.9.0"]
 # 2.4.6 release (Mini Shai-Hulud worm); 2.4.6 was removed from PyPI and the
 # project is serving clean releases again (2.4.7 2026-05-25, 2.4.8 2026-05-28).
 # Like other opt-in TTS/STT backends, this is lazy-installed via
-# tools/lazy_deps.py (stt.mistral / tts.mistral) at first use — deliberately
+# tools/lazy_deps.py (stt.mistral / tts.mistral) at first use â€” deliberately
 # NOT re-added to [all] so a future quarantined release can't break fresh
 # installs (see [all] policy comment below).
 mistral = ["mistralai==2.4.8"]
@@ -214,17 +214,17 @@ youtube = [
   "youtube-transcript-api==1.2.4",
 ]
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
-# starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
+# starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) â€” fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
 web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
-  # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
+  # CAN'T be lazy-installed via `tools/lazy_deps.py` â€” i.e. things every
   # session can use, things needed before the agent loop is alive
   # (terminal/CLI), and skill deps that packagers (Nix, AUR, Homebrew)
   # need in the wheel. Anything an opt-in backend (provider, search,
   # TTS, image, memory, messaging platform, terminal sandbox) needs
-  # MUST live exclusively in `LAZY_DEPS` and resolve at first use —
+  # MUST live exclusively in `LAZY_DEPS` and resolve at first use â€”
   # otherwise one quarantined PyPI release breaks every fresh install.
   #
   # Removed from [all] on 2026-05-12 (covered by lazy-install):
@@ -278,7 +278,7 @@ plugins = [
   # Plugin discovery (hermes_cli/plugins.py) reads a plugin.yaml/plugin.yml
   # manifest from each bundled plugin directory to register it. Wheels only
   # carry files declared here, so without this glob the wheel ships every
-  # plugin's Python code but none of its manifests — the scan finds zero
+  # plugin's Python code but none of its manifests â€” the scan finds zero
   # plugins and all gateway platforms fail with "No adapter available for
   # <platform>" (#34034), web-search providers go missing (#28149), etc.
   "**/plugin.yaml",
@@ -310,11 +310,11 @@ unknown-argument = "warn"
 redundant-cast = "ignore"
 
 [tool.ruff]
-preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
+preview = true  # required for PLW1514 (unspecified-encoding) â€” preview rule
 
 [tool.ruff.lint]
 # All other lints are intentionally disabled (see comment history on this
-# file) while we wrangle typechecks — but PLW1514 is too load-bearing to
+# file) while we wrangle typechecks â€” but PLW1514 is too load-bearing to
 # keep off.  Bare open()/read_text()/write_text() in text mode defaults to
 # the system locale encoding on Windows (cp1252 on US-locale installs),
 # which silently corrupts any non-ASCII file content.  We had three
@@ -325,7 +325,8 @@ select = ["PLW1514"]
 [tool.ruff.lint.per-file-ignores]
 # Tests can intentionally exercise locale-encoding edge cases.
 "tests/**" = ["PLW1514"]
-# Skills and plugins are partially user-authored — their own conventions.
+# Skills and plugins are partially user-authored â€” their own conventions.
 "skills/**" = ["PLW1514"]
 "optional-skills/**" = ["PLW1514"]
 "plugins/**" = ["PLW1514"]
+

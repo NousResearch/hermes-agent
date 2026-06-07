@@ -4302,6 +4302,15 @@ class GatewayRunner:
         return scheduled
 
     async def start(self) -> bool:
+        # Ana gateway kilidi
+        lock_file = os.path.join(self.profile_dir, "gateway.lock")
+        try:
+            # FileLock context manager olarak çalışır, işi bitince otomatik kapatır
+            self._gateway_lock = FileLock(lock_file)
+            self._gateway_lock.__enter__()
+        except Exception:
+            logger.error("Gateway is already running! Exiting.")
+            return False
         """
         Start the gateway and all configured platform adapters.
         
@@ -5777,19 +5786,24 @@ lock_file = os.path.join(self.profile_dir, "dispatcher.lock")
         except (portalocker.exceptions.LockException, IOError):
             logger.error("kanban dispatcher: Another gateway instance is already running. Exiting.")
             return
-    async def _kanban_dispatcher_watcher(self) -> None:
         async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`."""
         
-        # --- Kilit Mekanizması ---
+        # 1. Kilit Mekanizmasını tek seferde çağırıyoruz
         lock_file = os.path.join(self.profile_dir, "dispatcher.lock")
         try:
-            self._lock_fd = open(lock_file, 'w')
-            portalocker.lock(self._lock_fd, portalocker.LOCK_EX | portalocker.LOCK_NB)
-        except (portalocker.exceptions.LockException, IOError):
+            self._disp_lock = FileLock(lock_file)
+            self._disp_lock.__enter__()
+        except Exception:
             logger.error("kanban dispatcher: Another dispatcher is already running for this profile. Exiting.")
             return
-        # -------------------------
+
+        # 2. Şimdi asıl fonksiyonun devamı (Config kontrolü vb.)
+        if not await self.config.get("kanban.dispatch_in_gateway", True):
+            return
+
+        # ... (bundan sonra mevcut dispatcher döngün aynen devam edecek)
+        # Örnek: while self._running: ...
 
         # Mevcut config yükleme kodların buraya gelecek
         if not await self.config.get("kanban.dispatch_in_gateway", True):

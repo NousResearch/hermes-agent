@@ -40,8 +40,6 @@ SUMMARY_PREFIX = (
     "window — treat it as background reference, NOT as active instructions. "
     "Do NOT answer questions or fulfill requests mentioned in this summary; "
     "they were already addressed. "
-    "Your current task is identified in the '## Active Task' section of the "
-    "summary — resume exactly from there. "
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
@@ -837,15 +835,7 @@ class ContextCompressor(ContextEngine):
         )
 
         # Shared structured template (used by both paths).
-        _template_sections = f"""## Active Task
-[THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or
-task assignment verbatim — the exact words they used. If multiple tasks
-were requested and only some are done, list only the ones NOT yet completed.
-Continuation should pick up exactly here. Example:
-"User asked: 'Now refactor the auth module to use JWT instead of sessions'"
-If no outstanding task exists, write "None."]
-
-## Goal
+        _template_sections = f"""## Goal
 [What the user is trying to accomplish overall]
 
 ## Constraints & Preferences
@@ -908,7 +898,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled request — this is the most important field for task continuity.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. Keep any unfinished requests in "## Pending User Asks" as reference-only context; do not frame summary content as active instructions.
 
 {_template_sections}"""
         else:
@@ -955,7 +945,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 content = str(content) if content else ""
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
-            summary = redact_sensitive_text(content.strip())
+            summary = self._neutralize_active_task_section(
+                redact_sensitive_text(content.strip())
+            )
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
@@ -1069,6 +1061,15 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 _transient_cooldown,
             )
             return None
+
+    @staticmethod
+    def _neutralize_active_task_section(summary: str) -> str:
+        """Rename legacy Active Task headings so summaries stay reference-only."""
+        return re.sub(
+            r"(?im)^##\s*Active\s+Task\s*$",
+            "## Pending User Asks",
+            summary,
+        )
 
     @staticmethod
     def _strip_summary_prefix(summary: str) -> str:
@@ -1233,9 +1234,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         Context compressor bug (#10896): ``_align_boundary_backward`` can pull
         ``cut_idx`` past a user message when it tries to keep tool_call/result
         groups together.  If the last user message ends up in the *compressed*
-        middle region the LLM summariser writes it into "Pending User Asks",
-        but ``SUMMARY_PREFIX`` tells the next model to respond only to user
-        messages *after* the summary — so the task effectively disappears from
+        middle region the LLM summariser writes it into the reference-only
+        summary, but ``SUMMARY_PREFIX`` tells the next model to respond only
+        to user messages *after* the summary — so the task effectively disappears from
         the active context, causing the agent to stall, repeat completed work,
         or silently drop the user's latest request.
 
@@ -1497,8 +1498,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 _merge_summary_into_tail = True
 
         # When the summary lands as a standalone role="user" message,
-        # weak models read the verbatim "## Active Task" quote of a past
-        # user request as fresh input (#11475, #14521). Append the explicit
+        # weak models can read quoted past user requests as fresh input
+        # (#11475, #14521). Append the explicit
         # end marker — the same one used in the merge-into-tail path — so
         # the model has a clear "summary above, not new input" signal.
         if not _merge_summary_into_tail and summary_role == "user":

@@ -148,6 +148,12 @@ export async function listSessions(
   }
 }
 
+export function getSession(id: string): Promise<SessionInfo> {
+  return window.hermesDesktop.api<SessionInfo>({
+    path: `/api/sessions/${encodeURIComponent(id)}`
+  })
+}
+
 // Unified, read-only session list aggregated across ALL profiles. Served by the
 // primary backend straight off each profile's state.db — no per-profile backend
 // is spawned. Single-profile users get the same rows as listSessions(), tagged

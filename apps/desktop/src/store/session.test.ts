@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { $attentionSessionIds, mergeSessionPage, sessionPinId, setSessionAttention } from './session'
+import { getMissingPinnedSessionIds, resolvePinnedSessions, sessionPinId } from './session'
+import { $attentionSessionIds, mergeSessionPage, setSessionAttention } from './session'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
   archived: false,
@@ -63,6 +64,44 @@ describe('sessionPinId', () => {
   })
 })
 
+describe('getMissingPinnedSessionIds', () => {
+  it('returns pinned ids that cannot resolve from loaded sessions or fallbacks after reload', () => {
+    const loaded = session({ id: 'loaded', title: 'Loaded chat' })
+    const fallback = session({ id: 'cached-search', title: 'Cached search result' })
+
+    expect(getMissingPinnedSessionIds(['loaded', 'cached-search', 'hidden-after-reload'], [loaded], [fallback])).toEqual([
+      'hidden-after-reload'
+    ])
+  })
+
+  it('does not hydrate a lineage-root pin that already resolves from a loaded continuation tip', () => {
+    const loadedTip = session({ id: 'tip', _lineage_root_id: 'root', title: 'Loaded continuation' })
+
+    expect(getMissingPinnedSessionIds(['root'], [loadedTip])).toEqual([])
+  })
+})
+
+describe('resolvePinnedSessions', () => {
+  it('renders a pinned search result that is absent from the loaded session list', () => {
+    const loaded = session({ id: 'loaded', title: 'Loaded chat' })
+    const searchOnly = session({ id: 'search-only', title: 'desktop ui bug' })
+
+    expect(resolvePinnedSessions(['search-only'], [loaded], [searchOnly])).toEqual([searchOnly])
+  })
+
+  it('prefers the loaded session over a search-result fallback for the same pin id', () => {
+    const loaded = session({ id: 'loaded', title: 'Loaded chat' })
+    const staleSearchResult = session({ id: 'loaded', title: 'Stale search title' })
+
+    expect(resolvePinnedSessions(['loaded'], [loaded], [staleSearchResult])).toEqual([loaded])
+  })
+
+  it('resolves search-result fallbacks by lineage root pin id', () => {
+    const searchOnly = session({ id: 'tip', _lineage_root_id: 'root', title: 'Compressed search result' })
+
+    expect(resolvePinnedSessions(['root'], [], [searchOnly])).toEqual([searchOnly])
+  })
+})
 describe('mergeSessionPage', () => {
   it('returns the server page untouched when there is nothing to keep', () => {
     const previous = [session({ id: 'a' }), session({ id: 'b' })]

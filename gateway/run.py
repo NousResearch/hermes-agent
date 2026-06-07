@@ -14971,7 +14971,7 @@ class GatewayRunner:
     # honored via the registry fallback at ``_handle_update_command`` below.
     _UPDATE_ALLOWED_PLATFORMS = frozenset({
         Platform.TELEGRAM, Platform.SLACK, Platform.WHATSAPP,
-        Platform.SIGNAL, Platform.MATRIX,
+        Platform.MATRIX,
         Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
         Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
     })

@@ -1144,3 +1144,72 @@ class TestWriteApprovalMigration:
             # gate ends up off and there's no leftover write_mode key.
             assert raw["memory"].get("write_approval", False) is False
             assert "write_mode" not in raw.get("memory", {})
+
+
+class TestMigratePreservesCustomProviders:
+    """Verify that custom_providers is preserved through config version bumps.
+
+    Issue #40821: after upgrading from 0.15.x to 0.16.0, the first process
+    that writes config.yaml expanded it from ~950 bytes to ~12.4 KB and
+    dropped custom_providers entirely. The fix uses read_raw_config() for
+    version-bump writes so only user-specified keys are written back."""
+
+    def test_migrate_preserves_custom_providers_on_version_bump(self, tmp_path):
+        """Version bump without new fields should preserve custom_providers."""
+        config_path = tmp_path / "config.yaml"
+        # Create a config with an older version and custom_providers
+        old_config = {
+            "_config_version": 18,  # older than current
+            "model": {"default": "test-model"},
+            "custom_providers": [
+                {
+                    "name": "testprovider",
+                    "base_url": "http://example.com/v1",
+                    "api_key": "sk-test",
+                }
+            ],
+        }
+        config_path.write_text(yaml.safe_dump(old_config), encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        # Verify version was bumped
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+
+        # Verify custom_providers is still present
+        assert "custom_providers" in raw or "providers" in raw
+        if "custom_providers" in raw:
+            assert len(raw["custom_providers"]) == 1
+            assert raw["custom_providers"][0]["name"] == "testprovider"
+
+    def test_migrate_version_bump_does_not_expand_to_defaults(self, tmp_path):
+        """Verify that version-bump write doesn't inject DEFAULT_CONFIG keys."""
+        config_path = tmp_path / "config.yaml"
+        # Create a minimal valid config
+        minimal_config = {
+            "_config_version": 18,  # older than current
+            "model": {"default": "test-model"},
+        }
+        config_path.write_text(yaml.safe_dump(minimal_config), encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            written_yaml = config_path.read_text(encoding="utf-8")
+            raw = yaml.safe_load(written_yaml)
+
+        # Verify version was bumped
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+
+        # Verify DEFAULT_CONFIG-only keys are NOT injected
+        # (these are keys in DEFAULT_CONFIG but not in the original minimal config)
+        assert "insights_dir" not in raw
+        assert "agent_log_dir" not in raw
+        assert "discord" not in raw or raw.get("discord") == {}
+
+        # File size should be reasonable (not bloated to ~12.4 KB)
+        assert len(written_yaml) < 3000  # sanity check: much less than 12.4 KB
+>>>>>>> 5e525c339 (fix(config): preserve custom_providers and prevent defaults-bloat on version-bump write (#40821))

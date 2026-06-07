@@ -4869,25 +4869,27 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     
     # Check for missing config fields
     missing_config = get_missing_config_fields()
-    
+
     if missing_config:
-        config = load_config()
-        
+        config = read_raw_config()
+
         for field in missing_config:
             key = field["key"]
             default = field["default"]
-            
+
             _set_nested(config, key, default)
             results["config_added"].append(key)
             if not quiet:
                 print(f"  ✓ Added {key} = {default}")
-        
-        # Update version and save
+
+        # Update version and save — start from raw config to avoid writing
+        # the full DEFAULT_CONFIG tree into the user's compact file (#40821)
         config["_config_version"] = latest_ver
         save_config(config)
     elif current_ver < latest_ver:
-        # Just update version
-        config = load_config()
+        # Just update version — use raw config to avoid writing the full
+        # DEFAULT_CONFIG tree into the user's compact file (#40821)
+        config = read_raw_config()
         config["_config_version"] = latest_ver
         save_config(config)
 

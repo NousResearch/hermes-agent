@@ -1062,7 +1062,7 @@ class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}
 
-    def test_migrate_adds_discord_channel_prompts_default(self, tmp_path):
+    def test_migrate_does_not_expand_discord_channel_prompts_default(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump({"_config_version": 17, "discord": {"auto_thread": True}}),
@@ -1076,7 +1076,50 @@ class TestDiscordChannelPromptsConfig:
         from hermes_cli.config import DEFAULT_CONFIG
         assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert raw["discord"]["auto_thread"] is True
-        assert raw["discord"]["channel_prompts"] == {}
+        # channel_prompts is a DEFAULT_CONFIG value that should NOT be expanded
+        # into the user's file — read_raw_config() preserves only what the user
+        # explicitly wrote (fixes #40821: config migration expanding defaults).
+        assert "channel_prompts" not in raw.get("discord", {})
+
+    def test_migrate_preserves_custom_providers_and_no_defaults_dump(self, tmp_path):
+        """Migration must not expand config.yaml to a defaults dump (#40821).
+
+        Before the fix, migrations used load_config() which deep-merges
+        DEFAULT_CONFIG, then save_config() wrote the full ~13KB expanded
+        result — destroying comments and structure. Using read_raw_config()
+        keeps the file small and preserves only the user's actual config.
+        """
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({
+                "_config_version": 3,
+                "model": {"default": "test-model", "provider": "openrouter"},
+                "custom_providers": [
+                    {"name": "local-llm", "base_url": "http://localhost:8080/v1",
+                     "models": {"test": {}}}
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        # custom_providers migrated to providers dict (by design, v11->v12)
+        assert "custom_providers" not in raw
+        assert "providers" in raw
+        assert "local-llm" in raw["providers"]
+        assert raw["providers"]["local-llm"]["api"] == "http://localhost:8080/v1"
+
+        # File must NOT be a defaults dump — assert specific DEFAULT_CONFIG
+        # top-level keys are absent (they should only appear via load_config's
+        # deep-merge, not be written to the user's file by migration).
+        for default_key in ("tts", "compression", "security", "whatsapp", "bedrock"):
+            assert default_key not in raw, (
+                f"{default_key} should not be in migrated config file — "
+                f"migration should use read_raw_config() to avoid defaults dump"
+            )
 
 
 class TestUserMessagePreviewConfig:

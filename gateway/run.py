@@ -12326,17 +12326,37 @@ class GatewayRunner:
         audio_path = None
         actual_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from tools.tts_tool import (
+                text_to_speech_tool,
+                _strip_markdown_for_tts,
+                _load_tts_config,
+                _get_provider,
+            )
 
             tts_text = _strip_markdown_for_tts(text[:4000])
             if not tts_text:
                 return
 
-            # Use .mp3 extension so edge-tts conversion to opus works correctly.
-            # The TTS tool may convert to .ogg — use file_path from result.
+            # Pick the temp extension based on the configured provider so the
+            # TTS tool emits the right format directly. Providers in the
+            # native-Opus set ({openai, elevenlabs, mistral, gemini, inworld})
+            # honor the supplied path's extension; handing them ".mp3" makes
+            # them produce MP3 bytes, which then routes to sendAudio (audio-
+            # file card) instead of sendVoice (waveform bubble) on Telegram.
+            # Other providers (edge, neutts, etc.) still need .mp3 / .wav and
+            # get converted to .opus downstream by _convert_to_opus.
+            try:
+                _active_provider = _get_provider(_load_tts_config())
+            except Exception:
+                _active_provider = ""
+            _voice_reply_ext = (
+                ".ogg"
+                if _active_provider in {"openai", "elevenlabs", "mistral", "gemini", "inworld"}
+                else ".mp3"
+            )
             audio_path = os.path.join(
                 tempfile.gettempdir(), "hermes_voice",
-                f"tts_reply_{_uuid.uuid4().hex[:12]}.mp3",
+                f"tts_reply_{_uuid.uuid4().hex[:12]}{_voice_reply_ext}",
             )
             os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 

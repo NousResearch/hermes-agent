@@ -4178,9 +4178,21 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
-                            tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
-                            )
+                            # The gateway runner clears HERMES_SESSION_PLATFORM
+                            # (to "") before this auto-TTS step runs, so re-set
+                            # it for the duration of the TTS call. Without this
+                            # the TTS tool sees platform="" and falls back to
+                            # a .mp3 output path; downstream send_voice then
+                            # routes through sendAudio (audio-file card) on
+                            # Telegram instead of sendVoice (waveform bubble).
+                            from gateway.session_context import _SESSION_PLATFORM
+                            _platform_token = _SESSION_PLATFORM.set(self.platform.value)
+                            try:
+                                tts_result_str = await asyncio.to_thread(
+                                    text_to_speech_tool, text=speech_text
+                                )
+                            finally:
+                                _SESSION_PLATFORM.reset(_platform_token)
                             tts_data = _json.loads(tts_result_str)
                             _tts_path = tts_data.get("file_path")
                     except Exception as tts_err:

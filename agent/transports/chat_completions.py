@@ -11,6 +11,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 
 import copy
 from typing import Any, Dict
+from urllib.parse import urlparse
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
@@ -380,11 +381,14 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # Ollama-specific handling for all models using local Ollama backend.
         _base_url_str = str(params.get("base_url") or "")
-        if ":11434" in _base_url_str:  # Local Ollama default port
+        if urlparse(_base_url_str).port == 11434:  # Local Ollama default port
             api_kwargs["max_tokens"] = max(
                 api_kwargs.get("max_tokens", 0), 16384
             )
-            extra_body["num_predict"] = -1
+            # Only set num_predict=-1 if user hasn't already configured it.
+            # This respects explicit user settings and avoids silent overrides.
+            if "num_predict" not in extra_body:
+                extra_body["num_predict"] = -1
 
         is_openrouter = params.get("is_openrouter", False)
         is_nous = params.get("is_nous", False)

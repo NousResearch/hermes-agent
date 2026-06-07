@@ -9,6 +9,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useMemo, useState } from 'react'
 
+import { insertMessageReply } from '@/app/chat/composer/message-reply'
 import {
   contentHasVisibleText,
   messageContentText,
@@ -37,6 +38,7 @@ import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
+import { isWatchWindow } from '@/store/windows'
 
 interface MessageActionProps {
   messageId: string
@@ -142,6 +144,12 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
   const copy = t.assistant.thread
   const [menuOpen, setMenuOpen] = useState(false)
 
+  const reply = useCallback(() => {
+    if (insertMessageReply(getMessageText())) {
+      triggerHaptic('selection')
+    }
+  }, [getMessageText])
+
   return (
     <div className="relative flex w-full shrink-0 justify-end">
       <ActionBarPrimitive.Root
@@ -159,6 +167,11 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
         data-slot="aui_msg-actions"
       >
         <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
+        {!isWatchWindow() && (
+          <TooltipIconButton onClick={reply} tooltip={copy.reply}>
+            <Codicon name="reply" />
+          </TooltipIconButton>
+        )}
         <ActionBarPrimitive.Reload asChild>
           <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>
             <Codicon name="refresh" />

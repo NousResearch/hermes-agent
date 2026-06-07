@@ -1,6 +1,7 @@
 import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react'
 import { type FC, type ReactNode, useCallback, useRef, useState } from 'react'
 
+import { insertMessageReply } from '@/app/chat/composer/message-reply'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
@@ -217,9 +218,16 @@ export const UserMessage: FC<{
   // the live turn before rewinding.
   const showRestore = !readOnly && !showStop && Boolean(onRequestRestoreConfirm) && hasBody
 
+  const reply = () => {
+    if (insertMessageReply(messageText)) {
+      triggerHaptic('selection')
+    }
+  }
+
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
-    'cursor-pointer pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
+    'cursor-pointer text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
+    showStop || showRestore ? 'pr-16' : 'pr-9',
     'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
   )
 
@@ -293,8 +301,25 @@ export const UserMessage: FC<{
                   </button>
                 </ActionBarPrimitive.Edit>
               )}
-              {(showStop || showRestore) && (
+              {!readOnly && hasBody && (
                 <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
+                  <button
+                    aria-label={copy.reply}
+                    className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
+                    onClick={event => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      reply()
+                    }}
+                    onPointerDown={event => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                    }}
+                    title={copy.reply}
+                    type="button"
+                  >
+                    <Codicon name="reply" size="0.75rem" />
+                  </button>
                   {showStop ? (
                     <button
                       aria-label={copy.stop}
@@ -309,7 +334,7 @@ export const UserMessage: FC<{
                     >
                       {StopGlyph}
                     </button>
-                  ) : (
+                  ) : showRestore ? (
                     <button
                       aria-label={copy.restoreCheckpoint}
                       className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
@@ -331,7 +356,7 @@ export const UserMessage: FC<{
                     >
                       <Codicon name="discard" size="0.875rem" />
                     </button>
-                  )}
+                  ) : null}
                 </div>
               )}
             </div>

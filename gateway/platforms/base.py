@@ -2156,6 +2156,14 @@ class MessageEvent:
 
 
 @dataclass
+class ReplyDeliveryPolicy:
+    """Adapter-provided delivery policy for a completed assistant reply."""
+
+    send_voice_reply: bool = False
+    suppress_text_if_voice_reply_sent: bool = False
+
+
+@dataclass
 class TextDebounceState:
     event: MessageEvent
     task: asyncio.Task | None
@@ -2995,6 +3003,59 @@ class BasePlatformAdapter(ABC):
         Return ``None`` (default) to use ``MAX_MESSAGE_LENGTH``.
         """
         return None
+
+    def observe_inbound_message(self, event: MessageEvent) -> None:
+        """Observe inbound messages before gateway dispatch.
+
+        Platform adapters can override this to maintain lightweight
+        conversation state used by later delivery decisions.  The default is a
+        no-op so existing adapters keep their behavior unchanged.
+        """
+        return None
+
+    def reply_delivery_policy(
+        self,
+        event: MessageEvent,
+        response: str,
+        *,
+        voice_mode: Optional[str],
+        already_sent: bool,
+    ) -> ReplyDeliveryPolicy:
+        """Return how the gateway should deliver the final assistant reply.
+
+        The default preserves the runner's legacy auto-voice behavior:
+        explicit ``/voice all`` or ``/voice voice_only`` opt-ins request
+        runner-side TTS, ``voice.auto_tts`` (synced into the adapter on
+        gateway startup via ``_should_auto_tts_for_chat``) is the fallback
+        only when the chat has no explicit mode — otherwise the chat-level
+        all/voice_only/off choice takes precedence — and voice-input turns
+        are skipped when the adapter's own post-processing can still
+        auto-TTS the text response.
+
+        ``voice_mode`` is ``None`` when the chat never set a mode — distinct
+        from an explicit ``"off"``, which disables the auto_tts path.
+        """
+        if not response or response.startswith("Error:"):
+            return ReplyDeliveryPolicy()
+
+        is_voice_input = event.message_type == MessageType.VOICE
+        auto_tts = False
+        if hasattr(self, "_should_auto_tts_for_chat"):
+            try:
+                auto_tts = bool(self._should_auto_tts_for_chat(event.source.chat_id))
+            except Exception:
+                auto_tts = False
+        send_voice = (
+            voice_mode == "all"
+            or (voice_mode == "voice_only" and is_voice_input)
+            # The base adapter's own auto-TTS path only covers voice-input
+            # replies, so final text replies need the runner path here.
+            # Fallback only when the chat never set an explicit mode.
+            or (voice_mode is None and auto_tts)
+        )
+        if is_voice_input and not already_sent:
+            send_voice = False
+        return ReplyDeliveryPolicy(send_voice_reply=send_voice)
 
     async def send_draft(
         self,

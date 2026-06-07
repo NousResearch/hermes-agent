@@ -297,6 +297,31 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
+    def test_get_sessions_forwards_source_filter(self, monkeypatch):
+        captured = {}
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, source=None, **kwargs):
+                captured["list"] = source
+                return []
+
+            def session_count(self, source=None, **kwargs):
+                captured["count"] = source
+                return 0
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+
+        resp = self.client.get("/api/sessions?limit=5&offset=0&source=WebUI")
+        assert resp.status_code == 200
+        assert captured["list"] == "webui"
+        assert captured["count"] == "webui"
+
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route
         was missing entirely, so the desktop rename dialog got a 405)."""
@@ -400,6 +425,25 @@ class TestWebServerEndpoints:
         assert row["profile"] == "default"
         assert row["is_default_profile"] is True
         assert isinstance(data.get("errors"), list)
+
+    def test_profiles_sessions_filters_by_source(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="webui-me", source="webui")
+            db.append_message(session_id="webui-me", role="user", content="from webui")
+            db.create_session(session_id="cli-me", source="cli")
+            db.append_message(session_id="cli-me", role="user", content="from cli")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/profiles/sessions?limit=20&min_messages=1&source=webui")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [s["id"] for s in data["sessions"]] == ["webui-me"]
+        assert data["profile_totals"] == {"default": 1}
+        assert data["total"] == 1
 
     def test_profiles_sessions_rejects_unknown_archived_value(self):
         resp = self.client.get("/api/profiles/sessions?archived=bogus")

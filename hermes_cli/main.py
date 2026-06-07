@@ -15078,6 +15078,42 @@ Examples:
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
     )
 
+    sessions_import_webui = sessions_subparsers.add_parser(
+        "import-webui",
+        help="Import legacy Hermes WebUI JSON sessions into state.db",
+        description=(
+            "Import sessions from standalone hermes-webui's JSON store "
+            "($HERMES_HOME/webui/sessions by default) into the canonical SQLite "
+            "session store used by Desktop and the dashboard APIs. Dry-run by default."
+        ),
+    )
+    sessions_import_webui.add_argument(
+        "--state-dir",
+        help="Legacy WebUI state directory (defaults to $HERMES_WEBUI_STATE_DIR or $HERMES_HOME/webui)",
+    )
+    sessions_import_webui.add_argument(
+        "--sessions-dir",
+        help="Legacy WebUI sessions directory; overrides --state-dir",
+    )
+    sessions_import_webui.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write imports to state.db. Without this flag, only report what would change.",
+    )
+    sessions_import_webui.add_argument(
+        "--include-empty",
+        action="store_true",
+        help="Also import empty WebUI sessions. By default they are skipped.",
+    )
+    sessions_import_webui.add_argument(
+        "--current-profile-only",
+        action="store_true",
+        help=(
+            "Import only into the active profile database. By default, WebUI "
+            "sessions are routed to the profile named in each legacy JSON file."
+        ),
+    )
+
     def _confirm_prompt(prompt: str) -> bool:
         """Prompt for y/N confirmation, safe against non-TTY environments."""
         try:
@@ -15230,6 +15266,32 @@ Examples:
 
             relaunch(["--resume", selected_id])
             return  # won't reach here after execvp
+
+        elif action == "import-webui":
+            from hermes_cli.webui_session_import import (
+                format_webui_profiles_import_report,
+                format_webui_import_report,
+                import_webui_sessions_by_profile,
+                import_webui_sessions,
+            )
+
+            if bool(getattr(args, "current_profile_only", False)):
+                report = import_webui_sessions(
+                    db,
+                    state_dir=getattr(args, "state_dir", None),
+                    sessions_dir=getattr(args, "sessions_dir", None),
+                    dry_run=not bool(getattr(args, "apply", False)),
+                    include_empty=bool(getattr(args, "include_empty", False)),
+                )
+                print(format_webui_import_report(report))
+            else:
+                report = import_webui_sessions_by_profile(
+                    state_dir=getattr(args, "state_dir", None),
+                    sessions_dir=getattr(args, "sessions_dir", None),
+                    dry_run=not bool(getattr(args, "apply", False)),
+                    include_empty=bool(getattr(args, "include_empty", False)),
+                )
+                print(format_webui_profiles_import_report(report))
 
         elif action == "optimize":
             db_path = db.db_path

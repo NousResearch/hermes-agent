@@ -79,6 +79,7 @@ import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
 import { ProfileRail } from './profile-switcher'
+import { type SidebarSessionGroup, workspaceGroupsFor } from './session-groups'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
 
@@ -145,13 +146,6 @@ function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: string[
   return out
 }
 
-const baseName = (path: string) =>
-  path
-    .replace(/[/\\]+$/, '')
-    .split(/[/\\]/)
-    .filter(Boolean)
-    .pop()
-
 // FTS results cover sessions that aren't in the loaded page; synthesize a
 // minimal SessionInfo so they render in the same row component (resume works
 // by id; the snippet stands in for the preview).
@@ -176,30 +170,6 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     title: null,
     tool_call_count: 0
   }
-}
-
-function workspaceGroupsFor(sessions: SessionInfo[], noWorkspaceLabel: string): SidebarSessionGroup[] {
-  const groups = new Map<string, SidebarSessionGroup>()
-
-  for (const session of sessions) {
-    const path = session.cwd?.trim() || ''
-    const id = path || '__no_workspace__'
-    const label = baseName(path) || path || noWorkspaceLabel
-
-    const group = groups.get(id) ?? { id, label, path: path || null, sessions: [] }
-    group.sessions.push(session)
-    groups.set(id, group)
-  }
-
-  // Groups keep recency order (Map insertion = first-seen in the recency-sorted
-  // input, so an active project floats up), but rows *within* a group sort by
-  // creation time so they don't reshuffle every time a message lands — keeps
-  // muscle memory intact.
-  for (const group of groups.values()) {
-    group.sessions.sort((a, b) => b.started_at - a.started_at)
-  }
-
-  return [...groups.values()]
 }
 
 function useSortableBindings(id: string) {
@@ -835,19 +805,6 @@ function SidebarPinnedEmptyState() {
   )
 }
 
-interface SidebarSessionGroup {
-  id: string
-  label: string
-  path: null | string
-  sessions: SessionInfo[]
-  // Profile color for the ALL-profiles view; absent for workspace groups.
-  color?: null | string
-  loadingMore?: boolean
-  mode?: 'profile' | 'workspace'
-  onLoadMore?: () => void
-  totalCount?: number
-}
-
 interface SidebarSessionsSectionProps {
   label: string
   open: boolean
@@ -1032,6 +989,7 @@ function SidebarWorkspaceGroup({
   const { t } = useI18n()
   const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
+  const canStartInGroup = isProfileGroup || (group.allowNewSession !== false && Boolean(onNewSession))
   const pageStep = isProfileGroup ? PROFILE_INITIAL_PAGE : WORKSPACE_PAGE
   const [open, setOpen] = useState(true)
   const [visibleCount, setVisibleCount] = useState(pageStep)
@@ -1076,7 +1034,7 @@ function SidebarWorkspaceGroup({
             open={open}
           />
         </button>
-        {(onNewSession || isProfileGroup) && (
+        {canStartInGroup && (
           <Tip label={s.newSessionIn(group.label)}>
             <button
               aria-label={s.newSessionIn(group.label)}

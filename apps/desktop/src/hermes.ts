@@ -132,16 +132,30 @@ export async function listSessions(
   limit = 40,
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
-  order: 'created' | 'recent' = 'recent'
+  order: 'created' | 'recent' = 'recent',
+  source = '',
+  offset = 0
 ): Promise<PaginatedSessions> {
+  const params = new URLSearchParams({
+    archived,
+    limit: String(limit),
+    min_messages: String(Math.max(0, minMessages)),
+    offset: String(Math.max(0, offset)),
+    order
+  })
+
+  if (source.trim()) {
+    params.set('source', source.trim())
+  }
+
   const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`
+    path: `/api/sessions?${params}`
   })
 
   return {
     ...result,
     sessions: result.sessions.slice(0, limit),
-    offset: 0
+    offset: Math.max(0, offset)
   }
 }
 
@@ -154,18 +168,31 @@ export async function listAllProfileSessions(
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
-  profile: 'all' | (string & {}) = 'all'
+  profile: 'all' | (string & {}) = 'all',
+  source = '',
+  offset = 0
 ): Promise<PaginatedSessions> {
+  const params = new URLSearchParams({
+    archived,
+    limit: String(limit),
+    min_messages: String(Math.max(0, minMessages)),
+    offset: String(Math.max(0, offset)),
+    order,
+    profile
+  })
+
+  if (source.trim()) {
+    params.set('source', source.trim())
+  }
+
   const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path:
-      `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
-      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}`
+    path: `/api/profiles/sessions?${params}`
   })
 
   return {
     ...result,
     sessions: result.sessions.slice(0, limit),
-    offset: 0
+    offset: Math.max(0, offset)
   }
 }
 

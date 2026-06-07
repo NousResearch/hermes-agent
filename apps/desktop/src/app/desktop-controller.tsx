@@ -101,6 +101,8 @@ const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).P
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
 
+const WEBUI_SIDEBAR_PAGE_SIZE = 500
+
 // Rows a session refresh must preserve even if the aggregator omits them:
 // in-flight first turns (message_count 0), pinned rows aged off the page, and
 // the actively-viewed chat (its "working" flag clears a beat before the
@@ -119,6 +121,52 @@ function sessionsToKeep(scope?: string): Set<string> {
   }
 
   return keep
+}
+
+function mergeSessionsById(primary: SessionInfo[], extra: SessionInfo[]): SessionInfo[] {
+  const seen = new Set(primary.map(session => session.id))
+  const merged = [...primary]
+
+  for (const session of extra) {
+    if (seen.has(session.id)) {
+      continue
+    }
+
+    seen.add(session.id)
+    merged.push(session)
+  }
+
+  return merged
+}
+
+async function listAllWebUISessionsForSidebar(): Promise<SessionInfo[]> {
+  const sessions: SessionInfo[] = []
+  let offset = 0
+
+  while (true) {
+    const result = await listAllProfileSessions(
+      WEBUI_SIDEBAR_PAGE_SIZE,
+      1,
+      'exclude',
+      'recent',
+      'all',
+      'webui',
+      offset
+    )
+
+    if (result.sessions.length === 0) {
+      break
+    }
+
+    sessions.push(...result.sessions)
+    offset += result.sessions.length
+
+    if (offset >= result.total || result.sessions.length < WEBUI_SIDEBAR_PAGE_SIZE) {
+      break
+    }
+  }
+
+  return sessions
 }
 
 export function DesktopController() {
@@ -237,10 +285,16 @@ export function DesktopController() {
       // Unified cross-profile list (served read-only off each profile's
       // state.db; no per-profile backend is spawned). Single-profile users get
       // the same rows tagged profile="default".
-      const result = await listAllProfileSessions(limit, 1)
+
+      const [result, webuiResult] = await Promise.all([
+        listAllProfileSessions(limit, 1),
+        listAllWebUISessionsForSidebar()
+      ])
+
+      const sessions = mergeSessionsById(result.sessions, webuiResult)
 
       if (refreshSessionsRequestRef.current === requestId) {
-        setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
+        setSessions(prev => mergeSessionPage(prev, sessions, sessionsToKeep()))
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
         setSessionProfileTotals(result.profile_totals ?? {})
       }

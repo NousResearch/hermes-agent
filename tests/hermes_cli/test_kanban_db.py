@@ -1945,6 +1945,41 @@ def test_cleanup_workspace_removes_managed_scratch_dir(kanban_home):
     assert not ws.exists(), "Hermes-managed scratch dir should be cleaned up"
 
 
+def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
+    """Artifacts produced inside ephemeral scratch workspaces remain readable after completion.
+
+    ``kanban_complete(artifacts=[...])`` paths are consumed after the task has
+    completed.  If they still point into the scratch workspace, cleanup deletes
+    the files before notifiers or humans can open them.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="report")
+        task = kb.get_task(conn, t)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        report = ws / "report.md"
+        report.write_text("durable report", encoding="utf-8")
+
+        kb.complete_task(
+            conn,
+            t,
+            summary="report done",
+            metadata={"artifacts": [str(report)]},
+        )
+        run = kb.latest_run(conn, t)
+        assert run is not None
+        completed = [ev for ev in kb.list_events(conn, t) if ev.kind == "completed"][-1]
+
+    assert not ws.exists(), "Hermes-managed scratch dir should still be cleaned up"
+    persisted = Path(run.metadata["artifacts"][0])
+    assert persisted != report
+    assert persisted.exists()
+    assert persisted.read_text(encoding="utf-8") == "durable report"
+    assert completed.payload["artifacts"] == [str(persisted)]
+    assert str(persisted).startswith(str(kanban_home / "kanban" / "artifacts" / t))
+
+
 def test_cleanup_workspace_refuses_path_outside_scratch_root(kanban_home, tmp_path):
     """A scratch task with a user path outside the workspaces root must NOT be deleted (#28818).
 

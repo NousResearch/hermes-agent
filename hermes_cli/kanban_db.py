@@ -3559,6 +3559,73 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+def _persistent_artifact_dir(task_id: str) -> Path:
+    """Persistent directory for kanban completion artifacts for *task_id*."""
+    return kanban_home() / "kanban" / "artifacts" / task_id
+
+
+def _persist_scratch_artifacts(task_id: str, metadata: Optional[dict]) -> Optional[dict]:
+    """Copy artifacts out of ephemeral scratch workspaces before cleanup.
+
+    Workers often pass ``metadata['artifacts']`` via ``kanban_complete`` while
+    the files still live in the task's scratch workspace.  ``complete_task``
+    removes that workspace after completion, so paths in the run row and
+    completed event must be rewritten to durable copies first.
+    """
+    if not isinstance(metadata, dict):
+        return metadata
+    raw = metadata.get("artifacts")
+    if not isinstance(raw, (list, tuple)):
+        return metadata
+
+    artifact_dir: Optional[Path] = None
+    rewritten: list[Any] = []
+    changed = False
+    used_names: set[str] = set()
+
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            rewritten.append(item)
+            continue
+        original = item.strip()
+        src = Path(original).expanduser()
+        try:
+            should_persist = src.is_file() and _is_managed_scratch_path(src)
+        except OSError:
+            should_persist = False
+        if not should_persist:
+            rewritten.append(original)
+            continue
+
+        if artifact_dir is None:
+            artifact_dir = _persistent_artifact_dir(task_id)
+        try:
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            base_name = src.name or "artifact"
+            candidate = artifact_dir / base_name
+            if candidate.name in used_names or (candidate.exists() and candidate.resolve(strict=False) != src.resolve(strict=False)):
+                stem = candidate.stem or "artifact"
+                suffix = candidate.suffix
+                i = 2
+                while True:
+                    candidate = artifact_dir / f"{stem}-{i}{suffix}"
+                    if candidate.name not in used_names and not candidate.exists():
+                        break
+                    i += 1
+            shutil.copy2(src, candidate)
+            used_names.add(candidate.name)
+            rewritten.append(str(candidate))
+            changed = True
+        except OSError:
+            rewritten.append(original)
+
+    if not changed:
+        return metadata
+    updated = dict(metadata)
+    updated["artifacts"] = rewritten
+    return updated
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3660,6 +3727,7 @@ def complete_task(
             )
         if cur.rowcount != 1:
             return False
+        metadata = _persist_scratch_artifacts(task_id, metadata)
         run_id = _end_run(
             conn, task_id,
             outcome="completed", status="done",

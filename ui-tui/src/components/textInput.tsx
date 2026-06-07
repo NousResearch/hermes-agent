@@ -123,6 +123,33 @@ export function applyPrintableInsert(
 
 export const shouldRouteMultiCharInputAsPaste = (text: string): boolean => text.includes('\n')
 
+export function valueForReturnSubmit(
+  value: string,
+  cursor: number,
+  input: string,
+  range?: { end: number; start: number } | null
+): TextInsertResult {
+  const pending = input.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+
+  if (!pending) {
+    return { cursor, value }
+  }
+
+  // Browser/xterm IME commits can arrive as one burst immediately followed by
+  // Return (for example "会丢失内容\r").  The Return keypath is already about to
+  // submit, but the committed text has not passed through the ordinary
+  // printable-input branch yet.  Preserve the printable prefix before the first
+  // newline so the visible, just-committed IME text is part of the submitted
+  // prompt instead of being silently dropped.
+  const [beforeReturn] = pending.split('\n', 1)
+
+  if (!beforeReturn) {
+    return { cursor, value }
+  }
+
+  return applyPrintableInsert(value, cursor, beforeReturn, range) ?? { cursor, value }
+}
+
 export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
   if (env.WT_SESSION) {
     return true
@@ -968,13 +995,15 @@ export function TextInput({
       if (k.return) {
         flushKeyBurst()
 
+        const range = selRange()
+        const pending = valueForReturnSubmit(vRef.current, curRef.current, inp, range)
         const sequence = (event.keypress as { sequence?: string }).sequence
         const preserveBareLineFeed = shouldPreserveCtrlJNewline() && sequence === '\n'
 
         if (k.shift || k.ctrl || preserveBareLineFeed || (isMac ? isActionMod(k) : k.meta)) {
-          commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
+          commit(ins(pending.value, pending.cursor, '\n'), pending.cursor + 1)
         } else {
-          cbSubmit.current?.(vRef.current)
+          cbSubmit.current?.(pending.value)
         }
 
         return

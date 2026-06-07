@@ -5917,7 +5917,7 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
-        "    AND claim_lock IS NULL"
+        "    AND assignee != '' AND claim_lock IS NULL"
     ).fetchall()
     if not rows:
         return False
@@ -5955,6 +5955,130 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
         if profile_exists(row["assignee"]):
             return True
     return False
+
+
+@dataclass
+class BoardDispatchHealth:
+    """Per-board dispatch health summary.
+
+    Returned by :func:`board_dispatch_health` and consumed by the
+    gateway and CLI daemon stuck-detectors to identify WHICH boards
+    have spawnable work backing up behind zero spawns.
+    """
+
+    slug: str
+    ready: int = 0
+    """Count of ready tasks with a non-empty assignee and no active claim lock."""
+    ready_nonspawnable: int = 0
+    """Ready tasks assigned to control-plane lanes (e.g. ``orion-cc``)
+    rather than real Hermes profiles.  These are *not* operator-actionable —
+    they will be claimed by external terminals via ``claim_task``."""
+    running: int = 0
+    """Count of running tasks."""
+    spawnable: bool = False
+    """True if at least one ready task is assigned to a real Hermes profile."""
+
+    def __str__(self) -> str:
+        parts = [f"{self.slug} ({self.ready} ready, {self.running} running)"]
+        if self.ready_nonspawnable:
+            parts.append(f"({self.ready_nonspawnable} terminal lanes)")
+        return " ".join(parts)
+
+    @staticmethod
+    def format_stuck(boards: list[BoardDispatchHealth]) -> str:
+        """Format a human-readable summary of boards with spawnable work.
+
+        Returns a comma-separated string like
+        ``"ss-remediation-v2 (3 ready, 0 running), terax-remote (1 ready, 1 running)"``
+        or ``"unknown"`` if the list is empty.
+        """
+        stuck = [b for b in boards if b.spawnable]
+        return ", ".join(str(b) for b in stuck) if stuck else "unknown"
+
+
+def board_dispatch_health() -> list[BoardDispatchHealth]:
+    """Return per-board dispatch health summaries for all active boards.
+
+    Opens and closes per-board connections internally so the caller
+    does not need to manage connection lifecycles or bounce between
+    threads per board.  Safe to call from ``asyncio.to_thread()``.
+
+    .. note:: Performance
+       Each active board incurs one ``connect()`` + two COUNT queries +
+       one ``has_spawnable_ready`` probe + one optional GROUP BY for
+       terminal-lane partitioning.  For setups with many boards this is
+       O(boards × DB-ops); the diagnostic is rate-limited to once per
+       5 minutes by the callers, so the overhead is acceptable at typical
+       board counts (< 50).
+    """
+    try:
+        boards = list_boards(include_archived=False)
+    except Exception:
+        boards = [read_board_metadata(DEFAULT_BOARD)]
+
+    # Attempt to import profile_exists once for all boards rather than
+    # per-board (has_spawnable_ready does a local import internally).
+    _profile_exists = None
+    try:
+        from hermes_cli.profiles import profile_exists as _profile_exists  # noqa: N813
+    except Exception:
+        pass
+
+    results: list[BoardDispatchHealth] = []
+    for b in boards:
+        slug = b.get("slug") or DEFAULT_BOARD
+        conn = None
+        try:
+            conn = connect(board=slug)
+            ready = int(conn.execute(
+                "SELECT COUNT(*) FROM tasks "
+                "WHERE status = 'ready' AND assignee IS NOT NULL "
+                "AND assignee != '' AND claim_lock IS NULL"
+            ).fetchone()[0])
+            running = int(conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+            ).fetchone()[0])
+            try:
+                spawnable = has_spawnable_ready(conn)
+            except Exception:
+                # has_spawnable_ready can raise on pathological assignees
+                # (e.g. profile_exists('') ValueError).  In that case the
+                # ready count is authoritative — if there are ready tasks
+                # with non-empty assignees, conservatively assume spawnable.
+                spawnable = ready > 0
+            # Count how many ready tasks belong to non-profile (terminal)
+            # assignees so the operator can distinguish "real stuck" from
+            # "correctly idle".  Uses a per-task COUNT, not per-assignee.
+            # Excludes empty-string assignees to avoid ValueError in
+            # profile_exists('') (see has_spawnable_ready guard).
+            ready_nonspawnable = 0
+            if ready > 0 and _profile_exists is not None:
+                assignee_counts = conn.execute(
+                    "SELECT assignee, COUNT(*) AS cnt FROM tasks "
+                    "WHERE status = 'ready' AND assignee IS NOT NULL "
+                    "AND assignee != '' AND claim_lock IS NULL "
+                    "GROUP BY assignee"
+                ).fetchall()
+                ready_nonspawnable = sum(
+                    r["cnt"] for r in assignee_counts
+                    if not _profile_exists(r["assignee"])
+                )
+            results.append(BoardDispatchHealth(
+                slug=slug,
+                ready=ready,
+                ready_nonspawnable=ready_nonspawnable,
+                running=running,
+                spawnable=spawnable,
+            ))
+        except Exception:
+            results.append(BoardDispatchHealth(slug=slug))
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    return results
 
 
 def dispatch_once(

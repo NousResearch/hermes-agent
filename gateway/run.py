@@ -6243,12 +6243,21 @@ class GatewayRunner:
                 if bad_ticks >= HEALTH_WINDOW:
                     now = int(time.time())
                     if now - last_warn_at >= 300:
+                        # Per-board diagnosis: identify which boards have
+                        # spawnable work stuck behind 0 spawns.  Runs once
+                        # per warning (every 5+ min), not every tick.
+                        try:
+                            diag = await asyncio.to_thread(_kb.board_dispatch_health)
+                        except Exception:
+                            diag = []
+                        board_detail = _kb.BoardDispatchHealth.format_stuck(diag)
                         logger.warning(
                             "kanban dispatcher stuck: ready queue non-empty for "
-                            "%d consecutive ticks but 0 workers spawned. Check "
-                            "profile health (venv, PATH, credentials) and "
-                            "`hermes kanban list --status ready`.",
+                            "%d consecutive ticks but 0 workers spawned "
+                            "[boards: %s]. Check profile health (venv, PATH, "
+                            "credentials) and `hermes kanban list --status ready`.",
                             bad_ticks,
+                            board_detail,
                         )
                         last_warn_at = now
             except asyncio.CancelledError:

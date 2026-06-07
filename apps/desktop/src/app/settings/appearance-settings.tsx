@@ -2,11 +2,12 @@ import { useStore } from '@nanostores/react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Palette } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
+import { $keepToolCallsExpanded, $toolViewMode, setKeepToolCallsExpanded, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
 
@@ -57,6 +58,7 @@ export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const keepToolCallsExpanded = useStore($keepToolCallsExpanded)
   const a = t.settings.appearance
 
   const modeOptions = MODE_OPTIONS.map(({ id, icon }) => ({ icon, id, label: t.settings.modeOptions[id].label }))
@@ -154,6 +156,20 @@ export function AppearanceSettings() {
             }
             description={a.toolViewDesc}
             title={a.toolViewTitle}
+          />
+
+          <ListRow
+            action={
+              <Switch
+                checked={keepToolCallsExpanded}
+                onCheckedChange={(v: boolean) => {
+                  triggerHaptic('crisp')
+                  setKeepToolCallsExpanded(v)
+                }}
+              />
+            }
+            description={a.keepToolCallsExpandedDesc}
+            title={a.keepToolCallsExpandedTitle}
           />
         </div>
       </div>

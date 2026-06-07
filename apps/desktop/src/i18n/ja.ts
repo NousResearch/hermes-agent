@@ -210,6 +210,8 @@ export const ja = defineLocale({
       colorModeDesc: '固定モードを選ぶか、Hermes をシステム設定に合わせます。',
       toolViewTitle: 'ツール呼び出しの表示',
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
+      keepToolCallsExpandedTitle: 'ツール呼び出しを常に展開',
+      keepToolCallsExpandedDesc: 'ツール呼び出しの出力と推論ブロックを折りたたまずに常に表示します。',
       product: 'プロダクト',
       productDesc: '読みやすいツール活動と簡潔な要約を表示します。',
       technical: 'テクニカル',

@@ -8,19 +8,31 @@ type ToolDisclosureStates = Record<string, boolean>
 
 const TOOL_VIEW_TECHNICAL_STORAGE_KEY = 'hermes.desktop.toolView.technical'
 const TOOL_DISCLOSURE_STORAGE_KEY = 'hermes.desktop.toolDisclosure.v1'
+const KEEP_TOOL_CALLS_EXPANDED_KEY = 'hermes.desktop.keepToolCallsExpanded'
 const MAX_DISCLOSURE_STATES = 240
 
 export const $toolViewMode = atom<ToolViewMode>(
   storedBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, false) ? 'technical' : 'product'
 )
 export const $toolDisclosureStates = atom<ToolDisclosureStates>(loadToolDisclosureStates())
+
+// When true, all tool-call accordions start expanded and stay expanded.
+// The user can still collapse individual ones; re-render restores expanded.
+export const $keepToolCallsExpanded = atom<boolean>(
+  storedBoolean(KEEP_TOOL_CALLS_EXPANDED_KEY, false)
+)
 const disclosureOpenCache = new Map<string, ReadableAtom<boolean | undefined>>()
 
 $toolViewMode.subscribe(mode => persistBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, mode === 'technical'))
 $toolDisclosureStates.subscribe(persistToolDisclosureStates)
+$keepToolCallsExpanded.subscribe(v => persistBoolean(KEEP_TOOL_CALLS_EXPANDED_KEY, v))
 
 export function setToolViewMode(mode: ToolViewMode) {
   $toolViewMode.set(mode)
+}
+
+export function setKeepToolCallsExpanded(v: boolean) {
+  $keepToolCallsExpanded.set(v)
 }
 
 export function $toolDisclosureOpen(id: string): ReadableAtom<boolean | undefined> {

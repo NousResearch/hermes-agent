@@ -204,6 +204,8 @@ export const zhHant = defineLocale({
       colorModeDesc: '選擇固定模式，或讓 Hermes 跟隨系統設定。',
       toolViewTitle: '工具呼叫顯示',
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
+      keepToolCallsExpandedTitle: '保持工具呼叫展開',
+      keepToolCallsExpandedDesc: '始终顯示工具呼叫的輸出與推理內容，不自動折疊。',
       product: '產品',
       productDesc: '易讀的工具活動與精簡摘要。',
       technical: '技術',

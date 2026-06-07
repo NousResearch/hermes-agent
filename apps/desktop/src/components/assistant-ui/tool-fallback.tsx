@@ -22,7 +22,7 @@ import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
-import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
+import { $keepToolCallsExpanded, $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
 import { PendingToolApproval } from './tool-approval'
 import {
@@ -189,6 +189,13 @@ interface ToolEntryProps {
 
 function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean {
   const persistedOpen = useStore($toolDisclosureOpen(disclosureId))
+  const keepExpanded = useStore($keepToolCallsExpanded)
+
+  // When "Keep tool calls expanded" is enabled, all tool accordions stay open.
+  // The user can still collapse one manually, but the next render re-expands it.
+  if (keepExpanded) {
+    return true
+  }
 
   return persistedOpen ?? fallbackOpen
 }

@@ -287,6 +287,8 @@ export const en: Translations = {
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
+      keepToolCallsExpandedTitle: 'Keep Tool Calls Expanded',
+      keepToolCallsExpandedDesc: 'Always show tool-call output and reasoning blocks without collapsing.',
       product: 'Product',
       productDesc: 'Human-friendly tool activity with concise summaries.',
       technical: 'Technical',

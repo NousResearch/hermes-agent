@@ -213,6 +213,8 @@ export interface Translations {
       colorModeDesc: string
       toolViewTitle: string
       toolViewDesc: string
+      keepToolCallsExpandedTitle: string
+      keepToolCallsExpandedDesc: string
       product: string
       productDesc: string
       technical: string

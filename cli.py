@@ -11139,9 +11139,10 @@ class HermesCLI:
             _skill_commands = get_skill_commands()
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
+            modified = result.get("modified", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)
 
-            if not added and not removed:
+            if not added and not removed and not modified:
                 print("  No new skills detected.")
                 print(f"  📚 {total} skill(s) available")
                 return
@@ -11158,6 +11159,10 @@ class HermesCLI:
             if removed:
                 print("  ➖ Removed Skills:")
                 for item in removed:
+                    print(f"  {_fmt_line(item)}")
+            if modified:
+                print("  📝 Modified Skills:")
+                for item in modified:
                     print(f"  {_fmt_line(item)}")
             print(f"  📚 {total} skill(s) available")
 
@@ -11181,6 +11186,11 @@ class HermesCLI:
                 sections.append("")
                 sections.append("Removed Skills:")
                 for item in removed:
+                    sections.append(_fmt_line(item))
+            if modified:
+                sections.append("")
+                sections.append("Modified Skills:")
+                for item in modified:
                     sections.append(_fmt_line(item))
             sections.append("")
             sections.append("Use skills_list to see the updated catalog.]")
@@ -15721,6 +15731,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    effort: str = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -15743,6 +15754,7 @@ def main(
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
+        effort: Set reasoning effort for this session (none, minimal, low, medium, high, xhigh). Ephemeral — does not persist to config.
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -15754,6 +15766,8 @@ def main(
         python cli.py --resume 20260225_143052_a1b2c3  # Resume session
         python cli.py -w                         # Start in isolated git worktree
         python cli.py -w -q "Fix issue #123"     # Single query in worktree
+        python cli.py -q "Complex task" --effort xhigh   # High reasoning effort
+        python cli.py -q "Simple lookup" --effort none    # Disable reasoning
     """
     global _active_worktree
 
@@ -15841,6 +15855,20 @@ def main(
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
     )
+
+    # Override reasoning config from --effort flag (ephemeral, not persisted).
+    # Unlike /reasoning which writes to config.yaml, this is a per-invocation
+    # override that does not touch disk — ideal for scripts and CI.
+    if effort:
+        _parsed_effort = _parse_reasoning_config(effort)
+        if _parsed_effort is not None:
+            cli.reasoning_config = _parsed_effort
+        else:
+            from hermes_constants import VALID_REASONING_EFFORTS
+            _valid = ", ".join(("none",) + VALID_REASONING_EFFORTS)
+            raise ValueError(
+                f"Invalid --effort value '{effort}'. Valid values: {_valid}"
+            )
 
     if parsed_skills:
         skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(

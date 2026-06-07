@@ -23,7 +23,7 @@ def _make_cli():
 
 
 class TestReloadSkillsCLI:
-    def test_reports_added_and_removed_and_queues_note(self, capsys):
+    def test_reports_added_and_removed_and_modified_and_queues_note(self, capsys):
         cli = _make_cli()
         with patch(
             "agent.skill_commands.reload_skills",
@@ -35,9 +35,12 @@ class TestReloadSkillsCLI:
                 "removed": [
                     {"name": "gamma", "description": "Old removed skill"},
                 ],
-                "unchanged": ["delta"],
-                "total": 3,
-                "commands": 3,
+                "modified": [
+                    {"name": "delta", "description": "Updated delta skill"},
+                ],
+                "unchanged": ["epsilon"],
+                "total": 4,
+                "commands": 4,
             },
         ):
             cli._reload_skills()
@@ -48,7 +51,9 @@ class TestReloadSkillsCLI:
         assert "- beta: Run beta to do abc" in out
         assert "Removed Skills:" in out
         assert "- gamma: Old removed skill" in out
-        assert "3 skill(s) available" in out
+        assert "Modified Skills:" in out
+        assert "- delta: Updated delta skill" in out
+        assert "4 skill(s) available" in out
 
         # Must NOT pollute conversation_history — alternation-safe.
         assert cli.conversation_history == []
@@ -63,6 +68,8 @@ class TestReloadSkillsCLI:
         assert "    - beta: Run beta to do abc" in note
         assert "Removed Skills:" in note
         assert "    - gamma: Old removed skill" in note
+        assert "Modified Skills:" in note
+        assert "    - delta: Updated delta skill" in note
 
     def test_reports_no_changes_and_queues_nothing(self, capsys):
         cli = _make_cli()
@@ -71,6 +78,7 @@ class TestReloadSkillsCLI:
             return_value={
                 "added": [],
                 "removed": [],
+                "modified": [],
                 "unchanged": ["alpha"],
                 "total": 1,
                 "commands": 1,

@@ -200,6 +200,7 @@ gateway:
     total:                 "\n📚 {count}개 스킬 사용 가능"
     added_header:          "➕ **추가된 스킬:**"
     removed_header:        "➖ **제거된 스킬:**"
+    modified_header:        "📝 **수정된 스킬:**"
     item_with_desc:        "    - {name}: {desc}"
     item_no_desc:          "    - {name}"
     failed:                "❌ 스킬 재로드 실패: {error}"

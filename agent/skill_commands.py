@@ -322,6 +322,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
+                        "mtime": skill_md.stat().st_mtime,
                     }
                 except Exception:
                     continue
@@ -364,7 +365,8 @@ def reload_skills() -> Dict[str, Any]:
             {
               "added":      [{"name": str, "description": str}, ...],
               "removed":    [{"name": str, "description": str}, ...],
-              "unchanged":  [skill names present before and after],
+              "modified":   [{"name": str, "description": str}, ...],
+              "unchanged":  [skill names present before and after with same mtime],
               "total":      total skill count after rescan,
               "commands":   total /slash-skill count after rescan,
             }
@@ -385,25 +387,47 @@ def reload_skills() -> Dict[str, Any]:
         return out
 
     before = _snapshot(_skill_commands)
+    # Snapshot mtimes so we can detect content changes even when the
+    # skill name stays the same (the core feature requested in #41303).
+    before_mtimes: Dict[str, float] = {
+        bare: (info or {}).get("mtime", 0)
+        for slash_key, info in _skill_commands.items()
+        for bare in [slash_key.lstrip("/")]
+    }
 
     # Rescan the skills dir. ``scan_skill_commands`` resets
     # ``_skill_commands = {}`` internally and repopulates it.
     new_commands = scan_skill_commands()
 
     after = _snapshot(new_commands)
+    after_mtimes: Dict[str, float] = {
+        bare: (info or {}).get("mtime", 0)
+        for slash_key, info in new_commands.items()
+        for bare in [slash_key.lstrip("/")]
+    }
 
     added_names = sorted(set(after) - set(before))
     removed_names = sorted(set(before) - set(after))
-    unchanged = sorted(set(after) & set(before))
+    persisted_names = sorted(set(after) & set(before))
+    # Among skills present both before and after, detect content changes
+    # by comparing SKILL.md modification times.
+    modified_names = sorted(
+        n for n in persisted_names
+        if before_mtimes.get(n, 0) != after_mtimes.get(n, 0)
+    )
+    unchanged = sorted(n for n in persisted_names if n not in modified_names)
 
     added = [{"name": n, "description": after[n]} for n in added_names]
     # For removed skills, use the description we had cached pre-rescan
     # (the skill file is gone so we can't re-read it).
     removed = [{"name": n, "description": before[n]} for n in removed_names]
+    # For modified skills, use the NEW description (post-rescan content).
+    modified = [{"name": n, "description": after[n]} for n in modified_names]
 
     return {
         "added": added,
         "removed": removed,
+        "modified": modified,
         "unchanged": unchanged,
         "total": len(after),
         "commands": len(new_commands),

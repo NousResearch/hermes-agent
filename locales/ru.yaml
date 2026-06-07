@@ -200,6 +200,7 @@ gateway:
     total:                 "\n📚 {count} навык(ов) доступно"
     added_header:          "➕ **Добавленные навыки:**"
     removed_header:        "➖ **Удалённые навыки:**"
+    modified_header:        "📝 **Изменённые навыки:**"
     item_with_desc:        "    - {name}: {desc}"
     item_no_desc:          "    - {name}"
     failed:                "❌ Ошибка перезагрузки навыков: {error}"

@@ -8464,10 +8464,11 @@ def _(rid, params: dict) -> dict:
         result = reload_skills()
         added = result.get("added") or []
         removed = result.get("removed") or []
+        modified = result.get("modified") or []
         total = int(result.get("total") or 0)
 
         lines = ["Reloading skills..."]
-        if not added and not removed:
+        if not added and not removed and not modified:
             lines.append("No new skills detected.")
         if added:
             lines.append("Added skills:")
@@ -8475,6 +8476,9 @@ def _(rid, params: dict) -> dict:
         if removed:
             lines.append("Removed skills:")
             lines.extend(f"  - {item.get('name', '')}" for item in removed)
+        if modified:
+            lines.append("Modified skills:")
+            lines.extend(f"  - {item.get('name', '')}" for item in modified)
         lines.append(f"{total} skill(s) available")
         return _ok(rid, {"output": "\n".join(lines), "result": result})
     except Exception as e:

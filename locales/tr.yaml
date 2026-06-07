@@ -200,6 +200,7 @@ gateway:
     total:                 "\n📚 {count} beceri kullanılabilir"
     added_header:          "➕ **Eklenen Beceriler:**"
     removed_header:        "➖ **Kaldırılan Beceriler:**"
+    modified_header:        "📝 **Değiştirilen Yetenekler:**"
     item_with_desc:        "    - {name}: {desc}"
     item_no_desc:          "    - {name}"
     failed:                "❌ Beceri yeniden yükleme başarısız: {error}"

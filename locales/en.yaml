@@ -215,6 +215,7 @@ gateway:
     total:                 "\n📚 {count} skill(s) available"
     added_header:          "➕ **Added Skills:**"
     removed_header:        "➖ **Removed Skills:**"
+    modified_header:        "📝 **Modified Skills:**"
     item_with_desc:        "    - {name}: {desc}"
     item_no_desc:          "    - {name}"
     failed:                "❌ Skills reload failed: {error}"

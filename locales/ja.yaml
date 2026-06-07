@@ -200,6 +200,7 @@ gateway:
     total:                 "\n📚 {count} 個のスキルが利用可能"
     added_header:          "➕ **追加されたスキル:**"
     removed_header:        "➖ **削除されたスキル:**"
+    modified_header:        "📝 **変更されたスキル:**"
     item_with_desc:        "    - {name}: {desc}"
     item_no_desc:          "    - {name}"
     failed:                "❌ スキルの再読み込みに失敗しました: {error}"

@@ -200,6 +200,7 @@ gateway:
     total:                 "\n📚 {count} készség érhető el"
     added_header:          "➕ **Hozzáadott készségek:**"
     removed_header:        "➖ **Eltávolított készségek:**"
+    modified_header:        "📝 **Módosított készségek:**"
     item_with_desc:        "    - {name}: {desc}"
     item_no_desc:          "    - {name}"
     failed:                "❌ Készségek újratöltése sikertelen: {error}"

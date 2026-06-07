@@ -200,6 +200,7 @@ gateway:
     total:                 "\n📚 {count} vaardigheid(e) beskikbaar"
     added_header:          "➕ **Bygevoegde Vaardighede:**"
     removed_header:        "➖ **Verwyderde Vaardighede:**"
+    modified_header:        "📝 **Gewysigde Vaardighede:**"
     item_with_desc:        "    - {name}: {desc}"
     item_no_desc:          "    - {name}"
     failed:                "❌ Vaardigheids-herlaai het misluk: {error}"

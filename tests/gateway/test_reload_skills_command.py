@@ -99,9 +99,12 @@ async def test_reload_skills_handler_queues_note_on_diff(monkeypatch):
         "removed": [
             {"name": "gamma", "description": "Old removed skill"},
         ],
-        "unchanged": ["delta"],
-        "total": 3,
-        "commands": 3,
+        "modified": [
+            {"name": "delta", "description": "Updated delta skill"},
+        ],
+        "unchanged": ["epsilon"],
+        "total": 4,
+        "commands": 4,
     }
 
     import agent.skill_commands as skill_commands_mod
@@ -118,7 +121,9 @@ async def test_reload_skills_handler_queues_note_on_diff(monkeypatch):
     assert "- beta: Run beta to do abc" in out
     assert "Removed Skills:" in out
     assert "- gamma: Old removed skill" in out
-    assert "3 skill(s) available" in out
+    assert "Modified Skills:" in out
+    assert "- delta: Updated delta skill" in out
+    assert "4 skill(s) available" in out
 
     # MUST NOT write to the session transcript — that would break alternation.
     runner.session_store.append_to_transcript.assert_not_called()
@@ -136,6 +141,8 @@ async def test_reload_skills_handler_queues_note_on_diff(monkeypatch):
     assert "    - beta: Run beta to do abc" in note
     assert "Removed Skills:" in note
     assert "    - gamma: Old removed skill" in note
+    assert "Modified Skills:" in note
+    assert "    - delta: Updated delta skill" in note
 
 
 @pytest.mark.asyncio
@@ -149,6 +156,7 @@ async def test_reload_skills_handler_reports_no_changes(monkeypatch):
         lambda: {
             "added": [],
             "removed": [],
+            "modified": [],
             "unchanged": ["alpha"],
             "total": 1,
             "commands": 1,

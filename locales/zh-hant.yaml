@@ -200,6 +200,7 @@ gateway:
     total:                 "\n📚 {count} 個技能可用"
     added_header:          "➕ **新增技能：**"
     removed_header:        "➖ **移除技能：**"
+    modified_header:        "📝 **已修改的 Skills：**"
     item_with_desc:        "    - {name}：{desc}"
     item_no_desc:          "    - {name}"
     failed:                "❌ 技能重新載入失敗：{error}"

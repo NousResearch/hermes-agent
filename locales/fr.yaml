@@ -200,6 +200,7 @@ gateway:
     total:                 "\n📚 {count} skill(s) disponible(s)"
     added_header:          "➕ **Skills ajoutées :**"
     removed_header:        "➖ **Skills supprimées :**"
+    modified_header:        "📝 **Skills modifiés :**"
     item_with_desc:        "    - {name} : {desc}"
     item_no_desc:          "    - {name}"
     failed:                "❌ Échec du rechargement des skills : {error}"

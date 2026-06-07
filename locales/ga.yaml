@@ -204,6 +204,7 @@ gateway:
     total:                 "\n📚 {count} scil(eanna) ar fáil"
     added_header:          "➕ **Scileanna Curtha leis:**"
     removed_header:        "➖ **Scileanna Bainte:**"
+    modified_header:        "📝 **Scileanna Modhnaithe:**"
     item_with_desc:        "    - {name}: {desc}"
     item_no_desc:          "    - {name}"
     failed:                "❌ Theip ar athlódáil scileanna: {error}"

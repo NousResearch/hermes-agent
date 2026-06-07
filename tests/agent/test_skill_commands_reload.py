@@ -71,10 +71,11 @@ class TestReloadSkillsHelper:
         from agent.skill_commands import reload_skills
 
         result = reload_skills()
-        assert set(result) == {"added", "removed", "unchanged", "total", "commands"}
+        assert set(result) == {"added", "removed", "modified", "unchanged", "total", "commands"}
         assert result["total"] == 0
         assert result["added"] == []
         assert result["removed"] == []
+        assert result["modified"] == []
 
     def test_detects_newly_added_skill_with_description(self, hermes_home):
         from agent.skill_commands import reload_skills, get_skill_commands
@@ -158,3 +159,43 @@ class TestReloadSkillsHelper:
             "prompt cache snapshot should be preserved — skills don't live "
             "in the system prompt so there's no reason to invalidate it"
         )
+
+    def test_detects_modified_skill_content(self, hermes_home):
+        """When a SKILL.md file is edited on disk, /reload-skills must
+        detect the change and report it in the ``modified`` list (#41303).
+        """
+        import time
+        from agent.skill_commands import reload_skills, get_skill_commands
+
+        _write_skill(hermes_home / "skills", "my-skill", "original description")
+        # Prime the cache so the first reload sees the skill
+        get_skill_commands()
+
+        # Modify the skill content (simulate a real edit)
+        skill_md = hermes_home / "skills" / "my-skill" / "SKILL.md"
+        time.sleep(0.05)  # ensure mtime differs on all filesystems
+        skill_md.write_text(
+            "---\nname: my-skill\ndescription: updated description\n---\nnew body\n"
+        )
+
+        result = reload_skills()
+
+        assert result["modified"] == [{"name": "my-skill", "description": "updated description"}]
+        assert result["added"] == []
+        assert result["removed"] == []
+        assert "my-skill" not in result["unchanged"]
+
+    def test_unchanged_mtime_stays_in_unchanged(self, hermes_home):
+        """When a SKILL.md file is NOT modified between reloads, it must
+        stay in the ``unchanged`` list (not ``modified``).
+        """
+        from agent.skill_commands import reload_skills, get_skill_commands
+
+        _write_skill(hermes_home / "skills", "stable", "stable description")
+        get_skill_commands()
+
+        # Reload without touching the file
+        result = reload_skills()
+
+        assert "stable" in result["unchanged"]
+        assert result["modified"] == []

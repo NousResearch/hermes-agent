@@ -200,6 +200,7 @@ gateway:
     total:                 "\n📚 {count} навичок(и) доступно"
     added_header:          "➕ **Додані навички:**"
     removed_header:        "➖ **Видалені навички:**"
+    modified_header:        "📝 **Змінені навички:**"
     item_with_desc:        "    - {name}: {desc}"
     item_no_desc:          "    - {name}"
     failed:                "❌ Помилка перезавантаження навичок: {error}"

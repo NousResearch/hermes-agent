@@ -1,13 +1,16 @@
 """Tests for the per-turn file-mutation verifier footer.
 
-Covers the three moving pieces:
+Covers the four moving pieces:
 
 1. ``_extract_file_mutation_targets`` — pulls file paths from write_file /
    patch (replace + V4A) tool-call argument dicts.
 2. ``AIAgent._record_file_mutation_result`` — builds the per-turn state
    dict, removing entries when a later success supersedes an earlier
-   failure for the same path.
-3. ``AIAgent._format_file_mutation_failure_footer`` — renders the dict
+   failure for the same path.  Snapshots file mtime at failure time.
+3. ``AIAgent._prune_recovered_file_mutations`` — re-checks mtime at turn
+   end to detect recovery via non-mutating tools (``terminal``, ``git``,
+   etc.) and drops false-positive entries.
+4. ``AIAgent._format_file_mutation_failure_footer`` — renders the dict
    as a user-visible advisory.
 
 Regression target: the "Ben Eng llm-wiki" session where grok-4.1-fast
@@ -350,6 +353,101 @@ class TestFormatFooter:
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# _prune_recovered_file_mutations — mtime-based recovery detection
+# ---------------------------------------------------------------------------
+
+
+class TestPruneRecoveredFileMutations:
+    """Verify that the prune step drops entries whose files were modified
+    by non-mutating tools after the initial failure."""
+
+    def test_empty_dict_returns_empty(self):
+        assert AIAgent._prune_recovered_file_mutations({}) == {}
+
+    def test_unmodified_file_kept(self, tmp_path):
+        """File exists, mtime unchanged → entry stays."""
+        f = tmp_path / "config.yaml"
+        f.write_text("original")
+        mtime = f.stat().st_mtime
+        failed = {
+            str(f): {
+                "tool": "patch",
+                "error_preview": "Write denied",
+                "snapshot_mtime": mtime,
+            }
+        }
+        result = AIAgent._prune_recovered_file_mutations(failed)
+        assert str(f) in result
+
+    def test_modified_file_pruned(self, tmp_path):
+        """File exists, mtime changed → entry removed (recovered)."""
+        import time
+        f = tmp_path / "config.yaml"
+        f.write_text("original")
+        mtime = f.stat().st_mtime
+        failed = {
+            str(f): {
+                "tool": "patch",
+                "error_preview": "Write denied",
+                "snapshot_mtime": mtime,
+            }
+        }
+        # Simulate recovery via terminal (e.g. hermes config set)
+        time.sleep(0.05)
+        f.write_text("updated content")
+        result = AIAgent._prune_recovered_file_mutations(failed)
+        assert str(f) not in result
+
+    def test_file_didnt_exist_at_failure_now_exists(self, tmp_path):
+        """File didn't exist at failure time but does now → pruned."""
+        f = tmp_path / "new_file.txt"
+        failed = {
+            str(f): {
+                "tool": "write_file",
+                "error_preview": "Permission denied",
+                "snapshot_mtime": None,
+            }
+        }
+        # File was created by another tool
+        f.write_text("created")
+        result = AIAgent._prune_recovered_file_mutations(failed)
+        assert str(f) not in result
+
+    def test_file_still_missing_kept(self, tmp_path):
+        """File didn't exist at failure and still doesn't → entry stays."""
+        f = tmp_path / "missing.txt"
+        failed = {
+            str(f): {
+                "tool": "write_file",
+                "error_preview": "No such directory",
+                "snapshot_mtime": None,
+            }
+        }
+        result = AIAgent._prune_recovered_file_mutations(failed)
+        assert str(f) in result
+
+    def test_mixed_recovery(self, tmp_path):
+        """Some files recovered, some didn't — only unrecovered remain."""
+        import time
+        kept = tmp_path / "kept.yaml"
+        pruned = tmp_path / "pruned.yaml"
+        kept.write_text("original")
+        pruned.write_text("original")
+        kept_mtime = kept.stat().st_mtime
+        pruned_mtime = pruned.stat().st_mtime
+        failed = {
+            str(kept): {"tool": "patch", "error_preview": "err", "snapshot_mtime": kept_mtime},
+            str(pruned): {"tool": "patch", "error_preview": "err", "snapshot_mtime": pruned_mtime},
+        }
+        # Only modify pruned
+        time.sleep(0.05)
+        pruned.write_text("recovered via terminal")
+        result = AIAgent._prune_recovered_file_mutations(failed)
+        assert str(kept) in result
+        assert str(pruned) not in result
 
 
 # ---------------------------------------------------------------------------

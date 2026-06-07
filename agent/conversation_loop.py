@@ -4711,6 +4711,10 @@ def run_conversation(
     # the truth is surfaced on every turn, so over-claiming is
     # structurally impossible past the model.
     #
+    # Before rendering, prune entries whose files were modified by
+    # non-mutating tools (``terminal``, ``git``, etc.) — detected via
+    # mtime change since the failure was recorded.
+    #
     # Gate: only applied when a real text response exists for this
     # turn and the user didn't interrupt.  Empty/interrupted turns
     # already have other surface text that shouldn't be augmented.
@@ -4718,6 +4722,7 @@ def run_conversation(
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
             if _failed and agent._file_mutation_verifier_enabled():
+                _failed = AIAgent._prune_recovered_file_mutations(_failed)
                 footer = agent._format_file_mutation_failure_footer(_failed)
                 if footer:
                     final_response = final_response.rstrip() + "\n\n" + footer

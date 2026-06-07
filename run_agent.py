@@ -2422,11 +2422,11 @@ class AIAgent:
     ) -> None:
         """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
 
-        On failure, store ``{path: {error_preview, tool}}`` entries.  On
-        success, remove any prior failure entries for the same paths (the
-        model recovered within the turn).  Silently no-ops if the per-turn
-        state dict hasn't been initialised yet (e.g. a tool dispatched
-        outside ``run_conversation``).
+        On failure, store ``{path: {error_preview, tool, snapshot_mtime}}``
+        entries.  On success, remove any prior failure entries for the same
+        paths (the model recovered within the turn).  Silently no-ops if
+        the per-turn state dict hasn't been initialised yet (e.g. a tool
+        dispatched outside ``run_conversation``).
         """
         if tool_name not in _FILE_MUTATING_TOOLS:
             return
@@ -2444,13 +2444,54 @@ class AIAgent:
                 # later see success.  A repeated failure with a different
                 # message shouldn't silently overwrite the original.
                 if path not in state:
-                    state[path] = {
+                    entry: Dict[str, Any] = {
                         "tool": tool_name,
                         "error_preview": preview,
                     }
+                    # Snapshot the file's mtime so we can detect recovery
+                    # via non-mutating tools (e.g. ``terminal`` running
+                    # ``hermes config set``, ``git mv``, ``sed -i``).
+                    try:
+                        import os as _os
+                        entry["snapshot_mtime"] = _os.path.getmtime(path)
+                    except OSError:
+                        entry["snapshot_mtime"] = None
+                    state[path] = entry
         else:
             for path in targets:
                 state.pop(path, None)
+
+    @staticmethod
+    def _prune_recovered_file_mutations(
+        failed: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Remove entries whose files changed since the failure was recorded.
+
+        When a ``write_file`` / ``patch`` call fails but the agent later
+        recovers via a non-mutating tool (``terminal``, ``git``, etc.),
+        the file's mtime will have changed.  Detect that and drop the
+        stale entry so the verifier doesn't emit a false-positive footer.
+        """
+        if not failed:
+            return failed
+        import os as _os
+        pruned: Dict[str, Dict[str, Any]] = {}
+        for path, info in failed.items():
+            snapshot = info.get("snapshot_mtime")
+            try:
+                current_mtime = _os.path.getmtime(path)
+            except OSError:
+                # File still doesn't exist — keep the entry.
+                pruned[path] = info
+                continue
+            if snapshot is None:
+                # File didn't exist at failure time but does now — recovered.
+                continue
+            if current_mtime != snapshot:
+                # File was modified since the failure — recovered.
+                continue
+            pruned[path] = info
+        return pruned
 
     def _file_mutation_verifier_enabled(self) -> bool:
         """Check whether the per-turn file-mutation verifier footer is on.

@@ -167,6 +167,36 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+def test_run_slash_create_accepts_curly_quote_delimiters(kanban_home):
+    out = kc.run_slash('create “my prompt” --json')
+    payload = json.loads(out)
+    assert payload["title"] == "my prompt"
+
+
+def test_run_slash_preserves_curly_apostrophe_inside_text(kanban_home):
+    out = kc.run_slash("create 'Bob’s task' --json")
+    payload = json.loads(out)
+    assert payload["title"] == "Bob’s task"
+
+
+def test_run_slash_preserves_unmatched_curly_quote_text(kanban_home):
+    out = kc.run_slash("create “Bob --json")
+    payload = json.loads(out)
+    assert payload["title"] == "“Bob"
+
+
+def test_run_slash_single_curly_quotes_allow_curly_apostrophe(kanban_home):
+    out = kc.run_slash("create ‘Bob’s task’ --json")
+    payload = json.loads(out)
+    assert payload["title"] == "Bob’s task"
+
+
+def test_run_slash_curly_quotes_preserve_embedded_straight_quotes(kanban_home):
+    out = kc.run_slash('create “say "hi"” --json')
+    payload = json.loads(out)
+    assert payload["title"] == 'say "hi"'
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")

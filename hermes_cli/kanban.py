@@ -2752,6 +2752,48 @@ Read-only commands are safe while an agent is running.\
 """
 
 
+def _normalize_curly_quote_delimiters(text: str) -> str:
+    """Normalize paired smart-quote delimiters before ``shlex`` parsing.
+
+    Phone keyboards and rich-text clients often turn shell quote delimiters
+    into U+201C/U+201D or U+2018/U+2019.  Treat those as quote delimiters only
+    when they open at a token boundary; preserve literal curly punctuation in
+    ordinary text such as ``Bob’s task``.
+    """
+    if not text:
+        return text
+
+    normalized: list[str] = []
+    pairs = {"“": "”", "‘": "’"}
+    boundary_chars = set(" \t\r\n")
+    active: tuple[str, str, list[str]] | None = None
+
+    for index, char in enumerate(text):
+        if active is not None:
+            open_char, close_char, content = active
+            next_char = text[index + 1] if index + 1 < len(text) else " "
+            is_closing = char == close_char and (close_char != "’" or next_char in boundary_chars)
+            if is_closing:
+                normalized.append(shlex.quote("".join(content)))
+                active = None
+            else:
+                content.append(char)
+            continue
+
+        close_char = pairs.get(char)
+        previous = text[index - 1] if index else " "
+        if close_char is not None and previous in boundary_chars:
+            active = (char, close_char, [])
+        else:
+            normalized.append(char)
+
+    if active is not None:
+        open_char, _close_char, content = active
+        normalized.append(open_char + "".join(content))
+
+    return "".join(normalized)
+
+
 def run_slash(rest: str) -> str:
     """Execute a ``/kanban …`` string and return captured stdout/stderr.
 
@@ -2762,7 +2804,7 @@ def run_slash(rest: str) -> str:
     import io
     import contextlib
 
-    tokens = shlex.split(rest) if rest and rest.strip() else []
+    tokens = shlex.split(_normalize_curly_quote_delimiters(rest)) if rest and rest.strip() else []
 
     # Bare ``/kanban`` or ``/kanban help`` / ``--help`` / ``-h`` / ``?``:
     # show the curated short-help block instead of dumping argparse's full

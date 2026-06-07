@@ -127,6 +127,7 @@ _LEGACY_PREFERENCE = (
     "searxng",
     "brave-free",
     "ddgs",
+    "kagi",
 )
 
 
@@ -148,7 +149,7 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
 
     3. **Legacy preference walk, filtered by availability.** Walk the
        :data:`_LEGACY_PREFERENCE` order (firecrawl → parallel → tavily →
-       exa → searxng → brave-free → ddgs) looking for a provider whose
+       exa → searxng → brave-free → ddgs → kagi) looking for a provider whose
        ``supports_<capability>()`` is True AND whose ``is_available()`` is
        True. Matches the historic ``tools.web_tools._get_backend()``
        candidate order so users with credentials but no explicit config

@@ -168,7 +168,7 @@ def _get_backend() -> str:
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
-        ("kagi", _has_env("KAGI_SESSION")),
+        ("kagi", _has_env("KAGI_API_KEY")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -232,7 +232,7 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "ddgs":
         return _ddgs_package_importable()
     if backend == "kagi":
-        return _has_env("KAGI_SESSION")
+        return _has_env("KAGI_API_KEY")
     if backend == "xai":
         # Cheap probe — env var OR auth.json has OAuth tokens. Must not
         # call resolve_xai_http_credentials() here because the OAuth path

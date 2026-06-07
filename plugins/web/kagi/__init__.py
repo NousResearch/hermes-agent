@@ -1,8 +1,8 @@
 """Kagi web search plugin — bundled, auto-loaded.
 
-Uses the existing ``kagi_search.py`` script which scrapes Kagi's
-``/html/search`` endpoint via a session cookie.  Requires ``KAGI_SESSION``
-in ``~/.hermes/.env``.
+Calls Kagi Search API v1 (POST /api/v1/search) and Extract API
+(POST /api/v1/extract) directly. Requires ``KAGI_API_KEY`` in
+``~/.hermes/.env``.
 """
 
 from __future__ import annotations

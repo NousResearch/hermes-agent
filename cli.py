@@ -5400,9 +5400,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if not text:
                 return
             level = getattr(notice, "level", "info") or "info"
+            key = getattr(notice, "key", "") or ""
             if not hasattr(self, "_pending_credit_notices"):
                 self._pending_credit_notices = []
-            self._pending_credit_notices.append((level, text))
+            self._pending_credit_notices.append((level, text, key))
         except Exception:
             pass
 
@@ -5414,7 +5415,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if not pending:
                 return
             self._pending_credit_notices = []
-            for level, text in pending:
+            from gateway.display_config import should_show_credit_notice
+            for level, text, key in pending:
+                if not should_show_credit_notice(self.config, "cli", key):
+                    continue
                 color = {
                     "error": "\033[31m",
                     "warn": "\033[33m",

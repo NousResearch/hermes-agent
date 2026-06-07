@@ -596,6 +596,7 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
+        min_interval_seconds: float = 0,
     ):
         self.model = model
         self.base_url = base_url
@@ -607,6 +608,14 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+        try:
+            self.min_interval_seconds = max(0.0, float(min_interval_seconds or 0))
+        except (TypeError, ValueError):
+            self.min_interval_seconds = 0.0
+        self._last_auto_compression_attempt_at: float = 0.0
+        self._last_compress_deferred_reason: Optional[str] = None
+        self._last_compress_status: str = "idle"
+        self._last_compress_reason: Optional[str] = None
         # When True, summary-generation failure aborts compression entirely
         # (returns messages unchanged, sets _last_compress_aborted=True).
         # When False (default = historical behavior), insert a
@@ -1854,12 +1863,17 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_compress_deferred_reason = None
+        self._last_compress_status = "started"
+        self._last_compress_reason = None
+        original_messages = messages
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
         # this, /compress would silently no-op for 30-60s after a failure.
         if force and self._summary_failure_cooldown_until > 0.0:
             self._summary_failure_cooldown_until = 0.0
+
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
@@ -1869,9 +1883,38 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     "Cannot compress: only %d messages (need > %d)",
                     n_messages, _min_for_compress,
                 )
+            self._last_compress_status = "skipped"
+            self._last_compress_reason = "too_few_messages"
             return messages
 
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+
+        # Determine whether there is an actual compression window before any
+        # cheap pre-pass mutates a copy of the messages. A min-interval defer
+        # must be a true no-op for all callers, including direct
+        # ContextCompressor.compress() users.
+        compress_start = self._protect_head_size(messages)
+        compress_start = self._align_boundary_forward(messages, compress_start)
+        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+
+        if compress_start >= compress_end:
+            self._last_compress_status = "skipped"
+            self._last_compress_reason = "no_compression_window"
+            return original_messages
+
+        min_interval_seconds = getattr(self, "min_interval_seconds", 0.0)
+        if not force and min_interval_seconds > 0:
+            now = time.monotonic()
+            last_attempt_at = getattr(self, "_last_auto_compression_attempt_at", 0.0)
+            if (
+                last_attempt_at > 0
+                and now - last_attempt_at < min_interval_seconds
+            ):
+                self._last_compress_status = "deferred"
+                self._last_compress_reason = "min_interval"
+                self._last_compress_deferred_reason = "min_interval"
+                return original_messages
+            self._last_auto_compression_attempt_at = now
 
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
@@ -1881,15 +1924,15 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
-        # Phase 2: Determine boundaries
+        # Phase 2: Recompute boundaries after pruning/truncating copied messages.
         compress_start = self._protect_head_size(messages)
         compress_start = self._align_boundary_forward(messages, compress_start)
-
-        # Use token-budget tail protection instead of fixed message count
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
         if compress_start >= compress_end:
-            return messages
+            self._last_compress_status = "skipped"
+            self._last_compress_reason = "no_compression_window"
+            return original_messages
 
         turns_to_summarize = messages[compress_start:compress_end]
         # A persisted handoff summary can sit in the protected head after a
@@ -1951,6 +1994,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             self._last_summary_dropped_count = 0  # nothing actually dropped
             self._last_summary_fallback_used = False
             self._last_compress_aborted = True
+            self._last_compress_status = "aborted"
+            self._last_compress_reason = "summary_failure"
             if not self.quiet_mode:
                 logger.warning(
                     "Summary generation failed — aborting compression "
@@ -1959,7 +2004,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     "frozen until the next /compress or /new.",
                     n_skipped,
                 )
-            return messages
+            return original_messages
 
         # Phase 4: Assemble compressed message list
         compressed = []
@@ -2075,4 +2120,6 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
             logger.info("Compression #%d complete", self.compression_count)
 
+        self._last_compress_status = "compressed"
+        self._last_compress_reason = None
         return compressed

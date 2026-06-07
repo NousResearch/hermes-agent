@@ -74,6 +74,8 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
     compressor.last_completion_tokens = 0
     compressor._last_summary_error = None
     compressor._last_compress_aborted = False
+    compressor._last_compress_status = "compressed"
+    compressor._last_compress_reason = None
     compressor._last_aux_model_failure_model = None
     compressor._last_aux_model_failure_error = None
     agent.context_compressor = compressor
@@ -171,6 +173,45 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     assert agent.session_id == parent_sid
     # Compressor was never called (the skip happens before .compress())
     agent.context_compressor.compress.assert_not_called()
+
+
+def test_min_interval_defer_does_not_rotate_or_split_session(tmp_path: Path) -> None:
+    """Debounce defer is a no-op at the compress_context wrapper layer.
+
+    ContextCompressor.compress() returns the original messages when
+    min_interval_seconds is active.  compress_context() must treat that like
+    a skipped compression: no session split, no memory pre-compress hook, and
+    no compression-boundary callback.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "DEBOUNCE_DEFER_TEST"
+    db.create_session(parent_sid, source="discord")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    compressor = MagicMock()
+    compressor.compress.return_value = messages
+    compressor.compression_count = 0
+    compressor.last_prompt_tokens = 0
+    compressor.last_completion_tokens = 0
+    compressor._last_summary_error = None
+    compressor._last_compress_aborted = False
+    compressor._last_compress_deferred_reason = "min_interval"
+    compressor._last_aux_model_failure_model = None
+    compressor._last_aux_model_failure_error = None
+    agent.context_compressor = compressor
+    agent._memory_manager = MagicMock()
+    agent._cached_system_prompt = "cached system prompt"
+
+    returned, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert returned is messages or returned == messages
+    assert agent.session_id == parent_sid
+    assert _count_children(db, parent_sid) == 0
+    assert db.get_compression_lock_holder(parent_sid) is None
+    agent._memory_manager.on_pre_compress.assert_not_called()
+    compressor.on_session_start.assert_not_called()
 
 
 class _NoLockSubsystemDB:

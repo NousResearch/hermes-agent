@@ -65,6 +65,7 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_HYGIENE_WARNING_COOLDOWN_SECS = 3600.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -9129,6 +9130,7 @@ class GatewayRunner:
             _hyg_threshold_pct = 0.85
             _hyg_compression_enabled = True
             _hyg_hard_msg_limit = 400
+            _hyg_min_interval_seconds = 0.0
             _hyg_config_context_length = None
             _hyg_provider = None
             _hyg_base_url = None
@@ -9155,9 +9157,9 @@ class GatewayRunner:
                         _hyg_provider = _model_cfg.get("provider") or None
                         _hyg_base_url = _model_cfg.get("base_url") or None
 
-                    # Read compression settings — only use enabled flag.
-                    # The threshold is intentionally separate from the agent's
-                    # compression.threshold (hygiene runs higher).
+                    # Read compression settings used by gateway hygiene.
+                    # The token threshold is intentionally separate from the
+                    # agent's compression.threshold (hygiene runs higher).
                     _comp_cfg = _hyg_data.get("compression", {})
                     if isinstance(_comp_cfg, dict):
                         _hyg_compression_enabled = str(
@@ -9171,6 +9173,13 @@ class GatewayRunner:
                                     _hyg_hard_msg_limit = _parsed
                             except (TypeError, ValueError):
                                 pass
+                        try:
+                            _hyg_min_interval_seconds = max(
+                                0.0,
+                                float(_comp_cfg.get("min_interval_seconds", 0) or 0),
+                            )
+                        except (TypeError, ValueError):
+                            _hyg_min_interval_seconds = 0.0
 
                 try:
                     _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
@@ -9255,11 +9264,37 @@ class GatewayRunner:
                 # Threshold is configurable via
                 # compression.hygiene_hard_message_limit.
                 # (#2153)
-                _HARD_MSG_LIMIT = _hyg_hard_msg_limit
-                _needs_compress = (
-                    _approx_tokens >= _compress_token_threshold
-                    or _msg_count >= _HARD_MSG_LIMIT
-                )
+                _hard_msg_limit = _hyg_hard_msg_limit
+                _needs_compress_by_tokens = _approx_tokens >= _compress_token_threshold
+                _needs_compress_by_hard_limit = _msg_count >= _hard_msg_limit
+                _needs_compress = _needs_compress_by_tokens or _needs_compress_by_hard_limit
+
+                # Debounce routine token-pressure hygiene, but do not suppress the
+                # hard message-count safety valve. The hard limit exists to break
+                # oversized-session death spirals; if it is exceeded, we should keep
+                # trying even if a previous attempt was recent.
+                if (
+                    _needs_compress_by_tokens
+                    and not _needs_compress_by_hard_limit
+                    and _hyg_min_interval_seconds > 0
+                ):
+                    _now = time.time()
+                    _last_hyg_attempt = float(
+                        getattr(session_entry, "last_hygiene_compression_at", 0.0)
+                        or 0.0
+                    )
+                    _elapsed = _now - _last_hyg_attempt if _last_hyg_attempt > 0 else None
+                    if _elapsed is not None and _elapsed < 0:
+                        # Wall-clock moved backwards; do not over-defer.
+                        _elapsed = None
+                    if _elapsed is not None and _elapsed < _hyg_min_interval_seconds:
+                        _needs_compress = False
+                        _remaining = _hyg_min_interval_seconds - _elapsed
+                        logger.info(
+                            "Session hygiene: compression deferred by "
+                            "compression.min_interval_seconds (%.0fs remaining)",
+                            _remaining,
+                        )
 
                 if _needs_compress:
                     logger.info(
@@ -9302,6 +9337,13 @@ class GatewayRunner:
                                 try:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
+                                    if _hyg_min_interval_seconds > 0:
+                                        session_entry.last_hygiene_compression_at = time.time()
+                                        try:
+                                            self.session_store._save()
+                                        except Exception:
+                                            pass
+
                                     loop = asyncio.get_running_loop()
                                     _compressed, _ = await loop.run_in_executor(
                                         None,
@@ -9311,97 +9353,197 @@ class GatewayRunner:
                                         ),
                                     )
 
-                                    # _compress_context ends the old session and creates
-                                    # a new session_id.  Write compressed messages into
-                                    # the NEW session so the old transcript stays intact
-                                    # and searchable via session_search.
-                                    _hyg_new_sid = _hyg_agent.session_id
-                                    if _hyg_new_sid != session_entry.session_id:
-                                        session_entry.session_id = _hyg_new_sid
-                                        self.session_store._save()
-                                        self._sync_telegram_topic_binding(
-                                            source, session_entry,
-                                            reason="hygiene-compression",
-                                        )
-
-                                    self.session_store.rewrite_transcript(
-                                        session_entry.session_id, _compressed
-                                    )
-                                    # Reset stored token count — transcript was rewritten
-                                    session_entry.last_prompt_tokens = 0
-                                    history = _compressed
-                                    _new_count = len(_compressed)
-                                    _new_tokens = estimate_messages_tokens_rough(
-                                        _compressed
-                                    )
-
-                                    logger.info(
-                                        "Session hygiene: compressed %s → %s msgs, "
-                                        "~%s → ~%s tokens",
-                                        _msg_count, _new_count,
-                                        f"{_approx_tokens:,}", f"{_new_tokens:,}",
-                                    )
-
-                                    if _new_tokens >= _warn_token_threshold:
-                                        logger.warning(
-                                            "Session hygiene: still ~%s tokens after "
-                                            "compression",
-                                            f"{_new_tokens:,}",
-                                        )
-
-                                    # If summary generation failed, the
-                                    # compressor aborts entirely and returns
-                                    # messages unchanged — nothing is dropped.
-                                    # Surface a visible warning to the gateway
-                                    # user — agent.log alone is invisible on
-                                    # TG/Discord/etc. — so they know the chat
-                                    # is "frozen" at the current size and can
-                                    # /compress to retry or /reset to start
-                                    # fresh.
                                     _comp = getattr(_hyg_agent, "context_compressor", None)
-                                    if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
-                                        _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
-                                        _warn_msg = (
-                                            "⚠️ Context compression aborted "
-                                            f"({_err}). No messages were dropped — "
-                                            "conversation is unchanged. Run /compress "
-                                            "to retry, /reset for a clean session, or "
-                                            "check your auxiliary.compression model "
-                                            "configuration."
+                                    if _comp is not None:
+                                        _comp_status = getattr(_comp, "_last_compress_status", None)
+                                        _comp_reason = getattr(_comp, "_last_compress_reason", None)
+                                        _comp_aborted = bool(
+                                            getattr(_comp, "_last_compress_aborted", False)
                                         )
-                                        try:
-                                            _adapter = self.adapters.get(source.platform)
-                                            if _adapter and source.chat_id:
-                                                await _adapter.send(source.chat_id, _warn_msg, metadata=_hyg_meta)
-                                        except Exception as _werr:
-                                            logger.warning(
-                                                "Failed to deliver compression-failure warning to user: %s",
-                                                _werr,
-                                            )
-                                    # Separately: if the user's CONFIGURED aux
-                                    # model failed and we recovered by falling
-                                    # back to the main model, tell them — a
-                                    # misconfigured auxiliary.compression.model
-                                    # is something only they can fix, and
-                                    # silent recovery would hide it.
-                                    elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
-                                        _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
-                                        _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
-                                        _aux_msg = (
-                                            f"ℹ️ Configured compression model `{_aux_model}` "
-                                            f"failed ({_aux_err}). Recovered using your main "
-                                            "model — context is intact — but you may want to "
-                                            "check `auxiliary.compression.model` in config.yaml."
+                                    else:
+                                        _comp_status = None
+                                        _comp_reason = None
+                                        _comp_aborted = False
+                                    if not isinstance(_comp_status, str):
+                                        _comp_status = None
+                                    _confirmed_compressed = (
+                                        _comp_status == "compressed" and not _comp_aborted
+                                    )
+                                    _hyg_new_sid = _hyg_agent.session_id
+
+                                    # Rewrite only on positive evidence of real compression.
+                                    # The hygiene input intentionally strips persisted messages down to
+                                    # role/content user+assistant pairs before compression. Rewriting the
+                                    # canonical transcript with that reduced list on any no-op/unknown path
+                                    # would drop tool messages, metadata, and other fields while claiming
+                                    # the conversation is unchanged.
+                                    if not _confirmed_compressed:
+                                        logger.info(
+                                            "Session hygiene: compression produced no mutation "
+                                            "for %s (status=%s reason=%s)",
+                                            session_entry.session_id,
+                                            _comp_status or ("aborted" if _comp_aborted else "unknown"),
+                                            _comp_reason,
                                         )
-                                        try:
-                                            _adapter = self.adapters.get(source.platform)
-                                            if _adapter and source.chat_id:
-                                                await _adapter.send(source.chat_id, _aux_msg, metadata=_hyg_meta)
-                                        except Exception as _werr:
-                                            logger.warning(
-                                                "Failed to deliver aux-model-fallback notice to user: %s",
-                                                _werr,
+                                        if _comp_aborted:
+                                            _err = _redact_gateway_user_facing_secrets(
+                                                getattr(_comp, "_last_summary_error", None)
+                                                or "unknown error"
                                             )
+                                            _warn_category = "compression-abort:"
+                                            _warn_key = f"{_warn_category}{_err}"
+                                            _warn_now = time.time()
+                                            _last_warn_key = getattr(
+                                                session_entry,
+                                                "last_hygiene_compression_warning_key",
+                                                "",
+                                            )
+                                            _last_warn_at = float(
+                                                getattr(
+                                                    session_entry,
+                                                    "last_hygiene_compression_warning_at",
+                                                    0.0,
+                                                ) or 0.0
+                                            )
+                                            _warn_recent = (
+                                                _last_warn_key.startswith(_warn_category)
+                                                and _last_warn_at > 0
+                                                and (
+                                                    _warn_now - _last_warn_at
+                                                    < _HYGIENE_WARNING_COOLDOWN_SECS
+                                                )
+                                            )
+                                            if _warn_recent:
+                                                logger.info(
+                                                    "Session hygiene: compression abort warning "
+                                                    "already sent recently for %s",
+                                                    session_entry.session_id,
+                                                )
+                                            else:
+                                                _warn_msg = (
+                                                    "⚠️ Context compression aborted "
+                                                    f"({_err}). No messages were dropped — "
+                                                    "conversation is unchanged. Run /compress "
+                                                    "to retry, or /reset (alias: /new) for "
+                                                    "a clean session. If this repeats, check "
+                                                    "auxiliary.compression.model."
+                                                )
+                                                try:
+                                                    _adapter = self.adapters.get(source.platform)
+                                                    if _adapter and source.chat_id:
+                                                        await _adapter.send(source.chat_id, _warn_msg, metadata=_hyg_meta)
+                                                        session_entry.last_hygiene_compression_warning_key = _warn_key
+                                                        session_entry.last_hygiene_compression_warning_at = _warn_now
+                                                        try:
+                                                            self.session_store._save()
+                                                        except Exception:
+                                                            pass
+                                                except Exception as _werr:
+                                                    logger.warning(
+                                                        "Failed to deliver compression-failure warning to user: %s",
+                                                        _werr,
+                                                    )
+                                    else:
+                                        # _compress_context ends the old session and creates
+                                        # a new session_id.  Write compressed messages into
+                                        # the NEW session so the old transcript stays intact
+                                        # and searchable via session_search.
+                                        if _hyg_new_sid != session_entry.session_id:
+                                            session_entry.session_id = _hyg_new_sid
+                                            self.session_store._save()
+                                            self._sync_telegram_topic_binding(
+                                                source, session_entry,
+                                                reason="hygiene-compression",
+                                            )
+
+                                        self.session_store.rewrite_transcript(
+                                            session_entry.session_id, _compressed
+                                        )
+                                        # Reset stored token count — transcript was rewritten
+                                        session_entry.last_prompt_tokens = 0
+                                        history = _compressed
+                                        _new_count = len(_compressed)
+                                        _new_tokens = estimate_messages_tokens_rough(
+                                            _compressed
+                                        )
+
+                                        logger.info(
+                                            "Session hygiene: compressed %s → %s msgs, "
+                                            "~%s → ~%s tokens",
+                                            _msg_count, _new_count,
+                                            f"{_approx_tokens:,}", f"{_new_tokens:,}",
+                                        )
+
+                                        if _new_tokens >= _warn_token_threshold:
+                                            logger.warning(
+                                                "Session hygiene: still ~%s tokens after "
+                                                "compression",
+                                                f"{_new_tokens:,}",
+                                            )
+
+                                        # If the user's CONFIGURED aux model failed and we recovered
+                                        # by falling back to the main model, tell them — a
+                                        # misconfigured auxiliary.compression.model is something only
+                                        # they can fix, and silent recovery would hide it.
+                                        if _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
+                                            _aux_model = _redact_gateway_user_facing_secrets(
+                                                getattr(_comp, "_last_aux_model_failure_model", "")
+                                            )
+                                            _aux_err = _redact_gateway_user_facing_secrets(
+                                                getattr(_comp, "_last_aux_model_failure_error", None)
+                                                or "unknown error"
+                                            )
+                                            _warn_category = "compression-aux-fallback:"
+                                            _warn_key = f"{_warn_category}{_aux_model}:{_aux_err}"
+                                            _warn_now = time.time()
+                                            _last_warn_key = getattr(
+                                                session_entry,
+                                                "last_hygiene_compression_warning_key",
+                                                "",
+                                            )
+                                            _last_warn_at = float(
+                                                getattr(
+                                                    session_entry,
+                                                    "last_hygiene_compression_warning_at",
+                                                    0.0,
+                                                ) or 0.0
+                                            )
+                                            _warn_recent = (
+                                                _last_warn_key.startswith(_warn_category)
+                                                and _last_warn_at > 0
+                                                and (
+                                                    _warn_now - _last_warn_at
+                                                    < _HYGIENE_WARNING_COOLDOWN_SECS
+                                                )
+                                            )
+                                            if _warn_recent:
+                                                logger.info(
+                                                    "Session hygiene: aux-model fallback notice "
+                                                    "already sent recently for %s",
+                                                    session_entry.session_id,
+                                                )
+                                            else:
+                                                _aux_msg = (
+                                                    f"ℹ️ Configured compression model `{_aux_model}` "
+                                                    f"failed ({_aux_err}). Recovered using your main "
+                                                    "model — context is intact — but you may want to "
+                                                    "check `auxiliary.compression.model` in config.yaml."
+                                                )
+                                                try:
+                                                    _adapter = self.adapters.get(source.platform)
+                                                    if _adapter and source.chat_id:
+                                                        await _adapter.send(source.chat_id, _aux_msg, metadata=_hyg_meta)
+                                                        session_entry.last_hygiene_compression_warning_key = _warn_key
+                                                        session_entry.last_hygiene_compression_warning_at = _warn_now
+                                                        try:
+                                                            self.session_store._save()
+                                                        except Exception:
+                                                            pass
+                                                except Exception as _werr:
+                                                    logger.warning(
+                                                        "Failed to deliver aux-model-fallback notice to user: %s",
+                                                        _werr,
+                                                    )
                                 finally:
                                     # Evict the cached agent so the next turn
                                     # rebuilds its system prompt from current

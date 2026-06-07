@@ -50,6 +50,17 @@ class ContextEngine(ABC):
     context_length: int = 0
     compression_count: int = 0
 
+    # -- Last compression status (read by wrappers/persistence layers) --------
+    #
+    # Engines that can distinguish success/no-op should set these after each
+    # ``compress()`` call.  Supported status values are:
+    # ``compressed``, ``skipped``, ``deferred``, and ``aborted``.
+    # Legacy engines that do not set a status remain supported: wrappers infer
+    # success only when the returned messages differ from the input.
+    _last_compress_status: str | None = None
+    _last_compress_reason: str | None = None
+    _last_compress_aborted: bool = False
+
     # -- Compaction parameters (read by run_agent.py for preflight) --------
     #
     # These control the preflight compression check.  Subclasses may

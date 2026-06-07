@@ -425,13 +425,6 @@ def compress_context(
             except Exception as _rel_err:
                 logger.debug("compression lock release failed: %s", _rel_err)
 
-    # Notify external memory provider before compression discards context
-    if agent._memory_manager:
-        try:
-            agent._memory_manager.on_pre_compress(messages)
-        except Exception:
-            pass
-
     try:
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
     except TypeError:
@@ -444,11 +437,9 @@ def compress_context(
         _release_lock()
         raise
 
-    # If compression aborted (aux LLM failed to produce a usable summary)
-    # the compressor returns the input messages unchanged.  Surface the
-    # error to the user, skip the session-rotation work entirely (no
-    # session has logically ended), and let auto-compress callers detect
-    # the no-op via len(returned) == len(input).
+    # If compression aborted (aux LLM failed to produce a usable summary), the
+    # compressor returns the input messages unchanged. Surface the error to the
+    # user and skip session rotation entirely because no session logically ended.
     if getattr(agent.context_compressor, "_last_compress_aborted", False):
         _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
         if getattr(agent, "_last_compression_summary_warning", None) != _err:
@@ -463,6 +454,57 @@ def compress_context(
             _existing_sp = agent._build_system_prompt(system_message)
         _release_lock()  # compression aborted — no rotation will happen
         return messages, _existing_sp
+
+    if getattr(agent.context_compressor, "_last_compress_deferred_reason", None) == "min_interval":
+        logger.info(
+            "context compression deferred by compressor: session=%s reason=min_interval",
+            agent.session_id or "none",
+        )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()  # compression deferred — no rotation will happen
+        return messages, _existing_sp
+
+    _compress_status = getattr(agent.context_compressor, "_last_compress_status", None)
+    if not isinstance(_compress_status, str):
+        _compress_status = None
+
+    # Built-in ContextCompressor exposes an explicit status contract.  Legacy
+    # plugin engines may not yet set it, so infer success only when they return
+    # a changed message list.  Unchanged/no-status returns still fail closed and
+    # skip every post-success side effect below.
+    if _compress_status is None and compressed != messages:
+        _compress_status = "compressed"
+        try:
+            setattr(agent.context_compressor, "_last_compress_status", "compressed")
+            setattr(agent.context_compressor, "_last_compress_reason", None)
+        except Exception:
+            pass
+
+    if _compress_status != "compressed":
+        logger.info(
+            "context compression produced no confirmed mutation: "
+            "session=%s status=%s reason=%s",
+            agent.session_id or "none",
+            _compress_status,
+            getattr(agent.context_compressor, "_last_compress_reason", None),
+        )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()
+        return messages, _existing_sp
+
+    # Notify external memory provider before compression discards context.
+    # This runs only after the compressor actually proceeds; no-op paths
+    # (lock skip, summary abort, debounce defer) must not trigger memory or
+    # session-rotation side effects.
+    if agent._memory_manager:
+        try:
+            agent._memory_manager.on_pre_compress(messages)
+        except Exception:
+            pass
 
     summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
     if summary_error:

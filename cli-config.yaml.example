@@ -343,7 +343,7 @@ tool_loop_guardrails:
 # HOW IT WORKS:
 # 1. Tracks actual token usage from API responses (not estimates)
 # 2. When prompt_tokens >= threshold% of model's context_length, triggers compression
-# 3. Protects first 3 turns (system prompt, initial request, first response)
+# 3. Protects the system prompt plus the first N non-system head messages
 # 4. Protects last N turns (default 20 messages = ~10 full turns of recent context)
 # 5. Summarizes middle turns using a fast/cheap model
 # 6. Inserts summary as a user message, continues conversation seamlessly
@@ -366,6 +366,23 @@ compression:
   # Summary output is separately capped at 12K tokens (Gemini output limit).
   # Range: 0.10 - 0.80
   target_ratio: 0.20
+
+  # Minimum seconds between automatic compression attempts, including failed
+  # or aborted attempts (default: 0 = disabled).
+  # Applies to in-agent compression and gateway token-pressure hygiene. Gateway
+  # hard message-count safety compression and manual /compress bypass it.
+  min_interval_seconds: 0
+
+  # When true, preserve the original messages if the compression summarizer
+  # fails (for example provider 400 "bad format", timeout, or invalid
+  # auxiliary.compression configuration)
+  # instead of inserting a deterministic fallback marker and dropping the
+  # middle window. Recommended with flaky/strict auxiliary providers.
+  abort_on_summary_failure: false
+
+  # Gateway hard safety valve: force hygiene compression when a session reaches
+  # this many persisted messages. Bypasses min_interval_seconds.
+  hygiene_hard_message_limit: 400
 
   # Number of most-recent messages to always preserve (default: 20 ≈ 10 full turns)
   # Higher values keep more recent conversation intact at the cost of more aggressive

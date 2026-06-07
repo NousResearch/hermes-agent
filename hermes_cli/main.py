@@ -6224,12 +6224,14 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             _mark_skip_upstream_prompt()
             return
 
-    # Fetch upstream
+    # Fetch upstream main only. This sync compares upstream/main with
+    # origin/main, so there's no reason to pull every upstream ref — and a bare
+    # fetch drags in thousands of auto-generated branches.
     print()
     print("→ Fetching upstream...")
     try:
         subprocess.run(
-            git_cmd + ["fetch", "upstream", "--quiet"],
+            git_cmd + ["fetch", "upstream", "main", "--quiet"],
             cwd=cwd,
             capture_output=True,
             check=True,
@@ -7464,14 +7466,16 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # Fetch both origin and upstream; prefer upstream as the canonical reference.
+    # Fetch only the branch we compare against; prefer upstream as the canonical
+    # reference. A bare `git fetch <remote>` pulls every ref, and this repo has
+    # thousands of auto-generated branches, so scope the fetch to <branch>.
     # Note: upstream/<branch> may not exist for non-main branches (a fork's
     # bb/gui has no upstream counterpart), so when the caller picks a
     # non-default branch we skip the upstream probe and use origin directly.
     if branch == "main":
         print("→ Fetching from upstream...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "upstream"],
+            git_cmd + ["fetch", "upstream", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -7480,7 +7484,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             # Fallback to origin if upstream doesn't exist
             print("→ Fetching from origin...")
             fetch_result = subprocess.run(
-                git_cmd + ["fetch", "origin"],
+                git_cmd + ["fetch", "origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
@@ -7494,7 +7498,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
+            git_cmd + ["fetch", "origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -8002,9 +8006,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Fetch and pull
     try:
 
+        # Resolve the target branch up front so the fetch can be scoped to it.
+        # A bare `git fetch origin` pulls every ref, and this repo carries
+        # thousands of auto-generated branches — an unscoped fetch can stall for
+        # minutes on a non-single-branch checkout. Fetch only what we update
+        # against.
+        branch = _resolve_update_branch(args)
+
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
+            git_cmd + ["fetch", "origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -8035,11 +8046,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             check=True,
         )
         current_branch = result.stdout.strip()
-
-        # Determine the target branch. Default is "main" (the long-standing
-        # CLI behavior); --branch overrides for callers that want to update
-        # against a non-default channel.
-        branch = _resolve_update_branch(args)
 
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical

@@ -1130,7 +1130,7 @@ function Install-Repository {
                     git -c windows.appendAtomically=false stash push --include-untracked -m "$stashName"
                     if ($LASTEXITCODE -eq 0) { $autostashRef = "stash@{0}" }
                 }
-                git -c windows.appendAtomically=false fetch origin
+                git -c windows.appendAtomically=false fetch origin $Branch
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
                 # Precedence: Commit > Tag > Branch.  Commit and Tag check
                 # out as detached HEAD intentionally -- they're meant to be

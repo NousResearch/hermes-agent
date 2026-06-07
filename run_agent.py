@@ -4255,6 +4255,23 @@ class AIAgent:
         except Exception:
             return False
 
+    def _provider_supports_vision_tool_messages(self) -> bool:
+        """Return True if the active provider accepts list-type tool content.
+
+        Some providers (e.g. Xiaomi MiMo) support multimodal user messages
+        but reject list-type tool message content with 400 errors.  This
+        checks the provider profile's ``supports_vision_tool_messages`` field.
+        """
+        try:
+            from providers import get_provider_profile
+            provider = (getattr(self, "provider", "") or "").strip()
+            profile = get_provider_profile(provider)
+            if profile is not None:
+                return getattr(profile, "supports_vision_tool_messages", True)
+        except Exception:
+            pass
+        return True  # default: assume compatible
+
     def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:
         if not self._content_has_image_parts(content):
             return content
@@ -4394,13 +4411,17 @@ class AIAgent:
             return content
 
         if self._model_supports_vision():
-            # Vision-capable on paper — but if we've already learned in this
-            # session that the active (provider, model) rejects list-type
-            # tool content (e.g. Xiaomi MiMo's 400 "text is not set"),
-            # short-circuit to a text summary so we don't burn another
-            # round-trip relearning the same lesson.  Cache populated by
-            # the 400 recovery path in agent.conversation_loop.  Transient
-            # per-session; next session retries.
+            # Vision-capable on paper — but if the provider rejects list-type
+            # tool content (e.g. Xiaomi MiMo's 400 "text is not set"), or if
+            # we've already learned this lesson in-session, short-circuit to
+            # a text summary so we don't burn a round-trip relearning it.
+            if not self._provider_supports_vision_tool_messages():
+                logger.debug(
+                    "Tool %s: provider %s does not accept list-type tool "
+                    "content — sending text summary",
+                    tool_name, getattr(self, "provider", ""),
+                )
+                return _multimodal_text_summary(result)
             key = (
                 (getattr(self, "provider", "") or "").strip().lower(),
                 (getattr(self, "model", "") or "").strip(),

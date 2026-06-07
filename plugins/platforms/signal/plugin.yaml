@@ -1,0 +1,44 @@
+name: signal-platform
+label: Signal
+kind: platform
+version: 1.0.0
+description: >
+  Signal gateway adapter for Hermes Agent. Connects to a signal-cli instance
+  running in JSON-RPC daemon mode and relays messages between Signal DMs /
+  groups and the Hermes agent. Supports native attachments with rate-limit-
+  aware batching, mention rendering, DM pairing, and home-channel cron delivery.
+author: NousResearch
+requires_env:
+  - name: SIGNAL_HTTP_URL
+    description: "signal-cli JSON-RPC daemon URL (e.g. http://127.0.0.1:8080)"
+    prompt: "signal-cli JSON-RPC URL"
+    password: false
+  - name: SIGNAL_ACCOUNT
+    description: "Registered Signal phone number the bot sends from (e.g. +155****4567)"
+    prompt: "Signal account phone number"
+    password: false
+optional_env:
+  - name: SIGNAL_ALLOWED_USERS
+    description: "Comma-separated phone numbers allowed to DM the bot."
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: SIGNAL_GROUP_ALLOWED_USERS
+    description: "Comma-separated phone numbers allowed to trigger the bot in groups."
+    prompt: "Group-allowed users (comma-separated)"
+    password: false
+  - name: SIGNAL_ALLOW_ALL_USERS
+    description: "Allow any Signal user to trigger the bot (dev only)."
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: SIGNAL_HOME_CHANNEL
+    description: "Default target for cron / notification delivery (phone number or group:<id>)."
+    prompt: "Home channel"
+    password: false
+  - name: SIGNAL_REQUIRE_MENTION
+    description: "Require @bot mention in groups (default true)."
+    prompt: "Require @mention? (true/false)"
+    password: false
+  - name: SIGNAL_IGNORE_STORIES
+    description: "Ignore inbound Signal stories (default true)."
+    prompt: "Ignore stories? (true/false)"
+    password: false

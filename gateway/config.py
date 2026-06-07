@@ -425,8 +425,9 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.WEIXIN: lambda cfg: bool(
         cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))
     ),
+    # signal migrated to a bundled plugin (plugins/platforms/signal/); its
+    # connection check is registered via is_connected on the PlatformEntry.
     Platform.WHATSAPP: lambda cfg: True,  # bridge handles auth
-    Platform.SIGNAL: lambda cfg: bool(cfg.extra.get("http_url")),
     Platform.EMAIL: lambda cfg: bool(cfg.extra.get("address")),
     Platform.SMS: lambda cfg: bool(os.getenv("TWILIO_ACCOUNT_SID")),
     Platform.API_SERVER: lambda cfg: True,
@@ -1124,10 +1125,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["WHATSAPP_GROUP_ALLOWED_USERS"] = str(gaf)
 
             # Signal settings → env vars (env vars take precedence)
-            signal_cfg = yaml_cfg.get("signal", {})
-            if isinstance(signal_cfg, dict):
-                if "require_mention" in signal_cfg and not os.getenv("SIGNAL_REQUIRE_MENTION"):
-                    os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
+            # Signal config bridge moved into plugins/platforms/signal/
+            # adapter.py::_apply_yaml_config — see #25443 (apply_yaml_config_fn).
 
             # DingTalk settings → env vars (env vars take precedence)
             dingtalk_cfg = yaml_cfg.get("dingtalk", {})

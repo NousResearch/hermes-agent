@@ -20,7 +20,7 @@ _HAS_TELEGRAM = pytest.importorskip("telegram", reason="python-telegram-bot not 
 def _reset_signal_scheduler():
     """Drop the process-wide attachment scheduler so each test gets a
     fresh token bucket."""
-    from gateway.platforms.signal_rate_limit import _reset_scheduler
+    from plugins.platforms.signal.signal_rate_limit import _reset_scheduler
     _reset_scheduler()
     yield
     _reset_scheduler()
@@ -2153,10 +2153,10 @@ def _patch_sendmsg_sleep_and_time(monkeypatch, capture: list):
             await _real_sleep(0)
 
     monkeypatch.setattr(
-        "gateway.platforms.signal_rate_limit.asyncio.sleep", fake_sleep
+        "plugins.platforms.signal.signal_rate_limit.asyncio.sleep", fake_sleep
     )
     monkeypatch.setattr(
-        "gateway.platforms.signal_rate_limit.time.monotonic", lambda: offset[0]
+        "plugins.platforms.signal.signal_rate_limit.time.monotonic", lambda: offset[0]
     )
 
 
@@ -2182,7 +2182,7 @@ class TestSendSignalChunking:
     def test_chunks_attachments_above_max(self, tmp_path, monkeypatch):
         """33 attachments → 2 batches; text only on first batch. Batch 1
         only needs 1 token and 18 remain after batch 0, so no sleep."""
-        from gateway.platforms.signal_rate_limit import (
+        from plugins.platforms.signal.signal_rate_limit import (
             SIGNAL_MAX_ATTACHMENTS_PER_MSG,
         )
 
@@ -2226,7 +2226,7 @@ class TestSendSignalChunking:
         """64 attachments → 2 full batches. Batch 1 needs 14 more tokens
         than the 18 remaining after batch 0 — 56s wait crossing the 10s
         notice threshold."""
-        from gateway.platforms.signal_rate_limit import (
+        from plugins.platforms.signal.signal_rate_limit import (
             SIGNAL_MAX_ATTACHMENTS_PER_MSG,
             SIGNAL_RATE_LIMIT_BUCKET_CAPACITY,
             SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER,
@@ -2274,7 +2274,7 @@ class TestSendSignalChunking:
         error.data.response.results[*].retryAfterSeconds. The scheduler
         calibrates its refill rate from that value; the retry of n=1
         sleeps the per-token interval."""
-        from gateway.platforms.signal_rate_limit import SIGNAL_RPC_ERROR_RATELIMIT
+        from plugins.platforms.signal.signal_rate_limit import SIGNAL_RPC_ERROR_RATELIMIT
 
         p = tmp_path / "img.png"
         p.write_bytes(b"\x89PNG" + b"\x00" * 16)
@@ -2317,7 +2317,7 @@ class TestSendSignalChunking:
     def test_429_without_retry_after_falls_back_to_default(self, tmp_path, monkeypatch):
         """Older signal-cli (< v0.14.3) doesn't surface Retry-After.
         The scheduler keeps its default rate (1 token / 4s)."""
-        from gateway.platforms.signal_rate_limit import SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
+        from plugins.platforms.signal.signal_rate_limit import SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
 
         p = tmp_path / "img.png"
         p.write_bytes(b"\x89PNG" + b"\x00" * 16)
@@ -2347,7 +2347,7 @@ class TestSendSignalChunking:
         """Both attempts on batch 0 fail; batch 1 still gets a chance.
         The scheduler's natural pacing (no more cooldown gate) lets the
         second batch through after its acquire wait."""
-        from gateway.platforms.signal_rate_limit import SIGNAL_RPC_ERROR_RATELIMIT
+        from plugins.platforms.signal.signal_rate_limit import SIGNAL_RPC_ERROR_RATELIMIT
 
         paths = []
         for i in range(33):  # forces 2 batches

@@ -39,7 +39,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
 )
 from gateway.platforms.helpers import redact_phone
-from gateway.platforms.signal_rate_limit import (
+from .signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD,
     SIGNAL_MAX_ATTACHMENTS_PER_MSG,
     SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
@@ -1541,3 +1541,321 @@ class SignalAdapter(BasePlatformAdapter):
             "type": "dm",
             "chat_id": chat_id,
         }
+
+
+# ---------------------------------------------------------------------------
+# Plugin registration entry point
+# ---------------------------------------------------------------------------
+#
+# Signal migrated from a built-in adapter (gateway/platforms/signal*.py) into
+# this bundled plugin. The hooks below replace the per-platform wiring that
+# used to be scattered across core:
+#   - adapter_factory      -> the elif in gateway/run.py::_create_adapter()
+#   - check_fn             -> the check_signal_requirements guard there
+#   - is_connected         -> the Platform.SIGNAL lambda in gateway/config.py
+#   - setup_fn             -> _setup_signal in hermes_cli/gateway.py + its
+#                            _PLATFORMS entry + _builtin_setup_fn mapping
+#   - apply_yaml_config_fn -> the signal_cfg block in load_gateway_config()
+#   - standalone_sender_fn -> _send_signal in tools/send_message_tool.py
+#   - cron_deliver_env_var -> SIGNAL_HOME_CHANNEL
+#
+# Deliberately left generic in core (same as every other platform):
+#   - the Platform.SIGNAL enum literal (stable repo-wide identifier)
+#   - the _apply_env_overrides SIGNAL_* env bridge in gateway/config.py
+#   - the _is_user_authorized / _UPDATE_ALLOWED_PLATFORMS allowlist maps
+#     (SIGNAL_ALLOWED_USERS + SIGNAL_GROUP_ALLOWED_USERS stay there)
+#   - the cron _KNOWN_DELIVERY_PLATFORMS frozenset
+
+
+def _is_connected(config: PlatformConfig) -> bool:
+    """Signal is connected when an http_url is configured.
+
+    Ports the Platform.SIGNAL lambda from gateway/config.py.
+    """
+    extra = config.extra or {}
+    return bool(extra.get("http_url"))
+
+
+def _apply_yaml_config(yaml_cfg: dict, signal_cfg: dict) -> dict | None:
+    """Translate config.yaml ``signal:`` keys into env vars.
+
+    Implements the apply_yaml_config_fn contract (#24836 / #25443). Mirrors
+    the legacy signal_cfg block that used to live in
+    gateway/config.py::load_gateway_config(). Env vars take precedence over
+    YAML (the ``not os.getenv`` guard), matching the original behavior.
+    """
+    if "require_mention" in signal_cfg and not os.getenv("SIGNAL_REQUIRE_MENTION"):
+        os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
+    return None  # everything flows through env; nothing to merge into extras
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document: bool = False,
+):
+    """Send via the signal-cli JSON-RPC API for send_message / cron delivery.
+
+    Relocated from tools/send_message_tool.py::_send_signal. Signal is HTTP
+    to a signal-cli daemon, so unlike WebSocket-singleton platforms this works
+    out-of-process (cron running separately from the gateway). Multi-attachment
+    sends are chunked into SIGNAL_MAX_ATTACHMENTS_PER_MSG batches and metered by
+    the process-wide SignalAttachmentScheduler — the same bucket the live
+    adapter uses, so tool sends and inbound-driven replies share rate-limit
+    state.
+    """
+    extra = getattr(pconfig, "extra", None) or {}
+    try:
+        http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
+        account = extra.get("account", "")
+        if not account:
+            return {"error": "Signal account not configured"}
+
+        valid_media = media_files or []
+        attachment_paths = []
+        for media_path, _is_voice in valid_media:
+            if os.path.exists(media_path):
+                attachment_paths.append(media_path)
+            else:
+                logger.warning("Signal media file not found, skipping: %s", media_path)
+
+        # Chunk attachments. With no attachments we still emit one batch
+        # (text only). With attachments, the text rides on batch #0 so the
+        # caption isn't repeated across every chunk.
+        if attachment_paths:
+            att_batches = [
+                attachment_paths[i:i + SIGNAL_MAX_ATTACHMENTS_PER_MSG]
+                for i in range(0, len(attachment_paths), SIGNAL_MAX_ATTACHMENTS_PER_MSG)
+            ]
+        else:
+            att_batches = [[]]
+
+        async def _post(batch_attachments, batch_message):
+            params = {"account": account, "message": batch_message}
+            if chat_id.startswith("group:"):
+                params["groupId"] = chat_id[6:]
+            else:
+                params["recipient"] = [chat_id]
+            if batch_attachments:
+                params["attachments"] = batch_attachments
+
+            payload = {
+                "jsonrpc": "2.0",
+                "method": "send",
+                "params": params,
+                "id": f"send_{int(time.time() * 1000)}",
+            }
+            timeout = _signal_send_timeout(len(batch_attachments) if batch_attachments else 0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(f"{http_url}/api/v1/rpc", json=payload)
+                resp.raise_for_status()
+                return resp.json()
+
+        async def _send_inline_notice(text: str) -> None:
+            """Best-effort one-shot RPC for a user-facing pacing notice."""
+            notice_params = {"account": account, "message": text}
+            if chat_id.startswith("group:"):
+                notice_params["groupId"] = chat_id[6:]
+            else:
+                notice_params["recipient"] = [chat_id]
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as _client:
+                    await _client.post(
+                        f"{http_url}/api/v1/rpc",
+                        json={
+                            "jsonrpc": "2.0",
+                            "method": "send",
+                            "params": notice_params,
+                            "id": f"notice_{int(time.time() * 1000)}",
+                        },
+                    )
+            except Exception as _e:
+                logger.warning("Signal: inline notice failed: %s", _e)
+
+        scheduler = get_scheduler()
+        logger.info(
+            "send_message Signal: scheduler state=%s, %d attachment(s) in %d batch(es)",
+            scheduler.state(), len(attachment_paths), len(att_batches),
+        )
+        failed_batches: list[int] = []
+        for idx, att_batch in enumerate(att_batches):
+            n = len(att_batch)
+            if n > 0:
+                estimated = scheduler.estimate_wait(n)
+                if estimated >= SIGNAL_BATCH_PACING_NOTICE_THRESHOLD:
+                    await _send_inline_notice(
+                        f"(More images coming — pausing ~{_format_wait(estimated)} "
+                        f"for Signal rate limit, batch {idx + 1}/{len(att_batches)}.)"
+                    )
+
+            batch_message = message if idx == 0 else ""
+
+            for attempt in range(1, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS + 1):
+                try:
+                    await scheduler.acquire(n)
+                    _rpc_t0 = time.monotonic()
+                    data = await _post(att_batch, batch_message)
+                    _rpc_duration = time.monotonic() - _rpc_t0
+                    if "error" not in data:
+                        await scheduler.report_rpc_duration(_rpc_duration, n)
+                        break
+
+                    err = data["error"]
+
+                    if not _is_signal_rate_limit_error(err):
+                        return {"error": f"Signal RPC error on batch {idx + 1}/{len(att_batches)}: {err}"}
+
+                    server_retry_after = _extract_retry_after_seconds(err)
+                    scheduler.feedback(server_retry_after, n)
+
+                    if attempt >= SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
+                        failed_batches.append(idx + 1)
+                        logger.error(
+                            "Signal: rate-limit retries exhausted on batch %d/%d "
+                            "(%d attachments lost, server retry_after=%s)",
+                            idx + 1, len(att_batches), n,
+                            f"{server_retry_after:.0f}s" if server_retry_after else "unknown",
+                        )
+                        break
+                    logger.warning(
+                        "Signal: rate-limited on batch %d/%d "
+                        "(attempt %d/%d, server retry_after=%s); "
+                        "scheduler will pace the retry",
+                        idx + 1, len(att_batches),
+                        attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                        f"{server_retry_after:.0f}s" if server_retry_after else "unknown",
+                    )
+                except Exception as e:
+                    if attempt >= SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
+                        failed_batches.append(idx + 1)
+                        logger.error(
+                            "Signal: send error on batch %d/%d after %d attempts: %s",
+                            idx + 1, len(att_batches), attempt, str(e)
+                        )
+                        break
+                    logger.warning(
+                        "Signal: transient error on batch %d/%d (attempt %d/%d): %s; will retry",
+                        idx + 1, len(att_batches), attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS, str(e)
+                    )
+
+        warnings = []
+        if len(attachment_paths) < len(valid_media):
+            warnings.append("Some media files were skipped (not found on disk)")
+        if failed_batches:
+            warnings.append(
+                f"Signal rate-limited {len(failed_batches)} batch(es) "
+                f"(#{', #'.join(str(b) for b in failed_batches)})"
+            )
+
+        if failed_batches and len(failed_batches) == len(att_batches):
+            return {
+                "error": (
+                    f"Signal: every batch ({len(att_batches)}) hit rate limit; "
+                    f"no attachments delivered"
+                )
+            }
+
+        result = {"success": True, "platform": "signal", "chat_id": chat_id}
+        if warnings:
+            result["warnings"] = warnings
+        return result
+    except Exception as e:
+        return {"error": f"Signal send failed: {e}"}
+
+
+def interactive_setup() -> None:
+    """Interactive setup wizard — replaces hermes_cli/gateway.py::_setup_signal.
+
+    Lazy imports keep the plugin's load surface small. Mirrors the Teams /
+    Mattermost setup_fn shape.
+    """
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.cli_output import (
+        prompt,
+        prompt_yes_no,
+        print_header,
+        print_info,
+        print_success,
+    )
+
+    print_header("Signal")
+    print_info("Signal uses signal-cli running in JSON-RPC daemon mode.")
+    print_info("Set up signal-cli and register/link your account first:")
+    print_info("  https://github.com/AsamK/signal-cli")
+    print()
+
+    existing_url = get_env_value("SIGNAL_HTTP_URL")
+    existing_account = get_env_value("SIGNAL_ACCOUNT")
+    if existing_url and existing_account:
+        print_info("Signal: already configured")
+        if not prompt_yes_no("Reconfigure Signal?", False):
+            return
+
+    url = prompt("signal-cli JSON-RPC URL", default="http://127.0.0.1:8080")
+    if not url:
+        return
+    save_env_value("SIGNAL_HTTP_URL", url)
+
+    account = prompt("Signal account (your registered phone number, e.g. +15551234567)")
+    if not account:
+        return
+    save_env_value("SIGNAL_ACCOUNT", account)
+    print_success("Signal connection saved")
+
+    print()
+    print_info("🔒 Security: restrict who can DM your bot.")
+    allowed = prompt("Allowed phone numbers (comma-separated, leave empty for pairing-only)")
+    if allowed:
+        save_env_value("SIGNAL_ALLOWED_USERS", allowed)
+
+    if prompt_yes_no("Enable group access?", False):
+        groups = prompt("Group-allowed phone numbers (comma-separated)")
+        if groups:
+            save_env_value("SIGNAL_GROUP_ALLOWED_USERS", groups)
+
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results / notifications.")
+    home = prompt("Home channel (phone number or 'group:<id>', leave empty to set later)")
+    if home:
+        save_env_value("SIGNAL_HOME_CHANNEL", home)
+    print_info("   Open config in your editor:  hermes config edit")
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs SignalAdapter from a PlatformConfig."""
+    return SignalAdapter(config)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="signal",
+        label="Signal",
+        adapter_factory=_build_adapter,
+        check_fn=check_signal_requirements,
+        is_connected=_is_connected,
+        required_env=["SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"],
+        install_hint="set up signal-cli in JSON-RPC daemon mode",
+        # Interactive setup wizard — replaces hermes_cli/gateway.py::_setup_signal.
+        setup_fn=interactive_setup,
+        # YAML->env config bridge — owns the signal: require_mention key that
+        # used to live in gateway/config.py::load_gateway_config(). #24836/#25443.
+        apply_yaml_config_fn=_apply_yaml_config,
+        # Auth env vars for _is_user_authorized() integration. Signal also has
+        # SIGNAL_GROUP_ALLOWED_USERS, which stays in the generic gateway maps.
+        allowed_users_env="SIGNAL_ALLOWED_USERS",
+        allow_all_env="SIGNAL_ALLOW_ALL_USERS",
+        # Cron home-channel delivery.
+        cron_deliver_env_var="SIGNAL_HOME_CHANNEL",
+        # Out-of-process cron delivery via signal-cli JSON-RPC. Signal is HTTP,
+        # so unlike WebSocket platforms this works without a live gateway.
+        standalone_sender_fn=_standalone_send,
+        # Signal message size limit.
+        max_message_length=MAX_MESSAGE_LENGTH,
+        # Display
+        emoji="📡",
+    )

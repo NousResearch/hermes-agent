@@ -79,7 +79,7 @@ def test_helper_is_importable_from_every_platform_that_uses_it():
     import gateway.platforms.qqbot.adapter  # noqa: F401
     import gateway.platforms.wecom  # noqa: F401
     import gateway.platforms.dingtalk  # noqa: F401
-    import gateway.platforms.signal  # noqa: F401
+    import plugins.platforms.signal.adapter  # noqa: F401
     import gateway.platforms.bluebubbles  # noqa: F401
     import gateway.platforms.wecom_callback  # noqa: F401
 

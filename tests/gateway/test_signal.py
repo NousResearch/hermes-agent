@@ -13,7 +13,7 @@ from gateway.config import Platform, PlatformConfig
 def _reset_signal_scheduler():
     """The attachment scheduler is process-wide; drop it between tests
     so a fresh token bucket greets each case."""
-    from gateway.platforms.signal_rate_limit import _reset_scheduler
+    from plugins.platforms.signal.signal_rate_limit import _reset_scheduler
     _reset_scheduler()
     yield
     _reset_scheduler()
@@ -26,7 +26,7 @@ def _reset_signal_scheduler():
 def _make_signal_adapter(monkeypatch, account="+15551234567", **extra):
     """Create a SignalAdapter with sensible test defaults."""
     monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", extra.pop("group_allowed", ""))
-    from gateway.platforms.signal import SignalAdapter
+    from plugins.platforms.signal.adapter import SignalAdapter
     config = PlatformConfig()
     config.enabled = True
     config.extra = {
@@ -112,7 +112,7 @@ class TestSignalConnectCleanup:
         mock_client.get = AsyncMock(return_value=MagicMock(status_code=503))
         mock_client.aclose = AsyncMock()
 
-        with patch("gateway.platforms.signal.httpx.AsyncClient", return_value=mock_client), \
+        with patch("plugins.platforms.signal.adapter.httpx.AsyncClient", return_value=mock_client), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
              patch("gateway.status.release_scoped_lock") as mock_release:
             result = await adapter.connect()
@@ -138,56 +138,56 @@ class TestSignalHelpers:
         assert redact_phone("") == "<none>"
 
     def test_parse_comma_list(self):
-        from gateway.platforms.signal import _parse_comma_list
+        from plugins.platforms.signal.adapter import _parse_comma_list
         assert _parse_comma_list("+1234, +5678 , +9012") == ["+1234", "+5678", "+9012"]
         assert _parse_comma_list("") == []
         assert _parse_comma_list("  ,  ,  ") == []
 
     def test_guess_extension_png(self):
-        from gateway.platforms.signal import _guess_extension
+        from plugins.platforms.signal.adapter import _guess_extension
         assert _guess_extension(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100) == ".png"
 
     def test_guess_extension_jpeg(self):
-        from gateway.platforms.signal import _guess_extension
+        from plugins.platforms.signal.adapter import _guess_extension
         assert _guess_extension(b"\xff\xd8\xff\xe0" + b"\x00" * 100) == ".jpg"
 
     def test_guess_extension_pdf(self):
-        from gateway.platforms.signal import _guess_extension
+        from plugins.platforms.signal.adapter import _guess_extension
         assert _guess_extension(b"%PDF-1.4" + b"\x00" * 100) == ".pdf"
 
     def test_guess_extension_zip(self):
-        from gateway.platforms.signal import _guess_extension
+        from plugins.platforms.signal.adapter import _guess_extension
         assert _guess_extension(b"PK\x03\x04" + b"\x00" * 100) == ".zip"
 
     def test_guess_extension_mp4(self):
-        from gateway.platforms.signal import _guess_extension
+        from plugins.platforms.signal.adapter import _guess_extension
         assert _guess_extension(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 100) == ".mp4"
 
     def test_guess_extension_unknown(self):
-        from gateway.platforms.signal import _guess_extension
+        from plugins.platforms.signal.adapter import _guess_extension
         assert _guess_extension(b"\x00\x01\x02\x03" * 10) == ".bin"
 
     def test_is_image_ext(self):
-        from gateway.platforms.signal import _is_image_ext
+        from plugins.platforms.signal.adapter import _is_image_ext
         assert _is_image_ext(".png") is True
         assert _is_image_ext(".jpg") is True
         assert _is_image_ext(".gif") is True
         assert _is_image_ext(".pdf") is False
 
     def test_is_audio_ext(self):
-        from gateway.platforms.signal import _is_audio_ext
+        from plugins.platforms.signal.adapter import _is_audio_ext
         assert _is_audio_ext(".mp3") is True
         assert _is_audio_ext(".ogg") is True
         assert _is_audio_ext(".png") is False
 
     def test_check_requirements(self, monkeypatch):
-        from gateway.platforms.signal import check_signal_requirements
+        from plugins.platforms.signal.adapter import check_signal_requirements
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:8080")
         monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
         assert check_signal_requirements() is True
 
     def test_render_mentions(self):
-        from gateway.platforms.signal import _render_mentions
+        from plugins.platforms.signal.adapter import _render_mentions
         text = "Hello \uFFFC, how are you?"
         mentions = [{"start": 6, "length": 1, "number": "+15559999999"}]
         result = _render_mentions(text, mentions)
@@ -195,13 +195,13 @@ class TestSignalHelpers:
         assert "\uFFFC" not in result
 
     def test_render_mentions_no_mentions(self):
-        from gateway.platforms.signal import _render_mentions
+        from plugins.platforms.signal.adapter import _render_mentions
         text = "Hello world"
         result = _render_mentions(text, [])
         assert result == "Hello world"
 
     def test_check_requirements_missing(self, monkeypatch):
-        from gateway.platforms.signal import check_signal_requirements
+        from plugins.platforms.signal.adapter import check_signal_requirements
         monkeypatch.delenv("SIGNAL_HTTP_URL", raising=False)
         monkeypatch.delenv("SIGNAL_ACCOUNT", raising=False)
         assert check_signal_requirements() is False
@@ -241,7 +241,7 @@ class TestSignalAttachmentFetch:
 
         adapter._rpc, captured = _stub_rpc({"data": b64_data})
 
-        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/test.png"):
+        with patch("plugins.platforms.signal.adapter.cache_image_from_bytes", return_value="/tmp/test.png"):
             await adapter._fetch_attachment("attachment-123")
 
         call = captured[0]
@@ -267,7 +267,7 @@ class TestSignalAttachmentFetch:
 
         adapter._rpc, _ = _stub_rpc({"data": b64_data})
 
-        with patch("gateway.platforms.signal.cache_document_from_bytes", return_value="/tmp/test.pdf"):
+        with patch("plugins.platforms.signal.adapter.cache_document_from_bytes", return_value="/tmp/test.pdf"):
             path, ext = await adapter._fetch_attachment("doc-456")
 
         assert path == "/tmp/test.pdf"
@@ -1145,7 +1145,7 @@ class TestSignalRpcRateLimit:
 
     @pytest.mark.asyncio
     async def test_raises_on_429_when_opted_in(self, monkeypatch):
-        from gateway.platforms.signal import SignalRateLimitError
+        from plugins.platforms.signal.adapter import SignalRateLimitError
 
         adapter = _make_signal_adapter(monkeypatch)
         _install_fake_client(adapter, {
@@ -1158,7 +1158,7 @@ class TestSignalRpcRateLimit:
     @pytest.mark.asyncio
     async def test_raises_on_rate_limit_exception_substring(self, monkeypatch):
         """Some signal-cli builds emit 'RateLimitException' without a literal [429]."""
-        from gateway.platforms.signal import SignalRateLimitError
+        from plugins.platforms.signal.adapter import SignalRateLimitError
 
         adapter = _make_signal_adapter(monkeypatch)
         _install_fake_client(adapter, {
@@ -1195,7 +1195,7 @@ class TestSignalRpcRateLimit:
         """signal-cli ≥ v0.14.3 surfaces server Retry-After under
         ``error.data.response.results[*].retryAfterSeconds`` — _rpc
         carries that value through SignalRateLimitError.retry_after."""
-        from gateway.platforms.signal_rate_limit import (
+        from plugins.platforms.signal.signal_rate_limit import (
             SignalRateLimitError, SIGNAL_RPC_ERROR_RATELIMIT,
         )
 
@@ -1223,7 +1223,7 @@ class TestSignalRpcRateLimit:
     @pytest.mark.asyncio
     async def test_raises_with_retry_after_none_for_old_signal_cli(self, monkeypatch):
         """Older signal-cli builds emit only the substring; retry_after=None."""
-        from gateway.platforms.signal import SignalRateLimitError
+        from plugins.platforms.signal.adapter import SignalRateLimitError
 
         adapter = _make_signal_adapter(monkeypatch)
         _install_fake_client(adapter, {
@@ -1242,7 +1242,7 @@ class TestSignalRpcRateLimit:
         -32603), with the libsignal-net 'Retry after N seconds'
         message embedded. _rpc must still detect this as rate-limit
         AND parse the seconds out of the message."""
-        from gateway.platforms.signal import SignalRateLimitError
+        from plugins.platforms.signal.adapter import SignalRateLimitError
 
         adapter = _make_signal_adapter(monkeypatch)
         _install_fake_client(adapter, {
@@ -1318,10 +1318,10 @@ def _patch_scheduler_sleep(monkeypatch, capture: list):
             await _real_sleep(0)
 
     monkeypatch.setattr(
-        "gateway.platforms.signal_rate_limit.asyncio.sleep", fake_sleep
+        "plugins.platforms.signal.signal_rate_limit.asyncio.sleep", fake_sleep
     )
     monkeypatch.setattr(
-        "gateway.platforms.signal_rate_limit.time.monotonic", lambda: offset[0]
+        "plugins.platforms.signal.signal_rate_limit.time.monotonic", lambda: offset[0]
     )
 
 
@@ -1394,7 +1394,7 @@ class TestSignalSendMultipleImages:
         scheduler's refill_rate becomes 1/27. Re-acquiring n=3 tokens
         therefore waits 3 × 27 = 81s — pulled from the server's
         authoritative rate, not a `× 32` defensive multiplier."""
-        from gateway.platforms.signal import SignalRateLimitError
+        from plugins.platforms.signal.adapter import SignalRateLimitError
 
         adapter = _make_signal_adapter(monkeypatch)
         mock_rpc, captured = _stub_rpc_responses([
@@ -1420,7 +1420,7 @@ class TestSignalSendMultipleImages:
         """signal-cli < v0.14.3 doesn't surface Retry-After. The
         scheduler keeps its default refill rate (1 token / 4s), so a
         retry of n=3 waits 12s."""
-        from gateway.platforms.signal_rate_limit import (
+        from plugins.platforms.signal.signal_rate_limit import (
             SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER,
             SignalRateLimitError,
         )
@@ -1453,7 +1453,7 @@ class TestSignalSendMultipleImages:
         """Both attempts on batch 0 fail; batch 1 still gets a chance.
         The scheduler's natural pacing on the next acquire stands in for
         the old explicit cooldown."""
-        from gateway.platforms.signal import SignalRateLimitError
+        from plugins.platforms.signal.adapter import SignalRateLimitError
 
         adapter = _make_signal_adapter(monkeypatch)
         responses = [
@@ -1481,8 +1481,8 @@ class TestSignalSendMultipleImages:
         """Two full batches of 32. Batch 1 needs 14 more tokens than the
         18 remaining after batch 0, so the scheduler sleeps 56s —
         crossing the 10s user-facing pacing-notice threshold."""
-        from gateway.platforms.signal import SIGNAL_MAX_ATTACHMENTS_PER_MSG
-        from gateway.platforms.signal_rate_limit import (
+        from plugins.platforms.signal.adapter import SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        from plugins.platforms.signal.signal_rate_limit import (
             SIGNAL_RATE_LIMIT_BUCKET_CAPACITY,
             SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
         )
@@ -1560,7 +1560,7 @@ class TestSignalRateLimitDetection:
     """Coverage for the typed-code + substring detection helpers."""
 
     def test_detect_typed_code(self):
-        from gateway.platforms.signal_rate_limit import (
+        from plugins.platforms.signal.signal_rate_limit import (
             _is_signal_rate_limit_error,
             SIGNAL_RPC_ERROR_RATELIMIT,
         )
@@ -1568,17 +1568,17 @@ class TestSignalRateLimitDetection:
         assert _is_signal_rate_limit_error(err) is True
 
     def test_detect_substring_fallback(self):
-        from gateway.platforms.signal import _is_signal_rate_limit_error
+        from plugins.platforms.signal.adapter import _is_signal_rate_limit_error
         err = {"code": -32603, "message": "Failed: [429] Rate Limited (RateLimitException) (UnexpectedErrorException)"}
         assert _is_signal_rate_limit_error(err) is True
 
     def test_detect_non_rate_limit(self):
-        from gateway.platforms.signal import _is_signal_rate_limit_error
+        from plugins.platforms.signal.adapter import _is_signal_rate_limit_error
         err = {"code": -32603, "message": "UntrustedIdentityException"}
         assert _is_signal_rate_limit_error(err) is False
 
     def test_extract_retry_after_from_results(self):
-        from gateway.platforms.signal import _extract_retry_after_seconds
+        from plugins.platforms.signal.adapter import _extract_retry_after_seconds
         err = {
             "code": -5,
             "message": "Failed to send message due to rate limiting",
@@ -1596,7 +1596,7 @@ class TestSignalRateLimitDetection:
 
     def test_extract_retry_after_missing(self):
         """Old signal-cli builds don't expose retryAfterSeconds — return None."""
-        from gateway.platforms.signal import _extract_retry_after_seconds
+        from plugins.platforms.signal.adapter import _extract_retry_after_seconds
         err = {"code": -32603, "message": "[429] Rate Limited"}
         assert _extract_retry_after_seconds(err) is None
 
@@ -1604,7 +1604,7 @@ class TestSignalRateLimitDetection:
         """libsignal-net's RetryLaterException leaks through as
         AttachmentInvalidException → UnexpectedErrorException when the
         rate-limit fires inside attachment upload. Detect it by substring."""
-        from gateway.platforms.signal import _is_signal_rate_limit_error
+        from plugins.platforms.signal.adapter import _is_signal_rate_limit_error
         err = {
             "code": -32603,
             "message": (
@@ -1618,7 +1618,7 @@ class TestSignalRateLimitDetection:
     def test_extract_retry_after_parses_message_string(self):
         """When the structured field is missing, parse the seconds out
         of the human 'Retry after N seconds' substring."""
-        from gateway.platforms.signal import _extract_retry_after_seconds
+        from plugins.platforms.signal.adapter import _extract_retry_after_seconds
         err = {
             "code": -32603,
             "message": (
@@ -1634,17 +1634,17 @@ class TestSignalSendTimeout:
     """Timeout scaling for batched attachment sends."""
 
     def test_zero_attachments_uses_default(self):
-        from gateway.platforms.signal import _signal_send_timeout
+        from plugins.platforms.signal.adapter import _signal_send_timeout
         assert _signal_send_timeout(0) == 30.0
 
     def test_floor_at_60s(self):
-        from gateway.platforms.signal import _signal_send_timeout
+        from plugins.platforms.signal.adapter import _signal_send_timeout
         # Few attachments (would be 5×N=5s) should still get 60s floor.
         assert _signal_send_timeout(1) == 60.0
         assert _signal_send_timeout(5) == 60.0
 
     def test_scales_with_batch_size(self):
-        from gateway.platforms.signal import _signal_send_timeout
+        from plugins.platforms.signal.adapter import _signal_send_timeout
         # 32 attachments × 5s = 160s; ought to comfortably outlast a
         # serial upload of an attachment-heavy batch.
         assert _signal_send_timeout(32) == 160.0
@@ -1751,7 +1751,7 @@ class TestSignalContentlessEnvelope:
         b64_data = base64.b64encode(png_data).decode()
         adapter._rpc, _ = _stub_rpc({"data": b64_data})
 
-        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/img.png"):
+        with patch("plugins.platforms.signal.adapter.cache_image_from_bytes", return_value="/tmp/img.png"):
             await adapter._handle_envelope({
                 "envelope": {
                     "sourceNumber": "+155****9999",

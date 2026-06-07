@@ -8,7 +8,7 @@ false-positive regressions that caused spurious italics in production.
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.signal import SignalAdapter
+from plugins.platforms.signal.adapter import SignalAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -422,14 +422,14 @@ class TestSignalStreamingPatch:
     def test_signal_does_not_support_editing(self, monkeypatch):
         """SignalAdapter.SUPPORTS_MESSAGE_EDITING must be False."""
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
-        from gateway.platforms.signal import SignalAdapter
+        from plugins.platforms.signal.adapter import SignalAdapter
         assert SignalAdapter.SUPPORTS_MESSAGE_EDITING is False
 
     @pytest.mark.asyncio
     async def test_send_returns_no_message_id(self, monkeypatch):
         """send() returns message_id=None so stream consumer uses no-edit path."""
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
-        from gateway.platforms.signal import SignalAdapter
+        from plugins.platforms.signal.adapter import SignalAdapter
 
         config = PlatformConfig(enabled=True)
         config.extra = {

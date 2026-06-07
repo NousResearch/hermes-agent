@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from gateway.platforms.signal_rate_limit import (
+from plugins.platforms.signal.signal_rate_limit import (
     SIGNAL_RATE_LIMIT_BUCKET_CAPACITY,
     SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER,
     SignalAttachmentScheduler,
@@ -31,10 +31,10 @@ def _patch_sleep_and_time(monkeypatch, capture: list):
         offset += seconds
 
     monkeypatch.setattr(
-        "gateway.platforms.signal_rate_limit.asyncio.sleep", _fake_sleep
+        "plugins.platforms.signal.signal_rate_limit.asyncio.sleep", _fake_sleep
     )
     monkeypatch.setattr(
-        "gateway.platforms.signal_rate_limit.time.monotonic", lambda: offset
+        "plugins.platforms.signal.signal_rate_limit.time.monotonic", lambda: offset
     )
 
 
@@ -64,7 +64,7 @@ class TestEstimateWait:
         s.tokens = 0.0
         frozen = s.last_refill
         monkeypatch.setattr(
-            "gateway.platforms.signal_rate_limit.time.monotonic", lambda: frozen
+            "plugins.platforms.signal.signal_rate_limit.time.monotonic", lambda: frozen
         )
         # 32 tokens at 0.25 tokens/sec = 128s
         assert s.estimate_wait(32) == pytest.approx(32 / s.refill_rate)
@@ -185,7 +185,7 @@ class TestRefillClamping:
         s.tokens = 0.0
         # Pretend a year passed.
         monkeypatch.setattr(
-            "gateway.platforms.signal_rate_limit.time.monotonic",
+            "plugins.platforms.signal.signal_rate_limit.time.monotonic",
             lambda: s.last_refill + 365 * 24 * 3600,
         )
         s._refill()

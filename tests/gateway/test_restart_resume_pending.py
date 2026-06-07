@@ -900,6 +900,77 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
 
 
 @pytest.mark.asyncio
+async def test_startup_auto_resume_skips_completed_transcripts():
+    """Do not synthesize an empty turn for sessions that already replied."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="completed-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:completed-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "hello", "timestamp": time.time() - 2},
+        {"role": "assistant", "content": "hi", "timestamp": time.time() - 1},
+    ]
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+    assert pending_entry.resume_pending is True
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_schedules_fresh_tool_tail_transcripts():
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="tool-tail-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:tool-tail-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    runner.session_store.load_transcript.return_value = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "c1", "function": {"name": "x", "arguments": "{}"}}],
+            "timestamp": time.time() - 1,
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": "result",
+            "timestamp": time.time(),
+        },
+    ]
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_startup_auto_resume_includes_crash_recovery():
     """Crash-recovered sessions (reason=restart_interrupted) are also auto-resumed.
 

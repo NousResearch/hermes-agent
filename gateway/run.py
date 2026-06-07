@@ -684,6 +684,25 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     return None
 
 
+def _has_fresh_tool_tail(history: Optional[List[Dict[str, Any]]]) -> Optional[bool]:
+    """Return whether a transcript ends with fresh unprocessed tool output.
+
+    ``None`` means the transcript is unavailable/unknown, so callers should
+    preserve the historical permissive behavior.
+    """
+    if not isinstance(history, list):
+        return None
+    agent_history, _ = _build_gateway_agent_history(history)
+    return bool(
+        agent_history
+        and agent_history[-1].get("role") == "tool"
+        and _is_fresh_gateway_interruption(
+            _last_transcript_timestamp(history),
+            window_secs=_auto_continue_freshness_window(),
+        )
+    )
+
+
 # Tool results can contain literal MEDIA: examples in docs, logs, or other
 # ordinary outputs. Only tools that intentionally create deliverable media
 # artifacts should be eligible for automatic append when the model omits them
@@ -4280,6 +4299,18 @@ class GatewayRunner:
                     "Skipping auto-resume for %s: adapter not ready for %s",
                     entry.session_key,
                     getattr(source.platform, "value", source.platform),
+                )
+                continue
+
+            try:
+                history = self.session_store.load_transcript(entry.session_id)
+            except Exception:
+                history = None
+            has_fresh_tool_tail = _has_fresh_tool_tail(history)
+            if has_fresh_tool_tail is False:
+                logger.debug(
+                    "Skipping auto-resume for %s: transcript has no fresh tool tail",
+                    entry.session_key,
                 )
                 continue
 

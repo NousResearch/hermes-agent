@@ -15,8 +15,10 @@ import hashlib
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -39,6 +41,7 @@ _gateway_lock_handle = None
 # past the JSON payload so runtime status / PID readers can still read the file
 # while another process holds the mutual-exclusion lock.
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
+_PROCESS_INSTANCE_FALLBACK = f"process:{uuid.uuid4()}"
 
 
 def _get_pid_path() -> Path:
@@ -200,12 +203,63 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     return any(pattern in cmdline for pattern in patterns)
 
 
+def _get_process_instance() -> dict[str, Optional[str]]:
+    """Return a stable identifier for this gateway process namespace.
+
+    PID liveness probes are only reliable inside the same PID namespace.  Docker
+    containers that share HERMES_HOME can share lock files while seeing unrelated
+    /proc PID spaces, so scoped locks must record an instance signal before they
+    trust local PID checks.
+    """
+    pid_namespace = None
+    try:
+        pid_namespace = os.readlink("/proc/self/ns/pid")
+    except OSError:
+        pass
+
+    hostname = None
+    try:
+        hostname = socket.gethostname()
+    except OSError:
+        pass
+
+    marker = pid_namespace or hostname or _PROCESS_INSTANCE_FALLBACK
+    return {
+        "id": marker,
+        "pid_namespace": pid_namespace,
+        "hostname": hostname,
+    }
+
+
+def _same_process_instance(existing: dict[str, Any], current: dict[str, Optional[str]]) -> bool:
+    existing_instance = existing.get("instance")
+    if not isinstance(existing_instance, dict):
+        return False
+
+    existing_id = existing_instance.get("id")
+    if existing_id and existing_id == current.get("id"):
+        return True
+
+    existing_ns = existing_instance.get("pid_namespace")
+    current_ns = current.get("pid_namespace")
+    if existing_ns and current_ns and existing_ns == current_ns:
+        return True
+
+    existing_host = existing_instance.get("hostname")
+    current_host = current.get("hostname")
+    if existing_host and current_host and existing_host == current_host:
+        return True
+
+    return False
+
+
 def _build_pid_record() -> dict:
     return {
         "pid": os.getpid(),
         "kind": _GATEWAY_KIND,
         "argv": list(sys.argv),
         "start_time": _get_process_start_time(os.getpid()),
+        "instance": _get_process_instance(),
     }
 
 
@@ -611,6 +665,15 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         except (KeyError, TypeError, ValueError):
             existing_pid = None
 
+        existing_has_instance = isinstance(existing.get("instance"), dict)
+        same_instance = _same_process_instance(existing, record.get("instance", {}))
+        if existing_has_instance and not same_instance:
+            # A PID from another container/PID namespace cannot be checked with
+            # this process's /proc view.  Only legacy locks without instance
+            # metadata fall through to the old PID liveness path so single-
+            # gateway upgrades can still recover stale records.
+            return False, existing
+
         if existing_pid == os.getpid() and existing.get("start_time") == record.get("start_time"):
             _write_json_file(lock_path, record)
             return True, existing
@@ -689,6 +752,9 @@ def release_scoped_lock(scope: str, identity: str) -> None:
     if not existing:
         return
     if existing.get("pid") != os.getpid():
+        return
+    existing_has_instance = isinstance(existing.get("instance"), dict)
+    if existing_has_instance and not _same_process_instance(existing, _get_process_instance()):
         return
     if existing.get("start_time") != _get_process_start_time(os.getpid()):
         return

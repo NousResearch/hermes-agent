@@ -19,6 +19,23 @@ class TestGatewayPidState:
         assert payload["kind"] == "hermes-gateway"
         assert isinstance(payload["argv"], list)
         assert payload["argv"]
+        assert isinstance(payload["instance"], dict)
+        assert payload["instance"].get("id")
+
+    def test_get_process_instance_prefers_pid_namespace(self, monkeypatch):
+        monkeypatch.setattr(status.os, "readlink", lambda path: "pid:[4026539999]")
+        monkeypatch.setattr(status.socket, "gethostname", lambda: "container-a")
+
+        instance = status._get_process_instance()
+
+        assert instance == {
+            "id": "pid:[4026539999]",
+            "pid_namespace": "pid:[4026539999]",
+            "hostname": "container-a",
+        }
+
+    def test_same_process_instance_rejects_missing_legacy_metadata(self):
+        assert status._same_process_instance({}, status._get_process_instance()) is False
 
     def test_write_pid_file_is_atomic_against_concurrent_writers(self, tmp_path, monkeypatch):
         """Regression: two concurrent --replace invocations must not both win.
@@ -432,6 +449,7 @@ class TestScopedLocks:
             "pid": 99999,
             "start_time": 123,
             "kind": "hermes-gateway",
+            "instance": status._get_process_instance(),
         }))
 
         # Post-#21561 the liveness probe routes through
@@ -443,6 +461,126 @@ class TestScopedLocks:
 
         assert acquired is False
         assert existing["pid"] == 99999
+
+    def test_acquire_scoped_lock_rejects_fresh_lock_from_other_instance(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        original = {
+            "pid": 123,
+            "start_time": 456,
+            "kind": "hermes-gateway",
+            "instance": {
+                "id": "pid:[4026531111]",
+                "pid_namespace": "pid:[4026531111]",
+                "hostname": "container-a",
+            },
+            "updated_at": "2026-06-07T00:00:00+00:00",
+        }
+        lock_path.write_text(json.dumps(original))
+        monkeypatch.setattr(
+            status,
+            "_get_process_instance",
+            lambda: {
+                "id": "pid:[4026532222]",
+                "pid_namespace": "pid:[4026532222]",
+                "hostname": "container-b",
+            },
+        )
+        pid_checks = []
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: pid_checks.append(pid) or False)
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+
+        assert acquired is False
+        assert existing == original
+        assert json.loads(lock_path.read_text()) == original
+        assert pid_checks == []
+
+    def test_acquire_scoped_lock_recovers_legacy_lock_when_pid_is_dead(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 123,
+            "kind": "hermes-gateway",
+        }))
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+        assert payload["metadata"]["platform"] == "telegram"
+        assert isinstance(payload["instance"], dict)
+
+    def test_acquire_scoped_lock_keeps_legacy_lock_when_pid_is_live_gateway(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy = {
+            "pid": 99999,
+            "start_time": None,
+            "kind": "hermes-gateway",
+            "argv": ["hermes_cli/main.py", "gateway", "run"],
+        }
+        lock_path.write_text(json.dumps(legacy))
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: True)
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+
+        assert acquired is False
+        assert existing == legacy
+        assert json.loads(lock_path.read_text()) == legacy
+
+    def test_acquire_scoped_lock_reentrant_legacy_same_process_refreshes_record(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "start_time": 777,
+            "kind": "hermes-gateway",
+            "metadata": {"platform": "old"},
+        }))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 777)
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+
+        assert acquired is True
+        assert existing is not None
+        assert existing["metadata"]["platform"] == "old"
+        payload = json.loads(lock_path.read_text())
+        assert payload["metadata"]["platform"] == "telegram"
+        assert isinstance(payload["instance"], dict)
+
+    def test_acquire_scoped_lock_reentrant_same_instance_same_process_refreshes_record(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        current_instance = status._get_process_instance()
+        lock_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "start_time": 777,
+            "kind": "hermes-gateway",
+            "instance": current_instance,
+            "metadata": {"platform": "old"},
+        }))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 777)
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+
+        assert acquired is True
+        assert existing is not None
+        assert existing["metadata"]["platform"] == "old"
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+        assert payload["metadata"]["platform"] == "telegram"
+        assert payload["instance"] == current_instance
 
     def test_acquire_scoped_lock_replaces_pid_reused_by_unrelated_process(self, tmp_path, monkeypatch):
         """macOS regression: PID reused by an unrelated process with start_time=None.
@@ -460,6 +598,7 @@ class TestScopedLocks:
             "start_time": None,
             "kind": "hermes-gateway",
             "argv": ["/Users/user/.hermes/hermes-agent/hermes_cli/main.py", "gateway", "run", "--replace"],
+            "instance": status._get_process_instance(),
         }))
 
         # Post-#21561 the liveness probe routes through
@@ -496,6 +635,7 @@ class TestScopedLocks:
             "start_time": None,
             "kind": "hermes-gateway",
             "argv": ["hermes_cli/main.py", "gateway", "run"],
+            "instance": status._get_process_instance(),
         }))
 
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
@@ -520,6 +660,7 @@ class TestScopedLocks:
             "start_time": None,
             "kind": "hermes-gateway",
             "argv": ["/Users/user/.hermes/hermes-agent/hermes_cli/main.py", "gateway", "run", "--replace"],
+            "instance": status._get_process_instance(),
         }))
 
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
@@ -539,6 +680,7 @@ class TestScopedLocks:
             "pid": 99999,
             "start_time": 123,
             "kind": "hermes-gateway",
+            "instance": status._get_process_instance(),
         }))
 
         # Post-#21561: simulate "PID gone" via _pid_exists returning False.

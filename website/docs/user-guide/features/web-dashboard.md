@@ -145,6 +145,9 @@ If `/api/status` shows the gate is on with the `"basic"` provider and Desktop *s
 
 A form-based editor for `config.yaml`. All 150+ configuration fields are auto-discovered from `DEFAULT_CONFIG` and organized into tabbed categories:
 
+![Config admin page — section filters on the left, auto-discovered fields on the right](/img/dashboard/admin-config.png)
+
+
 - **model** — default model, provider, base URL, reasoning settings
 - **terminal** — backend (local/docker/ssh/modal), timeout, shell preferences
 - **display** — skin, tool progress, resume display, spinner settings

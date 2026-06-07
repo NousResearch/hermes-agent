@@ -1178,6 +1178,7 @@ def list_authenticated_providers(
     current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
+    force_fresh_nous_tier: bool = False,
     max_models: int = 8,
     current_model: str = "",
 ) -> List[dict]:
@@ -1197,6 +1198,9 @@ def list_authenticated_providers(
       - source: str — "built-in", "models.dev", "user-config"
 
     Only includes providers that have API keys set or are user-defined endpoints.
+    ``force_fresh_nous_tier`` bypasses the short Nous tier cache for explicit
+    account-sensitive flows. UI picker opens should leave it false so they do
+    not block on fresh Portal/account checks every time.
     """
     import os
     from agent.models_dev import (
@@ -1539,7 +1543,7 @@ def list_authenticated_providers(
                     _portal = _st.get("portal_base_url", "") or ""
                 except Exception:
                     _portal = ""
-                if _nous_free(force_fresh=True):
+                if _nous_free(force_fresh=force_fresh_nous_tier):
                     model_ids, _ = _union_free(model_ids, _pricing, _portal)
                 else:
                     model_ids, _ = _union_paid(model_ids, _pricing, _portal)

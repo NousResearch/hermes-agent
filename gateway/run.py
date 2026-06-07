@@ -7335,6 +7335,64 @@ class GatewayRunner:
 
         return bool(check_ids & allowed_ids)
 
+    def _is_voice_bench_user_authorized(self, source: SessionSource) -> bool:
+        """Authorize /voice bench by sender user, not group chat allowlist."""
+        user_id = str(source.user_id or "").strip()
+        if not user_id:
+            return False
+
+        platform_key = str(getattr(source.platform, "value", source.platform) or "")
+        platform_env_map = {
+            "telegram": "TELEGRAM_ALLOWED_USERS",
+            "discord": "DISCORD_ALLOWED_USERS",
+            "whatsapp": "WHATSAPP_ALLOWED_USERS",
+            "slack": "SLACK_ALLOWED_USERS",
+            "signal": "SIGNAL_ALLOWED_USERS",
+            "email": "EMAIL_ALLOWED_USERS",
+            "sms": "SMS_ALLOWED_USERS",
+            "mattermost": "MATTERMOST_ALLOWED_USERS",
+            "matrix": "MATRIX_ALLOWED_USERS",
+            "dingtalk": "DINGTALK_ALLOWED_USERS",
+            "feishu": "FEISHU_ALLOWED_USERS",
+            "wecom": "WECOM_ALLOWED_USERS",
+            "wecom_callback": "WECOM_CALLBACK_ALLOWED_USERS",
+            "weixin": "WEIXIN_ALLOWED_USERS",
+            "bluebubbles": "BLUEBUBBLES_ALLOWED_USERS",
+            "qqbot": "QQ_ALLOWED_USERS",
+            "yuanbao": "YUANBAO_ALLOWED_USERS",
+        }
+        platform_group_user_env_map = {
+            "telegram": "TELEGRAM_GROUP_ALLOWED_USERS",
+        }
+
+        platform_name = platform_key
+        pairing_store = getattr(self, "pairing_store", None)
+        if pairing_store is not None and pairing_store.is_approved(platform_name, user_id):
+            return True
+
+        allowed_ids: set[str] = set()
+        platform_env = platform_env_map.get(platform_key, "")
+        if platform_env:
+            allowed_ids.update(
+                uid.strip() for uid in os.getenv(platform_env, "").split(",") if uid.strip()
+            )
+        if source.chat_type in {"group", "forum"}:
+            group_user_env = platform_group_user_env_map.get(platform_key, "")
+            if group_user_env:
+                allowed_ids.update(
+                    uid.strip() for uid in os.getenv(group_user_env, "").split(",") if uid.strip()
+                )
+        allowed_ids.update(
+            uid.strip() for uid in os.getenv("GATEWAY_ALLOWED_USERS", "").split(",") if uid.strip()
+        )
+        if "*" in allowed_ids:
+            return True
+
+        check_ids = {user_id}
+        if "@" in user_id:
+            check_ids.add(user_id.split("@")[0])
+        return bool(check_ids & allowed_ids)
+
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
         """Return how unauthorized DMs should be handled for a platform.
 
@@ -12078,6 +12136,8 @@ class GatewayRunner:
         if args == "smoke":
             return await self._run_voice_smoke()
         elif args.startswith("bench"):
+            if not self._is_voice_bench_user_authorized(event.source):
+                return "Voice bench is restricted to an authorized user."
             parts = args.split()
             limit = 5
             if len(parts) > 1:

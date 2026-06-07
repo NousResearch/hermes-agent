@@ -136,6 +136,12 @@ def append_event(event: dict[str, Any]) -> None:
         _LOGGER.warning("Voice bench telemetry write queue full; dropping event")
 
 
+def flush_events() -> None:
+    """Wait until queued telemetry writes are persisted."""
+    if _WRITE_WORKER_STARTED:
+        _WRITE_QUEUE.join()
+
+
 def recent_events(*, platform: str | None = None, chat_id: str | None = None, max_events: int = MAX_EVENTS) -> list[dict[str, Any]]:
     global _LAST_READ_ERROR
     path = bench_path()
@@ -230,6 +236,7 @@ def _stage_item(stage: Any) -> dict[str, Any]:
 
 
 def format_recent(platform: str | None = None, chat_id: str | None = None, *, limit: int = DEFAULT_LIMIT) -> str:
+    flush_events()
     events = recent_events(platform=platform, chat_id=chat_id)
     if _LAST_READ_ERROR:
         return "Voice bench unavailable: telemetry read failed."

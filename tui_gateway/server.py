@@ -724,6 +724,15 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 pass
 
             _wire_callbacks(sid)
+            # Hydrate credits notices at session OPEN (not just on the first
+            # message), so depletion / usage-band warnings show at "ready". Runs
+            # off the build thread, after the notice_callback is wired. Fail-open.
+            try:
+                from agent.credits_tracker import seed_credits_at_session_start
+
+                seed_credits_at_session_start(agent)
+            except Exception:
+                pass
             with _sessions_lock:
                 if sid in _sessions:
                     _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
@@ -804,6 +813,30 @@ def _completion_cwd(params: dict | None = None) -> str:
     return os.getcwd()
 
 
+def _terminal_task_cwd(session: dict | None) -> str:
+    """Return the cwd that terminal_tool should use for this TUI session.
+
+    ``_completion_cwd`` validates paths on the host so file completion does not
+    point at nonsense.  Non-local terminal backends are different: their cwd is
+    inside the target environment, so an SSH path like /home/user/workspace may
+    not exist on the local macOS host but is still the correct execution cwd.
+    """
+    backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    if backend and backend != "local":
+        raw = os.environ.get("TERMINAL_CWD", "").strip()
+        if not raw:
+            try:
+                terminal_cfg = _load_cfg().get("terminal", {})
+                if isinstance(terminal_cfg, dict):
+                    raw = str(terminal_cfg.get("cwd") or "").strip()
+            except Exception:
+                raw = ""
+        if raw and raw not in {".", "auto", "cwd"}:
+            return raw
+
+    return _session_cwd(session)
+
+
 def _git_branch_for_cwd(cwd: str) -> str:
     try:
         result = subprocess.run(
@@ -842,7 +875,7 @@ def _register_session_cwd(session: dict | None) -> None:
         from tools.terminal_tool import register_task_env_overrides
 
         register_task_env_overrides(
-            session["session_key"], {"cwd": _session_cwd(session)}
+            session["session_key"], {"cwd": _terminal_task_cwd(session)}
         )
     except Exception:
         pass
@@ -1679,6 +1712,15 @@ def _get_usage(agent) -> dict:
             usage["cost_usd"] = float(cost.amount_usd)
     except Exception:
         pass
+    # Dev-only live credits-spent readout (L0 usage-aware-credits). Gated on
+    # HERMES_DEV_CREDITS so the payload stays clean when the flag is off.
+    if is_truthy_value(os.environ.get("HERMES_DEV_CREDITS")):
+        try:
+            spent = agent.get_credits_spent_micros()
+            if spent is not None:
+                usage["dev_credits_spent_micros"] = int(spent)
+        except Exception:
+            pass
     return usage
 
 
@@ -2154,6 +2196,24 @@ def _agent_cbs(sid: str) -> dict:
         ),
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
+        ),
+        # Credits/notice spine (L1): an AgentNotice fired by the agent becomes a
+        # notification.show WS event; a recovery clear becomes notification.clear.
+        # Snake_case payload to match the existing gateway-event convention.
+        "notice_callback": lambda n: _emit(
+            "notification.show",
+            sid,
+            {
+                "text": n.text,
+                "level": n.level,
+                "kind": n.kind,
+                "ttl_ms": n.ttl_ms,
+                "key": n.key,
+                "id": n.id,
+            },
+        ),
+        "notice_clear_callback": lambda key: _emit(
+            "notification.clear", sid, {"key": key}
         ),
         "clarify_callback": lambda q, c: _block(
             "clarify.request", sid, {"question": q, "choices": c}
@@ -3592,14 +3652,24 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     agent = session.get("agent")
-    return _ok(
-        rid,
-        (
-            _get_usage(agent)
-            if agent is not None
-            else {"calls": 0, "input": 0, "output": 0, "total": 0}
-        ),
+    usage: dict = (
+        _get_usage(agent)
+        if agent is not None
+        else {"calls": 0, "input": 0, "output": 0, "total": 0}
     )
+    # Nous credits block — agent-independent (a portal fetch), so it shows even
+    # with zero API calls or on a resumed session. The TUI /usage panel renders
+    # these lines regardless of `calls`. Fail-open: [] when not logged into Nous
+    # or on any portal hiccup.
+    try:
+        from agent.account_usage import nous_credits_lines
+
+        credits = nous_credits_lines()
+        if credits:
+            usage["credits_lines"] = credits
+    except Exception:
+        pass
+    return _ok(rid, usage)
 
 
 @method("session.status")

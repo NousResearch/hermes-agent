@@ -2016,11 +2016,11 @@ DEFAULT_CONFIG = {
         # raise these to keep more early failure evidence.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
-        # Profile that decomposes tasks in the Triage column. When unset,
-        # falls back to the default profile (the one `hermes` launches with
-        # no -p flag). Set this to a dedicated 'orchestrator' profile if you
-        # want decomposition to use a different model/skills from your main
-        # working profile.
+        # Profile assigned to the root/orchestration task after Triage
+        # decomposition. When unset, falls back to the default profile (the
+        # one `hermes` launches with no -p flag). This does not control the
+        # decomposer prompt, model, or skills; configure that LLM path under
+        # auxiliary.kanban_decomposer.
         "orchestrator_profile": "",
         # Where a child task lands if the orchestrator can't match an
         # assignee to any installed profile. When unset, falls back to the
@@ -3793,6 +3793,42 @@ def _normalize_custom_provider_entry(
     return normalized
 
 
+def _custom_provider_entry_to_provider_config(
+    entry: Any,
+    *,
+    provider_key: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Translate a legacy custom provider entry to the v12 providers shape."""
+    normalized = _normalize_custom_provider_entry(
+        dict(entry) if isinstance(entry, dict) else entry,
+        provider_key=provider_key,
+    )
+    if normalized is None:
+        return None
+
+    provider_entry: Dict[str, Any] = {"api": normalized["base_url"]}
+
+    for field in (
+        "name",
+        "api_key",
+        "key_env",
+        "models",
+        "context_length",
+        "rate_limit_delay",
+        "discover_models",
+        "extra_body",
+    ):
+        if field in normalized:
+            provider_entry[field] = normalized[field]
+
+    if "model" in normalized:
+        provider_entry["default_model"] = normalized["model"]
+    if "api_mode" in normalized:
+        provider_entry["transport"] = normalized["api_mode"]
+
+    return provider_entry
+
+
 def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, Any]]:
     """Normalize ``providers`` config entries into the legacy custom-provider shape."""
     if not isinstance(providers_dict, dict):
@@ -4299,8 +4335,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 if not isinstance(entry, dict):
                     continue
                 old_name = entry.get("name", "")
-                old_url = entry.get("base_url", "") or entry.get("url", "") or ""
-                old_key = entry.get("api_key", "")
+                old_url = entry.get("base_url", "") or entry.get("url", "") or entry.get("api", "") or ""
                 if not old_url:
                     continue  # skip entries with no URL
 
@@ -4320,20 +4355,22 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         key = f"endpoint-{migrated_count}"
 
                 # Don't overwrite existing entries
-                if key in providers_dict:
-                    key = f"{key}-{migrated_count}"
+                base_key = key
+                suffix = migrated_count
+                while key in providers_dict:
+                    key = f"{base_key}-{suffix}"
+                    suffix += 1
 
-                new_entry = {"api": old_url}
-                if old_name:
-                    new_entry["name"] = old_name
-                if old_key and old_key not in {"no-key", "no-key-required", ""}:
-                    new_entry["api_key"] = old_key
-
-                # Carry over model and api_mode if present
-                if entry.get("model"):
-                    new_entry["default_model"] = entry["model"]
-                if entry.get("api_mode"):
-                    new_entry["transport"] = entry["api_mode"]
+                new_entry = _custom_provider_entry_to_provider_config(
+                    entry,
+                    provider_key=key,
+                )
+                if new_entry is None:
+                    continue
+                if not old_name:
+                    new_entry.pop("name", None)
+                if new_entry.get("api_key") in {"no-key", "no-key-required", ""}:
+                    new_entry.pop("api_key", None)
 
                 providers_dict[key] = new_entry
                 migrated_count += 1

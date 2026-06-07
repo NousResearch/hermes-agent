@@ -1276,7 +1276,9 @@ class TestBuildAnthropicKwargs:
             max_tokens=4096,
             reasoning_config={"enabled": False},
         )
-        assert "thinking" not in kwargs
+        # When reasoning is explicitly disabled, emit thinking.type=disabled
+        # so providers don't silently default to thinking-on (see #41379).
+        assert kwargs["thinking"] == {"type": "disabled"}
 
     def test_default_max_tokens_uses_model_output_limit(self):
         """When max_tokens is None, use the model's native output limit."""

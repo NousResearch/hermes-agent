@@ -68,6 +68,7 @@ tts:
   gemini:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-2.5-pro-preview-tts
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
+    # fallback_models: []         # optional ordered list of models to try if `model` fails
   xai:
     voice_id: "eve"             # or a custom voice ID — see docs below
     language: "en"              # ISO 639-1 code
@@ -96,6 +97,16 @@ tts:
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+**Gemini model fallback**: `tts.gemini.fallback_models` is an optional ordered list of model names. Hermes tries `model` first and only falls through to the next entry when a request fails (HTTP error including 429, a malformed response, or empty audio). List order is priority — to re-prioritize, just rearrange the list; no code change. The default is empty, which leaves single-model behavior unchanged.
+
+```yaml
+tts:
+  gemini:
+    model: "gemini-2.5-flash-preview-tts"
+    fallback_models:
+      - "gemini-2.5-pro-preview-tts"
+```
 
 
 ### Input length limits

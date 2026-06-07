@@ -1458,6 +1458,7 @@ cn-desktop = [
     { name = "mcp" },
     { name = "qrcode" },
     { name = "starlette" },
+    { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 computer-use = [
@@ -1711,6 +1712,7 @@ requires-dist = [
     { name = "starlette", marker = "extra == 'web'", specifier = "==1.0.1" },
     { name = "tenacity", specifier = "==9.1.4" },
     { name = "ty", marker = "extra == 'dev'", specifier = "==0.0.21" },
+    { name = "typer", marker = "extra == 'cn-desktop'", specifier = "==0.24.1" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = "==2025.3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.24.0,<1" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = "==0.41.0" },

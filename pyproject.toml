@@ -263,6 +263,10 @@ cn-desktop = [
   "hermes-agent[web]",        # dashboard: fastapi / uvicorn / starlette
   "hermes-agent[anthropic]",  # native Anthropic transport (MiniMax-CN etc.)
   "hermes-agent[mcp]",        # native MCP client SDK (issue #16)
+  # PyInstaller's --collect-submodules mcp imports mcp.cli during analysis.
+  # The mcp package keeps its CLI deps behind the mcp[cli] extra, so the frozen
+  # runtime build must install typer explicitly or all platform builds fail.
+  "typer==0.24.1",
   "hermes-agent[feishu]",     # 飞书 / Lark — lark-oapi
   "hermes-agent[dingtalk]",   # 钉钉 — dingtalk-stream + alibabacloud SDK
   "hermes-agent[wecom]",      # 企业微信 callback — defusedxml

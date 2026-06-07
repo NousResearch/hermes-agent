@@ -144,7 +144,7 @@ jobs:
           missing = []
           for m in ("mcp", "lark_oapi", "dingtalk_stream", "alibabacloud_dingtalk",
                     "alibabacloud_tea_openapi", "alibabacloud_tea_util",
-                    "aiohttp", "qrcode", "defusedxml", "certifi"):
+                    "aiohttp", "qrcode", "defusedxml", "certifi", "typer"):
               try:
                   importlib.import_module(m)
               except Exception as e:

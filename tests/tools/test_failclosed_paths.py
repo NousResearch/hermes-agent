@@ -210,6 +210,86 @@ def test_submit_failure_fails_closed_without_legacy_fallback():
         }
 
 
+def test_init_failure_fails_closed_no_silent_legacy_fallback():
+    """Concern from Hermes review v2: if gateway boot wired the durable
+    store but the wiring raised an exception, gateway is in a degraded
+    state. Subsequent gateway-context approvals MUST fail closed rather
+    than silently degrade to legacy in-memory FIFO.
+
+    The gateway is still allowed to start (other features work); only
+    dangerous-command approval is hard-stopped until store is restored.
+    """
+    from tools.approval import (
+        mark_approval_store_init_failed,
+        clear_approval_store_init_failed,
+        is_approval_store_init_failed,
+    )
+
+    # Simulate boot-time wiring failure: no store + init-failed flag set.
+    set_default_approval_store(None)
+    mark_approval_store_init_failed("simulated SQLite open failure")
+    assert is_approval_store_init_failed() is True
+
+    try:
+        session_key = "degraded"
+        notify_calls: list = []
+        register_gateway_notify(session_key, lambda data: notify_calls.append(data))
+
+        result = _await_gateway_decision(
+            session_key=session_key,
+            notify_cb=lambda data: notify_calls.append(data),
+            approval_data={
+                "command": "rm -rf /tmp/degraded-test",
+                "description": "recursive delete",
+                "pattern_key": "rm-recursive",
+                "pattern_keys": ["rm-recursive"],
+            },
+            surface="test",
+        )
+
+        # No queue entry (legacy fallback didn't happen)
+        assert session_key not in approval_mod._gateway_queues, (
+            "init-failed degraded state MUST NOT create a legacy _ApprovalEntry"
+        )
+        # No notify (user never saw a phantom prompt)
+        assert notify_calls == [], (
+            "init-failed degraded state MUST NOT notify; there is no proposal"
+        )
+        # store_failed signal returned upstream
+        assert result == {
+            "resolved": False,
+            "choice": None,
+            "store_failed": True,
+        }
+    finally:
+        clear_approval_store_init_failed()
+
+
+def test_init_failure_recovers_when_store_re_wired():
+    """The init-failure flag clears when a real store is installed via
+    set_default_approval_store(actual_store). Recovery path semantics."""
+    from tools.approval import (
+        mark_approval_store_init_failed,
+        is_approval_store_init_failed,
+    )
+
+    set_default_approval_store(None)
+    mark_approval_store_init_failed("transient")
+    assert is_approval_store_init_failed() is True
+
+    # Operator restores wiring with a real store:
+    set_default_approval_store(InMemoryApprovalStore())
+    assert is_approval_store_init_failed() is False, (
+        "set_default_approval_store(real_store) must clear the "
+        "init-failure flag so the degraded-state guard stops firing"
+    )
+
+    # Installing None again does NOT re-arm the flag (only explicit
+    # mark_approval_store_init_failed does).
+    set_default_approval_store(None)
+    assert is_approval_store_init_failed() is False
+
+
 def test_submit_failure_propagates_blocked_via_check_all_command_guards():
     """End-to-end shape: an actually-dangerous command + failing store
     must produce a BLOCKED approval-result with a clear store-failure

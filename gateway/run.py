@@ -2009,17 +2009,21 @@ class GatewayRunner:
                 "(state.db under hermes home)"
             )
         except Exception as exc:
-            # Surface loudly but do NOT silently downgrade — leave the
-            # store at None so _await_gateway_decision sees no store
-            # configured and the legacy path takes over. Operators
-            # should treat this log line as a deployment-blocker.
+            # Surface loudly AND mark the approval-store as init-failed so
+            # _await_gateway_decision fails closed for subsequent gateway-
+            # context approval requests rather than silently degrading to
+            # the legacy in-memory FIFO. Gateway is allowed to keep
+            # starting (other features work) but dangerous-command
+            # approval is hard-stopped until an operator restores wiring.
+            from tools.approval import mark_approval_store_init_failed
             logger.error(
                 "FAILED to wire SqliteApprovalStore as gateway approval "
-                "store: %s. Gateway will fall back to in-memory FIFO "
-                "approval which does NOT satisfy the security invariants. "
-                "Investigate immediately.",
+                "store: %s. Gateway will continue starting but ALL "
+                "dangerous-command approval requests will fail closed "
+                "until this is fixed. Investigate immediately.",
                 exc, exc_info=True,
             )
+            mark_approval_store_init_failed(str(exc))
 
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}

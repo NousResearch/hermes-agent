@@ -615,14 +615,58 @@ def set_default_approval_store(store) -> None:  # type: ignore[no-untyped-def]
     Tests pass ``None`` (the default) or a fake store. The real gateway
     init (gateway/run.py) wires a SqliteApprovalStore via this hook.
     Set to ``None`` to disable durable persistence (legacy behavior).
+
+    Installing a non-None store also clears the init-failure flag — this
+    is the recovery path after a failed boot-time wiring.
     """
     global _default_approval_store
     _default_approval_store = store
+    if store is not None:
+        clear_approval_store_init_failed()
 
 
 def get_default_approval_store():  # type: ignore[no-untyped-def]
     """Return the currently-configured store, or None."""
     return _default_approval_store
+
+
+# ─── Init-failure tracking (concern #1 from Hermes review v2) ──────────────
+# Gateway boot calls set_default_approval_store(SqliteApprovalStore()). If
+# that raises, the gateway is in a degraded state: store is None, but unlike
+# "store is None by design" (tests, scripts) this is a production
+# mis-configuration. We must NOT silently fall back to the legacy in-memory
+# FIFO under such conditions — dangerous-command approval has to fail closed
+# until an operator restores the store.
+#
+# The flag is process-local and reset on store re-wiring; gateway init's
+# except-block sets it via mark_approval_store_init_failed().
+_approval_store_init_failed: bool = False
+_approval_store_init_failure_reason: str = ""
+
+
+def mark_approval_store_init_failed(reason: str) -> None:
+    """Called by gateway init (or any production wiring code) when
+    set_default_approval_store fails. Subsequent gateway-context approval
+    requests will fail closed instead of degrading to legacy FIFO."""
+    global _approval_store_init_failed, _approval_store_init_failure_reason
+    _approval_store_init_failed = True
+    _approval_store_init_failure_reason = reason or "unknown"
+    logger.error(
+        "Approval store initialisation marked as FAILED: %s. Subsequent "
+        "gateway approval requests will fail closed.", _approval_store_init_failure_reason,
+    )
+
+
+def clear_approval_store_init_failed() -> None:
+    """Reset the init-failure flag. Called by set_default_approval_store
+    when a real store is installed (recovery path), and by tests."""
+    global _approval_store_init_failed, _approval_store_init_failure_reason
+    _approval_store_init_failed = False
+    _approval_store_init_failure_reason = ""
+
+
+def is_approval_store_init_failed() -> bool:
+    return _approval_store_init_failed
 
 
 # ─── Phase 3: stricter-runtime fail-closed guard ───────────────────────────
@@ -1448,6 +1492,36 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     # stays None and nothing changes vs. previous behavior.
     store = get_default_approval_store()
     approval_id: Optional[str] = None
+
+    # If the gateway tried to wire a store at boot and failed, we are
+    # in a degraded state. Production gateway-context approval requests
+    # MUST fail closed here rather than silently degrade to the legacy
+    # in-memory FIFO path. This addresses the specific 'silent
+    # degradation' concern from review v2.
+    if store is None and is_approval_store_init_failed():
+        logger.error(
+            "FAIL CLOSED: gateway-context approval requested but the "
+            "durable store is in init-failed state (reason=%r). Refusing "
+            "to fall back to legacy in-memory path. Operator must restore "
+            "store via re-wiring before approvals can resume.",
+            _approval_store_init_failure_reason,
+        )
+        _fire_approval_hook(
+            "post_approval_response",
+            command=command,
+            description=description,
+            pattern_key=primary_key,
+            pattern_keys=list(all_keys),
+            session_key=session_key,
+            surface=surface,
+            choice="store_failed",
+        )
+        return {
+            "resolved": False,
+            "choice": None,
+            "store_failed": True,
+        }
+
     if store is not None:
         import secrets as _secrets
         approval_id = _secrets.token_urlsafe(8)

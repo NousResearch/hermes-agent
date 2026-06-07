@@ -135,6 +135,7 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    get_accepted_document_types,
     cache_document_from_bytes,
     cache_image_from_url,
     cache_audio_from_bytes,
@@ -3304,7 +3305,7 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _guess_remote_extension(url: str, *, default: str) -> str:
         ext = Path((url or "").split("?", 1)[0]).suffix.lower()
-        return ext if ext in (_IMAGE_EXTENSIONS | _AUDIO_EXTENSIONS | _VIDEO_EXTENSIONS | set(SUPPORTED_DOCUMENT_TYPES)) else default
+        return ext if ext in (_IMAGE_EXTENSIONS | _AUDIO_EXTENSIONS | _VIDEO_EXTENSIONS | set(get_accepted_document_types())) else default
 
     @staticmethod
     def _derive_remote_filename(file_url: str, *, content_type: str, default_name: str, default_ext: str) -> str:
@@ -3847,7 +3848,7 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _guess_document_media_type(filename: str) -> str:
         ext = Path(filename or "").suffix.lower()
-        return SUPPORTED_DOCUMENT_TYPES.get(ext, mimetypes.guess_type(filename or "")[0] or "application/octet-stream")
+        return get_accepted_document_types().get(ext, mimetypes.guess_type(filename or "")[0] or "application/octet-stream")
 
     @staticmethod
     def _display_name_from_cached_path(path: str) -> str:

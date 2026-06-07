@@ -1136,6 +1136,31 @@ SUPPORTED_DOCUMENT_TYPES = {
 }
 
 
+def get_accepted_document_types() -> dict[str, str]:
+    """Return document types merged with user config extensions.
+
+    Base set is ``SUPPORTED_DOCUMENT_TYPES``.  User-configured extensions from
+    ``gateway.accepted_document_extensions`` are merged in with auto-detected
+    MIME types (``mimetypes.guess_type``), defaulting to
+    ``application/octet-stream`` for unknown extensions.
+    """
+    import mimetypes
+
+    merged = dict(SUPPORTED_DOCUMENT_TYPES)
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        extra = cfg.get("gateway", {}).get("accepted_document_extensions", [])
+        if isinstance(extra, list):
+            for ext in extra:
+                if isinstance(ext, str) and ext.startswith(".") and ext not in merged:
+                    guessed, _ = mimetypes.guess_type(f"file{ext}")
+                    merged[ext] = guessed or "application/octet-stream"
+    except Exception:
+        pass
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Image document types
 #
@@ -1380,11 +1405,12 @@ def cache_media_bytes(
         out_mime = mime if mime.startswith("audio/") else f"audio/{aud_ext.lstrip('.')}"
         return CachedMedia(to_agent_visible_cache_path(path), out_mime, "audio", display)
 
-    if ext not in SUPPORTED_DOCUMENT_TYPES:
+    accepted_docs = get_accepted_document_types()
+    if ext not in accepted_docs:
         return None
 
     path = cache_document_from_bytes(data, filename or f"document{ext}")
-    return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_DOCUMENT_TYPES[ext], "document", display or f"document{ext}")
+    return CachedMedia(to_agent_visible_cache_path(path), accepted_docs[ext], "document", display or f"document{ext}")
 
 
 class MessageType(Enum):

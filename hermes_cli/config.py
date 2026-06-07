@@ -2185,6 +2185,20 @@ DEFAULT_CONFIG = {
         # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
+        # Additional document extensions to accept beyond the built-in set
+        # (.pdf, .md, .txt, .csv, .log, .json, .xml, .yaml, .yml, .toml,
+        # .ini, .cfg, .zip, .docx, .xlsx, .pptx, .ts, .py, .sh).
+        # Extensions listed here are merged into the default set at runtime.
+        # MIME types are auto-detected via ``mimetypes.guess_type()``;
+        # unknown extensions default to ``application/octet-stream``.
+        #
+        # Example:
+        #   accepted_document_extensions:
+        #     - ".rs"
+        #     - ".go"
+        #     - ".java"
+        #     - ".tex"
+        "accepted_document_extensions": [],
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,

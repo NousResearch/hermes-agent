@@ -78,6 +78,7 @@ from gateway.platforms.base import (
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
+    get_accepted_document_types,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
     utf16_len,
 )
@@ -5602,8 +5603,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 # code — the extension sets are identical.
 
                 # Check if supported
-                if ext not in SUPPORTED_DOCUMENT_TYPES:
-                    supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
+                accepted_docs = get_accepted_document_types()
+                if ext not in accepted_docs:
+                    supported_list = ", ".join(sorted(accepted_docs.keys()))
                     event.text = (
                         f"Unsupported document type '{ext or 'unknown'}'. "
                         f"Supported types: {supported_list}"
@@ -5617,7 +5619,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
                 cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
-                mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
+                mime_type = accepted_docs[ext]
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
                 logger.info("[Telegram] Cached user document at %s", cached_path)

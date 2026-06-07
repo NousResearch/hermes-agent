@@ -118,6 +118,44 @@ class TestCliApprovalUi:
         thread.join(timeout=2)
         assert result["value"] == "deny"
 
+    def test_approval_callback_renders_despite_recent_invalidate(self):
+        """Regression for #41098.
+
+        The approval panel must paint immediately even when another UI event
+        invalidated within the _invalidate() throttle window. Using the default
+        throttle, the initial redraw was silently dropped, the ConditionalContainer
+        never re-evaluated, and the command was denied on timeout without the user
+        ever seeing the prompt. The initial paint must bypass the throttle.
+        """
+        cli = _make_cli_stub()
+        # Drive the real throttled _invalidate so we exercise the actual gate.
+        cli._invalidate = HermesCLI._invalidate.__get__(cli, HermesCLI)
+        cli._resize_recovery_pending = False
+        app = SimpleNamespace(invalidate=MagicMock(), current_buffer=_FakeBuffer())
+        cli._app = app
+        # Simulate a UI event that invalidated moments ago, inside the throttle window.
+        cli._last_invalidate = time.monotonic()
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm -rf /tmp/scratch", "danger")
+
+        thread = threading.Thread(target=_run_callback, daemon=True)
+        thread.start()
+
+        deadline = time.time() + 2
+        while cli._approval_state is None and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert cli._approval_state is not None
+        # Despite the recent invalidate, the panel must have been painted.
+        assert app.invalidate.called, "approval panel redraw was dropped by the throttle"
+
+        cli._approval_state["response_queue"].put("deny")
+        thread.join(timeout=2)
+        assert result["value"] == "deny"
+
     def test_handle_approval_selection_view_expands_in_place(self):
         cli = _make_cli_stub()
         cli._approval_state = {

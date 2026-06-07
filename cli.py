@@ -11919,7 +11919,14 @@ class HermesCLI:
             }
             self._approval_deadline = _time.monotonic() + timeout
 
-            self._invalidate()
+            # Bypass the _invalidate() throttle: the approval panel is a
+            # user-blocking modal that must paint immediately. If any other UI
+            # event (spinner frame, output flush) invalidated within the throttle
+            # window, a throttled call here is silently dropped, the panel never
+            # renders, and the command is denied on timeout without the user ever
+            # seeing the prompt (#41098). Every redraw in this loop is forced for
+            # the same reason — the countdown must stay visible while we wait.
+            self._invalidate(min_interval=0.0)
 
             _last_countdown_refresh = _time.monotonic()
             while True:
@@ -11927,20 +11934,20 @@ class HermesCLI:
                     result = response_queue.get(timeout=1)
                     self._approval_state = None
                     self._approval_deadline = 0
-                    self._invalidate()
+                    self._invalidate(min_interval=0.0)
                     return result
                 except queue.Empty:
                     remaining = self._approval_deadline - _time.monotonic()
                     if remaining <= 0:
                         break
                     now = _time.monotonic()
-                    if now - _last_countdown_refresh >= 5.0:
+                    if now - _last_countdown_refresh >= 1.0:
                         _last_countdown_refresh = now
-                        self._invalidate()
+                        self._invalidate(min_interval=0.0)
 
             self._approval_state = None
             self._approval_deadline = 0
-            self._invalidate()
+            self._invalidate(min_interval=0.0)
             _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
             return "deny"
 

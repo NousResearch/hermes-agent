@@ -1513,18 +1513,39 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
             )
             store.submit(proposal)
         except Exception as e:
-            # Store-side failure must not silently allow execution, but
-            # must also not break the legacy in-memory path. Log loudly
-            # so the issue surfaces; the in-memory blocking flow below
-            # still requires user /approve to release the agent thread.
-            # Subsequent commits will tighten this to fail-closed once
-            # the store becomes source-of-truth.
+            # FAIL CLOSED: when the durable store cannot persist a
+            # proposal (DB unavailable, validation refused, disk full,
+            # …) we MUST NOT degrade to the legacy in-memory path.
+            # An approval flow without persistence is exactly the
+            # trust gap this rewrite eliminated; falling back would
+            # silently reintroduce it.
+            #
+            # Per spec: store-failure is no-execution. The agent thread
+            # gets {"resolved": False, "choice": None, "store_failed":
+            # True} so its caller can surface a clear error to the
+            # user/model without ever queuing an _ApprovalEntry that
+            # could be approved.
             logger.error(
-                "Failed to persist gateway approval proposal "
-                "(approval_id=%s, command=%r): %s",
+                "FAIL CLOSED: could not persist gateway approval proposal "
+                "(approval_id=%s, command=%r): %s — refusing to fall back "
+                "to in-memory path; no command will execute",
                 approval_id, command[:100], e, exc_info=True,
             )
-            approval_id = None
+            _fire_approval_hook(
+                "post_approval_response",
+                command=command,
+                description=description,
+                pattern_key=primary_key,
+                pattern_keys=list(all_keys),
+                session_key=session_key,
+                surface=surface,
+                choice="store_failed",
+            )
+            return {
+                "resolved": False,
+                "choice": None,
+                "store_failed": True,
+            }
 
     entry = _ApprovalEntry(approval_data, approval_id=approval_id)
     with _lock:
@@ -1863,6 +1884,23 @@ def check_all_command_guards(command: str, env_type: str,
                     "pattern_key": primary_key,
                     "description": combined_desc,
                 }
+            if decision.get("store_failed"):
+                # FAIL CLOSED: persistent approval store is unavailable.
+                # We deliberately do NOT fall back to legacy in-memory
+                # approval, because that path lacks the security
+                # guarantees the rewrite depends on (durability + atomic
+                # consume across processes). Operator action required.
+                return {
+                    "approved": False,
+                    "message": (
+                        "BLOCKED: Approval store unavailable — approval "
+                        "could not be durably persisted. Do NOT retry "
+                        "this command; the operator must investigate "
+                        "the gateway approval state database."
+                    ),
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                }
             resolved = decision["resolved"]
             choice = decision["choice"]
 
@@ -2132,6 +2170,18 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
             "pattern_key": pattern_key,
             "description": description,
             "outcome": "notify_failed",
+            "user_consent": False,
+        }
+    if decision.get("store_failed"):
+        # FAIL CLOSED: see _await_gateway_decision's matching comment.
+        return {
+            "approved": False,
+            "message": ("BLOCKED: Approval store unavailable — execute_code "
+                        "approval could not be durably persisted. Do NOT "
+                        "retry; operator must investigate gateway state DB."),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "store_failed",
             "user_consent": False,
         }
 

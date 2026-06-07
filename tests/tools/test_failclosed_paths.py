@@ -159,56 +159,88 @@ def test_store_deny_raises_does_not_signal_waiter():
 # ---------------------------------------------------------------------------
 
 
-def test_submit_failure_falls_through_to_legacy_flow_with_no_id():
-    """If store.submit raises, the proposal isn't persisted but the
-    in-memory entry still gets created (legacy fallback). The
-    approval_id on the entry must be None so the resulting /approve
-    cannot accidentally identify a non-existent store row.
+def test_submit_failure_fails_closed_without_legacy_fallback():
+    """If store.submit raises, the gateway approval flow MUST fail closed.
 
-    This documents current behavior: submit-failure is loud (logged
-    ERROR) but the agent thread still blocks waiting for resolution
-    via the legacy in-memory path. Future hardening could elevate this
-    to fail-closed-immediately."""
+    Specifically:
+      - no _ApprovalEntry queued (no waiter created)
+      - no notify_cb invoked (no message posted to user)
+      - _await_gateway_decision returns {resolved: False, store_failed: True}
+      - the in-memory FIFO path is NOT used as fallback
+
+    This replaces the previous test that pinned the lenient
+    fall-through-to-legacy behavior. The trust boundary is the durable
+    store; if it cannot accept a proposal, there is no approval flow."""
     store = InMemoryApprovalStore()
     with patch.object(store, "submit",
                       side_effect=ApprovalStoreError("simulated submit failure")):
         set_default_approval_store(store)
         session_key = "submit-fail"
-        register_gateway_notify(session_key, lambda data: None)
 
-        captured: dict[str, Any] = {}
-        barrier = threading.Event()
+        notify_calls: list = []
+        register_gateway_notify(session_key, lambda data: notify_calls.append(data))
 
-        def driver():
-            captured["result"] = _await_gateway_decision(
-                session_key=session_key,
-                notify_cb=lambda data: (captured.update(data=data), barrier.set()),
-                approval_data={
-                    "command": "echo fail-submit",
-                    "description": "test",
-                    "pattern_key": "test",
-                    "pattern_keys": ["test"],
-                },
-                surface="test",
-            )
-
-        t = threading.Thread(target=driver, daemon=True)
-        t.start()
-        assert barrier.wait(timeout=5)
-
-        # approval_data wire: approval_id MUST be absent (no row to address).
-        # The render-helper field was set before submit so it might exist;
-        # what matters is the entry-level approval_id is None.
-        entry = approval_mod._gateway_queues[session_key][0]
-        assert entry.approval_id is None, (
-            "submit failure must clear approval_id; otherwise /approve <id> "
-            "would target a row that does not exist"
+        result = _await_gateway_decision(
+            session_key=session_key,
+            notify_cb=lambda data: notify_calls.append(data),
+            approval_data={
+                "command": "echo fail-submit",
+                "description": "test",
+                "pattern_key": "test",
+                "pattern_keys": ["test"],
+            },
+            surface="test",
         )
 
-        # Cleanup: deny the entry to release driver.
-        from tools.approval import resolve_gateway_approval
-        resolve_gateway_approval(session_key, "deny")
-        t.join(timeout=5)
+        # No legacy entry was queued
+        assert session_key not in approval_mod._gateway_queues, (
+            "submit-failure MUST NOT leave a legacy _ApprovalEntry that "
+            "could be approved via FIFO bypass"
+        )
+        # notify_cb never fired — user never saw a phantom approval prompt
+        assert notify_calls == [], (
+            "submit-failure MUST NOT notify the user; the proposal never "
+            "existed durably so there is nothing for them to approve"
+        )
+        # Result signals store_failed; caller upstream renders BLOCKED
+        assert result == {
+            "resolved": False,
+            "choice": None,
+            "store_failed": True,
+        }
+
+
+def test_submit_failure_propagates_blocked_via_check_all_command_guards():
+    """End-to-end shape: an actually-dangerous command + failing store
+    must produce a BLOCKED approval-result with a clear store-failure
+    message, not a silent fall-through to either approve or in-memory
+    deny path."""
+    from tools.approval import check_all_command_guards
+
+    store = InMemoryApprovalStore()
+    with patch.object(store, "submit",
+                      side_effect=ApprovalStoreError("simulated DB locked")):
+        set_default_approval_store(store)
+
+        session_key = "submit-fail-e2e"
+        register_gateway_notify(session_key, lambda data: None)
+
+        # Patch the gateway context to make is_gateway True and route
+        # to _await_gateway_decision path.
+        with patch.object(approval_mod, "_is_gateway_approval_context",
+                          return_value=True), \
+             patch.object(approval_mod, "get_current_session_key",
+                          return_value=session_key):
+            result = check_all_command_guards(
+                command="rm -rf /tmp/important-test",
+                env_type="local",
+            )
+
+        assert result["approved"] is False
+        # The BLOCKED message must surface "approval store" so operators
+        # know it's not a normal deny or timeout.
+        assert "approval store" in result.get("message", "").lower() or \
+               "store" in result.get("message", "").lower()
 
 
 # ---------------------------------------------------------------------------

@@ -659,6 +659,179 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
     return message
 
 
+def _compact_gateway_progress_label(
+    tool_name: Optional[str],
+    preview: Optional[str] = None,
+    *,
+    max_len: int = 96,
+) -> str:
+    """Return a compact one-line label for long-running checkpoints."""
+    name = str(tool_name or "work").strip() or "work"
+    clean_preview = " ".join(str(preview or "").split())
+    label = f"{name}: {clean_preview}" if clean_preview else name
+    if len(label) > max_len:
+        return label[: max(0, max_len - 3)].rstrip() + "..."
+    return label
+
+
+def _gateway_progress_subject(preview: Optional[str], *, max_len: int = 52) -> str:
+    text = " ".join(str(preview or "").split())
+    if not text:
+        return "the relevant details"
+
+    lowered = text.lower()
+    known_sources = (
+        ("youtube", "YouTube"),
+        ("facebook", "Facebook"),
+        ("reddit", "Reddit"),
+        ("twitter", "Twitter"),
+        ("x.com", "X/Twitter"),
+        ("linkedin", "LinkedIn"),
+        ("instagram", "Instagram"),
+        ("tiktok", "TikTok"),
+    )
+    for needle, label in known_sources:
+        if needle in lowered:
+            return label
+
+    cleaned = text.replace("https://", "").replace("http://", "")
+    domain = cleaned.split("/")[0].strip()
+    if "." in domain and " " not in domain:
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return domain[:max_len]
+
+    path_match = re.search(r"(?:^|\s)([/~]?[\w@.+-][\w@.+/\-]*\.[A-Za-z0-9_+-]{1,12})(?:[:\s]|$)", text)
+    if path_match:
+        raw_path = path_match.group(1).strip().rstrip(":,;)")
+        parts = [part for part in raw_path.split("/") if part and part != "~"]
+        if len(parts) >= 2:
+            return "/".join(parts[-2:])[:max_len]
+        if parts:
+            return parts[-1][:max_len]
+
+    return (text[: max_len - 3].rstrip() + "...") if len(text) > max_len else text
+
+
+def _terminal_gateway_progress_label(preview: Optional[str], *, active: bool = False) -> str:
+    text = " ".join(str(preview or "").split()).lower()
+    if "pytest" in text or " test" in f" {text}" or "npm test" in text or "pnpm test" in text:
+        return "Running the tests" if active else "Ran the tests"
+    if "git status" in text or "git diff" in text:
+        return "Checking the pending code changes" if active else "Checked the pending code changes"
+    if text.startswith("ssh ") or " ssh " in text:
+        return "Checking the remote machine" if active else "Checked the remote machine"
+    if "rg " in f" {text}" or "grep " in f" {text}" or "find " in f" {text}":
+        return "Searching the project" if active else "Searched the project"
+    if "python" in text:
+        return "Running a local verification" if active else "Ran a local verification"
+    return "Checking the project" if active else "Checked the project"
+
+
+def _client_friendly_activity_label(activity_desc: Optional[str]) -> str:
+    desc = " ".join(str(activity_desc or "").split())
+    lowered = desc.lower()
+    if not desc:
+        return ""
+    if "receiving stream response" in lowered:
+        return "Writing the answer"
+    if "waiting for stream response" in lowered or "no chunks yet" in lowered:
+        return "Waiting for the answer to start"
+    return _compact_gateway_progress_label(desc, max_len=104)
+
+
+def _client_friendly_gateway_progress_label(
+    tool_name: Optional[str],
+    preview: Optional[str] = None,
+    *,
+    active: bool = False,
+) -> str:
+    """Translate internal tool activity into a client-friendly checkpoint line."""
+    name = str(tool_name or "").strip().lower()
+    subject = _gateway_progress_subject(preview)
+    has_preview = bool(str(preview or "").strip())
+
+    if name in {"web_search", "web_extract"}:
+        return f"Searching {subject}" if active else f"Scanned {subject}"
+    if name == "browser_navigate":
+        return f"Opening {subject}" if active else f"Opened {subject}"
+    if name in {"browser_snapshot", "browser_vision", "browser_get_images"}:
+        return "Reviewing the page" if active else "Reviewed the page"
+    if name == "browser_click":
+        return "Clicking through the page" if active else "Clicked through the page"
+    if name == "browser_type":
+        return "Filling in a field" if active else "Filled in a field"
+    if name == "browser_scroll":
+        return "Scrolling the page" if active else "Scrolled the page"
+    if name in {"browser_back", "browser_press"}:
+        return "Navigating the page" if active else "Navigated the page"
+    if name in {"read_file", "read", "open_file"}:
+        return (f"Reading {subject}" if active else f"Read {subject}") if has_preview else ("Checking the relevant notes" if active else "Checked the relevant notes")
+    if name in {"search_files", "grep", "glob", "lcm_grep"}:
+        return (f"Searching {subject}" if active else f"Searched {subject}") if has_preview else ("Searching the project" if active else "Searched the project")
+    if name in {"memory", "hindsight_search", "lcm_expand"}:
+        return (f"Checking {subject}" if active else f"Checked {subject}") if has_preview else ("Checking the relevant notes" if active else "Checked the relevant notes")
+    if name in {"write_file", "patch", "edit_file"}:
+        return (f"Updating {subject}" if active else f"Updated {subject}") if has_preview else ("Updating the draft" if active else "Updated the draft")
+    if name in {"terminal", "execute_code", "process"}:
+        return _terminal_gateway_progress_label(preview, active=active)
+    if name == "delegate_task":
+        return "Checking one part in parallel" if active else "Finished a parallel check"
+    if name in {"todo", "task_update", "task_done", "task_open"}:
+        return ""
+
+    clean = _compact_gateway_progress_label(tool_name, preview, max_len=72)
+    return f"Working on {clean}" if active else f"Finished {clean}"
+
+
+def _format_gateway_long_running_checkpoint(
+    elapsed_mins: int,
+    *,
+    activity: Optional[Dict[str, Any]] = None,
+    completed: Optional[List[str]] = None,
+    current: Optional[List[str]] = None,
+    include_iteration_detail: bool = False,
+) -> str:
+    """Build the editable long-running checkpoint message shown in chat."""
+    mins = max(0, int(elapsed_mins or 0))
+    lines = [f"⏱ {mins}-minute check-in"]
+
+    now_label = None
+    for item in reversed(current or []):
+        if not str(item or "").strip():
+            continue
+        label = _compact_gateway_progress_label(item, max_len=104)
+        if label:
+            now_label = label
+            break
+    if not now_label and activity:
+        action = activity.get("current_tool") or activity.get("last_activity_desc")
+        if action:
+            now_label = _client_friendly_activity_label(str(action))
+
+    if now_label:
+        lines.extend(["", "Working on", f"→ {now_label}"])
+
+    completed_items: List[str] = []
+    seen = set()
+    for item in reversed(completed or []):
+        if not str(item or "").strip():
+            continue
+        label = _compact_gateway_progress_label(item, max_len=104)
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        completed_items.append(label)
+        if len(completed_items) >= 4:
+            break
+    completed_items.reverse()
+
+    if completed_items:
+        lines.extend(["", "Progress so far"])
+        lines.extend(f"✓ {item}" for item in completed_items)
+
+    return "\n".join(lines)
+
 def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     """Return the ``timestamp`` of the last usable transcript row, if any.
 
@@ -17212,6 +17385,18 @@ class GatewayRunner:
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+        long_running_notifications_enabled = bool(
+            resolve_display_setting(
+                user_config,
+                platform_key,
+                "long_running_notifications",
+                True,
+            )
+        )
+        progress_history_lock = threading.Lock()
+        completed_progress_labels: List[str] = []
+        active_progress_labels: List[str] = []
+        active_progress_by_tool: Dict[str, List[Dict[str, str]]] = {}
 
         # ── Discord voice "verbal ack before tool calls" ────────────────
         # When the bot is in a voice channel with the continuous mixer
@@ -17278,7 +17463,40 @@ class GatewayRunner:
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
-            if not progress_queue or not _run_still_current():
+            if not _run_still_current():
+                return
+
+            if event_type == "tool.started":
+                active_label = _client_friendly_gateway_progress_label(tool_name, preview, active=True)
+                done_label = _client_friendly_gateway_progress_label(tool_name, preview, active=False)
+                if not active_label and not done_label:
+                    return
+                with progress_history_lock:
+                    if active_label:
+                        active_progress_labels.append(active_label)
+                    active_progress_by_tool.setdefault(str(tool_name or "work"), []).append({
+                        "active": active_label,
+                        "done": done_label,
+                    })
+                    del active_progress_labels[:-8]
+            elif event_type == "tool.completed":
+                with progress_history_lock:
+                    entries = active_progress_by_tool.get(str(tool_name or "work")) or []
+                    entry = entries.pop(0) if entries else None
+                    if not entries:
+                        active_progress_by_tool.pop(str(tool_name or "work"), None)
+                    active_label = entry.get("active") if isinstance(entry, dict) else None
+                    done_label = entry.get("done") if isinstance(entry, dict) else None
+                    if active_label:
+                        try:
+                            active_progress_labels.remove(active_label)
+                        except ValueError:
+                            pass
+                    if done_label:
+                        completed_progress_labels.append(done_label)
+                    del completed_progress_labels[:-12]
+
+            if not progress_queue:
                 return
 
             # First-touch onboarding: the first time a tool takes longer than
@@ -18063,7 +18281,11 @@ class GatewayRunner:
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
-            agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
+            agent.tool_progress_callback = (
+                progress_callback
+                if (tool_progress_enabled or long_running_notifications_enabled)
+                else None
+            )
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).
             agent.tool_start_callback = (
@@ -18817,14 +19039,7 @@ class GatewayRunner:
         # 0 = disable notifications.
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
-        if not bool(
-            resolve_display_setting(
-                user_config,
-                platform_key,
-                "long_running_notifications",
-                True,
-            )
-        ):
+        if not long_running_notifications_enabled:
             _NOTIFY_INTERVAL = None
         _notify_start = time.time()
 
@@ -18848,7 +19063,6 @@ class GatewayRunner:
                 # iteration counter is gated on busy_ack_detail so users
                 # who want it can opt in per platform.
                 _agent_ref = agent_holder[0]
-                _status_detail = ""
                 _want_iteration_detail = bool(
                     resolve_display_setting(
                         user_config,
@@ -18857,22 +19071,22 @@ class GatewayRunner:
                         True,
                     )
                 )
+                _activity = None
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
-                        _a = _agent_ref.get_activity_summary()
-                        _parts = []
-                        if _want_iteration_detail:
-                            _parts.append(
-                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
-                            )
-                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
-                        if _action:
-                            _parts.append(str(_action))
-                        if _parts:
-                            _status_detail = " — " + ", ".join(_parts)
+                        _activity = _agent_ref.get_activity_summary()
                     except Exception:
-                        pass
-                _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
+                        _activity = None
+                with progress_history_lock:
+                    _completed_snapshot = list(completed_progress_labels)
+                    _current_snapshot = list(active_progress_labels)
+                _heartbeat_text = _format_gateway_long_running_checkpoint(
+                    _elapsed_mins,
+                    activity=_activity,
+                    completed=_completed_snapshot,
+                    current=_current_snapshot,
+                    include_iteration_detail=_want_iteration_detail,
+                )
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:

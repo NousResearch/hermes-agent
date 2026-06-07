@@ -55,6 +55,14 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.voice_frontend import (
+    VoiceFrontendConfig,
+    VoiceRouteDecision,
+    VoiceTurn,
+    build_voice_agent_prompt,
+    plan_voice_turn,
+    sanitize_spoken_text,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -12304,27 +12312,255 @@ class GatewayRunner:
             )
             return
 
+        frontend_config = self._voice_frontend_config()
+        frontend_enabled = bool(frontend_config.enabled)
+        turn = None
+        decision = None
+        event_text = transcript
+        if frontend_enabled:
+            provider = self._voice_frontend_provider()
+            platform_value = getattr(source.platform, "value", source.platform)
+            thread_id = source.thread_id
+            metadata = {
+                "guild_id": guild_id,
+                "text_channel_id": str(text_ch_id),
+                "user_id": str(user_id),
+                "thread_id": thread_id,
+                "source": "discord_voice_channel",
+            }
+            voice_channels = getattr(adapter, "_voice_channel_ids", None)
+            voice_channel_id = voice_channels.get(guild_id) if isinstance(voice_channels, dict) else None
+            if voice_channel_id is not None:
+                metadata["voice_channel_id"] = str(voice_channel_id)
+            turn = VoiceTurn(
+                transcript=transcript,
+                platform=str(platform_value),
+                chat_id=str(source.chat_id),
+                user_id=str(user_id),
+                thread_id=thread_id,
+                provider=provider,
+                mode="asr",
+                metadata=metadata,
+            )
+            decision = plan_voice_turn(turn, frontend_config)
+            event_text = (
+                self._build_voice_command_message(turn, decision)
+                if decision.agent_prompt
+                else transcript
+            )
+
         # Show transcript in text channel (after auth, with mention sanitization)
         try:
             channel = adapter._client.get_channel(text_ch_id)
             if channel:
-                safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
-                await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+                safe_text = (
+                    transcript[:2000]
+                    .replace("@everyone", "@\u200beveryone")
+                    .replace("@here", "@\u200bhere")
+                )
+                if frontend_enabled:
+                    await channel.send(f"**[Voice ASR]** user {user_id}: {safe_text}")
+                else:
+                    await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
         except Exception:
             pass
+
+        # Approval-required routes are notices only. Voice ASR is untrusted, so
+        # risky commands must be confirmed via normal typed text before execution.
+        if frontend_enabled and decision and decision.kind == "approval_required":
+            await self._post_voice_approval_notice(
+                adapter=adapter,
+                text_channel_id=text_ch_id,
+                user_id=user_id,
+                transcript=transcript,
+                decision=decision,
+            )
+            from types import SimpleNamespace
+            raw_notice = SimpleNamespace(
+                guild_id=guild_id,
+                guild=None,
+                voice_frontend_enabled=True,
+                voice_origin=True,
+                voice_notice_only=True,
+                suppress_full_tts=True,
+                voice_notice_short=True,
+                voice_turn=turn,
+                voice_route_decision=decision,
+            )
+            notice_event = MessageEvent(
+                source=source,
+                text=decision.ack_text,
+                message_type=MessageType.TEXT,
+                raw_message=raw_notice,
+            )
+            await self._send_voice_reply(notice_event, decision.ack_text)
+            return
 
         # Build a synthetic MessageEvent and feed through the normal pipeline
         # Use SimpleNamespace as raw_message so _get_guild_id() can extract
         # guild_id and _send_voice_reply() plays audio in the voice channel.
         from types import SimpleNamespace
+        raw_message = SimpleNamespace(
+            guild_id=guild_id,
+            guild=None,
+            voice_frontend_enabled=frontend_enabled,
+            voice_origin=frontend_enabled,
+            voice_notice_only=frontend_enabled,
+            suppress_full_tts=frontend_enabled,
+            voice_notice_short=False,
+            voice_turn=turn,
+            voice_route_decision=decision,
+        )
         event = MessageEvent(
             source=source,
-            text=transcript,
-            message_type=MessageType.VOICE,
-            raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
+            text=event_text,
+            # The opt-in frontend path carries voice-origin metadata but sends
+            # Hermes a text prompt. This keeps the base adapter's generic
+            # voice auto-TTS from reading the full response aloud.
+            message_type=MessageType.TEXT if frontend_enabled else MessageType.VOICE,
+            raw_message=raw_message,
         )
+        if frontend_enabled:
+            event.voice_turn = turn
+            event.voice_route_decision = decision
+
+        if frontend_enabled and decision and not decision.enqueue:
+            return
+
+        if frontend_enabled and decision and decision.kind in {"async_job", "codex_job"}:
+            await self._send_voice_frontend_ack(event, decision)
+            self._schedule_voice_frontend_task(adapter, event, decision)
+            return
 
         await adapter.handle_message(event)
+
+    async def _send_voice_frontend_ack(
+        self,
+        event: MessageEvent,
+        decision: VoiceRouteDecision,
+    ) -> None:
+        """Speak a short acknowledgement for async voice frontend work."""
+        raw = getattr(event, "raw_message", None)
+        if raw is not None:
+            raw.voice_notice_short = True
+        notice = self._voice_notice_text(event, decision=decision)
+        try:
+            if self._should_send_voice_reply(event, notice, [], already_sent=True):
+                await self._send_voice_reply(event, notice)
+        finally:
+            if raw is not None:
+                raw.voice_notice_short = False
+
+    def _schedule_voice_frontend_task(
+        self,
+        adapter: Any,
+        event: MessageEvent,
+        decision: VoiceRouteDecision,
+    ) -> None:
+        """Run the detailed Hermes handling for a voice command in the background."""
+        async def _run() -> None:
+            try:
+                await adapter.handle_message(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                turn = getattr(getattr(event, "raw_message", None), "voice_turn", None)
+                turn_id = getattr(turn, "turn_id", "unknown")
+                logger.exception(
+                    "Voice frontend background task failed (turn_id=%s, route=%s)",
+                    turn_id,
+                    decision.kind,
+                )
+
+        task = asyncio.create_task(_run())
+        if not hasattr(self, "_background_tasks"):
+            self._background_tasks = set()
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _post_voice_approval_notice(
+        self,
+        *,
+        adapter: Any,
+        text_channel_id: Any,
+        user_id: Any,
+        transcript: str,
+        decision: VoiceRouteDecision,
+    ) -> None:
+        """Post a sanitized text notice for voice commands needing approval."""
+        try:
+            channel = adapter._client.get_channel(text_channel_id)
+            if not channel:
+                return
+            safe_text = (
+                str(transcript or "")[:2000]
+                .replace("@everyone", "@\u200beveryone")
+                .replace("@here", "@\u200bhere")
+            )
+            reason = sanitize_spoken_text(decision.reason or "confirmation required", 120)
+            await channel.send(
+                "**[Voice Approval Required]** "
+                f"user {user_id}: {safe_text}\n"
+                f"Reason: {reason}\n"
+                "Type the command in Discord text to run it."
+            )
+        except Exception:
+            logger.debug("Could not post voice approval notice", exc_info=True)
+
+    def _voice_frontend_config(self) -> VoiceFrontendConfig:
+        """Load provider-neutral voice frontend config from config.yaml safely."""
+        try:
+            config = _load_gateway_config() or {}
+            voice_cfg = config.get("voice") if isinstance(config, dict) else {}
+            frontend = voice_cfg.get("frontend") if isinstance(voice_cfg, dict) else {}
+            return VoiceFrontendConfig.from_mapping(
+                frontend if isinstance(frontend, dict) else {}
+            )
+        except Exception:
+            logger.debug("Could not load voice frontend config", exc_info=True)
+            return VoiceFrontendConfig()
+
+    def _voice_frontend_provider(self) -> str:
+        """Return configured ASR provider label for voice-origin metadata."""
+        try:
+            config = _load_gateway_config() or {}
+            voice_cfg = config.get("voice") if isinstance(config, dict) else {}
+            frontend = voice_cfg.get("frontend") if isinstance(voice_cfg, dict) else {}
+            if isinstance(frontend, dict) and frontend.get("provider"):
+                return str(frontend["provider"])
+            stt_cfg = config.get("stt") if isinstance(config, dict) else {}
+            if isinstance(stt_cfg, dict) and stt_cfg.get("provider"):
+                return str(stt_cfg["provider"])
+        except Exception:
+            logger.debug("Could not load voice frontend provider", exc_info=True)
+        return "unknown"
+
+    def _build_voice_command_message(
+        self, turn: VoiceTurn, decision: Optional[VoiceRouteDecision] = None
+    ) -> str:
+        """Build the agent-facing message for a voice-originated command."""
+        if decision and decision.agent_prompt:
+            return decision.agent_prompt
+        return build_voice_agent_prompt(turn, turn.transcript)
+
+    def _voice_notice_text(
+        self,
+        event: MessageEvent,
+        decision: Optional[VoiceRouteDecision] = None,
+        result: Optional[Any] = None,
+    ) -> str:
+        """Return a short safe voice notice for status-only TTS."""
+        max_chars = 80
+        if decision and decision.kind == "approval_required":
+            return sanitize_spoken_text("確認が必要。Discordを見て。", max_chars)
+        if result is not None:
+            result_text = str(result or "")
+            if result_text.startswith("Error:"):
+                return sanitize_spoken_text("失敗した。詳細をDiscordに貼ったよ。", max_chars)
+            return sanitize_spoken_text("終わったよ。結果はスレッドに置いた。", max_chars)
+        if decision and decision.ack_text:
+            return sanitize_spoken_text(decision.ack_text, max_chars)
+        return sanitize_spoken_text("了解、処理しておくね。", max_chars)
 
     def _should_send_voice_reply(
         self,
@@ -12349,7 +12585,13 @@ class GatewayRunner:
 
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
-        is_voice_input = (event.message_type == MessageType.VOICE)
+        raw = getattr(event, "raw_message", None)
+        voice_frontend_origin = bool(getattr(raw, "voice_frontend_enabled", False))
+        suppress_full_tts = bool(getattr(raw, "suppress_full_tts", False))
+        voice_notice_short = bool(getattr(raw, "voice_notice_short", False))
+        if suppress_full_tts and not voice_notice_short:
+            return False
+        is_voice_input = (event.message_type == MessageType.VOICE) or voice_frontend_origin
 
         should = (
             (voice_mode == "all")
@@ -12388,6 +12630,17 @@ class GatewayRunner:
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
+            raw = getattr(event, "raw_message", None)
+            if (
+                getattr(raw, "voice_frontend_enabled", False)
+                and self._voice_frontend_config().enabled
+                and not getattr(raw, "voice_notice_short", False)
+            ):
+                text = self._voice_notice_text(
+                    event,
+                    decision=getattr(raw, "voice_route_decision", None),
+                    result=text,
+                )
             tts_text = _strip_markdown_for_tts(text[:4000])
             if not tts_text:
                 return

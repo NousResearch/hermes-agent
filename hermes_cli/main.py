@@ -12399,6 +12399,33 @@ def cmd_dashboard(args):
         # the missing-provider state if it matters.
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
 
+    # Pre-warm the heavy ``from run_agent import AIAgent`` import off-thread
+    # while uvicorn is still binding/serving. The first chat session's deferred
+    # agent build (tui_gateway.server._make_agent) otherwise pays this import —
+    # model_tools' module-level ``discover_builtin_tools()`` plus the run_agent /
+    # model_metadata / provider-adapter parse — on the user's critical path,
+    # which is the single biggest first-conversation stall. ``discover_plugins()``
+    # already ran above on the main thread, so the transitive discovery this
+    # triggers is a cached no-op (no registry race). Imports are idempotent and
+    # cached, so the later on-demand ``_make_agent`` import just hits
+    # ``sys.modules``. Daemon + exception-isolated so it can never block startup
+    # or mask a real import error (the on-demand import still surfaces it). Opt
+    # out with ``HERMES_DASHBOARD_PREWARM_AGENT=0``.
+    if os.getenv("HERMES_DASHBOARD_PREWARM_AGENT", "1").strip().lower() not in {
+        "0", "false", "no", "off",
+    }:
+        def _prewarm_agent_import() -> None:
+            try:
+                from run_agent import AIAgent  # noqa: F401  # warms model_tools + adapters
+            except Exception:
+                logger.debug("dashboard agent-import prewarm failed", exc_info=True)
+
+        threading.Thread(
+            target=_prewarm_agent_import,
+            daemon=True,
+            name="dashboard-agent-prewarm",
+        ).start()
+
     from hermes_cli.web_server import start_server
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always

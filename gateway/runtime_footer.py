@@ -29,7 +29,7 @@ import os
 from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
-_SEP = " · "
+_SEP = " │ "
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -95,6 +95,9 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    char_count: Optional[int] = None,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -106,15 +109,24 @@ def format_runtime_footer(
         if field == "model":
             m = _model_short(model)
             if m:
-                parts.append(m)
+                parts.append(f"⚙ {m}")
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
-                parts.append(f"{pct}%")
+                parts.append(f"ctx {pct}%")
         elif field == "cwd":
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "char_count":
+            if char_count is not None:
+                parts.append(f"📝{char_count}字")
+        elif field == "input_tokens":
+            if input_tokens is not None:
+                parts.append(f"📥{input_tokens:,}")
+        elif field == "output_tokens":
+            if output_tokens is not None:
+                parts.append(f"📤{output_tokens:,}")
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,6 +142,9 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    char_count: Optional[int] = None,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -146,4 +161,7 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        char_count=char_count,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )

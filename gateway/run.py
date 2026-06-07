@@ -771,23 +771,9 @@ def _collect_auto_append_media_tags(
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
 # ---------------------------------------------------------------------------
 def _ensure_ssl_certs() -> None:
-    """Set SSL_CERT_FILE if the system doesn't expose CA certs to Python.
-
-    Windows startup paths (Desktop, Scheduled Tasks, installer children) can
-    occasionally inherit a stale SSL_CERT_FILE. Returning just because the
-    variable is present makes every later httpx/OpenAI client construction fail
-    with FileNotFoundError from ssl.load_verify_locations(). Treat a missing
-    path as unset and fall back to certifi instead.
-    """
-    configured_cert = os.environ.get("SSL_CERT_FILE")
-    if configured_cert:
-        if os.path.exists(configured_cert):
-            return  # user already configured it to a real file
-        logging.getLogger(__name__).warning(
-            "Ignoring stale SSL_CERT_FILE=%r because the path does not exist",
-            configured_cert,
-        )
-        os.environ.pop("SSL_CERT_FILE", None)
+    """Set SSL_CERT_FILE if the system doesn't expose CA certs to Python."""
+    if "SSL_CERT_FILE" in os.environ:
+        return  # user already configured it
 
     import ssl
 
@@ -1926,6 +1912,7 @@ class GatewayRunner:
         self._restart_via_service = False
         self._restart_command_source: Optional[SessionSource] = None
         self._stop_task: Optional[asyncio.Task] = None
+        self._gateway_dedup: dict = {}  # dedup
         
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
@@ -7316,21 +7303,6 @@ class GatewayRunner:
             if normalized_user_id:
                 check_ids.add(normalized_user_id)
 
-        # SimpleX: SIMPLEX_ALLOWED_USERS accepts either the numeric contactId
-        # or the contact's display name. The adapter sets user_id=contactId for
-        # stability across renames, but the SimpleX UI never surfaces the
-        # numeric id — operators only see display names, so that's what they
-        # naturally put in the env var. Match both so the allowlist works
-        # regardless of which form was chosen.
-        # Plugin platform: compare by value since Platform.SIMPLEX is not a
-        # hardcoded enum member (it's a dynamic plugin platform).
-        if (
-            source.platform is not None
-            and source.platform.value == "simplex"
-            and source.user_name
-        ):
-            check_ids.add(source.user_name)
-
         return bool(check_ids & allowed_ids)
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
@@ -7460,6 +7432,18 @@ class GatewayRunner:
         7. Return response
         """
         source = event.source
+        
+        # Gateway-level dedup
+        _dedup_key = (str(getattr(event, "platform", "")), str(getattr(event, "chat_id", "")), str(getattr(event, "message_id", "")))
+        if _dedup_key[2]:
+            import time as _dt
+            now = _dt.time()
+            if _dedup_key in self._gateway_dedup:
+                logger.debug(f"Dedup: dropping duplicate {_dedup_key}")
+                return
+            self._gateway_dedup[_dedup_key] = now
+            if len(self._gateway_dedup) > 100:
+                self._gateway_dedup = {k: v for k, v in self._gateway_dedup.items() if now - v < 10}
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
@@ -9445,41 +9429,11 @@ class GatewayRunner:
 
         # First-message onboarding -- only on the very first interaction ever
         if not history and not self.session_store.has_any_sessions():
-            # Default first-contact note: a brief self-introduction.
-            _intro_note = (
+            context_prompt += (
                 "\n\n[System note: This is the user's very first message ever. "
                 "Briefly introduce yourself and mention that /help shows available commands. "
                 "Keep the introduction concise -- one or two sentences max.]"
             )
-            # Opt-in structured profile-build path. When enabled (default
-            # "ask") and not yet offered on this install, swap the plain intro
-            # for a consent-gated directive that offers to build a user
-            # profile and persists confirmed facts via memory(target="user").
-            # The offer fires at most once (onboarding.seen flag); set
-            # onboarding.profile_build: off in config.yaml to disable.
-            try:
-                from agent.onboarding import (
-                    PROFILE_BUILD_FLAG,
-                    is_seen,
-                    mark_seen,
-                    profile_build_directive,
-                    profile_build_mode,
-                )
-                _onb_cfg = _load_gateway_config()
-                if (
-                    profile_build_mode(_onb_cfg) == "ask"
-                    and not is_seen(_onb_cfg, PROFILE_BUILD_FLAG)
-                ):
-                    context_prompt += profile_build_directive()
-                    mark_seen(_hermes_home / "config.yaml", PROFILE_BUILD_FLAG)
-                else:
-                    context_prompt += _intro_note
-            except Exception as _pb_err:
-                logger.debug(
-                    "Profile-build onboarding directive failed, using plain intro: %s",
-                    _pb_err,
-                )
-                context_prompt += _intro_note
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
@@ -9688,11 +9642,27 @@ class GatewayRunner:
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    char_count=len(response) if response else 0,
+                    input_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
+                    output_tokens=agent_result.get("completion_tokens", 0) or 0,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
             if _footer_line and response and not agent_result.get("already_sent"):
+                import re
+                # Strip model-mimicked footer from response before appending real footer
+                _fake_footer_re = re.compile(
+                    r'\n*\n*(?:⚙\s*mimo[^\n]*\n?'
+                    r'|mimo[^\n]*·\s*\d+%\s*\n?'
+                    r'|⚙\s*mimo[^\n]*│[^\n]*\n?'
+                    r'|⚙\s*mimo[^\n]*·[^\n]*\n?'
+                    r'|⚙️\s*mimo[^\n]*\n?'
+                    r'|[━─═]{2,}\n?'
+                    r')+',
+                    re.IGNORECASE,
+                )
+                response = _fake_footer_re.sub('', response).rstrip()
                 response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook
@@ -9957,37 +9927,6 @@ class GatewayRunner:
             except Exception:
                 pass
             logger.exception("Agent error in session %s", session_key)
-            # Crash-resilience for failures that happen before AIAgent enters
-            # run_conversation() (for example: provider/httpx client init
-            # failures). In that path the agent cannot persist the current
-            # inbound turn itself, so append the user message here once. If the
-            # agent already reached its early turn-start persistence, the latest
-            # transcript user row will match and we skip the duplicate.
-            try:
-                if 'message_text' in locals() and message_text is not None and session_entry is not None:
-                    _already_persisted = False
-                    try:
-                        _recent_transcript = self.session_store.load_transcript(session_entry.session_id)
-                    except Exception:
-                        _recent_transcript = []
-                    for _msg in reversed(_recent_transcript[-10:]):
-                        if _msg.get("role") == "user":
-                            _already_persisted = (_msg.get("content") == message_text)
-                            break
-                    if not _already_persisted:
-                        _user_entry = {
-                            "role": "user",
-                            "content": message_text,
-                            "timestamp": datetime.now().isoformat(),
-                        }
-                        if getattr(event, "message_id", None):
-                            _user_entry["message_id"] = str(event.message_id)
-                        self.session_store.append_to_transcript(
-                            session_entry.session_id,
-                            _user_entry,
-                        )
-            except Exception:
-                logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
             error_type = type(e).__name__
             error_detail = str(e)[:300] if str(e) else "no details available"
             status_hint = ""
@@ -15216,7 +15155,7 @@ class GatewayRunner:
                     env["PYTHONUNBUFFERED"] = "1"
                     with open(output_path, "wb") as f:
                         proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env)
-                        rc = proc.wait(timeout=3600)
+                        rc = proc.wait()
                     with open(exit_code_path, "w") as f:
                         f.write(str(rc))
                     """

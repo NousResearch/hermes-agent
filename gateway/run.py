@@ -11192,13 +11192,17 @@ class GatewayRunner:
 
             if has_picker:
                 try:
-                    providers = list_picker_providers(
-                        current_provider=current_provider,
-                        current_base_url=current_base_url,
-                        current_model=current_model,
-                        user_providers=user_provs,
-                        custom_providers=custom_provs,
-                        max_models=50,
+                    import functools
+                    providers = await asyncio.to_thread(
+                        functools.partial(
+                            list_picker_providers,
+                            current_provider=current_provider,
+                            current_base_url=current_base_url,
+                            current_model=current_model,
+                            user_providers=user_provs,
+                            custom_providers=custom_provs,
+                            max_models=50,
+                        )
                     )
                 except Exception:
                     providers = []
@@ -11341,13 +11345,17 @@ class GatewayRunner:
             lines = [t("gateway.model.current_label", model=current_model or "unknown", provider=provider_label), ""]
 
             try:
-                providers = list_authenticated_providers(
-                    current_provider=current_provider,
-                    current_base_url=current_base_url,
-                    current_model=current_model,
-                    user_providers=user_provs,
-                    custom_providers=custom_provs,
-                    max_models=5,
+                import functools
+                providers = await asyncio.to_thread(
+                    functools.partial(
+                        list_authenticated_providers,
+                        current_provider=current_provider,
+                        current_base_url=current_base_url,
+                        current_model=current_model,
+                        user_providers=user_provs,
+                        custom_providers=custom_provs,
+                        max_models=5,
+                    )
                 )
                 for p in providers:
                     tag = t("gateway.model.current_tag") if p["is_current"] else ""

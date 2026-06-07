@@ -966,8 +966,50 @@ class DockerEnvironment(BaseEnvironment):
     )
 
     def _is_container_gone(self, output: str) -> bool:
-        """Return True if the output indicates the container no longer exists."""
+        """Return True if the output *might* indicate the container is gone.
+
+        This is only a cheap first-pass filter: the phrases live in
+        ``_NO_CONTAINER_PATTERNS`` precisely because Docker emits them when an
+        ``exec`` target has vanished, but they also occur verbatim in perfectly
+        ordinary command output (``systemctl status``, ``docker compose ps``, a
+        script echoing "service X is not running"). A match here is necessary
+        but NOT sufficient to trigger recovery — :meth:`execute` confirms the
+        container's real state via :meth:`_container_confirmed_gone` before
+        tearing anything down.
+        """
         return any(p in output for p in self._NO_CONTAINER_PATTERNS)
+
+    def _container_confirmed_gone(self) -> bool:
+        """Ask Docker directly whether the current container is dead.
+
+        Recovery re-creates the container *and re-runs the user's command*, so
+        a false positive duplicates every side effect (a second ``git push``,
+        file write, package install, network POST). We must therefore never
+        rely on the substring scan in :meth:`_is_container_gone` alone — that
+        scans command-controlled output. Instead we run ``docker inspect`` and
+        only report the container gone when Docker itself confirms it is absent
+        or not running.
+
+        Fail safe: if the probe can't reach the daemon or times out we return
+        ``False`` so a live container is never torn down on an unverified guess
+        (the original error is surfaced to the caller unchanged).
+        """
+        if not self._container_id:
+            return True
+        try:
+            probe = subprocess.run(
+                [self._docker_exe, "inspect", "-f", "{{.State.Running}}", self._container_id],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("container liveness probe failed: %s — skipping recovery", e)
+            return False
+        if probe.returncode != 0:
+            # Non-zero almost always means "Error: No such object" — the
+            # container is genuinely gone, so recovery is warranted.
+            return True
+        # rc 0: stdout is "true" (running) or "false" (exists but stopped).
+        return probe.stdout.strip().lower() != "true"
 
     def _recreate_container(self) -> bool:
         """Recreate the container after it was removed out-of-band.
@@ -1057,10 +1099,16 @@ class DockerEnvironment(BaseEnvironment):
         transparently before retrying once.
         """
         result = super().execute(command, cwd, **kwargs)
+        # The substring scan and persist flag are cheap gates kept first so we
+        # don't spawn a ``docker inspect`` after every non-zero command. Only
+        # once they pass do we positively confirm the container is actually
+        # gone — sniffing command output alone would re-run side-effecting
+        # commands whenever their *own* output mentioned "is not running".
         if (
             result.get("returncode", 0) != 0
-            and self._is_container_gone(result.get("output", ""))
             and self._persist_across_processes
+            and self._is_container_gone(result.get("output", ""))
+            and self._container_confirmed_gone()
         ):
             if self._recreate_container():
                 result = super().execute(command, cwd, **kwargs)

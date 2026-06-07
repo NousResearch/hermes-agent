@@ -1833,3 +1833,134 @@ def test_execute_does_not_recover_on_ordinary_failure(monkeypatch):
     result = env.execute("badcmd")
     assert result.get("returncode") == 127
     assert "command not found" in result.get("output", "")
+
+
+def _patch_inspect(monkeypatch, running):
+    """Make ``docker inspect -f '{{.State.Running}}'`` report *running*.
+
+    *running* may be True/False (container exists) to emit the corresponding
+    ``true``/``false`` line with rc 0, or the string ``"missing"`` to emulate
+    a removed container (rc 1, "No such object"). Other docker subcommands fall
+    back to the standard mock so container creation during recovery still works.
+    """
+    base_calls = _mock_subprocess_run(monkeypatch)
+    real_run = docker_env.subprocess.run
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "inspect":
+            if running == "missing":
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="", stderr="Error: No such object: x"
+                )
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="true\n" if running else "false\n", stderr=""
+            )
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    return base_calls
+
+
+def test_execute_does_not_recover_when_container_still_running(monkeypatch):
+    """Regression: a non-zero command whose *own output* contains a
+    container-gone phrase (e.g. ``systemctl status`` printing "is not running")
+    must NOT tear down and re-run the command while the container is alive.
+
+    Before the liveness probe was added, the substring scan alone fired
+    recovery here, recreating the container and executing the user's command a
+    second time — duplicating any side effects.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _patch_inspect(monkeypatch, running=True)
+    env = _make_dummy_env(
+        persistent_filesystem=True,
+        persist_across_processes=True,
+    )
+
+    super_calls = []
+
+    def _fake_super_execute(self, command, cwd="", **kwargs):
+        super_calls.append(command)
+        # Mimics `systemctl status nginx` on a stopped unit: real, non-zero,
+        # and the text trips the substring filter.
+        return {"output": "Unit nginx.service is not running", "returncode": 3}
+
+    def _fail_recreate(self):
+        pytest.fail("recreation must not run while the container is alive")
+
+    monkeypatch.setattr(docker_env.BaseEnvironment, "execute", _fake_super_execute)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment, "_recreate_container", _fail_recreate
+    )
+
+    result = env.execute("systemctl status nginx")
+
+    assert super_calls == ["systemctl status nginx"], (
+        "the command must run exactly once when the container is still alive"
+    )
+    assert result.get("returncode") == 3
+    assert "is not running" in result.get("output", "")
+
+
+def test_execute_recovers_only_after_liveness_probe_confirms_gone(monkeypatch):
+    """The full recovery path still fires when the substring filter matches
+    AND ``docker inspect`` confirms the container is genuinely gone.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _patch_inspect(monkeypatch, running="missing")
+    env = _make_dummy_env(
+        persistent_filesystem=True,
+        persist_across_processes=True,
+    )
+
+    outputs = iter([
+        {"output": "Error response from daemon: No such container: hermes-x", "returncode": 1},
+        {"output": "ok", "returncode": 0},
+    ])
+
+    def _fake_super_execute(self, command, cwd="", **kwargs):
+        return next(outputs)
+
+    recreate_calls = []
+
+    def _fake_recreate(self):
+        recreate_calls.append(True)
+        self._container_id = "recovered-container-id"
+        return True
+
+    monkeypatch.setattr(docker_env.BaseEnvironment, "execute", _fake_super_execute)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment, "_recreate_container", _fake_recreate
+    )
+
+    result = env.execute("echo hi")
+
+    assert recreate_calls == [True], "recovery should fire once the probe confirms the container is gone"
+    assert result.get("returncode") == 0
+    assert result.get("output") == "ok"
+
+
+def test_container_confirmed_gone_reports_state(monkeypatch):
+    """``_container_confirmed_gone`` reflects the real docker inspect result:
+    running → False, stopped → True, missing → True, and fails safe (False)
+    when the probe can't reach the daemon.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+
+    _patch_inspect(monkeypatch, running=True)
+    env = _make_dummy_env(persistent_filesystem=True, persist_across_processes=True)
+    env._container_id = "live"
+    assert env._container_confirmed_gone() is False
+
+    _patch_inspect(monkeypatch, running=False)
+    assert env._container_confirmed_gone() is True
+
+    _patch_inspect(monkeypatch, running="missing")
+    assert env._container_confirmed_gone() is True
+
+    # Daemon unreachable / probe times out → fail safe, never recover blindly.
+    def _boom(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 10)
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _boom)
+    assert env._container_confirmed_gone() is False

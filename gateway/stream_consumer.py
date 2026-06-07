@@ -182,6 +182,7 @@ class GatewayStreamConsumer:
         # first failure we permanently disable drafts for the remainder of
         # this response and route through edit-based for graceful degradation.
         self._draft_failures = 0
+        self._native_stream_session = None
 
     @property
     def already_sent(self) -> bool:
@@ -261,6 +262,7 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        self._native_stream_session = None
         # #29346: a tool/segment boundary means what we delivered was an interim
         # preamble, not the final answer — clear the flags so a premature setter
         # can't fool the gateway. Safe: got_done returns before any reset, and
@@ -686,7 +688,7 @@ class GatewayStreamConsumer:
         stream finishes — we just need to hide the raw directives from the
         user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
+        if "media:" not in text.lower() and "[[audio_as_voice]]" not in text:
             return text
         cleaned = text.replace("[[audio_as_voice]]", "")
         cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
@@ -1138,6 +1140,57 @@ class GatewayStreamConsumer:
             self._final_response_sent = True
         return True
 
+    async def _send_or_update_native_stream(
+        self,
+        text: str,
+        *,
+        finalize: bool = False,
+        is_turn_final: bool = True,
+    ) -> Optional[bool]:
+        """Route through an adapter-native stream session.
+
+        Native sessions (e.g. Feishu Card Kit) have a lifecycle distinct from
+        ordinary send/edit_message: start -> update -> close.
+        """
+        try:
+            if self._native_stream_session is None:
+                factory = getattr(self.adapter, "create_stream_session")
+                self._native_stream_session = factory(metadata=self.metadata)
+                if self._native_stream_session is None:
+                    return None
+                result = await self._native_stream_session.start(
+                    self.chat_id,
+                    reply_to=self._initial_reply_to_id,
+                    metadata=self.metadata,
+                )
+                if not getattr(result, "success", False):
+                    self._edit_supported = False
+                    self._fallback_final_send = True
+                    return False
+                self._message_id = getattr(result, "message_id", None)
+                self._message_created_ts = time.monotonic() if self._message_id else None
+                self._already_sent = True
+                self._notify_new_message()
+
+            ok = await self._native_stream_session.update(text)
+            if ok:
+                self._last_sent_text = text
+            if finalize:
+                note = ""
+                if isinstance(self.metadata, dict):
+                    note = str(self.metadata.get("stream_footer_note") or "")
+                closed = await self._native_stream_session.close(text, note=note)
+                if closed and is_turn_final:
+                    self._final_response_sent = True
+                    self._final_content_delivered = True
+                return bool(closed)
+            return bool(ok)
+        except Exception as e:
+            logger.error("Native stream send/update error: %s", e, exc_info=True)
+            self._edit_supported = False
+            self._fallback_final_send = True
+            return False
+
     async def _send_or_edit(
         self, text: str, *, finalize: bool = False, is_turn_final: bool = True,
     ) -> bool:
@@ -1164,6 +1217,11 @@ class GatewayStreamConsumer:
             return True  # cursor-only / whitespace-only update
         if not text.strip():
             return True  # nothing to send is "success"
+        native_stream_factory = getattr(self.adapter, "create_stream_session", None)
+        if getattr(self.adapter, "SUPPORTS_NATIVE_STREAMING", False) is True and callable(native_stream_factory):
+            native_result = await self._send_or_update_native_stream(text, finalize=finalize, is_turn_final=is_turn_final)
+            if native_result is not None:
+                return native_result
         # Guard: do not create a brand-new standalone message when the only
         # visible content is a handful of characters alongside the streaming
         # cursor.  During rapid tool-calling the model often emits 1-2 tokens

@@ -395,6 +395,12 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    # Markdown rendering mode for messages containing tables.
+    # "post" (default): table content falls back to plain text (current behaviour).
+    # "card":  table content is sent as an interactive card (JSON 2.0) with full
+    #          markdown rendering including tables; non-table messages unchanged.
+    markdown_mode: str = "post"
+    card_streaming: bool = False
 
 
 @dataclass
@@ -548,6 +554,41 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _build_interactive_card_payload(
+    content: str,
+    *,
+    note: str = "",
+    header_title: str = "",
+    header_template: str = "",
+) -> str:
+    """Build a Feishu interactive card with markdown body and optional footer.
+
+    Interactive cards support full markdown rendering including tables,
+    which the post type's ``md`` tag does not.  Use JSON 2.0 card structure.
+    Header is only included when *header_title* is provided.  Footer note
+    uses grey markdown text when supplied (following OpenClaw patterns).
+    """
+    card: Dict[str, Any] = {
+        "config": {"wide_screen_mode": True},
+    }
+    if header_title:
+        card["header"] = {
+            "template": header_template or "blue",
+            "title": {"tag": "plain_text", "content": header_title},
+        }
+    elements: List[Dict[str, Any]] = [
+        {"tag": "markdown", "content": content},
+    ]
+    if note:
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "markdown",
+            "content": f"<font color='grey'>{note}</font>",
+        })
+    card["elements"] = elements
+    return json.dumps(card, ensure_ascii=False)
+
+
 def _build_markdown_post_payload(content: str) -> str:
     rows = _build_markdown_post_rows(content)
     return json.dumps(
@@ -607,6 +648,232 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
 
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
+
+
+
+class FeishuCardKitStreamSession:
+    """Card Kit streaming session independent from normal message send/edit.
+
+    The transport follows Feishu Card Kit's lifecycle: create a streaming card
+    entity, send a card reference as an interactive message, update markdown
+    elements by id, then close streaming mode.
+    """
+
+    _token_cache: Dict[str, Dict[str, Any]] = {}
+
+    def __init__(
+        self,
+        *,
+        app_id: str,
+        app_secret: str,
+        domain_name: str = "feishu",
+        request_json: Optional[Any] = None,
+        send_card_reference: Optional[Any] = None,
+        note: str = "",
+    ) -> None:
+        self.app_id = app_id
+        self.app_secret = app_secret
+        self.domain_name = domain_name or "feishu"
+        self.request_json = request_json or self._default_request_json
+        self.send_card_reference = send_card_reference
+        self.note = note
+        self.card_id: Optional[str] = None
+        self.message_id: Optional[str] = None
+        self.sequence = 0
+        self.sent_text = ""
+        self.closed = False
+
+    @property
+    def api_base(self) -> str:
+        return _ONBOARD_OPEN_URLS.get(self.domain_name, _ONBOARD_OPEN_URLS["feishu"])
+
+    async def _default_request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Optional[Dict[str, str]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if aiohttp is None:
+            raise RuntimeError("aiohttp required for Feishu Card Kit streaming")
+        async with aiohttp.ClientSession() as session:
+            async with session.request(
+                method,
+                url,
+                headers=headers,
+                json=json_body,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                try:
+                    return await resp.json()
+                except Exception:
+                    text = await resp.text()
+                    return {"code": resp.status, "msg": text}
+
+    async def _tenant_token(self) -> str:
+        cache_key = f"{self.domain_name}|{self.app_id}"
+        now = time.time()
+        cached = self._token_cache.get(cache_key)
+        if cached and cached.get("expires_at", 0) > now + 60:
+            return str(cached["token"])
+
+        data = await self.request_json(
+            "POST",
+            f"{self.api_base}/open-apis/auth/v3/tenant_access_token/internal",
+            headers={"Content-Type": "application/json"},
+            json_body={"app_id": self.app_id, "app_secret": self.app_secret},
+        )
+        token = data.get("tenant_access_token")
+        if data.get("code") != 0 or not token:
+            raise RuntimeError(f"Feishu Card Kit token error: {data.get('msg', 'unknown')}")
+        self._token_cache[cache_key] = {
+            "token": token,
+            "expires_at": now + int(data.get("expire") or 7200),
+        }
+        return str(token)
+
+    async def _authorized_request(self, method: str, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        token = await self._tenant_token()
+        return await self.request_json(
+            method,
+            f"{self.api_base}/open-apis{path}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json_body=body,
+        )
+
+    def _next_sequence(self) -> int:
+        self.sequence += 1
+        return self.sequence
+
+    def _summary(self, text: str, max_len: int = 50) -> str:
+        clean = (text or "").replace("\n", " ").strip()
+        return clean if len(clean) <= max_len else clean[: max_len - 3] + "..."
+
+    async def start(
+        self,
+        chat_id: str,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        elements: List[Dict[str, Any]] = [
+            {"tag": "markdown", "content": "", "element_id": "content"},
+        ]
+        if self.note:
+            elements.extend([
+                {"tag": "hr"},
+                {
+                    "tag": "markdown",
+                    "content": f"<font color='grey'>{self.note}</font>",
+                    "element_id": "note",
+                },
+            ])
+        card_json = {
+            "schema": "2.0",
+            "config": {
+                "streaming_mode": True,
+                "summary": {"content": "[Generating...]"},
+                "streaming_config": {
+                    "print_frequency_ms": {"default": 50},
+                    "print_step": {"default": 1},
+                },
+            },
+            "body": {"elements": elements},
+        }
+        data = await self._authorized_request(
+            "POST",
+            "/cardkit/v1/cards",
+            {"type": "card_json", "data": json.dumps(card_json, ensure_ascii=False)},
+        )
+        self.card_id = ((data.get("data") or {}).get("card_id"))
+        if data.get("code") != 0 or not self.card_id:
+            return SendResult(success=False, error=f"Card Kit create failed: {data.get('msg', 'unknown')}")
+        if self.send_card_reference is None:
+            return SendResult(success=False, error="send_card_reference callback not configured")
+        result = await self.send_card_reference(
+            chat_id,
+            self.card_id,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if result.success:
+            self.message_id = result.message_id
+        return result
+
+    async def update(self, text: str) -> bool:
+        if not self.card_id or self.closed:
+            return False
+        if text.startswith(self.sent_text):
+            delta = text[len(self.sent_text):]
+            if not delta:
+                return True
+            seq = self._next_sequence()
+            data = await self._authorized_request(
+                "PUT",
+                f"/cardkit/v1/cards/{self.card_id}/elements/content/content",
+                {"content": delta, "sequence": seq, "uuid": f"s_{self.card_id}_{seq}"},
+            )
+        else:
+            seq = self._next_sequence()
+            data = await self._authorized_request(
+                "PUT",
+                f"/cardkit/v1/cards/{self.card_id}/elements/content",
+                {
+                    "element": json.dumps({"tag": "markdown", "content": text, "element_id": "content"}, ensure_ascii=False),
+                    "sequence": seq,
+                    "uuid": f"r_{self.card_id}_{seq}",
+                },
+            )
+        ok = data.get("code", 0) == 0
+        if ok:
+            self.sent_text = text
+        return ok
+
+    async def update_note(self, note: str) -> bool:
+        if not self.card_id or self.closed or not note:
+            return False
+        seq = self._next_sequence()
+        data = await self._authorized_request(
+            "PUT",
+            f"/cardkit/v1/cards/{self.card_id}/elements/note/content",
+            {
+                "content": f"<font color='grey'>{note}</font>",
+                "sequence": seq,
+                "uuid": f"n_{self.card_id}_{seq}",
+            },
+        )
+        return data.get("code", 0) == 0
+
+    async def close(self, final_text: Optional[str] = None, *, note: str = "") -> bool:
+        if not self.card_id or self.closed:
+            return False
+        if final_text is not None and final_text != self.sent_text:
+            await self.update(final_text)
+        if note:
+            await self.update_note(note)
+        seq = self._next_sequence()
+        data = await self._authorized_request(
+            "PATCH",
+            f"/cardkit/v1/cards/{self.card_id}/settings",
+            {
+                "settings": json.dumps({
+                    "config": {
+                        "streaming_mode": False,
+                        "summary": {"content": self._summary(final_text or self.sent_text)},
+                    }
+                }, ensure_ascii=False),
+                "sequence": seq,
+                "uuid": f"c_{self.card_id}_{seq}",
+            },
+        )
+        self.closed = data.get("code", 0) == 0
+        return self.closed
+
+
 
 
 def parse_feishu_post_payload(
@@ -1409,6 +1676,7 @@ def check_feishu_requirements() -> bool:
 class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
+    SUPPORTS_NATIVE_STREAMING = True
     MAX_MESSAGE_LENGTH = 8000
     # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
     CHAT_LOCK_MAX_SIZE: int = 1000
@@ -1468,6 +1736,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        self._model_picker_state: Dict[str, Dict[str, Any]] = {}
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
@@ -1573,6 +1842,8 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            markdown_mode=str(extra.get("markdown_mode", os.getenv("FEISHU_MARKDOWN_MODE", "post"))).strip().lower(),
+            card_streaming=_to_boolean(extra.get("card_streaming", os.getenv("FEISHU_CARD_STREAMING", "false"))),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1605,6 +1876,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._markdown_mode = settings.markdown_mode if settings.markdown_mode in {"post", "card"} else "post"
+        self._card_streaming = bool(settings.card_streaming)
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1769,6 +2042,43 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
 
+    def create_stream_session(self, metadata: Optional[Dict[str, Any]] = None) -> Optional[FeishuCardKitStreamSession]:
+        """Create a Card Kit native stream session when enabled.
+
+        GatewayStreamConsumer probes this capability to avoid using normal
+        send/edit_message for Feishu streaming cards.
+        """
+        if not self._card_streaming:
+            return None
+        note = ""
+        if isinstance(metadata, dict):
+            note = str(metadata.get("stream_footer_note") or "")
+        return FeishuCardKitStreamSession(
+            app_id=self._app_id,
+            app_secret=self._app_secret,
+            domain_name=self._domain_name,
+            send_card_reference=self._send_card_kit_reference,
+            note=note,
+        )
+
+    async def _send_card_kit_reference(
+        self,
+        chat_id: str,
+        card_id: str,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        content = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
+        response = await self._feishu_send_with_retry(
+            chat_id=chat_id,
+            msg_type="interactive",
+            payload=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        return self._finalize_send_result(response, "Card Kit send failed")
+
     async def send(
         self,
         chat_id: str,
@@ -1834,13 +2144,48 @@ class FeishuAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Feishu text/post message."""
+        """Edit a previously sent Feishu text/post message.
+
+        When ``finalize=True`` and the content requires an interactive card
+        (markdown_mode=card), we recall the old placeholder and send a fresh
+        card instead, because Feishu's message.update API does not support
+        editing interactive cards.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
         try:
             msg_type, payload = self._build_outbound_payload(content)
+            # Interactive cards cannot be edited via the message update API.
+            if msg_type == "interactive":
+                if finalize:
+                    # Final delivery: recall the placeholder, send a fresh card.
+                    logger.info("[Feishu] Recalling placeholder %s and resending as interactive card", message_id)
+                    try:
+                        from lark_oapi.api.im.v1 import DeleteMessageRequest
+                        del_request = DeleteMessageRequest.builder().message_id(message_id).build()
+                        await asyncio.to_thread(self._client.im.v1.message.delete, del_request)
+                    except Exception as del_err:
+                        logger.warning("[Feishu] Failed to recall message %s: %s", message_id, del_err)
+                    # Send fresh card as a new message
+                    if chat_id.startswith("ou_"):
+                        receive_id_type = "open_id"
+                    else:
+                        receive_id_type = "chat_id"
+                    card_body = self._build_create_message_body(
+                        receive_id=chat_id,
+                        msg_type="interactive",
+                        content=payload,
+                        uuid_value=str(uuid.uuid4()),
+                    )
+                    card_request = self._build_create_message_request(receive_id_type, card_body)
+                    card_response = await asyncio.to_thread(self._client.im.v1.message.create, card_request)
+                    result = self._finalize_send_result(card_response, "card resend failed")
+                    return result
+                logger.debug("[Feishu] Skipping interactive card edit (not supported); using post fallback")
+                msg_type = "post"
+                payload = _build_markdown_post_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
@@ -1998,6 +2343,370 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("[Feishu] send_update_prompt failed: %s", exc)
             return SendResult(success=False, error=str(exc))
+
+    _MODEL_PAGE_SIZE = 8
+
+    # =========================================================================
+    # Model picker cards
+    # =========================================================================
+
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive card for model selection.
+
+        Two-step drill-down via Feishu CallBackCard: provider → model → confirm.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        try:
+            card = self._build_model_picker_providers_card(
+                providers=providers,
+                current_model=current_model,
+                current_provider=current_provider,
+                provider_label=get_label(current_provider),
+            )
+
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+
+            result = self._finalize_send_result(response, "send_model_picker failed")
+            if result.success:
+                self._model_picker_state[chat_id] = {
+                    "message_id": result.message_id or "",
+                    "providers": providers,
+                    "session_key": session_key,
+                    "on_model_selected": on_model_selected,
+                    "current_model": current_model,
+                    "current_provider": current_provider,
+                }
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_model_picker failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    @staticmethod
+    def _build_model_picker_providers_card(
+        *,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        provider_label: str,
+    ) -> Dict[str, Any]:
+        """Build provider selection card."""
+        def _btn(label: str, slug: str) -> dict:
+            return {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label},
+                "type": "default",
+                "value": {"hermes_model_picker": "provider", "slug": slug},
+            }
+
+        actions = []
+        for p in providers:
+            count = p.get("total_models", len(p.get("models", [])))
+            label = f"✓ {p['name']} ({count})" if p.get("is_current") else f"{p['name']} ({count})"
+            actions.append(_btn(label, p["slug"]))
+
+        actions.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "✗ 取消"},
+            "type": "danger",
+            "value": {"hermes_model_picker": "cancel"},
+        })
+
+        short_model = current_model.split("/")[-1] if "/" in current_model else (current_model or "unknown")
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "⚙️ 模型配置", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"**当前模型：** `{short_model}`\n**供应商：** {provider_label}\n\n选择一个供应商：",
+                },
+                {
+                    "tag": "action",
+                    "actions": actions,
+                },
+            ],
+        }
+
+    @classmethod
+    def _build_model_picker_models_card(
+        cls,
+        *,
+        provider_name: str,
+        models: list,
+        page: int,
+        provider_slug: str,
+        total_models: int,
+    ) -> Dict[str, Any]:
+        """Build model selection card for a specific provider."""
+        page_size = cls._MODEL_PAGE_SIZE
+        total = len(models)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        start = page * page_size
+        end = min(start + page_size, total)
+        page_models = models[start:end]
+
+        def _model_btn(label: str, idx: int) -> dict:
+            return {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label},
+                "type": "default",
+                "value": {"hermes_model_picker": "model", "slug": provider_slug, "idx": idx},
+            }
+
+        actions = [_model_btn(m, start + i) for i, m in enumerate(page_models)]
+
+        # Pagination
+        if total_pages > 1:
+            if page > 0:
+                actions.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "◀ 上一页"},
+                    "type": "default",
+                    "value": {"hermes_model_picker": "page", "slug": provider_slug, "page": page - 1},
+                })
+            actions.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": f"{page + 1}/{total_pages}"},
+                "type": "default",
+                "value": {"hermes_model_picker": "noop"},
+            })
+            if page < total_pages - 1:
+                actions.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "下一页 ▶"},
+                    "type": "default",
+                    "value": {"hermes_model_picker": "page", "slug": provider_slug, "page": page + 1},
+                })
+
+        actions.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "◀ 返回供应商"},
+            "type": "default",
+            "value": {"hermes_model_picker": "back"},
+        })
+        actions.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "✗ 取消"},
+            "type": "danger",
+            "value": {"hermes_model_picker": "cancel"},
+        })
+
+        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
+        extra = f"\n_还有 {total_models - total} 个可用模型 — 直接输入 `/model <名称>`_" if total_models > total else ""
+
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "⚙️ 模型配置", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"**供应商：** {provider_name}{page_info}\n选择一个模型：{extra}",
+                },
+                {
+                    "tag": "action",
+                    "actions": actions,
+                },
+            ],
+        }
+
+    @staticmethod
+    def _build_model_picker_confirm_card(content: str) -> Dict[str, Any]:
+        """Build confirmation card after model switch."""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "✅ 模型已切换", "tag": "plain_text"},
+                "template": "green",
+            },
+            "elements": [
+                {"tag": "markdown", "content": content},
+            ],
+        }
+
+    def _handle_model_picker_card_action(
+        self, *, event: Any, action_value: Dict[str, Any], loop: Any
+    ) -> Any:
+        """Handle model picker card actions synchronously via CallBackCard.
+
+        Returns a P2CardActionTriggerResponse with updated card JSON.
+        """
+        import asyncio
+
+        picker_action = action_value.get("hermes_model_picker") if isinstance(action_value, dict) else None
+        if not picker_action:
+            return None
+
+        context = getattr(event, "context", None)
+        chat_id = str(getattr(context, "open_chat_id", "") or "")
+        state = self._model_picker_state.get(chat_id)
+        if not state:
+            logger.debug("[Feishu] Model picker state not found for chat %s", chat_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        new_card = None
+
+        if picker_action == "provider":
+            # Provider selected → show model list
+            slug = action_value.get("slug", "")
+            provider = next((p for p in state["providers"] if p["slug"] == slug), None)
+            if not provider:
+                return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+            models = provider.get("models", [])
+            state["selected_provider"] = slug
+            state["selected_provider_name"] = provider.get("name", slug)
+            state["model_list"] = models
+            state["model_page"] = 0
+
+            new_card = self._build_model_picker_models_card(
+                provider_name=provider.get("name", slug),
+                models=models,
+                page=0,
+                provider_slug=slug,
+                total_models=provider.get("total_models", len(models)),
+            )
+
+        elif picker_action == "page":
+            slug = action_value.get("slug", "")
+            page = action_value.get("page", 0)
+            models = state.get("model_list", [])
+            provider_slug = state.get("selected_provider", slug)
+            provider_name = state.get("selected_provider_name", slug)
+            provider = next(
+                (p for p in state["providers"] if p["slug"] == provider_slug), None
+            )
+            state["model_page"] = page
+
+            new_card = self._build_model_picker_models_card(
+                provider_name=provider_name,
+                models=models,
+                page=page,
+                provider_slug=provider_slug,
+                total_models=provider.get("total_models", len(models)) if provider else len(models),
+            )
+
+        elif picker_action == "model":
+            # Model selected → perform switch asynchronously
+            idx = action_value.get("idx", -1)
+            model_list = state.get("model_list", [])
+            if idx < 0 or idx >= len(model_list):
+                return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+            model_id = model_list[idx]
+            provider_slug = state.get("selected_provider", "")
+            callback = state.get("on_model_selected")
+
+            if callback:
+                self._submit_on_loop(
+                    loop,
+                    self._async_switch_model(
+                        chat_id=chat_id, model_id=model_id,
+                        provider_slug=provider_slug, callback=callback,
+                    ),
+                )
+
+            new_card = self._build_model_picker_confirm_card(
+                f"正在切换到 **{model_id}** …",
+            )
+            # Clean up state — the async handler will send final result if needed
+            self._model_picker_state.pop(chat_id, None)
+
+        elif picker_action == "back":
+            # Back to provider list
+            try:
+                provider_label = get_label(state["current_provider"])
+            except Exception:
+                provider_label = state["current_provider"]
+
+            new_card = self._build_model_picker_providers_card(
+                providers=state["providers"],
+                current_model=state["current_model"],
+                current_provider=state["current_provider"],
+                provider_label=provider_label,
+            )
+
+        elif picker_action == "cancel":
+            self._model_picker_state.pop(chat_id, None)
+            new_card = self._build_model_picker_confirm_card("模型选择已取消。")
+
+        elif picker_action == "noop":
+            # No-op (page counter button) — return unchanged
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        else:
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if new_card is None:
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = new_card
+            response.card = card
+        return response
+
+    async def _async_switch_model(
+        self, *, chat_id: str, model_id: str, provider_slug: str, callback: Any
+    ) -> None:
+        """Perform the model switch asynchronously and send the result."""
+        try:
+            result_text = await callback(chat_id, model_id, provider_slug)
+        except Exception as exc:
+            logger.error("[Feishu] Model picker async switch failed: %s", exc)
+            result_text = f"❌ 切换模型失败：{exc}"
+
+        try:
+            msg_type, payload = self._build_outbound_payload(self.format_message(result_text))
+            await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type=msg_type,
+                payload=payload,
+                reply_to=None,
+                metadata=None,
+            )
+        except Exception:
+            logger.warning("[Feishu] Failed to send model switch result", exc_info=True)
 
     @staticmethod
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
@@ -2543,10 +3252,15 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
         if update_prompt_action:
             return self._handle_update_prompt_card_action(
-                event=event,
-                action_value=action_value,
-                loop=loop,
+                event=event, action_value=action_value, loop=loop,
             )
+
+        # Model picker card actions
+        picker_result = self._handle_model_picker_card_action(
+            event=event, action_value=action_value, loop=loop,
+        )
+        if picker_result is not None:
+            return picker_result
 
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         if P2CardActionTriggerResponse is None:
@@ -2596,9 +3310,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
-            logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning(
+                "[Feishu] Unauthorized approval click by %s (admins=%s, allowed_users=%s)",
+                open_id or "<unknown>",
+                list(self._admins)[:5],
+                list(self._allowed_group_users)[:5],
+            )
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
         callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
@@ -4326,11 +5044,28 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
+        # When markdown_mode is "card", send table content as an interactive
+        # card (JSON 2.0) which supports full markdown including tables.
+        #
+        # IMPORTANT: interactive cards CANNOT be edited via message.update API
+        # (only text/post are supported). This means streaming messages (which
+        # use edit_message) will degrade. The base adapter's _send_with_retry
+        # fallback also calls send(), so we must never return interactive for
+        # fallback content (prefixed with "(Response formatting failed").
+        is_fallback = content.startswith("(Response formatting failed")
+
+        if _MARKDOWN_TABLE_RE.search(content) and not is_fallback:
+            if self._markdown_mode == "card":
+                payload = _build_interactive_card_payload(content)
+                logger.debug("[Feishu] Using interactive card for table content (%d chars)", len(content))
+                return "interactive", payload
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
+            if self._markdown_mode == "card":
+                payload = _build_interactive_card_payload(content)
+                logger.debug("[Feishu] Using interactive card for markdown content (%d chars)", len(content))
+                return "interactive", payload
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
@@ -4408,6 +5143,8 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        if msg_type == "interactive":
+            logger.info("[Feishu] Sending interactive card to %s, payload=%s", chat_id, payload[:2000])
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")

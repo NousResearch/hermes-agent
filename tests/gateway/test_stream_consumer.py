@@ -41,6 +41,13 @@ class TestCleanForDisplay:
             result = GatewayStreamConsumer._clean_for_display(text)
             assert "MEDIA:" not in result, f"Failed for wrapper: {wrapper}"
 
+    def test_lowercase_media_tag_stripped(self):
+        """Lowercase media: tags are internal directives too."""
+        text = "Here\nmedia:/tmp/golden_chinchilla-01.jpg"
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert "media:" not in result
+        assert "Here" in result
+
     def test_audio_as_voice_stripped(self):
         """[[audio_as_voice]] directive is removed."""
         text = "[[audio_as_voice]]\nMEDIA:/tmp/voice.ogg"
@@ -1908,3 +1915,81 @@ class TestUtf16OverflowDetection:
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
 
+
+
+class _NativeStreamSession:
+    def __init__(self):
+        self.started = []
+        self.updated = []
+        self.closed = []
+        self.message_id = "native-msg-1"
+
+    async def start(self, chat_id, *, reply_to=None, metadata=None):
+        self.started.append((chat_id, reply_to, metadata))
+        from gateway.platforms.base import SendResult
+        return SendResult(success=True, message_id=self.message_id)
+
+    async def update(self, text):
+        self.updated.append(text)
+        return True
+
+    async def close(self, final_text=None, *, note=""):
+        self.closed.append((final_text, note))
+        return True
+
+
+class _NativeStreamAdapter:
+    MAX_MESSAGE_LENGTH = 8000
+    SUPPORTS_NATIVE_STREAMING = True
+
+    def __init__(self, session):
+        self.session = session
+        self.send_calls = []
+        self.edit_calls = []
+
+    def truncate_message(self, text, max_length, len_fn=len):
+        return [text]
+
+    def len_for_limit(self, text):
+        return len(text)
+
+    def create_stream_session(self, metadata=None):
+        return self.session
+
+    async def send(self, *args, **kwargs):
+        self.send_calls.append((args, kwargs))
+        from gateway.platforms.base import SendResult
+        return SendResult(success=True, message_id="fallback-msg")
+
+    async def edit_message(self, *args, **kwargs):
+        self.edit_calls.append((args, kwargs))
+        from gateway.platforms.base import SendResult
+        return SendResult(success=True, message_id=kwargs.get("message_id"))
+
+
+@pytest.mark.asyncio
+async def test_stream_consumer_uses_adapter_native_stream_session_instead_of_send_edit():
+    session = _NativeStreamSession()
+    adapter = _NativeStreamAdapter(session)
+    consumer = GatewayStreamConsumer(
+        adapter=adapter,
+        chat_id="chat-1",
+        config=StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=""),
+        metadata={"thread_id": "topic-1", "stream_footer_note": "Agent: Hermes | Model: gpt-5.5"},
+        initial_reply_to_id="root-msg",
+    )
+
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta("hello")
+    await asyncio.sleep(0.03)
+    consumer.on_delta(" world")
+    consumer.finish()
+    await asyncio.wait_for(task, timeout=1)
+
+    assert session.started == [("chat-1", "root-msg", {"thread_id": "topic-1", "stream_footer_note": "Agent: Hermes | Model: gpt-5.5"})]
+    assert session.updated[-1] == "hello world"
+    assert session.closed == [("hello world", "Agent: Hermes | Model: gpt-5.5")]
+    assert adapter.send_calls == []
+    assert adapter.edit_calls == []
+    assert consumer.final_response_sent is True
+    assert consumer.final_content_delivered is True

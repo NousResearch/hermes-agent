@@ -1967,6 +1967,10 @@ class GatewayRunner:
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        # Cache for /model picker provider list (TTL 60s).
+        # Key: hash of (current_provider, current_base_url), Value: (providers, timestamp)
+        self._model_picker_cache: Dict[str, tuple] = {}
+        self._model_picker_cache_ttl: float = 60.0
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
@@ -11099,19 +11103,31 @@ class GatewayRunner:
                 adapter is not None
                 and getattr(type(adapter), "send_model_picker", None) is not None
             )
+            logger.info("[/model] adapter=%s has_picker=%s platform=%s", type(adapter).__name__ if adapter else None, has_picker, source.platform)
 
             if has_picker:
-                try:
-                    providers = list_picker_providers(
-                        current_provider=current_provider,
-                        current_base_url=current_base_url,
-                        current_model=current_model,
-                        user_providers=user_provs,
-                        custom_providers=custom_provs,
-                        max_models=50,
-                    )
-                except Exception:
-                    providers = []
+                # Check cache first to avoid repeated provider enumeration.
+                import hashlib, time as _time
+                _cache_key = hashlib.sha256(
+                    f"{current_provider}|{current_base_url}|{current_model}".encode()
+                ).hexdigest()
+                _cached = self._model_picker_cache.get(_cache_key)
+                if _cached is not None and _time.time() - _cached[1] < self._model_picker_cache_ttl:
+                    providers = _cached[0]
+                    logger.info("[/model] cache hit for key=%s age=%.1fs", _cache_key[:12], _time.time() - _cached[1])
+                else:
+                    try:
+                        providers = list_picker_providers(
+                            current_provider=current_provider,
+                            current_base_url=current_base_url,
+                            current_model=current_model,
+                            user_providers=user_provs,
+                            custom_providers=custom_provs,
+                            max_models=50,
+                        )
+                        self._model_picker_cache[_cache_key] = (providers, _time.time())
+                    except Exception:
+                        providers = []
 
                 if providers:
                     # Build a callback closure for when the user picks a model.
@@ -11243,6 +11259,7 @@ class GatewayRunner:
                         on_model_selected=_on_model_selected,
                         metadata=metadata,
                     )
+                    logger.info("[/model] send_model_picker result: success=%s error=%s providers_count=%d", result.success, getattr(result, 'error', None), len(providers))
                     if result.success:
                         return None  # Picker sent — adapter handles the response
 
@@ -17700,6 +17717,21 @@ class GatewayRunner:
             }
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+        if source.platform == Platform.FEISHU:
+            if _status_thread_metadata is None:
+                _status_thread_metadata = {}
+            try:
+                _model_cfg = (user_config or {}).get("model", {}) if isinstance(user_config, dict) else {}
+                _stream_model = str(model or _model_cfg.get("default") or "").strip()
+                _stream_provider = str(_model_cfg.get("provider") or "").strip()
+                _footer_parts = ["Agent: Hermes"]
+                if _stream_model:
+                    _footer_parts.append(f"Model: {_stream_model}")
+                if _stream_provider:
+                    _footer_parts.append(f"Provider: {_stream_provider}")
+                _status_thread_metadata["stream_footer_note"] = " | ".join(_footer_parts)
+            except Exception:
+                _status_thread_metadata["stream_footer_note"] = "Agent: Hermes"
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():

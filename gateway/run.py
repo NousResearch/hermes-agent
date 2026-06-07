@@ -9636,7 +9636,11 @@ class GatewayRunner:
                     "rephrase your question."
                 )
             if voice_reply_note:
-                response = self._sanitize_voice_reply_response(response, event)
+                response = self._sanitize_voice_reply_response(
+                    response,
+                    event,
+                    user_text=message_text,
+                )
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -12577,7 +12581,13 @@ class GatewayRunner:
             "provided in the user message or verified by an allowed tool.]"
         )
 
-    def _sanitize_voice_reply_response(self, response: str, event: MessageEvent | None = None) -> str:
+    def _sanitize_voice_reply_response(
+        self,
+        response: str,
+        event: MessageEvent | None = None,
+        *,
+        user_text: str | None = None,
+    ) -> str:
         """Remove persona/status leakage before voice bench, TTS, and send."""
         text = str(response or "")
         if not text:
@@ -12595,12 +12605,22 @@ class GatewayRunner:
             text = _VOICE_PERSONA_PREFIX_RE.sub("", text, count=1).lstrip()
         text = text.strip()
         if _VOICE_PROVIDER_FAILURE_RE.search(text):
-            return self._voice_provider_failure_fallback(event)
+            return self._voice_provider_failure_fallback(event, user_text=user_text)
         return text
 
-    def _voice_provider_failure_fallback(self, event: MessageEvent | None = None) -> str:
+    def _voice_provider_failure_fallback(
+        self,
+        event: MessageEvent | None = None,
+        *,
+        user_text: str | None = None,
+    ) -> str:
         """Short deterministic fallback when the low-latency voice model is unavailable."""
-        heard = str(getattr(event, "text", "") or getattr(event, "content", "") or "")
+        heard = str(
+            user_text
+            or getattr(event, "text", "")
+            or getattr(event, "content", "")
+            or ""
+        )
         match = _VOICE_SIMPLE_SUM_RE.search(heard)
         if match:
             return str(int(match.group(1)) + int(match.group(2)))

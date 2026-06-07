@@ -2945,6 +2945,26 @@ class TestVoiceTTSPlayback:
 
         assert response == "Test ok."
 
+    def test_voice_reply_sanitizer_uses_prepared_transcript_for_voice_fallback(self):
+        """Telegram voice events can have transcript only in prepared message_text."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="ch1"),
+            text="",
+            message_type=MessageType.VOICE,
+        )
+
+        response = runner._sanitize_voice_reply_response(
+            "I reached the maximum iterations (1) but couldn't summarize. "
+            "Error: Gemini quota exhausted.",
+            event,
+            user_text="Hermes, răspunde foarte scurt. Test OK.",
+        )
+
+        assert response == "Test ok."
+
     def test_voice_reply_sanitizer_maps_quota_failure_for_simple_math(self):
         """Simple result-only arithmetic still works when the fast provider fails."""
         from gateway.config import Platform

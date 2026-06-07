@@ -938,6 +938,7 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
         pct = round((speed - 1.0) * 100)
         kwargs["rate"] = f"{pct:+d}%"
 
+    logger.info("Generating speech with Edge TTS voice=%s", voice)
     communicate = _edge_tts.Communicate(text, **kwargs)
     await communicate.save(output_path)
     return output_path
@@ -1853,6 +1854,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
+    voice: Optional[str] = None,
 ) -> str:
     """
     Convert text to speech audio.
@@ -1867,6 +1869,7 @@ def text_to_speech_tool(
     Args:
         text: The text to convert to speech.
         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+        voice: Optional per-call voice override. Currently applied to Edge TTS.
 
     Returns:
         str: JSON result with success, file_path, and optionally MEDIA tag.
@@ -1876,6 +1879,12 @@ def text_to_speech_tool(
 
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
+    voice_override = str(voice or "").strip()
+    if voice_override and provider == "edge":
+        tts_config = dict(tts_config)
+        edge_config = dict(tts_config.get("edge") or {})
+        edge_config["voice"] = voice_override
+        tts_config["edge"] = edge_config
 
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here
@@ -2130,7 +2139,16 @@ def text_to_speech_tool(
             voice_compatible = want_opus and file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
-        logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)
+        result_voice = ""
+        if provider == "edge":
+            result_voice = str((tts_config.get("edge") or {}).get("voice") or DEFAULT_EDGE_VOICE)
+        logger.info(
+            "TTS audio saved: %s (%s bytes, provider: %s, voice: %s)",
+            file_str,
+            f"{file_size:,}",
+            provider,
+            result_voice or "default",
+        )
 
         # Build response with MEDIA tag for platform delivery
         media_tag = f"MEDIA:{file_str}"
@@ -2142,6 +2160,7 @@ def text_to_speech_tool(
             "file_path": file_str,
             "media_tag": media_tag,
             "provider": provider,
+            "voice": result_voice,
             "voice_compatible": voice_compatible,
         }, ensure_ascii=False)
 

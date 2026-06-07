@@ -70,6 +70,37 @@ def test_edge_telegram_converts_to_opus_voice(tmp_path, monkeypatch):
     convert.assert_called_once_with(str(out))
 
 
+def test_edge_direct_voice_override_beats_configured_voice(tmp_path, monkeypatch):
+    out = tmp_path / "speech.mp3"
+    seen = {}
+
+    async def fake_edge(text: str, output_path: str, tts_config: dict) -> str:
+        seen["voice"] = tts_config["edge"]["voice"]
+        Path(output_path).write_bytes(b"mp3")
+        return output_path
+
+    monkeypatch.setattr(
+        tts_tool,
+        "_load_tts_config",
+        lambda: {"provider": "edge", "edge": {"voice": "ro-RO-EmilNeural"}},
+    )
+    monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: object())
+    monkeypatch.setattr(tts_tool, "_generate_edge_tts", fake_edge)
+    monkeypatch.setattr(tts_tool, "_convert_to_opus", Mock())
+
+    result = json.loads(
+        tts_tool.text_to_speech_tool(
+            "hello",
+            output_path=str(out),
+            voice="en-US-AriaNeural",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["voice"] == "en-US-AriaNeural"
+    assert seen["voice"] == "en-US-AriaNeural"
+
+
 @pytest.mark.asyncio
 async def test_edge_tts_honors_session_voice_override(tmp_path, monkeypatch):
     seen = {}

@@ -13716,7 +13716,10 @@ class GatewayRunner:
                     )
                     logger.info("Auto voice reply TTS voice override: %s", voice_override)
                 result_json = await asyncio.to_thread(
-                    text_to_speech_tool, text=tts_text, output_path=audio_path
+                    text_to_speech_tool,
+                    text=tts_text,
+                    output_path=audio_path,
+                    voice=voice_override or None,
                 )
             finally:
                 if voice_token is not None:

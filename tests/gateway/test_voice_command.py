@@ -625,11 +625,13 @@ class TestSendVoiceReply:
         event = _make_event()
         runner.adapters[event.source.platform] = mock_adapter
         seen_voice_overrides = []
+        seen_voice_args = []
 
-        def fake_tts(*, text, output_path):
+        def fake_tts(*, text, output_path, voice=None):
             seen_voice_overrides.append(
                 get_session_env("HERMES_VOICE_TTS_VOICE_OVERRIDE")
             )
+            seen_voice_args.append(voice)
             return json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
 
         with patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts), \
@@ -643,6 +645,7 @@ class TestSendVoiceReply:
             )
 
         assert seen_voice_overrides == ["en-US-AriaNeural"]
+        assert seen_voice_args == ["en-US-AriaNeural"]
         assert get_session_env("HERMES_VOICE_TTS_VOICE_OVERRIDE") == ""
         mock_adapter.send_voice.assert_called_once()
 

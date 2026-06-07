@@ -729,63 +729,99 @@ def _plugin_exists(name: str) -> bool:
 
 
 def _discover_all_plugins() -> list:
-    """Return a list of (name, version, description, source, dir_path) for
-    every plugin the loader can see — user + bundled + project.
+    """Return a list of (name, version, description, source, dir_path, key)
+    for every plugin the loader can see — user + bundled + project.
 
     Matches the ordering/dedup of ``PluginManager.discover_and_load``:
     bundled first, then user, then project; user overrides bundled on
-    name collision.
+    key collision.
+
+    Supports two layouts (matching ``PluginManager._scan_directory_level``):
+    * **Flat** — ``<root>/<plugin-name>/plugin.yaml``. Key = ``<plugin-name>``.
+    * **Category** — ``<root>/<category>/<plugin-name>/plugin.yaml``, where
+      the ``<category>`` dir has no manifest. Key = ``<category>/<plugin-name>``.
+      Depth is capped at two segments.
     """
     try:
         import yaml
     except ImportError:
         yaml = None
 
-    seen: dict = {}  # name -> (name, version, description, source, path)
+    # key -> (name, version, description, source, path, key)
+    # ``key`` is the path-derived identifier (e.g. "web/tavily") used in
+    # config files; ``name`` is the manifest display name.
+    seen: dict = {}
 
-    # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
-    from hermes_cli.plugins import get_bundled_plugins_dir
-    repo_plugins = get_bundled_plugins_dir()
-    for base, source in ((repo_plugins, "bundled"), (_plugins_dir(), "user")):
-        if not base.is_dir():
-            continue
-        for d in sorted(base.iterdir()):
+    def _read_info(d, prefix):
+        """Read manifest from *d*, return (name, ver, desc, key) or None."""
+        manifest_file = d / "plugin.yaml"
+        if not manifest_file.exists():
+            manifest_file = d / "plugin.yml"
+        if not manifest_file.exists():
+            return None
+        key = f"{prefix}/{d.name}" if prefix else d.name
+        name = d.name
+        version = ""
+        description = ""
+        if yaml:
+            try:
+                with open(manifest_file, encoding="utf-8") as f:
+                    manifest = yaml.safe_load(f) or {}
+                name = manifest.get("name", d.name)
+                version = manifest.get("version", "")
+                description = manifest.get("description", "")
+            except Exception:
+                pass
+        return name, version, description, key
+
+    def _scan_level(path, source, skip_names, prefix, depth):
+        """Recursive directory scan matching PluginManager._scan_directory_level."""
+        if not path.is_dir():
+            return
+        for d in sorted(path.iterdir()):
             if not d.is_dir():
                 continue
-            if source == "bundled" and d.name in {"memory", "context_engine"}:
+            if depth == 0 and skip_names and d.name in skip_names:
                 continue
-            manifest_file = d / "plugin.yaml"
-            if not manifest_file.exists():
-                manifest_file = d / "plugin.yml"
-            if not manifest_file.exists():
+            info = _read_info(d, prefix)
+            if info is not None:
+                name, version, description, key = info
+                # Dedup by key — user overrides bundled on collision.
+                if key in seen and source == "bundled":
+                    continue
+                src_label = source
+                if source == "user" and (d / ".git").exists():
+                    src_label = "git"
+                seen[key] = (name, version, description, src_label, d, key)
                 continue
-            name = d.name
-            version = ""
-            description = ""
-            if yaml:
-                try:
-                    with open(manifest_file, encoding="utf-8") as f:
-                        manifest = yaml.safe_load(f) or {}
-                    name = manifest.get("name", d.name)
-                    version = manifest.get("version", "")
-                    description = manifest.get("description", "")
-                except Exception:
-                    pass
-            # User plugins override bundled on name collision.
-            if name in seen and source == "bundled":
+            # No manifest at this level — recurse into category directory
+            # if we haven't hit the depth cap yet.
+            if depth >= 1:
                 continue
-            src_label = source
-            if source == "user" and (d / ".git").exists():
-                src_label = "git"
-            seen[name] = (name, version, description, src_label, d)
+            sub_prefix = f"{prefix}/{d.name}" if prefix else d.name
+            _scan_level(d, source, skip_names=None, prefix=sub_prefix,
+                        depth=depth + 1)
+
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    repo_plugins = get_bundled_plugins_dir()
+    skip = {"memory", "context_engine"}
+    for base, source in ((repo_plugins, "bundled"), (_plugins_dir(), "user")):
+        _scan_level(base, source,
+                    skip_names=skip if source == "bundled" else None,
+                    prefix="", depth=0)
     return list(seen.values())
 
 
-def _plugin_status(name: str, enabled: set, disabled: set) -> str:
-    """Return the user-facing activation state for a plugin name."""
-    if name in disabled:
+def _plugin_status(name: str, enabled: set, disabled: set, key: str = "") -> str:
+    """Return the user-facing activation state for a plugin.
+
+    Checks both the manifest *name* and the path-derived *key* (e.g.
+    ``web/tavily``) against the enabled/disabled sets so that category-
+    namespaced plugins resolve correctly.
+    """
+    if name in disabled or (key and key in disabled):
         return "disabled"
-    if name in enabled:
+    if name in enabled or (key and key in enabled):
         return "enabled"
     return "not enabled"
 
@@ -798,7 +834,8 @@ def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set
     if getattr(args, "enabled", False):
         filtered = [
             entry for entry in filtered
-            if _plugin_status(entry[0], enabled, disabled) == "enabled"
+            if _plugin_status(entry[0], enabled, disabled,
+                              key=entry[5] if len(entry) > 5 else "") == "enabled"
         ]
     return filtered
 
@@ -823,19 +860,20 @@ def cmd_list(args: Any | None = None) -> None:
         payload = [
             {
                 "name": name,
-                "status": _plugin_status(name, enabled, disabled),
+                "key": key,
+                "status": _plugin_status(name, enabled, disabled, key=key),
                 "version": str(version),
                 "description": description,
                 "source": source,
             }
-            for name, version, description, source, _dir in entries
+            for name, version, description, source, _dir, key in entries
         ]
         print(json.dumps(payload, indent=2))
         return
 
     if getattr(args, "plain", False):
-        for name, version, _description, source, _dir in entries:
-            status = _plugin_status(name, enabled, disabled)
+        for name, version, _description, source, _dir, key in entries:
+            status = _plugin_status(name, enabled, disabled, key=key)
             print(f"{status:12} {source:8} {str(version):8} {name}")
         return
 
@@ -850,8 +888,8 @@ def cmd_list(args: Any | None = None) -> None:
     table.add_column("Description")
     table.add_column("Source", style="dim")
 
-    for name, version, description, source, _dir in entries:
-        status_name = _plugin_status(name, enabled, disabled)
+    for name, version, description, source, _dir, key in entries:
+        status_name = _plugin_status(name, enabled, disabled, key=key)
         if status_name == "disabled":
             status = "[red]disabled[/red]"
         elif status_name == "enabled":
@@ -1051,7 +1089,7 @@ def cmd_toggle() -> None:
     plugin_labels = []
     plugin_selected = set()
 
-    for i, (name, _version, description, source, _d) in enumerate(entries):
+    for i, (name, _version, description, source, _d, _key) in enumerate(entries):
         label = f"{name} \u2014 {description}" if description else name
         if source == "bundled":
             label = f"{label} [bundled]"
@@ -1641,7 +1679,7 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
     """Delete a plugin tree under ``~/.hermes/plugins/`` only."""
     plugins_dir = _plugins_dir()
-    for n, _ver, _d, src, _path in _discover_all_plugins():
+    for n, _ver, _d, src, _path, _key in _discover_all_plugins():
         if n == name and src == "bundled":
             return {"ok": False, "error": "Bundled plugins cannot be removed from the dashboard."}
 

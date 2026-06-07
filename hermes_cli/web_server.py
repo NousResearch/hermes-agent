@@ -9421,10 +9421,10 @@ def _merged_plugins_hub() -> Dict[str, Any]:
     plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
     rows: List[Dict[str, Any]] = []
 
-    for name, version, description, source, dir_str in _discover_all_plugins():
-        if name in disabled_set:
+    for name, version, description, source, dir_str, key in _discover_all_plugins():
+        if name in disabled_set or (key and key in disabled_set):
             runtime_status = "disabled"
-        elif name in enabled_set:
+        elif name in enabled_set or (key and key in enabled_set):
             runtime_status = "enabled"
         else:
             runtime_status = "inactive"

@@ -644,6 +644,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // Server already wrote an ANSI error frame.
         return;
       }
+      if (ev.code === 1012) {
+        setBanner(
+          "Dashboard restarted. This chat connection was interrupted. Reload the page or open a new session.",
+        );
+        term.write(
+          "\r\n\x1b[33m[dashboard restarted — reload the page or open a new session]\x1b[0m\r\n",
+        );
+        return;
+      }
       term.write(
         `\r\n\x1b[90m[session ended (code ${ev.code})]\x1b[0m\r\n`,
       );

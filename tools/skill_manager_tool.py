@@ -482,6 +482,63 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
 # Core actions
 # =============================================================================
 
+def _inject_provenance_metadata(content: str, is_draft: bool = False) -> str:
+    """Inject provenance metadata into skill frontmatter.
+    
+    If is_draft is True, adds:
+      author: agent
+      status: draft
+      confirmed_at: null
+    
+    If is_draft is False, adds:
+      author: user
+      (no status field — legacy behavior for user-created skills)
+    
+    Args:
+        content: SKILL.md text (assumed to have valid frontmatter)
+        is_draft: Whether this is an agent-created draft skill
+    
+    Returns:
+        Updated content with injected metadata
+    """
+    if not content.startswith("---"):
+        return content
+    
+    # Find frontmatter boundaries
+    end_match = content.find('\n---\n', 3)
+    if end_match < 0:
+        return content
+    
+    yaml_str = content[3:end_match]
+    body = content[end_match + 5:]  # Skip '\n---\n'
+    
+    # Parse YAML to avoid duplication
+    try:
+        fm = yaml.safe_load(yaml_str) or {}
+    except Exception:
+        # If YAML parsing fails, return content unchanged
+        return content
+    
+    # Inject metadata based on draft status
+    if is_draft:
+        fm['author'] = 'agent'
+        fm['status'] = 'draft'
+        fm['confirmed_at'] = None
+    else:
+        # User-created skills get author=user but no status field
+        fm['author'] = 'user'
+    
+    # Re-serialize YAML (preserve structure)
+    try:
+        updated_yaml = yaml.dump(fm, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        # yaml.dump adds trailing newline; remove it
+        updated_yaml = updated_yaml.rstrip('\n')
+    except Exception:
+        return content
+    
+    return f"---\n{updated_yaml}\n---\n{body}"
+
+
 def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
     """Create a new user skill with SKILL.md content."""
     # Validate name
@@ -515,6 +572,11 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     # Write SKILL.md atomically
+    # Inject provenance metadata (author/status/confirmed_at)
+    from tools.skill_provenance import is_background_review
+    is_draft = is_background_review()
+    content = _inject_provenance_metadata(content, is_draft=is_draft)
+
     skill_md = skill_dir / "SKILL.md"
     _atomic_write_text(skill_md, content)
 

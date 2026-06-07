@@ -891,7 +891,13 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
             code_preview += "..."
         return f"[execute_code] `{code_preview}` ({line_count} lines output)"
 
-    if tool_name in {"skill_view", "skills_list", "skill_manage"}:
+    if tool_name == "skill_view":
+        name = args.get("name", "?")
+        if content_len > 5000:
+            return f"[skill_view] name={name} ({content_len:,} chars) [SKILL_PRUNED: content lost in compression; reload with skill_view before relying on it]"
+        return f"[skill_view] name={name} ({content_len:,} chars)"
+
+    if tool_name in {"skills_list", "skill_manage"}:
         name = args.get("name", "?")
         return f"[{tool_name}] name={name} ({content_len:,} chars)"
 

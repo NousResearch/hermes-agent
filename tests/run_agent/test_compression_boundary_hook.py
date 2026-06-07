@@ -17,7 +17,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
-
 class TestCompressionBoundaryHook:
     def _make_agent(self, session_db):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
@@ -90,7 +89,7 @@ class TestCompressionBoundaryHook:
             assert call.kwargs.get("old_session_id") == original_sid, \
                 f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
 
-    def test_compression_new_session_prefers_explicit_session_source(self, monkeypatch):
+    def test_compression_new_session_prefers_explicit_session_source(self):
         from hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -99,7 +98,6 @@ class TestCompressionBoundaryHook:
             agent.platform = "cli"
             db.create_session(session_id=agent.session_id, source="cli")
             agent._session_db_created = True
-            monkeypatch.setenv("HERMES_SESSION_SOURCE", "tool")
 
             compressor = MagicMock()
             compressor.compress.return_value = [
@@ -113,11 +111,12 @@ class TestCompressionBoundaryHook:
             compressor._last_compress_aborted = False
             agent.context_compressor = compressor
 
-            agent._compress_context(
-                [{"role": "user", "content": f"m{i}"} for i in range(10)],
-                "sys",
-                approx_tokens=10_000,
-            )
+            with patch.dict(os.environ, {"HERMES_SESSION_SOURCE": "tool"}):
+                agent._compress_context(
+                    [{"role": "user", "content": f"m{i}"} for i in range(10)],
+                    "sys",
+                    approx_tokens=10_000,
+                )
 
             session = db.get_session(agent.session_id)
             assert session is not None

@@ -292,6 +292,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "stepfun": [
+        "step-3.7-flash",
         "step-3.5-flash",
         "step-3.5-flash-2603",
     ],
@@ -1636,6 +1637,14 @@ def curated_models_for_provider(
     # Try live API first (Codex, Nous, etc. all support /models)
     live = provider_model_ids(normalized)
     if live:
+        # For StepFun, the Step Plan API may return a subset of models.
+        # Merge live results with the static catalog so models available
+        # via the Standard API (e.g. step-3.7-flash) still appear in the
+        # picker even when the configured base_url points to Step Plan.
+        if normalized == "stepfun":
+            static = _PROVIDER_MODELS.get(normalized, [])
+            merged = list(dict.fromkeys(live + static))
+            return [(m, "") for m in merged]
         return [(m, "") for m in live]
 
     # Fallback to static catalog

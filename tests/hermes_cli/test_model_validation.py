@@ -145,6 +145,23 @@ class TestCuratedModelsForProvider:
     def test_unknown_provider_returns_empty(self):
         assert curated_models_for_provider("totally-unknown") == []
 
+    def test_stepfun_merges_live_and_static(self):
+        """StepFun Step Plan API returns a subset; curated list merges with static."""
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": "***", "base_url": "https://api.stepfun.ai/step_plan/v1"},
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["step-3.5-flash", "step-3.5-flash-2603"],
+        ):
+            models = curated_models_for_provider("stepfun")
+        model_ids = [m[0] for m in models]
+        # Live models appear first, static-only models appended
+        assert model_ids[0] == "step-3.5-flash"
+        assert "step-3.7-flash" in model_ids
+        # No duplicates
+        assert len(model_ids) == len(set(model_ids))
+
 
 # -- normalize_provider ------------------------------------------------------
 

@@ -6,6 +6,12 @@ Updated: 2026-05-26
 
 Status: implemented, enabled, scheduled, and locally verified.
 
+## P0 Incident: Destructive Workspace Retirement Guard
+
+Status: open and requires Hermes Agent remediation.
+
+On 2026-06-07, AI deleted the local EmailHunter workspace during migration closeout after over-interpreting "no leftovers". The workspace was restored from branch `codex/local-retirement-snapshot-20260606`, but Hermes Agent must add a hard destructive-operation guard for project-root/worktree deletion. See `.hermes/issues/phase-013-destructive-workspace-retirement-guard.md`.
+
 Files added or changed for this work:
 
 - `plugins/trend_discovery/`

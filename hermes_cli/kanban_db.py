@@ -1393,14 +1393,74 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     if str(resolved) in _INITIALIZED_PATHS:
         return
     reason: Optional[str] = None
+    integrity_rows: list[str] = []
     try:
         probe = _sqlite_connect(resolved)
         try:
-            row = probe.execute("PRAGMA integrity_check").fetchone()
+            # integrity_check returns one row per problem, or a single ('ok',).
+            integrity_rows = [
+                (r[0] or "") for r in probe.execute("PRAGMA integrity_check").fetchall()
+            ]
         finally:
             probe.close()
-        if not row or (row[0] or "").lower() != "ok":
-            reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
+        if not integrity_rows or (
+            len(integrity_rows) == 1 and integrity_rows[0].lower() == "ok"
+        ):
+            return
+        # If every reported problem is isolated to the ephemeral
+        # ``kanban_notify_subs`` table or its indexes (notification
+        # routing — losing rows is a no-op, subscribers re-register on
+        # next use), try a self-heal: drop+recreate the table, reindex,
+        # and re-check. This avoids taking the whole kanban offline for
+        # a transient routing-state corruption (which has been observed
+        # in the wild when a malformed write path inserts non-conforming
+        # rows).
+        _NOTIFY_TOKENS = ("kanban_notify_subs", "idx_notify_task")
+        if all(any(tok in msg for tok in _NOTIFY_TOKENS) for msg in integrity_rows):
+            try:
+                healed = sqlite3.connect(str(resolved), timeout=5, isolation_level=None)
+                try:
+                    # DROP+recreate is more reliable than DELETE+REINDEX
+                    # when the table's b-tree pages themselves are
+                    # malformed.
+                    healed.execute("DROP TABLE IF EXISTS kanban_notify_subs")
+                    healed.execute(
+                        """
+                        CREATE TABLE kanban_notify_subs (
+                            task_id          TEXT NOT NULL,
+                            platform         TEXT NOT NULL,
+                            chat_id          TEXT NOT NULL,
+                            thread_id        TEXT NOT NULL DEFAULT '',
+                            user_id          TEXT,
+                            notifier_profile TEXT,
+                            created_at       INTEGER NOT NULL,
+                            last_event_id    INTEGER NOT NULL DEFAULT 0,
+                            PRIMARY KEY (task_id, platform, chat_id, thread_id)
+                        )
+                        """
+                    )
+                    healed.execute(
+                        "CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)"
+                    )
+                    healed.execute("REINDEX")
+                    recheck = [
+                        (r[0] or "")
+                        for r in healed.execute("PRAGMA integrity_check").fetchall()
+                    ]
+                finally:
+                    healed.close()
+                if (
+                    len(recheck) == 1 and recheck[0].lower() == "ok"
+                ):
+                    return  # healed; carry on
+                reason = (
+                    "integrity_check still failing after kanban_notify_subs "
+                    f"self-heal: {recheck!r}"
+                )
+            except sqlite3.DatabaseError as exc:
+                reason = f"self-heal of kanban_notify_subs failed: {exc}"
+        else:
+            reason = f"integrity_check returned {integrity_rows!r}"
     except sqlite3.OperationalError:
         # Lock contention, busy, transient IO — not corruption. Let it propagate.
         raise

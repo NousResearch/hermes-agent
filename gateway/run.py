@@ -4822,16 +4822,30 @@ class GatewayRunner:
         # Start background session expiry watcher to finalize expired sessions
         asyncio.create_task(self._session_expiry_watcher())
 
-        # Start background kanban notifier — delivers `completed`, `blocked`,
-        # `spawn_auto_blocked`, and `crashed` events to gateway subscribers
-        # so human-in-the-loop workflows hear back without polling.
-        asyncio.create_task(self._kanban_notifier_watcher())
+        # Start background kanban notifier — delivers card-move events to
+        # gateway subscribers so human-in-the-loop workflows hear back
+        # without polling. Wrapped in a supervisor that restarts the
+        # watcher on any exception (including BaseException / GC of the
+        # task handle), so a single transient SQLite "disk I/O error"
+        # or accidental cancellation can't permanently kill the
+        # pipeline. Strong refs held on `self` so the task isn't
+        # garbage-collected.
+        self._kanban_notifier_task = asyncio.create_task(
+            self._supervised_loop(
+                "kanban_notifier", self._kanban_notifier_watcher,
+            )
+        )
 
         # Start background kanban dispatcher — spawns workers for ready
         # tasks. Gated by `kanban.dispatch_in_gateway` (default True).
         # When false, users run `hermes kanban daemon` externally or
-        # simply don't use kanban; this loop becomes a no-op.
-        asyncio.create_task(self._kanban_dispatcher_watcher())
+        # simply don't use kanban; this loop becomes a no-op. Same
+        # supervisor pattern as the notifier.
+        self._kanban_dispatcher_task = asyncio.create_task(
+            self._supervised_loop(
+                "kanban_dispatcher", self._kanban_dispatcher_watcher,
+            )
+        )
 
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
@@ -5241,6 +5255,78 @@ class GatewayRunner:
         except Exception:
             return "default"
 
+    async def _supervised_loop(
+        self,
+        name: str,
+        coro_factory,
+        *,
+        initial_backoff: float = 1.0,
+        max_backoff: float = 60.0,
+    ) -> None:
+        """Run ``coro_factory()`` in a self-restarting supervisor.
+
+        The kanban notifier and dispatcher are long-lived watchers that
+        used to be spawned bare with ``asyncio.create_task(...)`` — a
+        single transient SQLite ``disk I/O error`` between ticks, or
+        garbage collection of the task handle, would silently kill the
+        loop with no restart. Symptom: card moves stop generating
+        Telegram pings even though the dispatcher keeps spawning
+        workers, because they're separate tasks.
+
+        This wrapper:
+          * Catches every ``Exception`` (transient errors → restart
+            with exponential backoff capped at ``max_backoff``).
+          * Catches ``asyncio.CancelledError`` and re-raises only when
+            ``self._running`` is False (clean shutdown). A spurious
+            cancel mid-flight gets logged and the loop is restarted.
+          * Lets ``BaseException`` (e.g. ``SystemExit``,
+            ``KeyboardInterrupt``) propagate so process exit still
+            works.
+
+        Backoff resets to ``initial_backoff`` after the watcher runs
+        for at least 60s without throwing — that way persistent bugs
+        still surface as frequent log entries instead of being hidden
+        by an ever-growing sleep.
+        """
+        backoff = initial_backoff
+        while self._running:
+            started = time.monotonic()
+            try:
+                await coro_factory()
+                # Watcher returned cleanly (e.g. self._running flipped
+                # to False during its own loop). Honor that.
+                if not self._running:
+                    return
+                logger.warning(
+                    "supervised loop %s returned while gateway running; restarting",
+                    name,
+                )
+            except asyncio.CancelledError:
+                if not self._running:
+                    raise
+                logger.warning(
+                    "supervised loop %s was cancelled but gateway is still "
+                    "running; restarting in %.1fs",
+                    name, backoff,
+                )
+            except Exception as exc:
+                logger.error(
+                    "supervised loop %s crashed: %s; restarting in %.1fs",
+                    name, exc, backoff, exc_info=True,
+                )
+            # If the watcher ran for at least a minute before failing,
+            # treat this as an isolated incident and reset backoff.
+            if time.monotonic() - started >= 60.0:
+                backoff = initial_backoff
+            if not self._running:
+                return
+            try:
+                await asyncio.sleep(backoff)
+            except asyncio.CancelledError:
+                if not self._running:
+                    raise
+            backoff = min(backoff * 2, max_backoff)
+
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
 
@@ -5291,7 +5377,18 @@ class GatewayRunner:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
 
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        TERMINAL_KINDS = (
+            "completed", "blocked", "gave_up", "crashed", "timed_out",
+            # Lifecycle moves the user wants pings for. Each one is a
+            # visible state transition: card was assigned to a worker
+            # (`claimed`), worker process actually started (`spawned`),
+            # an external action unblocked it (`unblocked`), or the
+            # dispatcher re-queued it for retry (`scheduled` /
+            # `reclaimed`). Decomposition (`decomposed`) is the moment
+            # a triage step splits a card into child tasks.
+            "claimed", "spawned", "unblocked", "scheduled",
+            "reclaimed", "decomposed",
+        )
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -5504,6 +5601,45 @@ class GatewayRunner:
                             msg = (
                                 f"⏱ {tag}Kanban {sub['task_id']} timed out "
                                 f"(max_runtime={limit}s); will retry"
+                            )
+                        elif kind == "claimed":
+                            # Worker profile picked the card off the
+                            # queue. Surfaces the assignment so the
+                            # user knows who's driving.
+                            msg = f"🤝 {tag}Kanban {sub['task_id']} claimed — {title}"
+                        elif kind == "spawned":
+                            pid = ev.payload.get("pid") if ev.payload else None
+                            extra = f" (pid {pid})" if pid else ""
+                            msg = (
+                                f"▶ {tag}Kanban {sub['task_id']} worker started"
+                                f"{extra} — {title}"
+                            )
+                        elif kind == "unblocked":
+                            msg = f"▶ {tag}Kanban {sub['task_id']} unblocked — {title}"
+                        elif kind == "scheduled":
+                            reason = ""
+                            if ev.payload and ev.payload.get("reason"):
+                                reason = f": {str(ev.payload['reason'])[:120]}"
+                            msg = (
+                                f"📅 {tag}Kanban {sub['task_id']} re-queued"
+                                f"{reason}"
+                            )
+                        elif kind == "reclaimed":
+                            msg = (
+                                f"🔄 {tag}Kanban {sub['task_id']} reclaimed by "
+                                f"dispatcher — {title}"
+                            )
+                        elif kind == "decomposed":
+                            children = 0
+                            if ev.payload and ev.payload.get("children"):
+                                try:
+                                    children = len(ev.payload["children"])
+                                except Exception:
+                                    children = 0
+                            extra = f" into {children} subtask(s)" if children else ""
+                            msg = (
+                                f"🧩 {tag}Kanban {sub['task_id']} decomposed"
+                                f"{extra} — {title}"
                             )
                         else:
                             continue

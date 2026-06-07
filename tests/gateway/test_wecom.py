@@ -1169,8 +1169,8 @@ class TestSendStreamFrame:
         assert ids[0].startswith("stream_")
 
     @pytest.mark.asyncio
-    async def test_intermediate_frame_skipped_within_backpressure_window(self):
-        """Rapid intermediate frames within skip window are dropped (backpressure)."""
+    async def test_intermediate_frame_skipped_within_throttle_window(self):
+        """Rapid intermediate frames within skip window are dropped (throttle)."""
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -1180,7 +1180,7 @@ class TestSendStreamFrame:
         adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
         await adapter.send_stream_frame("alpha", chat_id="chat-1")
-        # Immediately send another — should be skipped by backpressure.
+        # Immediately send another — should be skipped by throttle.
         ok = await adapter.send_stream_frame("alpha beta", chat_id="chat-1")
 
         assert ok is True  # returns True (skip is silent success)
@@ -1190,6 +1190,38 @@ class TestSendStreamFrame:
         # accumulated_text still updated despite skip (for finalize).
         turn = list(adapter._stream_turns.values())[0]
         assert turn.accumulated_text == "alpha beta"
+
+    @pytest.mark.asyncio
+    async def test_intermediate_frame_cap_drops_excess(self):
+        """After MAX_INTERMEDIATE_FRAMES, further intermediate frames are dropped."""
+        from gateway.platforms.wecom import WeComAdapter, MAX_INTERMEDIATE_FRAMES
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_json = AsyncMock()
+        adapter._ws = MagicMock(closed=False)
+        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+
+        # First call creates turn + seed + content frame.
+        turn_id = "cap-test"
+        await adapter.send_stream_frame("first", chat_id="chat-1", turn_id=turn_id)
+        turn_key = f"chat-1:{turn_id}"
+        turn = adapter._stream_turns[turn_key]
+
+        # Artificially set counter to the cap.
+        turn._intermediate_frames_sent = MAX_INTERMEDIATE_FRAMES
+        turn._last_frame_sent_at = 0  # clear time throttle
+
+        # Next intermediate frame should be dropped.
+        ok = await adapter.send_stream_frame("overflow", chat_id="chat-1", turn_id=turn_id)
+        assert ok is True
+        assert turn.accumulated_text == "overflow"
+        # No additional _send_json call beyond the initial seed + content.
+        initial_count = adapter._send_json.await_count
+
+        # Finalize still goes through unconditionally.
+        ok = await adapter.send_stream_frame("final", chat_id="chat-1", finalize=True, turn_id=turn_id)
+        assert ok is True
 
     @pytest.mark.asyncio
     async def test_finalize_sends_finish_true_and_resets_state(self):

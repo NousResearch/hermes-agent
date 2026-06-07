@@ -105,11 +105,20 @@ DEDUP_MAX_SIZE = 1000
 STREAM_EXPIRED_ERRCODE = 846608  # >6 min without update — stream is dead
 STREAM_NOT_SUBSCRIBED_ERRCODE = 846609  # ws connection lost the subscription
 MAX_STREAM_CONTENT_LENGTH = 20480  # WeCom server-enforced byte limit per frame
-# Backpressure skip window for intermediate stream frames (seconds).
+# Throttle window for intermediate stream frames (seconds).
 # If the previous frame was sent less than this duration ago, the current
 # intermediate frame is dropped.  Cumulative text guarantees no info loss.
-# Mirrors the official plugin's replyStreamNonBlocking skip semantics.
-STREAM_FRAME_SKIP_WINDOW = 0.15  # 150ms — covers network RTT to WeCom
+# NOTE: This is a time-based throttle, NOT true in-flight backpressure.
+# Our fire-and-forget path has no ack signal, so we cannot replicate the
+# official SDK's replyStreamNonBlocking (which skips when an ack is pending).
+# 200ms is a pragmatic middle ground: fast enough for smooth streaming UX,
+# slow enough to prevent frame pile-up under load.
+STREAM_FRAME_SKIP_WINDOW = 0.2  # 200ms
+# Per-turn cap on intermediate frames.  WeCom SDK has an internal 100-frame
+# per-reqId queue limit; we cap at 85 (matching openclaw plugin) to guarantee
+# room for the finalize frame.  Once hit, all further intermediate frames are
+# silently dropped — finalize still sends unconditionally.
+MAX_INTERMEDIATE_FRAMES = 85
 
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
 VIDEO_MAX_BYTES = 10 * 1024 * 1024
@@ -187,13 +196,11 @@ class StreamTurn:
         self.seeded = False  # True after seed frame sent (prevents double seed)
         self.start_time = time.monotonic()
         self.expired = False
-        # Backpressure: timestamp of last intermediate frame dispatch.
-        # When the next intermediate frame arrives within the skip window,
-        # it is dropped (cumulative text means no information is lost).
-        # Mirrors the official OpenClaw plugin's replyStreamNonBlocking
-        # semantics: skip mid-stream frames when the previous one is likely
-        # still in flight; finalize frames always send unconditionally.
+        # Throttle state for intermediate frames.
+        # Time-based: skip frames arriving within STREAM_FRAME_SKIP_WINDOW.
+        # Count-based: cap at MAX_INTERMEDIATE_FRAMES per turn.
         self._last_frame_sent_at: float = 0.0
+        self._intermediate_frames_sent: int = 0
 
 
 class WeComAdapter(BasePlatformAdapter):
@@ -2284,17 +2291,23 @@ class WeComAdapter(BasePlatformAdapter):
                 else:
                     self._cleanup_stream_turn(chat, turn.req_id)
             else:
-                # Backpressure: skip this intermediate frame if the previous
-                # one was dispatched within the skip window.  Cumulative text
-                # means the next frame (or finalize) will carry the full
-                # content — nothing is lost.  This mirrors the official
-                # plugin's replyStreamNonBlocking which drops mid-frames
-                # when the prior one hasn't been acked yet.
+                # Throttle: skip this intermediate frame if either:
+                # 1) The previous frame was dispatched within the skip window, or
+                # 2) The per-turn frame cap has been reached.
+                # Cumulative text means the next frame (or finalize) will carry
+                # the full content — nothing is lost.
                 now = time.monotonic()
-                if turn._last_frame_sent_at and (now - turn._last_frame_sent_at) < STREAM_FRAME_SKIP_WINDOW:
+                skip = False
+                if turn._intermediate_frames_sent >= MAX_INTERMEDIATE_FRAMES:
+                    skip = True
+                elif turn._last_frame_sent_at and (now - turn._last_frame_sent_at) < STREAM_FRAME_SKIP_WINDOW:
+                    skip = True
+
+                if skip:
                     # Still update accumulated_text so finalize has the latest.
                     turn.accumulated_text = text
                     return True
+
                 await self._send_stream_reply(
                     turn.req_id,
                     turn.stream_id,
@@ -2302,6 +2315,7 @@ class WeComAdapter(BasePlatformAdapter):
                     finish=False,
                 )
                 turn._last_frame_sent_at = time.monotonic()
+                turn._intermediate_frames_sent += 1
                 turn.accumulated_text = text
 
             return True

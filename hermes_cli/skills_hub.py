@@ -691,6 +691,33 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
+    # Recipe detection: if the installed skill declares a
+    # metadata.hermes.recipe block, it is a runnable automation. Register it as
+    # a Suggested Cron Job rather than auto-scheduling — installing never
+    # silently creates a recurring job; the user accepts it via /suggestions.
+    # This is the single surface every automation proposal flows through.
+    try:
+        from tools.recipes import RecipeError, recipe_spec_for_installed, register_recipe_suggestion
+
+        try:
+            spec = recipe_spec_for_installed(bundle.name)
+        except RecipeError as _rec_err:
+            c.print(f"[yellow]Recipe block present but invalid:[/] {_rec_err}\n")
+            spec = None
+        if spec is not None:
+            registered = register_recipe_suggestion(spec)
+            if registered is not None:
+                c.print(
+                    f"[bold cyan]Recipe:[/] '{bundle.name}' is an automation "
+                    f"(schedule [bold]{spec.schedule}[/])."
+                )
+                c.print(
+                    "[dim]Added to your suggestions — run[/] [bold]/suggestions[/] "
+                    "[dim]to schedule or dismiss it.[/]\n"
+                )
+    except Exception:  # pragma: no cover - recipe detection is best-effort
+        pass
+
     if invalidate_cache:
         # Invalidate the skills prompt cache so the new skill appears immediately
         try:

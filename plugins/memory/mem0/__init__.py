@@ -381,8 +381,9 @@ class Mem0MemoryProvider(MemoryProvider):
                     if vtype in _EXCLUSIVE_KEYS and map_a[key] != map_b[key]:
                         etype = 'endpoint' if vtype in ('ip', 'host', 'hostname', 'address', 'url', 'endpoint', 'port') else vtype
                         return True, etype, f'{vtype} mismatch: {map_a[key]} vs {map_b[key]}'
-            ip_a = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b', text_a)
-            ip_b = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b', text_b)
+            # IP only (no port) — port conflicts handled by separate port regex below
+            ip_a = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', text_a)
+            ip_b = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', text_b)
             if ip_a and ip_b and set(ip_a) != set(ip_b):
                 return True, 'endpoint', f'IP mismatch'
             # Port detection: "port N", "端口N", "port has been changed to N" (allow words between)
@@ -448,9 +449,19 @@ class Mem0MemoryProvider(MemoryProvider):
 
                     # Tier 1: cos_sim > 0.92 → high-confidence conflict
                     if cos_sim > 0.92 and cos_sim > max_sim:
+                        # Guard: if entity values are identical (e.g. same version), don't upgrade to HIGH
+                        # Strip IPs first to avoid matching IP fragments as version numbers
+                        clean_a = re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b', '', mem_text)
+                        clean_b = re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b', '', kept_mem.get('memory', ''))
+                        ver_a = re.findall(r'(\d+\.\d+(?:\.\d+)?)', clean_a, re.I)
+                        ver_b = re.findall(r'(\d+\.\d+(?:\.\d+)?)', clean_b, re.I)
+                        ver_same = bool(ver_a and ver_b and set(ver_a) & set(ver_b))
+                        if ver_same:
+                            conflict_level = 'medium'
+                        else:
+                            conflict_level = 'high'
                         conflict_with = kept_mem
                         max_sim = cos_sim
-                        conflict_level = 'high'
                     # Tier 2: cos_sim > 0.75 → check config conflict for promotion
                     elif cos_sim > 0.75 and cos_sim > max_sim:
                         is_cc, entity_type, reason = _is_config_conflict(mem_text, kept_mem.get('memory', ''))

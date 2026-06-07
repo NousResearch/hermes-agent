@@ -1,36 +1,38 @@
+# =============================================================================
+# Auto-merge — portable template
+# =============================================================================
+# A generic version of hermes-agent's auto-merge workflow. Copy this file to
+# `.github/workflows/auto-merge.yml` in the target repo and edit the spots
+# marked `# 👈 EDIT`. Most repo-specific values live in the job's `env:` block,
+# but a few cannot: GitHub exposes no `env` context to `on:` triggers or to a
+# job-level `if:`, so the watched-workflow list, the self-trigger guard, and the
+# `labeled` event's label literal are edited inline (all flagged `# 👈 EDIT`).
+#
+# Behaviour: merges a PR — squash by default, configurable via MERGE_METHOD —
+# once (1) all external CI checks pass, (2) a review happened (approval,
+# non-author inline comment, or a review-bot reply), and (3) the required label
+# is present. See AUTO_MERGE.md for the full decision flow.
+#
+# NOTE: `workflow_run` triggers only take effect once this file is on the
+# repo's DEFAULT branch.
+# =============================================================================
+# 👈 EDIT: this top-level workflow name is referenced by the self-trigger guard
+# in the job `if:` below (`workflow_run.name != 'Auto-merge'`). Keep them in sync.
 name: Auto-merge
 
 on:
-  # synchronize/opened/reopened make Auto-merge VISIBLE in the PR's check
-  # list as a quick passing status. The script posts a pending status and
-  # returns immediately on these events — it does NOT poll. The real
-  # evaluation runs on workflow_run / pull_request_review / labeled events.
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   pull_request_review:
     types: [submitted]
-  # CI-completion triggers: fire once per workflow finish so we get a
-  # fresh evaluation the moment the last check goes green.
-  # Note: workflow_run only reads from the default branch, so these
-  # triggers are active for future PRs once this workflow is on main.
   workflow_run:
+    # 👈 EDIT: list the display `name:` of every CI workflow that gates merge.
+    # (`on.workflow_run.workflows` cannot read env vars — edit this list.)
     workflows:
       - "Tests"
-      - "Lint (ruff + ty)"
-      - "Nix"
-      - "Contributor Attribution Check"
-      - "Supply Chain Audit"
-      - "OSV-Scanner"
-      - "Docs Site Checks"
-      - "uv.lock check"
+      - "Lint"
     types: [completed]
 
-# One evaluation per PR at a time; cancel any in-flight run when a
-# newer trigger arrives for the same PR.
-# Fast-path events (synchronize/opened/reopened) only post a pending status
-# and return immediately, so they use a separate concurrency group suffix
-# ('-fast') to avoid cancelling ongoing evaluation runs triggered by
-# pull_request_review, workflow_run, or labeled events.
 concurrency:
   group: >-
     auto-merge-pr-${{
@@ -54,24 +56,55 @@ permissions:
 
 jobs:
   auto-merge:
+    # 👈 EDIT: if you rename this JOB, also update AUTO_MERGE_JOB_NAME in env:
+    # below — it excludes this job's own check runs from the CI list.
     name: Auto-merge on review + passing checks
     runs-on: ubuntu-latest
-    # Skip fork PRs; skip non-'reviewed' label events; prevent self-trigger loop.
-    # synchronize/opened/reopened are allowed through so the workflow appears
-    # in the PR's checks list; the script short-circuits on those events.
+    # The `if:` below cannot read env vars: a job-level `if:` only sees the
+    # github / needs / vars / inputs contexts, not `env`. So two literals here
+    # are hand-edited rather than parameterized:
+    #   • `workflow_run.name != 'Auto-merge'` — must match the top-level
+    #     workflow `name:` above (self-trigger guard).       👈 EDIT if renamed.
+    #   • `github.event.label.name == 'reviewed'` — must match REQUIRED_LABEL.
+    #     This only gates the `labeled` fast-trigger; the other triggers read
+    #     REQUIRED_LABEL from env in the script.              👈 EDIT to match.
     if: >-
       (github.event_name == 'workflow_run' && github.event.workflow_run.name != 'Auto-merge') ||
       (github.event_name == 'pull_request_review' && github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (github.event.action != 'labeled' || github.event.label.name == 'reviewed'))
-    # No polling needed for workflow_run — it fires after CI finishes.
-    # For pull_request_review / labeled events a short poll loop waits for CI.
     timeout-minutes: 30
+
+    # ── Configuration ────────────────────────────────────────────────────────
+    # 👈 EDIT these to retarget the workflow. They are read via process.env in
+    # the script below.
+    env:
+      CURRENT_RUN_ID: ${{ github.run_id }}
+      # Label that must be present for merge to proceed. Drives the in-script
+      # check; if you rename it, also edit the matching 'reviewed' literal in the
+      # job `if:` above (env vars are not available in a job-level `if:`).
+      REQUIRED_LABEL: "reviewed"
+      # Display name of THIS workflow's job (used to exclude its own check runs).
+      AUTO_MERGE_JOB_NAME: "Auto-merge on review + passing checks"
+      # Merge strategy: squash | merge | rebase.
+      MERGE_METHOD: "squash"
+      # Comma-separated review-bot logins. Any comment/review from these counts
+      # as review activity (rate-limit replies included).
+      REVIEW_BOTS: >-
+        gemini-code-assist[bot],gemini-code-assist,
+        copilot-pull-request-reviewer[bot],copilot-pull-request-reviewer,
+        copilot-swe-agent[bot],copilot-swe-agent,
+        github-copilot[bot],github-copilot,Copilot,copilot[bot],copilot,
+        coderabbitai[bot],coderabbitai,
+        qodo-merge-pro[bot],qodo-merge-pro,codium-ai[bot],codium-ai
+      # Poll cadence for human-action triggers (review/label).
+      POLL_INTERVAL_MS: "60000"
+      POLL_TIMEOUT_MS: "1500000"   # 25 minutes
+      # Settle delay (ms) before reading state on non-workflow_run events.
+      SETTLE_DELAY_MS: "10000"
 
     steps:
       - name: Evaluate checks, reviews, and merge
         uses: actions/github-script@d746ffe35508b1917358783b479e04febd2b8f71 # v9
-        env:
-          CURRENT_RUN_ID: ${{ github.run_id }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -80,35 +113,19 @@ jobs:
             const currentRunId = process.env.CURRENT_RUN_ID;
             const workflowRunUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
 
-            // Known review-bot logins. A comment (or review of any state) from
-            // any of these counts as review activity, even if the bot couldn't
-            // produce a real review (e.g. "daily quota exceeded" responses,
-            // Copilot-over-usage-limit notices). The attempted review counts.
-            const REVIEW_BOTS = new Set([
-              'gemini-code-assist[bot]',
-              'gemini-code-assist',
-              'copilot-pull-request-reviewer[bot]',
-              'copilot-pull-request-reviewer',
-              'copilot-swe-agent[bot]',
-              'copilot-swe-agent',
-              'github-copilot[bot]',
-              'github-copilot',
-              'Copilot',
-              'copilot[bot]',
-              'copilot',
-              'coderabbitai[bot]',
-              'coderabbitai',
-              'qodo-merge-pro[bot]',
-              'qodo-merge-pro',
-              'codium-ai[bot]',
-              'codium-ai',
-            ]);
+            // ── Config (from env) ──────────────────────────────────────────────
+            const REQUIRED_LABEL      = process.env.REQUIRED_LABEL || 'reviewed';
+            const AUTO_MERGE_JOB_NAME = process.env.AUTO_MERGE_JOB_NAME;
+            const MERGE_METHOD        = process.env.MERGE_METHOD || 'squash';
+            const POLL_INTERVAL_MS    = parseInt(process.env.POLL_INTERVAL_MS || '60000', 10);
+            const POLL_TIMEOUT_MS     = parseInt(process.env.POLL_TIMEOUT_MS  || '1500000', 10);
+            const SETTLE_DELAY_MS     = parseInt(process.env.SETTLE_DELAY_MS  || '10000', 10);
+            const REVIEW_BOTS = new Set(
+              (process.env.REVIEW_BOTS || '')
+                .split(',').map(s => s.trim()).filter(Boolean)
+            );
 
             // ── Helper: post / update the visible `auto-merge` commit status ───
-            // This is the user-visible PENDING indicator that stays in the PR's
-            // checks list until evaluation reaches a terminal state. The status
-            // `context` value is stable so subsequent posts to the same SHA
-            // update the existing entry in-place.
             const STATUS_CONTEXT = 'auto-merge';
             async function setStatus(sha, state, description) {
               try {
@@ -125,12 +142,6 @@ jobs:
             }
 
             // ── Status-only fast path for push/open/reopen ─────────────────────
-            // On synchronize/opened/reopened: post a pending status so the PR's
-            // check list shows something, then RETURN immediately. The real
-            // evaluation will fire on workflow_run events as CI completes, and
-            // on pull_request_review / labeled events. Returning here avoids
-            // sitting in a long poll loop that the concurrency group cancels
-            // every time another trigger arrives.
             if (context.eventName === 'pull_request') {
               const action = context.payload.action;
               if (action === 'synchronize' || action === 'opened' || action === 'reopened') {
@@ -146,15 +157,12 @@ jobs:
             }
 
             // ── Resolve PR number from event context ───────────────────────────
-            // workflow_run doesn't have pull_request in the payload; find it
-            // from the head SHA's associated open PRs instead.
             let prNumber;
             if (context.eventName === 'workflow_run') {
               const wr = context.payload.workflow_run;
               if (wr.pull_requests && wr.pull_requests.length > 0) {
                 prNumber = wr.pull_requests[0].number;
               } else {
-                // Fork PRs or branches with no open PR — nothing to do.
                 core.info('workflow_run has no associated same-repo PR — skipping.');
                 return;
               }
@@ -191,20 +199,12 @@ jobs:
 
             const headSha = pr.head.sha;
 
-            // Brief settle delay for human-action triggers (labeled, review
-            // submitted) so GitHub has time to record the latest state.
-            // workflow_run triggers already arrive after the check completed,
-            // so no wait is needed.
+            // Brief settle delay for human-action triggers.
             if (context.eventName !== 'workflow_run') {
-              await new Promise(r => setTimeout(r, 10_000));
+              await new Promise(r => setTimeout(r, SETTLE_DELAY_MS));
             }
 
-            // ── 2. Fetch external check runs (helper used by poll loop) ───────
-            // Exclude the current run by its ID, and also exclude all runs of
-            // the auto-merge job itself — prior invocations may be present with
-            // conclusion 'cancelled' (due to cancel-in-progress) and must not
-            // be treated as failing CI checks.
-            const AUTO_MERGE_JOB_NAME = 'Auto-merge on review + passing checks';
+            // ── 2. Fetch external check runs ──────────────────────────────────
             async function fetchExternalRuns() {
               const { data: sd } = await github.rest.checks.listSuitesForRef({
                 owner, repo, ref: headSha, per_page: 100,
@@ -242,9 +242,6 @@ jobs:
             }
 
             // ── 4. Wait for all checks to complete ────────────────────────────
-            // workflow_run: another suite may still be running — exit and let the
-            // next workflow_run completion re-evaluate.
-            // pull_request_review / labeled: poll up to 25 min.
             const acceptable = new Set(['success', 'skipped', 'neutral']);
             let pendingRuns = externalRuns.filter(r => r.status !== 'completed');
             if (pendingRuns.length > 0) {
@@ -252,14 +249,12 @@ jobs:
                 core.info(`${pendingRuns.length} check(s) still pending — exiting; next workflow_run will re-evaluate.`);
                 return;
               }
-              const POLL_INTERVAL_MS = 60_000;   // 1 minute
-              const POLL_TIMEOUT_MS  = 25 * 60_000; // 25 minutes
               const pollStart = Date.now();
               while (pendingRuns.length > 0) {
                 if (Date.now() - pollStart >= POLL_TIMEOUT_MS) {
-                  core.warning('Poll timeout — CI did not complete within 25 min.');
+                  core.warning('Poll timeout — CI did not complete in time.');
                   await setStatus(headSha, 'error',
-                    'CI did not complete within 25 minutes.');
+                    'CI did not complete within the poll timeout.');
                   return;
                 }
                 const elapsedMin = Math.floor((Date.now() - pollStart) / 60_000);
@@ -299,7 +294,7 @@ jobs:
             }
             core.info('All CI checks passed/skipped/neutral.');
 
-            // ── 6. Re-fetch PR to get latest labels and verify SHA is unchanged ─
+            // ── 6. Re-fetch PR; verify still open and SHA unchanged ────────────
             const { data: freshPr } = await github.rest.pulls.get({
               owner, repo, pull_number: prNumber,
             });
@@ -356,12 +351,6 @@ jobs:
             }
 
             // ── 9. Collect review comments and bot activity ────────────────────
-            // Three independent signals satisfy "review activity":
-            //   a) any APPROVED review,
-            //   b) at least one inline review comment from a non-author,
-            //   c) any comment OR review from a known code-review bot — even
-            //      if the bot responded with a quota / rate-limit error, the
-            //      attempted review counts.
             const reviewComments = await github.paginate(github.rest.pulls.listReviewComments, {
               owner, repo, pull_number: prNumber,
             });
@@ -383,11 +372,11 @@ jobs:
             const reviewDetected = approvedReviews.length > 0
               || nonAuthorComments.length > 0
               || reviewBotActivity > 0;
-            const hasReviewedLabel = freshPr.labels.some(l => l.name === 'reviewed');
+            const hasReviewedLabel = freshPr.labels.some(l => l.name === REQUIRED_LABEL);
 
             core.info(`Review detected: ${reviewDetected} (${reviewerStats}; ` +
               `bot activity: ${reviewBotActivity}${botNames.length ? ` from ${botNames.join(', ')}` : ''})`);
-            core.info(`'reviewed' label: ${hasReviewedLabel}`);
+            core.info(`'${REQUIRED_LABEL}' label: ${hasReviewedLabel}`);
 
             // ── 10. Guard: no qualifying review yet ───────────────────────────
             if (!reviewDetected) {
@@ -398,21 +387,20 @@ jobs:
                 `### Auto-merge: pending review\n\n` +
                 `All CI checks have passed, but no qualifying review activity has been ` +
                 `detected yet.\n\n` +
-                `Auto-merge requires **one** of the following, plus the \`reviewed\` label:\n` +
+                `Auto-merge requires **one** of the following, plus the \`${REQUIRED_LABEL}\` label:\n` +
                 `- an **approved** review,\n` +
                 `- an inline review comment from someone other than the PR author, or\n` +
-                `- a comment or review from a recognised code-review bot ` +
-                `(e.g. \`@gemini-code-assist\`, \`@copilot-pull-request-reviewer\`, \`@coderabbitai\`) — ` +
+                `- a comment or review from a recognised code-review bot — ` +
                 `quota / rate-limit responses still count as an attempt.\n\n` +
                 `[View workflow run](${workflowRunUrl})`
               );
               return;
             }
 
-            // ── 11. Guard: review exists but 'reviewed' label missing ──────────
+            // ── 11. Guard: review exists but required label missing ────────────
             if (!hasReviewedLabel) {
               await setStatus(headSha, 'pending',
-                'Review received. Add the `reviewed` label to proceed.');
+                `Review received. Add the \`${REQUIRED_LABEL}\` label to proceed.`);
               const parts = [
                 approvedReviews.length > 0   ? `${approvedReviews.length} approved review(s): ${approvedNames.join(', ')}` : null,
                 nonAuthorComments.length > 0 ? `${nonAuthorComments.length} inline comment(s) by non-author(s)` : null,
@@ -423,7 +411,7 @@ jobs:
                 `### Auto-merge: review received — action required\n\n` +
                 `Review activity detected (${parts.join('; ')}).\n\n` +
                 `To confirm you have reviewed and accepted the feedback, please add the ` +
-                `\`reviewed\` label to this PR. Auto-merge will then proceed.\n\n` +
+                `\`${REQUIRED_LABEL}\` label to this PR. Auto-merge will then proceed.\n\n` +
                 `[View workflow run](${workflowRunUrl})`
               );
               return;
@@ -437,13 +425,9 @@ jobs:
               const { data: rePr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
               mergeableState = rePr.mergeable_state;
             }
-            // Accept 'unstable' in addition to 'clean'. Our own auto-merge
-            // commit status (non-required) may still be 'pending' from a prior
-            // polling run, which causes GitHub to report 'unstable' even though
-            // all real CI checks, reviews, and label conditions are satisfied.
-            // We have already verified each condition above, so merging under
-            // 'unstable' is safe. 'dirty', 'behind', 'blocked', 'has_hooks'
-            // remain blocking — those indicate real conflicts or unmet protections.
+            // 'unstable' tolerated: our own non-required 'auto-merge' status may
+            // still read pending from a prior run. 'dirty'/'behind'/'blocked'/
+            // 'has_hooks' remain blocking.
             const mergeOk = mergeableState === 'clean' || mergeableState === 'unstable';
             if (!mergeOk) {
               core.warning(`PR is not mergeable: mergeable_state = '${mergeableState}'`);
@@ -459,14 +443,14 @@ jobs:
               return;
             }
 
-            // ── 13. All conditions met — squash merge ──────────────────────────
-            core.info(`All conditions met. Squash-merging PR #${prNumber}…`);
+            // ── 13. All conditions met — merge ─────────────────────────────────
+            core.info(`All conditions met. Merging PR #${prNumber} via ${MERGE_METHOD}…`);
             try {
               await github.rest.pulls.merge({
                 owner,
                 repo,
                 pull_number: prNumber,
-                merge_method: 'squash',
+                merge_method: MERGE_METHOD,
                 commit_title: `${freshPr.title} (#${prNumber})`,
               });
               await setStatus(headSha, 'success', 'Auto-merged.');
@@ -477,8 +461,8 @@ jobs:
               await upsertComment(
                 '<!-- auto-merge-error -->',
                 `### Auto-merge: merge failed\n\n` +
-                `All checks passed and the \`reviewed\` label is present, but the ` +
-                `automatic squash merge failed:\n\n` +
+                `All checks passed and the \`${REQUIRED_LABEL}\` label is present, but the ` +
+                `automatic merge failed:\n\n` +
                 `> ${err.message}\n\n` +
                 `Please merge manually or investigate the error.\n\n` +
                 `[View workflow run](${workflowRunUrl})`

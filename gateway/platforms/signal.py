@@ -21,7 +21,11 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from gateway.run import GatewayRunner
+
 from urllib.parse import quote, unquote
 
 import httpx
@@ -242,6 +246,10 @@ class SignalAdapter(BasePlatformAdapter):
         self._recipient_uuid_by_number: Dict[str, str] = {}
         self._recipient_number_by_uuid: Dict[str, str] = {}
         self._recipient_cache_lock = asyncio.Lock()
+
+        # Set by GatewayRunner after instantiation so reaction hooks can
+        # consult the runner's authorization decision before emitting reactions.
+        self.gateway_runner: Optional["GatewayRunner"] = None
 
         logger.info(
             "Signal adapter initialized: url=%s account=%s groups=%s",
@@ -1565,16 +1573,29 @@ class SignalAdapter(BasePlatformAdapter):
     def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
         """Check if message reactions are enabled for this event.
 
-        Two gates:
-        1. SIGNAL_REACTIONS env var — set to false/0/no to disable globally.
-        2. DM allowlist — if SIGNAL_ALLOWED_USERS is set, only react to
-           messages from senders in that list.  This prevents unauthorized
-           contacts from seeing the 👀 reaction (which fires before run.py's
-           auth gate and would otherwise reveal that a bot is listening).
+        Gates are evaluated in the following order:
+
+        1. ``SIGNAL_REACTIONS`` env-var — when set to ``false``/``0``/``no``
+           all reactions are globally disabled regardless of sender.
+        2. Gateway runner authorization (when the adapter is wired to a runner)
+           — mirrors the runner's full ``_is_user_authorized()`` decision.
+           Fails closed (returns ``False``) on exceptions.  When the runner
+           gate fires, the DM-allowlist fallback (step 3) is **skipped**.
+        3. DM allowlist fallback — when no runner is attached, compares the
+           sender's ``user_id`` against ``self.dm_allow_from``; a ``"*"``
+           entry allows all users.
         """
         if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
             return False
         if event is not None:
+            auth_fn = getattr(getattr(self, "gateway_runner", None), "_is_user_authorized", None)
+            if callable(auth_fn):
+                try:
+                    return bool(auth_fn(event.source))
+                except Exception as e:
+                    logger.warning("Signal: reaction auth check failed: %s", e)
+                    return False
+
             sender = getattr(getattr(event, "source", None), "user_id", None)
             if (
                 sender

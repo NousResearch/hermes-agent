@@ -73,6 +73,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_video_from_bytes,
     cache_document_from_bytes,
+    resolve_channel_prompt,
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
@@ -325,6 +326,18 @@ class TelegramAdapter(BasePlatformAdapter):
     def message_len_fn(self):
         """Telegram measures message length in UTF-16 code units."""
         return utf16_len
+
+    def _resolve_channel_prompt(
+        self,
+        chat_id: str,
+        thread_id: str | None = None,
+    ) -> str | None:
+        """Resolve Telegram prompts with forum topics scoped to their chat."""
+        chat_id_str = str(chat_id)
+        if thread_id:
+            topic_key = f"{chat_id_str}:{thread_id}"
+            return resolve_channel_prompt(self.config.extra, topic_key, chat_id_str)
+        return resolve_channel_prompt(self.config.extra, chat_id_str)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
@@ -4491,13 +4504,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
 
         # Per-channel/topic ephemeral prompt
-        from gateway.platforms.base import resolve_channel_prompt
-        _chat_id_str = str(chat.id)
-        _channel_prompt = resolve_channel_prompt(
-            self.config.extra,
-            thread_id_str or _chat_id_str,
-            _chat_id_str if thread_id_str else None,
-        )
+        _channel_prompt = self._resolve_channel_prompt(str(chat.id), thread_id_str)
 
         return MessageEvent(
             text=message.text or "",

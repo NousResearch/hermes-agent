@@ -890,9 +890,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
-    def test_direct_endpoint_returns_none_api_key_when_not_configured(self):
-        # When base_url is set without api_key, api_key should be None so
-        # _build_child_agent inherits the parent's key (effective_api_key = override or parent).
+    def test_direct_endpoint_uses_openai_env_key_when_api_key_not_configured(self):
         parent = _make_mock_parent(depth=0)
         cfg = {
             "model": "qwen2.5-coder",
@@ -900,11 +898,10 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         }
         with patch.dict(os.environ, {"OPENAI_API_KEY": "env-openai-key"}, clear=False):
             creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertIsNone(creds["api_key"])
+        self.assertEqual(creds["api_key"], "env-openai-key")
         self.assertEqual(creds["provider"], "custom")
 
-    def test_direct_endpoint_no_raise_when_only_provider_env_key_present(self):
-        # Even if OPENAI_API_KEY is absent, no ValueError — _build_child_agent uses parent key.
+    def test_direct_endpoint_requires_explicit_or_openai_api_key(self):
         parent = _make_mock_parent(depth=0)
         cfg = {
             "model": "qwen2.5-coder",
@@ -918,9 +915,10 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             },
             clear=False,
         ):
-            creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertIsNone(creds["api_key"])
-        self.assertEqual(creds["provider"], "custom")
+            with self.assertRaises(ValueError) as ctx:
+                _resolve_delegation_credentials(cfg, parent)
+        self.assertIn("delegation.base_url", str(ctx.exception))
+        self.assertIn("delegation.api_key", str(ctx.exception))
 
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
@@ -960,6 +958,36 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
+
+
+    @patch("tools.delegate_tool._load_config")
+    def test_custom_base_url_without_api_key_does_not_inherit_parent_secret(self, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 45}
+        parent = _make_mock_parent(depth=0)
+        parent.api_key = "parent-provider-secret"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="test",
+                context="",
+                toolsets=None,
+                model=None,
+                parent_agent=parent,
+                max_iterations=45,
+                task_count=1,
+                override_provider="custom",
+                override_base_url="http://localhost:1234/v1",
+                override_api_key=None,
+                override_api_mode="chat_completions",
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["base_url"], "http://localhost:1234/v1")
+            self.assertIsNone(kwargs["api_key"])
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

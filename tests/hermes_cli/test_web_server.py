@@ -1892,7 +1892,14 @@ class TestPluginAPIAuth:
 
     @pytest.fixture(autouse=True)
     def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
-        """Create a TestClient without the session token header."""
+        """Create a TestClient without the session token header.
+
+        A minimal fake ``scan-status`` route is inserted directly into the app
+        before the SPA catch-all so ``test_plugin_route_allows_auth`` is fully
+        self-contained regardless of whether ``hermes-achievements`` is
+        installed in the checkout.  The route list is restored after each test
+        to avoid polluting the global app state.
+        """
         try:
             from starlette.testclient import TestClient
         except ImportError:
@@ -1901,12 +1908,47 @@ class TestPluginAPIAuth:
         import hermes_state
         from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from fastapi import APIRouter
+        from fastapi.responses import JSONResponse
+        import hermes_cli.web_server as _ws
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+
+        # Build a minimal fake scan-status route so the test never depends on
+        # the real plugin being installed or enabled.
+        fake_router = APIRouter()
+
+        @fake_router.get("/scan-status")
+        async def _fake_scan_status():
+            return JSONResponse({"status": "idle"})
+
+        # Snapshot the current route list so we can restore it after the test,
+        # keeping global app state clean between tests.
+        _routes = _ws.app.router.routes
+        _routes_snapshot = list(_routes)
+
+        _ws.app.include_router(fake_router, prefix="/api/plugins/hermes-achievements")
+        # include_router appends new routes at the end, which places them after
+        # the SPA catch-all (/{full_path:path}).  Move them before the
+        # catch-all so Starlette matches the explicit route first.
+        spa_idx = next(
+            (i for i, r in enumerate(_routes) if getattr(r, "path", "") == "/{full_path:path}"),
+            None,
+        )
+        if spa_idx is not None and spa_idx < len(_routes) - 1:
+            new_plugin_routes = _routes[spa_idx + 1:]
+            del _routes[spa_idx + 1:]
+            _routes[spa_idx:spa_idx] = new_plugin_routes
 
         self.client = TestClient(app)
         self.auth_client = TestClient(app)
         self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+        yield
+
+        # Restore the original route list to avoid polluting global app state
+        # for subsequent tests.
+        _routes[:] = _routes_snapshot
 
     def test_plugin_route_requires_auth(self):
         """Plugin API routes should return 401 without a valid session token."""
@@ -1921,12 +1963,18 @@ class TestPluginAPIAuth:
         side-effect-free GET that reads in-process scan state with no DB or
         external dependencies. With a valid token the handler should run
         (200); without one the middleware should 401 before the handler.
+
+        The hermes-achievements plugin is opt-in (bundled plugins are not
+        grandfathered into ``plugins.enabled`` — see the v20→v21 migration
+        in ``hermes_cli/config.py``). A fake scan-status route is added
+        directly to the app so this test runs regardless of whether the
+        plugin is installed in the checkout.
         """
         # Without auth: middleware blocks before reaching the handler.
         resp = self.client.get("/api/plugins/hermes-achievements/scan-status")
         assert resp.status_code == 401
 
-        # With auth: handler runs.
+        # With auth: handler runs — route is explicitly mounted above.
         resp = self.auth_client.get("/api/plugins/hermes-achievements/scan-status")
         assert resp.status_code == 200
 

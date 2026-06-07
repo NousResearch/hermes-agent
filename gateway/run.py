@@ -5226,7 +5226,9 @@ class GatewayRunner:
             if not check_signal_requirements():
                 logger.warning("Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
                 return None
-            return SignalAdapter(config)
+            adapter = SignalAdapter(config)
+            adapter.gateway_runner = self
+            return adapter
 
         elif platform == Platform.HOMEASSISTANT:
             from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
@@ -5371,6 +5373,7 @@ class GatewayRunner:
         user_id = source.user_id
         if not user_id:
             return False
+        team_id = (source.guild_id or "").strip() if source.platform == Platform.SLACK else ""
 
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
@@ -5418,8 +5421,9 @@ class GatewayRunner:
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
+        # Only platforms with explicit gateway-level bot bypass semantics
+        # should be listed here.
         platform_allow_bots_map = {
-            Platform.DISCORD: "DISCORD_ALLOW_BOTS",
             Platform.FEISHU: "FEISHU_ALLOW_BOTS",
         }
 
@@ -6712,6 +6716,26 @@ class GatewayRunner:
                 if hasattr(self, "_busy_ack_ts"):
                     self._busy_ack_ts.pop(_quick_key, None)
 
+    @staticmethod
+    def _allowed_context_reference_kinds(enabled_toolsets: set[str] | None) -> set[str]:
+        """Map enabled gateway toolsets to safe inline @ reference types.
+
+        A reference kind is only expandable when the toolset that would back
+        it is enabled for the platform. This prevents @file:/@folder: (and
+        git/url) expansion -- and the local file reads they perform -- from
+        leaking content into sessions whose toolset never granted access.
+        """
+        allowed: set[str] = set()
+        if not enabled_toolsets:
+            return allowed
+        if "file" in enabled_toolsets:
+            allowed.update({"file", "folder"})
+        if "terminal" in enabled_toolsets:
+            allowed.update({"diff", "staged", "git"})
+        if "web" in enabled_toolsets:
+            allowed.add("url")
+        return allowed
+
     async def _prepare_inbound_message_text(
         self,
         *,
@@ -6896,11 +6920,20 @@ class GatewayRunner:
                     api_key=_msg_runtime.get("api_key") or "",
                     config_context_length=_msg_config_ctx,
                 )
+                from hermes_cli.tools_config import _get_platform_tools
+
+                _msg_platform_key = _platform_config_key(source.platform)
+                _msg_enabled_toolsets = _get_platform_tools(
+                    _load_gateway_config(), _msg_platform_key
+                )
                 _ctx_result = await preprocess_context_references_async(
                     message_text,
                     cwd=_msg_cwd,
                     context_length=_msg_ctx_len,
                     allowed_root=_msg_cwd,
+                    allowed_kinds=self._allowed_context_reference_kinds(
+                        _msg_enabled_toolsets
+                    ),
                 )
                 if _ctx_result.blocked:
                     _adapter = self.adapters.get(source.platform)
@@ -8190,8 +8223,11 @@ class GatewayRunner:
                 try:
                     self._session_db.set_session_title(new_entry.session_id, sanitized)
                     header = t("gateway.reset.header_titled", title=sanitized)
-                except ValueError as e:
-                    _title_note = t("gateway.reset.title_error_untitled", error=str(e))
+                except ValueError:
+                    _title_note = t(
+                        "gateway.reset.title_error_untitled",
+                        error=t("gateway.reset.title_unavailable"),
+                    )
                 except Exception:
                     pass
             elif not _title_note:
@@ -11378,8 +11414,8 @@ class GatewayRunner:
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")
-            except ValueError as e:
-                return t("gateway.shared.warn_passthrough", error=e)
+            except ValueError:
+                return t("gateway.title.warn_prefix", error=t("gateway.title.unavailable"))
         else:
             # Show the current title and session ID
             title = self._session_db.get_session_title(session_id)

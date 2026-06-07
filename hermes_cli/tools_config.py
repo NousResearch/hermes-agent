@@ -162,10 +162,20 @@ def _get_plugin_toolset_keys() -> set:
 
 
 def _implicit_default_off_toolsets(platform: str) -> Set[str]:
-    """Return the default-off toolsets that remain implicitly disabled."""
+    """Return default-off toolsets to suppress for implicit platform config.
+
+    A platform's own unrestricted toolset remains available for backwards
+    compatibility (for example the ``homeassistant`` platform keeps the
+    ``homeassistant`` toolset). When ``HASS_TOKEN`` is set, the homeassistant
+    toolset is treated as opted-in across all platforms (including ``cron``
+    and ``cli``) — the operator has explicitly provisioned credentials, so
+    other platforms should pick it up rather than silently dropping it.
+    """
     default_off = set(_DEFAULT_OFF_TOOLSETS)
     if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
         default_off.remove(platform)
+    if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
+        default_off.remove("homeassistant")
     return default_off
 
 
@@ -1184,9 +1194,15 @@ def _get_platform_tools(
         explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
         enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
     if include_default_mcp_servers:
-        if explicit_mcp_servers or "no_mcp" in toolset_names:
+        if "no_mcp" in toolset_names:
+            # Operator opted out of MCP for this platform — keep only the
+            # MCP servers they explicitly named alongside no_mcp.
             enabled_toolsets.update(explicit_mcp_servers)
-        elif not has_explicit_platform_toolsets:
+        else:
+            # No no_mcp sentinel — surface every enabled MCP server even when
+            # platform_toolsets lists explicit builtin toolsets. The user's
+            # explicit builtin selection is the platform allowlist; MCP servers
+            # configured globally should not need to be re-listed per platform.
             enabled_toolsets.update(enabled_mcp_servers)
     else:
         enabled_toolsets.update(explicit_mcp_servers)

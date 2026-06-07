@@ -266,7 +266,10 @@ class TestMSGraphNotifications:
 
         await asyncio.sleep(0.05)
 
+        assert adapter._duplicate_count == 0
         assert len(scheduled) == 2
+        assert scheduled[0][1].message_id == ""
+        assert scheduled[1][1].message_id == ""
 
     @pytest.mark.anyio
     async def test_resource_patterns_accept_leading_slash(self):

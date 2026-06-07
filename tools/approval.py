@@ -32,6 +32,10 @@ _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_session_key",
     default="",
 )
+_approval_run_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "approval_run_id",
+    default="",
+)
 
 
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
@@ -68,6 +72,21 @@ def set_current_session_key(session_key: str) -> contextvars.Token[str]:
 def reset_current_session_key(token: contextvars.Token[str]) -> None:
     """Restore the prior approval session key context."""
     _approval_session_key.reset(token)
+
+
+def set_current_run_id(run_id: str) -> contextvars.Token[str]:
+    """Bind the active API run id to pending gateway approvals."""
+    return _approval_run_id.set(run_id or "")
+
+
+def reset_current_run_id(token: contextvars.Token[str]) -> None:
+    """Restore the prior API run id context."""
+    _approval_run_id.reset(token)
+
+
+def get_current_run_id() -> str:
+    """Return the active API run id for approval binding, if any."""
+    return _approval_run_id.get()
 
 
 def get_current_session_key(default: str = "default") -> str:

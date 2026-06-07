@@ -143,8 +143,8 @@ def _get_backend() -> ComputerUseBackend:
 
 
 def reset_backend_for_tests() -> None:  # pragma: no cover
-    """Test helper — tear down the cached backend."""
-    global _backend, _session_auto_approve, _always_allow
+    """Test helper — tear down the cached backend and approval state."""
+    global _backend, _session_auto_approve, _always_allow, _approval_callback
     with _backend_lock:
         if _backend is not None:
             try:
@@ -154,6 +154,7 @@ def reset_backend_for_tests() -> None:  # pragma: no cover
         _backend = None
     _session_auto_approve = False
     _always_allow = set()
+    _approval_callback = None
 
 
 class _NoopBackend(ComputerUseBackend):  # pragma: no cover
@@ -266,9 +267,10 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
         return None
     cb = _approval_callback
     if cb is None:
-        # No CLI approval wired — default allow. Gateway approval is handled
-        # one layer out via the normal tool-approval infra.
-        return None
+        return json.dumps({
+            "error": "approval required but no approval callback is registered",
+            "action": action,
+        })
     summary = _summarize_action(action, args)
     try:
         verdict = cb(action, args, summary)

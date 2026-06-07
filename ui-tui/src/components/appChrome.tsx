@@ -1,6 +1,6 @@
 import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, type RefObject, memo, useEffect, useMemo, useRef, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
@@ -387,7 +387,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
-export function StatusRule({
+export const StatusRule = memo(function StatusRule({
   cwdLabel,
   cols,
   busy,
@@ -410,20 +410,27 @@ export function StatusRule({
 }: StatusRuleProps) {
   const pct = usage.context_percent
   const barColor = ctxBarColor(pct, t)
-  const segs = statusBarSegments(cols)
+  const segs = useMemo(() => statusBarSegments(cols), [cols])
 
   // On narrow terminals the context read-out collapses to a bare token count
   // (`12k tok`) and the visual fill bar is dropped entirely.
-  const ctxLabel = usage.context_max
-    ? segs.compactCtx
-      ? `${fmtK(usage.context_used ?? 0)} tok`
-      : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
-    : usage.total > 0
-      ? `${fmtK(usage.total)} tok`
-      : ''
+  const ctxLabel = useMemo(
+    () =>
+      usage.context_max
+        ? segs.compactCtx
+          ? `${fmtK(usage.context_used ?? 0)} tok`
+          : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+        : usage.total > 0
+          ? `${fmtK(usage.total)} tok`
+          : '',
+    [usage.context_max, usage.context_used, usage.total, segs.compactCtx]
+  )
 
-  const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const bar = useMemo(
+    () => (!segs.compactCtx && usage.context_max ? ctxBar(pct) : ''),
+    [segs.compactCtx, usage.context_max, pct]
+  )
+  const modelText = useMemo(() => modelLabel(model, modelReasoningEffort, modelFast), [model, modelReasoningEffort, modelFast])
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
@@ -462,40 +469,70 @@ export function StatusRule({
   // descending priority order — bar, duration, compressions, voice, session
   // count, bg, cost. Lower-priority segments drop first and nothing truncates
   // mid-segment, so status/model/context are never crushed.
-  const SEP = stringWidth(' │ ')
-  let tailBudget = Math.max(0, leftWidth - essentialWidth)
-  const fits = (w: number) => {
-    if (tailBudget >= w) {
-      tailBudget -= w
-
-      return true
+  const tailSegments = useMemo(() => {
+    const SEP = stringWidth(' │ ')
+    let tailBudget = Math.max(0, leftWidth - essentialWidth)
+    const fits = (w: number) => {
+      if (tailBudget >= w) {
+        tailBudget -= w
+        return true
+      }
+      return false
     }
 
-    return false
-  }
+    const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+    const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+    const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
+    // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
+    // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
+    // math (display formatting) — never parseFloat a *_usd. Signed: a mid-session top-up that
+    // raises remaining nets a negative Δ (honest).
+    const devCreditsText =
+      typeof usage.dev_credits_spent_micros === 'number'
+        ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
+        : ''
 
-  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
-  const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
-  const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
-  // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
-  // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
-  // math (display formatting) — never parseFloat a *_usd. Signed: a mid-session top-up that
-  // raises remaining nets a negative Δ (honest).
-  const devCreditsText =
-    typeof usage.dev_credits_spent_micros === 'number'
-      ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
-      : ''
+    const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
+    const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+    const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
+    const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
+    const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
+    const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
+    const showCostSeg = segs.cost && showCost && !!costText && fits(SEP + stringWidth(costText))
+    // No segs flag / no showCost coupling — it's a server-gated dev readout, lowest priority,
+    // so it consumes tail budget LAST and drops first on a narrow terminal.
+    const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
 
-  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
-  const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
-  const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
-  const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
-  const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
-  const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
-  const showCostSeg = segs.cost && showCost && !!costText && fits(SEP + stringWidth(costText))
-  // No segs flag / no showCost coupling — it's a server-gated dev readout, lowest priority,
-  // so it consumes tail budget LAST and drops first on a narrow terminal.
-  const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
+    return {
+      sessionCountText,
+      compressions,
+      costText,
+      devCreditsText,
+      showBar,
+      showDuration,
+      showCompressions,
+      showVoice,
+      showSessionCount,
+      showBg,
+      showCostSeg,
+      showDevCredits
+    }
+  }, [leftWidth, essentialWidth, bar, pct, segs, sessionStartedAt, voiceLabel, liveSessionCount, usage, bgCount, showCost])
+
+  const {
+    sessionCountText,
+    compressions,
+    costText,
+    devCreditsText,
+    showBar,
+    showDuration,
+    showCompressions,
+    showVoice,
+    showSessionCount,
+    showBg,
+    showCostSeg,
+    showDevCredits
+  } = tailSegments
 
   const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
     event.stopImmediatePropagation?.()
@@ -623,7 +660,7 @@ export function StatusRule({
       ) : null}
     </Box>
   )
-}
+})
 
 export function FloatBox({ children, color }: { children: ReactNode; color: string }) {
   return (

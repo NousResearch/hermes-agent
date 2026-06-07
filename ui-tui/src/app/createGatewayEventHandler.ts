@@ -13,7 +13,7 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
-import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
+import type { Msg, SubagentProgress, SubagentStatus, Usage } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
@@ -22,6 +22,29 @@ import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
+
+// Shallow-compare Usage fields to avoid creating a new object reference when
+// values haven't changed.  A fresh reference on every streaming event forces
+// every $uiState subscriber (including StatusRulePane) to re-render.
+const usageChanged = (prev: Usage, next: Usage): boolean =>
+  prev.calls !== next.calls ||
+  prev.compressions !== next.compressions ||
+  prev.context_max !== next.context_max ||
+  prev.context_percent !== next.context_percent ||
+  prev.context_used !== next.context_used ||
+  prev.cost_status !== next.cost_status ||
+  prev.cost_usd !== next.cost_usd ||
+  prev.dev_credits_spent_micros !== next.dev_credits_spent_micros ||
+  prev.input !== next.input ||
+  prev.output !== next.output ||
+  prev.reasoning !== next.reasoning ||
+  prev.total !== next.total
+
+const mergeUsageStable = (prev: Usage, patch: Partial<Usage> | undefined): Usage => {
+  if (!patch) return prev
+  const merged: Usage = { ...prev, ...patch }
+  return usageChanged(prev, merged) ? merged : prev
+}
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
@@ -422,7 +445,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ...state,
           info,
           status: state.status === 'starting agent…' ? 'ready' : state.status,
-          usage: info.usage ? { ...state.usage, ...info.usage } : state.usage
+          usage: info.usage ? mergeUsageStable(state.usage, info.usage) : state.usage
         }))
 
         setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info } : m)))
@@ -887,7 +910,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         setStatus('ready')
 
         if (ev.payload?.usage) {
-          patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
+          patchUiState(state => ({ ...state, usage: mergeUsageStable(state.usage, ev.payload!.usage) }))
         }
 
         return

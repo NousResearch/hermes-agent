@@ -137,12 +137,32 @@ def build_edit_proposal(tool_name: str, arguments: dict[str, Any]) -> EditPropos
     return None
 
 
-def _is_sensitive_auto_approve_path(path: str) -> bool:
-    parts = Path(path).expanduser().parts
-    lowered = {part.lower() for part in parts}
+def _path_is_sensitive(candidate: Path) -> bool:
+    lowered = {part.lower() for part in candidate.parts}
     if ".git" in lowered or ".ssh" in lowered:
         return True
-    return Path(path).name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
+    return candidate.name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
+
+
+def _is_sensitive_auto_approve_path(path: str) -> bool:
+    """Return whether *path* — or the symlink target it resolves to — is sensitive.
+
+    The literal path alone is not enough: an innocuously named symlink such as
+    ``notes.txt`` pointing at ``~/.ssh/authorized_keys`` (or ``link.txt`` ->
+    ``.env`` inside the workspace) would otherwise pass this check and be
+    auto-approved under the ``session``/``workspace_session`` policies, defeating
+    the "sensitive paths always ask" guarantee. We therefore inspect both the
+    unresolved path and its ``resolve()``d target so symlinks cannot launder a
+    write to a protected file.
+    """
+    expanded = Path(path).expanduser()
+    if _path_is_sensitive(expanded):
+        return True
+    try:
+        resolved = expanded.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
+    return _path_is_sensitive(resolved)
 
 
 def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | None = None) -> bool:

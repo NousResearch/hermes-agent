@@ -205,3 +205,44 @@ def test_workspace_auto_approval_allows_workspace_and_tmp_but_not_sensitive(tmp_
         "session",
         str(tmp_path),
     )
+
+
+def test_symlink_to_sensitive_file_is_not_auto_approved(tmp_path):
+    """An innocuously named symlink must not launder a write to a secret file.
+
+    Without resolving the link target, ``link.txt`` -> ``.env`` and
+    ``notes.txt`` -> ``~/.ssh/authorized_keys`` would pass the sensitive-path
+    check (their literal names look harmless) and be auto-approved under the
+    autonomous ``session``/``workspace_session`` policies — silently writing
+    through to the secret. The guard inspects the resolved target instead.
+    """
+    secret = tmp_path / ".env"
+    secret.write_text("SECRET=x\n", encoding="utf-8")
+    env_link = tmp_path / "link.txt"
+    env_link.symlink_to(secret)
+
+    ssh_dir = tmp_path / ".ssh"
+    ssh_dir.mkdir()
+    authorized_keys = ssh_dir / "authorized_keys"
+    authorized_keys.write_text("", encoding="utf-8")
+    ssh_link = tmp_path / "notes.txt"
+    ssh_link.symlink_to(authorized_keys)
+
+    # Both links resolve inside the workspace, so the containment check alone
+    # would happily auto-approve them — only the symlink-aware sensitive guard
+    # blocks the write.
+    assert not should_auto_approve_edit(
+        EditProposal("write_file", str(env_link), None, "SECRET=y", {}),
+        "session",
+        str(tmp_path),
+    )
+    assert not should_auto_approve_edit(
+        EditProposal("write_file", str(env_link), None, "SECRET=y", {}),
+        "workspace_session",
+        str(tmp_path),
+    )
+    assert not should_auto_approve_edit(
+        EditProposal("write_file", str(ssh_link), None, "ssh-rsa attacker\n", {}),
+        "workspace_session",
+        str(tmp_path),
+    )

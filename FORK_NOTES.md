@@ -20,6 +20,7 @@ This document explains the fork-specific changes on `main` that diverge from ups
 | **P-013** | `model_tools.py`, `tests/run_agent/test_repair_tool_arg_keys.py` | Adds automatic tool argument key repair (`repair_tool_arg_keys`) with alias tables, per-tool overrides, fuzzy fallback, nested object/array recursion, and an optional callback hook; integrated into `handle_function_call` before type coercion | LLMs often misname arguments (e.g. "file"→"path", "cmd"→"command"); this makes tool dispatch resilient to common drift without weakening JSON Schemas | Should be upstreamed |
 | **P-014** | `.github/workflows/release-runtime.yml`, `tools/mcp_tool.py`, `hermes_cli/config.py`, `docs/RUNTIME_RELEASES.md`, `tests/tools/test_mcp_tool.py` | Bundles the native MCP client SDK into the frozen runtime (install entry later folded into the `cn-desktop` extra — see P-015 — plus `--collect-submodules/--copy-metadata mcp` and a CI assert on `mcp-*.dist-info`), and makes `discover_mcp_tools()` warn once when `mcp_servers` is configured but the SDK is absent instead of silently no-op'ing at debug | Issue #16: the desktop runtime shipped without the `mcp` extra, so `_MCP_AVAILABLE=False` and configured `mcp_servers` registered no tools with no INFO-level log. The packaging fix is fork-specific; the diagnostic + known-root-key are generic | Packaging change is CN-specific; the `mcp_tool.py` warning and `mcp_servers` known-root-key should be upstreamed |
 | **P-015** | `pyproject.toml`, `.github/workflows/release-runtime.yml`, `docs/RUNTIME_RELEASES.md`, `uv.lock` | Adds a `cn-desktop` aggregate extra that pre-bakes every backend the frozen runtime exposes (`web`, `anthropic`, `mcp`, `feishu`, `dingtalk`, `wecom`, plus 微信's `aiohttp`/`qrcode`/`cryptography`). The release workflow installs `.[cn-desktop]`, collects the IM SDK submodules + metadata, runs a build-env import smoke test, and asserts each backend's `dist-info` in the frozen output | Desktop report: the 飞书/钉钉/企微/微信 adapters silently degraded to "unavailable" because their SDKs (`lark-oapi`, `dingtalk-stream`, …) were never bundled and the frozen build can't lazy-install. Same root cause as P-014, generalized to all desktop backends | Packaging is CN-specific; not upstreamed (upstream doesn't build these artifacts) |
+| **P-016** | `tools/terminal_tool.py`, `tools/environments/local.py`, `model_tools.py`, `tests/tools/test_terminal_dynamic_description.py` | PowerShell (pwsh) native execution: on Windows, detects pwsh and uses it as the primary local shell with full lifecycle support (spawn, wrap, init_session, cwd tracking); adds runtime-adaptive terminal tool description that replaces Linux/bash command references with pwsh cmdlets when the active shell is pwsh; adds shell-fingerprint to tool-definitions cache key so mid-session pwsh auto-install invalidates the description | Agent on Windows was hardcoded to Git Bash; pwsh is faster (-NoProfile), has better Windows-native path handling, and avoids the POSIX-translation overhead. The static `TERMINAL_TOOL_DESCRIPTION` contained Linux-only command references (`cat/head/tail`, `grep/rg/find`, `echo/cat heredoc`) that are misleading under pwsh | Should be upstreamed |
 
 > **P-001** (provider dict-vs-list mismatch in `tui_gateway/server.py`) — **dropped from this fork**. Upstream has since fixed it; the line `user_provs = cfg.get("providers")` in `_apply_model_switch` already does the right thing.
 
@@ -287,6 +288,48 @@ opening an upstream PR.
 **Side effects**: The frozen runtime grows by the IM SDKs and their transitive deps (notably the pure-Python `alibabacloud_*` chain). All are pure-Python with cross-platform wheels/sdists — unlike `matrix`'s `python-olm`, which needs a C toolchain and is intentionally still excluded. No change to source installs.
 
 **Should we upstream?** No — upstream doesn't build these PyInstaller artifacts. The `cn-desktop` extra and packaging are CN-runtime-specific.
+### P-016: PowerShell (pwsh) native execution + runtime-adaptive terminal description
+
+**Symptom**: On Windows, the agent was hardcoded to always use Git Bash. PowerShell 7 (pwsh) is faster to start (`-NoProfile`), handles Windows paths natively (no `/c/foo` translation), and is the default shell on modern Windows. Additionally, the terminal tool's static `TERMINAL_TOOL_DESCRIPTION` referenced Linux/bash commands (`cat/head/tail`, `grep/rg/find`, `echo/cat heredoc`, `Pipe git output to cat`) that don't exist on native pwsh — the LLM would either try them and fail, or not know the pwsh equivalents to avoid.
+
+**Root cause**: Upstream's `LocalEnvironment` is bash-only. The terminal tool description is a hardcoded static string assuming a Linux environment.
+
+**What the patch does**:
+
+1. **`tools/environments/local.py`** — Shell resolution and pwsh execution:
+   - Adds `_resolve_shell()`: detects pwsh vs bash on Windows. Respects `HERMES_SHELL_TYPE` (auto/pwsh/bash) and `HERMES_PWSH_PATH` env overrides. Falls back to Git Bash when pwsh is unavailable. Uses the existing `_find_pwsh` (with auto-install) from `tools/environments/_find_pwsh.py`.
+   - `LocalEnvironment.__init__` calls `_resolve_shell()` and stores `self._shell_type` / `self._shell_path`.
+   - Adds `_run_pwsh()`: spawns pwsh with `-NoProfile -Command <script>`, handles stdin piping, Windows creation flags.
+   - Adds `_wrap_command_pwsh()`: builds a PowerShell script that executes `Set-Location`, `Invoke-Expression`, captures `$LASTEXITCODE`, writes CWD via `Get-Location | Out-File`, and emits a CWD marker for the framework.
+   - Overrides `init_session()`: pwsh path skips the bash env-snapshot dance (Windows env vars propagate through `os.environ` naturally). Just writes the initial CWD file.
+   - Overrides `_run_bash()` and `_wrap_command()`: dispatch to pwsh variants when `self._shell_type == "pwsh"`, preserving the original bash code paths unchanged.
+
+2. **`tools/terminal_tool.py`** — Dynamic description:
+   - Adds `_detect_shell_for_description()`: fast, side-effect-free shell probe (no auto-install). Uses `@lru_cache(maxsize=1)`.
+   - Adds `_build_dynamic_terminal_description()`: returns `{"description": ...}` with platform-appropriate first sentence and pwsh-adapted forbidden-command references. On pwsh, replaces:
+     - `cat/head/tail` → `Get-Content/cat/type`
+     - `grep/rg/find` → `Select-String/findstr`
+     - `ls` → `Get-ChildItem/ls/dir`
+     - `echo/cat heredoc` → `echo/Set-Content/Out-File`
+     - `Pipe git output to cat` → `Pipe git output to Out-Host -Paging`
+   - Registers `dynamic_schema_overrides=_build_dynamic_terminal_description` in the terminal tool's `registry.register()` call so the description is rebuilt each time tool definitions are assembled.
+
+3. **`model_tools.py`** — Cache invalidation:
+   - Adds `_shell_fp` (current shell type) to `get_tool_definitions()` cache key. This ensures that a mid-session pwsh auto-install (which changes the terminal description) invalidates the cached tool definitions.
+
+4. **`tests/tools/test_terminal_dynamic_description.py`** — 14 tests covering:
+   - Shell detection (Windows pwsh found/not-found, non-Windows, macOS, env overrides).
+   - Description building (pwsh, Windows bash, non-Windows).
+   - pwsh-adapted command references present and Linux-only references absent.
+   - Registry integration.
+   - LRU cache behavior.
+
+**Side effects**:
+- On Windows with pwsh: all local terminal commands now execute in pwsh instead of bash. This means shell syntax (`;` not `&&`, `$env:VAR` not `$VAR`, `Get-ChildItem` not `ls` for scripts) must be pwsh-compatible. The agent's prompt already instructs it to use the active shell.
+- The `_detect_shell_for_description` LRU cache means a mid-session pwsh auto-install won't update the description until cache is cleared. Mitigation: `_find_pwsh` auto-install path should call `_detect_shell_for_description.cache_clear()`.
+- Docker/SSH/Modal backends are unaffected — they always use bash inside containers and don't go through `_resolve_shell()`.
+
+**Should we upstream?** Yes. This makes Hermes a first-class Windows citizen. The changes are modular: shell detection and dispatch follow the existing `_run_bash` / `_wrap_command` pattern, and the dynamic description reuses the existing `dynamic_schema_overrides` mechanism.
 
 ---
 

@@ -23,6 +23,7 @@
 | **P-013** | `model_tools.py`, `tests/run_agent/test_repair_tool_arg_keys.py` | 在 `handle_function_call` 中增加自动参数键修复：全局别名表、工具级覆盖、模糊匹配、嵌套对象/数组递归修复，以及可选回调通知 | LLM 经常把参数名写错（如 `file`→`path`、`cmd`→`command`），此前会直接报 "unknown parameter"；该补丁在不放宽 JSON Schema 的前提下提高工具调用的容错率 | 建议上游 |
 | **P-014** | `.github/workflows/release-runtime.yml`, `tools/mcp_tool.py`, `hermes_cli/config.py`, `docs/RUNTIME_RELEASES.md`, `tests/tools/test_mcp_tool.py` | 把原生 MCP 客户端 SDK 打进冻结 runtime（安装入口后并入 `cn-desktop` extra，见 P-015；外加 `--collect-submodules/--copy-metadata mcp` + CI 断言 `mcp-*.dist-info` 存在）；并让 `discover_mcp_tools()` 在已配置 `mcp_servers` 但 SDK 缺失时输出一次 WARNING，而不是在 debug 级别静默跳过 | issue #16：desktop runtime 打包时缺少 `mcp` extra，导致 `_MCP_AVAILABLE=False`，已配置的 `mcp_servers` 不注册任何工具且 INFO 日志无任何提示。打包改动是 CN 特有，诊断日志与已知根键则是通用改进 | 打包改动 CN 特有；`mcp_tool.py` 告警与 `mcp_servers` 根键建议上游 |
 | **P-015** | `pyproject.toml`, `.github/workflows/release-runtime.yml`, `docs/RUNTIME_RELEASES.md`, `uv.lock` | 新增 `cn-desktop` 聚合 extra，把冻结 runtime 暴露的所有后端预打包（`web`、`anthropic`、`mcp`、`feishu`、`dingtalk`、`wecom`，以及微信用的 `aiohttp`/`qrcode`/`cryptography`）。发布流程改为安装 `.[cn-desktop]`，收集各 IM SDK 子模块与元数据，新增"构建环境 import 冒烟"，并断言每个后端的 `dist-info` 出现在冻结产物中 | 桌面反馈：飞书/钉钉/企微/微信适配器因 SDK（`lark-oapi`、`dingtalk-stream` 等）从未被打包、且冻结环境无法懒安装而静默降级为"不可用"。根因同 P-014，推广到所有桌面后端 | 打包 CN 特有；不上游（上游不构建这些产物） |
+| **P-016** | `tools/terminal_tool.py`, `tools/environments/local.py`, `model_tools.py`, `tests/tools/test_terminal_dynamic_description.py` | PowerShell (pwsh) 原生执行：Windows 上检测 pwsh 并将其作为主 shell，支持完整生命周期管理（spawn、wrap、init_session、cwd 跟踪）；增加运行时自适应的 terminal 工具描述，当激活 shell 为 pwsh 时自动将 Linux/bash 命令引用替换为 pwsh cmdlet；将 shell 指纹加入工具定义缓存键，使会话中期 pwsh 自动安装能刷新描述缓存 | Windows 上 agent 原本硬编码为 Git Bash；pwsh 启动更快（-NoProfile）、Windows 路径处理更原生、无需 POSIX 翻译。静态 `TERMINAL_TOOL_DESCRIPTION` 中包含的 Linux 命令引用（`cat/head/tail`、`grep/rg/find`、`echo/cat heredoc`）在 pwsh 下会产生误导 | 建议上游 |
 
 ## 发布和维护支撑
 
@@ -279,6 +280,48 @@
 **风险和约束**：冻结 runtime 体积增加 IM SDK 及其传递依赖（尤其是纯 Python 的 `alibabacloud_*` 链）。它们都是纯 Python、有跨平台 wheel/sdist——不像 `matrix` 的 `python-olm` 需要 C 工具链，那个仍刻意排除。对源码安装无影响。
 
 **是否上游**：否。上游不构建这些 PyInstaller 产物，`cn-desktop` extra 与打包均为 CN runtime 特有。
+### P-014：PowerShell (pwsh) 原生执行 + 运行时自适应终端工具描述
+
+**现象**：Windows 上 agent 硬编码使用 Git Bash。PowerShell 7 (pwsh) 启动更快（`-NoProfile` 跳过 profile 加载），原生处理 Windows 路径（无需 `/c/foo` 翻译），是现代 Windows 的默认 shell。此外，terminal 工具的静态 `TERMINAL_TOOL_DESCRIPTION` 包含 Linux/bash 命令引用（`cat/head/tail`、`grep/rg/find`、`echo/cat heredoc`、`Pipe git output to cat`），这些命令在原生 pwsh 中不存在——LLM 要么尝试执行失败，要么不知道应避开哪些 pwsh 等价命令。
+
+**原因**：上游 `LocalEnvironment` 只支持 bash。terminal 工具描述是硬编码的静态字符串，假定 Linux 环境。
+
+**改动内容**：
+
+1. **`tools/environments/local.py`** — Shell 检测与 pwsh 执行：
+   - 新增 `_resolve_shell()`：检测 pwsh vs bash。支持 `HERMES_SHELL_TYPE`（auto/pwsh/bash）和 `HERMES_PWSH_PATH` 环境变量覆盖。pwsh 不可用时回退到 Git Bash。复用已有的 `_find_pwsh`（含自动安装）来自 `tools/environments/_find_pwsh.py`。
+   - `LocalEnvironment.__init__` 调用 `_resolve_shell()` 并保存 `self._shell_type` / `self._shell_path`。
+   - 新增 `_run_pwsh()`：使用 `-NoProfile -Command <script>` 启动 pwsh，处理 stdin 管道和 Windows creation flags。
+   - 新增 `_wrap_command_pwsh()`：构建 PowerShell 脚本，执行 `Set-Location`、`Invoke-Expression`，捕获 `$LASTEXITCODE`，通过 `Get-Location | Out-File` 写入 CWD，并输出框架所需的 CWD 标记。
+   - 覆写 `init_session()`：pwsh 路径跳过 bash 环境快照（Windows 环境变量通过 `os.environ` 自然继承），仅写入初始 CWD 文件。
+   - 覆写 `_run_bash()` 和 `_wrap_command()`：当 `self._shell_type == "pwsh"` 时分发到 pwsh 变体，保持原有 bash 代码路径不变。
+
+2. **`tools/terminal_tool.py`** — 动态描述：
+   - 新增 `_detect_shell_for_description()`：快速、无副作用的 shell 探测（不触发自动安装）。使用 `@lru_cache(maxsize=1)` 缓存。
+   - 新增 `_build_dynamic_terminal_description()`：返回 `{"description": ...}`，包含平台适配的首句和 pwsh 专用的禁用手命令引用。在 pwsh 下替换：
+     - `cat/head/tail` → `Get-Content/cat/type`
+     - `grep/rg/find` → `Select-String/findstr`
+     - `ls` → `Get-ChildItem/ls/dir`
+     - `echo/cat heredoc` → `echo/Set-Content/Out-File`
+     - `Pipe git output to cat` → `Pipe git output to Out-Host -Paging`
+   - 在 terminal 工具的 `registry.register()` 调用中注册 `dynamic_schema_overrides=_build_dynamic_terminal_description`，使每次组装工具定义时描述都会重新生成。
+
+3. **`model_tools.py`** — 缓存失效：
+   - 将 `_shell_fp`（当前 shell 类型）加入 `get_tool_definitions()` 缓存键。确保会话中期 pwsh 自动安装（会改变 terminal 描述）能使缓存的工具定义失效。
+
+4. **`tests/tools/test_terminal_dynamic_description.py`** — 14 个测试覆盖：
+   - Shell 检测（Windows pwsh 存在/不存在、非 Windows、macOS、环境变量覆盖）。
+   - 描述构建（pwsh、Windows bash、非 Windows）。
+   - pwsh 适配命令引用存在且 Linux 原始引用不存在。
+   - Registry 集成。
+   - LRU 缓存行为。
+
+**风险和约束**：
+- Windows 上有 pwsh 时：所有本地 terminal 命令现在在 pwsh 中执行而非 bash。这意味着 shell 语法（`;` 而非 `&&`、`$env:VAR` 而非 `$VAR`、脚本应使用 `Get-ChildItem` 而非 `ls`）必须是 pwsh 兼容的。Agent 的 prompt 已指示使用当前活动的 shell。
+- `_detect_shell_for_description` LRU 缓存意味着会话中期 pwsh 自动安装不会更新描述，直到缓存被清除。缓解方案：`_find_pwsh` 自动安装路径应调用 `_detect_shell_for_description.cache_clear()`。
+- Docker/SSH/Modal 后端不受影响——它们始终在容器内使用 bash，不经过 `_resolve_shell()`。
+
+**是否上游**：建议上游。这使 Hermes 成为 Windows 一等公民。改动是模块化的：shell 检测和分发遵循已有的 `_run_bash` / `_wrap_command` 模式，动态描述复用已有的 `dynamic_schema_overrides` 机制。
 
 ---
 

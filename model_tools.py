@@ -522,6 +522,14 @@ def get_tool_definitions(
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
+        # Include current shell type in the cache key so that a mid-session
+        # auto-install of pwsh (which changes the terminal tool's dynamic
+        # description) invalidates the cached tool definitions.
+        try:
+            from tools.terminal_tool import _detect_shell_for_description
+            _shell_fp = _detect_shell_for_description()
+        except Exception:
+            _shell_fp = "bash"
         cache_key = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
@@ -529,6 +537,7 @@ def get_tool_definitions(
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
+            _shell_fp,
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:

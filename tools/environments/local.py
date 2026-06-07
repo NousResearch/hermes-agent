@@ -17,6 +17,9 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
 
+# Lazy-imported when needed on Windows
+_find_pwsh = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -398,6 +401,57 @@ def _find_bash() -> str:
     )
 
 
+def _resolve_shell() -> tuple[str, str]:
+    """Determine which shell to use for local command execution.
+
+    On Windows: try PowerShell 7 (pwsh) first, fall back to Git Bash.
+    On non-Windows: always use bash.
+
+    Env overrides:
+      ``HERMES_SHELL_TYPE`` — ``"pwsh"``, ``"bash"``, or ``"auto"`` (default).
+      ``HERMES_PWSH_PATH`` — explicit path to pwsh.exe.
+      ``HERMES_GIT_BASH_PATH`` — explicit path to bash.exe (existing).
+
+    Returns ``(shell_type, shell_path)`` where *shell_type* is ``"pwsh"``
+    or ``"bash"``.
+    """
+    shell_type = os.environ.get("HERMES_SHELL_TYPE", "auto").strip().lower() or "auto"
+
+    if _IS_WINDOWS and shell_type in ("pwsh", "powershell", "auto"):
+        # Check explicit pwsh path override first
+        explicit_pwsh = os.environ.get("HERMES_PWSH_PATH", "").strip()
+        if explicit_pwsh and os.path.isfile(explicit_pwsh):
+            logger.info("Using pwsh from HERMES_PWSH_PATH: %s", explicit_pwsh)
+            return ("pwsh", explicit_pwsh)
+
+        # Try discovery (with auto-install fallback)
+        try:
+            global _find_pwsh
+            if _find_pwsh is None:
+                from tools.environments._find_pwsh import find_pwsh as _fp
+                _find_pwsh = _fp
+            pwsh_path = _find_pwsh()
+            if pwsh_path:
+                logger.info("Selected shell: pwsh at %s", pwsh_path)
+                return ("pwsh", pwsh_path)
+        except Exception as exc:
+            logger.debug("pwsh discovery failed: %s", exc)
+
+        if shell_type == "pwsh":
+            raise RuntimeError(
+                "HERMES_SHELL_TYPE=pwsh but PowerShell 7 could not be found. "
+                "Set HERMES_PWSH_PATH or install PowerShell 7."
+            )
+
+    # Fall back to bash
+    bash_path = _find_bash()
+    if bash_path:
+        logger.info("Selected shell: bash at %s", bash_path)
+        return ("bash", bash_path)
+
+    raise RuntimeError("No usable shell found.")
+
+
 # Backward compat — process_registry.py imports this name
 _find_shell = _find_bash
 
@@ -546,8 +600,12 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host machine.
 
-    Spawn-per-call: every execute() spawns a fresh bash process.
-    Session snapshot preserves env vars across calls.
+    Spawn-per-call: every execute() spawns a fresh shell process.
+    On Windows, uses PowerShell 7 (pwsh) when available, falling back
+    to Git Bash.  On other platforms, uses bash.
+
+    Session snapshot preserves env vars across calls (bash only;
+    Windows env vars propagate naturally through ``os.environ``).
     CWD persists via file-based read after each command.
     """
 
@@ -555,6 +613,7 @@ class LocalEnvironment(BaseEnvironment):
         if cwd:
             cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        self._shell_type, self._shell_path = _resolve_shell()
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -605,9 +664,152 @@ class LocalEnvironment(BaseEnvironment):
 
         return "/tmp"
 
+    # ------------------------------------------------------------------
+    # pwsh-specific methods
+    # ------------------------------------------------------------------
+
+    def _run_pwsh(self, cmd_string: str, *, login: bool = False,
+                  timeout: int = 120,
+                  stdin_data: str | None = None) -> subprocess.Popen:
+        """Spawn a pwsh process to run *cmd_string*.
+
+        Uses ``-NoProfile`` for speed (profile loading is slow in pwsh).
+        Windows paths are handled natively — no backslash conversion needed.
+        """
+        args = [self._shell_path, "-NoProfile", "-Command", cmd_string]
+        run_env = _make_run_env(self.env)
+        safe_cwd = _resolve_safe_cwd(self.cwd)
+        if safe_cwd != self.cwd:
+            # On Windows, _resolve_safe_cwd calls os.path.normpath which
+            # converts forward slashes to backslashes.  Compare normalized
+            # forms so a benign slash-normalization doesn't trigger a warning.
+            normalized_self = os.path.normpath(
+                _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
+            )
+            if safe_cwd != normalized_self:
+                logger.warning(
+                    "LocalEnvironment cwd %r is missing on disk; "
+                    "falling back to %r so terminal commands keep working.",
+                    self.cwd,
+                    safe_cwd,
+                )
+            self.cwd = safe_cwd
+
+        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+
+        proc = subprocess.Popen(
+            args,
+            text=True,
+            env=run_env,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            cwd=safe_cwd,
+            **_popen_kwargs,
+        )
+
+        if stdin_data is not None:
+            _pipe_stdin(proc, stdin_data)
+
+        return proc
+
+    def _wrap_command_pwsh(self, command: str, cwd: str) -> str:
+        """Build a PowerShell script that cd's, runs the command, and emits
+        CWD marker + exit code.
+
+        PowerShell equivalents:
+          ``cd``      → ``Set-Location`` (``cd`` also works in pwsh)
+          ``$?``      → ``$LASTEXITCODE``
+          ``pwd -P``  → ``Get-Location``
+        """
+        # Escape single quotes for PowerShell: double them
+        escaped = command.replace("'", "''")
+        quoted_cwd = cwd.replace("'", "''")
+        quoted_cwd_file = self._cwd_file.replace("'", "''")
+
+        marker = self._cwd_marker
+
+        # Build a PowerShell script.  We use ``Invoke-Expression`` to run
+        # the user's command (similar to bash ``eval``).  ``$LASTEXITCODE``
+        # captures the exit code of the last external command.
+        parts = [
+            # Suppress errors, cd to target
+            f"$ErrorActionPreference = 'Continue'",
+            f"Set-Location -LiteralPath '{quoted_cwd}' -ErrorAction SilentlyContinue",
+            f"if ($?) {{ Set-Location -LiteralPath '{quoted_cwd}' }} else {{ exit 126 }}",
+            # Run the command
+            f"Invoke-Expression '{escaped}'",
+            f"$hermes_ec = $LASTEXITCODE",
+            # Write CWD to temp file
+            f"(Get-Location).Path | Out-File -Encoding utf8 -FilePath '{quoted_cwd_file}'",
+            # Emit CWD marker
+            f"$cwd = (Get-Location).Path",
+            f"Write-Output ''",
+            f"Write-Output '{marker}' + $cwd + '{marker}'",
+            # Exit with captured code
+            f"exit $hermes_ec",
+        ]
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # init_session override (handles both pwsh and bash)
+    # ------------------------------------------------------------------
+
+    def init_session(self):
+        """Capture shell environment into a snapshot file.
+
+        For **pwsh**: skip the snapshot dance — Windows env vars persist
+        through ``os.environ`` inheritance naturally.  Just write the
+        initial CWD and mark snapshot as not-ready (commands run fresh
+        with ``-NoProfile`` for speed).
+
+        For **bash**: unchanged — captures env vars, functions, aliases
+        into a snapshot file that subsequent commands source.
+        """
+        if self._shell_type == "pwsh":
+            # Simple CWD marker write — no snapshot needed for pwsh.
+            self._snapshot_ready = False
+            try:
+                cwd_path = self.cwd
+                if _IS_WINDOWS:
+                    cwd_path = os.path.normpath(cwd_path)
+                Path(self._cwd_file).parent.mkdir(parents=True, exist_ok=True)
+                Path(self._cwd_file).write_text(cwd_path, encoding="utf-8")
+            except Exception as exc:
+                logger.warning(
+                    "init_session (pwsh) failed to write CWD file: %s", exc
+                )
+            logger.info(
+                "pwsh session ready (session=%s, cwd=%s)",
+                self._session_id,
+                self.cwd,
+            )
+            return
+
+        # --- bash path (unchanged from BaseEnvironment) ---
+        return super().init_session()
+
+    # ------------------------------------------------------------------
+    # _run_bash override (dispatches to _run_pwsh when active)
+    # ------------------------------------------------------------------
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
+        """Spawn a shell process to run *cmd_string*.
+
+        Dispatches to ``_run_pwsh()`` when the active shell is pwsh,
+        otherwise uses the existing bash path (unchanged behaviour).
+        """
+        if self._shell_type == "pwsh":
+            return self._run_pwsh(
+                cmd_string, login=login, timeout=timeout, stdin_data=stdin_data
+            )
+
+        # --- existing bash path (unchanged) ---
         bash = _find_bash()
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
@@ -675,6 +877,20 @@ class LocalEnvironment(BaseEnvironment):
             _pipe_stdin(proc, stdin_data)
 
         return proc
+
+    # ------------------------------------------------------------------
+    # _wrap_command override (dispatches to pwsh wrapping when active)
+    # ------------------------------------------------------------------
+
+    def _wrap_command(self, command: str, cwd: str) -> str:
+        """Build the shell script wrapper for command execution.
+
+        Dispatches to ``_wrap_command_pwsh()`` when the active shell is
+        pwsh, otherwise uses the base bash wrapping.
+        """
+        if self._shell_type == "pwsh":
+            return self._wrap_command_pwsh(command, cwd)
+        return super()._wrap_command(command, cwd)
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""

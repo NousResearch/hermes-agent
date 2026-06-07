@@ -8,6 +8,7 @@ import os
 import queue
 import re
 import stat
+import atexit
 import threading
 import time
 import uuid
@@ -19,12 +20,14 @@ from typing import Any
 DEFAULT_LIMIT = 5
 MAX_EVENTS = 500
 TEXT_PREVIEW_LIMIT = 160
+MAX_FILE_BYTES = 1_000_000
 _LOGGER = logging.getLogger(__name__)
 _LAST_READ_ERROR: str | None = None
 _LAST_WRITE_ERROR: str | None = None
 _WRITE_QUEUE: queue.Queue[tuple[Path, dict[str, Any]] | None] = queue.Queue(maxsize=1000)
 _WRITE_WORKER_STARTED = False
 _WRITE_WORKER_LOCK = threading.Lock()
+_ATEXIT_REGISTERED = False
 
 _SECRET_PATTERNS = (
     re.compile(r"(?i)\bbearer\s+[-A-Za-z0-9._~+/=]{8,}\b"),
@@ -98,10 +101,35 @@ def _write_payload(path: Path, payload: dict[str, Any]) -> None:
             except OSError:
                 pass
         _LAST_WRITE_ERROR = None
+        _compact_if_needed(path)
     except OSError as exc:
         _LAST_WRITE_ERROR = str(exc)
         _LOGGER.warning("Voice bench telemetry write failed: %s", exc)
         return
+
+
+def _compact_if_needed(path: Path, *, max_events: int | None = None) -> None:
+    try:
+        keep_events = MAX_EVENTS if max_events is None else max_events
+        if path.stat().st_size <= MAX_FILE_BYTES:
+            return
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            lines = list(deque(fh, maxlen=keep_events))
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.writelines(lines)
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        tmp_path.replace(path)
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError as exc:
+        _LOGGER.warning("Voice bench telemetry compaction failed: %s", exc)
 
 
 def _writer_loop() -> None:
@@ -117,7 +145,7 @@ def _writer_loop() -> None:
 
 
 def _ensure_write_worker() -> None:
-    global _WRITE_WORKER_STARTED
+    global _ATEXIT_REGISTERED, _WRITE_WORKER_STARTED
     if _WRITE_WORKER_STARTED:
         return
     with _WRITE_WORKER_LOCK:
@@ -130,6 +158,9 @@ def _ensure_write_worker() -> None:
         )
         thread.start()
         _WRITE_WORKER_STARTED = True
+        if not _ATEXIT_REGISTERED:
+            atexit.register(flush_events)
+            _ATEXIT_REGISTERED = True
 
 
 def append_event(event: dict[str, Any]) -> None:

@@ -52,6 +52,29 @@ def test_append_event_redacts_standalone_github_tokens(tmp_path, monkeypatch):
     assert "[REDACTED]" in item["response_preview"]
 
 
+def test_append_event_compacts_large_telemetry_file(tmp_path, monkeypatch):
+    path = tmp_path / "voice_bench.jsonl"
+    monkeypatch.setenv("HERMES_VOICE_BENCH_PATH", str(path))
+    monkeypatch.setenv("HERMES_VOICE_BENCH_SYNC", "1")
+    monkeypatch.setattr(voice_bench, "MAX_FILE_BYTES", 20)
+    monkeypatch.setattr(voice_bench, "MAX_EVENTS", 2)
+    path.write_text(
+        "\n".join(
+            json.dumps({"turn_id": f"old-{idx}", "stage": "stt"})
+            for idx in range(4)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    voice_bench.append_event(
+        {"turn_id": "new", "stage": "stt", "platform": "telegram", "chat_id": "123"}
+    )
+
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [row["turn_id"] for row in rows] == ["old-3", "new"]
+
+
 def test_format_recent_displays_safe_previews(tmp_path, monkeypatch):
     path = tmp_path / "voice_bench.jsonl"
     monkeypatch.setenv("HERMES_VOICE_BENCH_PATH", str(path))

@@ -49,7 +49,7 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Any, List, Optional
 from urllib.parse import urljoin
 
 from hermes_constants import display_hermes_home
@@ -1392,42 +1392,59 @@ def _wrap_pcm_as_wav(
     return riff_header + fmt_chunk + data_chunk_header + pcm_bytes
 
 
-def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """Generate audio using Google Gemini TTS.
+def _split_text_for_tts(text: str, limit: int) -> List[str]:
+    """Split *text* into <=``limit``-char chunks on sentence then word boundaries.
 
-    Gemini's generateContent endpoint with responseModalities=["AUDIO"] returns
-    raw 24kHz mono 16-bit PCM (L16) as base64. We wrap it with a WAV RIFF
-    header to produce a playable file, then ffmpeg-convert to MP3 / Opus if
-    the caller requested those formats (same pattern as NeuTTS).
+    Whole sentences are kept together when they fit; a single sentence longer
+    than ``limit`` is hard-split on spaces. Used to break a long Gemini TTS
+    request into smaller ones that the preview endpoint synthesizes more
+    reliably.
+    """
+    import re
 
-    Args:
-        text: Text to convert (prompt-style; supports inline direction like
-              "Say cheerfully:" and audio tags like [whispers]).
-        output_path: Where to save the audio file (.wav, .mp3, or .ogg).
-        tts_config: TTS config dict.
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text]
+    chunks: List[str] = []
+    cur = ""
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        s = sentence.strip()
+        if not s:
+            continue
+        while len(s) > limit:
+            cut = s.rfind(" ", 0, limit)
+            if cut <= 0:
+                cut = limit
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            chunks.append(s[:cut].strip())
+            s = s[cut:].strip()
+        if not s:
+            continue
+        if cur and len(cur) + 1 + len(s) > limit:
+            chunks.append(cur)
+            cur = s
+        else:
+            cur = f"{cur} {s}".strip() if cur else s
+    if cur:
+        chunks.append(cur)
+    return chunks
 
-    Returns:
-        Path to the saved audio file.
+
+def _gemini_synth_pcm(req_text: str, model: str, voice: str, base_url: str, api_key: str) -> bytes:
+    """Synthesize one text chunk via Gemini TTS and return the decoded PCM bytes.
+
+    Posts a single generateContent request and decodes the base64 L16 PCM from
+    the response. Raised errors mirror the documented Gemini TTS failure modes
+    (HTTP error, malformed response, empty audio).
     """
     import requests
 
-    api_key = (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY") or "").strip()
-    if not api_key:
-        raise ValueError(
-            "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
-        )
-
-    gemini_config = tts_config.get("gemini", {})
-    model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
-    voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
-    base_url = str(
-        gemini_config.get("base_url")
-        or get_env_value("GEMINI_BASE_URL")
-        or DEFAULT_GEMINI_TTS_BASE_URL
-    ).strip().rstrip("/")
-
     payload: Dict[str, Any] = {
-        "contents": [{"parts": [{"text": text}]}],
+        "contents": [{"parts": [{"text": req_text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {
@@ -1471,7 +1488,55 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     if not audio_b64:
         raise RuntimeError("Gemini TTS returned empty audio data")
 
-    pcm_bytes = base64.b64decode(audio_b64)
+    return base64.b64decode(audio_b64)
+
+
+def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Google Gemini TTS.
+
+    Gemini's generateContent endpoint with responseModalities=["AUDIO"] returns
+    raw 24kHz mono 16-bit PCM (L16) as base64. We wrap it with a WAV RIFF
+    header to produce a playable file, then ffmpeg-convert to MP3 / Opus if
+    the caller requested those formats (same pattern as NeuTTS).
+
+    Args:
+        text: Text to convert (prompt-style; supports inline direction like
+              "Say cheerfully:" and audio tags like [whispers]).
+        output_path: Where to save the audio file (.wav, .mp3, or .ogg).
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    api_key = (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
+        )
+
+    gemini_config = tts_config.get("gemini", {})
+    model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
+    voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
+    base_url = str(
+        gemini_config.get("base_url")
+        or get_env_value("GEMINI_BASE_URL")
+        or DEFAULT_GEMINI_TTS_BASE_URL
+    ).strip().rstrip("/")
+
+    # The preview TTS endpoint can intermittently drop or truncate audio on
+    # longer inputs. When ``chunk_size`` is set, split the text into smaller
+    # sentence-aware requests and concatenate the returned PCM. Default 0 keeps
+    # the original single-request behavior unchanged.
+    chunk_size = int(gemini_config.get("chunk_size", 0) or 0)
+    if chunk_size > 0 and len(text) > chunk_size:
+        chunks = _split_text_for_tts(text, chunk_size)
+    else:
+        chunks = [text]
+
+    pcm_bytes = b"".join(
+        _gemini_synth_pcm(chunk, model, voice, base_url, api_key)
+        for chunk in chunks
+    )
     wav_bytes = _wrap_pcm_as_wav(pcm_bytes)
 
     # Fast path: caller wants WAV directly, just write.

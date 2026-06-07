@@ -68,6 +68,7 @@ tts:
   gemini:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-2.5-pro-preview-tts
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
+    chunk_size: 0               # 0 = single request (default); >0 splits long text into <=N-char requests and concatenates the audio (more reliable on the preview endpoint)
   xai:
     voice_id: "eve"             # or a custom voice ID — see docs below
     language: "en"              # ISO 639-1 code

@@ -77,6 +77,31 @@ class TestWrapPcmAsWav:
         assert len(wav) == 44 + len(pcm)
 
 
+class TestSplitTextForTts:
+    def test_short_text_returns_single_chunk(self):
+        from tools.tts_tool import _split_text_for_tts
+
+        assert _split_text_for_tts("Hello world.", 100) == ["Hello world."]
+
+    def test_empty_or_whitespace_returns_empty(self):
+        from tools.tts_tool import _split_text_for_tts
+
+        assert _split_text_for_tts("   ", 100) == []
+
+    def test_splits_on_sentence_boundaries_within_limit(self):
+        from tools.tts_tool import _split_text_for_tts
+
+        chunks = _split_text_for_tts("One. Two. Three.", 6)
+        assert len(chunks) > 1
+        assert all(len(c) <= 6 for c in chunks)
+
+    def test_hard_splits_overlong_sentence_on_spaces(self):
+        from tools.tts_tool import _split_text_for_tts
+
+        chunks = _split_text_for_tts("aaaa bbbb cccc dddd", 8)
+        assert all(len(c) <= 8 for c in chunks)
+
+
 class TestGenerateGeminiTts:
     def test_missing_api_key_raises_value_error(self, tmp_path):
         from tools.tts_tool import _generate_gemini_tts
@@ -162,6 +187,36 @@ class TestGenerateGeminiTts:
 
         endpoint = mock_post.call_args[0][0]
         assert "gemini-2.5-pro-preview-tts" in endpoint
+
+    def test_no_chunking_by_default_single_request(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        long_text = "One. Two. Three. Four. Five. Six."
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts(long_text, str(tmp_path / "test.wav"), {})
+
+        # chunk_size defaults to 0 -> exactly one request, behavior unchanged
+        assert mock_post.call_count == 1
+
+    def test_chunk_size_splits_into_multiple_requests(
+        self, tmp_path, monkeypatch, mock_gemini_response, fake_pcm_bytes
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {"gemini": {"chunk_size": 8}}
+        long_text = "One. Two. Three. Four."
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts(long_text, str(tmp_path / "test.wav"), config)
+
+        # Split into several <=8-char chunks -> one request each
+        assert mock_post.call_count > 1
+        # Concatenated PCM = one fake payload per request
+        data = (tmp_path / "test.wav").read_bytes()
+        assert data[44:] == fake_pcm_bytes * mock_post.call_count
 
     def test_response_modality_is_audio(self, tmp_path, monkeypatch, mock_gemini_response):
         from tools.tts_tool import _generate_gemini_tts

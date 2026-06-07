@@ -404,12 +404,12 @@ class TestTranscribeLocalCommand:
             return _TempDir()
 
         def fake_run(cmd, *args, **kwargs):
-            if isinstance(cmd, list):
-                output_path = cmd[-1]
-                with open(output_path, "wb") as handle:
-                    handle.write(b"RIFF....WAVEfmt ")
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
+            # PR #32694: command is always passed as a list (no shell=True).
+            # The fake must therefore handle the list form and write a transcript
+            # file directly so the post-run glob can find it.
+            assert isinstance(cmd, list), (
+                f"subprocess.run should be called with a list (no shell=True); got {type(cmd).__name__}"
+            )
             (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 

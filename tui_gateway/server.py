@@ -2606,6 +2606,25 @@ def _make_agent(sid: str, key: str, session_id: str | None = None, session_db=No
         requested=requested_provider,
         target_model=model or None,
     )
+    # Mirror gateway/run.py _resolve_runtime_agent_kwargs: HERMES_MAX_TOKENS >
+    # model.max_tokens > provider max_output_tokens, so the documented global
+    # key always wins and per-provider caps are a fallback only.
+    _tui_max_tokens = None
+    _env_mt = os.environ.get("HERMES_MAX_TOKENS")
+    if _env_mt:
+        try:
+            _tui_max_tokens = int(_env_mt)
+        except (ValueError, TypeError):
+            pass
+    else:
+        _model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        _mt = _model_cfg.get("max_tokens")
+        if isinstance(_mt, int):
+            _tui_max_tokens = _mt
+    if _tui_max_tokens is None:
+        _runtime_mot = runtime.get("max_output_tokens")
+        if isinstance(_runtime_mot, int) and _runtime_mot > 0:
+            _tui_max_tokens = _runtime_mot
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
@@ -2616,6 +2635,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None, session_db=No
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),
+        max_tokens=_tui_max_tokens,
         quiet_mode=True,
         # verbose_logging controls DEBUG-level agent logging; it is intentionally
         # independent of tool_progress_mode (which only controls per-tool

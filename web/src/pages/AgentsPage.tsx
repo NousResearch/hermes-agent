@@ -6,11 +6,11 @@ import {
   type ActiveAgentInfo,
 } from "@/lib/api";
 import { Bot } from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Input } from "@/components/ui/input";
-import { H2 } from "@/components/NouiTypography";
+import { Input } from "@nous-research/ui/ui/components/input";
+import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 
 /**
  * Agents — read-only view of delegation ``agent_profiles``.
@@ -193,7 +193,7 @@ export default function AgentsPage() {
           type="text"
           placeholder="Search agents…"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
           className="max-w-xs"
         />
         <select
@@ -276,13 +276,13 @@ export default function AgentsPage() {
                 {a.warnings.length > 0 ? (
                   <div className="flex flex-col gap-1">
                     {a.warnings.map((w, i) => (
-                      <Badge key={i} tone="warning" size="sm" className="w-fit">
+                      <Badge key={i} tone="warning" className="w-fit">
                         ⚠ {w}
                       </Badge>
                     ))}
                   </div>
                 ) : (
-                  <Badge tone="success" size="sm" className="w-fit">
+                  <Badge tone="success" className="w-fit">
                     valid
                   </Badge>
                 )}

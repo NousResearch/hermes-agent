@@ -3899,10 +3899,12 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   const scoped = key ? config.profiles?.[key] || null : null
   const block = key ? scoped || {} : config.remote || {}
 
+  const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+
   const remoteToken = decryptDesktopSecret(block.token)
   const authMode = normAuthMode(block.authMode)
-  const remoteUrl = String(block.url || '')
-  const mode = (key ? scoped?.mode : config.mode) === 'remote' ? 'remote' : 'local'
+  const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
+  const mode = envOverride || (key ? scoped?.mode : config.mode) === 'remote' ? 'remote' : 'local'
 
   let remoteOauthConnected = false
   if (authMode === 'oauth' && remoteUrl) {
@@ -3928,7 +3930,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     remoteTokenSet: Boolean(remoteToken),
     // The env override only forces the global/primary connection; a per-profile
     // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
-    envOverride: key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+    envOverride
   }
 }
 

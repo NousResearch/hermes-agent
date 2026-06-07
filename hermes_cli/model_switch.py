@@ -666,6 +666,31 @@ def switch_model(
     new_model = raw_input.strip()
     target_provider = current_provider
 
+    # --- Pre-process colon-based provider:model syntax ---
+    # Users sometimes type ``provider:model`` (e.g. ``xai-oauth:grok-4.3``)
+    # instead of ``--provider xai-oauth grok-4.3``.  Detect when the left
+    # side of the colon is a known provider and route to PATH A.
+    # Only apply on non-aggregator providers — aggregators already handle
+    # colons in step c (vendor:model -> vendor/model for catalog slugs).
+    if (
+        not explicit_provider
+        and ":" in new_model
+        and not is_aggregator(current_provider)
+    ):
+        _colon_pos = new_model.find(":")
+        if _colon_pos > 0:
+            _left = new_model[:_colon_pos].strip()
+            _right = new_model[_colon_pos + 1:].strip()
+            if _left and _right:
+                _pdef = resolve_provider_full(
+                    _left,
+                    user_providers,
+                    custom_providers,
+                )
+                if _pdef is not None:
+                    explicit_provider = _left
+                    new_model = _right
+
     # =================================================================
     # PATH A: Explicit --provider given
     # =================================================================

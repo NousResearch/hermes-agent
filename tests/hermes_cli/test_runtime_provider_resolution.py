@@ -959,6 +959,63 @@ def test_named_custom_provider_skipped_for_canonical_built_in(monkeypatch):
     assert entry is None
 
 
+def test_providers_dict_overrides_canonical_builtin(monkeypatch):
+    """A ``providers:`` dict entry for a canonical built-in name (e.g. minimax)
+    MUST override the built-in provider's defaults — #37288.  The old code
+    returned None because ``resolve_provider('minimax') == 'minimax'`` matched
+    the canonical bailout, silently ignoring the user's explicit config."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "minimax": {
+                    "base_url": "https://api.minimaxi.com/anthropic",
+                    "api_key": "sk-cp-test-key",
+                    "api_mode": "anthropic_messages",
+                }
+            }
+        },
+    )
+
+    entry = rp._get_named_custom_provider("minimax")
+
+    assert entry is not None
+    assert entry["base_url"] == "https://api.minimaxi.com/anthropic"
+    assert entry["api_key"] == "sk-cp-test-key"
+    assert entry.get("api_mode") == "anthropic_messages"
+
+
+def test_providers_dict_wins_builtin_in_full_resolution(monkeypatch):
+    """End-to-end: ``resolve_runtime_provider(requested=\"minimax\")`` with a
+    ``providers:`` dict entry must return the user's custom runtime, not the
+    built-in plugin's defaults.  Regression guard for #37288."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "minimax": {
+                    "base_url": "https://api.minimaxi.com/anthropic",
+                    "api_key": "sk-cp-full-test",
+                    "api_mode": "anthropic_messages",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://api.minimaxi.com/anthropic"
+    assert resolved["api_key"] == "sk-cp-full-test"
+    assert resolved.get("api_mode") == "anthropic_messages"
+
+
 def test_explicit_openrouter_skips_openai_base_url(monkeypatch):
     """When the user explicitly requests openrouter, OPENAI_BASE_URL
     (which may point to a custom endpoint) must not override the

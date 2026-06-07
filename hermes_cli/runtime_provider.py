@@ -494,31 +494,16 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     if not requested_norm or requested_norm == "custom":
         return None
 
-    # Raw names should only map to custom providers when they are not already
-    # valid built-in providers or aliases. Explicit menu keys like
-    # ``custom:local`` always target the saved custom provider.
-    if requested_norm == "auto":
-        return None
-    if not requested_norm.startswith("custom:"):
-        try:
-            canonical = auth_mod.resolve_provider(requested_norm)
-        except AuthError:
-            pass
-        else:
-            # A user-declared ``custom_providers`` entry whose name matches
-            # only an *alias* (``kimi`` → built-in ``kimi-coding``) is the
-            # user's intended target — alias rewriting would otherwise hijack
-            # the request.  We only defer to the built-in when the raw name is
-            # the canonical provider itself (``nous``, ``openrouter``, …) so
-            # accidentally shadowing a canonical provider still resolves to
-            # the built-in. See tests/hermes_cli/test_runtime_provider_resolution.py
-            # ``test_named_custom_provider_does_not_shadow_builtin_provider``.
-            if (canonical or "").strip().lower() == requested_norm:
-                return None
-
+    # ``providers:`` (dict format) is the user-explicit configuration surface
+    # for customising built-in providers.  When a user names a built-in
+    # provider (e.g. ``minimax``, ``anthropic``) under ``providers:`` they
+    # explicitly intend to override the built-in defaults — base_url, api_key,
+    # api_mode, etc.  Check this FIRST so it takes precedence over the
+    # canonical-provider bailout that guards ``custom_providers:`` (the legacy
+    # list format).  See #37288: user's ``providers.minimax.base_url`` was
+    # silently ignored because the built-in ``minimax`` plugin's base_url won.
     config = load_config()
-    
-    # First check providers: dict (new-style user-defined providers)
+
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
@@ -546,13 +531,6 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     extra_body = entry.get("extra_body")
                     if isinstance(extra_body, dict):
                         result["extra_body"] = dict(extra_body)
-                    # The v11→v12 migration writes the API mode under the new
-                    # ``transport`` field, but hand-edited configs may still
-                    # use the legacy ``api_mode`` spelling.  Accept both —
-                    # the runtime normaliser ``_normalize_custom_provider_entry``
-                    # already does, so without this lift every migrated config
-                    # silently downgrades codex_responses / anthropic_messages
-                    # providers to chat_completions in the resolved runtime.
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
@@ -581,7 +559,29 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         _lift_max_output_tokens(entry, result)
                         return result
 
-    # Fall back to custom_providers: list (legacy format)
+    # A user-declared ``custom_providers`` entry (legacy list format) whose
+    # name matches only an *alias* (``kimi`` → built-in ``kimi-coding``) is
+    # the user's intended target — alias rewriting would otherwise hijack
+    # the request.  We only defer to the built-in when the raw name is the
+    # canonical provider itself (``nous``, ``openrouter``, …) so accidentally
+    # shadowing a canonical provider via ``custom_providers:`` still resolves
+    # to the built-in.  (``providers:`` dict entries were already handled
+    # above and always win over built-ins.)
+    # See tests/hermes_cli/test_runtime_provider_resolution.py
+    # ``test_named_custom_provider_does_not_shadow_builtin_provider``.
+    if requested_norm == "auto":
+        return None
+    if not requested_norm.startswith("custom:"):
+        try:
+            canonical = auth_mod.resolve_provider(requested_norm)
+        except AuthError:
+            pass
+        else:
+            if (canonical or "").strip().lower() == requested_norm:
+                return None
+
+    # config may have already been loaded above; reload for safety
+    config = load_config()
     custom_providers = config.get("custom_providers")
     if isinstance(custom_providers, dict):
         logger.warning(

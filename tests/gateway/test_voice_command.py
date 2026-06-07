@@ -3117,6 +3117,27 @@ class TestVoiceTTSPlayback:
 
         assert runner._voice_fast_reply_route({"voice": {}}) is None
 
+    def test_voice_fast_reply_defers_explicit_research_request(self):
+        """Research-like voice transcripts must keep the orchestrator route."""
+        runner = self._make_runner()
+        message = (
+            "[The user sent a voice message~ Here's what they said: "
+            "\"I want you to research how can we connect Hermes agent to a "
+            "platform so that we can run live calls. Is it possible to use "
+            "Telegram if I provide a real account, or is WhatsApp or a regular "
+            "call better?\"]"
+        )
+
+        assert runner._voice_fast_reply_should_defer(message) is True
+
+    def test_voice_fast_reply_keeps_short_voice_test_fast(self):
+        """Short conversational voice prompts can still use the fast responder."""
+        runner = self._make_runner()
+
+        assert runner._voice_fast_reply_should_defer(
+            "Hermes, raspunde foarte scurt cu test OK."
+        ) is False
+
     def test_voice_fast_reply_route_uses_configured_fast_runtime(self, monkeypatch):
         """voice.fast_reply can route voice notes to a fast, tool-free model."""
         from hermes_cli import runtime_provider

@@ -13048,6 +13048,58 @@ class GatewayRunner:
             "reasoning_config": reasoning_config,
         }
 
+    @staticmethod
+    def _voice_fast_reply_should_defer(message: str | None) -> bool:
+        """Keep research/planning voice turns on the normal orchestrator route."""
+        normalized = " ".join(str(message or "").lower().split())
+        if not normalized:
+            return False
+
+        strong_research_markers = (
+            "/research",
+            "/hermes-research",
+            "/d1",
+            "/d2",
+            "/d3",
+            "/d4",
+            "research",
+            "source-backed",
+            "sources",
+            "citations",
+            "cite",
+            "investigate",
+            "investigation",
+            "document",
+            "deep dive",
+        )
+        if any(marker in normalized for marker in strong_research_markers):
+            return True
+
+        words = normalized.split()
+        if len(words) < 28:
+            return False
+
+        long_task_markers = (
+            "analyze",
+            "analyse",
+            "compare",
+            "what is the best",
+            "best way",
+            "how can we",
+            "is it possible",
+            "platform",
+            "integration",
+            "live call",
+            "live calls",
+            "telegram account",
+            "whatsapp",
+            "regular call",
+            "phone call",
+            "pipeline",
+            "end-to-end",
+        )
+        return any(marker in normalized for marker in long_task_markers)
+
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
         import uuid as _uuid
@@ -18733,25 +18785,31 @@ class GatewayRunner:
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
             if voice_reply_turn:
-                voice_route = self._voice_fast_reply_route(user_config)
-                if voice_route:
-                    turn_route = self._resolve_turn_agent_config(
-                        message, voice_route["model"], voice_route["runtime"]
-                    )
-                    max_iterations = voice_route["max_iterations"]
-                    enabled_toolsets = voice_route["enabled_toolsets"]
-                    disabled_toolsets = voice_route["disabled_toolsets"]
-                    reasoning_config = voice_route.get("reasoning_config") or {"enabled": False}
-                    self._reasoning_config = reasoning_config
-                    self._service_tier = "fast"
+                if self._voice_fast_reply_should_defer(message):
                     logger.info(
-                        "voice.fast_reply route: session=%s model=%s provider=%s max_iterations=%s tools=%s",
+                        "voice.fast_reply deferred: session=%s reason=research_or_long_request",
                         session_key or "",
-                        turn_route["model"],
-                        turn_route["runtime"].get("provider"),
-                        max_iterations,
-                        len(enabled_toolsets),
                     )
+                else:
+                    voice_route = self._voice_fast_reply_route(user_config)
+                    if voice_route:
+                        turn_route = self._resolve_turn_agent_config(
+                            message, voice_route["model"], voice_route["runtime"]
+                        )
+                        max_iterations = voice_route["max_iterations"]
+                        enabled_toolsets = voice_route["enabled_toolsets"]
+                        disabled_toolsets = voice_route["disabled_toolsets"]
+                        reasoning_config = voice_route.get("reasoning_config") or {"enabled": False}
+                        self._reasoning_config = reasoning_config
+                        self._service_tier = "fast"
+                        logger.info(
+                            "voice.fast_reply route: session=%s model=%s provider=%s max_iterations=%s tools=%s",
+                            session_key or "",
+                            turn_route["model"],
+                            turn_route["runtime"].get("provider"),
+                            max_iterations,
+                            len(enabled_toolsets),
+                        )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool

@@ -237,13 +237,32 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 export const ALL_PROFILES = '__all__'
 
 const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
+const SHOW_ALL_PROFILES_MIGRATION_KEY = 'hermes.desktop.showAllProfiles.migratedGatewayDefault.v1'
+
+function initialShowAllProfiles(): boolean {
+  try {
+    // One-shot migration for existing Desktop installs. A previous persisted
+    // `false` keeps gateway sessions (WhatsApp, Telegram, etc.) hidden when
+    // they are saved under a non-active profile. Flip existing installs to the
+    // safer unified view once; after that, the user's explicit rail choice wins.
+    if (window.localStorage.getItem(SHOW_ALL_PROFILES_MIGRATION_KEY) !== 'true') {
+      window.localStorage.setItem(SHOW_ALL_PROFILES_STORAGE_KEY, 'true')
+      window.localStorage.setItem(SHOW_ALL_PROFILES_MIGRATION_KEY, 'true')
+      return true
+    }
+  } catch {
+    // Fall through to the normal storage helper.
+  }
+
+  return storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, true)
+}
 
 // Unified view is the safe default for multi-profile Desktop installs: gateway
 // chats may arrive under a non-default profile (e.g. WhatsApp under `desktop`)
 // while the embedded dashboard initially connects to `default`. Showing all
 // profiles prevents those externally-created sessions from looking "missing".
 // Users can still switch to a concrete profile from the rail.
-export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, true))
+export const $showAllProfiles = atom<boolean>(initialShowAllProfiles())
 
 $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
 

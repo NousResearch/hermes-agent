@@ -3828,23 +3828,19 @@ class AIAgent:
         reach such an upstream instead of failing with an opaque 4xx/502 even
         though the same body works under ``curl``. (#40033)
 
+        Delegates the config read + merge to
+        ``agent.auxiliary_client._apply_user_default_headers`` so the main and
+        auxiliary clients can never drift on precedence or value handling.
+
         No-op for Anthropic/Bedrock modes, which don't use the OpenAI client,
         and when no overrides are configured.
         """
         if self.api_mode in ("anthropic_messages", "bedrock_converse"):
             return
-        try:
-            from hermes_cli.config import cfg_get, load_config
-            user_headers = cfg_get(load_config(), "model", "default_headers")
-        except Exception:
-            return
-        if not isinstance(user_headers, dict) or not user_headers:
-            return
-        merged = dict(self._client_kwargs.get("default_headers") or {})
-        for key, value in user_headers.items():
-            if value is None:
-                continue
-            merged[str(key)] = str(value)
+        from agent.auxiliary_client import (
+            _apply_user_default_headers as _merge_user_headers,
+        )
+        merged = _merge_user_headers(self._client_kwargs.get("default_headers"))
         if merged:
             self._client_kwargs["default_headers"] = merged
 

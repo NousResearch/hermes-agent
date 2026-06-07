@@ -9633,6 +9633,26 @@ class GatewayRunner:
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
+                
+            # Track working directory changes to persist across gateway restarts
+            try:
+                from gateway.runtime_footer import resolve_footer_cwd as _rfc
+                _live_cwd = _rfc(
+                    task_id=getattr(session_entry, "session_id", None),
+                    session_key=session_key,
+                    fallback=""
+                )
+                if _live_cwd and _live_cwd != getattr(session_entry, "cwd", None):
+                    session_entry.cwd = _live_cwd
+                    # Trigger an immediate background save to avoid dropping the
+                    # cwd jump on an ungraceful shutdown.
+                    try:
+                        self.session_store._save()
+                    except Exception:
+                        pass
+            except Exception as _cwd_err:
+                logger.debug("cwd persistence failed: %s", _cwd_err)
+
             if _footer_line and response and not agent_result.get("already_sent"):
                 response = f"{response}\n\n{_footer_line}"
 
@@ -15687,6 +15707,7 @@ class GatewayRunner:
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            cwd=context.cwd,
         )
 
     def _clear_session_env(self, tokens: list) -> None:

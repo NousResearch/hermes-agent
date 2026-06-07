@@ -174,6 +174,7 @@ class SessionContext:
     # Session metadata
     session_key: str = ""
     session_id: str = ""
+    cwd: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -187,6 +188,7 @@ class SessionContext:
             "shared_multi_user_session": self.shared_multi_user_session,
             "session_key": self.session_key,
             "session_id": self.session_id,
+            "cwd": self.cwd,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -433,6 +435,9 @@ class SessionEntry:
     created_at: datetime
     updated_at: datetime
     
+    # Optional persistent cwd for the session
+    cwd: Optional[str] = None
+    
     # Origin metadata for delivery routing
     origin: Optional[SessionSource] = None
     
@@ -497,6 +502,7 @@ class SessionEntry:
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
+            "cwd": self.cwd,
             "display_name": self.display_name,
             "platform": self.platform.value if self.platform else None,
             "chat_type": self.chat_type,
@@ -552,6 +558,7 @@ class SessionEntry:
             session_id=data["session_id"],
             created_at=datetime.fromisoformat(data["created_at"]),
             updated_at=datetime.fromisoformat(data["updated_at"]),
+            cwd=data.get("cwd"),
             origin=origin,
             display_name=data.get("display_name"),
             platform=platform,
@@ -1394,6 +1401,7 @@ def build_session_context(
     if session_entry:
         context.session_key = session_entry.session_key
         context.session_id = session_entry.session_id
+        context.cwd = session_entry.cwd or ""
         context.created_at = session_entry.created_at
         context.updated_at = session_entry.updated_at
     

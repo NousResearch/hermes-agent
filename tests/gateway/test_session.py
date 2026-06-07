@@ -1238,3 +1238,39 @@ class TestRewriteTranscriptPreservesReasoning:
             "before user",
             "before assistant",
         ]
+
+class TestSessionEntryCwd:
+    def test_session_entry_cwd_roundtrip(self):
+        from gateway.session import SessionEntry, SessionSource
+        from datetime import datetime
+        
+        source = SessionSource(platform="local", chat_id="cli")
+        entry = SessionEntry(
+            session_key="key",
+            session_id="id",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            cwd="/some/custom/path",
+            origin=source
+        )
+        
+        d = entry.to_dict()
+        assert d["cwd"] == "/some/custom/path"
+        
+        restored = SessionEntry.from_dict(d, origin=source, platform=None)
+        assert restored.cwd == "/some/custom/path"
+
+    def test_session_entry_cwd_missing(self):
+        from gateway.session import SessionEntry, SessionSource
+        from datetime import datetime
+        
+        source = SessionSource(platform="local", chat_id="cli")
+        d = {
+            "session_key": "key",
+            "session_id": "id",
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),
+        }
+        
+        restored = SessionEntry.from_dict(d, origin=source, platform=None)
+        assert restored.cwd is None

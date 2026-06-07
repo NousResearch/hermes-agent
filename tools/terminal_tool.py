@@ -993,23 +993,22 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     Map a tool-call ``task_id`` to the container/sandbox key used by
     ``_active_environments``.
 
-    The top-level agent passes ``task_id=None`` and lands on ``"default"``.
-    ``delegate_task`` children pass their own subagent ID so that
-    file-state tracking, the active-subagents registry, and TUI events stay
-    distinct per child -- but we deliberately collapse that ID back to
-    ``"default"`` here so subagents share the parent's long-lived container
-    (one bash, one /workspace, one set of installed packages).
-
-    Exception: RL / benchmark environments (TerminalBench2, HermesSweEnv, ...)
-    call ``register_task_env_overrides(task_id, {...})`` to request a
-    per-task Docker/Modal image. When an override is registered for a
-    task_id, we honour it by returning the task_id unchanged -- those
-    rollouts need their own isolated sandbox, which is the whole point of
-    the override.
+    The top-level agent passes ``task_id=session_id`` (or None in CLI mode).
+    ``delegate_task`` children pass their own subagent ID (e.g. session_id/task-123) 
+    so that file-state tracking and TUI events stay distinct per child -- but we 
+    deliberately collapse that ID back to the parent session_id here so subagents 
+    share the parent's container.
     """
     if task_id and task_id in _task_env_overrides:
         return task_id
-    return "default"
+        
+    if not task_id:
+        return "default"
+        
+    # Subagent IDs are formatted as "parent_id/task-xxx".
+    # By splitting on '/' and taking the first part, subagents share their parent's environment,
+    # while distinct gateway sessions get their own isolated environments (and their own CWD tracking).
+    return task_id.split("/")[0]
 
 
 # Configuration from environment variables

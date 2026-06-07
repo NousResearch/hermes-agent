@@ -3008,11 +3008,25 @@ def get_launchd_label() -> str:
 
 
 def _launchd_domain() -> str:
-    # The `user/<uid>` domain (vs the older `gui/<uid>`) is reachable from
-    # non-Aqua/background sessions (SSH, headless, login items) and is the only
-    # one that supports service management on macOS 26+. `gui/<uid>` returns
-    # error 125 ("Domain does not support specified action") there. See #23387.
-    return f"user/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    # On macOS 26+, `gui/<uid>` doesn't support service management from
+    # Background/SSH sessions (error 125), while `user/<uid>` is unreachable
+    # from Aqua GUI sessions.  Detect the active session manager so we target
+    # the domain that actually works in the current environment.
+    # See #23387 and #40831.
+    uid = os.getuid()  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    if sys.platform == "darwin":
+        try:
+            mgr = subprocess.run(
+                ["launchctl", "managername"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
+        except (subprocess.CalledProcessError, OSError, subprocess.TimeoutExpired):
+            mgr = ""
+        if mgr == "Aqua":
+            return f"gui/{uid}"
+    return f"user/{uid}"
 
 
 # On macOS, exit code 125 ("Domain does not support specified action") and

@@ -679,10 +679,51 @@ class TestLaunchdServiceRecovery:
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
 
-    def test_launchd_domain_uses_user_domain(self):
-        # The user/<uid> domain (not gui/<uid>) is the one reachable from
-        # non-Aqua/background sessions on macOS 26+ (issue #23387).
-        assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
+    def test_launchd_domain_uses_user_domain_on_background(self):
+        # user/<uid> is the correct domain for Background/SSH sessions on
+        # macOS 26+ (issue #23387).  Simulate a non-Aqua session.
+        monkeypatch = pytest.MonkeyPatch()
+        fake_result = SimpleNamespace(stdout="Background\n", returncode=0)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *a, **kw: fake_result,
+        )
+        monkeypatch.setattr(gateway_cli.sys, "platform", "darwin")
+        try:
+            assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
+        finally:
+            monkeypatch.undo()
+
+    def test_launchd_domain_uses_gui_domain_on_aqua(self):
+        # gui/<uid> is the correct domain for Aqua (GUI login) sessions
+        # where user/<uid> cannot bootstrap the job (issue #40831).
+        monkeypatch = pytest.MonkeyPatch()
+        fake_result = SimpleNamespace(stdout="Aqua\n", returncode=0)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *a, **kw: fake_result,
+        )
+        monkeypatch.setattr(gateway_cli.sys, "platform", "darwin")
+        try:
+            assert gateway_cli._launchd_domain() == f"gui/{os.getuid()}"
+        finally:
+            monkeypatch.undo()
+
+    def test_launchd_domain_falls_back_to_user_on_darwin_error(self):
+        # When launchctl managername fails, default to user/<uid>.
+        monkeypatch = pytest.MonkeyPatch()
+
+        def raise_oserror(*a, **kw):
+            raise OSError("command not found")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", raise_oserror)
+        monkeypatch.setattr(gateway_cli.sys, "platform", "darwin")
+        try:
+            assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
+        finally:
+            monkeypatch.undo()
 
     def test_launchctl_domain_unsupported_recognizes_macos26_codes(self):
         # Codes that persist after a fresh bootstrap → launchd truly unavailable.

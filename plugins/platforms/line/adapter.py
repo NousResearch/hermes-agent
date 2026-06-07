@@ -91,6 +91,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ReplyDeliveryPolicy,
     SendResult,
     cache_audio_from_bytes,
     cache_document_from_bytes,
@@ -721,6 +722,11 @@ class LineAdapter(BasePlatformAdapter):
             or extra.get("interrupted_text", DEFAULT_INTERRUPTED_TEXT)
         )
 
+        smart_modality_value = extra.get("smart_modality", False)
+        if isinstance(smart_modality_value, str):
+            smart_modality_value = smart_modality_value.strip().lower() in {"1", "true", "yes", "on"}
+        self.smart_modality = bool(smart_modality_value)
+
         # Runtime state
         self._client: Optional[_LineClient] = None
         self._app = None  # aiohttp.web.Application
@@ -740,6 +746,61 @@ class LineAdapter(BasePlatformAdapter):
         # Pending-button slot per chat — ensures one outstanding postback
         # button per chat at a time. Postback cache request_id keyed by chat_id.
         self._pending_buttons: Dict[str, str] = {}
+        self._last_reply_modality: Dict[Tuple[str, str], str] = {}
+
+    def _smart_modality_enabled(self) -> bool:
+        env_value = os.getenv("LINE_SMART_MODALITY")
+        if env_value is not None:
+            return env_value.strip().lower() in {"1", "true", "yes", "on"}
+        return self.smart_modality
+
+    @staticmethod
+    def _modality_key(event: MessageEvent) -> Tuple[str, str]:
+        source = event.source
+        return (str(source.chat_id or ""), str(source.user_id or source.chat_id or ""))
+
+    @staticmethod
+    def _input_reply_modality(event: MessageEvent) -> Optional[str]:
+        if event.message_type == MessageType.TEXT:
+            return "text"
+        if event.message_type in {MessageType.VOICE, MessageType.AUDIO}:
+            return "voice"
+        return None
+
+    def observe_inbound_message(self, event: MessageEvent) -> None:
+        modality = self._input_reply_modality(event)
+        if modality:
+            self._last_reply_modality[self._modality_key(event)] = modality
+
+    def reply_delivery_policy(
+        self,
+        event: MessageEvent,
+        response: str,
+        *,
+        voice_mode: str,
+        already_sent: bool,
+    ) -> ReplyDeliveryPolicy:
+        default_policy = super().reply_delivery_policy(
+            event,
+            response,
+            voice_mode=voice_mode,
+            already_sent=already_sent,
+        )
+        if not self._smart_modality_enabled() or not response or response.startswith("Error:"):
+            return default_policy
+
+        modality = self._input_reply_modality(event)
+        if modality is None and event.message_type == MessageType.PHOTO:
+            modality = self._last_reply_modality.get(self._modality_key(event))
+
+        if modality == "voice":
+            return ReplyDeliveryPolicy(
+                send_voice_reply=True,
+                suppress_text_if_voice_reply_sent=True,
+            )
+        if modality == "text":
+            return ReplyDeliveryPolicy()
+        return default_policy
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -1540,6 +1601,8 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
         seeded["public_url"] = os.environ["LINE_PUBLIC_URL"]
     if os.getenv("LINE_HOME_CHANNEL"):
         seeded["home_channel"] = os.environ["LINE_HOME_CHANNEL"]
+    if os.getenv("LINE_SMART_MODALITY"):
+        seeded["smart_modality"] = os.environ["LINE_SMART_MODALITY"]
     return seeded or {}
 
 

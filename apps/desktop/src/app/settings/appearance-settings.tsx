@@ -6,6 +6,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Palette } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $chatLayout, setChatLayout, type ChatLayout } from '@/store/chat-layout'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
@@ -64,6 +65,13 @@ export function AppearanceSettings() {
   const toolOptions = [
     { id: 'product', label: a.product },
     { id: 'technical', label: a.technical }
+  ] as const
+
+  const chatLayout = useStore($chatLayout)
+
+  const chatLayoutOptions = [
+    { id: 'stacked', label: a.chatLayoutStacked },
+    { id: 'bubbles', label: a.chatLayoutBubbles }
   ] as const
 
   return (
@@ -154,6 +162,21 @@ export function AppearanceSettings() {
             }
             description={a.toolViewDesc}
             title={a.toolViewTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={(id: string) => {
+                  triggerHaptic('crisp')
+                  setChatLayout(id as ChatLayout)
+                }}
+                options={chatLayoutOptions}
+                value={chatLayout}
+              />
+            }
+            description={a.chatLayoutDesc}
+            title={a.chatLayoutTitle}
           />
         </div>
       </div>

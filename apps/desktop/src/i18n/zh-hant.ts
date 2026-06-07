@@ -209,7 +209,13 @@ export const zhHant = defineLocale({
       technical: '技術',
       technicalDesc: '包含原始工具參數、結果與底層細節。',
       themeTitle: '主題',
-      themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。'
+      themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
+      chatLayoutTitle: '聊天佈局',
+      chatLayoutDesc: '選擇聊天視圖中訊息的顯示方式。',
+      chatLayoutStacked: '堆疊',
+      chatLayoutStackedDesc: '訊息從上到下排列，全寬顯示。',
+      chatLayoutBubbles: '氣泡',
+      chatLayoutBubblesDesc: '使用者訊息右對齊，助手訊息左對齊，使用對話氣泡樣式。'
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',

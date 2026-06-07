@@ -292,7 +292,13 @@ export const en: Translations = {
       technical: 'Technical',
       technicalDesc: 'Include raw tool args/results and low-level details.',
       themeTitle: 'Theme',
-      themeDesc: 'Desktop palettes only. The selected mode is applied on top.'
+      themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
+      chatLayoutTitle: 'Chat Layout',
+      chatLayoutDesc: 'Choose how messages are displayed in the chat view.',
+      chatLayoutStacked: 'Stacked',
+      chatLayoutStackedDesc: 'Messages flow top to bottom, full width.',
+      chatLayoutBubbles: 'Bubbles',
+      chatLayoutBubblesDesc: 'User messages right-aligned, assistant left-aligned with speech bubbles.'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,

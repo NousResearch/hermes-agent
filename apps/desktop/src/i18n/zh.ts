@@ -287,7 +287,13 @@ export const zh: Translations = {
       technical: '技术',
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
-      themeDesc: '仅桌面端调色板。所选模式叠加其上。'
+      themeDesc: '仅桌面端调色板。所选模式叠加其上。',
+      chatLayoutTitle: '聊天布局',
+      chatLayoutDesc: '选择聊天视图中消息的显示方式。',
+      chatLayoutStacked: '堆叠',
+      chatLayoutStackedDesc: '消息从上到下排列，全宽显示。',
+      chatLayoutBubbles: '气泡',
+      chatLayoutBubblesDesc: '用户消息右对齐，助手消息左对齐，使用对话气泡样式。'
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',

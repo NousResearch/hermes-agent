@@ -2303,6 +2303,176 @@ class TestRemoveLegacyHermesUnits:
         assert legacy.exists()
 
 
+class TestLegacyLaunchdPlistCleanup:
+    """Tests for the macOS launchd analog of the systemd legacy cleanup.
+
+    Hermes renamed its macOS launchd label
+    ``com.hermes.gateway[.default]`` → ``ai.hermes.gateway``
+    (and ``com.hermes.gateway-<profile>`` → ``ai.hermes.gateway-<profile>``),
+    but never shipped cleanup for the old plists. launchd auto-loads stale
+    ``com.hermes.gateway*.plist`` files at login, so they respawn alongside
+    the current label and fight over the same port / bot token. These tests
+    guard the detector + remover and the per-profile scoping that keeps one
+    profile's migrate from nuking another profile's artifacts.
+    """
+
+    # Minimal plist body that looks like our gateway (matches the program markers).
+    _OUR_PLIST_TEXT = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>\n'
+        "  <key>Label</key><string>com.hermes.gateway</string>\n"
+        "  <key>ProgramArguments</key><array>\n"
+        "    <string>/venv/bin/python</string><string>-m</string>"
+        "<string>hermes_cli.main</string>\n"
+        "    <string>gateway</string><string>run</string><string>--replace</string>\n"
+        "  </array>\n</dict></plist>\n"
+    )
+
+    @staticmethod
+    def _setup(tmp_path, monkeypatch, suffix=""):
+        """Redirect the LaunchAgents scan to tmp_path and stub launchctl."""
+        agents_dir = tmp_path / "LaunchAgents"
+        agents_dir.mkdir()
+        monkeypatch.setattr(
+            gateway_cli, "_legacy_launchd_plist_dir", lambda: agents_dir
+        )
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: suffix)
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+
+        launchctl_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            launchctl_calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        return agents_dir, launchctl_calls
+
+    def test_returns_empty_when_no_plists(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)
+
+        assert gateway_cli._find_legacy_launchd_plists() == []
+        assert gateway_cli.has_legacy_launchd_plists() is False
+
+    def test_detects_legacy_default_plist(self, tmp_path, monkeypatch):
+        agents_dir, _ = self._setup(tmp_path, monkeypatch)
+        legacy = agents_dir / "com.hermes.gateway.plist"
+        legacy.write_text(self._OUR_PLIST_TEXT, encoding="utf-8")
+
+        results = gateway_cli._find_legacy_launchd_plists()
+
+        assert len(results) == 1
+        label, path = results[0]
+        assert label == "com.hermes.gateway"
+        assert path == legacy
+        assert gateway_cli.has_legacy_launchd_plists() is True
+
+    def test_detects_dotted_default_label(self, tmp_path, monkeypatch):
+        agents_dir, _ = self._setup(tmp_path, monkeypatch)
+        legacy = agents_dir / "com.hermes.gateway.default.plist"
+        legacy.write_text(self._OUR_PLIST_TEXT, encoding="utf-8")
+
+        results = gateway_cli._find_legacy_launchd_plists()
+
+        assert [label for label, _ in results] == ["com.hermes.gateway.default"]
+
+    def test_ignores_plist_without_program_marker(self, tmp_path, monkeypatch):
+        """A com.hermes.gateway.plist that doesn't run our gateway is left alone."""
+        agents_dir, _ = self._setup(tmp_path, monkeypatch)
+        (agents_dir / "com.hermes.gateway.plist").write_text(
+            '<?xml version="1.0"?>\n<plist version="1.0"><dict>\n'
+            "  <key>Label</key><string>com.hermes.gateway</string>\n"
+            "  <key>ProgramArguments</key><array>"
+            "<string>/opt/other/daemon</string></array>\n"
+            "</dict></plist>\n",
+            encoding="utf-8",
+        )
+
+        assert gateway_cli._find_legacy_launchd_plists() == []
+        assert gateway_cli.has_legacy_launchd_plists() is False
+
+    def test_ignores_current_label_plist(self, tmp_path, monkeypatch):
+        """The current ai.hermes.gateway label must never be flagged as legacy."""
+        agents_dir, _ = self._setup(tmp_path, monkeypatch)
+        (agents_dir / "ai.hermes.gateway.plist").write_text(
+            self._OUR_PLIST_TEXT, encoding="utf-8"
+        )
+
+        assert gateway_cli._find_legacy_launchd_plists() == []
+
+    def test_profile_scoped_labels_only_match_profile(self, tmp_path, monkeypatch):
+        """Under a profile, only that profile's legacy variants are matched.
+
+        A ``migrate-legacy`` run as the ``regent`` profile must NOT touch the
+        default ``com.hermes.gateway.plist`` (that belongs to the default
+        profile and is handled by its own migrate run).
+        """
+        agents_dir, _ = self._setup(tmp_path, monkeypatch, suffix="regent")
+        profile_plist = agents_dir / "com.hermes.gateway-regent.plist"
+        profile_plist.write_text(self._OUR_PLIST_TEXT, encoding="utf-8")
+        # Default-profile legacy plist also present — must be left alone.
+        (agents_dir / "com.hermes.gateway.plist").write_text(
+            self._OUR_PLIST_TEXT, encoding="utf-8"
+        )
+
+        results = gateway_cli._find_legacy_launchd_plists()
+
+        assert [path for _, path in results] == [profile_plist]
+
+    def test_remove_boots_out_and_deletes(self, tmp_path, monkeypatch, capsys):
+        agents_dir, calls = self._setup(tmp_path, monkeypatch)
+        legacy = agents_dir / "com.hermes.gateway.plist"
+        legacy.write_text(self._OUR_PLIST_TEXT, encoding="utf-8")
+
+        removed, remaining = gateway_cli.remove_legacy_launchd_plists(interactive=False)
+
+        assert removed == 1
+        assert remaining == []
+        assert not legacy.exists()
+        # bootout must target the legacy label in the user GUI domain, and must
+        # run BEFORE the file is gone so KeepAlive can't respawn it.
+        cmds_joined = [" ".join(c) for c in calls]
+        assert any(
+            "launchctl bootout gui/501/com.hermes.gateway" in c for c in cmds_joined
+        )
+
+    def test_dry_run_lists_without_removing(self, tmp_path, monkeypatch, capsys):
+        agents_dir, calls = self._setup(tmp_path, monkeypatch)
+        legacy = agents_dir / "com.hermes.gateway.plist"
+        legacy.write_text(self._OUR_PLIST_TEXT, encoding="utf-8")
+
+        removed, remaining = gateway_cli.remove_legacy_launchd_plists(
+            interactive=False, dry_run=True
+        )
+
+        assert removed == 0
+        assert remaining == [legacy]
+        assert legacy.exists()  # Not removed
+        assert calls == []  # No launchctl invocations
+        assert "dry-run" in capsys.readouterr().out
+
+    def test_returns_zero_when_no_plists(self, tmp_path, monkeypatch, capsys):
+        self._setup(tmp_path, monkeypatch)
+
+        removed, remaining = gateway_cli.remove_legacy_launchd_plists(interactive=False)
+
+        assert removed == 0
+        assert remaining == []
+        assert "No legacy" in capsys.readouterr().out
+
+    def test_interactive_no_skips_removal(self, tmp_path, monkeypatch):
+        agents_dir, calls = self._setup(tmp_path, monkeypatch)
+        legacy = agents_dir / "com.hermes.gateway.plist"
+        legacy.write_text(self._OUR_PLIST_TEXT, encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "prompt_yes_no", lambda *a, **k: False)
+
+        removed, remaining = gateway_cli.remove_legacy_launchd_plists(interactive=True)
+
+        assert removed == 0
+        assert remaining == [legacy]
+        assert legacy.exists()
+        assert calls == []  # No bootout when the user declines
+
+
 class TestMigrateLegacyCommand:
     """Tests for the `hermes gateway migrate-legacy` subcommand dispatch."""
 
@@ -2354,6 +2524,36 @@ class TestMigrateLegacyCommand:
         gateway_cli.gateway_command(args)
 
         assert called == {"interactive": False, "dry_run": False}
+
+    def test_gateway_command_migrate_legacy_macos_dispatches_launchd(
+        self, monkeypatch
+    ):
+        """On macOS (no systemd), migrate-legacy must call the launchd remover,
+        not the systemd one."""
+        called = {}
+
+        def fake_launchd_remove(interactive=True, dry_run=False):
+            called["launchd"] = (interactive, dry_run)
+            return 0, []
+
+        def fail_systemd_remove(*a, **k):  # pragma: no cover - must not run
+            raise AssertionError("systemd remover called on macOS")
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli, "remove_legacy_launchd_plists", fake_launchd_remove
+        )
+        monkeypatch.setattr(
+            gateway_cli, "remove_legacy_hermes_units", fail_systemd_remove
+        )
+
+        args = SimpleNamespace(
+            gateway_command="migrate-legacy", dry_run=True, yes=False
+        )
+        gateway_cli.gateway_command(args)
+
+        assert called == {"launchd": (True, True)}
 
 
 class TestGatewayStatusParser:

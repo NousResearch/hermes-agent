@@ -3248,8 +3248,210 @@ def refresh_launchd_plist_if_needed() -> bool:
     return True
 
 
+# Legacy macOS launchd labels from older Hermes installs that predate the
+# ``com.hermes.gateway`` → ``ai.hermes.gateway`` rename. Kept as an explicit
+# allowlist (NOT a glob) so unrelated third-party ``com.hermes.*`` agents are
+# never matched. These cover the DEFAULT-profile install; per-profile variants
+# (``com.hermes.gateway-<profile>``) are derived in _legacy_launchd_labels().
+_LEGACY_LAUNCHD_LABELS: tuple[str, ...] = (
+    "com.hermes.gateway.default",
+    "com.hermes.gateway",
+)
+
+# Content markers that identify a plist as one of OUR gateway launchd jobs.
+# A legacy plist is only flagged when its body contains one of these — a
+# user-authored ``com.hermes.gateway.plist`` running something unrelated is
+# left untouched (mirrors the systemd ExecStart-marker safety guard).
+_LEGACY_PLIST_PROGRAM_MARKERS: tuple[str, ...] = (
+    "hermes_cli.main",
+    "hermes_cli/main.py",
+    "gateway/run.py",
+    "<string>gateway</string>",
+)
+
+
+def _legacy_launchd_plist_dir() -> Path:
+    """Return the LaunchAgents directory scanned for legacy gateway plists.
+
+    Factored out so tests can monkeypatch the search root without touching
+    the real ``~/Library/LaunchAgents``.
+    """
+    return _launchd_user_home() / "Library" / "LaunchAgents"
+
+
+def _legacy_launchd_labels() -> list[str]:
+    """Return the legacy launchd labels to clean for the current profile.
+
+    The macOS gateway label was renamed
+    ``com.hermes.gateway[.default]`` → ``ai.hermes.gateway`` and
+    ``com.hermes.gateway-<profile>`` → ``ai.hermes.gateway-<profile>``.
+    Old plists live in ``~/Library/LaunchAgents`` and launchd auto-loads them
+    at login, so they respawn alongside the current ``ai.hermes.gateway``
+    label and fight over the same ports / bot token.
+
+    Cleanup is scoped to the legacy equivalents of the CURRENT profile's
+    label — a ``migrate-legacy`` run under one profile never removes another
+    profile's artifacts.
+    """
+    suffix = _profile_suffix()
+    if suffix:
+        # Profile install: ai.hermes.gateway-<suffix> was com.hermes.gateway-<suffix>
+        # (and the dotted ``com.hermes.gateway.<suffix>`` variant seen in the wild).
+        return [
+            f"com.hermes.gateway-{suffix}",
+            f"com.hermes.gateway.{suffix}",
+        ]
+    # Default install (HERMES_HOME == default root) → bare legacy labels.
+    return list(_LEGACY_LAUNCHD_LABELS)
+
+
+def _find_legacy_launchd_plists() -> list[tuple[str, Path]]:
+    """Return ``[(label, plist_path)]`` for legacy macOS gateway launchd jobs.
+
+    Detects plist files installed by older Hermes versions under the
+    pre-rename ``com.hermes.gateway*`` labels. When a legacy plist and the
+    current ``ai.hermes.gateway`` plist are both loaded, launchd keeps both
+    alive (RunAtLoad + KeepAlive) and they fight over the same port / token.
+
+    Safety guards (mirroring _find_legacy_hermes_units):
+
+    * Explicit allowlist of legacy labels (no globbing), scoped per profile.
+    * Content-marker check — only flag plists that invoke our gateway
+      entrypoint, so an unrelated ``com.hermes.gateway`` agent is left alone.
+    * Never mutates or removes anything; returns results for the caller.
+    """
+    results: list[tuple[str, Path]] = []
+    base = _legacy_launchd_plist_dir()
+    for label in _legacy_launchd_labels():
+        plist_path = base / f"{label}.plist"
+        try:
+            if not plist_path.exists():
+                continue
+            text = plist_path.read_text(encoding="utf-8", errors="ignore")
+        except (OSError, PermissionError):
+            continue
+        if not any(marker in text for marker in _LEGACY_PLIST_PROGRAM_MARKERS):
+            # Not our gateway — leave alone.
+            continue
+        results.append((label, plist_path))
+    return results
+
+
+def has_legacy_launchd_plists() -> bool:
+    """Return True when any legacy Hermes gateway launchd plist exists."""
+    return bool(_find_legacy_launchd_plists())
+
+
+def print_legacy_launchd_warning() -> None:
+    """Warn about legacy launchd gateway plists if any are installed.
+
+    Idempotent: prints nothing when none are detected.
+    """
+    legacy = _find_legacy_launchd_plists()
+    if not legacy:
+        return
+    print_warning("Legacy Hermes gateway launchd plist(s) detected from an older install:")
+    for label, path in legacy:
+        print_info(f"    {path}  (label: {label})")
+    print_info("  launchd auto-loads these at login alongside the current")
+    print_info("  ai.hermes.gateway service — they fight over the same port / token.")
+    print_info("  Remove them with:")
+    print_info("    hermes gateway migrate-legacy")
+
+
+def remove_legacy_launchd_plists(
+    interactive: bool = True,
+    dry_run: bool = False,
+) -> tuple[int, list[Path]]:
+    """Boot out and remove legacy macOS launchd gateway plists.
+
+    macOS analog of ``remove_legacy_hermes_units()``. For each legacy plist
+    detected by ``_find_legacy_launchd_plists()`` (an explicit, per-profile
+    allowlist — never a glob), this boots the loaded job out of launchd so
+    KeepAlive can't respawn it, then deletes the plist file.
+
+    Non-destructive: returns ``(0, [])`` when nothing matches and never raises
+    if a legacy job isn't loaded.
+
+    Args:
+        interactive: When True, prompt before removing. When False, remove
+            without asking (used from the install flow once already confirmed).
+        dry_run: When True, list what would be removed and return.
+
+    Returns:
+        ``(removed_count, remaining_paths)`` — remaining includes plists we
+        couldn't delete (e.g. permission errors).
+    """
+    legacy = _find_legacy_launchd_plists()
+    if not legacy:
+        print("No legacy Hermes gateway launchd plists found.")
+        return 0, []
+
+    print()
+    print("Legacy Hermes gateway launchd plist(s) found:")
+    for label, path in legacy:
+        print(f"  {path}  (label: {label})")
+    print()
+
+    if dry_run:
+        print("(dry-run — nothing removed)")
+        return 0, [p for _, p in legacy]
+
+    if interactive and not prompt_yes_no("Remove these legacy plists?", True):
+        print("Skipped. Run again with: hermes gateway migrate-legacy")
+        return 0, [p for _, p in legacy]
+
+    domain = _launchd_domain()
+    removed = 0
+    remaining: list[Path] = []
+
+    for label, path in legacy:
+        # Boot the loaded job out first so KeepAlive doesn't respawn it after
+        # the plist is gone. bootout returns non-zero (3/113) when the job
+        # isn't loaded — that's fine, check=False keeps it non-destructive.
+        try:
+            subprocess.run(
+                ["launchctl", "bootout", f"{domain}/{label}"],
+                check=False,
+                timeout=90,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"  ⚠ Could not bootout {label}: {e}")
+
+        try:
+            path.unlink(missing_ok=True)
+            print(f"  ✓ Removed {path}")
+            removed += 1
+        except (OSError, PermissionError) as e:
+            print(f"  ⚠ Could not remove {path}: {e}")
+            remaining.append(path)
+
+    print()
+    if remaining:
+        print_warning(
+            f"{len(remaining)} legacy plist(s) still present — see messages above."
+        )
+    else:
+        print_success(f"Removed {removed} legacy launchd plist(s).")
+
+    return removed, remaining
+
+
 def launchd_install(force: bool = False):
     plist_path = get_launchd_plist_path()
+
+    # Offer to remove legacy launchd plists (com.hermes.gateway* from
+    # pre-rename installs) before bootstrapping the new ai.hermes.gateway
+    # label. launchd auto-loads stale plists at login; if both remain they
+    # flap-fight for the same port / bot token. Only plists matching the
+    # per-profile legacy allowlist + our program signature are touched.
+    if has_legacy_launchd_plists():
+        print()
+        print_legacy_launchd_warning()
+        print()
+        if prompt_yes_no("Remove the legacy plist(s) before installing?", True):
+            remove_legacy_launchd_plists(interactive=False)
+            print()
 
     if plist_path.exists() and not force:
         if not launchd_plist_is_current():
@@ -6695,12 +6897,19 @@ def _gateway_command_inner(args):
         _gateway_list()
 
     elif subcmd == "migrate-legacy":
-        # Stop, disable, and remove legacy Hermes gateway unit files from
-        # pre-rename installs (e.g. hermes.service). Profile units and
+        # Stop/boot out and remove legacy gateway service definitions from
+        # pre-rename installs — systemd units (e.g. hermes.service) on Linux,
+        # launchd plists (e.g. com.hermes.gateway*) on macOS. Profile units and
         # unrelated third-party services are never touched.
         dry_run = getattr(args, "dry_run", False)
         yes = getattr(args, "yes", False)
-        if not supports_systemd_services() and not is_macos():
-            print("Legacy unit migration only applies to systemd-based Linux hosts.")
+        if supports_systemd_services():
+            remove_legacy_hermes_units(interactive=not yes, dry_run=dry_run)
+        elif is_macos():
+            remove_legacy_launchd_plists(interactive=not yes, dry_run=dry_run)
+        else:
+            print(
+                "Legacy service migration only applies to systemd-based Linux "
+                "hosts and macOS/launchd."
+            )
             return
-        remove_legacy_hermes_units(interactive=not yes, dry_run=dry_run)

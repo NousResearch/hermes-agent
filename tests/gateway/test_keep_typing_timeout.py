@@ -79,6 +79,7 @@ class TestKeepTypingTimeoutPerTick:
                 chat_id="123",
                 interval=1.0,
                 stop_event=stop_event,
+                mode="always",
             )
         )
         await asyncio.sleep(3.0)
@@ -123,6 +124,7 @@ class TestKeepTypingTimeoutPerTick:
                 chat_id="456",
                 interval=0.5,
                 stop_event=stop_event,
+                mode="always",
             )
         )
         await asyncio.sleep(1.2)  # ~3 ticks
@@ -157,6 +159,7 @@ class TestKeepTypingTimeoutPerTick:
                 chat_id="789",
                 interval=0.3,
                 stop_event=stop_event,
+                mode="always",
             )
         )
         await asyncio.sleep(1.0)

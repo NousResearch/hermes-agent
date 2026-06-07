@@ -298,6 +298,17 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # Typing-indicator policy:
+    #   - "always": refresh typing... continuously for the whole turn (legacy
+    #     behavior; default for non-Telegram platforms)
+    #   - "stream_only": only refresh typing while assistant text is actively
+    #     streaming/about to be sent; NOT during long tool calls or model
+    #     thinking. Default for Telegram (5s expiry window makes the
+    #     continuous indicator feel broken when a tool call takes 30s+).
+    #   - "off": never send a typing indicator
+    # ``None`` means "use platform default" (resolved at runtime).
+    typing_indicator: Optional[str] = None
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -308,6 +319,8 @@ class PlatformConfig:
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
         }
+        if self.typing_indicator is not None:
+            result["typing_indicator"] = self.typing_indicator
         if self.token:
             result["token"] = self.token
         if self.api_key:
@@ -330,6 +343,15 @@ class PlatformConfig:
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
 
+        # typing_indicator follows the same top-level-or-extra pattern
+        _ti = data.get("typing_indicator")
+        if _ti is None:
+            _ti = data.get("extra", {}).get("typing_indicator")
+        if _ti is not None:
+            _ti = str(_ti).strip().lower()
+            if _ti not in ("always", "stream_only", "off"):
+                _ti = None
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
@@ -337,6 +359,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            typing_indicator=_ti,
             extra=data.get("extra", {}),
         )
 

@@ -1863,6 +1863,11 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        # Chats where the agent is currently streaming/about-to-send assistant
+        # text. Only consulted when the platform's ``typing_indicator`` policy
+        # is ``stream_only``: send_typing fires when chat_id is in this set,
+        # and is suppressed during tool calls / model thinking.
+        self._typing_streaming: set = set()
 
     @property
     def message_len_fn(self) -> Callable[[str], int]:
@@ -3051,42 +3056,69 @@ class BasePlatformAdapter(ABC):
 
         return paths, cleaned
 
+    def typing_indicator_mode(self) -> str:
+        """Resolve the typing-indicator policy for this platform.
+
+        Returns one of ``"always"``, ``"stream_only"``, ``"off"``.  Reads from
+        the platform's config (``typing_indicator`` field); falls back to
+        ``stream_only`` for Telegram and ``always`` for every other platform
+        to preserve backwards compatibility.
+        """
+        cfg = getattr(self, "config", None)
+        explicit = getattr(cfg, "typing_indicator", None) if cfg is not None else None
+        if explicit in ("always", "stream_only", "off"):
+            return explicit
+        # Platform-specific defaults
+        if self.platform == Platform.TELEGRAM:
+            return "stream_only"
+        return "always"
+
     async def _keep_typing(
         self,
         chat_id: str,
-        interval: float = 2.0,
+        interval: float = 4.0,
         metadata=None,
         stop_event: asyncio.Event | None = None,
+        mode: str | None = None,
     ) -> None:
         """
         Continuously send typing indicator until cancelled.
-        
-        Telegram/Discord typing status expires after ~5 seconds, so we refresh every 2
-        to recover quickly after progress messages interrupt it.
-        
+
+        Telegram/Discord typing status expires after ~5 seconds, so we refresh
+        every 4s — keeps the bubble alive without spending an extra HTTP call
+        per second.
+
         Skips send_typing when the chat is in ``_typing_paused`` (e.g. while
         the agent is waiting for dangerous-command approval).  This is critical
         for Slack's Assistant API where ``assistant_threads_setStatus`` disables
         the compose box — pausing lets the user type ``/approve`` or ``/deny``.
 
+        When ``mode == "stream_only"``, send_typing only fires while the chat
+        is in ``_typing_streaming`` (set just before / during assistant text
+        emission). This avoids showing "typing..." for the entire turn when
+        the agent is grinding through long tool calls or model thinking.
+
         Each ``send_typing`` call is bounded by a ~1.5s timeout so a slow
-        network round-trip can't stall the refresh cadence.  Telegram- and
-        Discord-side typing expire after ~5s; if any individual send_typing
-        takes longer than the refresh interval, the bubble would die and
-        stay dead until that call returns.  Abandoning the slow call lets
-        the next tick fire a fresh send_typing on schedule — as long as
-        one of them succeeds within the 5s platform-side window, the bubble
-        stays visible across provider stalls / upstream API timeouts.
+        network round-trip can't stall the refresh cadence.
         """
         # Bound each send_typing round-trip so the refresh cadence isn't
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        if mode is None:
+            try:
+                mode = self.typing_indicator_mode()
+            except Exception:
+                mode = "always"
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
-                if chat_id not in self._typing_paused:
+                _should_fire = (
+                    chat_id not in self._typing_paused
+                    and (mode != "stream_only" or chat_id in self._typing_streaming)
+                )
+                if _should_fire:
                     try:
                         await asyncio.wait_for(
                             self.send_typing(chat_id, metadata=metadata),
@@ -3132,6 +3164,7 @@ class BasePlatformAdapter(ABC):
                 except Exception:
                     pass
             self._typing_paused.discard(chat_id)
+            self._typing_streaming.discard(chat_id)
 
     def pause_typing_for_chat(self, chat_id: str) -> None:
         """Pause typing indicator for a chat (e.g. during approval waits).
@@ -3144,6 +3177,19 @@ class BasePlatformAdapter(ABC):
     def resume_typing_for_chat(self, chat_id: str) -> None:
         """Resume typing indicator for a chat after approval resolves."""
         self._typing_paused.discard(chat_id)
+
+    def start_streaming_typing(self, chat_id: str) -> None:
+        """Mark a chat as actively streaming assistant text.
+
+        Only consulted when ``typing_indicator_mode() == "stream_only"``: the
+        ``_keep_typing`` loop fires send_typing while the chat_id is in this
+        set, and otherwise stays silent. Safe to call repeatedly.
+        """
+        self._typing_streaming.add(chat_id)
+
+    def stop_streaming_typing(self, chat_id: str) -> None:
+        """Clear the streaming marker for a chat (text emission finished)."""
+        self._typing_streaming.discard(chat_id)
 
     async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
         """Signal the active session loop to stop and clear typing immediately."""
@@ -4045,23 +4091,44 @@ class BasePlatformAdapter(ABC):
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         
-        # Start continuous typing indicator (refreshes every 2 seconds)
+        # Start continuous typing indicator (refreshes every 4 seconds).
+        # Respect the per-platform ``typing_indicator`` policy:
+        #   - "off": don't spawn the task at all
+        #   - "stream_only": spawn but only fire send_typing while
+        #     ``_typing_streaming`` is set (managed by the streaming pipeline)
+        #   - "always": legacy behavior — refresh for the whole turn
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-        _keep_typing_kwargs = {"metadata": _thread_metadata}
         try:
-            _keep_typing_sig = inspect.signature(self._keep_typing)
-        except (TypeError, ValueError):
-            _keep_typing_sig = None
-        if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
-            _keep_typing_kwargs["stop_event"] = interrupt_event
-        typing_task = asyncio.create_task(
-            self._keep_typing(
-                event.source.chat_id,
-                **_keep_typing_kwargs,
+            _typing_mode = self.typing_indicator_mode()
+        except Exception:
+            _typing_mode = "always"
+        typing_task: Optional[asyncio.Task] = None
+        if _typing_mode != "off":
+            _keep_typing_kwargs: Dict[str, Any] = {
+                "metadata": _thread_metadata,
+                "mode": _typing_mode,
+            }
+            try:
+                _keep_typing_sig = inspect.signature(self._keep_typing)
+            except (TypeError, ValueError):
+                _keep_typing_sig = None
+            if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
+                _keep_typing_kwargs["stop_event"] = interrupt_event
+            # Some adapter subclasses override _keep_typing with a narrower
+            # signature (no ``mode``); drop the kwarg in that case to avoid
+            # TypeError at spawn time.
+            if _keep_typing_sig is not None and "mode" not in _keep_typing_sig.parameters:
+                _keep_typing_kwargs.pop("mode", None)
+            typing_task = asyncio.create_task(
+                self._keep_typing(
+                    event.source.chat_id,
+                    **_keep_typing_kwargs,
+                )
             )
-        )
 
         async def _stop_typing_task() -> None:
+            if typing_task is None:
+                return
             typing_task.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(typing_task), timeout=0.5)
@@ -4215,6 +4282,11 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                    # Mark this chat as actively streaming/sending assistant
+                    # text so the stream_only typing indicator wakes up just
+                    # before the user sees output (and stays quiet during
+                    # tool calls / model thinking).
+                    self.start_streaming_typing(event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
                     # Mark final response messages for notification delivery.
                     # Platform adapters that support per-message notification

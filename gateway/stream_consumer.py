@@ -402,6 +402,17 @@ class GatewayStreamConsumer:
 
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
+        # Tell the platform's typing-indicator task that assistant text is
+        # actively flowing — under the ``stream_only`` policy this is the
+        # signal to start refreshing typing... while we stream. No-op for
+        # ``always`` and ``off`` modes. Safe to call on adapters that don't
+        # expose the method (e.g. test MagicMocks).
+        _start_streaming = getattr(self.adapter, "start_streaming_typing", None)
+        if callable(_start_streaming):
+            try:
+                _start_streaming(self.chat_id)
+            except Exception:
+                pass
         # Platform message length limit — leave room for cursor + formatting.
         # Use the adapter's length function (e.g. utf16_len for Telegram) so
         # overflow detection matches what the platform actually enforces.

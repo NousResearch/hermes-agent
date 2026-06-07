@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import queue
+import shlex
 import subprocess
 import sys
 import threading
@@ -6313,9 +6314,20 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            cmd = qc.get("command", "")
+            try:
+                from tools.approval import detect_dangerous_command
+
+                is_dangerous, _, desc = detect_dangerous_command(cmd)
+                if is_dangerous:
+                    return _err(
+                        rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
+                    )
+            except ImportError:
+                pass
             r = subprocess.run(
-                qc.get("command", ""),
-                shell=True,
+                shlex.split(cmd),
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -8454,7 +8466,7 @@ def _(rid, params: dict) -> dict:
         pass
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
+            shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
         )
         return _ok(
             rid,

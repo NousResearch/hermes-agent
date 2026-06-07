@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -109,6 +110,21 @@ TECH_KEYWORDS = (
     "install", "build", "run", "code", "function", "contract", "api", "sdk",
     "npm", "cargo", "docker", "compile", "commit", "class", "module",
 )
+
+# Web3 / GameFi domain terms. A repo is considered relevant only if its public
+# text mentions at least one of these. Matched with word boundaries so generic
+# names like "gamefinal" or "gamefinder" do NOT match "gamefi".
+DOMAIN_KEYWORDS = (
+    "web3", "blockchain", "nft", "token", "crypto", "gamefi", "play to earn",
+    "onchain", "wallet", "smart contract", "testnet", "mainnet",
+)
+DOMAIN_PATTERNS = [
+    (term, re.compile(r"\b" + re.escape(term) + r"\b"))
+    for term in DOMAIN_KEYWORDS
+]
+
+# Penalty applied (and SKIP forced) when no domain term is found.
+RELEVANCE_PENALTY = 25
 
 
 def load_dotenv(script_dir: Path) -> None:
@@ -260,6 +276,23 @@ def repo_age_days(created_at: str | None) -> int | None:
     return (datetime.now(timezone.utc) - created).days
 
 
+def relevant_terms(repo: dict, readme: str | None) -> list[str]:
+    """Return the Web3/GameFi domain terms found in the repo's public text.
+
+    Searches name, full_name, description, topics, and README using
+    word-boundary matching to avoid false matches inside generic names.
+    """
+    parts = [
+        repo.get("name") or "",
+        repo.get("full_name") or "",
+        repo.get("description") or "",
+        " ".join(repo.get("topics") or []),
+        readme or "",
+    ]
+    hay = " ".join(parts).lower()
+    return [term for term, pat in DOMAIN_PATTERNS if pat.search(hay)]
+
+
 def score_project(
     repo: dict, readme: str | None, readme_known: bool
 ) -> dict:
@@ -349,6 +382,17 @@ def score_project(
     score += clarity
     components.append(f"clarity +{clarity:.0f}")
 
+    # Domain relevance filter (reduce false positives).
+    domain_terms = relevant_terms(repo, readme)
+    relevant = bool(domain_terms)
+    if relevant:
+        signals.append("relevance: " + ", ".join(domain_terms[:5]))
+        components.append("relevance ok (" + ", ".join(domain_terms[:5]) + ")")
+    else:
+        score -= RELEVANCE_PENALTY
+        risks.append("low web3/gamefi relevance — no domain keywords found")
+        components.append(f"relevance -{RELEVANCE_PENALTY} (no domain terms)")
+
     # Risk deductions for missing / unclear information.
     deductions = 0.0
     if readme_known and not readme_present:
@@ -382,6 +426,8 @@ def score_project(
         "has_test_signal": has_test_signal,
         "has_play_signal": has_play_signal,
         "unclear_purpose": unclear_purpose,
+        "relevant": relevant,
+        "domain_terms": domain_terms,
     }
 
 
@@ -391,6 +437,9 @@ def classify(s: dict) -> str:
     Mirrors the decision rules in SKILL.md: apply the first match, top to
     bottom, preferring the more conservative category when in doubt.
     """
+    # SKIP: off-topic — no Web3/GameFi domain terms in the public text.
+    if not s["relevant"]:
+        return "SKIP"
     # SKIP: confirmed missing docs, unclear purpose, or too little signal.
     if (s["readme_known"] and not s["readme_present"]) or s["unclear_purpose"]:
         return "SKIP"
@@ -460,6 +509,11 @@ def print_scored(scored: list[dict], limit: int) -> None:
         print(f"   risks: {risks}")
         print(f"   score: {', '.join(s['components'])}\n")
 
+    penalized = sum(1 for s in scored if not s.get("relevant", True))
+    print(
+        f"\nRelevance filter: {penalized} of {len(scored)} repositories "
+        "penalized (no web3/gamefi domain terms)."
+    )
     print(
         "Game Research Signal Score = research signal strength, not financial "
         "merit.\nDisclaimer: neutral research signals only — not financial "
@@ -471,6 +525,8 @@ def reason_for(s: dict) -> str:
     """Return a short, neutral reason for the classification."""
     cls = s["classification"]
     if cls == "SKIP":
+        if not s["relevant"]:
+            return "Low Web3/GameFi relevance — no domain keywords found in repo text."
         if s["readme_known"] and not s["readme_present"]:
             return "No README; not enough public information to assess."
         if s["unclear_purpose"]:
@@ -497,6 +553,7 @@ def build_markdown_report(
     counts = {"WATCH": 0, "TEST": 0, "CONTACT": 0, "SKIP": 0}
     for s in scored:
         counts[s["classification"]] = counts.get(s["classification"], 0) + 1
+    penalized = sum(1 for s in scored if not s["relevant"])
 
     lines: list[str] = []
     lines.append("# Game Research — Scan Report")
@@ -511,6 +568,10 @@ def build_markdown_report(
     lines.append(
         f"- WATCH: {counts['WATCH']} | TEST: {counts['TEST']} | "
         f"CONTACT: {counts['CONTACT']} | SKIP: {counts['SKIP']}"
+    )
+    lines.append(
+        f"- Penalized by relevance filter (no web3/gamefi domain terms): "
+        f"{penalized}"
     )
     lines.append("")
     lines.append(f"## Top {len(top)} projects (by Game Research Signal Score)")

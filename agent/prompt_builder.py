@@ -58,6 +58,14 @@ def _scan_context_content(content: str, filename: str) -> str:
     BLOCKED at this layer because the file would otherwise enter the
     system prompt verbatim and the user has no chance to intervene.
     """
+    # Editors (Windows Notepad, PowerShell Out-File without -Encoding
+    # utf8NoBOM, some VS Code profiles) prefix a UTF-8 BOM as an encoding
+    # artifact, not a prompt injection. Strip a leading U+FEFF silently so a
+    # context file (SOUL.md, AGENTS.md, ...) is not blocked wholesale; BOMs
+    # elsewhere in the content remain subject to the threat scan below.
+    if content.startswith("\ufeff"):
+        content = content[1:]
+
     findings = _scan_for_threats(content, scope="context")
     if findings:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))

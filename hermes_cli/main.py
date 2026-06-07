@@ -1515,11 +1515,20 @@ def select_provider_and_model(args=None):
     ordered.append(("aux-config", "Configure auxiliary models..."))
     ordered.append(("cancel", "Leave unchanged"))
 
+    currently_listed = {key for key, _ in ordered}
+    ordered.insert(0, ("skip-provider", "Skip provider setup for now"))
+    if active in currently_listed:
+        default_idx += 1
+
     provider_idx = _prompt_provider_choice(
         [label for _, label in ordered],
         default=default_idx,
     )
-    if provider_idx is None or ordered[provider_idx][0] == "cancel":
+    if (
+        provider_idx is None
+        or ordered[provider_idx][0] == "cancel"
+        or ordered[provider_idx][0] == "skip-provider"
+    ):
         print("No change.")
         return
 

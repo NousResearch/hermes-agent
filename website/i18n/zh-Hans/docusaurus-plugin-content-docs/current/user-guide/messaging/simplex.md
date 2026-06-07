@@ -32,7 +32,7 @@ simplex-chat -p 5225
 ### 通过设置向导
 
 ```bash
-hermes setup gateway
+hermes gateway setup
 ```
 
 选择 **SimpleX Chat** 并按提示操作。
@@ -64,7 +64,7 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 默认情况下**所有联系人均被拒绝访问**。你必须选择以下方式之一：
 
 1. 将 `SIMPLEX_ALLOWED_USERS` 设置为以逗号分隔的联系人 ID 列表，或
-2. 使用 **DM 配对**——向 Bot 发送任意消息，Bot 将回复一个配对码。通过 `hermes gateway pair` 输入该配对码。
+2. 使用 **DM 配对**——向 Bot 发送任意消息，Bot 将回复一个配对码。通过 `hermes pairing approve simplex <CODE>` 输入该配对码。
 
 ## 在 cron 任务中使用 SimpleX
 

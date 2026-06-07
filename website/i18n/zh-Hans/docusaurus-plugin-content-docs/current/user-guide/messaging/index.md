@@ -27,7 +27,7 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| WeCom | ✅ | ✅ | ✅ | — | — | — | — |
 | WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |

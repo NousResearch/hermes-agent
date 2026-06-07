@@ -1156,7 +1156,7 @@ display:
 
 `display.language` 设置翻译一小组静态面向用户的消息 —— CLI 审批提示、少数 gateway 斜杠命令回复（例如重启排空通知、"审批已过期"、"目标已清除"）。它**不**翻译 agent 响应、日志行、工具输出、错误回溯或斜杠命令描述 —— 这些保持英文。如果您希望 agent 本身用另一种语言回复，只需在您的提示词或系统消息中告诉它。
 
-支持的值：`en`（默认）、`zh`（简体中文）、`ja`（日语）、`de`（德语）、`es`（西班牙语）、`fr`（法语）、`tr`（土耳其语）、`uk`（乌克兰语）。未知值回退到英文。
+支持的值：`en`（默认）、`zh`（简体中文）、`zh-hant`（繁体中文）、`ja`（日语）、`de`（德语）、`es`（西班牙语）、`fr`（法语）、`tr`（土耳其语）、`uk`（乌克兰语）、`af`（南非荷兰语）、`ko`（韩语）、`it`（意大利语）、`ga`（爱尔兰语）、`pt`（葡萄牙语）、`ru`（俄语）、`hu`（匈牙利语）。未知值回退到英文。
 
 您也可以使用 `HERMES_LANGUAGE` 环境变量按会话设置，它会覆盖配置值。
 
@@ -1314,7 +1314,7 @@ streaming:
 **新的最终消息（Telegram）：** Telegram 的 `editMessageText` 保留原始消息时间戳，因此长时间运行的流式回复即使在完成后也会保留第一个 token 的时间戳。当 `fresh_final_after_seconds > 0`（默认 `60`）时，完成的回复作为全新消息传递（尽力删除旧预览），以便 Telegram 的可见时间戳反映完成时间。短预览仍然就地最终化。设置为 `0` 以始终就地编辑。
 
 :::note
-流式传输默认禁用。在 `~/.hermes/config.yaml` 中启用以尝试流式传输 UX。
+主开关 `streaming.enabled` 默认为 `false`——在你启用之前不会有任何流式传输。启用后，是否流式传输按**平台**决定：Telegram 默认带有 `display.platforms.telegram.streaming: true`（流式传输），Discord 为 `display.platforms.discord.streaming: false`（不流式传输）。因此启用流式传输后，Telegram 开箱即用地流式传输，Discord 在你修改其开关之前仍使用整条消息回复。你可以在仪表盘的 **Channels** 开关中或直接在 `~/.hermes/config.yaml` 中调整这些按平台的开关。
 :::
 
 ## 群聊会话隔离

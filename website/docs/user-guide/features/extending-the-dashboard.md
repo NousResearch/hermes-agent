@@ -131,6 +131,22 @@ typography:
   letterSpacing: "0.04em"
 ```
 
+##### Changing the font from the UI (no YAML)
+
+The theme picker in the dashboard header has a **Font** section below the
+theme list. Pick any font there and it overrides the body font of whatever
+theme is active — the choice is independent of the theme and persists across
+theme switches (stored in `config.yaml` under `dashboard.font`). Choose
+**Theme default** to clear the override and fall back to the active theme's
+own `fontSans`.
+
+The picker offers a curated catalog (system stacks plus a set of Google-Fonts
+families across sans / serif / mono). It deliberately does **not** accept a
+free-text font URL — the font's stylesheet is injected as a `<link>`, so the
+catalog keeps the injected origins fixed. For a fully custom face, set
+`fontSans` + `fontUrl` in a theme YAML as shown above. The theme's `fontMono`
+(code blocks, terminal) is always left untouched by the UI override.
+
 #### Layout
 
 | Key | Values | Description |

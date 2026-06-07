@@ -9221,6 +9221,52 @@ async def set_dashboard_theme(body: ThemeSetBody):
     return {"ok": True, "theme": body.name}
 
 
+# Curated font-override ids. Kept in sync with FONT_CHOICES in
+# web/src/themes/fonts.ts — the frontend owns the stacks + webfont URLs;
+# the backend only needs the id allow-list so it can reject anything not
+# in the vetted catalog (the font's webfont URL is injected as a <link>,
+# so we never accept an arbitrary user-supplied id/URL here).
+_FONT_DEFAULT_ID = "theme"
+_FONT_CHOICES = frozenset({
+    "system-sans", "system-serif", "system-mono",
+    "inter", "ibm-plex-sans", "work-sans", "atkinson-hyperlegible", "dm-sans",
+    "spectral", "fraunces", "source-serif",
+    "jetbrains-mono", "ibm-plex-mono", "space-mono",
+})
+
+
+@app.get("/api/dashboard/font")
+async def get_dashboard_font():
+    """Return the active font override (``"theme"`` = use the theme's font)."""
+    config = load_config()
+    font = cfg_get(config, "dashboard", "font", default=_FONT_DEFAULT_ID)
+    if font not in _FONT_CHOICES:
+        font = _FONT_DEFAULT_ID
+    return {"font": font}
+
+
+class FontSetBody(BaseModel):
+    font: str
+
+
+@app.put("/api/dashboard/font")
+async def set_dashboard_font(body: FontSetBody):
+    """Set the dashboard font override (persists to config.yaml).
+
+    Accepts any id in the curated catalog, or ``"theme"`` to clear the
+    override and fall back to the active theme's own font. Unknown ids are
+    coerced to ``"theme"`` rather than 400'd so a stale client can't wedge
+    the picker.
+    """
+    font = body.font if body.font in _FONT_CHOICES else _FONT_DEFAULT_ID
+    config = load_config()
+    if "dashboard" not in config:
+        config["dashboard"] = {}
+    config["dashboard"]["font"] = font
+    save_config(config)
+    return {"ok": True, "font": font}
+
+
 # ---------------------------------------------------------------------------
 # Dashboard plugin system
 # ---------------------------------------------------------------------------

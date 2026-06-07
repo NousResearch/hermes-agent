@@ -35,6 +35,11 @@ from typing import Dict, Any, List, Optional
 
 from utils import atomic_replace
 
+# Characters that are safe for filesystem paths beyond alphanumeric.
+# Used to sanitize user_id into a safe directory name while keeping
+# enough structure that a human can map it back to the original id.
+_USER_ID_SAFE_CHARS = set("_-@.+")
+
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
 try:
@@ -48,13 +53,45 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+def _sanitize_user_id(user_id: Optional[str]) -> Optional[str]:
+    """Sanitize a user_id into a safe directory name.
+
+    Keeps alphanumeric characters and a small set of common separator
+    characters (``_``, ``-``, ``@``, ``.``, ``+``).  All other characters
+    are replaced with ``_`` to avoid filesystem issues.
+
+    Returns the original string unchanged if it is already safe.
+    Empty or ``None`` values are returned as-is — callers should handle
+    the fallback to global (non-scoped) paths themselves.
+    """
+    if not user_id:
+        return user_id
+    if all(c.isalnum() or c in _USER_ID_SAFE_CHARS for c in user_id):
+        return user_id
+    return "".join(
+        c if c.isalnum() or c in _USER_ID_SAFE_CHARS else "_"
+        for c in user_id
+    )
+
+
 # Where memory files live — resolved dynamically so profile overrides
 # (HERMES_HOME env var changes) are always respected.  The old module-level
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
-def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
-    return get_hermes_home() / "memories"
+def get_memory_dir(user_id: Optional[str] = None) -> Path:
+    """Return the profile-scoped memories directory.
+
+    When *user_id* is provided (gateway sessions), returns a user-specific
+    subdirectory so each user gets their own isolated memory files.  When
+    *user_id* is ``None`` or empty (CLI / cron), returns the root memories
+    directory for backwards compatibility.
+    """
+    base = get_hermes_home() / "memories"
+    if user_id:
+        safe_id = _sanitize_user_id(user_id)
+        assert safe_id is not None  # user_id is truthy -> safe_id is a str
+        return base / safe_id
+    return base
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -113,19 +150,30 @@ class MemoryStore:
         Never mutated mid-session. Keeps prefix cache stable.
       - memory_entries / user_entries: live state, mutated by tool calls, persisted to disk.
         Tool responses always reflect this live state.
+
+    When *user_id* is provided (gateway sessions), memory files are scoped to
+    a per-user subdirectory so each user gets isolated memory.  When *user_id*
+    is ``None`` (CLI / cron), the global (non-scoped) files are used for
+    backwards compatibility.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
+                 user_id: Optional[str] = None):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self._user_id = user_id
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
+    def _get_memory_dir(self) -> Path:
+        """Return the memory directory for this store's user scope."""
+        return get_memory_dir(self._user_id)
+
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-        mem_dir = get_memory_dir()
+        mem_dir = self._get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
@@ -178,9 +226,8 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
-        mem_dir = get_memory_dir()
+    def _path_for(self, target: str) -> Path:
+        mem_dir = self._get_memory_dir()
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
@@ -196,7 +243,7 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
+        self._get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:

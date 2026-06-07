@@ -144,6 +144,28 @@ class FakeAgent:
         }
 
 
+class SubagentStartAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb(
+                "subagent.start",
+                preview="Generate marketing copy",
+                model="kimi-k2.6:cloud",
+                goal="Generate marketing copy",
+            )
+            time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class LongPreviewAgent:
     """Agent that emits a tool call with a very long preview string."""
     LONG_CMD = "cd /home/teknium/.hermes/hermes-agent/.worktrees/hermes-d8860339 && source .venv/bin/activate && python -m pytest tests/gateway/test_run_progress_topics.py -n0 -q"
@@ -822,6 +844,53 @@ async def test_run_agent_tool_progress_does_not_control_interim_commentary(monke
 
     assert result.get("already_sent") is not True
     assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_discord_reports_delegated_task_model(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SubagentStartAgent,
+        session_id="sess-discord-subagent-start",
+        platform=Platform.DISCORD,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    all_content = "\n".join(call["content"] for call in adapter.sent + adapter.edits)
+    assert "Task delegated" in all_content
+    assert "Model: `kimi-k2.6:cloud`" in all_content
+    assert "Goal: Generate marketing copy" in all_content
+
+
+@pytest.mark.asyncio
+async def test_run_agent_non_discord_ignores_subagent_start_message(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SubagentStartAgent,
+        session_id="sess-telegram-subagent-start",
+        platform=Platform.TELEGRAM,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    all_content = "\n".join(call["content"] for call in adapter.sent + adapter.edits)
+    assert "Task delegated" not in all_content
+    assert "kimi-k2.6:cloud" not in all_content
 
 
 @pytest.mark.asyncio

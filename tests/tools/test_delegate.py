@@ -1998,6 +1998,49 @@ class TestDelegateEventEnum(unittest.TestCase):
         cb("tool.started", tool_name="terminal", preview="ls")
         parent._delegate_spinner.print_above.assert_called()
 
+    def test_progress_callback_start_prints_model_label(self):
+        """subagent.start CLI display includes the delegated model."""
+        parent = _make_mock_parent()
+        parent._delegate_spinner = MagicMock()
+        parent.tool_progress_callback = None
+
+        cb = _build_child_progress_callback(
+            0,
+            "Generate marketing copy",
+            parent,
+            task_count=1,
+            model="kimi-k2.6:cloud",
+        )
+        self.assertIsNotNone(cb)
+
+        cb("subagent.start", preview="Generate marketing copy")
+
+        call_text = str(parent._delegate_spinner.print_above.call_args)
+        self.assertIn("Generate marketing copy", call_text)
+        self.assertIn("[model: kimi-k2.6:cloud]", call_text)
+
+    def test_progress_callback_start_relays_model(self):
+        """subagent.start relay carries model metadata for gateways/TUI."""
+        parent = _make_mock_parent()
+        parent._delegate_spinner = None
+        parent.tool_progress_callback = MagicMock()
+
+        cb = _build_child_progress_callback(
+            0,
+            "Generate marketing copy",
+            parent,
+            task_count=1,
+            model="kimi-k2.6:cloud",
+        )
+        self.assertIsNotNone(cb)
+
+        cb("subagent.start", preview="Generate marketing copy")
+
+        parent.tool_progress_callback.assert_called_once()
+        _, kwargs = parent.tool_progress_callback.call_args
+        self.assertEqual(kwargs["model"], "kimi-k2.6:cloud")
+        self.assertEqual(kwargs["goal"], "Generate marketing copy")
+
     def test_progress_callback_normalises_thinking(self):
         """Both _thinking and reasoning.available route to TASK_THINKING."""
         parent = _make_mock_parent()

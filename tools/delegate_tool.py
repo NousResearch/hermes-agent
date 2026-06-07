@@ -714,6 +714,11 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _format_model_suffix(model: Optional[str]) -> str:
+    label = str(model or "").strip()
+    return f" [model: {label}]" if label else ""
+
+
 def _build_child_progress_callback(
     task_index: int,
     goal: str,
@@ -750,6 +755,7 @@ def _build_child_progress_callback(
     # Show 1-indexed prefix only in batch mode (multiple tasks)
     prefix = f"[{task_index + 1}] " if task_count > 1 else ""
     goal_label = (goal or "").strip()
+    model_suffix = _format_model_suffix(model)
 
     # Gateway: batch tool names, flush periodically
     _BATCH_SIZE = 5
@@ -798,7 +804,7 @@ def _build_child_progress_callback(
                     (goal_label[:55] + "...") if len(goal_label) > 55 else goal_label
                 )
                 try:
-                    spinner.print_above(f" {prefix}├─ 🔀 {short}")
+                    spinner.print_above(f" {prefix}├─ 🔀 {short}{model_suffix}")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.start", preview=preview or goal_label or "", **kwargs)

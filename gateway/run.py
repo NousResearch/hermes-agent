@@ -17281,6 +17281,20 @@ class GatewayRunner:
             if not progress_queue or not _run_still_current():
                 return
 
+            if event_type == "subagent.start":
+                if source.platform == Platform.DISCORD:
+                    model_label = str(kwargs.get("model") or "").strip() or "unknown"
+                    goal_label = str(kwargs.get("goal") or preview or "").strip()
+                    if len(goal_label) > 180:
+                        goal_label = goal_label[:177] + "..."
+                    msg = (
+                        "🚀 **Task delegated**\n"
+                        f"• Model: `{model_label}`\n"
+                        f"• Goal: {goal_label or '(not provided)'}"
+                    )
+                    progress_queue.put(msg)
+                return
+
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
             # (progress_mode == "all"), append a one-time hint suggesting

@@ -1277,6 +1277,10 @@ class SessionStore:
                     platform_message_id=(
                         message.get("platform_message_id") or message.get("message_id")
                     ),
+                    chat_id=message.get("chat_id"),
+                    thread_id=message.get("thread_id"),
+                    reply_to_message_id=message.get("reply_to_message_id"),
+                    lcm_label=message.get("lcm_label"),
                     observed=bool(message.get("observed")),
                 )
             except Exception as e:

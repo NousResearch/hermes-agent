@@ -55,6 +55,14 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.active_task import (
+    LCM_ACTIVE_TASK,
+    LCM_USER_CORRECTION,
+    format_active_task_anchor_block,
+    is_correction_message,
+    is_explicit_latest_instruction,
+    resolve_active_task_anchor,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -9124,6 +9132,66 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
+        _active_task_anchor = None
+        try:
+            _platform_value = source.platform.value if source.platform else None
+            _open_tasks = (
+                self._session_db.get_open_tasks(
+                    platform=_platform_value,
+                    chat_id=str(source.chat_id) if source.chat_id is not None else None,
+                    thread_id=str(source.thread_id) if source.thread_id is not None else None,
+                )
+                if self._session_db is not None
+                else []
+            )
+            _active_task_anchor = resolve_active_task_anchor(
+                current_text=event.text or "",
+                history=history,
+                open_tasks=_open_tasks,
+                chat_id=str(source.chat_id) if source.chat_id is not None else None,
+                thread_id=str(source.thread_id) if source.thread_id is not None else None,
+                source_message_id=str(event.message_id) if event.message_id is not None else None,
+                reply_to_message_id=(
+                    str(event.reply_to_message_id)
+                    if getattr(event, "reply_to_message_id", None) is not None
+                    else None
+                ),
+                reply_to_text=getattr(event, "reply_to_text", None),
+            )
+            context_prompt = (
+                format_active_task_anchor_block(_active_task_anchor)
+                + "\n\n"
+                + (context_prompt or "")
+            ).strip()
+            if self._session_db is not None and event.text:
+                _is_correction = is_correction_message(event.text)
+                if _is_correction and _active_task_anchor and _active_task_anchor.task_id:
+                    self._session_db.task_update(
+                        _active_task_anchor.task_id,
+                        lcm_label=LCM_USER_CORRECTION,
+                        reply_to_message_id=(
+                            str(event.reply_to_message_id)
+                            if getattr(event, "reply_to_message_id", None) is not None
+                            else None
+                        ),
+                    )
+                elif is_explicit_latest_instruction(event.text):
+                    self._session_db.task_open(
+                        session_id=session_entry.session_id,
+                        content=event.text,
+                        platform=_platform_value,
+                        chat_id=str(source.chat_id) if source.chat_id is not None else None,
+                        thread_id=str(source.thread_id) if source.thread_id is not None else None,
+                        source_message_id=str(event.message_id) if event.message_id is not None else None,
+                        reply_to_message_id=(
+                            str(event.reply_to_message_id)
+                            if getattr(event, "reply_to_message_id", None) is not None
+                            else None
+                        ),
+                        lcm_label=LCM_ACTIVE_TASK,
+                    )
+        except Exception:
+            logger.debug("Active task anchor resolution failed", exc_info=True)
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -9846,6 +9914,18 @@ class GatewayRunner:
                 _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
+                _user_entry["chat_id"] = str(source.chat_id) if source.chat_id is not None else None
+                _user_entry["thread_id"] = str(source.thread_id) if source.thread_id is not None else None
+                _user_entry["reply_to_message_id"] = (
+                    str(event.reply_to_message_id)
+                    if getattr(event, "reply_to_message_id", None) is not None
+                    else None
+                )
+                _user_entry["lcm_label"] = (
+                    LCM_USER_CORRECTION
+                    if is_correction_message(event.text or "")
+                    else LCM_ACTIVE_TASK
+                )
                 self.session_store.append_to_transcript(
                     session_entry.session_id,
                     _user_entry,
@@ -9859,6 +9939,18 @@ class GatewayRunner:
                     _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
+                    _user_entry["chat_id"] = str(source.chat_id) if source.chat_id is not None else None
+                    _user_entry["thread_id"] = str(source.thread_id) if source.thread_id is not None else None
+                    _user_entry["reply_to_message_id"] = (
+                        str(event.reply_to_message_id)
+                        if getattr(event, "reply_to_message_id", None) is not None
+                        else None
+                    )
+                    _user_entry["lcm_label"] = (
+                        LCM_USER_CORRECTION
+                        if is_correction_message(event.text or "")
+                        else LCM_ACTIVE_TASK
+                    )
                     self.session_store.append_to_transcript(
                         session_entry.session_id,
                         _user_entry,
@@ -9892,6 +9984,18 @@ class GatewayRunner:
                             and "message_id" not in entry
                         ):
                             entry["message_id"] = str(event.message_id)
+                            entry["chat_id"] = str(source.chat_id) if source.chat_id is not None else None
+                            entry["thread_id"] = str(source.thread_id) if source.thread_id is not None else None
+                            entry["reply_to_message_id"] = (
+                                str(event.reply_to_message_id)
+                                if getattr(event, "reply_to_message_id", None) is not None
+                                else None
+                            )
+                            entry["lcm_label"] = (
+                                LCM_USER_CORRECTION
+                                if is_correction_message(event.text or "")
+                                else LCM_ACTIVE_TASK
+                            )
                             _user_msg_id_attached = True
                         self.session_store.append_to_transcript(
                             session_entry.session_id, entry,
@@ -17105,6 +17209,9 @@ class GatewayRunner:
         run_generation: Optional[int] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        source_message_id: Optional[str] = None,
+        reply_to_message_id: Optional[str] = None,
+        lcm_label: Optional[str] = None,
         channel_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -18498,6 +18605,13 @@ class GatewayRunner:
                 _conversation_kwargs = {
                     "conversation_history": agent_history,
                     "task_id": session_id,
+                }
+                agent._gateway_current_message_metadata = {
+                    "source_message_id": source_message_id or event_message_id,
+                    "chat_id": str(source.chat_id) if source.chat_id is not None else None,
+                    "thread_id": str(source.thread_id) if source.thread_id is not None else None,
+                    "reply_to_message_id": reply_to_message_id,
+                    "lcm_label": lcm_label or LCM_ACTIVE_TASK,
                 }
                 if observed_group_context:
                     _conversation_kwargs["persist_user_message"] = message

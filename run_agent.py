@@ -1546,6 +1546,8 @@ class AIAgent:
                 self._ensure_db_session()
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
+            gateway_meta = getattr(self, "_gateway_current_message_metadata", None) or {}
+            gateway_user_meta_attached = False
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
@@ -1571,6 +1573,7 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
+                current_user_meta = gateway_meta if role == "user" and not gateway_user_meta_attached else {}
                 self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
@@ -1584,7 +1587,14 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    platform_message_id=msg.get("platform_message_id") or msg.get("message_id") or current_user_meta.get("source_message_id"),
+                    chat_id=current_user_meta.get("chat_id"),
+                    thread_id=current_user_meta.get("thread_id"),
+                    reply_to_message_id=current_user_meta.get("reply_to_message_id"),
+                    lcm_label=msg.get("lcm_label") or current_user_meta.get("lcm_label"),
                 )
+                if current_user_meta:
+                    gateway_user_meta_attached = True
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)

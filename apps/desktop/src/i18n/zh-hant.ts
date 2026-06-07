@@ -2447,6 +2447,7 @@ export const zhHant = defineLocale({
       yesterday: time => `昨天，${time}`,
       copy: '複製',
       refresh: '重新整理',
+      reply: '回覆',
       moreActions: '更多動作',
       branchNewChat: '在新聊天中分支',
       react: '回應',

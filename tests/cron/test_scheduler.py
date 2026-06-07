@@ -2472,6 +2472,80 @@ class TestParallelTick:
         assert start_s2 >= end_s1, "Jobs ran concurrently despite max_parallel=1"
 
 
+class TestCronProviderCapacityCircuitBreaker:
+    def test_detects_usage_limit_capacity_errors(self):
+        from cron.scheduler import _is_provider_capacity_error
+
+        assert _is_provider_capacity_error("RuntimeError: HTTP 429: usage limit exceeded (2056)")
+        assert _is_provider_capacity_error("HTTP 429: rate limit exceeded")
+        assert _is_provider_capacity_error("usage limit exceeded. try again in 5 minutes")
+        assert not _is_provider_capacity_error("RuntimeError: product QA assertion failed")
+        assert not _is_provider_capacity_error("HTTP 500: gateway unavailable")
+
+    def test_pauses_recurring_llm_job_after_capacity_error(self, monkeypatch):
+        from cron.scheduler import _pause_job_for_capacity_error
+
+        pause_calls = []
+        job = {
+            "id": "capacity-job",
+            "name": "capacity job",
+            "schedule": {"kind": "cron"},
+        }
+
+        def fake_pause(job_id, reason=None):
+            pause_calls.append((job_id, reason))
+            return {"id": job_id, "state": "paused"}
+
+        monkeypatch.delenv("HERMES_CRON_PAUSE_ON_CAPACITY_ERROR", raising=False)
+        monkeypatch.setattr("cron.scheduler.pause_job", fake_pause)
+
+        _pause_job_for_capacity_error(job, "RuntimeError: HTTP 429: usage limit exceeded (2056)")
+
+        assert pause_calls == [
+            (
+                "capacity-job",
+                "Auto-paused after provider capacity error. "
+                "Resume after quota/auth is healthy. Last error: "
+                "RuntimeError: HTTP 429: usage limit exceeded (2056)",
+            )
+        ]
+
+    def test_does_not_pause_normal_failures_or_no_agent_jobs(self, monkeypatch):
+        from cron.scheduler import _pause_job_for_capacity_error
+
+        pause_mock = MagicMock()
+        monkeypatch.setattr("cron.scheduler.pause_job", pause_mock)
+
+        _pause_job_for_capacity_error(
+            {"id": "normal", "schedule": {"kind": "cron"}},
+            "AssertionError: expected button to be visible",
+        )
+        _pause_job_for_capacity_error(
+            {"id": "script", "no_agent": True, "schedule": {"kind": "cron"}},
+            "RuntimeError: HTTP 429: usage limit exceeded (2056)",
+        )
+        _pause_job_for_capacity_error(
+            {"id": "once", "schedule": {"kind": "once"}},
+            "RuntimeError: HTTP 429: usage limit exceeded (2056)",
+        )
+
+        pause_mock.assert_not_called()
+
+    def test_capacity_pause_can_be_disabled(self, monkeypatch):
+        from cron.scheduler import _pause_job_for_capacity_error
+
+        pause_mock = MagicMock()
+        monkeypatch.setenv("HERMES_CRON_PAUSE_ON_CAPACITY_ERROR", "false")
+        monkeypatch.setattr("cron.scheduler.pause_job", pause_mock)
+
+        _pause_job_for_capacity_error(
+            {"id": "capacity-job", "schedule": {"kind": "cron"}},
+            "RuntimeError: HTTP 429: usage limit exceeded (2056)",
+        )
+
+        pause_mock.assert_not_called()
+
+
 class TestDeliverResultTimeoutCancelsFuture:
     """When future.result(timeout=60) raises TimeoutError in the live
     adapter delivery path, _deliver_result must cancel the orphan

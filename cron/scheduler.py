@@ -149,7 +149,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, pause_job, save_job_output, advance_next_run
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -221,6 +221,70 @@ atexit.register(_shutdown_parallel_pool)
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
+
+_CAPACITY_ERROR_MARKERS = (
+    "usage limit exceeded",
+    "usage limit reached",
+    "rate limit exceeded",
+    "rate limited",
+    "quota exceeded",
+    "resource_exhausted",
+)
+
+
+def _cron_capacity_pause_enabled() -> bool:
+    """Whether cron should pause recurring LLM jobs after provider capacity errors."""
+    value = os.getenv("HERMES_CRON_PAUSE_ON_CAPACITY_ERROR", "").strip().lower()
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _is_provider_capacity_error(error: Optional[str]) -> bool:
+    """Return True for provider/account quota errors that should stop cron retry loops."""
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+    if "http 429" in text and any(marker in text for marker in _CAPACITY_ERROR_MARKERS):
+        return True
+    if "usage limit" in text and ("try again" in text or "exceeded" in text):
+        return True
+    if "resource_exhausted" in text and ("quota" in text or "limit" in text):
+        return True
+    return False
+
+
+def _pause_job_for_capacity_error(job: dict, error: Optional[str]) -> None:
+    """Pause an LLM cron job after a provider-capacity error so it cannot loop."""
+    if not _cron_capacity_pause_enabled():
+        return
+    if not _is_provider_capacity_error(error):
+        return
+    if job.get("no_agent"):
+        return
+
+    schedule_kind = (job.get("schedule") or {}).get("kind")
+    if schedule_kind not in {"cron", "interval"}:
+        return
+
+    reason = (
+        "Auto-paused after provider capacity error. "
+        "Resume after quota/auth is healthy. Last error: "
+        f"{str(error or '').strip()[:300]}"
+    )
+    paused = pause_job(job["id"], reason=reason)
+    if paused:
+        logger.error(
+            "Job '%s' auto-paused after provider capacity error: %s",
+            job.get("name", job["id"]),
+            error,
+        )
+    else:
+        logger.error(
+            "Job '%s' hit provider capacity error but could not be paused: %s",
+            job.get("name", job["id"]),
+            error,
+        )
 
 
 def _get_hermes_home() -> Path:
@@ -2127,11 +2191,14 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                if not success:
+                    _pause_job_for_capacity_error(job, error)
                 return True
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
                 mark_job_run(job["id"], False, str(e))
+                _pause_job_for_capacity_error(job, str(e))
                 return False
 
         # Partition due jobs: jobs with a per-job workdir and/or profile touch

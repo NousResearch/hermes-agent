@@ -1496,11 +1496,10 @@ export function ChatBar({
           <div className="relative w-full rounded-[inherit]">
             <div
               className={cn(
-                'relative z-4 isolate rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] shadow-composer transition-[border-color,box-shadow] duration-200 ease-out',
+                'relative z-4 isolate rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] transition-[border-color] duration-200 ease-out',
                 COMPOSER_DROP_FADE_CLASS,
-                'group-focus-within/composer:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)] group-focus-within/composer:shadow-composer-focus',
+                'group-focus-within/composer:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)]',
                 'group-has-data-[state=open]/composer:border-t-transparent',
-                'group-has-data-[state=open]/composer:shadow-[0_0.0625rem_0_0.0625rem_color-mix(in_srgb,var(--dt-composer-ring)_calc(35%*var(--composer-ring-strength)),transparent),0_0.5rem_1.5rem_color-mix(in_srgb,var(--shadow-ink)_6%,transparent)]',
                 dragActive && COMPOSER_DROP_ACTIVE_CLASS
               )}
               data-slot="composer-surface"
@@ -1532,7 +1531,7 @@ export function ChatBar({
                 {queueEdit && editingQueuedPrompt && (
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_32%,transparent)] bg-accent/18 px-2 py-1">
                     <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">
-                      Editing queued turn in composer
+                      {t.composer.editingQueuedInComposer}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       <Button
@@ -1541,14 +1540,14 @@ export function ChatBar({
                         type="button"
                         variant="ghost"
                       >
-                        Cancel
+                        {t.common.cancel}
                       </Button>
                       <Button
                         className="h-6 rounded-md px-2 text-[0.68rem]"
                         onClick={() => exitQueuedEdit('save')}
                         type="button"
                       >
-                        Save
+                        {t.common.save}
                       </Button>
                     </div>
                   </div>
@@ -1593,7 +1592,7 @@ export function ChatBarFallback() {
       )}
       data-slot="composer-root"
     >
-      <div className="composer-fallback-surface relative isolate h-(--composer-fallback-height) w-full rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] shadow-composer">
+      <div className="composer-fallback-surface relative isolate h-(--composer-fallback-height) w-full rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]">
         <div
           aria-hidden
           className={cn(

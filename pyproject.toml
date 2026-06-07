@@ -91,6 +91,14 @@ dependencies = [
   "uvicorn[standard]>=0.24.0,<1",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
+  # Image resize recovery for the vision tools. Pillow shrinks oversized images
+  # (>5 MB or >8000px) at embed time; without it the byte AND pixel-dimension
+  # shrink paths no-op, so an oversized image bakes into immutable history and
+  # bricks the session on Anthropic's non-retryable 400. Pure-wheel, no system
+  # libs required for the codecs we use, so it's safe to ship in the base
+  # install rather than gating it behind an extra + a mid-session lazy install
+  # (which deadlocked the CLI under prompt_toolkit — see #40490).
+  "Pillow==12.2.0",
 ]
 
 [project.optional-dependencies]
@@ -137,14 +145,12 @@ pty = [
   # without pulling in extra packages.
 ]
 honcho = ["honcho-ai==2.0.1"]
-# Image resize recovery for the vision tools.  Pillow is a soft dependency:
-# vision_tools / conversation_compression degrade gracefully without it (they
-# log and skip the resize), but without it the byte AND pixel-dimension shrink
-# paths silently no-op, so an oversized image (>5 MB or >8000px) bakes into
-# immutable history and bricks the session on Anthropic's non-retryable 400.
-# Declared here so packagers (Nix, Homebrew) ship it with [all] and so
-# `pip install hermes-agent[vision]` / the lazy-install path can resolve it.
-vision = ["Pillow==12.2.0"]
+# Image resize recovery for the vision tools. Pillow is now a CORE dependency
+# (see the main `dependencies` list) since the byte/pixel shrink paths are on
+# the default vision-embed path and the mid-session lazy install deadlocked the
+# CLI under prompt_toolkit (#40490). This extra is kept as a no-op back-compat
+# alias so existing `pip install hermes-agent[vision]` invocations still resolve.
+vision = []
 # CVE-2026-48710 (BadHost): Starlette is pulled transitively by mcp's
 # sse-starlette / HTTP-SSE stack (and by fastapi in the `web` extra). Before
 # 1.0.1, a malformed Host header makes `request.url.path` desync from the path

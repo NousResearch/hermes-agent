@@ -434,7 +434,7 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
                 {c.newCron}
               </Button>
             </div>
-            <div className="divide-y divide-border/40 rounded-lg border border-border/40 bg-background/70">
+            <div className="divide-y divide-(--ui-stroke-tertiary)">
               {visibleJobs.map(job => (
                 <CronJobRow
                   busy={busyJobId === job.id}

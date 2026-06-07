@@ -775,6 +775,34 @@ class TestWebServerEndpoints:
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
 
+    def test_cron_delivery_targets_lists_configured_platforms(self, monkeypatch):
+        """The cron dropdown endpoint returns Local + configured platforms dynamically."""
+        import gateway.config as gateway_config
+
+        class _Platform:
+            def __init__(self, value):
+                self.value = value
+
+        class _GatewayConfig:
+            def get_connected_platforms(self):
+                return [_Platform("matrix")]
+
+        monkeypatch.setattr(
+            gateway_config, "load_gateway_config", lambda: _GatewayConfig()
+        )
+        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room:matrix.org")
+
+        resp = self.client.get("/api/cron/delivery-targets")
+
+        assert resp.status_code == 200
+        targets = {t["id"]: t for t in resp.json()["targets"]}
+        # Local is always offered; matrix appears because its gateway is configured.
+        assert "local" in targets
+        assert "matrix" in targets
+        assert targets["matrix"]["home_target_set"] is True
+        # No hardcoded telegram/discord/slack/email when they aren't configured.
+        assert "telegram" not in targets
+
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
         assert resp.status_code == 200
@@ -1348,6 +1376,58 @@ class TestWebServerEndpoints:
         )
         assert resp.status_code == 200
         assert resp.json()["base_url"] == ""
+
+    def test_set_model_main_reports_stale_auxiliary_pins(self):
+        """Switching the main provider must report auxiliary slots still pinned
+        to a *different* provider so the UI can warn the user their helper tasks
+        aren't following the switch (the silent credit-burn path)."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {"provider": "nous", "default": "hermes-4"}
+        cfg["auxiliary"] = {
+            # Pinned to nous — same as the OLD main, becomes stale after switch.
+            "compression": {"provider": "nous", "model": "anthropic/claude-sonnet-4.6"},
+            # Auto — follows main, never stale.
+            "vision": {"provider": "auto", "model": ""},
+            # Pinned to a third provider — also stale vs the new main.
+            "curator": {"provider": "deepseek", "model": "deepseek-chat"},
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        )
+        assert resp.status_code == 200
+        stale = resp.json()["stale_aux"]
+        stale_tasks = {entry["task"] for entry in stale}
+        assert stale_tasks == {"compression", "curator"}
+        # auto slot must never appear.
+        assert "vision" not in stale_tasks
+        # Provider/model echoed back for the UI label.
+        comp = next(e for e in stale if e["task"] == "compression")
+        assert comp["provider"] == "nous"
+        assert comp["model"] == "anthropic/claude-sonnet-4.6"
+
+    def test_set_model_main_no_stale_when_aux_matches_new_provider(self):
+        """Aux slots pinned to the SAME provider as the new main are not stale."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {"provider": "nous", "default": "hermes-4"}
+        cfg["auxiliary"] = {
+            "compression": {"provider": "openrouter", "model": "google/gemini-2.5-flash"},
+            "vision": {"provider": "auto", "model": ""},
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["stale_aux"] == []
 
         model_cfg = load_config().get("model")
         assert model_cfg["provider"] == "openrouter"

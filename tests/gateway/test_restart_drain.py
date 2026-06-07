@@ -116,22 +116,37 @@ def test_load_busy_input_mode_prefers_env_then_config_then_default(tmp_path, mon
     assert gateway_run.GatewayRunner._load_busy_input_mode() == "interrupt"
 
 
-def test_load_busy_text_mode_defaults_to_queue_and_allows_interrupt(tmp_path, monkeypatch):
+def test_load_busy_text_mode_follows_input_mode_and_honors_legacy(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
 
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
-
-    (tmp_path / "config.yaml").write_text(
-        "display:\n  busy_text_mode: interrupt\n", encoding="utf-8"
-    )
+    # No knobs set → follows busy_input_mode, which defaults to interrupt.
     assert gateway_run.GatewayRunner._load_busy_text_mode() == "interrupt"
 
+    # busy_input_mode=queue propagates to text handling (single source of truth).
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  busy_input_mode: queue\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+
+    # Legacy explicit busy_text_mode still wins for backward compat.
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  busy_input_mode: interrupt\n  busy_text_mode: queue\n",
+        encoding="utf-8",
+    )
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+
+    # Legacy env override wins too.
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  busy_input_mode: interrupt\n", encoding="utf-8"
+    )
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "queue")
     assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
 
+    # Bogus legacy value is ignored → falls through to busy_input_mode (interrupt).
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "bogus")
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "interrupt"
 
 
 def test_load_restart_drain_timeout_prefers_env_then_config_then_default(

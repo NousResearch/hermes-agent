@@ -831,12 +831,12 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
         return None
 
     raw = result.stdout.strip()
-    if not raw:
+    if not isinstance(raw, str) or not raw:
         return None
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
 
@@ -854,6 +854,28 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     return None
 
 
+def _read_claude_code_credentials_file() -> Optional[Dict[str, Any]]:
+    """Read Claude Code OAuth credentials from ~/.claude/.credentials.json."""
+    cred_path = Path.home() / ".claude" / ".credentials.json"
+    if not cred_path.exists():
+        return None
+    try:
+        data = json.loads(cred_path.read_text(encoding="utf-8"))
+        oauth_data = data.get("claudeAiOauth")
+        if oauth_data and isinstance(oauth_data, dict):
+            access_token = oauth_data.get("accessToken", "")
+            if access_token:
+                return {
+                    "accessToken": access_token,
+                    "refreshToken": oauth_data.get("refreshToken", ""),
+                    "expiresAt": oauth_data.get("expiresAt", 0),
+                    "source": "claude_code_credentials_file",
+                }
+    except (json.JSONDecodeError, OSError, IOError) as e:
+        logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+    return None
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials.
 
@@ -863,35 +885,16 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
     subscription flow is OAuth/setup-token based with refreshable credentials,
-    and native direct Anthropic provider usage should follow that path rather
-    than auto-detecting Claude's first-party managed key.
+    and native direct Anthropic provider usage should follow that path
+    rather than auto-detecting Claude's first-party managed key.
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    # Try macOS Keychain first (covers Claude Code >=2.1.114)
     kc_creds = _read_claude_code_credentials_from_keychain()
     if kc_creds:
         return kc_creds
 
-    # Fall back to JSON file
-    cred_path = Path.home() / ".claude" / ".credentials.json"
-    if cred_path.exists():
-        try:
-            data = json.loads(cred_path.read_text(encoding="utf-8"))
-            oauth_data = data.get("claudeAiOauth")
-            if oauth_data and isinstance(oauth_data, dict):
-                access_token = oauth_data.get("accessToken", "")
-                if access_token:
-                    return {
-                        "accessToken": access_token,
-                        "refreshToken": oauth_data.get("refreshToken", ""),
-                        "expiresAt": oauth_data.get("expiresAt", 0),
-                        "source": "claude_code_credentials_file",
-                    }
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
-
-    return None
+    return _read_claude_code_credentials_file()
 
 
 def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:

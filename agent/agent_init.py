@@ -173,6 +173,8 @@ def init_agent(
     interim_assistant_callback: callable = None,
     tool_gen_callback: callable = None,
     status_callback: callable = None,
+    notice_callback: callable = None,
+    notice_clear_callback: callable = None,
     max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None,
     service_tier: str = None,
@@ -399,6 +401,8 @@ def init_agent(
     agent.stream_delta_callback = stream_delta_callback
     agent.interim_assistant_callback = interim_assistant_callback
     agent.status_callback = status_callback
+    agent.notice_callback = notice_callback
+    agent.notice_clear_callback = notice_clear_callback
     agent.tool_gen_callback = tool_gen_callback
 
     
@@ -506,6 +510,15 @@ def init_agent(
     # Rate limit tracking — updated from x-ratelimit-* response headers
     # after each API call.  Accessed by /usage slash command.
     agent._rate_limit_state: Optional["RateLimitState"] = None
+
+    # Credits tracking (dev-only, L0 usage-aware-credits) — updated from
+    # x-nous-credits-* response headers after each API call.  Session-start
+    # remaining is latched the first time a header is ever seen so we can
+    # report cumulative micros spent.  Surfaced behind HERMES_DEV_CREDITS.
+    agent._credits_state = None
+    agent._credits_session_start_micros = None
+    # Threshold-notice latch (L4): active sticky-notice keys + the warn90 crossing gate.
+    agent._credits_latch = {"active": set(), "seen_below_90": False, "usage_band": None}
 
     # OpenRouter response cache hit counter — incremented when
     # X-OpenRouter-Cache-Status: HIT is seen in streaming response headers.

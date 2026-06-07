@@ -1912,6 +1912,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    ReplyDeliveryPolicy,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     merge_pending_message_event,
@@ -9702,6 +9703,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         7. Return response
         """
         source = event.source
+        self._observe_inbound_message(event)
 
         # 🔴 Cross-session leak guard. This handler runs inside a per-message
         # asyncio task created via create_task(), which snapshots the spawning
@@ -13145,8 +13147,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
+            _voice_reply_sent = False
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
-                await self._send_voice_reply(event, response)
+                _voice_reply_sent = await self._send_voice_reply(event, response)
+            if self._should_suppress_text_after_voice_reply(event, response, _voice_reply_sent, already_sent=_already_sent):
+                return None
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -14080,6 +14085,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.handle_message(event)
 
+    def _observe_inbound_message(self, event: MessageEvent) -> None:
+        """Let the source adapter observe an inbound event before dispatch."""
+        adapter = self.adapters.get(event.source.platform)
+        if not adapter or not hasattr(adapter, "observe_inbound_message"):
+            return
+        try:
+            adapter.observe_inbound_message(event)
+        except Exception:
+            logger.debug(
+                "Adapter observe_inbound_message failed for %s",
+                getattr(event.source.platform, "value", event.source.platform),
+                exc_info=True,
+            )
+
+    def _reply_delivery_policy(
+        self,
+        event: MessageEvent,
+        response: str,
+        *,
+        already_sent: bool = False,
+    ):
+        """Return the adapter's reply delivery policy for this turn."""
+        adapter = self.adapters.get(event.source.platform)
+        chat_id = event.source.chat_id
+        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
+
+        if not response or response.startswith("Error:"):
+            return ReplyDeliveryPolicy()
+
+        if adapter and hasattr(adapter, "reply_delivery_policy"):
+            policy = adapter.reply_delivery_policy(
+                event,
+                response,
+                voice_mode=voice_mode,
+                already_sent=already_sent,
+            )
+            if isinstance(policy, ReplyDeliveryPolicy):
+                return policy
+
+        is_voice_input = event.message_type == MessageType.VOICE
+        send_voice = (
+            voice_mode == "all"
+            or (voice_mode == "voice_only" and is_voice_input)
+        )
+        if is_voice_input and not already_sent:
+            send_voice = False
+        return ReplyDeliveryPolicy(send_voice_reply=send_voice)
+
     def _should_send_voice_reply(
         self,
         event: MessageEvent,
@@ -14087,29 +14140,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         agent_messages: list,
         already_sent: bool = False,
     ) -> bool:
-        """Decide whether the runner should send a TTS voice reply.
-
-        Returns False when:
-        - voice_mode is off for this chat
-        - response is empty or an error
-        - agent already called text_to_speech tool (dedup)
-        - voice input and base adapter auto-TTS already handled it (skip_double)
-          UNLESS streaming already consumed the response (already_sent=True),
-          in which case the base adapter won't have text for auto-TTS so the
-          runner must handle it.
-        """
-        if not response or response.startswith("Error:"):
-            return False
-
-        chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
-        is_voice_input = (event.message_type == MessageType.VOICE)
-
-        should = (
-            (voice_mode == "all")
-            or (voice_mode == "voice_only" and is_voice_input)
-        )
-        if not should:
+        """Decide whether the runner should send a TTS voice reply."""
+        policy = self._reply_delivery_policy(event, response, already_sent=already_sent)
+        if not getattr(policy, "send_voice_reply", False):
             return False
 
         # Dedup: agent already called TTS tool
@@ -14124,21 +14157,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if has_agent_tts:
             return False
 
-        # Dedup: base adapter auto-TTS already handles voice input
-        # (play_tts plays in VC when connected, so runner can skip).
-        # When streaming already delivered the text (already_sent=True),
-        # the base adapter will receive None and can't run auto-TTS,
-        # so the runner must take over.
-        if is_voice_input and not already_sent:
-            return False
-
         return True
 
     def _should_echo_stt_transcripts(self) -> bool:
         """Return whether inbound voice/STT transcripts should be echoed to chat."""
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
+    def _should_suppress_text_after_voice_reply(
+        self,
+        event: MessageEvent,
+        response: str,
+        voice_reply_sent: bool,
+        *,
+        already_sent: bool = False,
+    ) -> bool:
+        """Return True when adapter policy wants voice to replace text."""
+        if not voice_reply_sent:
+            return False
+        policy = self._reply_delivery_policy(event, response, already_sent=already_sent)
+        return bool(getattr(policy, "suppress_text_if_voice_reply_sent", False))
+
+    async def _send_voice_reply(self, event: MessageEvent, text: str) -> bool:
         """Generate TTS audio and send as a voice message before the text reply."""
         import uuid as _uuid
         audio_path = None
@@ -14148,7 +14187,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             tts_text = _strip_markdown_for_tts(text[:4000])
             if not tts_text:
-                return
+                return False
 
             # Telegram's adapter only sends native voice bubbles for OGG/Opus.
             # Other platforms keep the existing MP3 default.
@@ -14166,13 +14205,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = json.loads(result_json)
             except (json.JSONDecodeError, TypeError):
                 logger.warning("Auto voice reply TTS returned invalid JSON: %s", result_json[:200] if result_json else result_json)
-                return
+                return False
 
             # Use the actual file path from result (may differ after opus conversion)
             actual_path = result.get("file_path", audio_path)
             if not result.get("success") or not os.path.isfile(actual_path):
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
-                return
+                return False
 
             adapter = self._adapter_for_source(event.source)
 
@@ -14183,6 +14222,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and hasattr(adapter, "is_in_voice_channel")
                     and adapter.is_in_voice_channel(guild_id)):
                 await adapter.play_in_voice_channel(guild_id, actual_path)
+                return True
             elif adapter and hasattr(adapter, "send_voice"):
                 reply_anchor = self._reply_anchor_for_event(event)
                 thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
@@ -14204,9 +14244,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "reply_to": reply_anchor,
                     "metadata": thread_meta,
                 }
-                await adapter.send_voice(**send_kwargs)
+                send_result = await adapter.send_voice(**send_kwargs)
+                if send_result is None:
+                    return True
+                return bool(getattr(send_result, "success", False))
+            return False
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
+            return False
         finally:
             for p in {audio_path, actual_path} - {None}:
                 try:

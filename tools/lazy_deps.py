@@ -179,7 +179,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # pixel-dimension shrink paths no-op when it's absent, so an oversized
     # image can brick a session on Anthropic's non-retryable 400. Keep in sync
     # with pyproject [vision].
-    "tool.vision": ("Pillow==12.2.0",),
+    "tool.vision": ("Pillow==12.2.0", "pdf2image==1.17.0"),
 }
 
 

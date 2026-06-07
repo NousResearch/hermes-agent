@@ -22,6 +22,7 @@ authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
+  "portalocker>=3.2.0",
   # Core — every direct dep is exact-pinned to ==X.Y.Z (no ranges).
   # Rationale: ranges allow PyPI to ship a fresh version of a transitive
   # at any time without a code review on our side. Exact pins mean the

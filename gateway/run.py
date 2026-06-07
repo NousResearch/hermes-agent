@@ -34,15 +34,13 @@ except ModuleNotFoundError:
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
-#import fcntl
-#import os
-import portalocker    
 import asyncio
 import dataclasses
 import inspect
 import json
 import logging
 import os
+import portalocker 
 import re
 import shlex
 import sys
@@ -56,7 +54,7 @@ from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List, Union
-
+logger = logging.getLogger(__name__)
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
 # patches (tests/gateway/test_usage_command.py) target

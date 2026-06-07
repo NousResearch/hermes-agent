@@ -1787,6 +1787,32 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             accumulated += msg_tokens
             cut_idx = i
 
+        # When the total transcript tokens are less than soft_ceiling the
+        # backward walk never breaks and cut_idx lands at head_end.  After
+        # _ensure_last_user_message_in_tail the compression window can
+        # shrink to a single message, producing a no-op loop where every
+        # compression pass saves ~0 tokens (messages=N->N).  Halve the
+        # budget and retry so the walk breaks earlier and leaves a
+        # meaningful window.  See issue #40803.
+        if cut_idx <= head_end and token_budget > 0:
+            token_budget = token_budget // 2
+            soft_ceiling = int(token_budget * 1.5)
+            accumulated = 0
+            cut_idx = n
+            for i in range(n - 1, head_end - 1, -1):
+                msg = messages[i]
+                raw_content = msg.get("content") or ""
+                content_len = _content_length_for_budget(raw_content)
+                msg_tokens = content_len // _CHARS_PER_TOKEN + 10
+                for tc in msg.get("tool_calls") or []:
+                    if isinstance(tc, dict):
+                        args = tc.get("function", {}).get("arguments", "")
+                        msg_tokens += len(args) // _CHARS_PER_TOKEN
+                if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
+                    break
+                accumulated += msg_tokens
+                cut_idx = i
+
         # Ensure we protect at least min_tail messages
         fallback_cut = n - min_tail
         cut_idx = min(cut_idx, fallback_cut)

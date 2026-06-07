@@ -661,10 +661,50 @@ def detect_dangerous_command(command: str) -> tuple:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
     command_lower = _normalize_command_for_detection(command).lower()
+    
+    # First-pass: regex-based detection (existing approach)
     for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
         if pattern_re.search(command_lower):
             pattern_key = description
             return (True, pattern_key, description)
+    
+    # Second-pass: detect shell-encoded bypass attempts (issue #36846)
+    # These patterns catch attempts to obfuscate dangerous keywords via:
+    # - Backslash escapes: r\m, c\hmod
+    # - Empty quotes: r''m, ''rm, c''hmod
+    # - Command substitution: $(echo rm), `echo chmod`
+    # - Parameter substitution: ${0/x/r}m, ${VAR//pattern/replacement}
+    #
+    # NOTE: This is a defensive layer, not a complete solution. A proper fix
+    # would tokenize with shlex.split() and validate each resolved argv[0].
+    # See #36846 for detailed analysis.
+    bypass_patterns = [
+        # Backslash escape: \r, \c, \k, etc. before common dangerous commands
+        # Matches patterns like: r\m, c\hmod, d\d, k\ill, etc.
+        (r'[a-z]\\[a-z]{1,4}\s', "shell-encoded dangerous command (backslash escape)"),
+        # Empty quote insertions: r''m, c''hmod, ch''own, etc.
+        # Match letter-quote-quote-letters pattern followed by space
+        (r"[a-z]''[a-z]{1,4}\s", "shell-encoded dangerous command (quote insertion)"),
+        # Command substitution of dangerous words
+        (r'\$\(\s*echo\s+(rm|chmod|chown|mkfs|dd|kill|pkill|killall|docker|systemctl|hermes|gateway)\b', 
+         "shell-encoded dangerous command (command substitution)"),
+        # Backtick variant
+        (r'`\s*echo\s+(rm|chmod|chown|mkfs|dd|kill|pkill|killall|docker|systemctl|hermes|gateway)\b',
+         "shell-encoded dangerous command (backtick substitution)"),
+        # Parameter expansion specifically to construct dangerous commands
+        # Catches attempts to obfuscate command names via ${...} + dangerous suffix
+        # Matches: ${0/x/r}m, ${VAR//a/r}m, ${1}hmod, ${1}own (= chown), etc.
+        # Does NOT match: ${CONFIG}backup (legitimate multi-letter suffix)
+        # Only match if the text after } spells a complete dangerous command
+        # or a known partial that MUST be from an obfuscation attempt
+        (r"\$\{[^}]*\}(?:rm|chmod|chown|mkfs|dd|kill|pkill|killall|docker|systemctl|hermes|gateway|m|own|hmod)(?:\s|$)",
+         "shell-encoded dangerous command (parameter expansion)"),
+    ]
+    
+    for pattern, description in bypass_patterns:
+        if re.search(pattern, command_lower):
+            return (True, description, description)
+    
     return (False, None, None)
 
 

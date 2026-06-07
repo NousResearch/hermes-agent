@@ -214,7 +214,11 @@ def _try_lazy_install_stt() -> bool:
     """
     try:
         from tools.lazy_deps import ensure
-        ensure("stt.faster_whisper")
+        # prompt=False: never raise a blocking input() prompt mid-session.
+        # Under the interactive CLI prompt_toolkit owns stdin, so a bare
+        # input() deadlocks the terminal (#40490). The install is already
+        # gated by security.allow_lazy_installs, so reaching here is opt-in.
+        ensure("stt.faster_whisper", prompt=False)
         # Re-check dynamically after install
         import importlib.util as _iu
         if _iu.find_spec("faster_whisper"):

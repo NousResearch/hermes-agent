@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
@@ -44,6 +45,8 @@ export function ModelPickerDialog({
   onSelect,
   contentClassName
 }: ModelPickerDialogProps) {
+  const { t } = useI18n()
+  const copy = t.modelPicker
   const [persistGlobal, setPersistGlobal] = useState(!sessionId)
   // Own the search term so we can filter manually. cmdk's built-in
   // shouldFilter reorders items by its fuzzy-match score (≈alphabetical with
@@ -128,7 +131,7 @@ export function ModelPickerDialog({
           </CommandList>
         </Command>
 
-        <DialogFooter className="flex-row items-center justify-between gap-3 border-t border-border bg-card p-3 sm:justify-between">
+        <DialogFooter className="flex-row items-center justify-between gap-3 bg-card p-3 sm:justify-between">
           <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground">
             <Checkbox
               checked={persistGlobal || !sessionId}
@@ -169,6 +172,9 @@ function ModelResults({
   onSelectModel: (provider: ModelOptionProvider, model: string) => void
   search: string
 }) {
+  const { t } = useI18n()
+  const copy = t.modelPicker
+
   if (loading) {
     return <LoadingResults />
   }
@@ -264,6 +270,9 @@ function ModelResults({
 // Compact In/Out $/Mtok price tag, mirroring the CLI picker's price columns.
 // Renders nothing when pricing is unavailable for the model.
 function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boolean }) {
+  const { t } = useI18n()
+  const copy = t.modelPicker
+
   if (!price || (!price.input && !price.output)) {
     return null
   }
@@ -307,6 +316,9 @@ function LoadingResults() {
 }
 
 function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
+  const { t } = useI18n()
+  const copy = t.modelPicker
+
   // free_tier is only set for Nous. true → "Free tier", false → "Pro".
   const tierBadge =
     provider.free_tier === true ? (

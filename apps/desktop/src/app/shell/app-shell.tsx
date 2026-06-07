@@ -16,6 +16,7 @@ import {
 import { $paneWidthOverride } from '@/store/panes'
 import { $connection } from '@/store/session'
 
+import { KeybindPanel } from './keybind-panel'
 import { StatusbarControls, type StatusbarItem } from './statusbar-controls'
 import { TITLEBAR_HEIGHT, titlebarControlsPosition } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'

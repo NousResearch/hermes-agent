@@ -11,13 +11,19 @@ import { useTranslation } from '@/hooks/use-translation'
 import { CONTROL_TEXT } from './constants'
 import { ListRow, LoadingState, Pill, SectionHeading } from './primitives'
 
+// A provider row is "ready" to pick a model from when it reports models. The
+// backend now surfaces the full `hermes model` universe (every canonical
+// provider), so unconfigured providers come back with `authenticated:false`
+// and an empty `models` list — those need a setup step before a model exists.
+function isProviderReady(p?: ModelOptionProvider): boolean {
+  return !!p && (p.authenticated !== false || (p.models?.length ?? 0) > 0)
+}
+
 // Mirrors `_AUX_TASK_SLOTS` in hermes_cli/web_server.py. Friendly labels and
 // hints make the assignments readable; raw task keys (vision, mcp, …) are
 // opaque to most users.
 interface AuxTaskMeta {
-  hint: string
   key: string
-  label: string
 }
 
 const AUX_TASKS: readonly AuxTaskMeta[] = [
@@ -46,13 +52,14 @@ interface StaleAuxWarningProps {
   applying: boolean
   onReset: () => void
   slots: readonly StaleAuxAssignment[]
+  taskLabel: (key: string) => string
 }
 
 // Shared notice: auxiliary tasks still pinned to a provider that isn't the
 // current main. Surfaces the silent credit-burn path (e.g. aux pinned to a
 // $0-balance provider after switching main away from it) and offers the
 // existing one-click reset rather than auto-clearing legitimate pins.
-function StaleAuxWarning({ applying, onReset, slots }: StaleAuxWarningProps) {
+function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarningProps) {
   if (!slots.length) {
     return null
   }
@@ -125,10 +132,23 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
   const providerOptions = providers.length ? providers : NO_PROVIDERS
 
-  const selectedProviderModels = useMemo(
-    () => providers.find(provider => provider.slug === selectedProvider)?.models ?? [],
+  const selectedProviderRow = useMemo(
+    () => providers.find(provider => provider.slug === selectedProvider),
     [providers, selectedProvider]
   )
+
+  const selectedProviderModels = selectedProviderRow?.models ?? []
+
+  // An unconfigured provider was picked: no credentials yet, so there are no
+  // models to choose. `api_key` providers can be activated inline (paste key);
+  // OAuth / external flows hand off to the onboarding sign-in.
+  const needsSetup = !!selectedProvider && !isProviderReady(selectedProviderRow)
+  const setupIsApiKey = needsSetup && selectedProviderRow?.auth_type === 'api_key' && !!selectedProviderRow?.key_env
+
+  // Clear any half-typed key when switching provider so it can't leak across.
+  useEffect(() => {
+    setApiKeyDraft('')
+  }, [selectedProvider])
 
   const auxDraftProviderModels = useMemo(
     () => providers.find(provider => provider.slug === auxDraft.provider)?.models ?? [],
@@ -140,12 +160,15 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // "I pinned aux months ago and forgot, now it bills a dead provider" case.
   const persistentStaleAux = useMemo<StaleAuxAssignment[]>(() => {
     const mainProvider = (mainModel?.provider ?? '').toLowerCase()
+
     if (!mainProvider || !auxiliary) {
       return []
     }
+
     return auxiliary.tasks
       .filter(entry => {
         const p = (entry.provider ?? '').toLowerCase()
+
         return p && p !== 'auto' && p !== mainProvider
       })
       .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
@@ -300,10 +323,22 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             {applying ? t('model.applying') : t('model.apply')}
           </Button>
         </div>
+        {needsSetup && !setupIsApiKey && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            {selectedProviderRow?.auth_type === 'api_key'
+              ? `${selectedProviderRow?.name} needs an API key — set it up to choose a model.`
+              : `${selectedProviderRow?.name} signs in through your browser — Hermes runs the flow for you.`}
+          </p>
+        )}
         {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
         {switchStaleAux.length > 0 && (
           <div className="mt-2">
-            <StaleAuxWarning applying={applying} onReset={() => void resetAuxiliaryModels()} slots={switchStaleAux} />
+            <StaleAuxWarning
+              applying={applying}
+              onReset={() => void resetAuxiliaryModels()}
+              slots={switchStaleAux}
+              taskLabel={auxiliaryTaskLabel}
+            />
           </div>
         )}
       </section>
@@ -325,6 +360,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         </p>
         <div className="divide-y divide-border/40">
           {AUX_TASKS.map(meta => {
+            const copy = m.tasks[meta.key] ?? { label: meta.key, hint: meta.key }
             const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
             const isAuto = !current || !current.provider || current.provider === 'auto'
             const isEditing = editingAuxTask === meta.key

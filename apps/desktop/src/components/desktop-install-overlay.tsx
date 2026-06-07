@@ -94,6 +94,8 @@ function formatElapsed(ms: number): string {
 }
 
 function StageRow({ descriptor, result, isCurrent, now }: StageRowProps) {
+  const { t } = useI18n()
+  const copy = t.install
   const state: DesktopBootstrapStageState = result?.state || 'pending'
   const elapsed =
     state === 'running' && typeof result?.startedAt === 'number' ? formatElapsed(now - result.startedAt) : ''
@@ -350,7 +352,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
 
   return (
     <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-background/90 backdrop-blur-md p-4">
-      <div className="flex w-full max-w-2xl max-h-[90vh] flex-col rounded-xl border bg-card shadow-xl">
+      <div className="flex w-full max-w-2xl max-h-[90vh] flex-col rounded-xl border border-(--stroke-nous) bg-card shadow-nous">
         {/* Header -- always visible, never scrolls */}
         <div className="flex-shrink-0 p-8 pb-4">
           <h2 className="text-2xl font-semibold tracking-tight">
@@ -426,15 +428,10 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               <span className="ml-1 tabular-nums">
                 ({state.log.length} {state.log.length === 1 ? t('install.line') : t('install.lines')})
               </span>
-            </button>
+            </Button>
 
             {logOpen && (
-              <div
-                className={cn(
-                  'mt-2 overflow-auto rounded-md border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed',
-                  failed ? 'max-h-96' : 'max-h-64'
-                )}
-              >
+              <LogView className={cn('mt-2', failed ? 'max-h-96' : 'max-h-64')}>
                 {state.log.length === 0 ? (
                   <div className="text-muted-foreground">{t('install.noOutput')}</div>
                 ) : (
@@ -451,14 +448,14 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                     <div ref={logEndRef} />
                   </>
                 )}
-              </div>
+              </LogView>
             )}
           </div>
         </div>
 
         {/* Active footer: let the user actually cancel a running install. */}
         {state.active && !failed && (
-          <div className="flex-shrink-0 border-t bg-card p-4">
+          <div className="flex-shrink-0 bg-card p-4">
             <div className="flex items-center justify-end">
               <Button
                 disabled={cancelling}
@@ -483,7 +480,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
 
         {/* Footer -- always visible, never scrolls; only renders on failure */}
         {failed && (
-          <div className="flex-shrink-0 border-t bg-card p-4">
+          <div className="flex-shrink-0 bg-card p-4">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-muted-foreground">
                 {t('install.saveLogs')}{' '}

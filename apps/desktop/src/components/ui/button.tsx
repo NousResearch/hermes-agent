@@ -15,6 +15,7 @@ const buttonVariants = cva(
         default: 'bg-primary text-primary-foreground hover:bg-primary/90',
         destructive:
           'bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60 dark:focus-visible:ring-destructive/40',
+        // Quiet action — transparent fill with a 1.5px inset ring (no layout-shifting border).
         outline:
           'border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50',
         secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
@@ -32,6 +33,10 @@ const buttonVariants = cva(
         xs: "gap-1 px-2 py-0.5 text-[0.6875rem] leading-4 has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3",
         sm: 'px-2.5 py-1 has-[>svg]:px-2',
         lg: 'px-5 py-2 text-sm leading-5 has-[>svg]:px-4',
+        // Flush inline text action — no box padding/height. Pair with text/link
+        // variants when the button must sit inline in a heading or sentence
+        // (replaces ad-hoc `h-auto px-0 py-0` overrides).
+        inline: 'h-auto gap-1 p-0 has-[>svg]:px-0',
         icon: 'size-9 rounded-[4px]',
         'icon-xs': "size-6 rounded-[4px] [&_svg:not([class*='size-'])]:size-3",
         'icon-sm': 'size-8 rounded-[4px]',

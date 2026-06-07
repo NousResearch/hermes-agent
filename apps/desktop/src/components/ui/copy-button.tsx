@@ -59,10 +59,10 @@ export function CopyButton({
   children,
   className,
   disabled = false,
-  errorMessage = 'Copy failed',
+  errorMessage,
   haptic = true,
   iconClassName,
-  label = 'Copy',
+  label,
   onCopied,
   onCopyError,
   preventDefault = false,
@@ -71,6 +71,9 @@ export function CopyButton({
   text,
   title
 }: CopyButtonProps) {
+  const { t } = useI18n()
+  const resolvedErrorMessage = errorMessage ?? t.common.copyFailed
+  const resolvedLabel = label ?? t.common.copy
   const [status, setStatus] = React.useState<CopyStatus>('idle')
   const resetRef = React.useRef<number | null>(null)
 
@@ -138,10 +141,10 @@ export function CopyButton({
   const visibleChildren =
     (showLabel ?? (appearance !== 'icon' && appearance !== 'tool-row'))
       ? status === 'copied'
-        ? 'Copied'
+        ? t.common.copied
         : status === 'error'
-          ? 'Failed'
-          : (children ?? label)
+          ? t.common.failed
+          : (children ?? resolvedLabel)
       : null
 
   const content = (
@@ -151,8 +154,9 @@ export function CopyButton({
     </>
   )
 
-  const feedbackLabel = status === 'copied' ? 'Copied' : status === 'error' ? errorMessage : (title ?? label)
-  const ariaLabel = status === 'idle' ? label : feedbackLabel
+  const feedbackLabel =
+    status === 'copied' ? t.common.copied : status === 'error' ? resolvedErrorMessage : (title ?? resolvedLabel)
+  const ariaLabel = status === 'idle' ? resolvedLabel : feedbackLabel
 
   if (appearance === 'menu-item') {
     return (

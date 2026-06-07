@@ -145,14 +145,14 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
               <OverlayNavItem
                 active={keysView === 'tools'}
                 icon={Wrench}
-                label="Tools"
+                label={t.settings.nav.keysTools}
                 nested
                 onClick={() => openKeysView('tools')}
               />
               <OverlayNavItem
                 active={keysView === 'settings'}
                 icon={Settings2}
-                label="Settings"
+                label={t.settings.nav.keysSettings}
                 nested
                 onClick={() => openKeysView('settings')}
               />

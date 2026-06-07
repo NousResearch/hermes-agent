@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { CheckCircle2, ExternalLink, Loader2, RefreshCw, Sparkles } from '@/lib/icons'
 import { useTranslation } from '@/hooks/use-translation'
@@ -16,6 +17,7 @@ import {
 } from '@/store/updates'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
+import { UninstallSection } from './uninstall-section'
 
 const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
 
@@ -91,9 +93,7 @@ export function AboutSettings() {
   return (
     <SettingsContent>
       <div className="flex flex-col items-center gap-3 pt-6 pb-2 text-center">
-        <span className="flex size-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <Sparkles className="size-8" />
-        </span>
+        <BrandMark className="size-16" />
         <div>
           <h2 className="text-lg font-semibold tracking-tight">{t('about.hermesDesktop')}</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -172,6 +172,8 @@ export function AboutSettings() {
           hint={t('about.buildInfo', { branch: status?.branch ?? 'unknown', sha: status?.currentSha?.slice(0, 7) ?? 'unknown' })}
           title={t('about.autoUpdates')}
         />
+
+        <UninstallSection />
       </div>
     </SettingsContent>
   )

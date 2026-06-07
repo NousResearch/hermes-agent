@@ -14,6 +14,7 @@ import {
 import type { ThemeMode } from '@/themes/context'
 
 import type { DesktopConfigSection } from './types'
+import { defineFieldCopy } from './field-copy'
 
 interface ProviderPrefix {
   prefix: string

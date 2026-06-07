@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
@@ -26,8 +27,7 @@ const tone: Record<NotificationKind, { icon: IconComponent; iconClass: string; v
   success: { icon: CheckCircle2, iconClass: 'text-primary', variant: 'success' }
 }
 
-const STACK_SURFACE = 'pointer-events-auto border-border/80 bg-popover/95 shadow-lg shadow-black/5 backdrop-blur-md'
-const GHOST_BTN = 'bg-transparent text-muted-foreground hover:text-foreground'
+const STACK_SURFACE = 'pointer-events-auto border border-(--stroke-nous) bg-popover/95 shadow-nous backdrop-blur-md'
 
 export function NotificationStack() {
   const notifications = useStore($notifications)
@@ -85,10 +85,10 @@ export function NotificationStack() {
         <div className={cn(STACK_SURFACE, 'flex min-h-8 items-center justify-between rounded-lg px-3 text-xs')}>
           <button className={cn(GHOST_BTN, 'font-medium')} onClick={() => setExpanded(v => !v)} type="button">
             {expanded ? copy.hide : copy.show} {copy.more(overflowCount)}
-          </button>
-          <button className={GHOST_BTN} onClick={clearNotifications} type="button">
+          </Button>
+          <Button className="-mr-2" onClick={clearNotifications} size="xs" type="button" variant="text">
             {copy.clearAll}
-          </button>
+          </Button>
         </div>
       )}
     </div>,
@@ -117,16 +117,18 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
           <p className="m-0">{notification.message}</p>
           {hasDetail && <NotificationDetail detail={notification.detail || ''} />}
           {notification.action && (
-            <button
-              className="mt-1.5 inline-flex items-center rounded-md bg-primary/15 px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/25"
+            <Button
+              className="mt-1.5 bg-primary/15 font-medium text-primary hover:bg-primary/25 hover:text-primary"
               onClick={() => {
                 notification.action?.onClick()
                 dismissNotification(notification.id)
               }}
+              size="xs"
               type="button"
+              variant="ghost"
             >
               {notification.action.label}
-            </button>
+            </Button>
           )}
         </AlertDescription>
       </div>
@@ -134,10 +136,12 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
         aria-label={copy.dismiss}
         className="col-start-3 -mr-1 grid size-6 place-items-center rounded-md bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         onClick={() => dismissNotification(notification.id)}
+        size="icon-xs"
         type="button"
+        variant="ghost"
       >
         <Codicon name="close" size="0.875rem" />
-      </button>
+      </Button>
     </Alert>
   )
 }

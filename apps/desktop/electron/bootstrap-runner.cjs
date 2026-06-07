@@ -76,6 +76,21 @@ function bootstrapCacheDir(hermesHome) {
   return path.join(hermesHome, 'bootstrap-cache')
 }
 
+// The install.sh / install.ps1 that ships inside the already-installed agent
+// checkout under ~/.hermes/hermes-agent. Used as a last-resort fallback when
+// the pinned commit can't be fetched from GitHub (e.g. a locally-built desktop
+// app stamped to an unpushed HEAD).
+function installedAgentInstallScript(hermesHome) {
+  if (!hermesHome) return null
+  const candidate = path.join(hermesHome, 'hermes-agent', 'scripts', installScriptName())
+  try {
+    fs.accessSync(candidate, fs.constants.R_OK)
+    return candidate
+  } catch {
+    return null
+  }
+}
+
 function cachedScriptPath(hermesHome, commit) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
@@ -155,7 +170,7 @@ function downloadInstallScript(commit, destPath) {
   })
 }
 
-async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit }) {
+async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit, _download = downloadInstallScript }) {
   // 1. Dev shortcut: prefer a local checkout's installer so we can iterate
   //    without pushing. SOURCE_REPO_ROOT comes from main.cjs (path.resolve
   //    of APP_ROOT/../..).
@@ -198,9 +213,49 @@ async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, 
 // powershell wrapper
 // ---------------------------------------------------------------------------
 
+// Canonical PowerShell 5.1 location under a Windows root (%SystemRoot%).
+function powershellUnderRoot(root) {
+  return path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+}
+
+// Resolve the PowerShell interpreter to spawn.
+//
+// Spawning bare 'powershell.exe' trusts PATH to contain
+// %SystemRoot%\System32\WindowsPowerShell\v1.0. On machines whose PATH was
+// trimmed, truncated, or stored as a non-expanding REG_SZ (so %SystemRoot%
+// never expands), that lookup fails and the spawn dies with ENOENT before
+// install.ps1 ever runs — the installer stalls at "0 of 0 steps". Resolve by
+// absolute path first, then fall back to PATH (powershell 5.1, then pwsh 7),
+// then a bare name as a last resort.
+function resolveWindowsPowerShell() {
+  for (const v of ['SystemRoot', 'windir']) {
+    const root = process.env[v]
+    if (root) {
+      const candidate = powershellUnderRoot(root)
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate
+      } catch {
+        void 0
+      }
+    }
+  }
+  const pathDirs = (process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean)
+  for (const exe of ['powershell.exe', 'pwsh.exe']) {
+    for (const dir of pathDirs) {
+      const candidate = path.join(dir, exe)
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate
+      } catch {
+        void 0
+      }
+    }
+  }
+  return 'powershell.exe'
+}
+
 function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome } = {}) {
   return new Promise((resolve, reject) => {
-    const ps = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
+    const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
     const fullArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args]
 
     const child = spawn(ps, fullArgs, {
@@ -633,5 +688,7 @@ module.exports = {
   // Exposed for testability
   parseStageResult,
   resolveLocalInstallScript,
+  resolveInstallScript,
+  installedAgentInstallScript,
   cachedScriptPath
 }

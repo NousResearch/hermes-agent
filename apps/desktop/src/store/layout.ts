@@ -13,7 +13,8 @@ import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, t
 
 export const SIDEBAR_DEFAULT_WIDTH = 237
 export const SIDEBAR_MAX_WIDTH = 360
-export const FILE_BROWSER_DEFAULT_WIDTH = '17rem'
+// Open at the same width as the sessions sidebar so the two rails match.
+export const FILE_BROWSER_DEFAULT_WIDTH = `${SIDEBAR_DEFAULT_WIDTH}px`
 export const FILE_BROWSER_MIN_WIDTH = '14rem'
 export const FILE_BROWSER_MAX_WIDTH = '20rem'
 
@@ -53,6 +54,10 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
 export const $pinnedSessionIds = atom(storedStringArray(SIDEBAR_PINNED_STORAGE_KEY))
 export const $sidebarPinsOpen = atom(true)
 export const $sidebarRecentsOpen = atom(true)
+// Cron-job sessions live in their own section below recents, collapsed by
+// default (it only renders at all when cron sessions exist) so the
+// scheduler's `[IMPORTANT: …]` first-message previews don't spam recents.
+export const $sidebarCronOpen = atom(storedBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, false))
 export const $sidebarAgentsGrouped = atom(storedBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false))
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.
@@ -61,6 +66,7 @@ export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
 $pinnedSessionIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_STORAGE_KEY, [...ids]))
+$sidebarCronOpen.subscribe(open => persistBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, open))
 $sidebarAgentsGrouped.subscribe(grouped => persistBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, grouped))
 $panesFlipped.subscribe(flipped => persistBoolean(PANES_FLIPPED_STORAGE_KEY, flipped))
 
@@ -95,6 +101,10 @@ export function setSidebarPinsOpen(open: boolean) {
 
 export function setSidebarRecentsOpen(open: boolean) {
   $sidebarRecentsOpen.set(open)
+}
+
+export function setSidebarCronOpen(open: boolean) {
+  $sidebarCronOpen.set(open)
 }
 
 export function setSidebarAgentsGrouped(grouped: boolean) {

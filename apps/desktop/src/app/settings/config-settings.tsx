@@ -201,7 +201,7 @@ export function ConfigSettings({
         setDefaults(d)
         setSchema(s.fields)
       })
-      .catch(err => notifyError(err, 'Settings failed to load'))
+      .catch(err => notifyError(err, c.failedLoad))
 
     return () => void (cancelled = true)
   }, [])
@@ -245,7 +245,7 @@ export function ConfigSettings({
           }
         } catch (err) {
           if (saveVersionRef.current === v) {
-            notifyError(err, 'Autosave failed')
+            notifyError(err, c.autosaveFailed)
           }
         }
       })()
@@ -316,7 +316,7 @@ export function ConfigSettings({
         updateConfig(JSON.parse(String(reader.result)))
         notify({ kind: 'success', title: 'Config imported', message: t('config.saving') })
       } catch (err) {
-        notifyError(err, 'Invalid config JSON')
+        notifyError(err, c.invalidJson)
       }
     }
 

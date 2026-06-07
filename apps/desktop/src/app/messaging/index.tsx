@@ -571,7 +571,7 @@ function PlatformDetail({
           {hiddenCount > 0 && (
             <section>
               <button
-                className="flex w-full items-center justify-between gap-2 rounded-lg px-1 py-1 text-left text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground"
+                className="flex w-full items-center justify-between gap-2 py-0.5 text-left text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground"
                 onClick={() => setShowAdvanced(value => !value)}
                 type="button"
               >

@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import {
   Dialog,
   DialogContent,
@@ -53,15 +52,12 @@ export function ProfilesView({
 }: ProfilesViewProps) {
   const { t } = useTranslation()
   const [profiles, setProfiles] = useState<null | ProfileInfo[]>(null)
-  const [refreshing, setRefreshing] = useState(false)
   const [selectedName, setSelectedName] = useState<null | string>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
   const [deleting, setDeleting] = useState(false)
 
   const refresh = useCallback(async () => {
-    setRefreshing(true)
-
     try {
       const { profiles: list } = await getProfiles()
       setProfiles(list)
@@ -278,7 +274,7 @@ function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: 
   return (
     <button
       className={cn(
-        'flex w-full flex-col items-start gap-1 rounded-lg px-2.5 py-2 text-left transition-colors',
+        'flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors',
         active ? 'bg-accent text-foreground' : 'text-foreground/85 hover:bg-accent/60'
       )}
       onClick={onSelect}

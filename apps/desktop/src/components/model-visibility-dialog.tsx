@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import {
   $visibleModels,
@@ -133,13 +134,15 @@ export function ModelVisibilityDialog({
         </div>
 
         <div className="px-3 py-2">
-          <button
-            className="text-xs text-(--ui-text-tertiary) transition-colors hover:text-foreground"
+          <Button
+            className="-ml-2 text-(--ui-text-tertiary)"
             onClick={() => {
               onOpenChange(false)
               onOpenProviders()
             }}
+            size="xs"
             type="button"
+            variant="text"
           >
             {t('models.addProvider')}
           </button>

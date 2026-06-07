@@ -7,6 +7,7 @@ import { type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useSt
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { HelpCircle, Loader2, PencilLine } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -47,6 +48,8 @@ export const ClarifyTool = (props: ToolCallMessagePartProps) => {
 }
 
 function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
+  const { t } = useI18n()
+  const copy = t.assistant.clarify
   const request = useStore($clarifyRequest)
   const gateway = useStore($gateway)
   const fromArgs = useMemo(() => readClarifyArgs(args), [args])
@@ -278,7 +281,9 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             className="bg-transparent text-muted-foreground/85 underline-offset-4 decoration-current/20 hover:text-foreground hover:underline disabled:opacity-50"
             disabled={!ready || submitting}
             onClick={() => void respond('')}
+            size="xs"
             type="button"
+            variant="text"
           >
             {t('clarify.skip')}
           </button>

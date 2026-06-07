@@ -1401,6 +1401,7 @@ dependencies = [
     { name = "markdown" },
     { name = "openai" },
     { name = "pathspec" },
+    { name = "pillow" },
     { name = "prompt-toolkit" },
     { name = "psutil" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },

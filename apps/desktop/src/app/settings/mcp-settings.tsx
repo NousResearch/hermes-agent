@@ -224,7 +224,7 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
                     <div className="truncate text-sm font-medium">{serverName}</div>
                     <div className="mt-1 flex items-center gap-1.5">
                       <Pill>{transportLabel(server)}</Pill>
-                      {server.disabled === true && <Pill>disabled</Pill>}
+                      {server.disabled === true && <Pill>{m.disabled}</Pill>}
                     </div>
                   </button>
                 )
@@ -239,7 +239,7 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
             {selected ? t('mcp.editServer') : t('mcp.newServer')}
           </div>
           <label className="grid gap-1.5">
-            <span className="text-xs text-muted-foreground">Name</span>
+            <span className="text-xs text-muted-foreground">{m.name}</span>
             <Input onChange={event => setName(event.currentTarget.value)} placeholder="filesystem" value={name} />
           </label>
           <label className="grid gap-1.5">

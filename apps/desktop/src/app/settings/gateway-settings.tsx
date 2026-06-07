@@ -120,7 +120,7 @@ export function GatewaySettings() {
 
         setState(config)
       })
-      .catch(err => notifyError(err, 'Gateway settings failed to load'))
+      .catch(err => notifyError(err, g.failedLoad))
       .finally(() => {
         if (!cancelled) {
           setLoading(false)
@@ -163,11 +163,11 @@ export function GatewaySettings() {
       setRemoteToken('')
       notify({
         kind: 'success',
-        title: apply ? 'Gateway connection restarting' : 'Gateway settings saved',
-        message: apply ? 'Hermes Desktop will reconnect using the saved settings.' : 'Saved for the next restart.'
+        title: apply ? g.restartingTitle : g.savedTitle,
+        message: apply ? g.restartingMessage : g.savedMessage
       })
     } catch (err) {
-      notifyError(err, apply ? 'Could not apply gateway settings' : 'Could not save gateway settings')
+      notifyError(err, apply ? g.applyFailed : g.saveFailed)
     } finally {
       setSaving(false)
     }
@@ -194,11 +194,11 @@ export function GatewaySettings() {
         remoteUrl: state.remoteUrl.trim()
       })
 
-      const message = `Connected to ${result.baseUrl}${result.version ? ` · Hermes ${result.version}` : ''}`
+      const message = g.connectedTo(result.baseUrl, result.version ?? undefined)
       setLastTest(message)
-      notify({ kind: 'success', title: 'Remote gateway reachable', message })
+      notify({ kind: 'success', title: g.reachableTitle, message })
     } catch (err) {
-      notifyError(err, 'Remote gateway test failed')
+      notifyError(err, g.testFailed)
     } finally {
       setTesting(false)
     }
@@ -233,10 +233,10 @@ export function GatewaySettings() {
       {namedProfiles.length > 0 ? (
         <div className="mb-5 grid gap-2">
           <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
-            Applies to
+            {g.appliesTo}
           </div>
           <div className="flex flex-wrap gap-1.5">
-            <ScopeChip active={scope === null} label="All profiles" onSelect={() => setScope(null)} />
+            <ScopeChip active={scope === null} label={g.allProfiles} onSelect={() => setScope(null)} />
             {namedProfiles.map(profile => (
               <ScopeChip
                 active={scope === profile.name}
@@ -247,9 +247,7 @@ export function GatewaySettings() {
             ))}
           </div>
           <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {scope === null
-              ? 'Default connection for every profile that has no override of its own.'
-              : `Connection used only when “${scope}” is the active profile. Set it to Local to inherit the default.`}
+            {scope === null ? g.defaultConnection : g.profileConnection(scope)}
           </p>
         </div>
       ) : null}

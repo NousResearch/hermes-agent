@@ -131,13 +131,13 @@ export function useStatusbarItems({
 
   const gatewayDetail = gatewayOpen
     ? inferenceStatus?.ready
-      ? 'ready'
+      ? copy.gatewayReady
       : inferenceStatus
-        ? 'needs setup'
-        : 'checking'
+        ? copy.gatewayNeedsSetup
+        : copy.gatewayChecking
     : gatewayConnecting
-      ? 'connecting'
-      : 'offline'
+      ? copy.gatewayConnecting
+      : copy.gatewayOffline
 
   const gatewayClassName = inferenceReady
     ? undefined
@@ -150,21 +150,21 @@ export function useStatusbarItems({
     const sha = updateStatus?.currentSha?.slice(0, 7) ?? null
     const behind = updateStatus?.behind ?? 0
     const applying = updateApply.applying || updateApply.stage === 'restart'
-    const base = appVersion ? `v${appVersion}` : (sha ?? 'unknown')
+    const base = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
 
     const label = applying
       ? updateApply.stage === 'restart'
-        ? `${base} · restart`
-        : `${base} · update`
+        ? `${base} · ${copy.restart}`
+        : `${base} · ${copy.update}`
       : `${base}${behindHint}`
 
     const tooltip = [
-      applying ? updateApply.message || 'Update in progress' : null,
-      !applying && behind > 0 && `${behind} commit${behind === 1 ? '' : 's'} behind ${updateStatus?.branch ?? '…'}`,
-      appVersion && `Hermes Desktop v${appVersion}`,
-      sha && `commit ${sha}`,
-      updateStatus?.branch && `branch ${updateStatus.branch}`
+      applying ? updateApply.message || copy.updateInProgress : null,
+      !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
+      appVersion && copy.desktopVersion(appVersion),
+      sha && copy.commit(sha),
+      updateStatus?.branch && copy.branch(updateStatus.branch)
     ]
       .filter(Boolean)
       .join(' · ')
@@ -182,6 +182,7 @@ export function useStatusbarItems({
     }
   }, [
     desktopVersion?.appVersion,
+    copy,
     updateApply.applying,
     updateApply.message,
     updateApply.stage,
@@ -218,11 +219,11 @@ export function useStatusbarItems({
         ),
         detail:
           subagentsRunning > 0
-            ? `${subagentsRunning} subagent${subagentsRunning === 1 ? '' : 's'}`
+            ? copy.subagents(subagentsRunning)
             : bgFailed > 0
-              ? `${bgFailed} failed`
+              ? copy.failed(bgFailed)
               : bgRunning > 0
-                ? `${bgRunning} running`
+                ? copy.running(bgRunning)
                 : undefined,
         icon:
           bgFailed > 0 ? (
@@ -252,6 +253,7 @@ export function useStatusbarItems({
       bgFailed,
       bgRunning,
       commandCenterOpen,
+      copy,
       gatewayMenuContent,
       gatewayClassName,
       gatewayDetail,
@@ -270,8 +272,8 @@ export function useStatusbarItems({
         hidden: !busy || !turnStartedAt,
         icon: <Loader2 className="size-3 animate-spin" />,
         id: 'running-timer',
-        label: 'Running',
-        title: 'Current turn elapsed',
+        label: copy.turnRunning,
+        title: copy.currentTurnElapsed,
         variant: 'text'
       },
       {
@@ -279,15 +281,15 @@ export function useStatusbarItems({
         hidden: !contextUsage,
         id: 'context-usage',
         label: contextUsage,
-        title: 'Context usage',
+        title: copy.contextUsage,
         variant: 'text'
       },
       {
         detail: <LiveDuration since={sessionStartedAt} />,
         hidden: !sessionStartedAt,
         id: 'session-timer',
-        label: 'Session',
-        title: 'Runtime session elapsed',
+        label: copy.session,
+        title: copy.runtimeSessionElapsed,
         variant: 'text'
       },
       {
@@ -327,6 +329,7 @@ export function useStatusbarItems({
       busy,
       contextBar,
       contextUsage,
+      copy,
       currentFastMode,
       currentModel,
       currentProvider,

@@ -111,10 +111,12 @@ export function GatewayMenuPanel({
               </Tip>
             ))}
           </ul>
-          <button
-            className="mt-1.5 text-[0.66rem] font-medium text-muted-foreground hover:text-foreground"
+          <Button
+            className="-ml-2 mt-1.5 font-medium text-muted-foreground"
             onClick={onOpenSystem}
+            size="xs"
             type="button"
+            variant="text"
           >
             {t('gateway.viewAllLogs')}
           </button>

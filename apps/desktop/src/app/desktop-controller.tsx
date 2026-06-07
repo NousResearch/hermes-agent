@@ -42,6 +42,7 @@ import {
   sessionPinId,
   setAwaitingResponse,
   setBusy,
+  setCronSessions,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentModel,
@@ -66,12 +67,13 @@ import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
+import { useKeybinds } from './hooks/use-keybinds'
 import { ModelPickerOverlay } from './model-picker-overlay'
 import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
-import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
@@ -233,21 +235,25 @@ export function DesktopController() {
         return
       }
 
-      const key = event.key.toLowerCase()
-
-      if (key === 'k' || key === 'p') {
-        event.preventDefault()
-        toggleCommandPalette()
-      } else if (key === '.') {
-        event.preventDefault()
-        toggleCommandCenter()
-      }
+      setCronSessions(prev => (sameCronSignature(prev, sessions) ? prev : sessions))
+    } catch {
+      // Non-fatal: the cron section just stays empty/stale.
     }
+  }, [])
 
-    window.addEventListener('keydown', onKeyDown)
+  // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
+  // synchronously (agent tool call or the cron UI), so refreshing here right
+  // after an agent turn surfaces a new job immediately; the interval poll keeps
+  // next-run/state fresh as the scheduler advances them.
+  const refreshCronJobs = useCallback(async () => {
+    try {
+      const jobs = await getCronJobs()
 
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [toggleCommandCenter])
+      setCronJobs(jobs)
+    } catch {
+      // Non-fatal: the cron section just keeps its last-known jobs.
+    }
+  }, [])
 
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
@@ -256,13 +262,22 @@ export function DesktopController() {
 
     try {
       const limit = $sessionsLimit.get()
+
       // Require at least one message so abandoned/empty "Untitled" drafts (one
       // was created per TUI/desktop launch before the lazy-create fix) don't
       // clutter the sidebar.
       // Unified cross-profile list (served read-only off each profile's
       // state.db; no per-profile backend is spawned). Single-profile users get
-      // the same rows tagged profile="default".
-      const result = await listAllProfileSessions(limit, 1)
+      // the same rows tagged profile="default". Cron sessions are excluded here
+      // and fetched separately (refreshCronSessions) so the scheduler's
+      // always-newest rows can't consume the recents page budget.
+      // Scope the fetch to the active profile (not always 'all') so a profile
+      // with few recent sessions isn't windowed out of the cross-profile
+      // recency page — the empty-history-on-profile-switch bug.
+      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+      const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', sessionProfile, {
+        excludeSources: ['cron']
+      })
 
       if (refreshSessionsRequestRef.current === requestId) {
         setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
@@ -274,7 +289,10 @@ export function DesktopController() {
         setSessionsLoading(false)
       }
     }
-  }, [])
+
+    void refreshCronSessions()
+    void refreshCronJobs()
+  }, [profileScope, refreshCronSessions, refreshCronJobs])
 
   const loadMoreSessions = useCallback(() => {
     bumpSessionsLimit()
@@ -287,7 +305,11 @@ export function DesktopController() {
     const key = normalizeProfileKey(profile)
     const inKey = (s: SessionInfo) => normalizeProfileKey(s.profile) === key
     const loaded = $sessions.get().filter(inKey).length
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key)
+
+    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key, {
+      excludeSources: ['cron']
+    })
+
     const keep = sessionsToKeep(key)
 
     setSessions(prev => [...prev.filter(s => !inKey(s)), ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)])
@@ -457,9 +479,13 @@ export function DesktopController() {
     updateSessionState
   })
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
+  // Single global listener for every rebindable hotkey (incl. profile switching)
+  // plus the on-screen keybind editor's capture mode.
+  useKeybinds({
+    startFreshSession: startFreshSessionDraft,
+    toggleCommandCenter,
+    toggleSelectedPin
+  })
 
       const editing =
         target?.isContentEditable ||
@@ -612,6 +638,25 @@ export function DesktopController() {
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
 
+  // Keep the cron jobs section live without a user action: the scheduler ticks
+  // in the background (advancing next-run/state and creating runs), so poll the
+  // job list on an interval (and on tab re-focus) while connected.
+  useEffect(() => {
+    if (gatewayState !== 'open') {return}
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') {void refreshCronJobs()}
+    }
+
+    const intervalId = window.setInterval(tick, CRON_POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [gatewayState, refreshCronJobs])
+
   useRouteResume({
     activeSessionId,
     activeSessionIdRef,
@@ -652,9 +697,18 @@ export function DesktopController() {
       onDeleteSession={sessionId => void removeSession(sessionId)}
       onLoadMoreProfileSessions={loadMoreSessionsForProfile}
       onLoadMoreSessions={loadMoreSessions}
+      onManageCronJob={jobId => {
+        setCronFocusJobId(jobId)
+        navigate(CRON_ROUTE)
+      }}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
+      onTriggerCronJob={jobId => {
+        void triggerCronJob(jobId)
+          .then(() => refreshCronJobs())
+          .catch(() => undefined)
+      }}
     />
   )
 
@@ -721,7 +775,10 @@ export function DesktopController() {
 
       {cronOpen && (
         <Suspense fallback={null}>
-          <CronView onClose={closeOverlayToPreviousRoute} />
+          <CronView
+            onClose={closeOverlayToPreviousRoute}
+            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+          />
         </Suspense>
       )}
 

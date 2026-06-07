@@ -1,20 +1,17 @@
 import { useStore } from '@nanostores/react'
-import {
-  IconBookmark,
-  IconBookmarkFilled,
-  IconDownload,
-  IconRefresh,
-  IconTrash
-} from '@tabler/icons-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { IconBookmark, IconBookmarkFilled, IconDownload, IconTrash } from '@tabler/icons-react'
+import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { PageLoader } from '@/components/page-loader'
+import { Button } from '@/components/ui/button'
+import { SearchField } from '@/components/ui/search-field'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
   getActionStatus,
   getLogs,
   getStatus,
   getUsageAnalytics,
   restartGateway,
-  searchSessions,
   updateHermes
 } from '@/hermes'
 import type {
@@ -35,11 +32,8 @@ import { $sessions, sessionPinId } from '@/store/session'
 import { useLocaleSync } from '@/store/use-locale-sync'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
-import { OverlayActionButton, OverlayCard, overlayCardClass, OverlayIconButton } from '../overlays/overlay-chrome'
-import { OverlaySearchInput } from '../overlays/overlay-search-input'
 import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
-import { ARTIFACTS_ROUTE, MESSAGING_ROUTE, NEW_CHAT_ROUTE, SETTINGS_ROUTE, SKILLS_ROUTE } from '../routes'
 
 export type CommandCenterSection = 'sessions' | 'system' | 'usage'
 
@@ -52,7 +46,8 @@ interface CommandCenterViewProps {
   initialSection?: CommandCenterSection
   onClose: () => void
   onDeleteSession: (sessionId: string) => Promise<void>
-  onNavigateRoute: (path: string) => void
+  // Accepted for call-site parity; navigation lives in the global Cmd+K palette.
+  onNavigateRoute?: (path: string) => void
   onOpenSession: (sessionId: string) => void
 }
 
@@ -166,24 +161,6 @@ function formatTimestamp(value?: number | null): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
-function splitSessionSearchResult(result: SessionSearchApiResult, sessionsById: Map<string, SessionInfo>) {
-  const row = sessionsById.get(result.session_id)
-  const title = row ? sessionTitle(row) : result.session_id
-  const detail = [result.model, result.source].filter(Boolean).join(' · ')
-
-  return { detail, title }
-}
-
-function matchesSearchQuery(query: string, ...values: Array<string | undefined>): boolean {
-  const normalized = query.trim().toLowerCase()
-
-  if (!normalized) {
-    return true
-  }
-
-  return values.some(value => value?.toLowerCase().includes(normalized))
-}
-
 function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value)
 
@@ -211,8 +188,6 @@ export function CommandCenterView({
   const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'sessions')
 
   const [query, setQuery] = useState('')
-  const [searchLoading, setSearchLoading] = useState(false)
-  const [searchGroups, setSearchGroups] = useState<CommandCenterSearchGroup[]>([])
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [systemLoading, setSystemLoading] = useState(false)
@@ -222,23 +197,19 @@ export function CommandCenterView({
   const [usage, setUsage] = useState<AnalyticsResponse | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState('')
-  const searchRequestRef = useRef(0)
   const usageRequestRef = useRef(0)
 
   const debouncedQuery = useDebouncedValue(query.trim(), 180)
 
-  const sessionsById = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions])
+  const filteredSessions = useMemo(() => {
+    const sorted = [...sessions].sort((a, b) => {
+      const left = a.last_active || a.started_at || 0
+      const right = b.last_active || b.started_at || 0
 
-  const filteredSessions = useMemo(
-    () =>
-      [...sessions].sort((a, b) => {
-        const left = a.last_active || a.started_at || 0
-        const right = b.last_active || b.started_at || 0
+      return right - left
+    })
 
-        return right - left
-      }),
-    [sessions]
-  )
+    const needle = debouncedQuery.toLowerCase()
 
   const searchProviders = useMemo<readonly CommandCenterSearchProvider[]>(
     () => [
@@ -335,42 +306,6 @@ export function CommandCenterView({
       }
     }
   }, [])
-
-  useEffect(() => {
-    if (!debouncedQuery) {
-      setSearchGroups([])
-      setSearchLoading(false)
-
-      return
-    }
-
-    const requestId = searchRequestRef.current + 1
-    searchRequestRef.current = requestId
-    setSearchLoading(true)
-
-    void Promise.all(
-      searchProviders.map(async provider => ({
-        id: provider.id,
-        label: provider.label,
-        results: await provider.search(debouncedQuery)
-      }))
-    )
-      .then(groups => {
-        if (searchRequestRef.current === requestId) {
-          setSearchGroups(groups.filter(group => group.results.length > 0))
-        }
-      })
-      .catch(() => {
-        if (searchRequestRef.current === requestId) {
-          setSearchGroups([])
-        }
-      })
-      .finally(() => {
-        if (searchRequestRef.current === requestId) {
-          setSearchLoading(false)
-        }
-      })
-  }, [debouncedQuery, searchProviders])
 
   useEffect(() => {
     if (section === 'system' && !status && !systemLoading) {
@@ -613,24 +548,29 @@ export function CommandCenterView({
                 </div>
               )}
             </div>
-          ) : section === 'sessions' ? (
+          </header>
+
+          {section === 'sessions' ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {!sessionListHasResults ? (
                 <OverlayCard className="px-3 py-4 text-sm text-muted-foreground">{t('commandCenter.noSessionsYet')}</OverlayCard>
               ) : (
-                <div className="grid gap-1.5">
+                <ul>
                   {filteredSessions.map(session => {
-                    const pinned = pinnedSessionIds.includes(session.id)
+                    const pinId = sessionPinId(session)
+                    const pinned = pinnedSessionIds.includes(pinId)
 
                     return (
-                      <OverlayCard className="flex items-center gap-2 px-2.5 py-2" key={session.id}>
+                      <li className="group flex items-center gap-2 py-2" key={session.id}>
                         <button
                           className="min-w-0 flex-1 text-left"
                           onClick={() => onOpenSession(session.id)}
                           type="button"
                         >
-                          <div className="truncate text-sm font-medium text-foreground">{sessionTitle(session)}</div>
-                          <div className="truncate text-xs text-muted-foreground">
+                          <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+                            {sessionTitle(session)}
+                          </div>
+                          <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                             {formatTimestamp(session.last_active || session.started_at)}
                           </div>
                         </button>
@@ -656,21 +596,20 @@ export function CommandCenterView({
                       </OverlayCard>
                     )
                   })}
-                </div>
+                </ul>
               )}
             </div>
           ) : section === 'usage' ? (
             <UsagePanel
               error={usageError}
               loading={usageLoading}
-              onPeriodChange={setUsagePeriod}
               onRefresh={() => void refreshUsage(usagePeriod)}
               period={usagePeriod}
               usage={usage}
             />
           ) : (
-            <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-3">
-              <OverlayCard className="p-3 text-sm">
+            <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4">
+              <div className="border-b border-(--ui-stroke-tertiary) pb-4">
                 {status ? (
                   <div className="grid gap-2">
                     <div className="flex items-start justify-between gap-3">
@@ -700,7 +639,7 @@ export function CommandCenterView({
                       </div>
                     </div>
                     {systemAction && (
-                      <div className="text-xs text-muted-foreground">
+                      <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                         {systemAction.name} ·{' '}
                         {systemAction.running ? cc.actionRunning : systemAction.exit_code === 0 ? cc.actionDone : cc.actionFailed}
                       </div>
@@ -709,13 +648,13 @@ export function CommandCenterView({
                 ) : (
                   <div className="text-xs text-muted-foreground">{t('commandCenter.loadingStatus')}</div>
                 )}
-              </OverlayCard>
+              </div>
 
-              <OverlayCard className="min-h-0 overflow-hidden p-2">
+              <div className="flex min-h-0 flex-col">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-xs font-medium text-muted-foreground">{t('commandCenter.recentLogs')}</span>
                   {systemError && (
-                    <span className="inline-flex items-center gap-1 text-xs text-destructive">
+                    <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
                       <AlertCircle className="size-3.5" />
                       {systemError}
                     </span>
@@ -724,7 +663,7 @@ export function CommandCenterView({
                 <pre className="h-full min-h-0 overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.65rem] leading-relaxed text-muted-foreground">
                   {logs.length ? logs.join('\n') : 'No logs loaded yet.'}
                 </pre>
-              </OverlayCard>
+              </div>
             </div>
           )}
         </OverlayMain>
@@ -768,7 +707,6 @@ function formatInteger(value: null | number | undefined): string {
 interface UsagePanelProps {
   error: string
   loading: boolean
-  onPeriodChange: (period: UsagePeriod) => void
   onRefresh: () => void
   period: UsagePeriod
   usage: AnalyticsResponse | null
@@ -787,6 +725,25 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
 
     return daily.reduce((acc, entry) => Math.max(acc, (entry.input_tokens || 0) + (entry.output_tokens || 0)), 1)
   }, [daily])
+
+  if (!totals) {
+    return (
+      <div className="min-h-0 flex-1">
+        {loading ? (
+          <PageLoader className="min-h-48" label={cc.loadingUsage} />
+        ) : (
+          <EmptyPanel
+            action={
+              <Button onClick={onRefresh} size="xs" variant="text">
+                {cc.retry}
+              </Button>
+            }
+            description={cc.noUsage(period)}
+          />
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="grid min-h-0 flex-1 grid-rows-[auto_auto_minmax(0,1fr)] gap-3">
@@ -855,6 +812,14 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
                 <span className="size-2 bg-emerald-500/70" /> output
               </span>
             </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="size-2 rounded-[1px] bg-emerald-500/70" /> {cc.output}
+            </span>
+          </span>
+        </div>
+        {daily.length === 0 ? (
+          <div className="grid h-24 place-items-center text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {cc.noDailyActivity}
           </div>
           {daily.length === 0 ? (
             <div className="grid h-24 place-items-center text-xs text-muted-foreground">{t('commandCenter.noDailyActivity')}</div>
@@ -866,31 +831,31 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
                   const inputH = Math.round(((entry.input_tokens || 0) / maxTokens) * 96)
                   const outputH = Math.round(((entry.output_tokens || 0) / maxTokens) * 96)
 
-                  return (
+                return (
+                  <div
+                    className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
+                    key={entry.day}
+                    title={`${entry.day} · in ${formatTokens(entry.input_tokens)} · out ${formatTokens(entry.output_tokens)}`}
+                  >
                     <div
-                      className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
-                      key={entry.day}
-                      title={`${entry.day} · in ${formatTokens(entry.input_tokens)} · out ${formatTokens(entry.output_tokens)}`}
-                    >
-                      <div
-                        className="w-full bg-[color:var(--dt-primary)]/50"
-                        style={{ height: Math.max(inputH, entry.input_tokens > 0 ? 1 : 0) }}
-                      />
-                      <div
-                        className="w-full bg-emerald-500/60"
-                        style={{ height: Math.max(outputH, entry.output_tokens > 0 ? 1 : 0) }}
-                      />
-                    </div>
-                  )
-                })}
-              </div>
-              <div className="mt-1 flex justify-between text-[0.6rem] text-muted-foreground/70">
-                <span>{daily[0]?.day}</span>
-                <span>{daily[daily.length - 1]?.day}</span>
-              </div>
-            </>
-          )}
-        </OverlayCard>
+                      className="w-full rounded-t-[1px] bg-[color:var(--dt-primary)]/50"
+                      style={{ height: Math.max(inputH, entry.input_tokens > 0 ? 1 : 0) }}
+                    />
+                    <div
+                      className="w-full bg-emerald-500/60"
+                      style={{ height: Math.max(outputH, entry.output_tokens > 0 ? 1 : 0) }}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+            <div className="mt-1 flex justify-between text-[0.6rem] text-(--ui-text-tertiary)">
+              <span>{daily[0]?.day}</span>
+              <span>{daily[daily.length - 1]?.day}</span>
+            </div>
+          </>
+        )}
+      </section>
 
         <OverlayCard className="min-h-0 overflow-auto p-2">
           <div className="grid gap-3 sm:grid-cols-2">
@@ -947,12 +912,44 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
   )
 }
 
+function UsageList({
+  emptyLabel,
+  rows,
+  title
+}: {
+  emptyLabel: string
+  rows: Array<{ key: string; label: string; value: string }>
+  title: string
+}) {
+  return (
+    <section className="min-w-0">
+      <div className="mb-1.5 text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+        {title}
+      </div>
+      {rows.length === 0 ? (
+        <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+          {emptyLabel}
+        </div>
+      ) : (
+        <ul>
+          {rows.map(row => (
+            <li className="flex items-center justify-between gap-2 py-1.5" key={row.key}>
+              <span className="min-w-0 truncate font-mono text-[0.7rem] text-foreground">{row.label}</span>
+              <span className="shrink-0 text-[0.65rem] text-(--ui-text-tertiary)">{row.value}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 function UsageStat({ hint, label, value }: { hint?: string; label: string; value: string }) {
   return (
     <div className="min-w-0">
-      <div className="text-[0.65rem] font-medium uppercase tracking-[0.12em] text-muted-foreground">{label}</div>
-      <div className="mt-0.5 truncate text-sm font-semibold tracking-tight text-foreground">{value}</div>
-      {hint && <div className="mt-0.5 truncate text-[0.62rem] text-muted-foreground/80">{hint}</div>}
+      <div className="text-[0.625rem] font-medium uppercase tracking-[0.12em] text-(--ui-text-tertiary)">{label}</div>
+      <div className="mt-1 truncate text-base font-semibold tracking-tight text-foreground">{value}</div>
+      {hint && <div className="mt-0.5 truncate text-[0.62rem] text-(--ui-text-tertiary)">{hint}</div>}
     </div>
   )
 }

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { t } from '@/store/i18n'
 import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { useTranslation } from '@/hooks/use-translation'
 import { triggerHaptic } from '@/lib/haptics'
@@ -70,10 +71,10 @@ export function SessionsSettings({ query }: SearchProps) {
     } finally {
       setBusyId(null)
     }
-  }, [])
+  }, [s])
 
   const remove = useCallback(async (session: SessionInfo) => {
-    if (!window.confirm(`Permanently delete "${sessionTitle(session)}"? This cannot be undone.`)) {
+    if (!window.confirm(s.deleteConfirm(sessionTitle(session)))) {
       return
     }
 
@@ -88,7 +89,7 @@ export function SessionsSettings({ query }: SearchProps) {
     } finally {
       setBusyId(null)
     }
-  }, [])
+  }, [s])
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -116,8 +117,7 @@ export function SessionsSettings({ query }: SearchProps) {
         title={t('sessions.archivedTitle')}
       />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        Archived chats are hidden from the sidebar but keep all their messages. Ctrl/⌘-click a chat in the sidebar to
-        archive it.
+        {s.archivedIntro}
       </p>
 
       {filtered.length === 0 ? (
@@ -176,6 +176,8 @@ export function SessionsSettings({ query }: SearchProps) {
 // builds on Windows used to spawn sessions in the install dir (`win-unpacked`
 // / Program Files), which buried any files Hermes wrote there.
 function DefaultProjectDirSetting() {
+  const { t } = useI18n()
+  const s = t.settings.sessions
   const [dir, setDir] = useState<null | string>(null)
   const [fallback, setFallback] = useState<string>('')
   const [busy, setBusy] = useState(false)
@@ -227,7 +229,7 @@ function DefaultProjectDirSetting() {
     } finally {
       setBusy(false)
     }
-  }, [])
+  }, [s])
 
   const clear = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
@@ -244,13 +246,13 @@ function DefaultProjectDirSetting() {
     } finally {
       setBusy(false)
     }
-  }, [])
+  }, [s])
 
   return (
     <div className="mb-6">
       <SectionHeading icon={FolderOpen} title={t('sessions.defaultProjectDirTitle')} />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        New sessions start in this folder unless you pick another. Leave it unset to use your home directory.
+        {s.defaultDirDesc}
       </p>
       <ListRow
         action={
@@ -266,8 +268,8 @@ function DefaultProjectDirSetting() {
             )}
           </div>
         }
-        description={dir || `Defaults to ${fallback || '~/hermes-projects'}.`}
-        title={dir ? dir : 'Not set'}
+        description={dir || s.defaultsTo(fallback || '~/hermes-projects')}
+        title={dir ? dir : s.notSet}
       />
     </div>
   )

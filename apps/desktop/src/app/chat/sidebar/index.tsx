@@ -42,12 +42,15 @@ import { t } from '@/store/i18n'
 import {
   $pinnedSessionIds,
   $sidebarAgentsGrouped,
+  $sidebarCronOpen,
   $sidebarOpen,
   $sidebarPinsOpen,
   $sidebarRecentsOpen,
   pinSession,
   reorderPinnedSession,
+  SESSION_SEARCH_FOCUS_EVENT,
   setSidebarAgentsGrouped,
+  setSidebarCronOpen,
   setSidebarPinsOpen,
   setSidebarRecentsOpen,
   SIDEBAR_SESSIONS_PAGE_SIZE,
@@ -62,6 +65,7 @@ import {
   normalizeProfileKey
 } from '@/store/profile'
 import {
+  $cronSessions,
   $selectedStoredSessionId,
   $sessionProfileTotals,
   $sessions,
@@ -222,6 +226,8 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
+  onManageCronJob: (jobId: string) => void
+  onTriggerCronJob: (jobId: string) => void
 }
 
 export function ChatSidebar({
@@ -232,7 +238,9 @@ export function ChatSidebar({
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
-  onNewSessionInWorkspace
+  onNewSessionInWorkspace,
+  onManageCronJob,
+  onTriggerCronJob
 }: ChatSidebarProps) {
   const { t } = useTranslation()
   const sidebarOpen = useStore($sidebarOpen)
@@ -240,8 +248,11 @@ export function ChatSidebar({
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
+  const cronOpen = useStore($sidebarCronOpen)
   const selectedSessionId = useStore($selectedStoredSessionId)
   const sessions = useStore($sessions)
+  const cronSessions = useStore($cronSessions)
+  const cronJobs = useStore($cronJobs)
   const sessionsLoading = useStore($sessionsLoading)
   const sessionsTotal = useStore($sessionsTotal)
   const sessionProfileTotals = useStore($sessionProfileTotals)
@@ -448,7 +459,9 @@ export function ChatSidebar({
   ])
 
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
+
   const showSessionSections = showSessionSkeletons || sortedSessions.length > 0
+
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
   // unified set. When scoped to one profile it must compare that profile's own
   // loaded rows against that profile's total — otherwise a huge default profile

@@ -24,6 +24,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from agent.discard_sentinel import is_discard_marked
+
 logger = logging.getLogger(__name__)
 
 
@@ -229,7 +231,14 @@ _COMBINED_REVIEW_PROMPT = (
     "standalone constraint.\n\n"
     "Act on whichever of the two dimensions has real signal. If "
     "genuinely nothing stands out on either, say 'Nothing to save.' "
-    "and stop — but don't reach for that conclusion as a default."
+    "and stop — but don't reach for that conclusion as a default.\n\n"
+    "Notification control: after you act, a short '💾 Self-improvement "
+    "review: ...' note is shown to the user. If your writes were purely "
+    "internal housekeeping not worth interrupting the user over (e.g. a "
+    "trivial dedupe or a tiny phrasing tweak), include the token "
+    "[DISCARD] anywhere in your final reply. Your memory/skill writes "
+    "still persist — only the user-facing note is suppressed. Use this "
+    "sparingly; a genuine profile or skill change is worth surfacing."
 )
 
 
@@ -295,6 +304,24 @@ def summarize_background_review_actions(
             label = "Memory" if target == "memory" else "User profile" if target == "user" else target
             actions.append(f"{label} updated")
     return actions
+
+
+def _review_requested_discard(review_messages: Optional[List[Dict]]) -> bool:
+    """Return True if the review fork asked to suppress its notification.
+
+    Scans the review agent's session messages for the LAST assistant message
+    with textual content and checks it for the ``[DISCARD]`` sentinel. The
+    review's memory/skill writes have already persisted at this point; a True
+    return suppresses only the user-facing ``💾`` notification, mirroring the
+    cron ``[SILENT]`` save-but-don't-deliver contract.
+    """
+    for msg in reversed(review_messages or []):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            return is_discard_marked(content)
+    return False
 
 
 def build_memory_write_metadata(
@@ -514,18 +541,30 @@ def _run_review_in_thread(
         )
 
         if actions:
-            summary = " · ".join(dict.fromkeys(actions))
-            agent._safe_print(
-                f"  💾 Self-improvement review: {summary}"
-            )
-            _bg_cb = agent.background_review_callback
-            if _bg_cb:
-                try:
-                    _bg_cb(
-                        f"💾 Self-improvement review: {summary}"
-                    )
-                except Exception:
-                    pass
+            # The review fork may decide its writes happened but the
+            # user-facing notification is noise (e.g. a trivial dedupe). It
+            # signals that by emitting the [DISCARD] sentinel in its final
+            # message. The memory/skill writes already persisted inside
+            # run_conversation — only the 💾 surfacing is suppressed, exactly
+            # like cron's [SILENT] save-but-don't-deliver split.
+            if _review_requested_discard(review_messages):
+                logger.info(
+                    "Background review emitted [DISCARD] — writes kept, "
+                    "notification suppressed"
+                )
+            else:
+                summary = " · ".join(dict.fromkeys(actions))
+                agent._safe_print(
+                    f"  💾 Self-improvement review: {summary}"
+                )
+                _bg_cb = agent.background_review_callback
+                if _bg_cb:
+                    try:
+                        _bg_cb(
+                            f"💾 Self-improvement review: {summary}"
+                        )
+                    except Exception:
+                        pass
 
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)

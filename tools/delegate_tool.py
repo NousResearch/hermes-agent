@@ -30,6 +30,8 @@ from concurrent.futures import (
 )
 from typing import Any, Dict, List, Optional
 
+from agent.discard_sentinel import is_discard_marked
+
 from toolsets import TOOLSETS
 
 # Sentinel value used by the runtime provider system for providers that are
@@ -1368,6 +1370,28 @@ def _dump_subagent_timeout_diagnostic(
         return None
 
 
+def _append_batch_discard_hint(goal: str) -> str:
+    """Append the [DISCARD] self-suppression hint to a batch child's goal.
+
+    Only used for batch (parallel) runs — that's the only mode where a child
+    can sensibly judge its output redundant with a sibling's. A child that
+    concludes its result adds nothing the siblings won't cover ends its final
+    response with [DISCARD]; the aggregation pass then drops it from the
+    results[] the parent ingests, keeping the parent's context lean. The child
+    still runs fully (cost/hooks accounted), mirroring Poke's "wait" tool.
+    """
+    hint = (
+        "\n\n[Parallel-task note: you are one of several subagents running "
+        "concurrently for the same parent request. If, after doing the work, "
+        "you conclude your result is redundant with what a sibling task will "
+        "obviously produce, or that it adds nothing useful for the parent, end "
+        "your final response with the token [DISCARD]. The parent will then "
+        "skip your result entirely. Only do this when your output is genuinely "
+        "not worth surfacing — when in doubt, report normally.]"
+    )
+    return f"{goal}{hint}"
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -1672,8 +1696,18 @@ def _run_single_child(
         interrupted = result.get("interrupted", False)
         api_calls = result.get("api_calls", 0)
 
+        # A child may decide its output is redundant with a sibling's (or simply
+        # not worth surfacing) and emit the [DISCARD] sentinel in its final
+        # response. We tag it here; the aggregation pass drops discarded entries
+        # from the results[] the parent ingests, keeping the parent's context
+        # clean. The child still ran — cost/hooks are accounted normally — this
+        # only suppresses the noisy payload, mirroring Poke's "wait" tool.
+        discarded = bool(summary) and is_discard_marked(summary)
+
         if interrupted:
             status = "interrupted"
+        elif discarded:
+            status = "discarded"
         elif summary:
             # A summary means the subagent produced usable output.
             # exit_reason ("completed" vs "max_iterations") already
@@ -2155,7 +2189,7 @@ def delegate_task(
                 future = executor.submit(
                     _run_single_child,
                     task_index=i,
-                    goal=t["goal"],
+                    goal=_append_batch_discard_hint(t["goal"]),
                     child=child,
                     parent_agent=parent_agent,
                 )
@@ -2359,13 +2393,23 @@ def delegate_task(
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
-    return json.dumps(
-        {
-            "results": results,
-            "total_duration_seconds": total_duration,
-        },
-        ensure_ascii=False,
-    )
+    # Drop [DISCARD]-tagged children from the payload the parent ingests. The
+    # cost rollup and subagent_stop hooks above already ran over the full set,
+    # so accounting/observability stay accurate — only the noisy summary is
+    # withheld from the parent's context. We report the count so the parent
+    # knows N siblings ran but chose to self-suppress (mirrors Poke's "wait").
+    _discarded_count = sum(1 for e in results if e.get("status") == "discarded")
+    if _discarded_count:
+        results = [e for e in results if e.get("status") != "discarded"]
+
+    payload: Dict[str, Any] = {
+        "results": results,
+        "total_duration_seconds": total_duration,
+    }
+    if _discarded_count:
+        payload["discarded_count"] = _discarded_count
+
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):

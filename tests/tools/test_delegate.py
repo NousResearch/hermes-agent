@@ -217,6 +217,33 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("total_duration_seconds", result)
 
     @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_drops_discarded_children(self, mock_run):
+        """A child whose entry is status='discarded' is filtered from results[]."""
+        mock_run.side_effect = [
+            {"task_index": 0, "status": "completed", "summary": "Result A", "api_calls": 2, "duration_seconds": 3.0},
+            {"task_index": 1, "status": "discarded", "summary": "redundant [DISCARD]", "api_calls": 1, "duration_seconds": 2.0},
+        ]
+        parent = _make_mock_parent()
+        tasks = [{"goal": "Research topic A"}, {"goal": "Research topic A again"}]
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+        # Only the non-discarded child survives in results[].
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["summary"], "Result A")
+        self.assertEqual(result.get("discarded_count"), 1)
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_no_discarded_key_when_none_discarded(self, mock_run):
+        mock_run.side_effect = [
+            {"task_index": 0, "status": "completed", "summary": "A", "api_calls": 1, "duration_seconds": 1.0},
+            {"task_index": 1, "status": "completed", "summary": "B", "api_calls": 1, "duration_seconds": 1.0},
+        ]
+        parent = _make_mock_parent()
+        tasks = [{"goal": "A"}, {"goal": "B"}]
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+        self.assertEqual(len(result["results"]), 2)
+        self.assertNotIn("discarded_count", result)
+
+    @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode_accepts_json_string_tasks(self, mock_run):
         mock_run.side_effect = [
             {

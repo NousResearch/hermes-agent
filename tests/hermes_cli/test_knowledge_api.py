@@ -277,6 +277,33 @@ def test_knowledge_graph_returns_local_note_neighborhood(
     assert ("10-Knowledge/Operating Rules.md", "20-Departments/HR.md") in edge_pairs
 
 
+def test_knowledge_global_graph_returns_vault_wide_map(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.get(
+        "/api/knowledge/global-graph",
+        params={"limit": 4, "edge_limit": 10},
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    node_ids = {node["id"] for node in payload["nodes"]}
+    edge_pairs = {(edge["source"], edge["target"]) for edge in payload["edges"]}
+
+    assert payload["mode"] == "global"
+    assert payload["path"] == ""
+    assert payload["limit"] == 4
+    assert payload["node_count"] == 4
+    assert len(payload["nodes"]) <= 4
+    assert "90-Owner-Private/profile/secret.md" not in node_ids
+    assert "MOC.md" in node_ids
+    assert "10-Knowledge/Operating Rules.md" in node_ids
+    assert ("MOC.md", "10-Knowledge/Operating Rules.md") in edge_pairs
+
+
 def test_knowledge_graph_and_backlinks_resolve_relative_links(
     tmp_path: Path, monkeypatch
 ) -> None:

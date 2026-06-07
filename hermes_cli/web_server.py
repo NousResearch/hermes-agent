@@ -1186,6 +1186,64 @@ async def get_knowledge_graph(path: str, depth: int = 2, limit: int = 40):
     }
 
 
+@app.get("/api/knowledge/global-graph")
+async def get_knowledge_global_graph(limit: int = 180, edge_limit: int = 700):
+    root = _knowledge_vault_root()
+    max_nodes = max(1, min(limit, 500))
+    max_edges = max(0, min(edge_limit, 2000))
+    file_index = _knowledge_file_index(root)
+    safe_files = _knowledge_safe_files(root)
+    titles: dict[str, str] = {}
+    degree: dict[str, int] = {}
+    raw_edges: set[tuple[str, str]] = set()
+
+    for item in safe_files:
+        rel = _knowledge_relative(root, item)
+        content = _knowledge_read_text(item)
+        titles[rel] = _knowledge_title(item, content)
+        degree.setdefault(rel, 0)
+        for link in _knowledge_extract_links(content):
+            resolved = _knowledge_resolve_link(root, link, rel, file_index)
+            if not resolved:
+                continue
+            linked_path = root / resolved
+            if not _knowledge_safe_file(root, linked_path):
+                continue
+            raw_edges.add((rel, resolved))
+            degree[rel] = degree.get(rel, 0) + 1
+            degree[resolved] = degree.get(resolved, 0) + 1
+
+    ranked_paths = sorted(titles, key=lambda rel: (-degree.get(rel, 0), rel.lower()))
+    selected_paths = set(ranked_paths[:max_nodes])
+    nodes = [
+        {
+            "id": rel,
+            "path": rel,
+            "label": titles[rel],
+            "degree": degree.get(rel, 0),
+        }
+        for rel in ranked_paths[:max_nodes]
+    ]
+    edges = [
+        {"source": source, "target": target}
+        for source, target in sorted(raw_edges)
+        if source in selected_paths and target in selected_paths
+    ][:max_edges]
+
+    return {
+        "ok": True,
+        "mode": "global",
+        "path": "",
+        "depth": 0,
+        "limit": max_nodes,
+        "edge_limit": max_edges,
+        "node_count": len(titles),
+        "edge_count": len(raw_edges),
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()

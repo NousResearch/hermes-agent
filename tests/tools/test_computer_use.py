@@ -1204,6 +1204,78 @@ def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
     return backend
 
 
+class TestCuaDriverSessionReconnect:
+    def test_call_tool_reconnects_once_after_closed_resource(self):
+        """A daemon restart closes the cached MCP stdio channel; recover once."""
+        import threading
+        from typing import Any, cast
+        from anyio import ClosedResourceError
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                # 1st call_tool -> closed; aexit ok; aenter ok; retried call_tool ok.
+                self.effects = [ClosedResourceError(), None, None, {"ok": True}]
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                effect = self.effects.pop(0)
+                if isinstance(effect, Exception):
+                    raise effect
+                return effect
+
+        bridge = FakeBridge()
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._bridge = bridge
+        session._session = object()
+        session._exit_stack = None
+        session._lock = threading.Lock()
+        session._started = True
+        session._call_tool_async = lambda name, args: ("call", name, args)
+        session._aexit = lambda: ("aexit",)
+        session._aenter = lambda: ("aenter",)
+
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+        # Reconnect-once sequence: failed call -> aexit -> aenter -> retried call.
+        assert bridge.calls[0][0] == ("call", "list_apps", {})
+        assert bridge.calls[1][0] == ("aexit",)
+        assert bridge.calls[2][0] == ("aenter",)
+        assert bridge.calls[3][0] == ("call", "list_apps", {})
+        assert len(bridge.calls) == 4
+
+    def test_call_tool_does_not_retry_on_unrelated_error(self):
+        """Non-transport errors must propagate without a reconnect attempt."""
+        import threading
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise ValueError("boom")
+
+        bridge = FakeBridge()
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._bridge = bridge
+        session._session = object()
+        session._exit_stack = None
+        session._lock = threading.Lock()
+        session._started = True
+        session._call_tool_async = lambda name, args: ("call", name, args)
+        session._aexit = lambda: ("aexit",)
+        session._aenter = lambda: ("aenter",)
+
+        import pytest
+        with pytest.raises(ValueError):
+            session.call_tool("list_apps", {})
+        # Exactly one attempt, no reconnect.
+        assert len(bridge.calls) == 1
+
+
 class TestCaptureAppFilterNoMatch:
     """capture(app=X) must not silently fall back to the frontmost window
     when X matches nothing — on a non-English macOS, list_windows returns

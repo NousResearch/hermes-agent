@@ -411,6 +411,26 @@ class TestWeixinChunkDelivery:
         assert first_try["text"] == retry["text"]
         assert first_try["client_id"] == retry["client_id"]
 
+    @patch.object(WeixinAdapter, "_send_file", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_treats_media_directives_and_local_paths_as_text(self, send_message_mock, send_file_mock, tmp_path):
+        adapter = self._connected_adapter()
+        secret_doc = tmp_path / "secret.txt"
+        bare_image = tmp_path / "diagram.png"
+        secret_doc.write_text("do not upload", encoding="utf-8")
+        bare_image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        content = f"note MEDIA:{secret_doc} keep literal {bare_image}"
+
+        result = asyncio.run(adapter.send("wxid_test123", content))
+
+        assert result.success is True
+        send_file_mock.assert_not_awaited()
+        assert send_message_mock.await_count > 0
+        sent_chunks = [call.kwargs["text"] for call in send_message_mock.await_args_list]
+        sent_text = "\n".join(sent_chunks)
+        assert f"MEDIA:{secret_doc}" in sent_text
+        assert str(bare_image) in sent_text
+
 
 class TestWeixinOutboundMedia:
     def test_send_image_file_accepts_keyword_image_path(self):

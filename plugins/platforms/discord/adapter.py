@@ -5608,8 +5608,15 @@ def _define_discord_view_classes() -> None:
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
             self._selected_provider: str = ""
+            # pagination state — Discord select menus cap at 25 options,
+            # so provider/model lists longer than that are split into pages.
+            self._provider_page: int = 0
+            self._model_page: int = 0
 
             self._build_provider_select()
+
+        # Discord hard limit on SelectOption entries per select menu.
+        _PAGE_SIZE = 25
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             return _component_check_auth(
@@ -5617,10 +5624,17 @@ def _define_discord_view_classes() -> None:
             )
 
         def _build_provider_select(self):
-            """Build the provider dropdown menu."""
+            """Build the provider dropdown menu (paginated)."""
             self.clear_items()
+            size = self._PAGE_SIZE
+            total = len(self.providers)
+            pages = max(1, (total + size - 1) // size)
+            self._provider_page = max(0, min(self._provider_page, pages - 1))
+            start = self._provider_page * size
+            page_providers = self.providers[start:start + size]
+
             options = []
-            for p in self.providers:
+            for p in page_providers:
                 count = p.get("total_models", len(p.get("models", [])))
                 label = f"{p['name']} ({count} models)"
                 desc = "current" if p.get("is_current") else None
@@ -5634,13 +5648,31 @@ def _define_discord_view_classes() -> None:
             if not options:
                 return
 
+            placeholder = "Choose a provider..."
+            if pages > 1:
+                placeholder = f"Choose a provider... (page {self._provider_page + 1}/{pages})"
             select = discord.ui.Select(
-                placeholder="Choose a provider...",
-                options=options[:25],
+                placeholder=placeholder,
+                options=options,
                 custom_id="model_provider_select",
             )
             select.callback = self._on_provider_selected
             self.add_item(select)
+
+            # page navigation when providers exceed one page.
+            if pages > 1:
+                prev_btn = discord.ui.Button(
+                    label="◀ Prev", style=discord.ButtonStyle.grey,
+                    custom_id="model_provider_prev", disabled=self._provider_page == 0,
+                )
+                prev_btn.callback = self._on_provider_prev
+                self.add_item(prev_btn)
+                next_btn = discord.ui.Button(
+                    label="Next ▶", style=discord.ButtonStyle.grey,
+                    custom_id="model_provider_next", disabled=self._provider_page >= pages - 1,
+                )
+                next_btn.callback = self._on_provider_next
+                self.add_item(next_btn)
 
             cancel_btn = discord.ui.Button(
                 label="Cancel", style=discord.ButtonStyle.red, custom_id="model_cancel"
@@ -5658,8 +5690,17 @@ def _define_discord_view_classes() -> None:
                 return
 
             models = provider.get("models", [])
+            # paginate models — dropdown caps at 25, providers can
+            # carry up to 50 (max_models), so without paging half are unreachable.
+            size = self._PAGE_SIZE
+            total = len(models)
+            pages = max(1, (total + size - 1) // size)
+            self._model_page = max(0, min(self._model_page, pages - 1))
+            start = self._model_page * size
+            page_models = models[start:start + size]
+
             options = []
-            for model_id in models[:25]:
+            for model_id in page_models:
                 short = model_id.split("/")[-1] if "/" in model_id else model_id
                 options.append(
                     discord.SelectOption(
@@ -5670,13 +5711,32 @@ def _define_discord_view_classes() -> None:
             if not options:
                 return
 
+            pname = provider.get('name', provider_slug)
+            placeholder = f"Choose a model from {pname}..."
+            if pages > 1:
+                placeholder = f"Model from {pname}... (page {self._model_page + 1}/{pages})"
             select = discord.ui.Select(
-                placeholder=f"Choose a model from {provider.get('name', provider_slug)}...",
+                placeholder=placeholder[:150],
                 options=options,
                 custom_id="model_model_select",
             )
             select.callback = self._on_model_selected
             self.add_item(select)
+
+            # page navigation when models exceed one page.
+            if pages > 1:
+                prev_btn = discord.ui.Button(
+                    label="◀ Prev", style=discord.ButtonStyle.grey,
+                    custom_id="model_model_prev", disabled=self._model_page == 0,
+                )
+                prev_btn.callback = self._on_model_prev
+                self.add_item(prev_btn)
+                next_btn = discord.ui.Button(
+                    label="Next ▶", style=discord.ButtonStyle.grey,
+                    custom_id="model_model_next", disabled=self._model_page >= pages - 1,
+                )
+                next_btn.callback = self._on_model_next
+                self.add_item(next_btn)
 
             back_btn = discord.ui.Button(
                 label="◀ Back", style=discord.ButtonStyle.grey, custom_id="model_back"
@@ -5699,6 +5759,7 @@ def _define_discord_view_classes() -> None:
 
             provider_slug = interaction.data["values"][0]
             self._selected_provider = provider_slug
+            self._model_page = 0  # reset model pagination per provider
             provider = next(
                 (p for p in self.providers if p["slug"] == provider_slug), None
             )
@@ -5706,8 +5767,10 @@ def _define_discord_view_classes() -> None:
 
             self._build_model_select(provider_slug)
 
+            # models are now fully paginated; only note models beyond
+            # the curated max_models cap (i.e. total_models exceeds the list we got).
             total = provider.get("total_models", 0) if provider else 0
-            shown = min(len(provider.get("models", [])), 25) if provider else 0
+            shown = len(provider.get("models", [])) if provider else 0
             extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
 
             await interaction.response.edit_message(
@@ -5761,6 +5824,70 @@ def _define_discord_view_classes() -> None:
                 view=None,
             )
 
+        # pagination navigation callbacks ----------------------
+        async def _rerender_provider_page(self, interaction: discord.Interaction):
+            self._build_provider_select()
+            try:
+                from hermes_cli.providers import get_label
+                provider_label = get_label(self.current_provider)
+            except Exception:
+                provider_label = self.current_provider
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Model Configuration",
+                    description=(
+                        f"Current model: `{self.current_model or 'unknown'}`\n"
+                        f"Provider: {provider_label}\n\n"
+                        f"Select a provider:"
+                    ),
+                    color=discord.Color.blue(),
+                ),
+                view=self,
+            )
+
+        async def _rerender_model_page(self, interaction: discord.Interaction):
+            provider = next(
+                (p for p in self.providers if p["slug"] == self._selected_provider), None
+            )
+            pname = provider.get("name", self._selected_provider) if provider else self._selected_provider
+            self._build_model_select(self._selected_provider)
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Model Configuration",
+                    description=f"Provider: **{pname}**\nSelect a model:",
+                    color=discord.Color.blue(),
+                ),
+                view=self,
+            )
+
+        async def _on_provider_prev(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized~", ephemeral=True)
+                return
+            self._provider_page -= 1
+            await self._rerender_provider_page(interaction)
+
+        async def _on_provider_next(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized~", ephemeral=True)
+                return
+            self._provider_page += 1
+            await self._rerender_provider_page(interaction)
+
+        async def _on_model_prev(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized~", ephemeral=True)
+                return
+            self._model_page -= 1
+            await self._rerender_model_page(interaction)
+
+        async def _on_model_next(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized~", ephemeral=True)
+                return
+            self._model_page += 1
+            await self._rerender_model_page(interaction)
+
         async def _on_back(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
@@ -5768,6 +5895,7 @@ def _define_discord_view_classes() -> None:
                 )
                 return
 
+            self._provider_page = 0  # reset provider pagination on back
             self._build_provider_select()
 
             try:

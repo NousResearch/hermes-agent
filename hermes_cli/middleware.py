@@ -234,7 +234,7 @@ def _has_middleware(kind: str) -> bool:
 def _get_middleware_callbacks(kind: str) -> List[Callable]:
     from hermes_cli.plugins import get_plugin_manager
 
-    return list(get_plugin_manager()._middleware.get(kind, []))
+    return list(getattr(get_plugin_manager(), "_middleware", {}).get(kind, []))
 
 
 def _run_execution_chain(

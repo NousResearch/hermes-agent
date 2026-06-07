@@ -1062,7 +1062,8 @@ class PluginManager:
         if force:
             self._plugins.clear()
             self._hooks.clear()
-            self._middleware.clear()
+            if hasattr(self, "_middleware"):
+                self._middleware.clear()
             self._plugin_tool_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
@@ -1476,7 +1477,7 @@ class PluginManager:
                 loaded.middleware_registered = list(
                     {
                         kind
-                        for kind, cbs in self._middleware.items()
+                        for kind, cbs in getattr(self, "_middleware", {}).items()
                         if cbs
                     }
                     - {
@@ -1614,7 +1615,7 @@ class PluginManager:
 
     def has_middleware(self, kind: str) -> bool:
         """Return True when at least one callback is registered for middleware."""
-        return bool(self._middleware.get(kind))
+        return bool(getattr(self, "_middleware", {}).get(kind))
 
     def invoke_middleware(self, kind: str, **kwargs: Any) -> List[Any]:
         """Call registered middleware callbacks for *kind*.
@@ -1623,7 +1624,7 @@ class PluginManager:
         path. Middleware that wants to change behavior must return the shape
         documented by the caller-specific contract.
         """
-        callbacks = self._middleware.get(kind, [])
+        callbacks = getattr(self, "_middleware", {}).get(kind, [])
         results: List[Any] = []
         for cb in callbacks:
             try:

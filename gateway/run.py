@@ -5343,6 +5343,11 @@ class GatewayRunner:
                             )
                             continue
                         seen_db_paths.add(resolved_db_path)
+                        # If the board directory was archived since
+                        # list_boards(), skip it — connect() would
+                        # recreate it and resurrect the board.
+                        if not _kb.board_dir(slug).exists():
+                            continue
                         try:
                             conn = _kb.connect(board=slug)
                         except Exception as exc:
@@ -5996,6 +6001,11 @@ class GatewayRunner:
                         slug,
                     )
                 disabled_corrupt_boards.pop(slug, None)
+            # If the board directory no longer exists (e.g. it was archived
+            # since the last `list_boards` call), avoid `connect()` which
+            # would recreate the directory and resurrect the board.
+            if not _kb.board_dir(slug).exists():
+                return None
             try:
                 conn = _kb.connect(board=slug)
                 # `connect()` runs the schema + idempotent migration on
@@ -6086,6 +6096,8 @@ class GatewayRunner:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
+                if not _kb.board_dir(slug).exists():
+                    continue
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)

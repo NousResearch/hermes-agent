@@ -789,8 +789,13 @@ def run_conversation(
     # prefetch_all() on each tool call (10 tool calls = 10x latency + cost).
     # Use original_user_message (clean input) — user_message may contain
     # injected skill content that bloats / breaks provider queries.
+    #
+    # Security: For customer-facing gateways (Telegram, WhatsApp, Discord, etc.),
+    # skip memory injection to prevent operator-level memory from leaking to customers.
+    # Memory is still available for tool use, but won't be auto-injected into responses.
     _ext_prefetch_cache = ""
-    if agent._memory_manager:
+    _skip_memory_injection = getattr(agent, "_skip_memory_injection", False)
+    if agent._memory_manager and not _skip_memory_injection:
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
             _ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""

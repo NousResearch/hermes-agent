@@ -2,9 +2,15 @@ import { execFileSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { findSlashCommand, SLASH_COMMANDS } from '../app/slash/registry.js'
+import { writeClipboardText } from '../lib/clipboard.js'
+import type { SlashRunCtx } from '../app/slash/types.js'
+
+vi.mock('../lib/clipboard.js', () => ({
+  writeClipboardText: vi.fn(() => Promise.resolve(true))
+}))
 
 type CommandRoute = 'fallback' | 'local' | 'native'
 
@@ -88,6 +94,10 @@ const classifyRoute = (name: string): CommandRoute => {
 }
 
 describe('slash parity matrix', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   if (commandRegistry.error) {
     it.skip(`Python command registry unavailable: ${skipReason}`, () => {})
   }
@@ -119,5 +129,30 @@ describe('slash parity matrix', () => {
     const cmd = findSlashCommand('q')
     expect(cmd, '/q must resolve to a command').toBeDefined()
     expect(cmd!.name).toBe('queue')
+  })
+
+  it('/copy number selects the nth-latest assistant response', () => {
+    const cmd = findSlashCommand('copy')
+    expect(cmd, '/copy must resolve to a command').toBeDefined()
+
+    const sysMessages: string[] = []
+    const history = [
+      { role: 'assistant', text: 'one' },
+      { role: 'user', text: 'ignore me' },
+      { role: 'assistant', text: 'two' },
+      { role: 'assistant', text: 'three' }
+    ]
+    const ctx = {
+      composer: { hasSelection: false },
+      local: { getHistoryItems: () => history },
+      stale: () => false,
+      transcript: { sys: (message: string) => sysMessages.push(message) }
+    } as unknown as SlashRunCtx
+
+    cmd!.run('2', ctx, 'copy')
+
+    expect(writeClipboardText).toHaveBeenCalledWith('two')
+    expect(writeClipboardText).not.toHaveBeenCalledWith('one')
+    expect(writeClipboardText).not.toHaveBeenCalledWith('three')
   })
 })

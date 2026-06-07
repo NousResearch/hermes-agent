@@ -362,16 +362,22 @@ export const coreCommands: SlashCommand[] = [
         }
       }
 
-      if (arg && Number.isNaN(parseInt(arg, 10))) {
+      const all = ctx.local.getHistoryItems().filter(m => m.role === 'assistant')
+      const n = arg ? parseInt(arg, 10) : 1
+
+      if (Number.isNaN(n)) {
         return sys('usage: /copy [number]')
       }
 
-      const all = ctx.local.getHistoryItems().filter(m => m.role === 'assistant')
-      const target = all[arg ? Math.min(parseInt(arg, 10), all.length) - 1 : all.length - 1]
-
-      if (!target) {
+      if (!all.length) {
         return sys('nothing to copy — start a conversation first')
       }
+
+      if (n < 1 || n > all.length) {
+        return sys(`invalid response number. Use 1-${all.length}`)
+      }
+
+      const target = all[all.length - n]
 
       void writeClipboardText(target.text)
         .then(nativeOk => {

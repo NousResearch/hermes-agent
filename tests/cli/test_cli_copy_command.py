@@ -32,17 +32,18 @@ def test_copy_copies_latest_assistant_message():
     mock_copy.assert_called_once_with("latest")
 
 
-def test_copy_with_index_uses_requested_assistant_message():
+def test_copy_with_index_uses_nth_latest_assistant_message():
     cli_obj = _make_cli()
     cli_obj.conversation_history = [
         {"role": "assistant", "content": "one"},
         {"role": "assistant", "content": "two"},
+        {"role": "assistant", "content": "three"},
     ]
 
     with patch.object(cli_obj, "_write_osc52_clipboard") as mock_copy:
-        cli_obj.process_command("/copy 1")
+        cli_obj.process_command("/copy 2")
 
-    mock_copy.assert_called_once_with("one")
+    mock_copy.assert_called_once_with("two")
 
 
 def test_copy_strips_reasoning_blocks_before_copy():

@@ -6070,13 +6070,14 @@ class HermesCLI:
 
         if arg:
             try:
-                idx = int(arg) - 1
+                n = int(arg)
             except ValueError:
                 _cprint("  Usage: /copy [number]")
                 return
-            if idx < 0 or idx >= len(assistant):
+            if n < 1 or n > len(assistant):
                 _cprint(f"  Invalid response number. Use 1-{len(assistant)}.")
                 return
+            idx = len(assistant) - n
         else:
             idx = len(assistant) - 1
             while idx >= 0 and not _assistant_copy_text(assistant[idx].get("content")):
@@ -6092,7 +6093,8 @@ class HermesCLI:
 
         try:
             self._write_osc52_clipboard(text)
-            _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+            ordinal = len(assistant) - idx
+            _cprint(f"  Copied assistant response #{ordinal} from latest to clipboard")
         except Exception as e:
             _cprint(f"  Clipboard copy failed: {e}")
 

@@ -507,6 +507,19 @@ def compress_context(
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
             agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+            # Reset the flush cursor atomically with the id rotation. The new
+            # session starts empty and `messages` has just been compressed to a
+            # much shorter list, so 0 is the only valid cursor for it. If we
+            # left this reset until after the fallible DB calls below (as it
+            # was), any exception there would skip it: session_id would already
+            # point at the new id while the cursor still held the stale
+            # pre-compression value (e.g. 50). The next _persist_session passes
+            # conversation_history=None, so flush_from = max(0, 50) = 50 and
+            # messages[50:] is empty — NOTHING is written and the entire
+            # compressed history is permanently dropped from the resumable
+            # session. Resetting here keeps the rotation recoverable even if a
+            # transient SQLite error trips the handler below.
+            agent._last_flushed_db_idx = 0
             try:
                 from gateway.session_context import set_current_session_id
 
@@ -530,8 +543,6 @@ def compress_context(
                 except (ValueError, Exception) as e:
                     logger.debug("Could not propagate title on compression: %s", e)
             agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
-            # Reset flush cursor — new session starts with no messages written
-            agent._last_flushed_db_idx = 0
         except Exception as e:
             logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 

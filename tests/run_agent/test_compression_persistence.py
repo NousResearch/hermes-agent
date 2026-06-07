@@ -17,6 +17,7 @@ Bug scenario (pre-fix):
 """
 
 import os
+import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -130,6 +131,123 @@ class TestFlushAfterCompression:
             assert len(rows) == 0, (
                 "Expected 0 messages with stale conversation_history "
                 "(this test verifies the bug condition exists)"
+            )
+
+
+class _FakeCompressor:
+    """Minimal stand-in for the context compressor used in rotation tests.
+
+    Returns a fixed, short compacted message list and reports a clean
+    (non-aborted) compression so ``compress_context`` proceeds to the
+    SQLite session-rotation block.
+    """
+
+    def __init__(self, compressed):
+        self._compressed = compressed
+        self.compression_count = 1
+        self._last_compress_aborted = False
+        self._last_summary_error = None
+        self._last_aux_model_failure_model = None
+        self._last_aux_model_failure_error = None
+
+    def compress(self, messages, current_tokens=None, focus_topic=None, force=False):
+        return list(self._compressed)
+
+
+class TestRotationFlushCursorAtomicity:
+    """Guard the compression session-rotation against partial DB failures.
+
+    Regression for the data-loss bug where ``_last_flushed_db_idx`` was only
+    reset at the very end of the rotation block — *after* the fallible
+    ``create_session`` / title / ``update_system_prompt`` calls. A transient
+    SQLite error there left ``session_id`` pointing at the new (empty) session
+    while the flush cursor still held the stale pre-compression index. The next
+    persist then computed ``flush_from`` past the end of the shortened
+    compressed list and wrote NOTHING, permanently dropping the entire
+    compressed conversation from resumable state.
+    """
+
+    def _make_agent(self, session_db):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            from run_agent import AIAgent
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                session_db=session_db,
+                session_id="original-session",
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        return agent
+
+    def test_flush_cursor_reset_when_rotation_db_call_fails(self):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            db.create_session(session_id="original-session", source="test")
+
+            agent = self._make_agent(db)
+            agent._session_db_created = True
+            # Skip the just-in-time aux-model feasibility probe (network).
+            agent._compression_feasibility_checked = True
+
+            # Seed a long original history and flush it so the cursor advances
+            # well past the length of the post-compression list.
+            original = [
+                {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"}
+                for i in range(50)
+            ]
+            agent._flush_messages_to_session_db(original, [])
+            assert agent._last_flushed_db_idx == 50
+
+            compressed = [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary of earlier work"},
+                {"role": "user", "content": "recent question"},
+                {"role": "assistant", "content": "recent answer"},
+            ]
+            agent.context_compressor = _FakeCompressor(compressed)
+
+            # Make create_session raise exactly once for the rotated (new)
+            # session id — a transient SQLite hiccup mid-rollover. The retry
+            # via _ensure_db_session on the next flush must then succeed.
+            real_create = db.create_session
+            state = {"tripped": False}
+
+            def flaky_create(*args, **kwargs):
+                sid = kwargs.get("session_id")
+                if sid != "original-session" and not state["tripped"]:
+                    state["tripped"] = True
+                    raise sqlite3.OperationalError("database is locked")
+                return real_create(*args, **kwargs)
+
+            db.create_session = flaky_create
+
+            result, _sp = compress_context(agent, list(original), "system prompt")
+
+            # The rotation happened (id changed) and the DB call failed.
+            assert agent.session_id != "original-session"
+            assert state["tripped"] is True
+
+            # THE FIX: the flush cursor was reset to 0 atomically with the id
+            # rotation, despite the create_session failure. Pre-fix this stayed
+            # at 50, which would silently skip every compressed message below.
+            assert agent._last_flushed_db_idx == 0, (
+                "flush cursor must reset to 0 when the session id rotates, even "
+                "if a DB step in the rotation block raised — otherwise the "
+                "compressed history is permanently dropped"
+            )
+
+            # Recovery: the next persist re-creates the new session row and
+            # writes the full compressed list, so nothing is lost.
+            agent._flush_messages_to_session_db(result, None)
+            new_rows = db.get_messages(agent.session_id)
+            assert len(new_rows) == len(compressed), (
+                f"Expected {len(compressed)} compressed messages persisted to the "
+                f"new session, got {len(new_rows)} — compressed history was lost."
             )
 
 

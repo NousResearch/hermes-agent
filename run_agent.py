@@ -4367,6 +4367,24 @@ class AIAgent:
         t = threading.Thread(target=_run_review, daemon=True, name="bg-review")
         t.start()
 
+    @staticmethod
+    def _memory_tool_write_succeeded(function_result: str) -> bool:
+        """Return True only when the builtin memory tool accepted a new write.
+
+        Returns False for both hard failures (success=false) and no-op responses
+        such as duplicate-entry rejections (success=true, message contains
+        "already exists"), which must not be mirrored to external providers.
+        """
+        try:
+            result = json.loads(function_result)
+        except (TypeError, json.JSONDecodeError):
+            return False
+        if not (isinstance(result, dict) and result.get("success") is True):
+            return False
+        # Exclude no-op responses where the entry was already present
+        message = result.get("message", "")
+        return "already exists" not in message.lower()
+
     def _build_memory_write_metadata(
         self,
         *,
@@ -10532,8 +10550,12 @@ class AIAgent:
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
             )
-            # Bridge: notify external memory provider of built-in memory writes
-            if self._memory_manager and function_args.get("action") in {"add", "replace"}:
+            # Bridge only after the built-in memory store accepted the write.
+            if (
+                self._memory_manager
+                and function_args.get("action") in {"add", "replace"}
+                and self._memory_tool_write_succeeded(result)
+            ):
                 try:
                     self._memory_manager.on_memory_write(
                         function_args.get("action", ""),
@@ -11163,8 +11185,12 @@ class AIAgent:
                     old_text=function_args.get("old_text"),
                     store=self._memory_store,
                 )
-                # Bridge: notify external memory provider of built-in memory writes
-                if self._memory_manager and function_args.get("action") in {"add", "replace"}:
+                # Bridge only after the built-in memory store accepted the write.
+                if (
+                    self._memory_manager
+                    and function_args.get("action") in {"add", "replace"}
+                    and self._memory_tool_write_succeeded(function_result)
+                ):
                     try:
                         self._memory_manager.on_memory_write(
                             function_args.get("action", ""),

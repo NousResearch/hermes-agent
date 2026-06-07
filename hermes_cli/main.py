@@ -998,7 +998,9 @@ def _ensure_tui_node() -> None:
             [
                 "bash",
                 "-c",
-                f'source "{helper}" >&2 && ensure_node >&2 && command -v node',
+                'source -- "$1" >&2 && ensure_node >&2 && command -v node',
+                "bash",
+                str(helper),
             ],
             env={**os.environ, "HERMES_HOME": hermes_home},
             capture_output=True,
@@ -3125,6 +3127,8 @@ def _model_flow_custom(config):
         model["base_url"] = effective_url
         if effective_key:
             model["api_key"] = effective_key
+        else:
+            model.pop("api_key", None)
         model.pop("api_mode", None)  # let runtime auto-detect from URL
         save_config(cfg)
         deactivate_provider()
@@ -3148,6 +3152,8 @@ def _model_flow_custom(config):
         _caller_model["base_url"] = effective_url
         if effective_key:
             _caller_model["api_key"] = effective_key
+        else:
+            _caller_model.pop("api_key", None)
         _caller_model.pop("api_mode", None)
         config["model"] = _caller_model
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
@@ -3653,6 +3659,8 @@ def _model_flow_named_custom(config, provider_info):
         model["base_url"] = base_url
         if config_api_key:
             model["api_key"] = config_api_key
+        else:
+            model.pop("api_key", None)
     # Apply api_mode from custom_providers entry, or clear stale value
     custom_api_mode = provider_info.get("api_mode", "")
     if custom_api_mode:

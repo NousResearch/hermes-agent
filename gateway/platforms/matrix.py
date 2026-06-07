@@ -1713,6 +1713,12 @@ class MatrixAdapter(BasePlatformAdapter):
         else:
             await self.handle_message(msg_event)
 
+    def _get_gateway_authorizer(self) -> Any:
+        """Return the gateway authorization callback when this adapter is wired to one."""
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        return auth_fn if callable(auth_fn) else None
+
     async def _handle_media_message(
         self,
         room_id: str,
@@ -1725,6 +1731,7 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> None:
         """Process a media message event (image, audio, video, file)."""
         body = source_content.get("body", "") or ""
+        original_body = body
         url = source_content.get("url", "")
 
         # Convert mxc:// to HTTP URL for downstream processing.
@@ -1768,6 +1775,36 @@ class MatrixAdapter(BasePlatformAdapter):
             media_type = event_mimetype or "video/mp4"
         elif event_mimetype:
             media_type = event_mimetype
+
+        ctx = await self._resolve_message_context(
+            room_id,
+            sender,
+            event_id,
+            body,
+            source_content,
+            relates_to,
+        )
+        if ctx is None:
+            return
+        body, is_dm, chat_type, thread_id, display_name, source = ctx
+
+        # Avoid downloading and caching attacker-controlled media for users
+        # that the gateway allowlist will reject.  Still pass a media-less
+        # event through so the normal unauthorized-DM pairing flow can run.
+        auth_fn = self._get_gateway_authorizer()
+        if auth_fn is not None and not auth_fn(source):
+            display_body = body
+            if msgtype == "m.image" and _looks_like_matrix_image_filename(display_body):
+                display_body = ""
+            msg_event = MessageEvent(
+                text=display_body,
+                message_type=msg_type,
+                source=source,
+                raw_message=source_content,
+                message_id=event_id,
+            )
+            await self.handle_message(msg_event)
+            return
 
         # Cache media locally when downstream tools need a real file path.
         cached_path = None
@@ -1837,7 +1874,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         elif msg_type in {MessageType.AUDIO, MessageType.VOICE}:
                             ext = (
                                 Path(
-                                    body
+                                    original_body
                                     or (
                                         "voice.ogg" if is_voice_message else "audio.ogg"
                                     )
@@ -1846,7 +1883,7 @@ class MatrixAdapter(BasePlatformAdapter):
                             )
                             cached_path = cache_audio_from_bytes(file_bytes, ext=ext)
                         else:
-                            filename = body or (
+                            filename = original_body or (
                                 "video.mp4"
                                 if msg_type == MessageType.VIDEO
                                 else "document"
@@ -1856,18 +1893,6 @@ class MatrixAdapter(BasePlatformAdapter):
                             )
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
-
-        ctx = await self._resolve_message_context(
-            room_id,
-            sender,
-            event_id,
-            body,
-            source_content,
-            relates_to,
-        )
-        if ctx is None:
-            return
-        body, is_dm, chat_type, thread_id, display_name, source = ctx
 
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
@@ -2565,32 +2590,19 @@ class MatrixAdapter(BasePlatformAdapter):
         return f"{self._homeserver}/_matrix/client/v1/media/download/{parts}"
 
     def _markdown_to_html(self, text: str) -> str:
-        """Convert Markdown to Matrix-compatible HTML (org.matrix.custom.html).
+        """Convert Markdown to hardened HTML (org.matrix.custom.html).
 
-        Uses the ``markdown`` library when available (installed with the
-        ``matrix`` extra).  Falls back to a comprehensive regex converter
-        that handles fenced code blocks, inline code, headers, bold,
-        italic, strikethrough, links, blockquotes, lists, and horizontal
-        rules — everything the Matrix HTML spec allows.
+        Always uses the sanitized regex-based converter to prevent
+        inline HTML and unsafe URI schemes (javascript:, data:, vbscript:)
+        from reaching Matrix clients. Handles fenced code blocks, inline
+        code, headers, bold, italic, strikethrough, links, blockquotes,
+        lists, and horizontal rules — everything the Matrix HTML spec allows.
+
+        Note: Python-Markdown support was intentionally removed to prevent
+        sanitization bypass vulnerabilities (raw inline HTML and unsafe
+        link schemes can slip through when the ``matrix`` extra installs
+        ``Markdown>=3.6``).
         """
-        try:
-            import markdown as _md
-
-            md = _md.Markdown(
-                extensions=["fenced_code", "tables", "nl2br", "sane_lists"],
-            )
-            if "html_block" in md.preprocessors:
-                md.preprocessors.deregister("html_block")
-
-            html = md.convert(text)
-            md.reset()
-
-            if html.count("<p>") == 1:
-                html = html.replace("<p>", "").replace("</p>", "")
-            return html
-        except ImportError:
-            pass
-
         return self._markdown_to_html_fallback(text)
 
     # ------------------------------------------------------------------

@@ -85,6 +85,20 @@ class TestHandleFunctionCall:
             ),
         ]
 
+    def test_execute_code_legacy_positional_enabled_tools_binding(self):
+        """Old positional callers must still bind arg5 to enabled_tools."""
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}') as mock_dispatch:
+            result = handle_function_call(
+                "execute_code",
+                {"code": "print('ok')"},
+                "task-1",
+                None,
+                ["read_file"],
+            )
+
+        assert result == '{"ok":true}'
+        assert mock_dispatch.call_args.kwargs["enabled_tools"] == ["read_file"]
+
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
         """Regression: post_tool_call and transform_tool_result hooks must
         receive a non-negative integer ``duration_ms`` kwarg measuring

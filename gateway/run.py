@@ -5373,7 +5373,13 @@ class GatewayRunner:
         user_id = source.user_id
         if not user_id:
             return False
-        team_id = (source.guild_id or "").strip() if source.platform == Platform.SLACK else ""
+        team_id = str(source.guild_id or "").strip() if source.platform == Platform.SLACK else ""
+
+        # Optional Slack-style team scoping.  When source carries a team_id
+        # (e.g. Slack), the pairing/allowlist checks below augment the bare
+        # auth id with a "{team_id}:{auth_user_id}" key.  Other platforms
+        # don't populate team_id, so default to "" and skip those checks.
+        team_id = getattr(source, "team_id", None) or ""
 
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
@@ -5464,9 +5470,11 @@ class GatewayRunner:
 
         # Check pairing store (always checked, regardless of allowlists)
         platform_name = source.platform.value if source.platform else ""
+        team_id = source.guild_id or ""
         auth_user_id = user_id
         if source.platform == Platform.WECOM_CALLBACK and source.chat_id:
             auth_user_id = source.chat_id
+        team_id = ""
         pairing_check_ids = [auth_user_id]
         if team_id:
             pairing_check_ids.insert(0, f"{team_id}:{auth_user_id}")

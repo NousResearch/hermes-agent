@@ -134,6 +134,39 @@ def _make_adapter():
     return adapter
 
 
+def test_forum_general_topic_uses_per_user_session_keys_by_default():
+    """Synthetic General-topic routing must not collapse user isolation."""
+    from gateway.platforms import telegram as telegram_mod
+
+    adapter = _make_adapter()
+
+    def make_event(user_id):
+        message = SimpleNamespace(
+            text="hello from General",
+            caption=None,
+            chat=SimpleNamespace(
+                id=-100123,
+                type=telegram_mod.ChatType.SUPERGROUP,
+                is_forum=True,
+                title="Forum group",
+            ),
+            from_user=SimpleNamespace(id=user_id, full_name=f"User {user_id}"),
+            message_thread_id=None,
+            reply_to_message=None,
+            message_id=10,
+            date=None,
+        )
+        return adapter._build_message_event(message, msg_type=SimpleNamespace(value="text"))
+
+    first = make_event(101)
+    second = make_event(202)
+
+    assert first.source.thread_id == "1"
+    assert second.source.thread_id == "1"
+    assert build_session_key(first.source) == "agent:main:telegram:group:-100123:1:101"
+    assert build_session_key(second.source) == "agent:main:telegram:group:-100123:1:202"
+
+
 def test_forum_general_topic_without_message_thread_id_keeps_thread_context():
     """Forum General-topic messages should keep synthetic thread context."""
     from gateway.platforms import telegram as telegram_mod

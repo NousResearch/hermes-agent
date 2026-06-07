@@ -876,6 +876,28 @@ class TestExportImport:
         assert "default/SOUL.md" in names
         assert "default/memories/MEMORY.md" in names
 
+    def test_export_default_preserves_symlink_entries(self, profile_env, tmp_path):
+        """Default export keeps symlinks as links, not copied target file data."""
+        default_dir = get_profile_dir("default")
+        (default_dir / "config.yaml").write_text("model: test")
+        external_secret = tmp_path / "outside-secret.txt"
+        external_secret.write_text("leak-me")
+        link_path = default_dir / "linked-secret.txt"
+        try:
+            link_path.symlink_to(external_secret)
+        except (NotImplementedError, OSError):
+            pytest.skip("symlink creation is not supported in this environment")
+
+        output = tmp_path / "export" / "default.tar.gz"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("default", str(output))
+
+        with tarfile.open(str(output), "r:gz") as tf:
+            member = tf.getmember("default/linked-secret.txt")
+
+        assert member.issym()
+        assert not member.isfile()
+
     def test_export_default_excludes_infrastructure(self, profile_env, tmp_path):
         """Repo checkout, worktrees, profiles, databases are excluded."""
         default_dir = get_profile_dir("default")

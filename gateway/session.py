@@ -570,6 +570,23 @@ class SessionEntry:
         )
 
 
+def _is_telegram_general_topic(source: SessionSource) -> bool:
+    """Return True for Telegram forum General-topic routing metadata.
+
+    The adapter preserves General-topic routing metadata as thread id ``1``
+    for typing and inbound context, even though Telegram sends must omit
+    ``message_thread_id=1``. Incoming General-topic messages may also have this
+    id synthesized when Telegram omits ``message_thread_id``. For session
+    isolation, keep General aligned with regular group messages so the default
+    ``group_sessions_per_user=True`` remains protective.
+    """
+    return (
+        source.platform == Platform.TELEGRAM
+        and source.chat_type == "group"
+        and str(source.thread_id or "") == "1"
+    )
+
+
 def is_shared_multi_user_session(
     source: SessionSource,
     *,
@@ -581,12 +598,15 @@ def is_shared_multi_user_session(
     Mirrors the isolation rules in :func:`build_session_key`:
       - DMs are never shared.
       - Threads are shared unless ``thread_sessions_per_user`` is True.
+      - Telegram forum General-topic routing id (``1``) follows regular group
+        isolation because the adapter may synthesize it for messages that
+        Telegram delivers without ``message_thread_id``.
       - Non-thread group/channel sessions are shared unless
         ``group_sessions_per_user`` is True (default: True = isolated).
     """
     if source.chat_type == "dm":
         return False
-    if source.thread_id:
+    if source.thread_id and not _is_telegram_general_topic(source):
         return not thread_sessions_per_user
     return not group_sessions_per_user
 
@@ -615,6 +635,9 @@ def build_session_key(
         participants — user_id is NOT appended, so every user in the thread
         shares a single session.  This is the expected UX for threaded
         conversations (Telegram forum topics, Discord threads, Slack threads).
+      - Telegram forum General-topic routing id (``1``) is the exception: it
+        follows regular group isolation because the adapter may synthesize it
+        for messages that Telegram delivers without ``message_thread_id``.
       - Without participant identifiers, or when isolation is disabled, messages fall back to one
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
@@ -650,7 +673,11 @@ def build_session_key(
     # conversation).  Per-user isolation only applies when explicitly enabled
     # via thread_sessions_per_user, or when there is no thread (regular group).
     isolate_user = group_sessions_per_user
-    if source.thread_id and not thread_sessions_per_user:
+    if (
+        source.thread_id
+        and not _is_telegram_general_topic(source)
+        and not thread_sessions_per_user
+    ):
         isolate_user = False
 
     if isolate_user and participant_id:

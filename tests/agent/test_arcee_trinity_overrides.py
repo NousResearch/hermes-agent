@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent.agent_init import _resolve_compression_threshold
 from agent.auxiliary_client import (
     _compression_threshold_for_model,
     _fixed_temperature_for_model,
@@ -248,3 +249,68 @@ def test_compression_threshold_codex_spark_not_gated_by_gpt55_optout() -> None:
         )
         == 0.70
     )
+
+
+# ── _resolve_compression_threshold (init_agent application logic) ────────────
+#
+# The Codex overrides are *autoraises*: they raise the trigger (0.85 for the
+# gpt-5.4/5.5 272K family, 0.70 for spark) but must never LOWER a higher
+# user-configured global threshold.
+
+
+def test_resolve_codex_autoraise_raises_from_default() -> None:
+    # Default 0.50 global → raised to 0.85, notice emitted.
+    effective, notice = _resolve_compression_threshold(
+        0.50, 0.85, model="gpt-5.5", is_codex_autoraise=True
+    )
+    assert effective == 0.85
+    assert notice == {"model": "gpt-5.5", "from": 0.50, "to": 0.85}
+
+
+def test_resolve_codex_autoraise_never_lowers_higher_threshold() -> None:
+    # Regression: a user who set compression.threshold above 0.85 must keep it.
+    # The autoraise previously clobbered it down to 0.85 (and silently, since
+    # the notice was suppressed when nothing "raised").
+    effective, notice = _resolve_compression_threshold(
+        0.90, 0.85, model="gpt-5.5", is_codex_autoraise=True
+    )
+    assert effective == 0.90
+    assert notice is None
+
+
+def test_resolve_codex_spark_autoraise_never_lowers_higher_threshold() -> None:
+    # Same never-lower contract for the spark autoraise (0.70).
+    effective, notice = _resolve_compression_threshold(
+        0.80, 0.70, model="gpt-5.3-codex-spark", is_codex_autoraise=True
+    )
+    assert effective == 0.80
+    assert notice is None
+
+
+def test_resolve_codex_autoraise_equal_threshold_is_noop() -> None:
+    # User already at exactly the raised value: keep it, no notice.
+    effective, notice = _resolve_compression_threshold(
+        0.85, 0.85, model="gpt-5.5", is_codex_autoraise=True
+    )
+    assert effective == 0.85
+    assert notice is None
+
+
+def test_resolve_no_override_keeps_global() -> None:
+    # No per-model override (model_cthresh is None) → global threshold, no notice.
+    effective, notice = _resolve_compression_threshold(
+        0.50, None, is_codex_autoraise=False
+    )
+    assert effective == 0.50
+    assert notice is None
+
+
+def test_resolve_non_codex_override_applies_unconditionally() -> None:
+    # Arcee Trinity (0.75) keeps its long-standing unconditional behaviour: it
+    # applies even when it lowers the user's global value, and never emits the
+    # codex autoraise notice.
+    effective, notice = _resolve_compression_threshold(
+        0.90, 0.75, is_codex_autoraise=False
+    )
+    assert effective == 0.75
+    assert notice is None

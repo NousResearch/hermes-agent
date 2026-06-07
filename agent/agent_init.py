@@ -77,14 +77,52 @@ def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, float]) -> str:
     include the exact opt-back-out command.
     """
     model = str(autoraise.get("model") or "gpt-5.4/5.5").strip().lower().rsplit("/", 1)[-1]
+    # gpt-5.3-codex-spark has a native 128K window; the gpt-5.4/5.5 family is
+    # capped at 272K by the Codex OAuth backend.
+    cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
     from_pct = int(round(autoraise["from"] * 100))
     to_pct = int(round(autoraise["to"] * 100))
     return (
-        f"ℹ Codex {model} caps context at 272K, so auto-compaction was raised "
+        f"ℹ Codex {model} caps context at {cap}, so auto-compaction was raised "
         f"to {to_pct}% (from {from_pct}%) to use more of the window before "
         f"summarizing.\n"
         f"  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
     )
+
+
+def _resolve_compression_threshold(
+    global_threshold: float,
+    model_cthresh: Optional[float],
+    *,
+    model: Optional[str] = None,
+    is_codex_autoraise: bool,
+) -> tuple[float, Optional[Dict[str, Any]]]:
+    """Combine the user's global compaction threshold with a per-model override.
+
+    Returns ``(effective_threshold, autoraise_notice)``. ``autoraise_notice`` is
+    ``{"model": <slug>, "from": <old>, "to": <new>}`` only when a Codex
+    autoraise (gpt-5.4/5.5 272K family or gpt-5.3-codex-spark) actually raises
+    the threshold, otherwise ``None``.
+
+    The Codex overrides are *autoraises*: they must never LOWER a higher
+    user-configured threshold. A user who already set ``compression.threshold``
+    above the raised value deliberately keeps more raw context, and silently
+    dropping them would both waste usable window and contradict the feature's
+    purpose (use more of the window). Other overrides (e.g. Arcee Trinity)
+    keep their existing unconditional behaviour.
+    """
+    if model_cthresh is None:
+        return global_threshold, None
+    if is_codex_autoraise:
+        if model_cthresh <= global_threshold + 1e-9:
+            # Autoraise never lowers; keep the user's higher/equal threshold.
+            return global_threshold, None
+        return model_cthresh, {
+            "model": model,
+            "from": global_threshold,
+            "to": model_cthresh,
+        }
+    return model_cthresh, None
 
 
 def _normalized_custom_base_url(value: Any) -> str:
@@ -1429,28 +1467,29 @@ def init_agent(
         from agent.auxiliary_client import (
             _compression_threshold_for_model as _cthresh_fn,
             _is_codex_gpt54_or_gpt55 as _is_codex_gpt54_or_gpt55_fn,
+            _is_codex_spark as _is_codex_spark_fn,
         )
         _model_cthresh = _cthresh_fn(
             agent.model,
             agent.provider,
             allow_codex_gpt55_autoraise=_codex_gpt55_autoraise,
         )
-        if _model_cthresh is not None:
-            _prev_threshold = compression_threshold
-            compression_threshold = _model_cthresh
-            # Notify only for the Codex gpt-5.4 / gpt-5.5 autoraise (the Arcee
-            # Trinity override is a long-standing silent default). Skip the
-            # notice when the user's global threshold already meets/exceeds the
-            # raised value, since nothing actually changed for them.
-            if (
-                _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider)
-                and _model_cthresh > _prev_threshold + 1e-9
-            ):
-                agent._compression_threshold_autoraised = {
-                    "model": agent.model,
-                    "from": _prev_threshold,
-                    "to": _model_cthresh,
-                }
+        # The Codex autoraises (gpt-5.4/5.5 272K family and gpt-5.3-codex-spark)
+        # apply only when they RAISE (never lower a user's higher global
+        # threshold). The notice is populated only when it actually fires, and
+        # carries the model slug so the banner names the right family. Arcee
+        # Trinity keeps its long-standing unconditional behaviour.
+        compression_threshold, agent._compression_threshold_autoraised = (
+            _resolve_compression_threshold(
+                compression_threshold,
+                _model_cthresh,
+                model=agent.model,
+                is_codex_autoraise=(
+                    _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider)
+                    or _is_codex_spark_fn(agent.model, agent.provider)
+                ),
+            )
+        )
     except Exception:
         pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}

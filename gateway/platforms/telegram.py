@@ -20,6 +20,17 @@ from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
 
+def _safe_int_env(name: str, default: int) -> int:
+    """Read env var as int, returning *default* if missing or non-numeric."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     try:
@@ -1658,7 +1669,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # inject forged updates as if from Telegram. Refuse to
                 # start rather than silently run in fail-open mode.
                 # See GHSA-3vpc-7q5r-276h.
-                webhook_port = int(os.getenv("TELEGRAM_WEBHOOK_PORT", "8443"))
+                webhook_port = _safe_int_env("TELEGRAM_WEBHOOK_PORT", 8443)
                 webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
                 if not webhook_secret:
                     raise RuntimeError(

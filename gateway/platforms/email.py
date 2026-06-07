@@ -44,6 +44,17 @@ from gateway.platforms.base import (
 from gateway.config import Platform, PlatformConfig
 
 logger = logging.getLogger(__name__)
+
+def _safe_int_env(name: str, default: int) -> int:
+    """Read env var as int, returning *default* if missing or non-numeric."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
 # Automated sender patterns — emails from these are silently ignored
 _NOREPLY_PATTERNS = (
     "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
@@ -251,10 +262,10 @@ class EmailAdapter(BasePlatformAdapter):
         self._address = os.getenv("EMAIL_ADDRESS", "")
         self._password = os.getenv("EMAIL_PASSWORD", "")
         self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
-        self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
+        self._imap_port = _safe_int_env("EMAIL_IMAP_PORT", 993)
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
-        self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
-        self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+        self._smtp_port = _safe_int_env("EMAIL_SMTP_PORT", 587)
+        self._poll_interval = _safe_int_env("EMAIL_POLL_INTERVAL", 15)
 
         # Skip attachments — configured via config.yaml:
         #   platforms:

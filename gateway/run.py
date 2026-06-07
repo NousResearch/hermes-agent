@@ -1170,6 +1170,17 @@ from gateway.whatsapp_identity import (
 
 logger = logging.getLogger(__name__)
 
+def _safe_int_env(name: str, default: int) -> int:
+    """Read env var as int, returning *default* if missing or non-numeric."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
 
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
@@ -4328,7 +4339,7 @@ class GatewayRunner:
         # config.yaml → env bridge did the right thing at a glance (instead
         # of silently running at a stale .env value for weeks).
         try:
-            _effective_max_iter = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            _effective_max_iter = _safe_int_env("HERMES_MAX_ITERATIONS", 90)
             logger.info(
                 "Agent budget: max_iterations=%d (agent.max_turns from config.yaml, "
                 "or HERMES_MAX_ITERATIONS from .env, or default 90)",
@@ -12656,7 +12667,7 @@ class GatewayRunner:
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
             pr = self._provider_routing
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = _safe_int_env("HERMES_MAX_ITERATIONS", 90)
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
@@ -17750,7 +17761,7 @@ class GatewayRunner:
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
             # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = _safe_int_env("HERMES_MAX_ITERATIONS", 90)
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.

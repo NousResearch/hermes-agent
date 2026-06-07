@@ -37,6 +37,17 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+def _safe_int_env(name: str, default: int) -> int:
+    """Read env var as int, returning *default* if missing or non-numeric."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
 # ---------------------------------------------------------------------------
 # Lazy import: BasePlatformAdapter and friends live in the main repo.
 # We import at function/class level to avoid import errors when the plugin
@@ -107,7 +118,7 @@ class IRCAdapter(BasePlatformAdapter):
 
         # Connection settings (env vars override config.yaml)
         self.server = os.getenv("IRC_SERVER") or extra.get("server", "")
-        self.port = int(os.getenv("IRC_PORT") or extra.get("port", 6697))
+        self.port = _safe_int_env("IRC_PORT", int(extra.get("port", 6697)))
         self.nickname = os.getenv("IRC_NICKNAME") or extra.get("nickname", "hermes-bot")
         self.channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
         self.use_tls = (

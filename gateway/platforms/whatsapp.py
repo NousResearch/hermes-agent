@@ -33,6 +33,17 @@ from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
 
+def _safe_int_env(name: str, default: int) -> int:
+    """Read env var as int, returning *default* if missing or non-numeric."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
 
 def _kill_port_process(port: int) -> None:
     """Kill any process listening on the given TCP port."""
@@ -597,7 +608,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 try:
                     # Read timeout from environment variable, default to 300 seconds (5 minutes)
                     # to accommodate slower systems like Unraid NAS
-                    npm_install_timeout = int(os.environ.get("WHATSAPP_NPM_INSTALL_TIMEOUT", "300"))
+                    npm_install_timeout = _safe_int_env("WHATSAPP_NPM_INSTALL_TIMEOUT", 300)
                     install_result = subprocess.run(
                         [_npm_bin, "install", "--silent"],
                         cwd=str(bridge_dir),

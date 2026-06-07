@@ -37,6 +37,17 @@ from agent.browser_provider import BrowserProvider
 
 logger = logging.getLogger(__name__)
 
+def _safe_int_env(name: str, default: int) -> int:
+    """Read env var as int, returning *default* if missing or non-numeric."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
 _BASE_URL = "https://api.firecrawl.dev"
 
 
@@ -78,7 +89,7 @@ class FirecrawlBrowserProvider(BrowserProvider):
         }
 
     def create_session(self, task_id: str) -> Dict[str, object]:
-        ttl = int(os.environ.get("FIRECRAWL_BROWSER_TTL", "300"))
+        ttl = _safe_int_env("FIRECRAWL_BROWSER_TTL", 300)
 
         body: Dict[str, object] = {"ttl": ttl}
 

@@ -149,6 +149,17 @@ from gateway.platforms.base import (
 # downstream log-monitor that greps for ``gateway.platforms.google_chat``.
 logger = logging.getLogger("gateway.platforms.google_chat")
 
+def _safe_int_env(name: str, default: int) -> int:
+    """Read env var as int, returning *default* if missing or non-numeric."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
 
 # Regex validating Pub/Sub subscription path format.
 _SUBSCRIPTION_PATH_RE = re.compile(
@@ -540,8 +551,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # they don't sit in the chat forever as "Hermes is thinking…".
         self._orphan_typing_messages: Dict[str, List[str]] = {}
         # FlowControl knobs (env-configurable).
-        self._max_messages = int(os.getenv("GOOGLE_CHAT_MAX_MESSAGES", "1"))
-        self._max_bytes = int(os.getenv("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024)))
+        self._max_messages = _safe_int_env("GOOGLE_CHAT_MAX_MESSAGES", 1)
+        self._max_bytes = _safe_int_env("GOOGLE_CHAT_MAX_BYTES", 16 * 1024 * 1024)
 
     # ------------------------------------------------------------------
     # Configuration loading and validation

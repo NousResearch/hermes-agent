@@ -2862,7 +2862,7 @@ class OptionalSkillSource(SkillSource):
                 and "__pycache__" not in f.parts
                 and f.suffix != ".pyc"
             ):
-                rel_path = str(f.relative_to(skill_dir))
+                rel_path = f.relative_to(skill_dir).as_posix()
                 try:
                     files[rel_path] = f.read_bytes()
                 except OSError:
@@ -2878,7 +2878,7 @@ class OptionalSkillSource(SkillSource):
             name=name,
             files=files,
             source="official",
-            identifier=f"official/{skill_dir.relative_to(self._optional_dir)}",
+            identifier=f"official/{skill_dir.relative_to(self._optional_dir).as_posix()}",
             trust_level="builtin",
         )
 
@@ -2932,7 +2932,7 @@ class OptionalSkillSource(SkillSource):
                 if isinstance(hermes_meta, dict):
                     tags = hermes_meta.get("tags", [])
 
-            rel_path = str(parent.relative_to(self._optional_dir))
+            rel_path = parent.relative_to(self._optional_dir).as_posix()
 
             results.append(SkillMeta(
                 name=name,
@@ -3309,14 +3309,23 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
 
 
 def bundle_content_hash(bundle: SkillBundle) -> str:
-    """Compute a deterministic hash for an in-memory skill bundle."""
+    """Compute a deterministic hash for an in-memory skill bundle.
+
+    Bundle paths may come from platform-native ``Path`` stringification
+    (notably Windows ``\\`` separators). Canonicalize them to the same POSIX
+    form used by ``tools.skills_guard.content_hash`` before sorting and
+    hashing so bundle and on-disk hashes stay symmetric.
+    """
     h = hashlib.sha256()
-    for rel_path in sorted(bundle.files):
+    normalized_files = sorted(
+        (_validate_bundle_rel_path(rel_path), content)
+        for rel_path, content in bundle.files.items()
+    )
+    for rel_path, content in normalized_files:
         # Include the path so swapping file contents between two paths
         # changes the hash (avoids filename-swap evading update detection).
         h.update(rel_path.encode("utf-8"))
         h.update(b"\x00")
-        content = bundle.files[rel_path]
         if isinstance(content, bytes):
             h.update(content)
         else:
@@ -3372,10 +3381,18 @@ def check_for_skill_updates(
             })
             continue
 
-        current_hash = entry.get("content_hash", "")
+        lock_hash = entry.get("content_hash", "")
         latest_hash = bundle_content_hash(bundle)
+        current_hash = lock_hash
+        install_path = entry.get("install_path", "")
+        try:
+            install_dir = _resolve_lock_install_path(install_path, entry.get("name", ""))
+            if install_dir.is_dir():
+                current_hash = content_hash(install_dir)
+        except (OSError, ValueError):
+            pass
         status = "up_to_date" if current_hash == latest_hash else "update_available"
-        results.append({
+        result = {
             "name": entry.get("name", ""),
             "identifier": identifier,
             "source": source_name,
@@ -3383,7 +3400,10 @@ def check_for_skill_updates(
             "current_hash": current_hash,
             "latest_hash": latest_hash,
             "bundle": bundle,
-        })
+        }
+        if lock_hash != current_hash:
+            result["lock_hash"] = lock_hash
+        results.append(result)
 
     return results
 

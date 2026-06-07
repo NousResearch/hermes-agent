@@ -1249,6 +1249,18 @@ def init_agent(
     # are noisy.
     agent._environment_probe = bool(_agent_section.get("environment_probe", True))
 
+    # Ephemeral per-message timestamp context.  Default True.  Prefixes each
+    # LLM-visible string message with compact ISO send time at API-call time,
+    # using stored timestamps for replayed history and current time for fresh
+    # in-memory turns.  This keeps the system prompt cache-stable.
+    _raw_live_time_context = _agent_section.get("live_time_context", True)
+    if isinstance(_raw_live_time_context, str):
+        agent._live_time_context = _raw_live_time_context.strip().lower() not in {
+            "0", "false", "no", "off", "never"
+        }
+    else:
+        agent._live_time_context = bool(_raw_live_time_context)
+
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.
     try:

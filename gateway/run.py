@@ -9568,6 +9568,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                current_message_timestamp=event.timestamp,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -17106,6 +17107,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        current_message_timestamp: Any = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -18498,6 +18500,7 @@ class GatewayRunner:
                 _conversation_kwargs = {
                     "conversation_history": agent_history,
                     "task_id": session_id,
+                    "current_message_timestamp": current_message_timestamp,
                 }
                 if observed_group_context:
                     _conversation_kwargs["persist_user_message"] = message
@@ -19309,6 +19312,11 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    current_message_timestamp=(
+                        getattr(pending_event, "timestamp", None)
+                        if pending_event is not None
+                        else None
+                    ),
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

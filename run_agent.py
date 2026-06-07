@@ -1584,6 +1584,7 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    timestamp=msg.get("timestamp"),
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
@@ -4059,6 +4060,12 @@ class AIAgent:
                 self, "_current_streamed_assistant_text", ""
             ):
                 text = text.lstrip("\n")
+                try:
+                    from agent.live_time_context import strip_sent_timestamp_prefix
+
+                    text = strip_sent_timestamp_prefix(text)
+                except Exception:
+                    pass
         if not text:
             return
         callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
@@ -5056,10 +5063,20 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        current_message_timestamp: Any = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
-        return run_conversation(self, user_message, system_message, conversation_history, task_id, stream_callback, persist_user_message)
+        return run_conversation(
+            self,
+            user_message,
+            system_message,
+            conversation_history,
+            task_id,
+            stream_callback,
+            persist_user_message,
+            current_message_timestamp,
+        )
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

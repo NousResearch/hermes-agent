@@ -594,6 +594,12 @@ agent:
   # 0 = no drain, interrupt immediately.
   # restart_drain_timeout: 60
 
+  # Prefix each LLM-visible string message with a compact send timestamp at
+  # API-call time (e.g. [sent: 2026-06-07T17:42+02:00]). Replayed history
+  # uses stored session timestamps; fresh in-memory turns use current time.
+  # This keeps exact wall-clock context out of the cached system prompt.
+  # live_time_context: true
+
   # Max app-level retry attempts for API errors (connection drops, provider
   # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
   # to 1 if you use fallback providers and want fast failover on flaky

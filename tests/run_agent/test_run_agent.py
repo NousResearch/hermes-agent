@@ -12,10 +12,12 @@ import json
 import logging
 import re
 import uuid
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from agent.codex_responses_adapter import _normalize_codex_response
@@ -1109,6 +1111,50 @@ class TestBuildSystemPrompt:
                 break
         else:
             assert False, "Expected a 'Conversation started:' line in the system prompt"
+
+    def test_exact_current_time_is_not_in_system_prompt(self, agent):
+        """Live wall-clock time belongs in per-turn context, not the cached prompt."""
+        with patch("hermes_time.now") as mock_now:
+            mock_now.return_value.strftime.side_effect = lambda fmt: {
+                "%A, %B %d, %Y": "Sunday, June 07, 2026",
+            }.get(fmt, "15:42")
+
+            prompt = agent._build_system_prompt()
+
+        assert "Conversation started: Sunday, June 07, 2026" in prompt
+        assert "15:42" not in prompt
+
+    def test_live_time_context_formats_exact_time_for_ephemeral_injection(self):
+        from agent.live_time_context import add_sent_timestamp_prefix, format_live_time_context
+
+        now = datetime(2026, 6, 7, 21, 34, tzinfo=ZoneInfo("Europe/Berlin"))
+
+        assert format_live_time_context(now) == "[sent: 2026-06-07T21:34+02:00]"
+        assert (
+            add_sent_timestamp_prefix("what time is it?", now)
+            == "[sent: 2026-06-07T21:34+02:00]\nwhat time is it?"
+        )
+
+    def test_live_time_context_config_defaults_on_and_parses_string_false(self, agent):
+        assert agent._live_time_context is True
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("hermes_cli.config.load_config", return_value={"agent": {"live_time_context": "false"}}),
+            patch("run_agent.OpenAI"),
+        ):
+            configured = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert getattr(configured, "_live_time_context") is False
 
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
@@ -3365,6 +3411,7 @@ class TestRunConversation:
         agent.tool_delay = 0
         agent.compression_enabled = False
         agent.save_trajectories = False
+        agent._live_time_context = False
 
     def test_stop_finish_reason_returns_response(self, agent):
         self._setup_agent(agent)
@@ -3378,6 +3425,68 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_echoed_live_time_marker_is_stripped_from_final_response(self, agent):
+        self._setup_agent(agent)
+        resp = _mock_response(
+            content="[sent: 2026-06-07T19:42+02:00]\nFinal answer",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.return_value = resp
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Final answer"
+        persisted_assistant = [
+            m for m in result["messages"] if m.get("role") == "assistant"
+        ][-1]
+        assert persisted_assistant["content"] == "Final answer"
+
+    def test_injects_live_time_context_into_current_user_message_only(self, agent):
+        self._setup_agent(agent)
+        agent._live_time_context = True
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        prompt = "what time is it?"
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(prompt)
+
+        assert result["final_response"] == "Final answer"
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        user_messages = [m for m in sent_messages if m.get("role") == "user"]
+        assert user_messages
+        content = str(user_messages[-1].get("content", ""))
+        assert content.startswith("[sent: ")
+        assert prompt in content
+        # Timestamp prefix is ephemeral API context, not a mutation of the input.
+        assert prompt == "what time is it?"
+
+    def test_live_time_context_can_be_disabled(self, agent):
+        self._setup_agent(agent)
+        agent._live_time_context = False
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch("agent.live_time_context.add_sent_timestamp_prefix") as mock_live_time,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("what time is it?")
+
+        mock_live_time.assert_not_called()
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert all(not str(m.get("content", "")).startswith("[sent: ") for m in sent_messages)
 
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
@@ -3462,7 +3571,10 @@ class TestRunConversation:
         ]
         assert all("message_count" in c and isinstance(c.get("request_messages"), list) for c in pre_request_calls)
         assert all("request" in c and "messages" in c["request"]["body"] for c in pre_request_calls)
-        assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
+        assert any(
+            msg.get("role") == "user" and "search something" in str(msg.get("content", ""))
+            for msg in pre_request_calls[0]["request_messages"]
+        )
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
 

@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -2010,6 +2011,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        timestamp: Any = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -2040,6 +2042,12 @@ class SessionDB:
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
+        if isinstance(timestamp, datetime):
+            stored_timestamp = timestamp.timestamp()
+        elif timestamp is None:
+            stored_timestamp = time.time()
+        else:
+            stored_timestamp = timestamp
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -2060,7 +2068,7 @@ class SessionDB:
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
-                    time.time(),
+                    stored_timestamp,
                     token_count,
                     finish_reason,
                     reasoning,
@@ -2497,7 +2505,7 @@ class SessionDB:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
-                "finish_reason, reasoning, reasoning_content, reasoning_details, "
+                "timestamp, finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 f"{active_clause} ORDER BY id",
@@ -2510,6 +2518,8 @@ class SessionDB:
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
+            if row["timestamp"]:
+                msg["timestamp"] = row["timestamp"]
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:

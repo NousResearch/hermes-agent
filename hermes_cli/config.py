@@ -852,6 +852,11 @@ DEFAULT_CONFIG = {
         # (docker/modal/ssh — they have their own probe).  Set False to
         # disable entirely.
         "environment_probe": True,
+        # Prefix each LLM-visible string message with a compact per-message ISO
+        # send timestamp at API-call time. Uses stored session timestamps for
+        # replayed history and current wall-clock time for new in-memory turns.
+        # Keeps the system prompt cache-stable. Set False to disable.
+        "live_time_context": True,
         # Embedder-supplied environment description appended to the system
         # prompt's environment-hints block. Lets a host that wraps Hermes
         # (sandbox runner, managed platform) explain the runtime environment

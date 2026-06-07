@@ -77,6 +77,19 @@ Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a refer
 
 For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/integrations/providers).
 
+## Agent Runtime Context
+
+Hermes keeps volatile runtime facts out of the cached system prompt whenever possible. When enabled, each LLM-visible string message is prefixed at API-call time with a compact send timestamp, for example `[sent: 2026-06-07T17:42+02:00]`. Replayed history uses the message's stored timestamp; fresh in-memory turns use the current wall clock. This lets the model interpret phrases like "now", "tomorrow", and gaps between cached/history messages without changing the stable prompt prefix that providers cache across turns.
+
+```yaml
+agent:
+  live_time_context: true   # default: prefix LLM-visible messages with compact send timestamps
+
+timezone: Europe/Berlin     # optional IANA timezone; HERMES_TIMEZONE overrides it
+```
+
+Set `agent.live_time_context: false` to disable this timestamp context entirely. The prefix uses the same timezone resolution as other Hermes time features: `HERMES_TIMEZONE` first, then top-level `timezone` in `config.yaml`, then the server-local timezone. The date-only `Conversation started:` line remains session-scoped and cache-stable; exact HH:MM context is ephemeral and is not persisted to session history.
+
 ### Provider Timeouts
 
 You can set `providers.<id>.request_timeout_seconds` for a provider-wide request timeout, plus `providers.<id>.models.<model>.timeout_seconds` for a model-specific override. Applies to the primary turn client on every transport (OpenAI-wire, native Anthropic, Anthropic-compatible), the fallback chain, rebuilds after credential rotation, and (for OpenAI-wire) the per-request timeout kwarg — so the configured value wins over the legacy `HERMES_API_TIMEOUT` env var.

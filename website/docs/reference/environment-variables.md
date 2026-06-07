@@ -124,7 +124,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `HERMES_NOUS_TIMEOUT_SECONDS` | HTTP timeout for Nous credential / token flows |
 | `HERMES_DUMP_REQUESTS` | Dump API request payloads to log files (`true`/`false`) |
 | `HERMES_PREFILL_MESSAGES_FILE` | Path to a JSON file of ephemeral prefill messages injected at API-call time |
-| `HERMES_TIMEZONE` | IANA timezone override (for example `America/New_York`) |
+| `HERMES_TIMEZONE` | IANA timezone override (for example `America/New_York`). Used for scheduled jobs and ephemeral LLM-visible send timestamp prefixes; overrides top-level `timezone` in `config.yaml`. |
 
 ## Tool APIs
 

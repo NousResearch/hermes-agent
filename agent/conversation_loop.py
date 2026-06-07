@@ -31,6 +31,7 @@ from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
+from agent.live_time_context import strip_sent_timestamp_prefix
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
     _repair_tool_call_arguments,
@@ -369,6 +370,7 @@ def run_conversation(
     task_id: str = None,
     stream_callback: Optional[callable] = None,
     persist_user_message: Optional[str] = None,
+    current_message_timestamp: Any = None,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -384,6 +386,10 @@ def run_conversation(
         persist_user_message: Optional clean user message to store in
             transcripts/history when user_message contains API-only
             synthetic prefixes.
+        current_message_timestamp: Optional platform send timestamp for
+            the current user message. When provided, the stored transcript
+            and live-time prompt context use the platform send time instead
+            of the gateway processing time.
                 or queuing follow-up prefetch work.
 
     Returns:
@@ -441,8 +447,11 @@ def run_conversation(
     agent._stream_callback = stream_callback
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = persist_user_message
+    agent._current_message_timestamp = current_message_timestamp
+
     # Generate unique task_id if not provided to isolate VMs between concurrent tasks
     effective_task_id = task_id or str(uuid.uuid4())
+
     # Expose the active task_id so tools running mid-turn (e.g. delegate_task
     # in delegate_tool.py) can identify this agent for the cross-agent file
     # state registry.  Set BEFORE any tool dispatch so snapshots taken at
@@ -576,6 +585,8 @@ def run_conversation(
 
     # Add user message
     user_msg = {"role": "user", "content": user_message}
+    if current_message_timestamp is not None:
+        user_msg["timestamp"] = current_message_timestamp
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
@@ -733,6 +744,13 @@ def run_conversation(
     #
     # All injected context is ephemeral (not persisted to session DB).
     _plugin_user_context = ""
+    _stamp_message_time = None
+    if getattr(agent, "_live_time_context", True):
+        try:
+            from agent.live_time_context import add_sent_timestamp_prefix as _stamp_message_time
+        except Exception as exc:
+            logger.warning("live time context setup failed: %s", exc)
+            _stamp_message_time = None
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
@@ -980,11 +998,18 @@ def run_conversation(
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
 
-            # Inject ephemeral context into the current turn's user message.
-            # Sources: memory manager prefetch + plugin pre_llm_call hooks
-            # with target="user_message" (the default).  Both are
-            # API-call-time only — the original message in `messages` is
-            # never mutated, so nothing leaks into session persistence.
+            # Inject ephemeral context into API messages only.  Per-message
+            # timestamps use each message's stored timestamp when available and
+            # fall back to the current wall clock for brand-new in-memory turns.
+            # Memory/plugin context is appended only to the current user message.
+            # The original `messages` list is never mutated, so nothing leaks
+            # into session persistence and the cached system prompt stays
+            # byte-stable.
+            if _stamp_message_time and isinstance(api_msg.get("content"), str):
+                api_msg["content"] = _stamp_message_time(
+                    api_msg["content"], msg.get("timestamp")
+                )
+
             if idx == current_turn_user_idx and msg.get("role") == "user":
                 _injections = []
                 if _ext_prefetch_cache:
@@ -4500,9 +4525,12 @@ def run_conversation(
                     truncated_response_parts = []
                     length_continue_retries = 0
                 
-                final_response = agent._strip_think_blocks(final_response).strip()
+                final_response = strip_sent_timestamp_prefix(
+                    agent._strip_think_blocks(final_response).strip()
+                )
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                final_msg["content"] = final_response
 
                 # Pop thinking-only prefill and empty-response retry
                 # scaffolding before appending the final response.  These
@@ -4811,11 +4839,14 @@ def run_conversation(
             )
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:
-                    final_response = _hook_result
+                    final_response = strip_sent_timestamp_prefix(_hook_result)
                     _response_transformed = True
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
+
+    if final_response:
+        final_response = strip_sent_timestamp_prefix(final_response)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

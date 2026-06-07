@@ -13,27 +13,128 @@ import pytest
 def test_version_string_no_v_prefix():
     """__version__ should be bare semver without a 'v' prefix."""
     from hermes_cli import __version__
-    assert not __version__.startswith("v"), f"__version__ should not start with 'v', got {__version__!r}"
+
+    assert not __version__.startswith(
+        "v"
+    ), f"__version__ should not start with 'v', got {__version__!r}"
 
 
 def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
-    """When cache is fresh, check_for_updates should return cached value without calling git."""
+    """When cache is fresh and HEAD matches, check_for_updates should return cached value.
+
+    This prevents stale "behind" results after a local fast-forward update that would
+    otherwise require another full git check within the TTL window.
+    """
     from hermes_cli.banner import check_for_updates
 
-    # Create a fake git repo and fresh cache
+    # Create a fake git repo and fresh cache with a HEAD fingerprint
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
     (repo_dir / ".git").mkdir()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+    cache_file.write_text(
+        json.dumps({"ts": time.time(), "behind": 3, "head": "abc12345"})
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout="abc12345\n")
+        result = check_for_updates()
+
+    assert result == 3
+    assert mock_run.call_count == 1
+    assert mock_run.call_args_list[0].args[0][:3] == ["git", "rev-parse", "--short=8"]
+
+
+def test_check_for_updates_refreshes_cache_when_head_changes(tmp_path, monkeypatch):
+    """If cached HEAD doesn't match current HEAD, check_for_updates refreshes.
+
+    This handles fast-forward git pulls where package version stays unchanged but
+    cached update status should be invalidated.
+    """
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(
+        json.dumps({"ts": time.time(), "behind": 3, "head": "oldhash1"})
+    )
+
+    mock_results = [
+        MagicMock(returncode=0, stdout="newhash2\n"),  # current HEAD mismatch
+        MagicMock(returncode=0, stdout=""),  # git fetch
+        MagicMock(returncode=0, stdout="5\n"),  # git rev-list
+    ]
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch(
+        "hermes_cli.banner.subprocess.run", side_effect=mock_results
+    ) as mock_run:
+        result = check_for_updates()
+
+    assert result == 5
+    assert mock_run.call_count == 3  # git rev-parse HEAD + git fetch + git rev-list
+    # cache was rewritten with the current HEAD hash
+    reloaded = json.loads(cache_file.read_text())
+    assert reloaded.get("head") == "newhash2"
+
+
+def test_check_for_updates_uses_legacy_cache_when_revision_present(
+    tmp_path, monkeypatch
+):
+    """Legacy cache with an explicit embedded revision should still be used."""
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(
+        json.dumps({"ts": time.time(), "behind": 7, "rev": "some-embedded-rev"})
+    )
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
         result = check_for_updates()
 
-    assert result == 3
-    mock_run.assert_not_called()
+    assert result == 7
+    assert mock_run.call_count == 0
+
+
+def test_check_for_updates_refreshes_legacy_cache_when_revision_missing(
+    tmp_path, monkeypatch
+):
+    """Legacy cache with unknown embedded revision (None) should be invalidated."""
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(
+        json.dumps({"ts": time.time(), "behind": 7, "rev": None, "head": None})
+    )
+
+    mock_results = [
+        MagicMock(returncode=0, stdout="newhash2\n"),  # current HEAD
+        MagicMock(returncode=0, stdout=""),  # git fetch
+        MagicMock(returncode=0, stdout="6\n"),  # git rev-list
+    ]
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch(
+        "hermes_cli.banner.subprocess.run", side_effect=mock_results
+    ) as mock_run:
+        result = check_for_updates()
+
+    assert result == 6
+    assert mock_run.call_count == 3
 
 
 def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
@@ -51,11 +152,13 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     mock_result = MagicMock(returncode=0, stdout="5\n")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+    with patch(
+        "hermes_cli.banner.subprocess.run", return_value=mock_result
+    ) as mock_run:
         result = check_for_updates()
 
     assert result == 5
-    assert mock_run.call_count == 2  # git fetch + git rev-list
+    assert mock_run.call_count == 3  # git rev-parse HEAD + git fetch + git rev-list
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
@@ -128,14 +231,21 @@ def test_invalidate_update_cache_clears_all_profiles(tmp_path):
         p.mkdir(parents=True)
         (p / ".update_check").write_text('{"ts":1,"behind":50}')
 
-    with patch.object(Path, "home", return_value=tmp_path), \
-         patch.dict(os.environ, {"HERMES_HOME": str(default_home)}):
+    with patch.object(Path, "home", return_value=tmp_path), patch.dict(
+        os.environ, {"HERMES_HOME": str(default_home)}
+    ):
         _invalidate_update_cache()
 
     # All three caches should be gone
-    assert not (default_home / ".update_check").exists(), "default profile cache not cleared"
-    assert not (profiles_root / "ops" / ".update_check").exists(), "ops profile cache not cleared"
-    assert not (profiles_root / "dev" / ".update_check").exists(), "dev profile cache not cleared"
+    assert not (
+        default_home / ".update_check"
+    ).exists(), "default profile cache not cleared"
+    assert not (
+        profiles_root / "ops" / ".update_check"
+    ).exists(), "ops profile cache not cleared"
+    assert not (
+        profiles_root / "dev" / ".update_check"
+    ).exists(), "dev profile cache not cleared"
 
 
 def test_invalidate_update_cache_no_profiles_dir(tmp_path):
@@ -146,8 +256,9 @@ def test_invalidate_update_cache_no_profiles_dir(tmp_path):
     default_home.mkdir()
     (default_home / ".update_check").write_text('{"ts":1,"behind":5}')
 
-    with patch.object(Path, "home", return_value=tmp_path), \
-         patch.dict(os.environ, {"HERMES_HOME": str(default_home)}):
+    with patch.object(Path, "home", return_value=tmp_path), patch.dict(
+        os.environ, {"HERMES_HOME": str(default_home)}
+    ):
         _invalidate_update_cache()
 
     assert not (default_home / ".update_check").exists()

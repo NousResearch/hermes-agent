@@ -42,10 +42,12 @@ def cprint(text: str):
 # Skin-aware color helpers
 # =========================================================================
 
+
 def _skin_color(key: str, fallback: str) -> str:
     """Get a color from the active skin, or return fallback."""
     try:
         from hermes_cli.skin_engine import get_active_skin
+
         return get_active_skin().get_color(key, fallback)
     except Exception:
         return fallback
@@ -55,6 +57,7 @@ def _skin_branding(key: str, fallback: str) -> str:
     """Get a branding string from the active skin, or return fallback."""
     try:
         from hermes_cli.skin_engine import get_active_skin
+
         return get_active_skin().get_branding(key, fallback)
     except Exception:
         return fallback
@@ -90,10 +93,10 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
 
 
-
 # =========================================================================
 # Skills scanning
 # =========================================================================
+
 
 def get_available_skills() -> Dict[str, List[str]]:
     """Return skills grouped by category, filtered by platform and disabled state.
@@ -104,6 +107,7 @@ def get_available_skills() -> Dict[str, List[str]]:
     """
     try:
         from tools.skills_tool import _find_all_skills
+
         all_skills = _find_all_skills()  # already filtered
     except Exception:
         return {}
@@ -140,21 +144,40 @@ def check_for_updates() -> Optional[int]:
     if not (repo_dir / ".git").exists():
         return None
 
-    # Read cache
+    # Read cache and validate against current HEAD to avoid stale "behind" notices
+    # after a manual `git pull --ff-only` / fast-forward.
     now = time.time()
+    current_head = None
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
+            cached_head = cached.get("head")
+            cached_behind = cached.get("behind")
             if now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS:
-                return cached.get("behind")
+                # Legacy cache format used by older releases may store `rev` instead
+                # of a short local HEAD. If embedded revision is unknown (`None`),
+                # we refresh to avoid reusing potentially stale status.
+                if cached_head:
+                    current_head = _git_short_hash(repo_dir, "HEAD")
+                    if current_head is None:
+                        return cached_behind
+                    if current_head == cached_head:
+                        return cached_behind
+                elif cached.get("rev") is not None:
+                    return cached_behind
     except Exception:
         pass
+
+    # Compute the local HEAD once for both cache population and refresh checks.
+    if current_head is None:
+        current_head = _git_short_hash(repo_dir, "HEAD")
 
     # Fetch latest refs (fast — only downloads ref metadata, no files)
     try:
         subprocess.run(
             ["git", "fetch", "origin", "--quiet"],
-            capture_output=True, timeout=10,
+            capture_output=True,
+            timeout=10,
             cwd=str(repo_dir),
         )
     except Exception:
@@ -164,7 +187,9 @@ def check_for_updates() -> Optional[int]:
     try:
         result = subprocess.run(
             ["git", "rev-list", "--count", "HEAD..origin/main"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
             cwd=str(repo_dir),
         )
         if result.returncode == 0:
@@ -174,9 +199,17 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         behind = None
 
-    # Write cache
+    # Write cache with short local HEAD hash for robust invalidation on local updates
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind}))
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "ts": now,
+                    "behind": behind,
+                    "head": current_head,
+                }
+            )
+        )
     except Exception:
         pass
 
@@ -266,10 +299,12 @@ _update_check_done = threading.Event()
 
 def prefetch_update_check():
     """Kick off update check in a background daemon thread."""
+
     def _run():
         global _update_result
         _update_result = check_for_updates()
         _update_check_done.set()
+
     t = threading.Thread(target=_run, daemon=True)
     t.start()
 
@@ -283,6 +318,7 @@ def get_update_result(timeout: float = 0.5) -> Optional[int]:
 # =========================================================================
 # Welcome banner
 # =========================================================================
+
 
 def _format_context_length(tokens: int) -> str:
     """Format a token count for display (e.g. 128000 → '128K', 1048576 → '1M')."""
@@ -305,19 +341,19 @@ def _display_toolset_name(toolset_name: str) -> str:
     """Normalize internal/legacy toolset identifiers for banner display."""
     if not toolset_name:
         return "unknown"
-    return (
-        toolset_name[:-6]
-        if toolset_name.endswith("_tools")
-        else toolset_name
-    )
+    return toolset_name[:-6] if toolset_name.endswith("_tools") else toolset_name
 
 
-def build_welcome_banner(console: Console, model: str, cwd: str,
-                         tools: List[dict] = None,
-                         enabled_toolsets: List[str] = None,
-                         session_id: str = None,
-                         get_toolset_for_tool=None,
-                         context_length: int = None):
+def build_welcome_banner(
+    console: Console,
+    model: str,
+    cwd: str,
+    tools: List[dict] = None,
+    enabled_toolsets: List[str] = None,
+    session_id: str = None,
+    get_toolset_for_tool=None,
+    context_length: int = None,
+):
     """Build and print a welcome banner with caduceus on left and info on right.
 
     Args:
@@ -331,6 +367,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         context_length: Model's context window size in tokens.
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+
     if get_toolset_for_tool is None:
         from model_tools import get_toolset_for_tool
 
@@ -365,8 +402,13 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     # Use skin's custom caduceus art if provided
     try:
         from hermes_cli.skin_engine import get_active_skin
+
         _bskin = get_active_skin()
-        _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else HERMES_CADUCEUS
+        _hero = (
+            _bskin.banner_hero
+            if hasattr(_bskin, "banner_hero") and _bskin.banner_hero
+            else HERMES_CADUCEUS
+        )
     except Exception:
         _bskin = None
         _hero = HERMES_CADUCEUS
@@ -376,8 +418,14 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         model_short = model_short[:-5]
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
-    ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-    left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+    ctx_str = (
+        f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]"
+        if context_length
+        else ""
+    )
+    left_lines.append(
+        f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]"
+    )
     left_lines.append(f"[dim {dim}]{cwd}[/]")
     if session_id:
         left_lines.append(f"[dim {session_color}]Session: {session_id}[/]")
@@ -445,6 +493,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     # MCP Servers section (only if configured)
     try:
         from tools.mcp_tool import get_mcp_status
+
         mcp_status = get_mcp_status()
     except Exception:
         mcp_status = []
@@ -492,6 +541,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     # Show active profile name when not 'default'
     try:
         from hermes_cli.profiles import get_active_profile_name
+
         _profile_name = get_active_profile_name()
         if _profile_name and _profile_name != "default":
             right_lines.append(f"[bold {accent}]Profile:[/] [{text}]{_profile_name}[/]")
@@ -505,6 +555,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         behind = get_update_result(timeout=0.5)
         if behind and behind > 0:
             from hermes_cli.config import recommended_update_command
+
             commits_word = "commit" if behind == 1 else "commits"
             right_lines.append(
                 f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
@@ -529,7 +580,11 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     console.print()
     term_width = shutil.get_terminal_size().columns
     if term_width >= 95:
-        _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
+        _logo = (
+            _bskin.banner_logo
+            if _bskin and hasattr(_bskin, "banner_logo") and _bskin.banner_logo
+            else HERMES_AGENT_LOGO
+        )
         console.print(_logo)
         console.print()
     console.print(outer_panel)

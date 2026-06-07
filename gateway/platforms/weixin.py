@@ -19,6 +19,7 @@ import json
 import logging
 import mimetypes
 import os
+import random
 import re
 import secrets
 import struct
@@ -105,6 +106,28 @@ def _is_stale_session_ret(
     if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
         return False
     return (errmsg or "").lower() == "unknown error"
+
+
+def _parse_retry_after(resp: Dict[str, Any]) -> Optional[float]:
+    """Extract retry-after hint from iLink rate-limit response.
+
+    Tries common field names that the iLink API might return alongside
+    ``ret=-2`` / ``errcode=-2`` rate-limit errors.  Returns seconds to wait,
+    or ``None`` when no usable hint is present.
+    """
+    for key in ("retry_after", "retry_after_seconds", "retry_after_ms", "backoff"):
+        val = resp.get(key)
+        if val is None:
+            continue
+        try:
+            seconds = float(val)
+        except (ValueError, TypeError):
+            continue
+        if key.endswith("_ms"):
+            seconds /= 1000.0
+        if 0 < seconds <= 120:  # sanity cap at 2 minutes
+            return seconds
+    return None
 
 
 MEDIA_IMAGE = 1
@@ -1155,6 +1178,7 @@ class WeixinAdapter(BasePlatformAdapter):
         self._send_session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
+        self._rate_limited_at: Dict[str, float] = {}  # chat_id → last rate-limit timestamp
 
         self._account_id = str(extra.get("account_id") or os.getenv("WEIXIN_ACCOUNT_ID", "")).strip()
         self._token = str(config.token or extra.get("token") or os.getenv("WEIXIN_TOKEN", "")).strip()
@@ -1171,6 +1195,14 @@ class WeixinAdapter(BasePlatformAdapter):
         self._send_chunk_retry_delay_seconds = float(
             extra.get("send_chunk_retry_delay_seconds")
             or os.getenv("WEIXIN_SEND_CHUNK_RETRY_DELAY_SECONDS", "1.0")
+        )
+        self._rate_limit_backoff_base = float(
+            extra.get("rate_limit_backoff_base_seconds")
+            or os.getenv("WEIXIN_RATE_LIMIT_BACKOFF_BASE", str(self._send_chunk_retry_delay_seconds))
+        )
+        self._rate_limit_chunk_cooldown = float(
+            extra.get("rate_limit_chunk_cooldown_seconds")
+            or os.getenv("WEIXIN_RATE_LIMIT_CHUNK_COOLDOWN", "5.0")
         )
         self._dm_policy = str(extra.get("dm_policy") or os.getenv("WEIXIN_DM_POLICY", "open")).strip().lower()
         self._group_policy = str(extra.get("group_policy") or os.getenv("WEIXIN_GROUP_POLICY", "disabled")).strip().lower()
@@ -1695,26 +1727,34 @@ class WeixinAdapter(BasePlatformAdapter):
                                 self.name, _safe_id(chat_id),
                             )
                             continue
-                        # Rate limit (-2) — backoff and retry
+                        # Rate limit (-2) — exponential backoff and retry
                         is_rate_limited = (
                             ret == RATE_LIMIT_ERRCODE
                             or errcode == RATE_LIMIT_ERRCODE
                         )
                         if is_rate_limited:
                             errmsg = resp.get("errmsg") or resp.get("msg") or "rate limited"
-                            # Record the error so we raise a descriptive
-                            # RuntimeError (instead of AssertionError) if the
-                            # loop exhausts with the server still rate-limiting.
                             last_error = RuntimeError(
                                 f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg}"
                             )
                             if attempt >= self._send_chunk_retries:
                                 break
-                            wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
+                            # Exponential backoff with jitter.
+                            #   attempt 0 → ~1s,  1 → ~2s,  2 → ~4s,  3 → ~8s,  4 → ~16s
+                            # Respect a server-supplied retry_after hint when available.
+                            retry_after = _parse_retry_after(resp)
+                            if retry_after is not None:
+                                wait = retry_after
+                            else:
+                                wait = self._rate_limit_backoff_base * (2 ** attempt)
+                                # ±25 % jitter to avoid thundering-herd
+                                wait *= 0.75 + random.random() * 0.5
                             logger.warning(
-                                "[%s] rate limited for %s; backing off %.1fs before retry",
+                                "[%s] rate limited for %s; backing off %.1fs before retry %d/%d",
                                 self.name, _safe_id(chat_id), wait,
+                                attempt + 1, self._send_chunk_retries + 1,
                             )
+                            self._rate_limited_at[chat_id] = time.time()
                             await asyncio.sleep(wait)
                             continue
                         errmsg = resp.get("errmsg") or resp.get("msg") or "unknown error"
@@ -1755,10 +1795,8 @@ class WeixinAdapter(BasePlatformAdapter):
 
         # Extract MEDIA: tags and bare local file paths before text delivery.
         media_files, cleaned_content = self.extract_media(content)
-        media_files = self.filter_media_delivery_paths(media_files)
         _, image_cleaned = self.extract_images(cleaned_content)
         local_files, final_content = self.extract_local_files(image_cleaned)
-        local_files = self.filter_local_delivery_paths(local_files)
 
         _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
         _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
@@ -1801,8 +1839,19 @@ class WeixinAdapter(BasePlatformAdapter):
                     client_id=client_id,
                 )
                 last_message_id = client_id
-                if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
-                    await asyncio.sleep(self._send_chunk_delay_seconds)
+                if idx < len(chunks) - 1:
+                    # When the chat was recently rate-limited, apply a longer
+                    # cooldown between chunks to avoid cascading failures.
+                    last_rl = self._rate_limited_at.get(chat_id, 0)
+                    delay = self._send_chunk_delay_seconds
+                    if last_rl and time.time() - last_rl < self._rate_limit_chunk_cooldown * 2:
+                        delay = max(delay, self._rate_limit_chunk_cooldown)
+                        logger.debug(
+                            "[%s] rate-limit cooldown active for %s; inter-chunk delay %.1fs",
+                            self.name, _safe_id(chat_id), delay,
+                        )
+                    if delay > 0:
+                        await asyncio.sleep(delay)
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)

@@ -1057,6 +1057,53 @@ def test_drain_notifications_skips_consumed():
             process_registry.completion_queue.get_nowait()
 
 
+def test_drain_notifications_skips_consumed_watch_events():
+    """Consumed sessions must not replay stale watch notifications later."""
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    process_registry._completion_consumed.add("proc_consumed_watch")
+    process_registry.completion_queue.put({
+        "type": "watch_match",
+        "session_id": "proc_consumed_watch",
+        "command": "tail -f x",
+        "pattern": "Application startup complete",
+        "output": "Application startup complete",
+        "suppressed": 0,
+    })
+    process_registry.completion_queue.put({
+        "type": "watch_disabled",
+        "session_id": "proc_consumed_watch",
+        "message": "Watch disabled for proc_consumed_watch",
+    })
+
+    try:
+        results = process_registry.drain_notifications()
+        assert results == []
+    finally:
+        process_registry._completion_consumed.discard("proc_consumed_watch")
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_kill_process_marks_session_consumed(registry):
+    """Killing a watched process should suppress queued stale notifications."""
+    s = _make_session(sid="proc_kill_consumed")
+    s.detached = True
+    s.pid_scope = "host"
+    s.pid = 12345
+    registry._running[s.id] = s
+    registry._is_host_pid_alive = MagicMock(return_value=True)
+    registry._terminate_host_pid = MagicMock()
+
+    result = registry.kill_process(s.id)
+
+    assert result["status"] == "killed"
+    assert s.id in registry._completion_consumed
+
+
 def test_drain_notifications_empty_queue():
     from tools.process_registry import process_registry
 

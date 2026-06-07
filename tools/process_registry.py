@@ -905,7 +905,7 @@ class ProcessRegistry:
             except Exception:
                 break
             _evt_sid = evt.get("session_id", "")
-            if evt.get("type") == "completion" and self.is_completion_consumed(_evt_sid):
+            if _evt_sid and self.is_completion_consumed(_evt_sid):
                 continue
             text = format_process_notification(evt)
             if text:
@@ -1193,6 +1193,10 @@ class ProcessRegistry:
                 }
             session.exited = True
             session.exit_code = -15  # SIGTERM
+            # process.kill is an explicit user/agent action.  Do not later
+            # replay queued watch_match/watch_disabled/completion events for
+            # this session as fresh "IMPORTANT" notifications.
+            self._completion_consumed.add(session.id)
             self._move_to_finished(session)
             self._write_checkpoint()
             return {"status": "killed", "session_id": session.id}

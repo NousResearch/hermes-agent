@@ -794,6 +794,66 @@ def test_ai_pair_run_executes_configured_coder_command(tmp_path):
     assert state["status"] == "coder_plan_ready_for_owner"
 
 
+def test_desktop_seat_registry_maps_coach_coder_reviewer(tmp_path):
+    cli = _load_cli()
+    _init_git_repo(tmp_path)
+
+    registry = cli.build_desktop_seat_registry(
+        project=tmp_path,
+        coach_ai="Claude",
+        coder_ai="Cursor/Qwen",
+        reviewer_ai="Codex",
+    )
+
+    assert registry["project_name"] == tmp_path.name
+    assert registry["roles"]["coach"]["bundle_id"] == "com.anthropic.claudefordesktop"
+    assert registry["roles"]["coder"]["bundle_id"] == "com.todesktop.230313mzl4w4u92"
+    assert registry["roles"]["reviewer"]["bundle_id"] == "com.openai.codex"
+
+
+def test_evaluate_desktop_seats_blocks_unbound_windows(tmp_path):
+    cli = _load_cli()
+    registry = {
+        "project": str(tmp_path),
+        "project_name": "Lotto Reward",
+        "branch": "ai-pair/phase-0-foundation",
+        "roles": {
+            "coach": {
+                "ai": "Claude",
+                "seat_id": "claude",
+                "bundle_id": "com.anthropic.claudefordesktop",
+            },
+            "coder": {
+                "ai": "Cursor/Qwen",
+                "seat_id": "cursor-qwen",
+                "bundle_id": "com.todesktop.230313mzl4w4u92",
+            },
+            "reviewer": {
+                "ai": "Codex",
+                "seat_id": "codex",
+                "bundle_id": "com.openai.codex",
+            },
+        },
+    }
+    apps = [
+        {"bundle_id": "com.anthropic.claudefordesktop", "running": True, "pid": 10},
+        {"bundle_id": "com.todesktop.230313mzl4w4u92", "running": True, "pid": 20},
+        {"bundle_id": "com.openai.codex", "running": True, "pid": 30},
+    ]
+    windows_by_pid = {
+        10: [{"title": "Claude", "bounds": {"width": 1200, "height": 900}}],
+        20: [{"title": "Qwen Code - Lotto Reward", "bounds": {"width": 1200, "height": 900}}],
+        30: [{"title": "Codex", "bounds": {"width": 1200, "height": 900}}],
+    }
+
+    report = cli.evaluate_desktop_seats(registry=registry, apps=apps, windows_by_pid=windows_by_pid)
+
+    assert report["ok"] is False
+    assert report["roles"]["coder"]["ok"] is True
+    assert report["roles"]["coach"]["ok"] is False
+    assert report["roles"]["reviewer"]["ok"] is False
+
+
 def test_render_ai_pair_review_packet_includes_read_only_rules(tmp_path):
     cli = _load_cli()
     cli.init_project(tmp_path, force=False)

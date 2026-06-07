@@ -1090,6 +1090,189 @@ def run_ai_pair_coder_plan(
     }
 
 
+DESKTOP_SEAT_PROFILES = {
+    "claude": {
+        "bundle_id": "com.anthropic.claudefordesktop",
+        "app_name": "Claude",
+        "aliases": ("claude", "claude code", "claude-code", "claude app"),
+    },
+    "codex": {
+        "bundle_id": "com.openai.codex",
+        "app_name": "Codex",
+        "aliases": ("codex", "codex app"),
+    },
+    "cursor-qwen": {
+        "bundle_id": "com.todesktop.230313mzl4w4u92",
+        "app_name": "Cursor",
+        "aliases": ("cursor", "qwen", "cursor/qwen", "cursor qwen", "qwen code"),
+    },
+}
+
+
+def _desktop_profile_for_ai(ai_name: str) -> dict[str, Any]:
+    normalized = ai_name.strip().lower()
+    for seat_id, profile in DESKTOP_SEAT_PROFILES.items():
+        if normalized == seat_id or normalized in profile["aliases"]:
+            result = dict(profile)
+            result["seat_id"] = seat_id
+            return result
+    return {
+        "seat_id": re.sub(r"[^a-z0-9]+", "-", normalized).strip("-") or "unknown",
+        "bundle_id": "",
+        "app_name": ai_name,
+        "aliases": (),
+    }
+
+
+def _git_branch(root: Path) -> str:
+    completed = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=str(root),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return completed.stdout.strip()
+
+
+def build_desktop_seat_registry(
+    *,
+    project: str | Path,
+    coach_ai: str,
+    coder_ai: str,
+    reviewer_ai: str,
+) -> dict[str, Any]:
+    root = _project_root(project)
+    return {
+        "version": 1,
+        "project": str(root),
+        "project_name": root.name,
+        "branch": _git_branch(root),
+        "roles": {
+            "coach": {"ai": coach_ai, **_desktop_profile_for_ai(coach_ai)},
+            "coder": {"ai": coder_ai, **_desktop_profile_for_ai(coder_ai)},
+            "reviewer": {"ai": reviewer_ai, **_desktop_profile_for_ai(reviewer_ai)},
+        },
+    }
+
+
+def evaluate_desktop_seats(
+    *,
+    registry: dict[str, Any],
+    apps: list[dict[str, Any]],
+    windows_by_pid: dict[int, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    project_name = str(registry.get("project_name", ""))
+    branch = str(registry.get("branch", ""))
+    app_by_bundle = {app.get("bundle_id"): app for app in apps}
+    roles: dict[str, Any] = {}
+    all_ok = True
+
+    for role, seat in registry["roles"].items():
+        bundle_id = seat.get("bundle_id", "")
+        app = app_by_bundle.get(bundle_id, {})
+        pid = int(app.get("pid") or 0)
+        running = bool(app.get("running")) and pid > 0
+        windows = windows_by_pid.get(pid, []) if running else []
+        usable_windows = [
+            window
+            for window in windows
+            if int(window.get("bounds", {}).get("width", 0)) >= 700
+            and int(window.get("bounds", {}).get("height", 0)) >= 500
+        ]
+        matching_windows = [
+            window
+            for window in windows
+            if project_name and project_name.lower() in str(window.get("title", "")).lower()
+        ]
+        branch_windows = [
+            window
+            for window in windows
+            if branch and branch.lower() in str(window.get("title", "")).lower()
+        ]
+        ok = running and (bool(matching_windows) or bool(branch_windows))
+        if not ok:
+            all_ok = False
+        roles[role] = {
+            "ai": seat.get("ai", ""),
+            "seat_id": seat.get("seat_id", ""),
+            "bundle_id": bundle_id,
+            "pid": pid,
+            "running": running,
+            "usable_window_count": len(usable_windows),
+            "project_window_count": len(matching_windows),
+            "branch_window_count": len(branch_windows),
+            "ok": ok,
+            "blocker": ""
+            if ok
+            else "seat is not bound to the target project/worktree window",
+        }
+
+    return {
+        "ok": all_ok,
+        "project": registry.get("project", ""),
+        "project_name": project_name,
+        "branch": branch,
+        "roles": roles,
+    }
+
+
+def _cua_json(command: list[str]) -> dict[str, Any]:
+    completed = subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip())
+    return json.loads(completed.stdout)
+
+
+def audit_ai_pair_desktop(
+    *,
+    project: str | Path,
+    issue_id: str,
+    coach_ai: str = "",
+    coder_ai: str = "",
+    reviewer_ai: str = "",
+    cua_driver: str = "cua-driver",
+) -> dict[str, Any]:
+    root = _project_root(project)
+    pair_dir, state = _load_ai_pair_state(root, issue_id)
+    registry = build_desktop_seat_registry(
+        project=root,
+        coach_ai=coach_ai or str(state.get("coach_ai", "")),
+        coder_ai=coder_ai or str(state.get("coder_ai", "")),
+        reviewer_ai=reviewer_ai or str(state.get("reviewer_ai", "")),
+    )
+    apps_payload = _cua_json([cua_driver, "call", "list_apps", "{}"])
+    apps = list(apps_payload.get("apps", []))
+    windows_by_pid: dict[int, list[dict[str, Any]]] = {}
+    for role in registry["roles"].values():
+        app = next((item for item in apps if item.get("bundle_id") == role.get("bundle_id")), None)
+        pid = int((app or {}).get("pid") or 0)
+        if pid > 0 and pid not in windows_by_pid:
+            windows_payload = _cua_json([cua_driver, "call", "list_windows", json.dumps({"pid": pid})])
+            windows_by_pid[pid] = list(windows_payload.get("windows", []))
+
+    report = evaluate_desktop_seats(registry=registry, apps=apps, windows_by_pid=windows_by_pid)
+    (pair_dir / "desktop-seat-registry.json").write_text(
+        json.dumps(registry, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (pair_dir / "desktop-audit.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    state["status"] = "desktop_audit_ready" if report["ok"] else "blocked_desktop_seat_binding"
+    state["desktop_audit_ok"] = report["ok"]
+    _write_ai_pair_state(pair_dir, state)
+    return report
+
+
 def _markdown_field_value(text: str, field: str) -> str:
     prefix = f"{field}:"
     for line in text.splitlines():
@@ -1802,6 +1985,21 @@ def main(argv: list[str] | None = None) -> int:
     ai_pair_run.add_argument("--timeout-seconds", type=int, default=300)
     ai_pair_run.add_argument("--format", choices=("text", "json"), default="text")
 
+    ai_pair_desktop = ai_pair_subparsers.add_parser("desktop", help="Audit AI Pair desktop app seats.")
+    ai_pair_desktop_subparsers = ai_pair_desktop.add_subparsers(
+        dest="ai_pair_desktop_command", required=True
+    )
+    ai_pair_desktop_audit = ai_pair_desktop_subparsers.add_parser(
+        "audit", help="Check Claude/Cursor/Codex app seats against the target project."
+    )
+    ai_pair_desktop_audit.add_argument("--project", default=".")
+    ai_pair_desktop_audit.add_argument("--issue-id", required=True)
+    ai_pair_desktop_audit.add_argument("--coach-ai", default="")
+    ai_pair_desktop_audit.add_argument("--coder-ai", default="")
+    ai_pair_desktop_audit.add_argument("--reviewer-ai", default="")
+    ai_pair_desktop_audit.add_argument("--cua-driver", default="cua-driver")
+    ai_pair_desktop_audit.add_argument("--format", choices=("text", "json"), default="text")
+
     worktree_parser = subparsers.add_parser("worktree", help="Manage issue worktrees.")
     worktree_subparsers = worktree_parser.add_subparsers(dest="worktree_command", required=True)
     worktree_create = worktree_subparsers.add_parser("create", help="Create and claim a git worktree.")
@@ -1976,6 +2174,28 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
             print(f"{result['status']}: {result.get('reason', result.get('coder_plan_path', ''))}")
+        return 0 if result["ok"] else 2
+
+    if args.command == "ai-pair" and args.ai_pair_command == "desktop":
+        result = audit_ai_pair_desktop(
+            project=args.project,
+            issue_id=args.issue_id,
+            coach_ai=args.coach_ai,
+            coder_ai=args.coder_ai,
+            reviewer_ai=args.reviewer_ai,
+            cua_driver=args.cua_driver,
+        )
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            status = "OK" if result["ok"] else "BLOCKED"
+            print(f"Desktop seat audit: {status}")
+            for role, detail in result["roles"].items():
+                print(
+                    f"- {role}: {detail['ai']} running={detail['running']} "
+                    f"usable_windows={detail['usable_window_count']} "
+                    f"project_windows={detail['project_window_count']} ok={detail['ok']}"
+                )
         return 0 if result["ok"] else 2
 
     if args.command == "worktree" and args.worktree_command == "create":

@@ -5375,6 +5375,12 @@ class GatewayRunner:
             return False
         team_id = str(source.guild_id or "").strip() if source.platform == Platform.SLACK else ""
 
+        # Optional Slack-style team scoping.  When source carries a team_id
+        # (e.g. Slack), the pairing/allowlist checks below augment the bare
+        # auth id with a "{team_id}:{auth_user_id}" key.  Other platforms
+        # don't populate team_id, so default to "" and skip those checks.
+        team_id = getattr(source, "team_id", None) or ""
+
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",

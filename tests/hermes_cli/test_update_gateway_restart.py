@@ -195,6 +195,14 @@ class TestLaunchdPlistPath:
         plist = gateway_cli.generate_launchd_plist()
         assert "/custom/bin" in plist
 
+    def test_plist_escapes_path_xml_metacharacters(self, monkeypatch):
+        injected = "/tmp/good&bad:</string><key>ProgramArguments</key><array><string>/tmp/pwn</string></array><string>"
+        monkeypatch.setenv("PATH", injected)
+        plist = gateway_cli.generate_launchd_plist()
+        assert "/tmp/good&amp;bad" in plist
+        assert "</string><key>ProgramArguments</key>" not in plist
+        assert "&lt;/string&gt;&lt;key&gt;ProgramArguments&lt;/key&gt;" in plist
+
     def test_plist_path_deduplicates_venv_bin_when_already_in_path(self, monkeypatch):
         detected = gateway_cli._detect_venv_dir()
         venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")

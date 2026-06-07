@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from agent import codex_workflow_ledger as ledger
+from agent import codex_workflow_must_fix as must_fix_loop
 from agent import codex_workflow_provenance as provenance
 from agent import codex_workflow_verification as verification
 from tools import codex_staged_implement_tool as staged
@@ -516,6 +517,27 @@ def _leftover_candidate(dirty: dict[str, Any], codex_staged_result: dict[str, An
     return result
 
 
+def _must_fix_loop_status(args: dict[str, Any], review_result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not bool(args.get("must_fix_loop")):
+        return None
+    try:
+        flood_timeout_count = int(args.get("must_fix_codex_flood_timeout_count") or 0)
+    except (TypeError, ValueError):
+        flood_timeout_count = 0
+    return must_fix_loop.build_must_fix_loop_status(
+        review_result=review_result,
+        authorized=bool(args.get("must_fix_loop_authorized")),
+        max_fix_rounds=args.get("max_fix_rounds"),
+        current_round=args.get("current_fix_round", 0),
+        verification_result=args.get("must_fix_verification_result"),
+        dirty_overlap=bool(args.get("must_fix_dirty_overlap")),
+        allowlist_escape=bool(args.get("must_fix_allowlist_escape")),
+        new_secret_or_real_data_risk=bool(args.get("must_fix_new_secret_or_real_data_risk")),
+        codex_flood_timeout_count=flood_timeout_count,
+        finding_resolutions=args.get("must_fix_finding_resolutions"),
+    )
+
+
 def _finish_after_staged(
     *,
     args: dict[str, Any],
@@ -550,6 +572,9 @@ def _finish_after_staged(
     )
     if review_result.get("status") != "not_requested":
         result["review"] = review_result
+        loop_status = _must_fix_loop_status(args, review_result)
+        if loop_status is not None:
+            result["must_fix_loop"] = loop_status
         if review_result.get("status") == "passed":
             result["leftover_candidate"] = {
                 "requires_review": False,
@@ -576,6 +601,10 @@ def _finish_after_staged(
                 post_review_dirty_check=after_review_dirty,
             )
             return _json_result(result)
+
+    loop_status = _must_fix_loop_status(args, review_result)
+    if loop_status is not None and "must_fix_loop" not in result:
+        result["must_fix_loop"] = loop_status
 
     checkpoint_requested = bool(args.get("checkpoint_verified_diff"))
     if checkpoint_requested:
@@ -1074,6 +1103,16 @@ _SCHEMA = {
             "review_autopilot_authorized": {"type": "boolean"},
             "review_timeout_seconds": {"type": "integer"},
             "codex_review_bin": {"type": "string"},
+            "must_fix_loop": {"type": "boolean"},
+            "must_fix_loop_authorized": {"type": "boolean"},
+            "max_fix_rounds": {"type": "integer", "default": 2},
+            "current_fix_round": {"type": "integer"},
+            "must_fix_verification_result": {"type": "object"},
+            "must_fix_dirty_overlap": {"type": "boolean"},
+            "must_fix_allowlist_escape": {"type": "boolean"},
+            "must_fix_new_secret_or_real_data_risk": {"type": "boolean"},
+            "must_fix_codex_flood_timeout_count": {"type": "integer"},
+            "must_fix_finding_resolutions": {"type": "array", "items": {"type": "object"}},
             "mode": {"type": "string", "enum": ["execute", "dry_run"]},
         },
         "required": ["workdir", "task"],

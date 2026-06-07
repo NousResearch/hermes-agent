@@ -182,6 +182,8 @@ def test_registration_and_core_toolset_exposure():
     properties = schema["parameters"]["properties"]
     assert "session_id" in properties
     assert "provenance_events" in properties
+    assert "must_fix_loop" in properties
+    assert properties["max_fix_rounds"]["default"] == 2
 
 
 def test_schema_has_no_executable_command_suggestions():
@@ -913,6 +915,27 @@ def _passed_guard_json() -> str:
     )
 
 
+def _failed_guard_json() -> str:
+    return json.dumps(
+        {
+            "status": "failed",
+            "reason": "must_fix_non_empty",
+            "terminated_by_guard": False,
+            "source_flood_detected": False,
+            "diff_flood_detected": False,
+            "json_field_flood_detected": False,
+            "review": {
+                "verdict": "failed",
+                "summary": "needs fix",
+                "must_fix": ["add regression coverage"],
+                "suggested_fixes": ["refactor later"],
+                "verification_commands": [],
+                "final_judgment": "needs fix",
+            },
+        }
+    )
+
+
 def test_review_autopilot_uses_existing_packet_and_guard_commands(tmp_path, monkeypatch):
     repo = _clean_repo(tmp_path)
     commands = []
@@ -1119,3 +1142,85 @@ def test_review_packet_excludes_unknown_dirty_diff(tmp_path, monkeypatch):
     assert "README.md" in packet_command
     assert "scratch.tmp" not in packet_command
     assert repo.joinpath("scratch.tmp").exists()
+
+
+def test_must_fix_loop_without_review_autopilot_stops_as_review_unavailable(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\ncandidate\n", encoding="utf-8")
+        return json.dumps({"status": "ready_for_review"})
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        must_fix_loop=True,
+        must_fix_loop_authorized=True,
+    )
+
+    assert result["status"] == "staged_called"
+    assert result["must_fix_loop"]["status"] == "stopped"
+    assert result["must_fix_loop"]["reason"] == "review_unavailable"
+    assert result["must_fix_loop"]["blocks_continuation"] is True
+
+
+def test_must_fix_loop_ready_for_round_after_failed_review_autopilot(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello" + chr(10) + "candidate" + chr(10), encoding="utf-8")
+        return json.dumps({"status": "ready_for_review"})
+
+    def fake_review_command(argv, *, timeout=workflow._REVIEW_TIMEOUT_SECONDS):
+        if str(workflow._review_packet_script()) in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="# packet" + chr(10), stderr="")
+        return subprocess.CompletedProcess(argv, 1, stdout=_write_guard_final(argv, _failed_guard_json()), stderr="")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_review_command", fake_review_command)
+
+    result = _call(
+        workdir=str(repo),
+        review_autopilot=True,
+        review_autopilot_authorized=True,
+        must_fix_loop=True,
+        must_fix_loop_authorized=True,
+    )
+
+    assert result["status"] == "review_failed"
+    assert result["review"]["status"] == "failed"
+    assert result["must_fix_loop"]["status"] == "ready_for_round"
+    assert result["must_fix_loop"]["must_fix"] == ["add regression coverage"]
+    assert result["must_fix_loop"]["suggested_fixes_recorded"] == ["refactor later"]
+    assert result["must_fix_loop"]["auto_implements_suggested_fixes"] is False
+
+
+def test_must_fix_loop_max_round_exhaustion_through_workflow_tool(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello" + chr(10) + "candidate" + chr(10), encoding="utf-8")
+        return json.dumps({"status": "ready_for_review"})
+
+    def fake_review_command(argv, *, timeout=workflow._REVIEW_TIMEOUT_SECONDS):
+        if str(workflow._review_packet_script()) in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="# packet" + chr(10), stderr="")
+        return subprocess.CompletedProcess(argv, 1, stdout=_write_guard_final(argv, _failed_guard_json()), stderr="")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_review_command", fake_review_command)
+
+    result = _call(
+        workdir=str(repo),
+        review_autopilot=True,
+        review_autopilot_authorized=True,
+        must_fix_loop=True,
+        must_fix_loop_authorized=True,
+        current_fix_round=2,
+    )
+
+    assert result["status"] == "review_failed"
+    assert result["must_fix_loop"]["status"] == "stopped"
+    assert result["must_fix_loop"]["reason"] == "max_fix_rounds_exhausted"
+    assert result["must_fix_loop"]["max_fix_rounds"] == 2

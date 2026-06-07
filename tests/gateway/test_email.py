@@ -1203,5 +1203,61 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         mock_imap.xatom.assert_called_once()
 
 
+class TestLoginUser(unittest.TestCase):
+    """Test EMAIL_LOGIN_USER env var for custom-domain alias support."""
+
+    def test_login_user_defaults_to_address(self):
+        """Without EMAIL_LOGIN_USER, _login_user should equal _address."""
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "user@custom.domain",
+            "EMAIL_PASSWORD": "pw",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }, clear=False):
+            # Remove EMAIL_LOGIN_USER if present
+            os.environ.pop("EMAIL_LOGIN_USER", None)
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+            self.assertEqual(adapter._login_user, "user@custom.domain")
+            self.assertEqual(adapter._address, "user@custom.domain")
+
+    def test_login_user_overrides_address(self):
+        """With EMAIL_LOGIN_USER set, _login_user uses it; _address stays as From."""
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "user@custom.domain",
+            "EMAIL_LOGIN_USER": "account@icloud.com",
+            "EMAIL_PASSWORD": "pw",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }, clear=False):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+            # Login uses the account credential
+            self.assertEqual(adapter._login_user, "account@icloud.com")
+            # From: header uses the public alias
+            self.assertEqual(adapter._address, "user@custom.domain")
+
+    def test_login_used_for_imap_auth(self):
+        """IMAP .login() should use _login_user, not _address."""
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "user@custom.domain",
+            "EMAIL_LOGIN_USER": "account@icloud.com",
+            "EMAIL_PASSWORD": "pw",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }, clear=False):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+            mock_imap = MagicMock()
+            mock_imap.uid.return_value = ("OK", [b""])
+            with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+                import asyncio
+                asyncio.run(adapter.connect())
+            mock_imap.login.assert_called_with("account@icloud.com", "pw")
+
+
 if __name__ == "__main__":
     unittest.main()

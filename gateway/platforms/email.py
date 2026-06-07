@@ -250,6 +250,10 @@ class EmailAdapter(BasePlatformAdapter):
 
         self._address = os.getenv("EMAIL_ADDRESS", "")
         self._password = os.getenv("EMAIL_PASSWORD", "")
+        # Login username may differ from EMAIL_ADDRESS when using custom-domain
+        # aliases (iCloud, Fastmail, ProtonMail bridge, Migadu, etc.).
+        # Defaults to EMAIL_ADDRESS if not set.
+        self._login_user = os.getenv("EMAIL_LOGIN_USER", self._address)
         self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
         self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
@@ -298,7 +302,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
+            imap.login(self._login_user, self._password)
             _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
@@ -318,7 +322,7 @@ class EmailAdapter(BasePlatformAdapter):
             # Test SMTP connection
             smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            smtp.login(self._login_user, self._password)
             smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
@@ -367,7 +371,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
-                imap.login(self._address, self._password)
+                imap.login(self._login_user, self._password)
                 _send_imap_id(imap)
                 imap.select("INBOX")
 
@@ -551,7 +555,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            smtp.login(self._login_user, self._password)
             smtp.send_message(msg)
         finally:
             try:
@@ -673,7 +677,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            smtp.login(self._login_user, self._password)
             smtp.send_message(msg)
         finally:
             try:
@@ -752,7 +756,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            smtp.login(self._login_user, self._password)
             smtp.send_message(msg)
         finally:
             try:

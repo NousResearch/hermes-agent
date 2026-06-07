@@ -202,3 +202,36 @@ def test_successful_switch_still_works_after_rollback_refactor():
     assert agent.provider == "openrouter"
     assert agent.api_key == "or-key-new"
     assert agent.client is new_client
+
+
+def test_bedrock_client_rebuild_failure_restores_previous_region_and_runtime():
+    """A failed regional Bedrock swap must keep the previous Bedrock runtime."""
+    agent = _make_agent_anthropic()
+    old_client = agent._anthropic_client
+    agent.model = "global.anthropic.claude-sonnet-4-6"
+    agent.provider = "bedrock"
+    agent.base_url = "https://bedrock-runtime.eu-west-1.amazonaws.com"
+    agent.api_key = "aws-sdk"
+    agent._anthropic_api_key = "aws-sdk"
+    agent._anthropic_base_url = agent.base_url
+    agent._bedrock_region = "eu-west-1"
+
+    with patch(
+        "agent.anthropic_adapter.build_anthropic_bedrock_client",
+        side_effect=RuntimeError("client rebuild failed"),
+    ):
+        with pytest.raises(RuntimeError, match="client rebuild failed"):
+            agent.switch_model(
+                "jp.anthropic.claude-opus-4-8",
+                "bedrock",
+                api_key="aws-sdk",
+                base_url="https://bedrock-runtime.ap-northeast-1.amazonaws.com",
+                api_mode="anthropic_messages",
+            )
+
+    assert agent.model == "global.anthropic.claude-sonnet-4-6"
+    assert agent.provider == "bedrock"
+    assert agent.base_url == "https://bedrock-runtime.eu-west-1.amazonaws.com"
+    assert agent.api_mode == "anthropic_messages"
+    assert agent._bedrock_region == "eu-west-1"
+    assert agent._anthropic_client is old_client

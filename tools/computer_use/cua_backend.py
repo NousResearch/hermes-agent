@@ -56,16 +56,31 @@ _WINDOW_LINE_RE = re.compile(
 
 # Regex to parse element lines from get_window_state AX tree markdown.
 #
-# Handles two output formats from different cua-driver versions:
-#   Classic:  "  - [N] AXRole \"label\""
-#   New:       "[N] AXRole (order) id=Label"
+# cua-driver renders each actionable node as one of:
+#   - [N] AXRole "label"                         (quoted label, classic)
+#   - [N] AXRole = "value"                        (value form, e.g. AXStaticText/AXPopUpButton)
+#   - [N] AXRole (label)                          (parenthesised label, e.g. AXButton (Dark))
+#   - [N] AXRole (order) id=Label                 (order number + id= label, newer builds)
+#   - [N] AXRole id=Label                         (id= label only)
+#   - [N] AXRole                                  (no label)
+# followed by trailing metadata like [help="..." actions=[...]].
 #
-# Group 1: element index
-# Group 2: AX role
-# Group 3: quoted label (classic format)
-# Group 4: id= label (new format)
+# Earlier the regex only matched the quoted and id= forms, so the very common
+# `(label)` and `= "value"` forms (System Settings buttons, static text, popups)
+# came back with an empty label — which made label-driven clicking impossible.
+# A parenthesised group that is purely digits is an ORDER index, not a label, so
+# it is excluded and we fall through to the id= label.
+#
+# Group 1: element index   Group 2: AX role
+# Groups 3-6: the label in value / quoted / paren / id= form (whichever matched)
 _ELEMENT_LINE_RE = re.compile(
-    r'^\s*(?:-\s+)?\[(\d+)\]\s+(\w+)(?:\s+"([^"]*)"|(?:\s+\(\d+\))?\s+id=([^\s\[\]]*))?' ,
+    r'^\s*(?:-\s+)?\[(\d+)\]\s+(\w+)'
+    r'(?:'
+      r'\s*=\s*"([^"]*)"'              # = "value"
+      r'|\s+"([^"]*)"'                 # "value"
+      r'|\s+\((?!\d+\))([^)]*)\)'      # (value) but not a pure-digit (order) number
+    r')?'
+    r'(?:\s+(?:\(\d+\)\s+)?id=([^\s\[\]]+))?',  # optional id=value (after an optional (order))
     re.MULTILINE,
 )
 
@@ -110,13 +125,15 @@ def _parse_windows_from_text(text: str) -> List[Dict[str, Any]]:
 def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
     """Parse UIElement list from get_window_state AX tree markdown.
 
-    Handles both the classic ``"label"``-quoted format and the newer
-    ``id=Label`` format introduced in cua-driver v0.1.6.
+    Captures the label whichever form cua-driver used: ``= "value"``,
+    ``"quoted"``, ``(parenthesised)``, or ``id=Label``. Bounds are not present
+    in the markdown rendering, so they remain (0,0,0,0); element-index clicks do
+    not need them (the driver resolves the index to a frame internally).
     """
     elements = []
     for m in _ELEMENT_LINE_RE.finditer(markdown):
-        # group(3) = quoted label (classic); group(4) = id= label (new)
-        label = m.group(3) or m.group(4) or ""
+        # groups 3-6: value / quoted / paren / id= label (first non-None wins)
+        label = m.group(3) or m.group(4) or m.group(5) or m.group(6) or ""
         elements.append(UIElement(
             index=int(m.group(1)),
             role=m.group(2),

@@ -2838,6 +2838,10 @@ class TestVoiceTTSPlayback:
 
         assert "Voice reply mode is active" in prompt
         assert "Do not call text_to_speech" in prompt
+        assert "same language as the voice transcript" in prompt
+        assert "If the user asks for only a result, return only the result" in prompt
+        assert "Never introduce yourself as Leo" in prompt
+        assert "Do not invent live/current facts" in prompt
         assert "concise, natural text only" in prompt
 
     def test_voice_reply_context_prompt_absent_for_text_input(self):
@@ -2922,7 +2926,7 @@ class TestVoiceTTSPlayback:
 
         assert route["model"] == "gemini-3-flash-preview"
         assert route["runtime"]["provider"] == "google-gemini-cli"
-        assert route["runtime"]["max_tokens"] == 512
+        assert route["runtime"]["max_tokens"] == 220
         assert route["enabled_toolsets"] == []
         assert route["max_iterations"] == 3
         assert route["reasoning_config"] == {"enabled": False}
@@ -2946,7 +2950,7 @@ class TestVoiceTTSPlayback:
             "voice": {"fast_reply": {"enabled": True, "max_turns": 99}}
         })
 
-        assert route["max_iterations"] == 6
+        assert route["max_iterations"] == 3
 
 
 class TestUDPKeepalive:

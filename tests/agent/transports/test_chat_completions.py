@@ -46,6 +46,44 @@ class TestChatCompletionsBasic:
         assert "codex_reasoning_items" in msgs[0]
         assert "codex_message_items" in msgs[0]
 
+    def _msg_with_extra_content(self):
+        return [
+            {"role": "assistant", "content": "ok",
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "extra_content": {"google": {"thought_signature": "SIG_123"}},
+                             "function": {"name": "t", "arguments": "{}"}}]},
+        ]
+
+    def test_convert_messages_strips_extra_content_for_strict_provider(self, transport):
+        """Strict providers (Fireworks, Mistral) reject extra_content on
+        tool_calls with HTTP 400. When the outgoing model is NOT Gemini-family,
+        the Gemini thought_signature must be stripped — including stale
+        signatures inherited from earlier in a mixed-provider session.
+        """
+        msgs = self._msg_with_extra_content()
+        result = transport.convert_messages(msgs, model="accounts/fireworks/models/llama-v3p1-70b")
+        assert "extra_content" not in result[0]["tool_calls"][0]
+        # Original list untouched (deepcopy-on-demand)
+        assert "extra_content" in msgs[0]["tool_calls"][0]
+
+    def test_convert_messages_strips_extra_content_when_model_unknown(self, transport):
+        """Default (no model supplied) is to strip — safe for strict providers."""
+        msgs = self._msg_with_extra_content()
+        result = transport.convert_messages(msgs)
+        assert "extra_content" not in result[0]["tool_calls"][0]
+
+    def test_convert_messages_keeps_extra_content_for_gemini(self, transport):
+        """Gemini 3 thinking models require the thought_signature replayed on
+        every turn — stripping it would 400. Keep extra_content for Gemini
+        targets (including aggregator slugs like google/gemini-3-pro).
+        """
+        for model in ("gemini-3-pro", "google/gemini-3-pro-preview", "gemma-3-27b"):
+            msgs = self._msg_with_extra_content()
+            result = transport.convert_messages(msgs, model=model)
+            assert result[0]["tool_calls"][0]["extra_content"] == {
+                "google": {"thought_signature": "SIG_123"}
+            }, model
+
     def test_convert_messages_strips_tool_name(self, transport):
         """Internal `tool_name` (used for FTS indexing in the SQLite store) is
         not part of the OpenAI Chat Completions schema. Strict providers like
@@ -65,6 +103,38 @@ class TestChatCompletionsBasic:
         assert result[2]["tool_call_id"] == "call_1"
         # Original list untouched (deepcopy-on-demand)
         assert msgs[2]["tool_name"] == "execute_code"
+
+    def test_convert_messages_strips_internal_scaffolding_markers(self, transport):
+        """Hermes-internal ``_``-prefixed markers must never reach the wire.
+
+        The empty-response recovery path appends synthetic messages tagged
+        with ``_empty_recovery_synthetic``; permissive providers ignore the
+        unknown key, but strict gateways (opencode-go, codex.nekos.me)
+        reject the request, poisoning every later turn in the session.
+        """
+        msgs = [
+            {"role": "user", "content": "run the task"},
+            {"role": "assistant", "content": "(empty)", "_empty_recovery_synthetic": True},
+            {"role": "user", "content": "continue", "_empty_recovery_synthetic": True},
+            {"role": "assistant", "content": "done", "_thinking_prefill": True,
+             "_empty_terminal_sentinel": True},
+        ]
+        result = transport.convert_messages(msgs)
+        for m in result:
+            assert not any(k.startswith("_") for k in m), m
+        # Visible content preserved
+        assert result[1]["content"] == "(empty)"
+        assert result[2]["content"] == "continue"
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[1]["_empty_recovery_synthetic"] is True
+
+    def test_convert_messages_clean_list_is_identity(self, transport):
+        """A list with no internal/codex keys is returned as-is (no copy)."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        assert transport.convert_messages(msgs) is msgs
 
 
 class TestChatCompletionsBuildKwargs:
@@ -789,3 +859,53 @@ class TestChatCompletionsCacheStats:
         r = SimpleNamespace(usage=SimpleNamespace(prompt_tokens_details=details))
         result = transport.extract_cache_stats(r)
         assert result == {"cached_tokens": 500, "creation_tokens": 100}
+
+
+class TestChatCompletionsGeminiNativeExtraBodyStrip:
+    """Profile extra_body (e.g. Nous portal tags) must not reach a native
+    Gemini endpoint — Google's REST API rejects unknown fields with HTTP 400.
+    """
+
+    def _nous_profile(self):
+        from providers import get_provider_profile
+        return get_provider_profile("nous")
+
+    def test_tags_stripped_when_endpoint_is_native_gemini(self, transport):
+        kw = transport.build_kwargs(
+            "anthropic/claude-sonnet-4.6",
+            [{"role": "user", "content": "hi"}],
+            None,
+            provider_profile=self._nous_profile(),
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            session_id="s1",
+            max_tokens=None,
+        )
+        eb = kw.get("extra_body")
+        assert not eb or "tags" not in eb
+
+    def test_tags_preserved_on_nous_endpoint(self, transport):
+        kw = transport.build_kwargs(
+            "hermes-3-405b",
+            [{"role": "user", "content": "hi"}],
+            None,
+            provider_profile=self._nous_profile(),
+            base_url="https://inference.nousresearch.com/v1",
+            session_id="s1",
+            max_tokens=None,
+        )
+        eb = kw.get("extra_body")
+        assert eb and "tags" in eb
+
+    def test_tags_pass_through_on_gemini_openai_compat(self, transport):
+        # /openai compat endpoint is not "native" — unchanged behavior.
+        kw = transport.build_kwargs(
+            "anthropic/claude-sonnet-4.6",
+            [{"role": "user", "content": "hi"}],
+            None,
+            provider_profile=self._nous_profile(),
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            session_id="s1",
+            max_tokens=None,
+        )
+        eb = kw.get("extra_body")
+        assert eb and "tags" in eb

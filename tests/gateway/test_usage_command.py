@@ -1,6 +1,5 @@
 """Tests for gateway /usage command — agent cache lookup and output fields."""
 
-import asyncio
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -44,7 +43,7 @@ def _make_mock_agent(**overrides):
 
 def _make_runner(session_key, agent=None, cached_agent=None):
     """Build a bare GatewayRunner with just the fields _handle_usage_command needs."""
-    from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+    from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
@@ -224,11 +223,14 @@ class TestUsageAccountSection:
             {"role": "user", "content": "earlier"},
         ]
 
-        calls = {}
+        calls = []
 
         async def _fake_to_thread(fn, *args, **kwargs):
-            calls["args"] = args
-            calls["kwargs"] = kwargs
+            # /usage dispatches BOTH the account fetch (fetch_account_usage, called
+            # with the provider positionally) and the Nous credits fetch
+            # (nous_credits_lines, markdown-only) through to_thread — record every
+            # call rather than last-wins so we can pick out the account fetch.
+            calls.append({"args": args, "kwargs": kwargs})
             return fn(*args, **kwargs)
 
         monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
@@ -243,11 +245,14 @@ class TestUsageAccountSection:
                 "Provider: openai-codex (Pro)",
             ],
         )
+        # The credits block routes through the shared nous_credits_lines() helper;
+        # stub it so this account-section test stays hermetic (no portal/auth lookup).
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
 
         event = MagicMock()
         result = await runner._handle_usage_command(event)
 
-        assert calls["args"] == ("openai-codex",)
-        assert calls["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
+        account_call = next(c for c in calls if c["args"] == ("openai-codex",))
+        assert account_call["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
         assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result

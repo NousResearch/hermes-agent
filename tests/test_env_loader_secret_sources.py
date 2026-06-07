@@ -22,10 +22,12 @@ from hermes_cli import env_loader  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _reset_sources():
-    """Each test starts with a clean source map."""
+    """Each test starts with a clean source map and applied-home guard."""
     env_loader._SECRET_SOURCES.clear()
+    env_loader.reset_secret_source_cache()
     yield
     env_loader._SECRET_SOURCES.clear()
+    env_loader.reset_secret_source_cache()
 
 
 def test_get_secret_source_returns_none_for_untracked_var():
@@ -117,3 +119,57 @@ def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch)
     env_loader._apply_external_secret_sources(tmp_path)
 
     assert env_loader.get_secret_source("ANTHROPIC_API_KEY") is None
+
+
+def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypatch):
+    """``load_hermes_dotenv()`` is called at module-import time from several
+    hot modules (cli.py, hermes_cli/main.py, run_agent.py, ...).  The
+    Bitwarden status line previously printed once per call — 3-5x per
+    startup.  The applied-home guard must short-circuit subsequent calls
+    so the heavy work (config re-parse, Bitwarden lookup, status print)
+    runs exactly once per HERMES_HOME per process.
+    """
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n",
+        encoding="utf-8",
+    )
+
+    from agent.secret_sources.bitwarden import FetchResult
+
+    call_count = {"n": 0}
+
+    def _fake_apply(**_kwargs):
+        call_count["n"] += 1
+        return FetchResult(
+            secrets={"ANTHROPIC_API_KEY": "sk-ant-test"},
+            applied=["ANTHROPIC_API_KEY"],
+        )
+
+    import agent.secret_sources.bitwarden as bw_module
+    monkeypatch.setattr(bw_module, "apply_bitwarden_secrets", _fake_apply)
+
+    # Five calls in a row, simulating module-import-time invocations from
+    # cli.py, hermes_cli/main.py, run_agent.py, trajectory_compressor.py,
+    # gateway/run.py.  Only the first should actually call the backend.
+    for _ in range(5):
+        env_loader._apply_external_secret_sources(tmp_path)
+
+    assert call_count["n"] == 1, (
+        "Bitwarden backend was called {} time(s); expected exactly 1 — "
+        "the applied-home guard is broken.".format(call_count["n"])
+    )
+
+    # Source tracking still works after dedup.
+    assert env_loader.get_secret_source("ANTHROPIC_API_KEY") == "bitwarden"
+
+    # reset_secret_source_cache() forces a fresh pull on the next call.
+    env_loader.reset_secret_source_cache()
+    env_loader._apply_external_secret_sources(tmp_path)
+    assert call_count["n"] == 2

@@ -19,7 +19,8 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a DM. |
 | **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. |
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
-| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. |
+| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. |
+| **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
 
 :::tip
@@ -336,6 +337,7 @@ You can designate a "home room" where the bot sends proactive messages (such as 
 ### Using the Slash Command
 
 Type `/sethome` in any Matrix room where the bot is present. That room becomes the home room.
+If your Matrix client intercepts slash commands, type `!sethome` instead.
 
 ### Manual Configuration
 
@@ -376,6 +378,29 @@ See also: [admin/user slash command split](../../reference/slash-commands.md#per
 :::tip
 To find a Room ID: in Element, go to the room → **Settings** → **Advanced** → the **Internal room ID** is shown there (starts with `!`).
 :::
+
+## Commands in Matrix
+
+Hermes supports the same gateway commands in Matrix that it supports on other
+messaging platforms, including `/commands`, `/model`, `/stop`, `/queue`,
+`/steer`, `/goal`, `/subgoal`, `/background`, `/bg`, `/btw`, `/tasks`, and
+`/yolo`.
+
+Some Matrix clients reserve leading `/` for local client commands and may not
+send unknown slash commands to the room. In that case, use `!` as a Matrix-safe
+alias:
+
+```text
+!commands
+!model
+!model gpt-5.5 --provider openrouter
+!queue continue with the next task
+!stop
+```
+
+Hermes only normalizes `!command` when the command is known to the gateway, a
+registered plugin command, or an installed skill command. Ordinary exclamations
+such as `!important` remain normal chat messages.
 
 ## Troubleshooting
 

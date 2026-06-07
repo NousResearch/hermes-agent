@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -360,7 +361,9 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()):
+        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
+             patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "vision"})
 
         assert isinstance(out, dict)
@@ -398,7 +401,9 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()):
+        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
+             patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
         assert isinstance(out, dict)
         text_part = next(p for p in out["content"] if p.get("type") == "text")
@@ -435,6 +440,7 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         return FakeBackend()
+
 
     def test_capture_ax_caps_elements_at_default_for_dense_trees(self):
         """Regression for #22865: an Electron-style 600-element AX tree must
@@ -582,7 +588,9 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()):
+        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
+             patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
 
         assert isinstance(out, dict) and out["_multimodal"] is True
@@ -592,6 +600,32 @@ class TestCaptureResponse:
             "the truncation note describes a payload field that isn't present"
         )
         assert "truncated to" not in out["text_summary"]
+
+
+class TestCuaCaptureImageDimensions:
+    def test_png_dimensions_are_sniffed_from_image_bytes(self):
+        from tools.computer_use.cua_backend import _image_dimensions_from_bytes
+
+        raw_png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42m"
+            "NkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+            validate=False,
+        )
+        assert _image_dimensions_from_bytes(raw_png) == (1, 1)
+
+    def test_jpeg_dimensions_are_sniffed_from_sof_segment(self):
+        from tools.computer_use.cua_backend import _image_dimensions_from_bytes
+
+        raw_jpeg = (
+            b"\xff\xd8" +
+            b"\xff\xe0\x00\x10" + (b"0" * 14)
+            + b"\xff\xc0\x00\x11\x08"
+            + b"\x01\x2c"  # height: 300
+            + b"\x01\x90"  # width: 400
+            + b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+            + b"\xff\xd9"
+        )
+        assert _image_dimensions_from_bytes(raw_jpeg) == (400, 300)
 
 
 # ---------------------------------------------------------------------------
@@ -1202,6 +1236,78 @@ def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
         "isError": False,
     }
     return backend
+
+
+class TestCuaDriverSessionReconnect:
+    def test_call_tool_reconnects_once_after_closed_resource(self):
+        """A daemon restart closes the cached MCP stdio channel; recover once."""
+        import threading
+        from typing import Any, cast
+        from anyio import ClosedResourceError
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                # 1st call_tool -> closed; aexit ok; aenter ok; retried call_tool ok.
+                self.effects = [ClosedResourceError(), None, None, {"ok": True}]
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                effect = self.effects.pop(0)
+                if isinstance(effect, Exception):
+                    raise effect
+                return effect
+
+        bridge = FakeBridge()
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._bridge = bridge
+        session._session = object()
+        session._exit_stack = None
+        session._lock = threading.Lock()
+        session._started = True
+        session._call_tool_async = lambda name, args: ("call", name, args)
+        session._aexit = lambda: ("aexit",)
+        session._aenter = lambda: ("aenter",)
+
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+        # Reconnect-once sequence: failed call -> aexit -> aenter -> retried call.
+        assert bridge.calls[0][0] == ("call", "list_apps", {})
+        assert bridge.calls[1][0] == ("aexit",)
+        assert bridge.calls[2][0] == ("aenter",)
+        assert bridge.calls[3][0] == ("call", "list_apps", {})
+        assert len(bridge.calls) == 4
+
+    def test_call_tool_does_not_retry_on_unrelated_error(self):
+        """Non-transport errors must propagate without a reconnect attempt."""
+        import threading
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise ValueError("boom")
+
+        bridge = FakeBridge()
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._bridge = bridge
+        session._session = object()
+        session._exit_stack = None
+        session._lock = threading.Lock()
+        session._started = True
+        session._call_tool_async = lambda name, args: ("call", name, args)
+        session._aexit = lambda: ("aexit",)
+        session._aenter = lambda: ("aenter",)
+
+        import pytest
+        with pytest.raises(ValueError):
+            session.call_tool("list_apps", {})
+        # Exactly one attempt, no reconnect.
+        assert len(bridge.calls) == 1
 
 
 class TestCaptureAppFilterNoMatch:

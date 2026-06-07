@@ -40,16 +40,46 @@ SUMMARY_PREFIX = (
     "window — treat it as background reference, NOT as active instructions. "
     "Do NOT answer questions or fulfill requests mentioned in this summary; "
     "they were already addressed. "
-    "Your current task is identified in the '## Active Task' section of the "
-    "summary — resume exactly from there. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "If the latest user message is consistent with the '## Active Task' "
+    "section, you may use the summary as background. If the latest user "
+    "message contradicts, supersedes, changes topic from, or in any way "
+    "diverges from '## Active Task' / '## In Progress' / '## Pending User "
+    "Asks' / '## Remaining Work', the latest message WINS — discard those "
+    "stale items entirely and do not 'wrap up the old task first'. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
-    "Respond ONLY to the latest user message "
-    "that appears AFTER this summary. The current session state (files, "
-    "config, etc.) may reflect work described here — avoid repeating it:"
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+
+# Handoff prefixes that shipped in earlier releases. A summary persisted under
+# one of these can be inherited into a resumed lineage (#35344); when it is
+# re-normalized on re-compaction we must strip the OLD prefix too, otherwise the
+# stale directive it carried (e.g. "resume exactly from Active Task") survives
+# embedded in the body and keeps hijacking replies. Keep newest-first; entries
+# are matched literally. Add a frozen copy here whenever SUMMARY_PREFIX changes.
+_HISTORICAL_SUMMARY_PREFIXES = (
+    # Pre-#35344: contained the self-contradicting "resume exactly" directive.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Your current task is identified in the '## Active Task' section of the "
+    "summary — resume exactly from there. "
+    "Respond ONLY to the latest user message "
+    "that appears AFTER this summary. The current session state (files, "
+    "config, etc.) may reflect work described here — avoid repeating it:",
+)
 
 # Minimum tokens for the summary output
 _MIN_SUMMARY_TOKENS = 2000
@@ -74,6 +104,44 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 # for tail-cut decisions.
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+
+# Hard ceiling for the deterministic summary-failure handoff.  The fallback is
+# only meant to preserve continuity anchors from the dropped window, not to
+# become another unbounded transcript copy after the LLM summarizer failed.
+_FALLBACK_SUMMARY_MAX_CHARS = 8_000
+_FALLBACK_TURN_MAX_CHARS = 700
+
+
+_PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
+
+
+def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
+    value = value.strip()
+    if value and value not in items and len(items) < limit:
+        items.append(value)
+
+
+def _extract_tool_call_name_and_args(tool_call: Any) -> tuple[str, str]:
+    """Return a best-effort ``(name, arguments)`` pair for dict/object tool calls."""
+    if isinstance(tool_call, dict):
+        fn = tool_call.get("function") or {}
+        return str(fn.get("name") or "unknown"), str(fn.get("arguments") or "")
+
+    fn = getattr(tool_call, "function", None)
+    if fn is None:
+        return "unknown", ""
+    return str(getattr(fn, "name", None) or "unknown"), str(getattr(fn, "arguments", None) or "")
+
+
+def _extract_tool_call_id(tool_call: Any) -> str:
+    if isinstance(tool_call, dict):
+        return str(tool_call.get("id") or "")
+    return str(getattr(tool_call, "id", "") or "")
+
+
+def _collect_path_mentions(text: str, relevant_files: list[str], *, limit: int = 12) -> None:
+    for match in _PATH_MENTION_RE.findall(text):
+        _dedupe_append(relevant_files, match.rstrip(".,:;"), limit=limit)
 
 
 def _content_length_for_budget(raw_content: Any) -> int:
@@ -480,6 +548,10 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self.last_real_prompt_tokens = 0
+        self.last_compression_rough_tokens = 0
+        self.last_rough_tokens_when_real_prompt_fit = 0
+        self.awaiting_real_usage_after_compression = False
 
     def update_model(
         self,
@@ -537,8 +609,8 @@ class ContextCompressor(ContextEngine):
         self.quiet_mode = quiet_mode
         # When True, summary-generation failure aborts compression entirely
         # (returns messages unchanged, sets _last_compress_aborted=True).
-        # When False (default = historical behavior), insert a static
-        # "summary unavailable" placeholder and drop the middle window.
+        # When False (default = historical behavior), insert a
+        # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
 
         self.context_length = get_model_context_length(
@@ -577,6 +649,10 @@ class ContextCompressor(ContextEngine):
 
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
+        self.last_real_prompt_tokens = 0
+        self.last_compression_rough_tokens = 0
+        self.last_rough_tokens_when_real_prompt_fit = 0
+        self.awaiting_real_usage_after_compression = False
 
         self.summary_model = summary_model_override or ""
 
@@ -609,6 +685,45 @@ class ContextCompressor(ContextEngine):
         """Update tracked token usage from API response."""
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
+        self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
+        if self.last_prompt_tokens > 0:
+            self.last_real_prompt_tokens = self.last_prompt_tokens
+            if self.last_prompt_tokens < self.threshold_tokens:
+                if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
+                    self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
+            else:
+                self.last_rough_tokens_when_real_prompt_fit = 0
+        self.awaiting_real_usage_after_compression = False
+
+    def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
+        """Return True when a high rough preflight estimate is known-noisy.
+
+        ``estimate_request_tokens_rough(..., tools=...)`` intentionally
+        overestimates schema-heavy requests so Hermes compresses before a
+        provider rejects the payload. After a successful compressed API call,
+        though, provider ``prompt_tokens`` are a better signal than repeating
+        compaction from the same rough schema overhead. Defer only while the
+        rough estimate has grown modestly since a request the provider proved
+        fit under the threshold.
+        """
+        if rough_tokens < self.threshold_tokens:
+            return False
+        if self.last_real_prompt_tokens <= 0:
+            return False
+        if self.last_real_prompt_tokens >= self.threshold_tokens:
+            return False
+
+        baseline = self.last_rough_tokens_when_real_prompt_fit or self.last_compression_rough_tokens
+        if baseline <= 0:
+            return False
+
+        growth = max(0, rough_tokens - baseline)
+        tolerated_growth = max(4096, int(self.threshold_tokens * 0.05))
+        if growth > tolerated_growth:
+            return False
+
+        self.last_rough_tokens_when_real_prompt_fit = max(baseline, rough_tokens)
+        return True
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
@@ -883,6 +998,195 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
+    def _build_static_fallback_summary(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+        reason: str | None = None,
+    ) -> str:
+        """Build a deterministic handoff when the LLM summarizer is unavailable.
+
+        This is intentionally much less rich than an LLM-written summary, but it
+        is still better than a bare "N messages were removed" marker.  It keeps
+        the most useful continuity anchors that can be extracted locally:
+        recent user asks, assistant/tool actions, files/commands mentioned in
+        tool calls, and any error text.  The result uses the normal summary
+        structure so downstream prompts can recover gracefully after a provider
+        outage or summary-model failure.
+        """
+        user_asks: list[str] = []
+        assistant_actions: list[str] = []
+        tool_actions: list[str] = []
+        relevant_files: list[str] = []
+        blockers: list[str] = []
+        last_dropped_turns: list[str] = []
+
+        def _compact_fallback_turn(value: Any) -> str:
+            text = redact_sensitive_text(_content_text_for_contains(value))
+            text = re.sub(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b", "[REDACTED]", text)
+            text = re.sub(r"\s+", " ", text).strip()
+            if len(text) > _FALLBACK_TURN_MAX_CHARS:
+                text = text[: _FALLBACK_TURN_MAX_CHARS - 15].rstrip() + " ...[truncated]"
+            return re.sub(r"\bgh[pousr]_[A-Za-z0-9_.-]+", "[REDACTED]", text)
+
+        def _remember_dropped_turn(label: str, text: str, *, limit: int = 8) -> None:
+            text = text.strip()
+            if not text:
+                return
+            last_dropped_turns.append(f"{label}: {text}")
+            if len(last_dropped_turns) > limit:
+                del last_dropped_turns[0]
+
+        def _collect_paths_from_jsonish(obj: Any) -> None:
+            if isinstance(obj, dict):
+                for key, val in obj.items():
+                    if key in {"path", "workdir", "file_path", "output_path"} and isinstance(val, str):
+                        _dedupe_append(relevant_files, val, limit=12)
+                    _collect_paths_from_jsonish(val)
+            elif isinstance(obj, list):
+                for val in obj:
+                    _collect_paths_from_jsonish(val)
+            elif isinstance(obj, str):
+                _collect_path_mentions(obj, relevant_files)
+
+        call_id_to_tool: dict[str, tuple[str, str]] = {}
+        for msg in turns_to_summarize:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg.get("tool_calls") or []:
+                    name, raw_args = _extract_tool_call_name_and_args(tc)
+                    args = redact_sensitive_text(raw_args)
+                    call_id = _extract_tool_call_id(tc)
+                    if call_id:
+                        call_id_to_tool[call_id] = (name, args)
+                    if args:
+                        try:
+                            parsed = json.loads(args)
+                        except Exception:
+                            parsed = args
+                        _collect_paths_from_jsonish(parsed)
+
+        for msg in turns_to_summarize:
+            role = msg.get("role", "unknown")
+            text = _compact_fallback_turn(msg.get("content"))
+            _collect_path_mentions(text, relevant_files)
+
+            turn_text = text
+            turn_tool_names: list[str] = []
+            if role == "assistant" and msg.get("tool_calls"):
+                for tc in msg.get("tool_calls") or []:
+                    name, _args = _extract_tool_call_name_and_args(tc)
+                    turn_tool_names.append(name)
+                if turn_tool_names:
+                    prefix = "tool calls: " + ", ".join(turn_tool_names[:6])
+                    turn_text = f"{prefix}; {turn_text}" if turn_text else prefix
+            _remember_dropped_turn(str(role).upper(), turn_text)
+
+            if len(text) > 600:
+                text = text[:420].rstrip() + " ... " + text[-160:].lstrip()
+
+            if role == "user" and text:
+                user_asks.append(text)
+            elif role == "assistant":
+                tool_names: list[str] = []
+                for tc in msg.get("tool_calls") or []:
+                    name, _args = _extract_tool_call_name_and_args(tc)
+                    tool_names.append(name)
+                if tool_names:
+                    assistant_actions.append(
+                        "Called tool(s): " + ", ".join(tool_names[:6])
+                    )
+                elif text:
+                    assistant_actions.append(text)
+            elif role == "tool":
+                call_id = str(msg.get("tool_call_id") or "")
+                tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+                tool_actions.append(
+                    _summarize_tool_result(tool_name, tool_args, text or "")
+                )
+                if re.search(
+                    r"\b(error|failed|exception|traceback|timeout|timed out|fatal)\b",
+                    text,
+                    re.I,
+                ):
+                    blockers.append(text[:500])
+
+        def _bullets(items: list[str], limit: int = 8) -> str:
+            unique: list[str] = []
+            seen: set[str] = set()
+            for item in items:
+                item = item.strip()
+                if not item or item in seen:
+                    continue
+                seen.add(item)
+                unique.append(item)
+                if len(unique) >= limit:
+                    break
+            return "\n".join(f"- {item}" for item in unique) if unique else "None."
+
+        completed: list[str] = []
+        for idx, item in enumerate((assistant_actions + tool_actions)[:12], start=1):
+            completed.append(f"{idx}. {item}")
+
+        active_task = (
+            f"User asked: {user_asks[-1]!r}"
+            if user_asks
+            else "Unknown from deterministic fallback."
+        )
+        previous_summary_note = ""
+        if self._previous_summary:
+            previous_summary_note = (
+                "\n\nPrevious compaction summary was present and should still be treated as "
+                "background continuity context, but the latest LLM summary update failed."
+            )
+
+        reason_text = f" Summary failure reason: {reason}." if reason else ""
+        body = f"""## Active Task
+{active_task}
+
+## Goal
+Recovered from a deterministic fallback because the LLM context summarizer was unavailable. Continue from the protected recent messages after this summary and use current file/system state for exact details.{previous_summary_note}
+
+## Constraints & Preferences
+- This fallback was generated locally without an LLM summary call.
+- Secrets and credentials were redacted before preservation.
+- The summary may be incomplete; prefer verifying current files, git state, processes, and test results instead of assuming omitted details.
+
+## Completed Actions
+{chr(10).join(completed) if completed else "None recoverable from compacted turns."}
+
+## Active State
+Unknown from deterministic fallback. Inspect current repository/session state if needed.
+
+## In Progress
+{active_task}
+
+## Blocked
+{_bullets(blockers, limit=5)}
+
+## Key Decisions
+None recoverable from deterministic fallback.
+
+## Resolved Questions
+None recoverable from deterministic fallback.
+
+## Pending User Asks
+{active_task}
+
+## Relevant Files
+{_bullets(relevant_files, limit=12)}
+
+## Remaining Work
+Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
+
+## Last Dropped Turns
+{_bullets(last_dropped_turns, limit=8)}
+
+## Critical Context
+Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
+        summary = self._with_summary_prefix(redact_sensitive_text(body.strip()))
+        if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
+            summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
+        return summary
+
     def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
         """Switch from a separate ``summary_model`` back to the main model.
 
@@ -897,7 +1201,7 @@ class ContextCompressor(ContextEngine):
         into the warning log.
         """
         self._summary_model_fallen_back = True
-        logging.warning(
+        logger.warning(
             "Summary model '%s' %s (%s). "
             "Falling back to main model '%s' for compression.",
             self.summary_model, reason, e, self.model,
@@ -910,7 +1214,11 @@ class ContextCompressor(ContextEngine):
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
+    def _generate_summary(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+        focus_topic: Optional[str] = None,
+    ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
         Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
@@ -958,11 +1266,27 @@ class ContextCompressor(ContextEngine):
 
         # Shared structured template (used by both paths).
         _template_sections = f"""## Active Task
-[THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or
-task assignment verbatim — the exact words they used. If multiple tasks
-were requested and only some are done, list only the ones NOT yet completed.
-Continuation should pick up exactly here. Example:
+[THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
+input verbatim — the exact words they used. This includes:
+- Explicit task assignments ("refactor the auth module")
+- Questions awaiting an answer ("waarom staat X op Y?", "wat zijn de volgende stappen?")
+- Decisions awaiting input ("optie A of B?")
+- Ongoing discussions where the assistant owes the next substantive reply
+A conversation where the user just asked a question IS an active task — the
+task is "answer that question with full context". Do NOT write "None" merely
+because the user did not issue an imperative command; reserve "None" for the
+rare case where the last exchange was fully resolved and the user said
+something like "thanks, that's all".
+If multiple items are outstanding, list only the ones NOT yet completed.
+Continuation should pick up exactly here. Examples:
 "User asked: 'Now refactor the auth module to use JWT instead of sessions'"
+"User asked: 'Waarom stond provider ineens op openrouter?' — needs investigation + answer"
+"User chose option A; awaiting implementation of step 2"
+If the user's most recent message was a reverse signal (stop, undo, roll
+back, never mind, just verify, change of topic) that supersedes earlier
+work, write the reverse signal verbatim and DO NOT carry forward the
+cancelled task. Example: "User asked: 'Stop the i18n refactor and just
+verify the current diff' — earlier i18n in-flight work is cancelled."
 If no outstanding task exists, write "None."]
 
 ## Goal
@@ -1028,7 +1352,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled request — this is the most important field for task continuity.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
 {_template_sections}"""
         else:
@@ -1086,7 +1410,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # No provider configured — long cooldown, unlikely to self-resolve
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
             self._last_summary_error = "no auxiliary LLM provider configured"
-            logging.warning("Context compression: no provider available for "
+            logger.warning("Context compression: no provider available for "
                             "summary. Middle turns will be dropped without summary "
                             "for %d seconds.",
                             _SUMMARY_FAILURE_COOLDOWN_SECONDS)
@@ -1182,7 +1506,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."
             self._last_summary_error = err_text
-            logging.warning(
+            logger.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",
                 e,
@@ -1192,9 +1516,16 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
     @staticmethod
     def _strip_summary_prefix(summary: str) -> str:
-        """Return summary body without the current or legacy handoff prefix."""
+        """Return summary body without the current, legacy, or any historical
+        handoff prefix.
+
+        Historical prefixes must be stripped too: a handoff persisted under an
+        older prefix can be inherited into a resumed lineage (#35344), and if we
+        only re-prepend the current prefix without removing the old one, the
+        stale directive it carried stays embedded in the body.
+        """
         text = (summary or "").strip()
-        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX):
+        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
             if text.startswith(prefix):
                 return text[len(prefix):].lstrip()
         return text
@@ -1208,7 +1539,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     @staticmethod
     def _is_context_summary_content(content: Any) -> bool:
         text = _content_text_for_contains(content).lstrip()
-        return text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX)
+        if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
+            return True
+        return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
 
     @classmethod
     def _find_latest_context_summary(
@@ -1607,9 +1940,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         #   True  → ABORT compression entirely. Return messages unchanged
         #           and set _last_compress_aborted=True so callers can warn
         #           the user and stop the auto-compress retry loop.
-        #   False → Fall through to the legacy fallback path below: insert
-        #           a static "summary unavailable" placeholder and drop the
-        #           middle window.  Records _last_summary_fallback_used /
+        #   False → Fall through to the default fallback path below: insert
+        #           a deterministic "summary unavailable" handoff and drop
+        #           the middle window.  Records _last_summary_fallback_used /
         #           _last_summary_dropped_count for gateway hygiene to
         #           surface a warning.
         # Default is False (historical behavior).
@@ -1642,21 +1975,18 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     )
             compressed.append(msg)
 
-        # Legacy fallback path: LLM summary failed and abort_on_summary_failure
-        # is False (the default).  Insert a static placeholder so the model
-        # knows context was lost rather than silently dropping everything.
+        # If LLM summary failed, insert a deterministic fallback so the model
+        # gets at least locally recoverable continuity anchors instead of a
+        # content-free "N messages were removed" marker.
         if not summary:
             if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting static fallback context marker")
+                logger.warning("Summary generation failed — inserting deterministic fallback context summary")
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
-            summary = (
-                f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} message(s) were "
-                f"removed to free context space but could not be summarized. The removed "
-                f"messages contained earlier work in this session. Continue based on the "
-                f"recent messages below and the current state of any files or resources."
+            summary = self._build_static_fallback_summary(
+                turns_to_summarize,
+                reason=self._last_summary_error,
             )
 
         _merge_summary_into_tail = False

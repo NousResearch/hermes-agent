@@ -6697,8 +6697,30 @@ def cmd_version(args):
 
 
 def cmd_uninstall(args):
-    """Uninstall Hermes Agent."""
-    _require_tty("uninstall")
+    """Uninstall Hermes Agent (or just the Chat GUI with --gui)."""
+    # Machine-readable install snapshot for the desktop app's uninstall UI.
+    # Must run before any TTY gate — it's called from a non-interactive child.
+    if getattr(args, "gui_summary", False):
+        from hermes_cli.gui_uninstall import gui_install_summary
+
+        print(json.dumps(gui_install_summary()))
+        return
+
+    # GUI-only uninstall. The desktop app shells out to this non-interactively
+    # with --yes, so only gate on a TTY when we actually need to prompt.
+    if getattr(args, "gui", False):
+        if not getattr(args, "yes", False):
+            _require_tty("uninstall --gui")
+        from hermes_cli.uninstall import run_gui_uninstall
+
+        run_gui_uninstall(args)
+        return
+
+    # Full/keep-data uninstall. ``--yes`` runs non-interactively (the desktop
+    # app's lite/full modes drive this from a detached cleanup script), so only
+    # gate on a TTY when we actually need to prompt for the option + confirm.
+    if not getattr(args, "yes", False):
+        _require_tty("uninstall")
     from hermes_cli.uninstall import run_uninstall
 
     run_uninstall(args)
@@ -15453,6 +15475,17 @@ Examples:
         "--full",
         action="store_true",
         help="Full uninstall - remove everything including configs and data",
+    )
+    uninstall_parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="Uninstall only the desktop Chat GUI, leaving the agent intact",
+    )
+    uninstall_parser.add_argument(
+        "--gui-summary",
+        action="store_true",
+        help="Print a JSON summary of installed GUI/agent artifacts and exit "
+        "(used by the desktop app to gate uninstall options)",
     )
     uninstall_parser.add_argument(
         "--yes", "-y", action="store_true", help="Skip confirmation prompts"

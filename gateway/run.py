@@ -18346,14 +18346,21 @@ class GatewayRunner:
                     + message
                 )
             elif _has_fresh_tool_tail:
-                message = (
-                    "[System note: Your previous turn was interrupted before you could "
-                    "process the last tool result(s). The conversation history contains "
-                    "tool outputs you haven't responded to yet. Please finish processing "
-                    "those results and summarize what was accomplished, then address the "
-                    "user's new message below.]\n\n"
-                    + message
-                )
+                # #interrupt-mode — when busy_input_mode is "interrupt", the user
+                # explicitly sent a message to STOP the current task.  Injecting a
+                # System note that says "please finish processing those results"
+                # would make the agent resume the very task the user interrupted.
+                # Skip the note and let the agent respond to the new message.
+                _busy_mode = getattr(self, '_busy_input_mode', 'interrupt')
+                if _busy_mode != 'interrupt':
+                    message = (
+                        "[System note: Your previous turn was interrupted before you could "
+                        "process the last tool result(s). The conversation history contains "
+                        "tool outputs you haven't responded to yet. Please finish processing "
+                        "those results and summarize what was accomplished, then address the "
+                        "user's new message below.]\n\n"
+                        + message
+                    )
 
             # Consume one-shot /reload-skills note (if the user ran
             # /reload-skills since their last turn in this session). Same

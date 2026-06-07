@@ -12501,13 +12501,21 @@ class GatewayRunner:
             return ""
 
         return (
-            "[Voice reply mode is active for this chat. The platform adapter "
-            "will synthesize and send your final answer as audio. Do not call "
-            "text_to_speech, terminal, or media-generation tools just to make "
-            "the spoken reply. Do not include MEDIA: tags or audio file paths "
-            "unless the user explicitly asks you to create a reusable audio "
-            "asset. Answer with concise, natural text only; prefer one or two "
-            "short spoken sentences.]"
+            "[Voice reply mode is active for this chat. These rules are for "
+            "the final spoken reply only: the platform adapter will synthesize "
+            "and send your final answer as audio. Do not call "
+            "text_to_speech, terminal, web/search, weather, or media-generation "
+            "tools merely to make the spoken reply. Do not include MEDIA: tags "
+            "or audio file paths unless the user explicitly asks you to create "
+            "a reusable audio asset. Answer with concise, natural text only: "
+            "default to one short sentence, and two short sentences only when "
+            "needed. Follow the user's requested language; otherwise reply in "
+            "the same language as the voice transcript. If the user asks for "
+            "only a result, return only the result. Never introduce yourself as "
+            "Leo, Pafi, Guardian, or any team/persona name; if a name is needed, "
+            "you are Hermes. Do not invent live/current facts such as weather, "
+            "prices, account state, or system status unless they are already "
+            "provided in the user message or verified by an allowed tool.]"
         )
 
     def _is_voice_reply_turn(self, event: MessageEvent) -> bool:
@@ -12562,9 +12570,15 @@ class GatewayRunner:
             "credential_pool": runtime.get("credential_pool"),
         }
         try:
-            max_tokens = int(fast_cfg.get("max_tokens", 700) or 700)
+            max_tokens = int(fast_cfg.get("max_tokens", 180) or 180)
         except (TypeError, ValueError):
-            max_tokens = 700
+            max_tokens = 180
+        if max_tokens > 220:
+            logger.warning(
+                "voice.fast_reply max_tokens=%s exceeds latency-safe cap; clamping to 220",
+                max_tokens,
+            )
+            max_tokens = 220
         if max_tokens > 0:
             runtime_kwargs["max_tokens"] = max_tokens
 
@@ -12580,12 +12594,12 @@ class GatewayRunner:
             max_iterations = int(fast_cfg.get("max_turns", 4) or 4)
         except (TypeError, ValueError):
             max_iterations = 4
-        if max_iterations > 6:
+        if max_iterations > 3:
             logger.warning(
-                "voice.fast_reply max_turns=%s exceeds latency-safe cap; clamping to 6",
+                "voice.fast_reply max_turns=%s exceeds latency-safe cap; clamping to 3",
                 max_iterations,
             )
-            max_iterations = 6
+            max_iterations = 3
 
         reasoning_config = fast_cfg.get("reasoning")
         if not isinstance(reasoning_config, dict):

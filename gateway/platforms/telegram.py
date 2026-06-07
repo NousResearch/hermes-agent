@@ -34,6 +34,10 @@ try:
         ContextTypes,
         filters,
     )
+    try:
+        from telegram.ext import MessageReactionHandler
+    except ImportError:
+        MessageReactionHandler = None
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -49,6 +53,7 @@ except ImportError:
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    MessageReactionHandler = None
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -119,7 +124,7 @@ def check_telegram_requirements() -> bool:
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
-    global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
+    global MessageReactionHandler, ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
     try:
@@ -140,6 +145,10 @@ def check_telegram_requirements() -> bool:
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
+        try:
+            from telegram.ext import MessageReactionHandler as _MRH
+        except ImportError:
+            _MRH = None
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
     except ImportError:
@@ -154,6 +163,7 @@ def check_telegram_requirements() -> bool:
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
     TelegramMessageHandler = _MH
+    MessageReactionHandler = _MRH
     ContextTypes = _CT
     filters = _filters
     ParseMode = _PM
@@ -1620,6 +1630,10 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            if MessageReactionHandler is not None:
+                self._app.add_handler(MessageReactionHandler(self._handle_message_reaction))
+            else:
+                logger.debug("[%s] MessageReactionHandler unavailable; reaction commands disabled", self.name)
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -6000,6 +6014,116 @@ class TelegramAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
             timestamp=message.date,
         )
+
+    # ── User reaction commands ────────────────────────────────────────────
+
+    def _reaction_commands_config(self) -> dict:
+        """Return Telegram reaction-command config from platform extra."""
+        cfg = self.config.extra.get("reaction_commands", {}) if self.config else {}
+        return cfg if isinstance(cfg, dict) else {}
+
+    def _reaction_commands_enabled(self) -> bool:
+        """Check if reacting to bot messages should synthesize commands."""
+        raw = self._reaction_commands_config().get("enabled", False)
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(raw)
+
+    def _reaction_command_map(self) -> dict[str, str]:
+        """Return emoji → instruction map for Telegram reaction commands."""
+        mapping = self._reaction_commands_config().get("map", {})
+        if not isinstance(mapping, dict):
+            return {}
+        return {
+            str(emoji): str(instruction).strip()
+            for emoji, instruction in mapping.items()
+            if str(emoji) and str(instruction).strip()
+        }
+
+    @staticmethod
+    def _reaction_emoji_values(reactions: Any) -> list[str]:
+        """Extract plain emoji values from PTB/Bot API reaction objects.
+
+        Custom/premium reactions do not expose an ``emoji`` attribute; those are
+        ignored here until a plugin deliberately adds a custom-reaction id path.
+        """
+        values: list[str] = []
+        for reaction in reactions or []:
+            emoji = getattr(reaction, "emoji", None)
+            if emoji:
+                values.append(str(emoji))
+        return values
+
+    @classmethod
+    def _reaction_added_removed(cls, old_reactions: Any, new_reactions: Any) -> tuple[Optional[str], bool]:
+        """Return ``(emoji, removed)`` for the first changed plain emoji reaction."""
+        old_values = cls._reaction_emoji_values(old_reactions)
+        new_values = cls._reaction_emoji_values(new_reactions)
+        for emoji in new_values:
+            if emoji not in old_values:
+                return emoji, False
+        for emoji in old_values:
+            if emoji not in new_values:
+                return emoji, True
+        if new_values:
+            return new_values[0], False
+        return None, False
+
+    def _build_reaction_command_event(self, reaction_update: Any, emoji: str, instruction: str) -> MessageEvent:
+        """Build a synthetic MessageEvent for an incoming Telegram reaction."""
+        chat = reaction_update.chat
+        user = getattr(reaction_update, "user", None)
+        telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        chat_type = "dm"
+        if telegram_chat_type in {"group", "supergroup"}:
+            chat_type = "group"
+        elif telegram_chat_type == "channel":
+            chat_type = "channel"
+
+        source = self.build_source(
+            chat_id=str(chat.id),
+            chat_name=getattr(chat, "title", None) or (getattr(chat, "full_name", None) if hasattr(chat, "full_name") else None),
+            chat_type=chat_type,
+            user_id=str(user.id) if user else (str(chat.id) if chat_type in {"dm", "channel"} else None),
+            user_name=(getattr(user, "full_name", None) if user else None),
+            thread_id=None,
+            message_id=str(getattr(reaction_update, "message_id", "")),
+        )
+        text = (
+            f"[Telegram reaction command]\n"
+            f"User reacted {emoji} to assistant message {getattr(reaction_update, 'message_id', '')}.\n"
+            f"Instruction: {instruction}\n\n"
+            "Safety: act only on the reacted message context. If this is an approval/proceed instruction, "
+            "proceed only when that exact reacted message has an active pending action; otherwise reply that "
+            "the reaction was seen but no pending approval is attached to that message. Reaction removal does not undo actions."
+        )
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=reaction_update,
+            message_id=str(getattr(reaction_update, "message_id", "")),
+            timestamp=getattr(reaction_update, "date", None) or datetime.now(timezone.utc),
+        )
+
+    async def _handle_message_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle user reactions to bot messages as scoped command shortcuts."""
+        if not self._reaction_commands_enabled():
+            return
+        reaction_update = getattr(update, "message_reaction", None)
+        if reaction_update is None:
+            return
+        emoji, removed = self._reaction_added_removed(
+            getattr(reaction_update, "old_reaction", None),
+            getattr(reaction_update, "new_reaction", None),
+        )
+        if not emoji or removed:
+            return
+        instruction = self._reaction_command_map().get(emoji)
+        if not instruction:
+            return
+        event = self._build_reaction_command_event(reaction_update, emoji, instruction)
+        await self.handle_message(event)
 
     # ── Message reactions (processing lifecycle) ──────────────────────────
 

@@ -315,3 +315,105 @@ def test_config_reactions_env_takes_precedence(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("TELEGRAM_REACTIONS") == "false"
+
+
+# ── inbound reaction commands ─────────────────────────────────────────
+
+
+def _reaction(emoji: str):
+    return SimpleNamespace(emoji=emoji)
+
+
+def _reaction_update(old, new):
+    return SimpleNamespace(
+        chat=SimpleNamespace(id=123, type="private", title=None, full_name="Test Chat"),
+        user=SimpleNamespace(id=42, full_name="Test User"),
+        message_id=456,
+        old_reaction=old,
+        new_reaction=new,
+        date=None,
+    )
+
+
+def test_reaction_added_removed_detects_added_and_removed():
+    from gateway.platforms.telegram import TelegramAdapter
+
+    assert TelegramAdapter._reaction_added_removed([], [_reaction("💯")]) == ("💯", False)
+    assert TelegramAdapter._reaction_added_removed([_reaction("💯")], []) == ("💯", True)
+
+
+def test_reaction_commands_config_map_filters_blank_values():
+    adapter = _make_adapter()
+    adapter.config.extra = {
+        "reaction_commands": {
+            "enabled": "true",
+            "map": {"💯": "approve scoped action", "🤓": ""},
+        }
+    }
+
+    assert adapter._reaction_commands_enabled() is True
+    assert adapter._reaction_command_map() == {"💯": "approve scoped action"}
+
+
+@pytest.mark.asyncio
+async def test_handle_message_reaction_enqueues_configured_reaction(monkeypatch):
+    adapter = _make_adapter()
+    adapter.config.extra = {
+        "reaction_commands": {
+            "enabled": True,
+            "map": {"🤓": "Research the reacted message."},
+        }
+    }
+    adapter.handle_message = AsyncMock()
+    update = SimpleNamespace(
+        message_reaction=_reaction_update([], [_reaction("🤓")])
+    )
+
+    await adapter._handle_message_reaction(update, None)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert "[Telegram reaction command]" in event.text
+    assert "Research the reacted message" in event.text
+    assert "active pending action" in event.text
+    assert event.source.chat_id == "123"
+    assert event.source.user_id == "42"
+
+
+@pytest.mark.asyncio
+async def test_handle_message_reaction_ignores_removed_reaction():
+    adapter = _make_adapter()
+    adapter.config.extra = {
+        "reaction_commands": {
+            "enabled": True,
+            "map": {"🤓": "Research the reacted message."},
+        }
+    }
+    adapter.handle_message = AsyncMock()
+    update = SimpleNamespace(
+        message_reaction=_reaction_update([_reaction("🤓")], [])
+    )
+
+    await adapter._handle_message_reaction(update, None)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+def test_config_bridges_telegram_reaction_commands_into_extra(monkeypatch, tmp_path):
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "telegram": {
+            "reaction_commands": {
+                "enabled": True,
+                "map": {"💯": "approve scoped action"},
+            },
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from gateway.config import Platform, load_gateway_config
+    config = load_gateway_config()
+
+    assert config.platforms[Platform.TELEGRAM].extra["reaction_commands"]["enabled"] is True
+    assert config.platforms[Platform.TELEGRAM].extra["reaction_commands"]["map"] == {"💯": "approve scoped action"}

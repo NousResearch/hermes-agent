@@ -1915,7 +1915,7 @@ DEFAULT_CONFIG = {
     #   approve — auto-approve all dangerous commands in cron jobs
     "approvals": {
         "mode": "manual",
-        "timeout": 60,
+        "timeout": 60,  # Seconds to wait for approval; 0 = wait indefinitely
         "cron_mode": "deny",
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates

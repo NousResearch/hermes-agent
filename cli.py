@@ -458,7 +458,10 @@ def load_cli_config() -> Dict[str, Any]:
             "skin": "default",
         },
         "clarify": {
-            "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
+            "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding; 0 = wait indefinitely
+        },
+        "sudo": {
+            "timeout": 45,  # Seconds to wait for sudo password; 0 = wait indefinitely
         },
         "code_execution": {
             "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
@@ -11797,7 +11800,8 @@ class HermesCLI:
             "selected": 0,
             "response_queue": response_queue,
         }
-        self._clarify_deadline = _time.monotonic() + timeout
+        # timeout <= 0 means wait indefinitely (no deadline)
+        self._clarify_deadline = _time.monotonic() + timeout if timeout > 0 else 0
         # Open-ended questions skip straight to freetext input
         self._clarify_freetext = is_open_ended
 
@@ -11820,9 +11824,11 @@ class HermesCLI:
                 self._clarify_deadline = 0
                 return result
             except queue.Empty:
-                remaining = self._clarify_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
+                # deadline == 0 means wait indefinitely (no timeout)
+                if self._clarify_deadline > 0:
+                    remaining = self._clarify_deadline - _time.monotonic()
+                    if remaining <= 0:
+                        break
                 # Only repaint every 5 s for the countdown — avoids flicker
                 now = _time.monotonic()
                 if now - _last_countdown_refresh >= 5.0:
@@ -11853,14 +11859,15 @@ class HermesCLI:
         """
         import time as _time
 
-        timeout = 45
+        timeout = int(CLI_CONFIG.get("sudo", {}).get("timeout", 45))
         response_queue = queue.Queue()
 
         self._capture_modal_input_snapshot()
         self._sudo_state = {
             "response_queue": response_queue,
         }
-        self._sudo_deadline = _time.monotonic() + timeout
+        # timeout <= 0 means wait indefinitely (no deadline)
+        self._sudo_deadline = _time.monotonic() + timeout if timeout > 0 else 0
 
         self._invalidate()
 
@@ -11877,9 +11884,11 @@ class HermesCLI:
                     _cprint(f"\n{_DIM}  ⏭ Skipped{_RST}")
                 return result
             except queue.Empty:
-                remaining = self._sudo_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
+                # deadline == 0 means wait indefinitely (no timeout)
+                if self._sudo_deadline > 0:
+                    remaining = self._sudo_deadline - _time.monotonic()
+                    if remaining <= 0:
+                        break
                 self._invalidate()
 
         self._sudo_state = None
@@ -11917,7 +11926,8 @@ class HermesCLI:
                 "selected": 0,
                 "response_queue": response_queue,
             }
-            self._approval_deadline = _time.monotonic() + timeout
+            # timeout <= 0 means wait indefinitely (no deadline)
+            self._approval_deadline = _time.monotonic() + timeout if timeout > 0 else 0
 
             self._invalidate()
 
@@ -11930,9 +11940,11 @@ class HermesCLI:
                     self._invalidate()
                     return result
                 except queue.Empty:
-                    remaining = self._approval_deadline - _time.monotonic()
-                    if remaining <= 0:
-                        break
+                    # deadline == 0 means wait indefinitely (no timeout)
+                    if self._approval_deadline > 0:
+                        remaining = self._approval_deadline - _time.monotonic()
+                        if remaining <= 0:
+                            break
                     now = _time.monotonic()
                     if now - _last_countdown_refresh >= 5.0:
                         _last_countdown_refresh = now
@@ -14436,24 +14448,36 @@ class HermesCLI:
         # The agent-running interrupt hint is now an inline placeholder above.
         def get_hint_text():
             if cli_ref._sudo_state:
-                remaining = max(0, int(cli_ref._sudo_deadline - time.monotonic()))
+                if cli_ref._sudo_deadline > 0:
+                    remaining = max(0, int(cli_ref._sudo_deadline - time.monotonic()))
+                    countdown = f'  ({remaining}s)'
+                else:
+                    countdown = ''
                 return [
                     ('class:hint', '  password hidden · Enter to skip'),
-                    ('class:clarify-countdown', f'  ({remaining}s)'),
+                    ('class:clarify-countdown', countdown),
                 ]
 
             if cli_ref._secret_state:
-                remaining = max(0, int(cli_ref._secret_deadline - time.monotonic()))
+                if cli_ref._secret_deadline > 0:
+                    remaining = max(0, int(cli_ref._secret_deadline - time.monotonic()))
+                    countdown = f'  ({remaining}s)'
+                else:
+                    countdown = ''
                 return [
                     ('class:hint', '  secret hidden · Enter to skip'),
-                    ('class:clarify-countdown', f'  ({remaining}s)'),
+                    ('class:clarify-countdown', countdown),
                 ]
 
             if cli_ref._approval_state:
-                remaining = max(0, int(cli_ref._approval_deadline - time.monotonic()))
+                if cli_ref._approval_deadline > 0:
+                    remaining = max(0, int(cli_ref._approval_deadline - time.monotonic()))
+                    countdown = f'  ({remaining}s)'
+                else:
+                    countdown = ''
                 return [
                     ('class:hint', '  ↑/↓ to select, Enter to confirm'),
-                    ('class:clarify-countdown', f'  ({remaining}s)'),
+                    ('class:clarify-countdown', countdown),
                 ]
 
             if cli_ref._slash_confirm_state:
@@ -14464,8 +14488,11 @@ class HermesCLI:
                 ]
 
             if cli_ref._clarify_state:
-                remaining = max(0, int(cli_ref._clarify_deadline - time.monotonic()))
-                countdown = f'  ({remaining}s)' if cli_ref._clarify_deadline else ''
+                if cli_ref._clarify_deadline > 0:
+                    remaining = max(0, int(cli_ref._clarify_deadline - time.monotonic()))
+                    countdown = f'  ({remaining}s)'
+                else:
+                    countdown = ''
                 if cli_ref._clarify_freetext:
                     return [
                         ('class:hint', '  type your answer and press Enter'),

@@ -99,7 +99,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
             "message": "Secret stored securely. The secret value was not exposed to the model.",
         }
 
-    timeout = 120
+    timeout = 120  # 0 = wait indefinitely
     response_queue = queue.Queue()
 
     cli._secret_state = {
@@ -108,7 +108,8 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
         "metadata": metadata or {},
         "response_queue": response_queue,
     }
-    cli._secret_deadline = _time.monotonic() + timeout
+    # timeout <= 0 means wait indefinitely (no deadline)
+    cli._secret_deadline = _time.monotonic() + timeout if timeout > 0 else 0
     # Avoid storing stale draft input as the secret when Enter is pressed.
     if hasattr(cli, "_clear_secret_input_buffer"):
         try:
@@ -152,9 +153,11 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
                 "message": "Secret stored securely. The secret value was not exposed to the model.",
             }
         except queue.Empty:
-            remaining = cli._secret_deadline - _time.monotonic()
-            if remaining <= 0:
-                break
+            # deadline == 0 means wait indefinitely (no timeout)
+            if cli._secret_deadline > 0:
+                remaining = cli._secret_deadline - _time.monotonic()
+                if remaining <= 0:
+                    break
             if hasattr(cli, "_app") and cli._app:
                 cli._app.invalidate()
 

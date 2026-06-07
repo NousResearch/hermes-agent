@@ -876,6 +876,58 @@ class TestEditMessageStreamingSafety:
         assert adapter._bot.send_message.await_count == len(result.continuation_message_ids)
 
     @pytest.mark.asyncio
+    async def test_markdown_inflated_finalize_splits_not_silent_truncation(self):
+        """When MarkdownV2 formatting inflates content past 4096 UTF-16,
+        the adapter must route through _edit_overflow_split BEFORE
+        calling edit_message_text so Telegram's silent truncation is
+        never reached.  Raw content under 4096 but formatted content
+        over 4096 is the exact gap the pre-formatting check closes."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        _next_id = [1000]
+        async def _fake_send(**kwargs):
+            _next_id[0] += 1
+            return SimpleNamespace(message_id=_next_id[0])
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        # ~3950 chars raw with ~500 MarkdownV2-special chars (_ and *).
+        # formatting escapes each to \_ and \*, inflating to ~4450 chars.
+        specials = "_" * 250 + "*" * 250
+        padding = "x" * 3450
+        raw = padding + specials
+        formatted = adapter.format_message(raw)
+        assert len(raw) < 4096, (
+            f"raw length {len(raw)} must be under 4096 to test the pre-formatting gap"
+        )
+        assert len(formatted) > 4096, (
+            f"formatted length {len(formatted)} must exceed 4096 to trigger the guard"
+        )
+
+        result = await adapter.edit_message("123", "456", raw, finalize=True)
+
+        # The pre-formatting check routes through _edit_overflow_split.
+        # Even if truncate_message produces a single chunk (raw < 4096),
+        # the critical property is that the guard fired: edit_message_text
+        # was NOT called with the oversized formatted text inline.
+        assert result.success is True
+        assert result.error is None
+        # Verify edit_message_text was called from the overflow path
+        # (message_id=456), not from the inline path with full formatted
+        # text (>4096).  The exact number of calls depends on whether
+        # overflow_split needed continuations, but the guard that prevents
+        # inline silent truncation is what this test validates.
+        edit_calls = adapter._bot.edit_message_text.await_args_list
+        assert len(edit_calls) >= 1
+        # Every edit_message_text call must use text under the limit
+        for call in edit_calls:
+            from gateway.platforms.telegram import utf16_len
+            assert utf16_len(call.kwargs["text"]) <= 4096, (
+                f"edit_message_text called with {utf16_len(call.kwargs['text'])} "
+                f"UTF-16 chars — would be silently truncated by Telegram"
+            )
+
+    @pytest.mark.asyncio
     async def test_message_too_long_continuations_preserve_topic_metadata(self):
         """Overflow continuations should stay in the originating Telegram topic."""
         adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))

@@ -2190,6 +2190,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)
+            if utf16_len(formatted) > self.MAX_MESSAGE_LENGTH:
+                return await self._edit_overflow_split(
+                    chat_id, message_id, content, finalize=True, metadata=metadata,
+                )
             try:
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
@@ -2324,20 +2328,29 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Use format_message + parse_mode for the final chunk;
                 # mirror edit_message's main happy-path.
                 formatted = self.format_message(first_chunk)
-                try:
+                if utf16_len(formatted) > self.MAX_MESSAGE_LENGTH:
+                    # Formatting inflated past limit — send plain text to avoid
+                    # Telegram silent truncation (same guard as edit_message).
                     await self._bot.edit_message_text(
                         chat_id=int(chat_id),
                         message_id=int(message_id),
-                        text=formatted,
-                        parse_mode=ParseMode.MARKDOWN_V2,
+                        text=first_chunk,
                     )
-                except Exception as fmt_err:
-                    if "not modified" not in str(fmt_err).lower():
+                else:
+                    try:
                         await self._bot.edit_message_text(
                             chat_id=int(chat_id),
                             message_id=int(message_id),
-                            text=first_chunk,
+                            text=formatted,
+                            parse_mode=ParseMode.MARKDOWN_V2,
                         )
+                    except Exception as fmt_err:
+                        if "not modified" not in str(fmt_err).lower():
+                            await self._bot.edit_message_text(
+                                chat_id=int(chat_id),
+                                message_id=int(message_id),
+                                text=first_chunk,
+                            )
             else:
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),

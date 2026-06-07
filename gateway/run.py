@@ -9615,9 +9615,26 @@ class GatewayRunner:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
-            # Runtime-metadata footer — only on the FINAL message of the turn.
-            # Off by default (display.runtime_footer.enabled=false).  When
-            # streaming already delivered the body, we can't mutate the sent
+            # Track working directory changes to persist across gateway restarts
+            try:
+                from tools.terminal_tool import _resolve_container_task_id, get_active_env
+                task_id = getattr(session_entry, "session_id", None)
+                container_key = _resolve_container_task_id(task_id)
+                env = get_active_env(container_key)
+                
+                _live_cwd = getattr(env, "cwd", None) if env else None
+                if _live_cwd and str(_live_cwd) != getattr(session_entry, "cwd", None):
+                    session_entry.cwd = str(_live_cwd)
+                    # Trigger an immediate background save to avoid dropping the
+                    # cwd jump on an ungraceful shutdown.
+                    try:
+                        self.session_store._save()
+                    except Exception:
+                        pass
+            except Exception as _cwd_err:
+                logger.debug("cwd persistence failed: %s", _cwd_err)
+
+            # Build optional runtime footer. We only attach this to the final
             # text, so we fire a separate trailing send below.
             _footer_line = ""
             try:
@@ -9628,30 +9645,13 @@ class GatewayRunner:
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
-                    cwd=os.environ.get("TERMINAL_CWD", ""),
+                    cwd=getattr(session_entry, "cwd", None) or os.environ.get("TERMINAL_CWD", ""),
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
                 
-            # Track working directory changes to persist across gateway restarts
-            try:
-                from gateway.runtime_footer import resolve_footer_cwd as _rfc
-                _live_cwd = _rfc(
-                    task_id=getattr(session_entry, "session_id", None),
-                    session_key=session_key,
-                    fallback=""
-                )
-                if _live_cwd and _live_cwd != getattr(session_entry, "cwd", None):
-                    session_entry.cwd = _live_cwd
-                    # Trigger an immediate background save to avoid dropping the
-                    # cwd jump on an ungraceful shutdown.
-                    try:
-                        self.session_store._save()
-                    except Exception:
-                        pass
-            except Exception as _cwd_err:
-                logger.debug("cwd persistence failed: %s", _cwd_err)
+
 
             if _footer_line and response and not agent_result.get("already_sent"):
                 response = f"{response}\n\n{_footer_line}"

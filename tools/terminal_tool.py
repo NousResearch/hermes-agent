@@ -1011,6 +1011,12 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     return task_id.split("/")[0]
 
 
+def get_active_env(task_id: str) -> Optional[BaseEnvironment]:
+    """Retrieve the active environment for a given task ID."""
+    with _env_lock:
+        return _active_environments.get(task_id)
+
+
 # Configuration from environment variables
 
 def _parse_env_var(name: str, default: str, converter=int, type_label: str = "integer"):
@@ -1065,7 +1071,13 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    try:
+        from agent.runtime_cwd import _session_cwd_override
+        _override = _session_cwd_override()
+    except Exception:
+        _override = ""
+        
+    cwd = _override or os.getenv("TERMINAL_CWD", default_cwd)
     if cwd:
         cwd = os.path.expanduser(cwd)
     host_cwd = None

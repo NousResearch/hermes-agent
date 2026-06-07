@@ -106,6 +106,13 @@ from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_
 
 logger = logging.getLogger(__name__)
 
+# Config/api_key sentinel values that must be treated as *unset* rather than
+# sent verbatim as a bearer token. A literal ``api_key: none`` in config.yaml is
+# parsed by YAML as the string "none" (NOT null), and "no-key-required" is our
+# own local-server placeholder; neither is a real credential. When the resolved
+# api_key is one of these, an env-var fallback (e.g. OPENROUTER_API_KEY) wins.
+_CUSTOM_KEY_SENTINELS = {"none", "null", "no-key-required", "nokey", "no_key"}
+
 
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
     """Return False instead of raising when a patched symbol is not a type."""
@@ -3500,9 +3507,33 @@ def resolve_provider_client(
     if provider == "custom":
         if explicit_base_url:
             custom_base = _to_openai_base_url(explicit_base_url).strip()
+            # Treat config sentinels ("none"/"null"/"no-key-required") as
+            # *unset* so an env-var fallback can win. A literal ``api_key: none``
+            # in config.yaml (parsed by YAML as the string "none", NOT null)
+            # must never be sent as the bearer token — it 401s. See the OCR /
+            # describe OpenRouter auth defect: the OCR tool passes an explicit
+            # OpenRouter base_url with no key, and auxiliary.vision is
+            # configured with ``api_key: none``; both force provider="custom"
+            # and previously resolved to "none"/"no-key-required" instead of
+            # OPENROUTER_API_KEY.
+            _explicit_key = (explicit_api_key or "").strip()
+            if _explicit_key.lower() in _CUSTOM_KEY_SENTINELS:
+                _explicit_key = ""
+            # When the explicit endpoint is OpenRouter, fall back to
+            # OPENROUTER_API_KEY (not OPENAI_API_KEY) so OpenRouter-custom
+            # calls authenticate correctly. This fixes OCR + describe + any
+            # future openrouter-custom call in one place without changing
+            # behaviour for other providers (OPENAI_API_KEY still wins for
+            # non-OpenRouter custom hosts).
+            _is_openrouter_host = base_url_host_matches(custom_base, "openrouter.ai")
+            _env_key = ""
+            if _is_openrouter_host:
+                _env_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+            if not _env_key:
+                _env_key = os.getenv("OPENAI_API_KEY", "").strip()
             custom_key = (
-                (explicit_api_key or "").strip()
-                or os.getenv("OPENAI_API_KEY", "").strip()
+                _explicit_key
+                or _env_key
                 or "no-key-required"  # local servers don't need auth
             )
             if not custom_base:

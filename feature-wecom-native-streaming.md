@@ -3,7 +3,7 @@
 > **分支**：`feat/wecom-native-streaming`  
 > **日期**：2026-06-04 ~ 2026-06-07  
 > **基于**：hermes-agent main (`40420a619`)  
-> **最新 commit**：`a62d21f1d`
+> **最新 commit**：`c49384360`
 
 ## 背景
 
@@ -36,7 +36,7 @@ class StreamTurn:
 ```
 Control Lane (6 reserved tokens):  approval prompts, finalize frames
 Normal Lane  (24 tokens):          普通消息
-Fire-and-forget (无限制):          stream 中间帧
+Fire-and-forget (背压可跳过):      stream 中间帧
 ```
 
 Token bucket: 30 tokens/minute/chat，按分钟窗口重置。
@@ -52,7 +52,7 @@ Token bucket: 30 tokens/minute/chat，按分钟窗口重置。
 
 2. Agent 生成内容 → on_delta("累积文本...")
    → Consumer: send_stream_frame("累积文本...", turn_id=X)
-   → Adapter: fire-and-forget 发送（不等 ack）
+   → Adapter: 背压检查 → 跳过或 fire-and-forget 发送（不等 ack）
 
 3. Agent 完成 → finish()
    → Consumer: send_stream_frame("完整内容", finalize=True, turn_id=X)
@@ -67,6 +67,20 @@ Token bucket: 30 tokens/minute/chat，按分钟窗口重置。
 - **`turn.seeded` 标志**：防止 double seed（会触发 WeCom errcode 6000）
 - **Consumer 发空帧**：adapter 检测到空 text + 未 seeded → 发 `<think></think>` seed 并返回
 - **_native_stream_opened 跟踪**：用于 fallback finalize 判断
+
+### 中间帧背压（Backpressure）
+
+对齐官方 OpenClaw 插件的 `replyStreamNonBlocking` 语义：
+
+- **中间帧可跳过**：如果上一帧发送距今 < 150ms（`STREAM_FRAME_SKIP_WINDOW`），当前帧被丢弃
+- **累积文本保证不丢信息**：跳过的帧内容会更新 `turn.accumulated_text`，下一次未跳过的帧或 finalize 会携带完整内容
+- **Finalize 帧永远发送**：不受背压影响，确保 stream 可靠关闭
+- **自适应**：慢网络 → 帧间隔自然拉长 → 几乎不跳过；快 LLM + 快网络 → 高频输出 → 自动降帧
+
+```
+官方插件:  replyStreamNonBlocking — 上一帧未 ack 则跳过
+Hermes:    _last_frame_sent_at + 150ms skip window — 等价语义
+```
 
 ### 边界处理
 
@@ -149,7 +163,13 @@ except (asyncio.TimeoutError, RuntimeError):
 
 ## 测试覆盖
 
-**总计：26 tests passed**
+**总计：30 tests passed**
+
+### test_wecom.py::TestSendStreamFrame (4 tests)
+- Seed frame sends `<think></think>` ✓
+- Stream ID shared across frames ✓
+- Backpressure skip within 150ms window ✓
+- Finalize sends finish=true and resets state ✓
 
 ### test_stream_consumer_wecom_native.py (13 tests)
 - Seed frame, full run, throttling, fallback

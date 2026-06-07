@@ -382,6 +382,299 @@ class TestTeamsMeetingPipeline:
         assert teams_record is not None
         assert teams_record["message_id"] == "msg-1"
 
+    async def test_join_web_url_returns_pending_reference_when_graph_cannot_resolve(self, monkeypatch):
+        from plugins.teams_pipeline import meetings as meetings_module
+
+        class FakeClient:
+            async def get_json(self, path, params=None, headers=None):
+                raise meetings_module.MicrosoftGraphAPIError(
+                    400,
+                    "GET",
+                    f"https://graph.microsoft.com/v1.0{path}",
+                    "BadRequest",
+                )
+
+        ref = await meetings_module.resolve_meeting_reference(
+            FakeClient(),
+            join_web_url="https://teams.microsoft.com/meet/278515858493828?p=8FExxBj8D8N6Zxd1vu",
+        )
+
+        assert ref.join_web_url == "https://teams.microsoft.com/meet/278515858493828?p=8FExxBj8D8N6Zxd1vu"
+        assert ref.metadata["pending_resolution"] is True
+        assert ref.meeting_id == "278515858493828"
+
+    async def test_chat_url_bridges_through_call_record_lookup(self, monkeypatch):
+        from plugins.teams_pipeline import meetings as meetings_module
+
+        chat_url = "https://teams.microsoft.com/l/chat/19:meeting_MGQ3MGMxNDQtOGU0ZC00Yzc0LTkxY2MtZjRhNDU3NTcxY2Q4@thread.v2/conversations?context=%7B%22contextType%22%3A%22chat%22%7D"
+        call_join_url = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_MGQ3MGMxNDQtOGU0ZC00Yzc0LTkxY2MtZjRhNDU3NTcxY2Q4%40thread.v2/0?context=%7B%22Tid%22%3A%2219cd252c-b188-4d97-96dd-c74217c18f6d%22%2C%22Oid%22%3A%2229427ce2-dce0-42ce-b212-92a227f61979%22%7D"
+
+        class FakeClient:
+            async def collect_paginated(self, path):
+                if path == "/communications/callRecords":
+                    return [
+                        {
+                            "id": "call-record-1",
+                            "joinWebUrl": call_join_url,
+                            "organizer": {"user": {"id": "user-123"}},
+                        }
+                    ]
+                raise AssertionError(f"Unexpected Graph call: {path}")
+
+            async def get_json(self, path, params=None, headers=None):
+                if path == "/communications/onlineMeetings":
+                    raise meetings_module.MicrosoftGraphAPIError(
+                        404,
+                        "GET",
+                        f"https://graph.microsoft.com/v1.0{path}",
+                        "NotFound",
+                    )
+                expected_filter = "JoinWebUrl eq '{}'".format(call_join_url.replace("'", "''"))
+                if path == "/users/user-123/onlineMeetings" and params == {"$filter": expected_filter}:
+                    return {
+                        "value": [
+                            {
+                                "id": "meeting-123",
+                                "joinWebUrl": call_join_url,
+                                "subject": "Weekly Sync",
+                                "organizer": {"user": {"id": "user-123"}},
+                                "participants": [{"displayName": "Ada"}],
+                                "chatInfo": {"threadId": "19:meeting_MGQ3MGMxNDQtOGU0ZC00Yzc0LTkxY2MtZjRhNDU3NTcxY2Q4@thread.v2"},
+                            }
+                        ]
+                    }
+                raise AssertionError(f"Unexpected Graph call: {path} {params}")
+
+        ref = await meetings_module.resolve_meeting_reference(FakeClient(), join_web_url=chat_url)
+
+        assert ref.meeting_id == "meeting-123"
+        assert ref.organizer_user_id == "user-123"
+        assert ref.join_web_url == call_join_url
+        assert ref.thread_id == "19:meeting_MGQ3MGMxNDQtOGU0ZC00Yzc0LTkxY2MtZjRhNDU3NTcxY2Q4@thread.v2"
+
+    async def test_call_record_notification_bridges_past_online_meeting_lookup_error(self, monkeypatch):
+        from plugins.teams_pipeline import meetings as meetings_module
+
+        call_record_id = "call-record-1"
+        call_join_url = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_callrecord@thread.v2/0?context=%7B%22Tid%22%3A%2219cd252c-b188-4d97-96dd-c74217c18f6d%22%2C%22Oid%22%3A%22user-123%22%7D"
+
+        class FakeClient:
+            async def get_json(self, path, params=None, headers=None):
+                if path == f"/communications/onlineMeetings/{call_record_id}":
+                    raise meetings_module.MicrosoftGraphAPIError(
+                        400,
+                        "GET",
+                        f"https://graph.microsoft.com/v1.0{path}",
+                        "BadRequest",
+                    )
+                if path == f"/communications/callRecords/{call_record_id}":
+                    return {
+                        "id": call_record_id,
+                        "joinWebUrl": call_join_url,
+                        "organizer": {"user": {"id": "user-123"}},
+                    }
+                # VTC filter may be tried first (Strategy 1) — expect it to fail
+                if path == "/communications/onlineMeetings" and params and "$filter" in params:
+                    if "VideoTeleconferenceId" in params["$filter"]:
+                        raise meetings_module.MicrosoftGraphAPIError(
+                            404, "GET", f"https://graph.microsoft.com/v1.0{path}", "NotFound"
+                        )
+                    # JoinWebUrl filter on /communications (Strategy 2) — also fails
+                    if "JoinWebUrl eq" in params["$filter"]:
+                        raise meetings_module.MicrosoftGraphAPIError(
+                            400, "GET", f"https://graph.microsoft.com/v1.0{path}", "BadRequest"
+                        )
+                expected_filter = "JoinWebUrl eq '{}'".format(call_join_url.replace("'", "''"))
+                if path == "/users/user-123/onlineMeetings" and params == {"$filter": expected_filter}:
+                    return {
+                        "value": [
+                            {
+                                "id": "meeting-123",
+                                "joinWebUrl": call_join_url,
+                                "organizer": {"user": {"id": "user-123"}},
+                            }
+                        ]
+                    }
+                raise AssertionError(f"Unexpected Graph call: {path} {params}")
+
+        ref = await meetings_module.resolve_meeting_reference(FakeClient(), meeting_id=call_record_id)
+
+        assert ref.meeting_id == "meeting-123"
+        assert ref.organizer_user_id == "user-123"
+        assert ref.join_web_url == call_join_url
+
+    async def test_join_web_url_permission_errors_surface(self, monkeypatch):
+        from plugins.teams_pipeline import meetings as meetings_module
+
+        class FakeClient:
+            async def get_json(self, path, params=None, headers=None):
+                raise meetings_module.MicrosoftGraphAPIError(
+                    403,
+                    "GET",
+                    f"https://graph.microsoft.com/v1.0{path}",
+                    "Forbidden",
+                )
+
+        with pytest.raises(meetings_module.TeamsMeetingPermissionError):
+            await meetings_module.resolve_meeting_reference(
+                FakeClient(),
+                join_web_url="https://teams.microsoft.com/meet/278515858493828?p=8FExxBj8D8N6Zxd1vu",
+            )
+
+    async def test_fetch_preferred_transcript_text_uses_resolved_meeting_for_download(self, monkeypatch):
+        from plugins.teams_pipeline import meetings as meetings_module
+
+        pending_ref = meetings_module.TeamsMeetingRef(
+            meeting_id="278515858493828",
+            join_web_url="https://teams.microsoft.com/meet/278515858493828?p=8FExxBj8D8N6Zxd1vu",
+            tenant_id="tenant-1",
+            metadata={"pending_resolution": True, "join_web_url": "https://teams.microsoft.com/meet/278515858493828?p=8FExxBj8D8N6Zxd1vu"},
+        )
+        resolved_ref = meetings_module.TeamsMeetingRef(
+            meeting_id="meeting-123",
+            organizer_user_id="user-123",
+            join_web_url="https://teams.microsoft.com/l/meetup-join/real",
+            tenant_id="tenant-1",
+            metadata={"subject": "Weekly Sync"},
+        )
+        captured = {}
+
+        async def _resolve_artifact_meeting_ref(client, meeting_ref):
+            return resolved_ref
+
+        async def _list_transcript_artifacts(client, meeting_ref):
+            captured["listed_ref"] = meeting_ref.meeting_id
+            return [
+                MeetingArtifact(
+                    artifact_type="transcript",
+                    artifact_id="tx-1",
+                    display_name="meeting.vtt",
+                    download_url=None,
+                )
+            ]
+
+        async def _download_transcript_text(
+            client,
+            meeting_ref,
+            transcript,
+            *,
+            resolved_meeting_ref=None,
+            encoding="utf-8",
+        ):
+            captured["download_ref"] = meeting_ref.meeting_id
+            captured["resolved_download_ref"] = resolved_meeting_ref.meeting_id if resolved_meeting_ref else None
+            return "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello world\n"
+
+        monkeypatch.setattr(meetings_module, "_resolve_artifact_meeting_ref", _resolve_artifact_meeting_ref)
+        monkeypatch.setattr(meetings_module, "list_transcript_artifacts", _list_transcript_artifacts)
+        monkeypatch.setattr(meetings_module, "download_transcript_text", _download_transcript_text)
+
+        transcript, text = await meetings_module.fetch_preferred_transcript_text(object(), pending_ref)
+
+        assert transcript is not None
+        assert text is not None
+        assert captured["listed_ref"] == "meeting-123"
+        assert captured["download_ref"] == "meeting-123"
+        assert captured["resolved_download_ref"] == "meeting-123"
+
+    async def test_download_recording_artifact_uses_resolved_meeting_for_download(self, tmp_path):
+        from plugins.teams_pipeline import meetings as meetings_module
+
+        captured = {}
+
+        class FakeClient:
+            async def download_to_file(self, path, destination):
+                captured["path"] = path
+                destination.write_text("binary", encoding="utf-8")
+                return {"path": str(destination), "size_bytes": destination.stat().st_size, "content_type": "video/mp4"}
+
+        pending_ref = meetings_module.TeamsMeetingRef(
+            meeting_id="278515858493828",
+            join_web_url="https://teams.microsoft.com/meet/278515858493828?p=8FExxBj8D8N6Zxd1vu",
+            tenant_id="tenant-1",
+            metadata={"pending_resolution": True, "join_web_url": "https://teams.microsoft.com/meet/278515858493828?p=8FExxBj8D8N6Zxd1vu"},
+        )
+        resolved_ref = meetings_module.TeamsMeetingRef(
+            meeting_id="meeting-123",
+            organizer_user_id="user-123",
+            join_web_url="https://teams.microsoft.com/l/meetup-join/real",
+            tenant_id="tenant-1",
+            metadata={"subject": "Weekly Sync"},
+        )
+        recording = MeetingArtifact(
+            artifact_type="recording",
+            artifact_id="rec-1",
+            display_name="meeting.mp4",
+            download_url=None,
+        )
+
+        result = await meetings_module.download_recording_artifact(
+            FakeClient(),
+            pending_ref,
+            recording,
+            tmp_path / "out.mp4",
+            resolved_meeting_ref=resolved_ref,
+        )
+
+        assert captured["path"] == "/users/user-123/onlineMeetings/meeting-123/recordings/rec-1/content"
+        assert result["size_bytes"] > 0
+
+    async def test_transcript_artifacts_use_organizer_specific_endpoint(self, tmp_path, monkeypatch):
+        from plugins.teams_pipeline import meetings as meetings_module
+
+        captured = {"paths": []}
+
+        class FakeClient:
+            async def collect_paginated(self, path):
+                captured["paths"].append(path)
+                return [
+                    {
+                        "id": "tx-1",
+                        "displayName": "meeting.vtt",
+                        "contentType": "text/vtt",
+                        "downloadUrl": None,
+                    }
+                ]
+
+            async def download_to_file(self, path, destination):
+                captured["paths"].append(path)
+                destination.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello world\n", encoding="utf-8")
+                return {"path": str(destination), "size_bytes": destination.stat().st_size, "content_type": "text/vtt"}
+
+        meeting_ref = meetings_module.TeamsMeetingRef(
+            meeting_id="meeting-123",
+            organizer_user_id="user-123",
+            join_web_url="https://teams.microsoft.com/l/meetup-join/abc",
+            tenant_id="tenant-1",
+            metadata={"subject": "Weekly Sync"},
+        )
+
+        transcript, text = await meetings_module.fetch_preferred_transcript_text(FakeClient(), meeting_ref)
+
+        assert transcript is not None
+        assert text is not None
+        assert captured["paths"][0] == "/users/user-123/onlineMeetings/meeting-123/transcripts"
+        assert captured["paths"][1] == "/users/user-123/onlineMeetings/meeting-123/transcripts/tx-1/content"
+        assert "Hello world" in text
+
+
+    async def test_missing_transcript_endpoint_falls_back_to_recordings(self, tmp_path, monkeypatch):
+        from plugins.teams_pipeline import meetings as meetings_module
+
+        async def _missing(*args, **kwargs):
+            raise meetings_module.TeamsMeetingNotFoundError("No transcripts found for Teams meeting meeting-789")
+
+        monkeypatch.setattr(meetings_module, "list_transcript_artifacts", _missing)
+
+        meeting_ref = await _transcript_meeting_resolver(FakeGraphClient())
+        transcript_artifact, transcript_text = await meetings_module.fetch_preferred_transcript_text(
+            FakeGraphClient(),
+            meeting_ref,
+        )
+
+        assert transcript_artifact is None
+        assert transcript_text is None
+
     async def test_missing_transcript_and_recording_schedules_retry(self, tmp_path, monkeypatch):
         from plugins.teams_pipeline import pipeline as pipeline_module
 
@@ -392,9 +685,9 @@ class TestTeamsMeetingPipeline:
         store = TeamsPipelineStore(tmp_path / "teams-store.json")
         pipeline = TeamsMeetingPipeline(
             graph_client=FakeGraphClient(),
-            store=store,
             config={},
             summarize_fn=lambda **kwargs: asyncio.sleep(0, result=None),
+            store=store,
         )
 
         job = await pipeline.run_notification(

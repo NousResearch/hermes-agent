@@ -105,7 +105,7 @@ def test_show_prints_job_json(capsys, tmp_path):
 def test_fetch_requires_meeting_identifier(capsys):
     teams_pipeline_command(_make_args(teams_pipeline_action="fetch"))
     out = capsys.readouterr().out
-    assert "meeting_id or join_web_url is required" in out
+    assert "meeting_id, join_web_url, recap_url, or call_record_id is required" in out
 
 
 def test_subscriptions_lists_graph_subscriptions(monkeypatch, capsys):

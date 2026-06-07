@@ -104,6 +104,7 @@ When the user reports "the pipeline worked yesterday but nothing is arriving tod
 ## Other pitfalls
 
 - **Transcript not available yet.** Teams takes some time after a meeting ends to generate the transcript artifact. `fetch --meeting-id` on a just-ended meeting may return empty. Wait 2-5 minutes and retry, or let the Graph webhook drive ingestion naturally.
+- **Join-URL lookup is not supported for app-only Graph auth.** In Microsoft Graph, `GET /communications/onlineMeetings?$filter=JoinWebUrl eq ...` is documented for delegated `/me` or `/users/{userId}` access, while app-only access supports `communications/onlineMeetings` lookup by `VideoTeleconferenceId` instead. If Hermes is configured for app-only auth, `hermes teams-pipeline fetch --join-web-url ...` may fail with HTTP 400 even when permissions are correct. Prefer `--meeting-id`, or add a resolver that extracts a supported identifier from the meeting invite payload.
 - **Delivery mode mismatch.** If summaries are produced (`list` shows success) but nothing lands in Teams, check `platforms.teams.extra.delivery_mode` and the matching target config (`incoming_webhook_url` OR `chat_id` OR `team_id`+`channel_id`). The writer reads these from config.yaml or `TEAMS_*` env vars.
 - **Graph app permissions.** A token acquires cleanly (`token-health` passes) but Graph API calls return 401/403 when permissions were added but admin consent wasn't re-granted. Have the user revisit the app registration in the Azure portal and click "Grant admin consent" again.
 

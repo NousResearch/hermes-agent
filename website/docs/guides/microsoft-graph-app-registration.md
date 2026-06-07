@@ -72,6 +72,16 @@ The pipeline uses a minimum-viable set of application permissions. Add only what
 | `OnlineMeetingRecording.Read.All` | Download Teams meeting recordings for offline STT processing. |
 | `CallRecords.Read.All` | Resolve meetings from call records when only the join URL is known. |
 
+### Required for short `meet` URL resolution
+
+When users paste short Teams meeting links (`https://teams.microsoft.com/meet/<numeric_id>?p=...`), the Graph API cannot resolve them directly because it does not index legacy numeric meeting IDs. The pipeline uses a calendar-based fallback to find the matching event and extract the full `meetup-join` URL.
+
+| Permission | What it lets the app do |
+|------------|--------------------------|
+| `Calendar.Read` | Search organizer calendars to match short meet URL numeric IDs and extract the full `onlineMeeting.joinUrl`. |
+
+> **Why Calendar.Read?** Short `meet` URLs (the default format Teams calendar invites generate) contain numeric IDs that Graph API meeting endpoints return `400 BadRequest` for. Call records can bridge the gap too, but they're only available 15–30 minutes after the meeting ends. Calendar search provides real-time resolution by scanning recent events for the numeric ID in the body or join URL.
+
 ### Required for outbound summary delivery (Graph mode only)
 
 If `platforms.teams.extra.delivery_mode` is `graph`, the pipeline posts summaries into a Teams channel or chat via the Graph API. Skip these if you use `incoming_webhook` delivery mode instead.
@@ -119,6 +129,8 @@ Test-CsApplicationAccessPolicy -Identity "alice@example.com" -AppId "<MSGRAPH_CL
 
 Without the policy, **any** user's meetings are readable — that's what the permission technically grants. Don't skip this step on a production tenant.
 
+> **Note on `Calendar.Read` scoping:** The `CsApplicationAccessPolicy` above only restricts Teams API access (`OnlineMeetings.*`). The `Calendar.Read` permission has its own Exchange Online scoping mechanism. If you need to restrict calendar access in production, see [Exchange Online Application Access Policies](https://learn.microsoft.com/en-us/exchange/clients-and-mobile-in-exchange-online/exchange-web-services/configure-application-access-policies). Without additional scoping, `Calendar.Read` grants access to every user's calendar in the tenant.
+
 ## Step 5: Write the Credentials to Your Env File
 
 Put the three values you collected into `~/.hermes/.env`:
@@ -128,6 +140,17 @@ MSGRAPH_TENANT_ID=<directory-tenant-id>
 MSGRAPH_CLIENT_ID=<application-client-id>
 MSGRAPH_CLIENT_SECRET=<client-secret-value>
 ```
+
+### Optional: Configure Calendar Search Organizers
+
+For short `meet` URL resolution, the pipeline searches specific users' calendars to find matching events. By default, it searches any `organizer_user_id` it extracts from call records or meeting metadata. You can also specify a list of organizer user IDs (comma-separated) to always include in calendar searches:
+
+```bash
+# Optional: comma-separated Azure AD user IDs for calendar-based short URL resolution
+HERMES_TEAMS_CALENDAR_ORGANIZERS="fd3fdd74-1ba4-4df1-a5ea-55b35de08c5f,d0527e29-630d-4335-8dc4-e3e28c0a94f1"
+```
+
+This is useful when meetings are organized by specific users whose calendars the pipeline should always check. Omit this variable if you don't need calendar-based resolution.
 
 Set file permissions so only you can read the secret:
 
@@ -158,6 +181,9 @@ A successful run prints a long token string and a health dict showing `cached: T
 | `AADSTS700016: Application not found` | Wrong `MSGRAPH_CLIENT_ID` or wrong tenant. | Double-check the values from step 1 are from the same app. |
 | `AADSTS90002: Tenant not found` | Typo in `MSGRAPH_TENANT_ID`. | Copy the Directory (tenant) ID from the app overview again. |
 | `insufficient_claims` at call time (not token time) | Token acquires but Graph returns 401/403. | You skipped step 3 admin-consent, or added permissions but haven't re-consented. Revisit API permissions and click **Grant admin consent** again. |
+| `403 Forbidden` on `/communications/onlineMeetings` | App access policy (`CsApplicationAccessPolicy`) not granted for the meeting organizer. | Run `Grant-CsApplicationAccessPolicy` for each organizer whose meetings the pipeline needs to read (Step 4). Propagation can take up to 30 minutes. |
+| `400 BadRequest` on `/communications/onlineMeetings` with short `meet` URL | Graph API does not index legacy numeric meeting IDs from short URLs (`teams.microsoft.com/meet/<number>`). | This is expected. The pipeline falls back to calendar search (requires `Calendar.Read`) and call records. Ensure `Calendar.Read` is granted and admin-consented. |
+| `403 Forbidden` on `/users/{id}/calendarView` | `Calendar.Read` permission not consented, or user not accessible via app-only auth. | Grant and admin-consent `Calendar.Read` in Step 3. For production tenants, configure Exchange Online application access policies. |
 
 ## Rotating the Client Secret
 

@@ -3033,9 +3033,16 @@ def _configure_simple_requirements(ts_key: str):
                 _cfg = load_config()
                 _aux = _cfg.setdefault("auxiliary", {}).setdefault("vision", {})
                 _aux["base_url"] = base_url
+                # Prompt for model name — native OpenAI defaults to gpt-4o-mini;
+                # custom endpoints have no sensible default so the user must specify.
+                default_model = "gpt-4o-mini" if is_native_openai else ""
+                model_hint = f" (blank for {default_model})" if default_model else ""
+                model_name = _prompt(f"    Vision model name{model_hint}").strip()
+                model_name = model_name or default_model
+                if model_name:
+                    _aux["model"] = model_name
+                    save_env_value("AUXILIARY_VISION_MODEL", model_name)
                 save_config(_cfg)
-                if is_native_openai:
-                    save_env_value("AUXILIARY_VISION_MODEL", "gpt-4o-mini")
                 _print_success("    Saved")
             else:
                 _print_warning("    Skipped")

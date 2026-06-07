@@ -24,12 +24,59 @@ describe('virtual height estimates', () => {
     expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
   })
 
+  it('adds one row for a group-boundary lead gap', () => {
+    const msg: Msg = { role: 'assistant', text: 'reply' }
+
+    expect(estimatedMsgHeight(msg, 80, { compact: false, details: false, leadGap: true })).toBe(
+      estimatedMsgHeight(msg, 80, { compact: false, details: false, leadGap: false }) + 1
+    )
+  })
+
   it('includes detail sections when visible', () => {
     const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'line 1\nline 2', tools: ['Tool A', 'Tool B'] }
 
     expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBeGreaterThan(
       estimatedMsgHeight(msg, 80, { compact: false, details: false })
     )
+  })
+
+  it('accounts for the response separator when assistant details are visible', () => {
+    const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'plan' }
+
+    expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBe(
+      estimatedMsgHeight(msg, 80, { compact: false, details: false }) + 3
+    )
+  })
+
+  it('does not account for a response separator without visible details', () => {
+    const msg: Msg = { role: 'assistant', text: 'ok' }
+
+    expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBe(
+      estimatedMsgHeight(msg, 80, { compact: false, details: false })
+    )
+  })
+
+  it('honors per-section visibility when estimating response separators', () => {
+    const thinkingOnly: Msg = { role: 'assistant', text: 'ok', thinking: 'plan' }
+    const toolsOnly: Msg = { role: 'assistant', text: 'ok', tools: ['Tool A'] }
+
+    expect(
+      estimatedMsgHeight(thinkingOnly, 80, {
+        compact: false,
+        details: true,
+        thinkingVisible: false,
+        toolsVisible: true
+      })
+    ).toBe(estimatedMsgHeight(thinkingOnly, 80, { compact: false, details: false }))
+
+    expect(
+      estimatedMsgHeight(toolsOnly, 80, {
+        compact: false,
+        details: true,
+        thinkingVisible: true,
+        toolsVisible: false
+      })
+    ).toBe(estimatedMsgHeight(toolsOnly, 80, { compact: false, details: false }))
   })
 
   it('reserves two extra rows for the inter-turn separator on non-first user messages', () => {

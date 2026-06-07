@@ -222,9 +222,12 @@ gateway:
     no_named_sessions:     "No se encontraron sesiones con nombre.\nUsa `/title Mi sesión` para nombrar la sesión actual y luego `/resume Mi sesión` para volver a ella."
     list_header:           "📋 **Sesiones con nombre**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nUso: `/resume <nombre de sesión>`"
+    list_footer_numbered:  "\nUso: `/resume <nombre de sesión>` o `/resume <número>` (p. ej. `/resume 1` para la más reciente)"
     list_failed:           "No se pudieron listar las sesiones: {error}"
+    out_of_range:          "El índice de reanudación {index} está fuera de rango.\nUsa `/resume` sin argumentos para ver las sesiones disponibles."
     not_found:             "No se encontró ninguna sesión que coincida con '**{name}**'.\nUsa `/resume` sin argumentos para ver las sesiones disponibles."
     already_on:            "📌 Ya estás en la sesión **{name}**."
     switch_failed:         "No se pudo cambiar de sesión."
@@ -252,7 +255,7 @@ gateway:
     title:                 "**Título:** {title}"
     created:               "**Creado:** {timestamp}"
     last_activity:         "**Última actividad:** {timestamp}"
-    tokens:                "**Tokens:** {tokens}"
+    tokens:                "**Tokens de API acumulados (reenviados en cada llamada):** {tokens}"
     agent_running:         "**Agente activo:** {state}"
     state_yes:             "Sí ⚡"
     state_no:              "No"
@@ -287,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "Nada que deshacer."
-    removed:               "↩️ {count} mensaje(s) deshecho(s).\nEliminado: \"{preview}\""
+    removed:               "↩️ {turns} turno(s) deshecho(s) ({count} mensaje(s)).\nRespaldado en: \"{preview}\"\nCopia/edita el texto de arriba y envíalo para volver a preguntar desde aquí."
+    invalid_count:         "Cantidad no válida \"{arg}\" — usa /undo o /undo N."
 
   update:
     platform_not_messaging:  "✗ /update solo está disponible en plataformas de mensajería. Ejecuta `hermes update` desde la terminal."
@@ -339,6 +343,8 @@ gateway:
     label_off:             "Desactivado (solo texto)"
     label_voice_only:      "Activado (responder con voz a mensajes de voz)"
     label_all:             "TTS (responder con voz a todos los mensajes)"
+    help:                  "{toggle}\n\n**Cómo funciona /voice**\n• `/voice on` — respuesta de voz cuando envías un mensaje de voz\n• `/voice tts` — respuesta de voz a *cada* mensaje\n• `/voice off` — volver a respuestas solo de texto\n• `/voice status` — mostrar el modo actual\n• `/voice` (sin argumento) — alternar rápido entre activado y desactivado{channels}"
+    help_channels:         "\n\n**Canales de voz en vivo (Discord)**\n• Únete primero a un canal de voz, luego `/voice channel` — me uno, escucho y digo mis respuestas\n• `/voice leave` — desconectar del canal de voz"
 
   yolo:
     disabled:                   "⚠️ Modo YOLO **DESACTIVADO** en esta sesión — los comandos peligrosos requerirán aprobación."

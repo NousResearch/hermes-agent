@@ -13,7 +13,6 @@ import re
 import ssl
 import time
 from email.utils import formatdate
-from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
 
@@ -41,6 +40,15 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# Email addresses — a valid email like "user@domain.com" should be treated as
+# an explicit target for the email platform, not fall through to channel-name
+# resolution which has no way to resolve a raw address.
+_EMAIL_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*$")
+# Most platforms read their home channel from "<PLATFORM>_HOME_CHANNEL", but a
+# few diverge. Email reads EMAIL_HOME_ADDRESS (see gateway/config.py), so the
+# generic "<PLATFORM>_HOME_CHANNEL" hint would point users at a variable that is
+# never read. Map the exceptions so the error guidance is actually actionable.
+_HOME_CHANNEL_ENV_OVERRIDES = {"email": "EMAIL_HOME_ADDRESS"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
@@ -135,11 +143,11 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> for a file under a Hermes media cache or HERMES_MEDIA_ALLOW_DIRS — the platform will deliver it as a native media attachment."
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
             }
         },
         "required": []
@@ -266,10 +274,13 @@ def _handle_send(args):
             chat_id = home.chat_id
             used_home_channel = True
         else:
+            home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(
+                platform_name, f"{platform_name.upper()}_HOME_CHANNEL"
+            )
             return json.dumps({
                 "error": f"No home channel set for {platform_name} to determine where to send the message. "
                 f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
-                f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
+                f"or set a home channel via: hermes config set {home_env} <channel_id>"
             })
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
@@ -384,6 +395,14 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
+    if platform_name == "ntfy":
+        topic = target_ref.strip()
+        if topic:
+            return topic, None, True
+    if platform_name == "email":
+        match = _EMAIL_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return target_ref.strip(), None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -487,6 +506,7 @@ async def _send_via_adapter(
          the runner weakref is ``None``).
       3. A descriptive error explaining both options.
     """
+    platform_name = platform.value if hasattr(platform, "value") else str(platform)
     runner = None
     try:
         from gateway.run import _gateway_runner_ref
@@ -501,7 +521,13 @@ async def _send_via_adapter(
             adapter = None
         if adapter is not None:
             try:
-                metadata = {"thread_id": thread_id} if thread_id else None
+                metadata = {}
+                if thread_id:
+                    metadata["thread_id"] = thread_id
+                if platform_name == "ntfy" and chat_id:
+                    metadata["publish_topic"] = chat_id
+                if not metadata:
+                    metadata = None
                 result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
             except asyncio.CancelledError:
                 raise
@@ -511,7 +537,6 @@ async def _send_via_adapter(
                 return {"success": True, "message_id": result.message_id}
             return {"error": f"Adapter send failed: {result.error}"}
 
-    platform_name = platform.value if hasattr(platform, "value") else str(platform)
     entry = None
     try:
         from gateway.platform_registry import platform_registry
@@ -752,7 +777,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            result = await _send_slack(pconfig.token, chat_id, chunk, thread_ts=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -761,12 +786,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
-        elif platform == Platform.MATTERMOST:
-            result = await _send_mattermost(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.MATRIX:
             result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
-        elif platform == Platform.HOMEASSISTANT:
-            result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         elif platform == Platform.FEISHU:
@@ -1036,7 +1057,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return _error(f"Telegram send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
+async def _send_slack(token, chat_id, message, thread_ts=None):
     """Send via Slack Web API."""
     try:
         import aiohttp
@@ -1050,6 +1071,8 @@ async def _send_slack(token, chat_id, message):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            if thread_ts:
+                payload["thread_ts"] = thread_ts
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):
@@ -1272,7 +1295,6 @@ async def _send_email(extra, chat_id, message):
     """Send via SMTP (one-shot, no persistent connection needed)."""
     import smtplib
     from email.mime.text import MIMEText
-    from email.utils import formatdate
 
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
     password = os.getenv("EMAIL_PASSWORD", "")
@@ -1356,30 +1378,6 @@ async def _send_sms(auth_token, chat_id, message):
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
     except Exception as e:
         return _error(f"SMS send failed: {e}")
-
-
-async def _send_mattermost(token, extra, chat_id, message):
-    """Send via Mattermost REST API."""
-    try:
-        import aiohttp
-    except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
-    try:
-        base_url = (extra.get("url") or os.getenv("MATTERMOST_URL", "")).rstrip("/")
-        token = token or os.getenv("MATTERMOST_TOKEN", "")
-        if not base_url or not token:
-            return {"error": "Mattermost not configured (MATTERMOST_URL, MATTERMOST_TOKEN required)"}
-        url = f"{base_url}/api/v4/posts"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.post(url, headers=headers, json={"channel_id": chat_id, "message": message}) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return _error(f"Mattermost API error ({resp.status}): {body}")
-                data = await resp.json()
-        return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id")}
-    except Exception as e:
-        return _error(f"Mattermost send failed: {e}")
 
 
 async def _send_matrix(token, extra, chat_id, message):
@@ -1484,29 +1482,6 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
             await adapter.disconnect()
         except Exception:
             pass
-
-
-async def _send_homeassistant(token, extra, chat_id, message):
-    """Send via Home Assistant notify service."""
-    try:
-        import aiohttp
-    except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
-    try:
-        hass_url = (extra.get("url") or os.getenv("HASS_URL", "")).rstrip("/")
-        token = token or os.getenv("HASS_TOKEN", "")
-        if not hass_url or not token:
-            return {"error": "Home Assistant not configured (HASS_URL, HASS_TOKEN required)"}
-        url = f"{hass_url}/api/services/notify/notify"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.post(url, headers=headers, json={"message": message, "target": chat_id}) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return _error(f"Home Assistant API error ({resp.status}): {body}")
-        return {"success": True, "platform": "homeassistant", "chat_id": chat_id}
-    except Exception as e:
-        return _error(f"Home Assistant send failed: {e}")
 
 
 async def _send_dingtalk(extra, chat_id, message):

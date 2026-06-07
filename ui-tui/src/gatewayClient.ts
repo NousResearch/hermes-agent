@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline'
 
 import type { GatewayEvent } from './gatewayTypes.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
+import { recordParentLifecycle } from './lib/parentLog.js'
 
 const MAX_GATEWAY_LOG_LINES = 200
 const MAX_LOG_LINE_BYTES = 4096
@@ -20,6 +21,14 @@ const WS_CLOSED = 3
 
 const truncateLine = (line: string) =>
   line.length > MAX_LOG_LINE_BYTES ? `${line.slice(0, MAX_LOG_LINE_BYTES)}… [truncated ${line.length} bytes]` : line
+
+const describeChild = (proc: ChildProcess | null) => {
+  if (!proc) {
+    return 'pid=none'
+  }
+
+  return `pid=${proc.pid ?? 'unknown'} killed=${proc.killed} exitCode=${proc.exitCode ?? 'null'} signal=${proc.signalCode ?? 'null'}`
+}
 
 const resolveGatewayAttachUrl = () => {
   const raw = process.env.HERMES_TUI_GATEWAY_URL?.trim()
@@ -85,7 +94,7 @@ const asWireText = (raw: unknown): string | null => {
 // otherwise-malformed URLs that the WHATWG `URL` parser can't accept.
 // Used by the `redactUrl` fallback so embedded credentials are
 // scrubbed from log lines even when the URL is unparseable.
-const _USERINFO_FALLBACK_RE = /^([a-z][a-z0-9+.\-]*:\/\/)[^/?#@]*@/i
+const _USERINFO_FALLBACK_RE = /^([a-z][a-z0-9+.-]*:\/\/)[^/?#@]*@/i
 
 // Connection URLs (gateway, sidecar) often carry bearer tokens in the query
 // string. We surface them in user-facing log lines and the
@@ -191,6 +200,7 @@ export class GatewayClient extends EventEmitter {
     const ws = this.ws
     this.ws = null
     this.wsConnectPromise = null
+
     try {
       ws?.close()
     } catch {
@@ -228,7 +238,7 @@ export class GatewayClient extends EventEmitter {
       // readable on slow boots.
       const stderrTail = this.getLogTail(20)
 
-      this.pushLog(`[startup] timed out waiting for gateway.ready (python=${python}, cwd=${cwd})`)
+      this.lifecycle(`[startup] timed out waiting for gateway.ready (python=${python}, cwd=${cwd})`)
       this.publish({
         type: 'gateway.start_timeout',
         payload: { cwd, python, stderr_tail: stderrTail }
@@ -239,6 +249,7 @@ export class GatewayClient extends EventEmitter {
   private handleTransportExit(code: null | number, reason?: string) {
     this.clearReadyTimer()
     this.closeSidecarSocket()
+    this.lifecycle(`[lifecycle] transport exit code=${code ?? 'null'} reason=${reason ?? 'none'}`)
     this.rejectPending(new Error(reason || `gateway exited${code === null ? '' : ` (${code})`}`))
 
     if (this.subscribed) {
@@ -257,6 +268,7 @@ export class GatewayClient extends EventEmitter {
 
     if (typeof WebSocket === 'undefined') {
       this.pushLog(`[sidecar] WebSocket unavailable; skipping mirror to ${redactUrl(this.sidecarUrl)}`)
+
       return
     }
 
@@ -324,6 +336,7 @@ export class GatewayClient extends EventEmitter {
     env.PYTHONPATH = pyPath ? `${root}${delimiter}${pyPath}` : root
     this.startReadyTimer(python, cwd)
     this.proc = spawn(python, ['-m', 'tui_gateway.entry'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
+    this.lifecycle(`[lifecycle] spawned gateway child ${describeChild(this.proc)} python=${python} cwd=${cwd}`)
 
     this.stdoutRl = createInterface({ input: this.proc.stdout! })
     this.stdoutRl.on('line', raw => {
@@ -353,11 +366,14 @@ export class GatewayClient extends EventEmitter {
     this.proc.on('error', err => {
       // Skip stale errors on an already-replaced child.
       if (this.proc !== ownedProc) {
+        this.pushLog(`[lifecycle] stale child error ignored ${describeChild(ownedProc)} message=${err.message}`)
+
         return
       }
 
       const line = `[spawn] ${err.message}`
 
+      this.lifecycle(`[lifecycle] child error ${describeChild(ownedProc)} message=${err.message}`)
       this.pushLog(line)
       this.publish({ type: 'gateway.stderr', payload: { line } })
       // Detach the reference up front so the late `exit` event for
@@ -369,14 +385,19 @@ export class GatewayClient extends EventEmitter {
       this.proc = null
       this.handleTransportExit(1, `gateway error: ${err.message}`)
     })
-    this.proc.on('exit', code => {
+    this.proc.on('exit', (code, signal) => {
       // start() can replace `this.proc` while an old child is still
       // tearing down. Skip stale exits so we don't clear the new
       // startup timer or reject newly-issued pending requests.
       if (this.proc !== ownedProc) {
+        this.pushLog(
+          `[lifecycle] stale child exit ignored ${describeChild(ownedProc)} code=${code ?? 'null'} signal=${signal ?? 'null'}`
+        )
+
         return
       }
 
+      this.lifecycle(`[lifecycle] child exit ${describeChild(ownedProc)} code=${code ?? 'null'} signal=${signal ?? 'null'}`)
       this.handleTransportExit(code)
     })
   }
@@ -400,6 +421,7 @@ export class GatewayClient extends EventEmitter {
       let settled = false
 
       this.ws = ws
+
       const connectPromise = new Promise<void>((resolve, reject) => {
         ws.addEventListener(
           'open',
@@ -454,9 +476,12 @@ export class GatewayClient extends EventEmitter {
         // new ready timer or reject the new pending requests on behalf
         // of a stale socket.
         if (this.ws !== ws) {
+          this.pushLog(`[lifecycle] stale websocket close ignored code=${ev.code}`)
+
           return
         }
 
+        this.pushLog(`[lifecycle] websocket close code=${ev.code}`)
         this.ws = null
         this.wsConnectPromise = null
         this.handleTransportExit(ev.code, `gateway websocket closed${ev.code ? ` (${ev.code})` : ''}`)
@@ -483,14 +508,17 @@ export class GatewayClient extends EventEmitter {
     this.resetStartupState()
 
     if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
+      this.lifecycle(`[lifecycle] replacing live gateway child ${describeChild(this.proc)}`)
       this.proc.kill()
     }
+
     this.proc = null
     this.closeGatewaySocket()
     this.closeSidecarSocket()
 
     if (attachUrl) {
       this.startAttachedGateway(attachUrl)
+
       return
     }
 
@@ -535,6 +563,14 @@ export class GatewayClient extends EventEmitter {
 
   private pushLog(line: string) {
     this.logs.push(truncateLine(line))
+  }
+
+  // Death-explaining breadcrumbs (spawn / exit / kill / replace) — kept in the
+  // in-memory tail for /logs AND persisted to the gateway crash log so the
+  // reason survives a parent exit and lands next to the child's SIGTERM panic.
+  private lifecycle(line: string) {
+    this.pushLog(line)
+    recordParentLifecycle(line)
   }
 
   private rejectPending(err: Error) {
@@ -686,8 +722,11 @@ export class GatewayClient extends EventEmitter {
     })
   }
 
-  kill() {
-    this.proc?.kill()
+  kill(reason = 'requested') {
+    const proc = this.proc
+    const killed = proc?.kill()
+
+    this.lifecycle(`[lifecycle] GatewayClient.kill reason=${reason} ${describeChild(proc)} killResult=${killed ?? 'none'}`)
     this.closeGatewaySocket()
     this.closeSidecarSocket()
     this.clearReadyTimer()

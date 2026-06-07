@@ -2230,6 +2230,45 @@ class MediaResolveMiddleware(InboundMiddleware):
 
     name = "media-resolve"
 
+    # --- Resource download cache (keyed by resourceId) ---
+    # Avoids redundant downloads of the same resource within the TTL window.
+    # The same resourceId can be referenced multiple times in a session (own
+    # attachment, then quoted again, then observed in a group backfill); each
+    # reference otherwise triggers a fresh token exchange + download.
+    _resource_cache: ClassVar[Dict[str, Tuple[str, str, float]]] = {}  # rid -> (local_path, mime, ts)
+    _RESOURCE_CACHE_TTL_S: ClassVar[int] = 24 * 60 * 60  # 24 hours
+    _RESOURCE_CACHE_MAX_SIZE: ClassVar[int] = 256
+
+    @classmethod
+    def _get_cached_resource(cls, resource_id: str) -> Optional[Tuple[str, str]]:
+        """Return cached ``(local_path, mime)`` if still valid and file exists, else None."""
+        if not resource_id:
+            return None
+        entry = cls._resource_cache.get(resource_id)
+        if entry is None:
+            return None
+        local_path, mime, ts = entry
+        if time.time() - ts > cls._RESOURCE_CACHE_TTL_S:
+            cls._resource_cache.pop(resource_id, None)
+            return None
+        # Verify the cached file still exists on disk (cache dir may be swept).
+        if not os.path.isfile(local_path):
+            cls._resource_cache.pop(resource_id, None)
+            return None
+        return local_path, mime
+
+    @classmethod
+    def _put_cached_resource(cls, resource_id: str, local_path: str, mime: str) -> None:
+        """Store download result in cache. Evicts oldest entries when over capacity."""
+        if not resource_id:
+            return
+        if len(cls._resource_cache) >= cls._RESOURCE_CACHE_MAX_SIZE:
+            # Drop the oldest 25% of entries by timestamp.
+            sorted_keys = sorted(cls._resource_cache, key=lambda k: cls._resource_cache[k][2])
+            for k in sorted_keys[: cls._RESOURCE_CACHE_MAX_SIZE // 4]:
+                cls._resource_cache.pop(k, None)
+        cls._resource_cache[resource_id] = (local_path, mime, time.time())
+
     @staticmethod
     def _guess_image_ext_from_url(url: str) -> str:
         """Guess image extension from URL path."""
@@ -2327,8 +2366,23 @@ class MediaResolveMiddleware(InboundMiddleware):
     async def _download_and_cache(
         cls, adapter, *, fetch_url: str, kind: str,
         file_name: Optional[str] = None, log_tag: str = "",
+        resource_id: str = "",
     ) -> Optional[Tuple[str, str]]:
-        """Download a Yuanbao resource and cache locally. Returns ``(local_path, mime)`` or ``None``."""
+        """Download a Yuanbao resource and cache locally. Returns ``(local_path, mime)`` or ``None``.
+
+        When *resource_id* is provided, an in-memory cache keyed by resourceId
+        is consulted first to skip redundant downloads of the same resource
+        within the TTL window.
+        """
+        if resource_id:
+            hit = cls._get_cached_resource(resource_id)
+            if hit is not None:
+                logger.debug(
+                    "[%s] resource cache hit: rid=%s path=%s",
+                    adapter.name, resource_id, hit[0],
+                )
+                return hit
+
         try:
             file_bytes, content_type = await media_download_url(
                 fetch_url, max_size_mb=adapter.MEDIA_MAX_SIZE_MB,
@@ -2353,6 +2407,7 @@ class MediaResolveMiddleware(InboundMiddleware):
             mime = guess_mime_type(f"image{ext}")
             if not mime.startswith("image/"):
                 mime = content_type if content_type.startswith("image/") else "image/jpeg"
+            cls._put_cached_resource(resource_id, local_path, mime)
             return local_path, mime
 
         # kind == "file"
@@ -2368,6 +2423,7 @@ class MediaResolveMiddleware(InboundMiddleware):
             )
             return None
         mime = guess_mime_type(file_name) or content_type or "application/octet-stream"
+        cls._put_cached_resource(resource_id, local_path, mime)
         return local_path, mime
 
     @classmethod
@@ -2393,6 +2449,9 @@ class MediaResolveMiddleware(InboundMiddleware):
             if kind not in _RESOLVABLE_MEDIA_KINDS or not url:
                 continue
 
+            # Extract resourceId from the placeholder URL for cache dedup.
+            rid = ExtractContentMiddleware._parse_resource_id(url)
+
             try:
                 fetch_url = await cls._resolve_download_url(adapter, url)
             except Exception as exc:
@@ -2408,6 +2467,7 @@ class MediaResolveMiddleware(InboundMiddleware):
                 kind=kind,
                 file_name=str(ref.get("name") or "").strip() or None,
                 log_tag=f"placeholder_url={url[:80]}",
+                resource_id=rid,
             )
             if cached is None:
                 continue
@@ -2480,6 +2540,7 @@ class MediaResolveMiddleware(InboundMiddleware):
                 kind=kind,
                 file_name=filename or None,
                 log_tag=f"rid={rid}",
+                resource_id=rid,
             )
             if cached is None:
                 continue
@@ -2563,6 +2624,7 @@ class DispatchMiddleware(InboundMiddleware):
                         kind=kind,
                         file_name=filename or None,
                         log_tag=f"quote rid={rid}",
+                        resource_id=rid,
                     )
                     if cached is None:
                         continue
@@ -4628,6 +4690,11 @@ class YuanbaoAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Abstract method implementations
     # ------------------------------------------------------------------
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
+        return True
 
     async def connect(self) -> bool:
         """Connect to Yuanbao WS gateway and authenticate.

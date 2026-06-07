@@ -105,7 +105,7 @@ def test_stale_non_stream_close_is_single_owner(monkeypatch):
     monkeypatch.setattr(run_agent, "OpenAI", factory)
 
     agent = _build_agent()
-    agent._compute_non_stream_stale_timeout = lambda _messages: 0.01
+    agent._compute_non_stream_stale_timeout = lambda api_payload: 0.01
 
     with pytest.raises(APIConnectionError):
         agent._interruptible_api_call({"model": agent.model, "messages": []})

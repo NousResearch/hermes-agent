@@ -8,7 +8,7 @@ Covers:
 - _is_backend_available("brave-free") integration
 - _get_backend() recognizes "brave-free" as a valid configured backend
 - check_web_api_key() includes brave-free in availability check
-- web_extract / web_crawl return search-only errors when brave-free is active
+- web_extract returns a search-only error when brave-free is active
 """
 from __future__ import annotations
 
@@ -238,7 +238,7 @@ class TestBraveFreeBackendWiring:
 
 
 # ---------------------------------------------------------------------------
-# brave-free is search-only: web_extract / web_crawl return clear errors
+# brave-free is search-only: web_extract returns a clear error
 # ---------------------------------------------------------------------------
 
 
@@ -259,31 +259,14 @@ class TestBraveFreeSearchOnlyErrors:
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "brave-free"})
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+        async def _allow_ssrf(_url: str) -> bool:
+            return True
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
 
         result_str = asyncio.get_event_loop().run_until_complete(
             web_tools.web_extract_tool(["https://example.com"])
-        )
-        result = json.loads(result_str)
-        assert result["success"] is False
-        assert "search-only" in result["error"].lower()
-        assert "brave" in result["error"].lower()
-
-    def test_web_crawl_returns_search_only_error(self, monkeypatch):
-        import asyncio
-        from tools import web_tools
-
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "brave-free"})
-        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
-        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
-        monkeypatch.setattr(web_tools, "check_website_access", lambda url: None)
-        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
-
-        result_str = asyncio.get_event_loop().run_until_complete(
-            web_tools.web_crawl_tool("https://example.com")
         )
         result = json.loads(result_str)
         assert result["success"] is False

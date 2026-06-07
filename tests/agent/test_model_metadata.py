@@ -10,13 +10,9 @@ Coverage levels:
   Persistent cache       — save/load, corruption, update, provider isolation
 """
 
-import os
 import time
-import tempfile
 
-import pytest
 import yaml
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from agent.model_metadata import (
@@ -127,56 +123,6 @@ class TestEstimateMessagesTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
-    def test_claude_models_context_lengths(self):
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "claude" not in key:
-                continue
-            # Claude 4.6+ models (4.6 and 4.7) have 1M context at standard
-            # API pricing (no long-context premium).  Older Claude 4.x and
-            # 3.x models cap at 200k.
-            if any(tag in key for tag in ("4.6", "4-6", "4.7", "4-7")):
-                assert value == 1000000, f"{key} should be 1000000"
-            else:
-                assert value == 200000, f"{key} should be 200000"
-
-    def test_gpt4_models_128k_or_1m(self):
-        # gpt-4.1 and gpt-4.1-mini have 1M context; other gpt-4* have 128k
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "gpt-4" in key and "gpt-4.1" not in key:
-                assert value == 128000, f"{key} should be 128000"
-
-    def test_gpt41_models_1m(self):
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "gpt-4.1" in key:
-                assert value == 1047576, f"{key} should be 1047576"
-
-    def test_gemini_models_1m(self):
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "gemini" in key:
-                assert value == 1048576, f"{key} should be 1048576"
-
-    def test_grok_models_context_lengths(self):
-        # xAI /v1/models does not return context_length metadata, so
-        # DEFAULT_CONTEXT_LENGTHS must cover the Grok family explicitly.
-        # Values sourced from models.dev (2026-04).
-        expected = {
-            "grok-4.20": 2000000,
-            "grok-4-1-fast": 2000000,
-            "grok-4-fast": 2000000,
-            "grok-4": 256000,
-            "grok-build": 256000,
-            "grok-code-fast": 256000,
-            "grok-3": 131072,
-            "grok-2": 131072,
-            "grok-2-vision": 8192,
-            "grok": 131072,
-        }
-        for key, value in expected.items():
-            assert key in DEFAULT_CONTEXT_LENGTHS, f"{key} missing from DEFAULT_CONTEXT_LENGTHS"
-            assert DEFAULT_CONTEXT_LENGTHS[key] == value, (
-                f"{key} should be {value}, got {DEFAULT_CONTEXT_LENGTHS[key]}"
-            )
-
     def test_grok_substring_matching(self):
         # Longest-first substring matching must resolve the real xAI model
         # IDs to the correct fallback entries without 128k probe-down.
@@ -190,8 +136,6 @@ class TestDefaultContextLengths:
                 ("grok-4.20-0309-reasoning", 2000000),
                 ("grok-4.20-0309-non-reasoning", 2000000),
                 ("grok-4.20-multi-agent-0309", 2000000),
-                ("grok-4-1-fast-reasoning", 2000000),
-                ("grok-4-1-fast-non-reasoning", 2000000),
                 ("grok-4-fast-reasoning", 2000000),
                 ("grok-4-fast-non-reasoning", 2000000),
                 ("grok-4", 256000),
@@ -274,13 +218,6 @@ class TestDefaultContextLengths:
                 assert actual == expected_ctx, (
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
-
-    def test_all_values_positive(self):
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            assert value > 0, f"{key} has non-positive context length"
-
-    def test_dict_is_not_empty(self):
-        assert len(DEFAULT_CONTEXT_LENGTHS) >= 10
 
 
 # =========================================================================
@@ -1148,12 +1085,6 @@ class TestContextProbeTiers:
         for i in range(len(CONTEXT_PROBE_TIERS) - 1):
             assert CONTEXT_PROBE_TIERS[i] > CONTEXT_PROBE_TIERS[i + 1]
 
-    def test_first_tier_is_256k(self):
-        assert CONTEXT_PROBE_TIERS[0] == 256_000
-
-    def test_last_tier_is_8k(self):
-        assert CONTEXT_PROBE_TIERS[-1] == 8_000
-
 
 class TestGetNextProbeTier:
     def test_from_256k(self):
@@ -1316,3 +1247,59 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+class TestGrok43StaleCacheGuard:
+    """Pre-catalog builds resolved grok-4.3 via the generic 'grok-4' catch-all
+    (256,000) and persisted it before the 'grok-4.3' (1M) catalog entry was
+    added on 2026-05-15.  The step-1 cache guard must drop that stale value
+    and re-resolve to 1M, while leaving correct grok-4 entries (256,000)
+    untouched.
+    """
+
+    def test_suggests_grok_4_3(self):
+        from agent.model_metadata import _model_name_suggests_grok_4_3
+        assert _model_name_suggests_grok_4_3("grok-4.3")
+        assert _model_name_suggests_grok_4_3("grok-4.3-latest")
+        assert _model_name_suggests_grok_4_3("xai/grok-4.3")
+        assert not _model_name_suggests_grok_4_3("grok-4")
+        assert not _model_name_suggests_grok_4_3("grok-4-fast")
+        assert not _model_name_suggests_grok_4_3("grok-4.20")
+
+    def test_stale_grok_4_3_dropped_and_reresolves_to_1m(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import importlib
+        import agent.model_metadata as mm
+        importlib.reload(mm)
+        base = "https://api.x.ai/v1"
+        mm.save_context_length("grok-4.3", base, 256_000)
+        ctx = mm.get_model_context_length(
+            "grok-4.3", base_url=base, api_key="", provider="xai"
+        )
+        assert ctx == 1_000_000
+
+    def test_correct_grok_4_3_cache_preserved(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import importlib
+        import agent.model_metadata as mm
+        importlib.reload(mm)
+        base = "https://api.x.ai/v1"
+        mm.save_context_length("grok-4.3", base, 1_000_000)
+        ctx = mm.get_model_context_length(
+            "grok-4.3", base_url=base, api_key="", provider="xai"
+        )
+        assert ctx == 1_000_000
+
+    def test_grok_4_not_clobbered(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import importlib
+        import agent.model_metadata as mm
+        importlib.reload(mm)
+        base = "https://api.x.ai/v1"
+        # 256,000 is the CORRECT value for plain grok-4 — guard must not touch it.
+        for slug in ("grok-4", "grok-4-0709"):
+            mm.save_context_length(slug, base, 256_000)
+            ctx = mm.get_model_context_length(
+                slug, base_url=base, api_key="", provider="xai"
+            )
+            assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"

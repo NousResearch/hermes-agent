@@ -32,6 +32,7 @@ declare global {
       readFileDataUrl: (filePath: string) => Promise<string>
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
       writeFileText: (filePath: string, content: string) => Promise<{ path: string }>
+      stopAllPreviewFileWatches: () => Promise<boolean>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
       writeClipboard: (text: string) => Promise<boolean>
       saveImageFromUrl: (url: string) => Promise<boolean>

@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   normalizePreviewTarget: (target, baseDir) => ipcRenderer.invoke('hermes:normalizePreviewTarget', target, baseDir),
   watchPreviewFile: url => ipcRenderer.invoke('hermes:watchPreviewFile', url),
   stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),
+  stopAllPreviewFileWatches: () => ipcRenderer.invoke('hermes:stopAllPreviewFileWatches'),
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),

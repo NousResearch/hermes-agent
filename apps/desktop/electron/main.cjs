@@ -2834,6 +2834,14 @@ function stopPreviewFileWatch(id) {
   return true
 }
 
+function stopAllPreviewFileWatches() {
+  for (const [id, watcher] of previewWatchers) {
+    watcher.close()
+    previewWatchers.delete(id)
+  }
+  return true
+}
+
 function closePreviewWatchers() {
   for (const id of previewWatchers.keys()) {
     stopPreviewFileWatch(id)
@@ -4830,6 +4838,7 @@ ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
 ipcMain.handle('hermes:watchPreviewFile', (_event, url) => watchPreviewFile(String(url || '')))
 
 ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWatch(String(id || '')))
+ipcMain.handle('hermes:stopAllPreviewFileWatches', () => stopAllPreviewFileWatches())
 
 ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
   if (!payload || !isHexColor(payload.background) || !isHexColor(payload.foreground)) {

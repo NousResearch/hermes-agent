@@ -547,6 +547,9 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
     const handleSaveEdit = async () => {
       try {
+        // Stop all file watchers to prevent them from detecting our own write
+        // and triggering a reload cascade that loses session data.
+        await window.hermesDesktop.stopAllPreviewFileWatches()
         await window.hermesDesktop.writeFileText(filePath, editContent)
         setState(prev => ({ ...prev, text: editContent }))
         setEditing(false)

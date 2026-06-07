@@ -11919,7 +11919,18 @@ class HermesCLI:
             }
             self._approval_deadline = _time.monotonic() + timeout
 
-            self._invalidate()
+            # Bypass the _invalidate() throttle — approval is a user-blocking
+            # modal that must render immediately.  The 250ms throttle exists to
+            # prevent terminal flicker on slow connections, but dropping an
+            # approval redraw means the panel never appears and the command is
+            # silently denied after 60s.
+            if hasattr(self, "_app") and self._app:
+                try:
+                    self._app.invalidate()
+                except Exception:
+                    pass
+            # Audible signal so the user knows approval is pending.
+            print("\a", end="", flush=True)
 
             _last_countdown_refresh = _time.monotonic()
             while True:
@@ -11936,11 +11947,19 @@ class HermesCLI:
                     now = _time.monotonic()
                     if now - _last_countdown_refresh >= 5.0:
                         _last_countdown_refresh = now
-                        self._invalidate()
+                        if hasattr(self, "_app") and self._app:
+                            try:
+                                self._app.invalidate()
+                            except Exception:
+                                pass
 
             self._approval_state = None
             self._approval_deadline = 0
-            self._invalidate()
+            if hasattr(self, "_app") and self._app:
+                try:
+                    self._app.invalidate()
+                except Exception:
+                    pass
             _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
             return "deny"
 

@@ -12144,7 +12144,9 @@ class GatewayRunner:
                 try:
                     limit = int(parts[1])
                 except ValueError:
-                    limit = 5
+                    return "Usage: /voice bench [1-20]"
+                if limit < 1 or limit > 20:
+                    return "Usage: /voice bench [1-20]"
             platform_name = str(getattr(platform, "value", platform) or "")
             return await asyncio.to_thread(
                 _voice_bench_format_recent,

@@ -200,6 +200,24 @@ class TestHandleVoiceCommand:
         assert calls == {}
 
     @pytest.mark.asyncio
+    async def test_voice_bench_rejects_invalid_limit(self, runner, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "user1")
+        event = _make_event("/voice bench nope")
+
+        result = await runner._handle_voice_command(event)
+
+        assert result == "Usage: /voice bench [1-20]"
+
+    @pytest.mark.asyncio
+    async def test_voice_bench_rejects_out_of_range_limit(self, runner, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "user1")
+        event = _make_event("/voice bench 99")
+
+        result = await runner._handle_voice_command(event)
+
+        assert result == "Usage: /voice bench [1-20]"
+
+    @pytest.mark.asyncio
     async def test_toggle_off_to_on(self, runner):
         event = _make_event("/voice")
         result = await runner._handle_voice_command(event)

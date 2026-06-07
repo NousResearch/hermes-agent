@@ -1276,6 +1276,7 @@ export const ja = defineLocale({
     editQueued: 'キュー済みターンを編集',
     sendQueuedNow: 'キュー済みターンを今すぐ送信',
     deleteQueued: 'キュー済みターンを削除',
+    mergeQueued: 'キュー済みターンをすべて結合',
     previewUnavailable: 'プレビューは利用できません',
     previewLabel: label => `${label} のプレビュー`,
     couldNotPreview: label => `${label} をプレビューできませんでした`,

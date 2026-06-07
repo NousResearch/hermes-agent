@@ -1175,6 +1175,7 @@ export const en: Translations = {
     sendQueuedNext: 'Send queued turn next',
     sendQueuedNow: 'Send queued turn now',
     deleteQueued: 'Delete queued turn',
+    mergeQueued: 'Merge all queued turns',
     previewUnavailable: 'Preview unavailable',
     previewLabel: label => `Preview ${label}`,
     couldNotPreview: label => `Could not preview ${label}`,

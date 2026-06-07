@@ -34,6 +34,7 @@ import {
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
+  mergeAllQueuedPrompts,
   promoteQueuedPrompt,
   type QueuedPromptEntry,
   removeQueuedPrompt,
@@ -1485,6 +1486,10 @@ export function ChatBar({
                   }
                 }}
                 onEdit={beginQueuedEdit}
+                onMergeAll={() => {
+                  mergeAllQueuedPrompts(activeQueueSessionKey)
+                  setQueueEdit(null)
+                }}
                 onSendNow={id => void sendQueuedNow(id)}
               />
             </div>

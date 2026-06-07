@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { ArrowUp, Pencil, Trash2 } from '@/lib/icons'
+import { ArrowUp, GitBranch, Pencil, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { QueuedPromptEntry } from '@/store/composer-queue'
 
@@ -14,13 +14,14 @@ interface QueuePanelProps {
   entries: QueuedPromptEntry[]
   onDelete: (id: string) => void
   onEdit: (entry: QueuedPromptEntry) => void
+  onMergeAll: () => void
   onSendNow: (id: string) => void
 }
 
 const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
   entry.text.trim() || (entry.attachments.length > 0 ? c.attachmentOnly : c.emptyTurn)
 
-export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendNow }: QueuePanelProps) {
+export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onMergeAll, onSendNow }: QueuePanelProps) {
   const { t } = useI18n()
   const c = t.composer
   const [collapsed, setCollapsed] = useState(false)
@@ -38,6 +39,28 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
       >
         <DisclosureCaret className="shrink-0" open={!collapsed} size="1em" />
         <span className="truncate">{c.queued(entries.length)}</span>
+        {entries.length >= 2 && !editingId && (
+          <Tip label={c.mergeQueued}>
+            <span
+              className="ml-auto flex shrink-0 items-center rounded-md p-0.5 transition-colors hover:bg-(--chrome-action-hover)"
+              onClick={e => {
+                e.stopPropagation()
+                onMergeAll()
+              }}
+              role="button"
+              tabIndex={0}
+              onKeyDown={e => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  onMergeAll()
+                }
+              }}
+            >
+              <GitBranch size={11} />
+            </span>
+          </Tip>
+        )}
       </button>
 
       {!collapsed && (

@@ -1242,6 +1242,7 @@ export const zhHant = defineLocale({
     editQueued: '編輯排隊回合',
     sendQueuedNow: '立即傳送排隊回合',
     deleteQueued: '刪除排隊回合',
+    mergeQueued: '合併所有排隊回合',
     previewUnavailable: '預覽不可用',
     previewLabel: label => `預覽 ${label}`,
     couldNotPreview: label => `無法預覽 ${label}`,

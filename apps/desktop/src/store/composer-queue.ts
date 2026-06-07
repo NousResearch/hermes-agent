@@ -199,6 +199,41 @@ export const updateQueuedPrompt = (
 export const updateQueuedPromptText = (key: string | null | undefined, id: string, text: string): boolean =>
   updateQueuedPrompt(key, id, { text })
 
+/**
+ * Merge all queued entries into a single entry.  Texts are joined with a
+ * blank-line separator; attachments are concatenated in queue order.  The
+ * head entry's `id` and `queuedAt` are preserved so any UI tracking the
+ * head (auto-drain target, arrow-history pointer) keeps pointing at the
+ * same logical slot.
+ *
+ * Returns `false` when there are fewer than 2 entries (nothing to merge)
+ * or the session key is invalid.
+ */
+export const mergeAllQueuedPrompts = (key: string | null | undefined): boolean => {
+  const sid = sidOf(key)
+
+  if (!sid) {
+    return false
+  }
+
+  const queue = queueFor(sid)
+
+  if (queue.length < 2) {
+    return false
+  }
+
+  const head = queue[0]!
+  const merged: QueuedPromptEntry = {
+    ...head,
+    text: queue.map(e => e.text.trim()).filter(Boolean).join('\n\n'),
+    attachments: queue.flatMap(e => cloneAttachments(e.attachments))
+  }
+
+  writeSession(sid, [merged])
+
+  return true
+}
+
 export const clearQueuedPrompts = (key: string | null | undefined) => {
   const sid = sidOf(key)
 

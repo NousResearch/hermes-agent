@@ -1322,6 +1322,7 @@ export const zh: Translations = {
     sendQueuedNext: '下一个发送排队回合',
     sendQueuedNow: '立即发送排队回合',
     deleteQueued: '删除排队回合',
+    mergeQueued: '合并所有排队回合',
     previewUnavailable: '预览不可用',
     previewLabel: label => `预览 ${label}`,
     couldNotPreview: label => `无法预览 ${label}`,

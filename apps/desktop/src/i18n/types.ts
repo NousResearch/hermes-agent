@@ -900,6 +900,7 @@ export interface Translations {
     sendQueuedNext: string
     sendQueuedNow: string
     deleteQueued: string
+    mergeQueued: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string

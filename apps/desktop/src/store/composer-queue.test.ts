@@ -7,6 +7,7 @@ import {
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  mergeAllQueuedPrompts,
   promoteQueuedPrompt,
   removeQueuedPrompt,
   shouldAutoDrainOnSettle,
@@ -114,6 +115,75 @@ describe('composer queue store', () => {
 
     const parsed = JSON.parse(String(raw)) as Record<string, { text: string }[]>
     expect(parsed[SESSION_KEY]?.[0]?.text).toBe('persist me')
+  })
+})
+
+describe('mergeAllQueuedPrompts', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    $queuedPromptsBySession.set({})
+  })
+
+  it('merges multiple entries into one with blank-line separator', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'second' })
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'third' })
+
+    const result = mergeAllQueuedPrompts(SESSION_KEY)
+
+    expect(result).toBe(true)
+    const queue = getQueuedPrompts(SESSION_KEY)
+    expect(queue).toHaveLength(1)
+    expect(queue[0]!.text).toBe('first\n\nsecond\n\nthird')
+  })
+
+  it('preserves the head entry id and queuedAt', () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'head' })
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'tail' })
+
+    mergeAllQueuedPrompts(SESSION_KEY)
+
+    const queue = getQueuedPrompts(SESSION_KEY)
+    expect(queue[0]!.id).toBe(first!.id)
+    expect(queue[0]!.queuedAt).toBe(first!.queuedAt)
+  })
+
+  it('concatenates attachments from all entries', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('a-1')], text: 'first' })
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('a-2'), attachment('a-3')], text: 'second' })
+
+    mergeAllQueuedPrompts(SESSION_KEY)
+
+    const queue = getQueuedPrompts(SESSION_KEY)
+    expect(queue[0]!.attachments).toHaveLength(3)
+    expect(queue[0]!.attachments.map(a => a.id)).toEqual(['a-1', 'a-2', 'a-3'])
+  })
+
+  it('returns false when fewer than 2 entries', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'only one' })
+
+    expect(mergeAllQueuedPrompts(SESSION_KEY)).toBe(false)
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('returns false for empty queue', () => {
+    expect(mergeAllQueuedPrompts(SESSION_KEY)).toBe(false)
+  })
+
+  it('returns false for null key', () => {
+    expect(mergeAllQueuedPrompts(null)).toBe(false)
+  })
+
+  it('filters out empty text entries when merging', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('img')], text: '' })
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'third' })
+
+    mergeAllQueuedPrompts(SESSION_KEY)
+
+    const queue = getQueuedPrompts(SESSION_KEY)
+    expect(queue[0]!.text).toBe('first\n\nthird')
+    expect(queue[0]!.attachments).toHaveLength(1)
   })
 })
 

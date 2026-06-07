@@ -237,6 +237,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
     - allow_from: List of sender IDs allowed in DMs (when dm_policy="allowlist")
     - group_policy: "open" | "allowlist" | "disabled" — which groups are processed (default: "open")
     - group_allow_from: List of group JIDs allowed (when group_policy="allowlist")
+    - group_sender_allow_from: Optional list of sender IDs allowed within groups
+        (env: WHATSAPP_GROUP_SENDER_ALLOWED_USERS). When set, only these senders
+        can invoke the bot in group chats, even via @mention.
     """
     
     # WhatsApp message limits — practical UX limit, not protocol max.
@@ -264,6 +267,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        self._group_sender_allow_from = self._coerce_allow_list(
+            config.extra.get("group_sender_allow_from")
+            or config.extra.get("groupSenderAllowFrom")
+            or os.getenv("WHATSAPP_GROUP_SENDER_ALLOWED_USERS", "")
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -402,6 +410,18 @@ class WhatsAppAdapter(BasePlatformAdapter):
         # "open" — all groups allowed
         return True
 
+    def _is_group_sender_allowed(self, sender_id: str) -> bool:
+        """Check whether a sender within an allowed group should be processed.
+
+        When ``group_sender_allow_from`` is configured and non-empty, only
+        senders on the list can invoke the bot in group chats — even if they
+        @mention it.  When unset (the default), all senders in an allowed
+        group are processed, preserving existing behaviour.
+        """
+        if not self._group_sender_allow_from:
+            return True
+        return sender_id in self._group_sender_allow_from
+
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
@@ -505,6 +525,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if is_group:
             chat_id = chat_id_raw
             if not self._is_group_allowed(chat_id):
+                return False
+            sender_id = str(data.get("senderId") or data.get("from") or "")
+            if not self._is_group_sender_allowed(sender_id):
                 return False
         else:
             sender_id = str(data.get("senderId") or data.get("from") or "")

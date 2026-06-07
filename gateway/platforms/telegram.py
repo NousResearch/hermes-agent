@@ -1128,6 +1128,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
                 )
                 self._polling_conflict_count = 0  # reset counter on success
+                self._polling_error_task = None  # Reset task guard for next error (fixes #40691)
                 return
             except Exception as retry_err:
                 logger.warning(

@@ -1210,6 +1210,7 @@ AUTHOR_MAP = {
     "teknium@hermes-agent": "teknium1",
     "web3blind@gmail.com": "web3blind",
     "ztzheng@163.com": "chengoak",  # PR #17467
+    "zwcf5200@163.com": "zwcf5200",  # PR #38661 (SSH remote cwd fix)
     "24110240104@m.fudan.edu.cn": "YuShu",  # co-author only
     "charliekerfoot@gmail.com": "CharlieKerfoot",  # PR #18951
     # Debug share upload-time redaction (May 2026)

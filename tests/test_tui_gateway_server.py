@@ -60,6 +60,49 @@ def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
         server._clear_session_context(tokens)
 
 
+def test_terminal_task_cwd_local_backend_uses_session_cwd(monkeypatch, tmp_path):
+    """A local terminal backend must keep host-validated session cwd behaviour."""
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    assert server._terminal_task_cwd({"cwd": str(project)}) == str(project)
+
+
+def test_terminal_task_cwd_ssh_uses_remote_path_unvalidated(monkeypatch):
+    """SSH (non-local) backend: the configured remote cwd is used verbatim even
+    though it does not exist on the local host. This is the jonbohz fix — host
+    `isdir()` validation would otherwise discard the remote path and fall back
+    to os.getcwd(), running commands against the wrong machine."""
+    remote = "/home/jonboh/workspace/proj"  # does not exist on this host
+    assert not os.path.isdir(remote)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_CWD", remote)
+
+    assert server._terminal_task_cwd({"cwd": "/some/host/dir"}) == remote
+
+
+def test_terminal_task_cwd_ssh_falls_back_to_config(monkeypatch):
+    """When TERMINAL_CWD is unset, the SSH path reads terminal.cwd from config."""
+    remote = "/home/jonboh/workspace/from-config"
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": remote}})
+
+    assert server._terminal_task_cwd({"cwd": "/some/host/dir"}) == remote
+
+
+def test_terminal_task_cwd_ssh_sentinel_cwd_falls_back_to_session(monkeypatch):
+    """Sentinel/auto cwd values are not real remote paths, so the SSH branch
+    must defer to the session cwd rather than registering a meaningless dir."""
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_CWD", "auto")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": "."}})
+
+    assert server._terminal_task_cwd({"cwd": "/host/session/dir"}) == "/host/session/dir"
+
+
 class _ChunkyStdout:
     def __init__(self):
         self.parts: list[str] = []

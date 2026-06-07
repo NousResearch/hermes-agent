@@ -3219,6 +3219,30 @@ class GatewayRunner:
             default=False,
         )
 
+    def _resolve_effective_show_reasoning(self, source: SessionSource) -> bool:
+        """Resolve the reasoning-display state the user actually sees.
+
+        A per-platform ``display.platforms.<platform>.show_reasoning`` override
+        wins over the global ``display.show_reasoning`` toggle — the same
+        resolution the delivery path uses when deciding whether to prepend
+        reasoning to a reply. Reading it here keeps ``/reasoning`` status in
+        agreement with what gets delivered, instead of reporting only the
+        global toggle via ``_load_show_reasoning()``. Falls back to the
+        session's cached ``_show_reasoning`` when config is unreadable.
+        """
+        try:
+            from gateway.display_config import resolve_display_setting
+            return bool(
+                resolve_display_setting(
+                    _load_gateway_config(),
+                    _platform_config_key(source.platform),
+                    "show_reasoning",
+                    getattr(self, "_show_reasoning", False),
+                )
+            )
+        except Exception:
+            return getattr(self, "_show_reasoning", False)
+
     @staticmethod
     def _load_busy_input_mode() -> str:
         """Load gateway drain-time busy-input behavior from config/env."""
@@ -9593,16 +9617,7 @@ class GatewayRunner:
                 )
 
             # Prepend reasoning/thinking if display is enabled (per-platform)
-            try:
-                from gateway.display_config import resolve_display_setting as _rds
-                _show_reasoning_effective = _rds(
-                    _load_gateway_config(),
-                    _platform_config_key(source.platform),
-                    "show_reasoning",
-                    getattr(self, "_show_reasoning", False),
-                )
-            except Exception:
-                _show_reasoning_effective = getattr(self, "_show_reasoning", False)
+            _show_reasoning_effective = self._resolve_effective_show_reasoning(source)
             if _show_reasoning_effective and response:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
@@ -12868,7 +12883,7 @@ class GatewayRunner:
                 level = rc.get("effort", "medium")
             display_state = (
                 t("gateway.reasoning.display_on")
-                if self._show_reasoning
+                if self._resolve_effective_show_reasoning(event.source)
                 else t("gateway.reasoning.display_off")
             )
             has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})

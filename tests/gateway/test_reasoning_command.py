@@ -105,6 +105,63 @@ class TestReasoningCommand:
         assert runner._show_reasoning is True
 
     @pytest.mark.asyncio
+    async def test_reasoning_status_reflects_per_platform_show_override(self, tmp_path, monkeypatch):
+        """Status must report the effective per-platform display state.
+
+        Global show_reasoning is off, but the platform has an explicit
+        ``display.platforms.telegram.show_reasoning: true`` override — the
+        same override the delivery path honors. Status must say "on", not
+        read the global toggle and claim "off".
+        """
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "display:\n"
+            "  show_reasoning: false\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      show_reasoning: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+
+        result = await runner._handle_reasoning_command(_make_event("/reasoning"))
+
+        assert "**Display:** on ✓" in result
+
+    @pytest.mark.asyncio
+    async def test_reasoning_status_reflects_per_platform_hide_override(self, tmp_path, monkeypatch):
+        """A per-platform hide override wins over a global show toggle.
+
+        Global show_reasoning is on, but ``display.platforms.telegram`` opts
+        out. Reasoning is NOT delivered on Telegram, so status must say "off".
+        """
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "display:\n"
+            "  show_reasoning: true\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      show_reasoning: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+
+        result = await runner._handle_reasoning_command(_make_event("/reasoning"))
+
+        assert "**Display:** off" in result
+        assert "**Display:** on ✓" not in result
+
+    @pytest.mark.asyncio
     async def test_handle_reasoning_command_updates_config_and_cache(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()

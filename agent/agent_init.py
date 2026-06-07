@@ -835,6 +835,10 @@ def init_agent(
                             explicit_api_key=_fb_explicit_key,
                         )
                         if _fb_client is not None:
+                            # Preserve the user's configured primary model so
+                            # the TUI status bar displays the intended model,
+                            # not the fallback that happened to activate.
+                            agent._configured_model = agent.model
                             agent.provider = _fb["provider"]
                             agent.model = _fb_model or _fb["model"]
                             agent._fallback_activated = True

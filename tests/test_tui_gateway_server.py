@@ -3048,6 +3048,28 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     assert info["mcp_servers"] == fake_status
 
 
+def test_session_info_prefers_configured_model_over_fallback():
+    """When a fallback provider activates, the TUI status bar should show
+    the user's configured primary model, not the fallback model name."""
+    agent = types.SimpleNamespace(
+        model="mimo-v2.5",
+        _configured_model="gpt-5.5",
+        _fallback_activated=True,
+        tools=[],
+    )
+    info = server._session_info(agent)
+    assert info["model"] == "gpt-5.5"
+    assert info["runtime_model"] == "mimo-v2.5"
+
+
+def test_session_info_model_field_without_fallback():
+    """When no fallback is active, model and runtime_model are identical."""
+    agent = types.SimpleNamespace(model="claude-sonnet-4", tools=[])
+    info = server._session_info(agent)
+    assert info["model"] == "claude-sonnet-4"
+    assert info["runtime_model"] == "claude-sonnet-4"
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either

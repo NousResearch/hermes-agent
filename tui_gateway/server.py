@@ -1828,7 +1828,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
     except Exception:
         yolo = False
     info: dict = {
-        "model": getattr(agent, "model", ""),
+        "model": getattr(agent, "_configured_model", None) or getattr(agent, "model", ""),
+        "runtime_model": getattr(agent, "model", ""),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",

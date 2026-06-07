@@ -8450,8 +8450,11 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
             )
-    except ImportError:
-        pass
+    except ImportError as e:
+        # Fail-closed: if approval module is unavailable, reject the command
+        # rather than silently skipping the gate. This prevents a dependency
+        # failure from becoming a security bypass.
+        return _err(rid, 5001, f"approval system unavailable: {str(e)}")
     try:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()

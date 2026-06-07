@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import {
   Dialog,
   DialogContent,
@@ -30,7 +29,7 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
-import { OverlayMain, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
+import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -145,15 +144,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       ) : (
         <OverlaySplitLayout>
           <OverlaySidebar>
-            <Button
-              className="mb-1 w-full justify-start gap-2"
-              onClick={() => setCreateOpen(true)}
-              size="sm"
-              variant="text"
-            >
-              <Codicon name="add" />
-              {p.newProfile}
-            </Button>
+            <OverlayNewButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
             {profiles.map(profile => (
               <ProfileRow
                 active={selected?.name === profile.name}

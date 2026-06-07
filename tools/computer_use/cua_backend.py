@@ -575,27 +575,43 @@ class CuaDriverBackend(ComputerUseBackend):
         # Step 1: enumerate on-screen windows to find target pid/window_id.
         lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
 
-        # Prefer structuredContent.windows (MCP 2024-11-05+); fall back to
-        # text-line parsing for older cua-driver builds.
-        sc = lw_out.get("structuredContent") or {}
-        raw_windows = sc.get("windows") if sc else None
-        if raw_windows:
-            windows = [
-                {
-                    "app_name": w.get("app_name", ""),
-                    "pid": int(w["pid"]),
-                    "window_id": int(w["window_id"]),
-                    "off_screen": not w.get("is_on_screen", True),
-                    "title": w.get("title", ""),
-                    "z_index": w.get("z_index", 0),
-                }
-                for w in raw_windows
-            ]
-            # Sort by z_index descending (lowest z_index = frontmost on macOS).
-            windows.sort(key=lambda w: w["z_index"])
-        else:
-            raw_text = lw_out["data"] if isinstance(lw_out["data"], str) else ""
-            windows = _parse_windows_from_text(raw_text)
+        def _windows_from(out: Dict[str, Any]) -> List[Dict[str, Any]]:
+            sc_ = out.get("structuredContent") or {}
+            raw_ = sc_.get("windows") if sc_ else None
+            if raw_:
+                wins_ = [
+                    {
+                        "app_name": w.get("app_name", ""),
+                        "pid": int(w["pid"]),
+                        "window_id": int(w["window_id"]),
+                        "off_screen": not w.get("is_on_screen", True),
+                        "title": w.get("title", ""),
+                        "z_index": w.get("z_index", 0),
+                    }
+                    for w in raw_
+                ]
+                wins_.sort(key=lambda w: w["z_index"])
+                return wins_
+            raw_text_ = out["data"] if isinstance(out.get("data"), str) else ""
+            return _parse_windows_from_text(raw_text_)
+
+        windows = _windows_from(lw_out)
+
+        # If the MCP bridge returned an empty/degenerate window list (flaky
+        # session), re-fetch over the CLI transport before giving up — otherwise
+        # the caller sees a silent 0x0 capture even though windows exist.
+        if not windows:
+            logger.warning(
+                "cua-driver list_windows returned no windows over MCP; "
+                "re-fetching via CLI transport",
+            )
+            try:
+                cli_lw = self._session._call_tool_via_cli(
+                    "list_windows", {"on_screen_only": True}, 20.0,
+                )
+                windows = _windows_from(cli_lw)
+            except Exception as cli_exc:
+                logger.error("cua-driver CLI re-fetch for list_windows failed: %s", cli_exc)
 
         if not windows:
             return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
@@ -648,12 +664,67 @@ class CuaDriverBackend(ComputerUseBackend):
             )
             if sc_out["images"]:
                 png_b64 = sc_out["images"][0]
+            else:
+                # Empty screenshot result over MCP (flaky bridge) — re-fetch the
+                # window state via the CLI transport, which embeds a screenshot.
+                logger.warning(
+                    "cua-driver screenshot returned no image over MCP "
+                    "(window_id=%s); re-fetching via CLI transport",
+                    self._active_window_id,
+                )
+                try:
+                    cli_out = self._session._call_tool_via_cli(
+                        "get_window_state",
+                        {"pid": self._active_pid, "window_id": self._active_window_id},
+                        30.0,
+                    )
+                    if cli_out.get("images"):
+                        png_b64 = cli_out["images"][0]
+                except Exception as cli_exc:
+                    logger.error(
+                        "cua-driver CLI re-fetch for vision screenshot failed: %s", cli_exc,
+                    )
         else:
             # get_window_state: AX tree + optional screenshot.
             gws_out = self._session.call_tool(
                 "get_window_state",
                 {"pid": self._active_pid, "window_id": self._active_window_id},
             )
+            # The persistent MCP session can return a degenerate result —
+            # empty/partial data with NO exception — when the bridge is flaky
+            # (e.g. it reconnected mid-call and dropped the heavy
+            # get_window_state payload). That surfaces to the model as a silent
+            # 0x0 capture. Detect "no screenshot AND no parseable tree" and
+            # force a one-shot CLI-transport re-fetch, which talks to the daemon
+            # over a different socket and returns the full result. This is
+            # distinct from the EAGAIN McpError path (handled in call_tool);
+            # here the MCP call "succeeded" but gave us nothing usable.
+            def _gws_is_empty(out: Dict[str, Any]) -> bool:
+                if out.get("images"):
+                    return False
+                txt = out.get("data") if isinstance(out.get("data"), str) else ""
+                _, tr = _split_tree_text(txt or "")
+                return not (tr and tr.strip())
+
+            if _gws_is_empty(gws_out):
+                logger.warning(
+                    "cua-driver get_window_state returned an empty result over MCP "
+                    "(pid=%s window_id=%s); re-fetching via CLI transport",
+                    self._active_pid, self._active_window_id,
+                )
+                try:
+                    cli_out = self._session._call_tool_via_cli(
+                        "get_window_state",
+                        {"pid": self._active_pid, "window_id": self._active_window_id},
+                        30.0,
+                    )
+                    if not _gws_is_empty(cli_out):
+                        gws_out = cli_out
+                except Exception as cli_exc:
+                    logger.error(
+                        "cua-driver CLI re-fetch for get_window_state failed: %s", cli_exc,
+                    )
+
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)
 

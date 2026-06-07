@@ -1485,7 +1485,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
             detail = ""
             try:
                 err_body = response.json()
-                detail = err_body.get("error", {}).get("message", "") or response.text[:300]
+                detail = (err_body.get("error", {}).get("message", "") or response.text)[:300]
             except Exception:
                 detail = response.text[:300]
             return {

@@ -102,11 +102,55 @@ _log = logging.getLogger(__name__)
 # when the same module is used across TestClient instances or uvicorn reloads.
 # ---------------------------------------------------------------------------
 
+def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
+    """Tick the cron scheduler from inside the desktop dashboard backend.
+
+    The scheduler tick loop normally lives in ``hermes gateway run`` — but the
+    desktop app spawns a ``hermes dashboard`` backend, not a gateway, so a cron
+    a user creates in the app would never fire. We run a minimal ticker here
+    (no live adapters; delivery falls back to the per-platform send path).
+
+    Cross-process safe: ``cron.scheduler.tick`` takes the ``cron/.tick.lock``
+    file lock, so this never double-fires alongside a real gateway on the same
+    HERMES_HOME — whichever process grabs the lock first wins the tick.
+    """
+    from cron.scheduler import tick as cron_tick
+
+    _log.info("Desktop cron ticker started (interval=%ds)", interval)
+    # Tick once up front (catches jobs due at launch), then on the interval.
+    while not stop_event.is_set():
+        try:
+            cron_tick(verbose=False, sync=False)
+        except Exception as e:
+            _log.debug("Desktop cron tick error: %s", e)
+        stop_event.wait(interval)
+
+
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
-    yield
+
+    # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
+    # since the app has no gateway running the scheduler. Server `hermes
+    # dashboard` is unaffected — it relies on its own gateway.
+    cron_stop: "threading.Event | None" = None
+    cron_thread: "threading.Thread | None" = None
+    if os.getenv("HERMES_DESKTOP") == "1":
+        cron_stop = threading.Event()
+        cron_thread = threading.Thread(
+            target=_start_desktop_cron_ticker,
+            args=(cron_stop,),
+            daemon=True,
+            name="desktop-cron-ticker",
+        )
+        cron_thread.start()
+
+    try:
+        yield
+    finally:
+        if cron_stop is not None:
+            cron_stop.set()
 
 
 def _get_event_state(app: "FastAPI"):
@@ -1574,6 +1618,8 @@ async def get_sessions(
     min_messages: int = 0,
     archived: str = "exclude",
     order: str = "created",
+    source: str = None,
+    exclude_sources: str = None,
 ):
     """List sessions.
 
@@ -1604,7 +1650,14 @@ async def get_sessions(
             min_message_count = max(0, min_messages)
             archived_only = archived == "only"
             include_archived = archived == "include"
+            # Optional source scoping: ``source`` includes a single class,
+            # ``exclude_sources`` (comma-separated) drops classes. The desktop
+            # uses these to split recents (exclude=cron) from the cron-jobs
+            # section (source=cron) into two independent lists.
+            exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
             sessions = db.list_sessions_rich(
+                source=source or None,
+                exclude_sources=exclude_list or None,
                 limit=limit,
                 offset=offset,
                 min_message_count=min_message_count,
@@ -1613,6 +1666,8 @@ async def get_sessions(
                 order_by_last_active=order == "recent",
             )
             total = db.session_count(
+                source=source or None,
+                exclude_sources=exclude_list or None,
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
@@ -1642,6 +1697,8 @@ async def get_profiles_sessions(
     archived: str = "exclude",
     order: str = "recent",
     profile: str = "all",
+    source: str = None,
+    exclude_sources: str = None,
 ):
     """Unified, read-only session list aggregated across ALL profiles.
 
@@ -1677,6 +1734,11 @@ async def get_profiles_sessions(
     min_message_count = max(0, min_messages)
     archived_only = archived == "only"
     include_archived = archived == "include"
+    # Source scoping (see /api/sessions): recents pass exclude_sources=cron,
+    # the cron-jobs section passes source=cron — two independent lists so
+    # newest cron sessions can't starve the recents page.
+    source_filter = source or None
+    exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
     # Over-fetch per profile so the merged+sorted window is correct for the
     # requested page. Capped so a huge profile can't blow up the response.
     per_profile = min(max(limit + offset, limit), 500)
@@ -1700,6 +1762,8 @@ async def get_profiles_sessions(
             continue
         try:
             rows = db.list_sessions_rich(
+                source=source_filter,
+                exclude_sources=exclude_list or None,
                 limit=per_profile,
                 offset=0,
                 min_message_count=min_message_count,
@@ -1708,6 +1772,8 @@ async def get_profiles_sessions(
                 order_by_last_active=order == "recent",
             )
             profile_total = db.session_count(
+                source=source_filter,
+                exclude_sources=exclude_list or None,
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
@@ -5582,6 +5648,53 @@ async def get_cron_job(job_id: str, profile: Optional[str] = None):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@app.get("/api/cron/jobs/{job_id}/runs")
+async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: int = 20):
+    """Run sessions produced by a cron job, newest first.
+
+    Cron runs are stored as ordinary sessions whose id is
+    ``cron_{job_id}_{timestamp}`` (see cron/scheduler.run_job). A job's history
+    is therefore every session whose id carries that prefix; ``source='cron'``
+    narrows it and the id substring binds it to this job. Powers the run-history
+    list under each job in the desktop cron detail. Same row shape as
+    ``/api/sessions`` so the frontend can reuse SessionInfo.
+    """
+    selected = profile or _find_cron_job_profile(job_id)
+    # job_id may be a human name; resolve to the canonical id used in run-session ids.
+    canonical = job_id
+    if selected:
+        job = _call_cron_for_profile(selected, "get_job", job_id)
+        if job and job.get("id"):
+            canonical = str(job["id"])
+
+    try:
+        limit_n = max(1, min(int(limit), 100))
+    except (TypeError, ValueError):
+        limit_n = 20
+
+    db = _open_session_db_for_profile(selected)
+    try:
+        runs = db.list_sessions_rich(
+            source="cron",
+            id_query=f"cron_{canonical}_",
+            limit=limit_n,
+            offset=0,
+            order_by_last_active=True,
+        )
+        now = time.time()
+        for s in runs:
+            s["is_active"] = (
+                s.get("ended_at") is None
+                and (now - s.get("last_active", s.get("started_at", 0))) < 300
+            )
+            s["archived"] = bool(s.get("archived"))
+            if selected:
+                s["profile"] = selected
+        return {"runs": runs, "limit": limit_n}
+    finally:
+        db.close()
 
 
 @app.post("/api/cron/jobs")

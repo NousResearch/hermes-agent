@@ -183,6 +183,9 @@ jobs:
           # client expects an executable named hermes-agent-cn-runtime-<platform>-<arch>{.ext}.
           # Hidden imports cover modules PyInstaller doesn't discover via
           # static analysis (lazy imports inside hermes_cli/main.py).
+          # The cn-desktop runtime cannot lazy-install packages after freezing,
+          # so collect both the direct backend packages and the cross-platform
+          # transitive SDK packages those backends load dynamically.
           NAME="hermes-agent-cn-runtime-${{ matrix.platform }}-${{ matrix.arch }}"
           pyinstaller --noconfirm \
             --name "$NAME" \
@@ -201,8 +204,25 @@ jobs:
             --collect-submodules alibabacloud_dingtalk \
             --collect-submodules alibabacloud_tea_openapi \
             --collect-submodules alibabacloud_tea_util \
+            --collect-submodules alibabacloud_endpoint_util \
+            --collect-submodules alibabacloud_gateway_dingtalk \
+            --collect-submodules alibabacloud_gateway_spi \
+            --collect-submodules alibabacloud_credentials \
+            --collect-submodules alibabacloud_credentials_api \
+            --collect-submodules alibabacloud_openapi_util \
+            --collect-submodules Tea \
+            --collect-submodules darabonba \
+            --collect-submodules requests_toolbelt \
             --collect-submodules aiohttp \
+            --collect-submodules websockets \
+            --collect-submodules apscheduler \
+            --collect-submodules aiofiles \
             --collect-submodules qrcode \
+            --collect-submodules png \
+            --collect-submodules defusedxml \
+            --collect-submodules cryptography \
+            --collect-submodules certifi \
+            --collect-submodules typer \
             --collect-data hermes_cli \
             --collect-data gateway \
             --collect-data plugins \
@@ -217,9 +237,31 @@ jobs:
             --copy-metadata pydantic \
             --copy-metadata anthropic \
             --copy-metadata mcp \
+            --copy-metadata typer \
             --copy-metadata lark_oapi \
             --copy-metadata dingtalk_stream \
             --copy-metadata alibabacloud_dingtalk \
+            --copy-metadata alibabacloud_tea_openapi \
+            --copy-metadata alibabacloud_tea_util \
+            --copy-metadata alibabacloud_endpoint_util \
+            --copy-metadata alibabacloud_gateway_dingtalk \
+            --copy-metadata alibabacloud_gateway_spi \
+            --copy-metadata alibabacloud_credentials \
+            --copy-metadata alibabacloud_credentials_api \
+            --copy-metadata alibabacloud_openapi_util \
+            --copy-metadata alibabacloud_tea \
+            --copy-metadata darabonba_core \
+            --copy-metadata requests_toolbelt \
+            --copy-metadata aiohttp \
+            --copy-metadata websockets \
+            --copy-metadata apscheduler \
+            --copy-metadata aiofiles \
+            --copy-metadata qrcode \
+            --copy-metadata pypng \
+            --copy-metadata defusedxml \
+            --copy-metadata cryptography \
+            --copy-metadata pycryptodome \
+            --copy-metadata certifi \
             --paths . \
             -p . \
             hermes_cli/main.py
@@ -289,8 +331,14 @@ jobs:
           # shipped. dist-info names are the normalized (underscored) project
           # names: anthropic, mcp, lark-oapi -> lark_oapi, etc.
           fail=0
-          for pkg in anthropic mcp lark_oapi dingtalk_stream alibabacloud_dingtalk \
-                     aiohttp qrcode defusedxml cryptography; do
+          for pkg in anthropic mcp typer lark_oapi dingtalk_stream alibabacloud_dingtalk \
+                     alibabacloud_tea_openapi alibabacloud_tea_util \
+                     alibabacloud_endpoint_util alibabacloud_gateway_dingtalk \
+                     alibabacloud_gateway_spi alibabacloud_credentials \
+                     alibabacloud_credentials_api alibabacloud_openapi_util \
+                     alibabacloud_tea darabonba_core requests_toolbelt \
+                     aiohttp websockets apscheduler aiofiles qrcode pypng \
+                     defusedxml cryptography pycryptodome certifi; do
             if [[ -z "$(find "$internal" -maxdepth 1 -type d -name "${pkg}-*.dist-info" -print -quit)" ]]; then
               echo "::error::Frozen runtime is missing ${pkg} package metadata" >&2
               find "dist/$NAME" -maxdepth 3 -type d -iname "${pkg}*" -print >&2

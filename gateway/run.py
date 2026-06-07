@@ -12266,13 +12266,15 @@ class GatewayRunner:
                 lines[-1] += f", {done:.1f}ms done"
         transcript = str(metrics.get("transcript") or "").strip()
         if transcript:
+            transcript = _redact_gateway_user_facing_secrets(transcript)
             lines.append(f"Transcript: {transcript[:160]}")
         response = str(metrics.get("brain_response") or "").strip()
         if response:
+            response = _redact_gateway_user_facing_secrets(response)
             lines.append(f"Brain: {response[:160]}")
         output_wav = artifacts.get("output_wav")
         if output_wav:
-            lines.append(f"Output: {output_wav}")
+            lines.append(f"Output: {os.path.basename(str(output_wav))}")
         return "\n".join(lines)
 
     async def _run_voice_smoke(self) -> str:

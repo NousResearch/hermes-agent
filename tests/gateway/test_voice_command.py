@@ -150,7 +150,7 @@ class TestHandleVoiceCommand:
         assert "Voice smoke PASS" in result
         assert "total=7092.8ms" in result
         assert "brain_stream=76.2ms first, 123.0ms done" in result
-        assert "Output: /home/pafi/.hermes-voice/output/run/response.wav" in result
+        assert "Output: response.wav" in result
 
     @pytest.mark.asyncio
     async def test_voice_bench_reports_current_chat(self, runner, monkeypatch):

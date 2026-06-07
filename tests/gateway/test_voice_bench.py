@@ -75,6 +75,25 @@ def test_append_event_compacts_large_telemetry_file(tmp_path, monkeypatch):
     assert [row["turn_id"] for row in rows] == ["old-3", "new"]
 
 
+def test_append_event_serializes_unknown_values(tmp_path, monkeypatch):
+    path = tmp_path / "voice_bench.jsonl"
+    monkeypatch.setenv("HERMES_VOICE_BENCH_PATH", str(path))
+    monkeypatch.setenv("HERMES_VOICE_BENCH_SYNC", "1")
+
+    voice_bench.append_event(
+        {
+            "turn_id": "voice-object",
+            "stage": "agent",
+            "platform": "telegram",
+            "chat_id": "123",
+            "extra": object(),
+        }
+    )
+
+    item = json.loads(path.read_text(encoding="utf-8"))
+    assert item["turn_id"] == "voice-object"
+
+
 def test_format_recent_displays_safe_previews(tmp_path, monkeypatch):
     path = tmp_path / "voice_bench.jsonl"
     monkeypatch.setenv("HERMES_VOICE_BENCH_PATH", str(path))

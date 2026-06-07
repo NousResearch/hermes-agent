@@ -102,7 +102,7 @@ from tools.tool_backend_helpers import (  # noqa: F401
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
-from tools.url_safety import async_is_safe_url
+from tools.url_safety import async_is_safe_url, normalize_url_for_request
 import sys
 
 logger = logging.getLogger(__name__)
@@ -902,17 +902,25 @@ async def web_extract_tool(
     # URL-decode first so percent-encoded secrets (%73k- = sk-) are caught.
     from agent.redact import _PREFIX_RE
     from urllib.parse import unquote
+    normalized_urls: List[str] = []
     for _url in urls:
-        if _PREFIX_RE.search(_url) or _PREFIX_RE.search(unquote(_url)):
+        normalized_url = normalize_url_for_request(_url)
+        if (
+            _PREFIX_RE.search(_url)
+            or _PREFIX_RE.search(unquote(_url))
+            or _PREFIX_RE.search(normalized_url)
+            or _PREFIX_RE.search(unquote(normalized_url))
+        ):
             return json.dumps({
                 "success": False,
                 "error": "Blocked: URL contains what appears to be an API key or token. "
                          "Secrets must not be sent in URLs.",
             })
+        normalized_urls.append(normalized_url)
 
     debug_call_data = {
         "parameters": {
-            "urls": urls,
+            "urls": normalized_urls,
             "format": format,
             "use_llm_processing": use_llm_processing,
             "model": model,
@@ -928,12 +936,12 @@ async def web_extract_tool(
     }
     
     try:
-        logger.info("Extracting content from %d URL(s)", len(urls))
+        logger.info("Extracting content from %d URL(s)", len(normalized_urls))
 
         # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
         ssrf_blocked: List[Dict[str, Any]] = []
-        for url in urls:
+        for url in normalized_urls:
             if not await async_is_safe_url(url):
                 ssrf_blocked.append({
                     "url": url, "title": "", "content": "",

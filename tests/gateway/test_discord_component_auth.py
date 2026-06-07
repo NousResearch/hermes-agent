@@ -19,6 +19,8 @@ import pytest
 # Trigger the shared discord mock from tests/gateway/conftest.py before
 # importing the production module.
 from plugins.platforms.discord.adapter import (  # noqa: E402
+    DISCORD_INTERACTIVE_VIEW_TIMEOUT_SECONDS,
+    ClarifyChoiceView,
     ExecApprovalView,
     ModelPickerView,
     SlashConfirmView,
@@ -228,3 +230,30 @@ def test_model_picker_view_empty_allowlists_allow_everyone():
     )
     assert view.allowed_role_ids == set()
     assert view._check_auth(_interaction(99999)) is True
+
+
+def test_discord_interactive_views_default_to_one_hour_timeout():
+    async def _noop(*_a, **_k):
+        return ""
+
+    views = [
+        ExecApprovalView(session_key="s", allowed_user_ids=set()),
+        SlashConfirmView(session_key="s", confirm_id="c", allowed_user_ids=set()),
+        UpdatePromptView(session_key="s", allowed_user_ids=set()),
+        ModelPickerView(
+            providers=[],
+            current_model="m",
+            current_provider="p",
+            session_key="s",
+            on_model_selected=_noop,
+            allowed_user_ids=set(),
+        ),
+        ClarifyChoiceView(
+            choices=["a"],
+            clarify_id="clarify-1",
+            allowed_user_ids=set(),
+        ),
+    ]
+
+    assert DISCORD_INTERACTIVE_VIEW_TIMEOUT_SECONDS == 3600
+    assert {view.timeout for view in views} == {DISCORD_INTERACTIVE_VIEW_TIMEOUT_SECONDS}

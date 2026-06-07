@@ -21,6 +21,9 @@ def _clean_pending():
 
 
 class TestRegisterAndGetPending:
+    def test_default_timeout_is_one_hour(self):
+        assert slash_confirm.DEFAULT_TIMEOUT_SECONDS == 3600
+
     def test_register_stores_entry(self):
         async def handler(choice):
             return f"got {choice}"

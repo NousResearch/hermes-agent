@@ -30,6 +30,7 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+DISCORD_INTERACTIVE_VIEW_TIMEOUT_SECONDS = 3600
 
 try:
     import discord
@@ -103,6 +104,11 @@ def _clean_discord_id(entry: str) -> str:
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+def _discord_interactive_view_timeout() -> int:
+    """Return the default lifetime for Discord component views."""
+    return DISCORD_INTERACTIVE_VIEW_TIMEOUT_SECONDS
 
 
 def check_discord_requirements() -> bool:
@@ -5265,7 +5271,7 @@ def _define_discord_view_classes() -> None:
         Shows four buttons: Allow Once, Allow Session, Always Allow, Deny.
         Clicking a button calls ``resolve_gateway_approval()`` to unblock the
         waiting agent thread — the same mechanism as the text ``/approve`` flow.
-        Only users in the allowed list can click.  Times out after 5 minutes.
+        Only users in the allowed list can click.  Times out after 1 hour.
         """
 
         def __init__(
@@ -5274,7 +5280,7 @@ def _define_discord_view_classes() -> None:
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)  # 5-minute timeout
+            super().__init__(timeout=_discord_interactive_view_timeout())
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
@@ -5384,7 +5390,7 @@ def _define_discord_view_classes() -> None:
         ``tools.slash_confirm.resolve(session_key, confirm_id, choice)``
         which runs the handler the runner stored for this ``session_key``.
         Only users in the adapter's allowlist can click.  Times out after
-        5 minutes (matches the gateway primitive's timeout).
+        1 hour (matches the gateway primitive's timeout).
         """
 
         def __init__(
@@ -5394,7 +5400,7 @@ def _define_discord_view_classes() -> None:
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)
+            super().__init__(timeout=_discord_interactive_view_timeout())
             self.session_key = session_key
             self.confirm_id = confirm_id
             self.allowed_user_ids = allowed_user_ids
@@ -5489,8 +5495,7 @@ def _define_discord_view_classes() -> None:
 
         Clicking a button writes the answer to ``.update_response`` so the
         detached update process can pick it up.  Only authorized users can
-        click.  Times out after 5 minutes (the update process also has a
-        5-minute timeout on its side).
+        click.  Times out after 1 hour.
         """
 
         def __init__(
@@ -5499,7 +5504,7 @@ def _define_discord_view_classes() -> None:
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)
+            super().__init__(timeout=_discord_interactive_view_timeout())
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
@@ -5585,7 +5590,7 @@ def _define_discord_view_classes() -> None:
 
         Two-step drill-down: provider dropdown → model dropdown.
         Edits the original message in-place as the user navigates.
-        Times out after 2 minutes.
+        Times out after 1 hour.
         """
 
         def __init__(
@@ -5598,7 +5603,7 @@ def _define_discord_view_classes() -> None:
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=120)
+            super().__init__(timeout=_discord_interactive_view_timeout())
             self.providers = providers
             self.current_model = current_model
             self.current_provider = current_provider
@@ -5840,7 +5845,7 @@ def _define_discord_view_classes() -> None:
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)  # 5-minute timeout
+            super().__init__(timeout=_discord_interactive_view_timeout())
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
             self.allowed_user_ids = allowed_user_ids

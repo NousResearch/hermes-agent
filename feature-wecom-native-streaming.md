@@ -3,7 +3,7 @@
 > **分支**：`feat/wecom-native-streaming`  
 > **日期**：2026-06-04 ~ 2026-06-07  
 > **基于**：hermes-agent main (`40420a619`)  
-> **最新 commit**：`a8c5fd575`
+> **最新 commit**：`a62d21f1d`
 
 ## 背景
 
@@ -47,8 +47,8 @@ Token bucket: 30 tokens/minute/chat，按分钟窗口重置。
 
 ```
 1. Consumer run() → send_stream_frame("", turn_id=X)
-   → Adapter: 创建 StreamTurn, 发 seed frame, 设 turn.seeded=True
-   → WeCom 客户端显示 typing bubble
+   → Adapter: 创建 StreamTurn, 发 seed frame "<think></think>", 设 turn.seeded=True
+   → WeCom 客户端显示 thinking bubble（对齐官方插件 THINKING_MESSAGE）
 
 2. Agent 生成内容 → on_delta("累积文本...")
    → Consumer: send_stream_frame("累积文本...", turn_id=X)
@@ -57,14 +57,15 @@ Token bucket: 30 tokens/minute/chat，按分钟窗口重置。
 3. Agent 完成 → finish()
    → Consumer: send_stream_frame("完整内容", finalize=True, turn_id=X)
    → Adapter: await ack, 检测 846608
-   → WeCom 客户端替换 typing 为最终内容
+   → WeCom 客户端替换 thinking bubble 为最终内容
 ```
 
 ### Seed Frame 规则
 
 - **单一 owner**：只有 adapter 在 `_send_stream_frame_inner` 中发 seed
+- **Seed 内容**：`"<think></think>"` — 对齐官方 OpenClaw 插件的 `THINKING_MESSAGE` 常量，触发 WeCom thinking bubble 而非空 typing dots
 - **`turn.seeded` 标志**：防止 double seed（会触发 WeCom errcode 6000）
-- **Consumer 发空帧**：adapter 检测到空 text + 未 seeded → 发 seed 并返回
+- **Consumer 发空帧**：adapter 检测到空 text + 未 seeded → 发 `<think></think>` seed 并返回
 - **_native_stream_opened 跟踪**：用于 fallback finalize 判断
 
 ### 边界处理

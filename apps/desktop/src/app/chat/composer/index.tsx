@@ -158,6 +158,9 @@ export function ChatBar({
   const [focusRequestId, setFocusRequestId] = useState(0)
   const dragDepthRef = useRef(0)
   const composingRef = useRef(false) // true during IME composition (CJK input)
+  const compositionJustEndedRef = useRef(false)
+  const submitAfterCompositionRef = useRef(false)
+  const compositionSubmitTimerRef = useRef<number | null>(null)
   const lastSpokenIdRef = useRef<string | null>(null)
 
   const narrow = useMediaQuery('(max-width: 30rem)')
@@ -575,6 +578,8 @@ export function ChatBar({
     }
 
     window.setTimeout(refreshTrigger, 0)
+
+    return nextDraft
   }
 
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
@@ -586,6 +591,26 @@ export function ChatBar({
     }
 
     flushEditorToDraft(event.currentTarget)
+  }
+
+  const scheduleSubmitAfterComposition = () => {
+    if (compositionSubmitTimerRef.current !== null) {
+      window.clearTimeout(compositionSubmitTimerRef.current)
+    }
+
+    compositionSubmitTimerRef.current = window.setTimeout(() => {
+      compositionSubmitTimerRef.current = null
+      compositionJustEndedRef.current = false
+      submitAfterCompositionRef.current = false
+
+      const editor = editorRef.current
+
+      if (editor) {
+        flushEditorToDraft(editor)
+      }
+
+      submitDraft()
+    }, 0)
   }
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
@@ -671,12 +696,26 @@ export function ChatBar({
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    // IME composition: Enter confirms composed text, not a message submission.
-    // We check both composingRef (set by compositionstart/compositionend, robust
-    // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
-    // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
-    // preedit fires submitDraft() and splits the message mid-word.
-    if (composingRef.current || event.nativeEvent.isComposing) {
+    const nativeEvent = event.nativeEvent as globalThis.KeyboardEvent & { keyCode?: number }
+    const plainEnter = event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey
+
+    // IME composition: Enter can be the key that finalizes Korean/Japanese/Chinese
+    // text. Chromium sometimes reports that Enter after compositionend, before a
+    // trailing input event has synced the final syllable into React state. When
+    // that happens, defer the chat submit one macrotask and re-read the live DOM.
+    if (composingRef.current || event.nativeEvent.isComposing || nativeEvent.keyCode === 229) {
+      if (plainEnter) {
+        submitAfterCompositionRef.current = true
+      }
+
+      return
+    }
+
+    if (plainEnter && compositionJustEndedRef.current) {
+      event.preventDefault()
+      submitAfterCompositionRef.current = true
+      scheduleSubmitAfterComposition()
+
       return
     }
 
@@ -1073,21 +1112,24 @@ export function ChatBar({
     return true
   }
 
-  const queueCurrentDraft = useCallback(() => {
-    if (!activeQueueSessionKey || (!draft.trim() && attachments.length === 0)) {
-      return false
-    }
+  const queueCurrentDraft = useCallback(
+    (text = draftRef.current, queuedAttachments = $composerAttachments.get()) => {
+      if (!activeQueueSessionKey || (!text.trim() && queuedAttachments.length === 0)) {
+        return false
+      }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: draft, attachments })) {
-      return false
-    }
+      if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: queuedAttachments })) {
+        return false
+      }
 
-    clearDraft()
-    clearComposerAttachments()
-    triggerHaptic('selection')
+      clearDraft()
+      clearComposerAttachments()
+      triggerHaptic('selection')
 
-    return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draft])
+      return true
+    },
+    [activeQueueSessionKey, clearDraft]
+  )
 
   // Steer the live turn (nudge without interrupting). Clears the draft up front
   // for snappy feedback; if the gateway rejects (no live tool window) the words
@@ -1212,6 +1254,16 @@ export function ChatBar({
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submitDraft = () => {
+    const editor = editorRef.current
+
+    if (editor) {
+      flushEditorToDraft(editor)
+    }
+
+    const currentDraft = draftRef.current
+    const currentAttachments = $composerAttachments.get()
+    const currentHasPayload = currentDraft.trim().length > 0 || currentAttachments.length > 0
+
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
@@ -1222,28 +1274,28 @@ export function ChatBar({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(draft.trim())) {
-        const submitted = draft
+      if (!currentAttachments.length && SLASH_COMMAND_RE.test(currentDraft.trim())) {
+        const submitted = currentDraft
         triggerHaptic('submit')
         clearDraft()
         void onSubmit(submitted)
-      } else if (hasComposerPayload) {
-        queueCurrentDraft()
+      } else if (currentHasPayload) {
+        queueCurrentDraft(currentDraft, currentAttachments)
       } else {
         // Stop button (the only way to reach here while busy with an empty
         // composer — empty Enter is short-circuited in the keydown handler).
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }
-    } else if (!hasComposerPayload && queuedPrompts.length > 0) {
+    } else if (!currentHasPayload && queuedPrompts.length > 0) {
       void drainNextQueued()
-    } else if (draft.trim() || attachments.length > 0) {
-      const submitted = draft
+    } else if (currentDraft.trim() || currentAttachments.length > 0) {
+      const submitted = currentDraft
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
       clearComposerAttachments()
-      void onSubmit(submitted, { attachments })
+      void onSubmit(submitted, { attachments: currentAttachments })
     }
 
     focusInput()
@@ -1387,6 +1439,7 @@ export function ChatBar({
         onBlur={() => window.setTimeout(closeTrigger, 80)}
         onCompositionEnd={event => {
           composingRef.current = false
+          compositionJustEndedRef.current = true
 
           // The input events fired *during* composition were skipped (they
           // carried uncommitted preedit text), and Chromium does NOT reliably
@@ -1396,9 +1449,24 @@ export function ChatBar({
           // `hasComposerPayload` stays false and the send button stays hidden
           // until an unrelated edit forces a sync (#39614).
           flushEditorToDraft(event.currentTarget)
+
+          if (submitAfterCompositionRef.current) {
+            scheduleSubmitAfterComposition()
+          } else {
+            window.setTimeout(() => {
+              compositionJustEndedRef.current = false
+            }, 0)
+          }
         }}
         onCompositionStart={() => {
           composingRef.current = true
+          compositionJustEndedRef.current = false
+          submitAfterCompositionRef.current = false
+
+          if (compositionSubmitTimerRef.current !== null) {
+            window.clearTimeout(compositionSubmitTimerRef.current)
+            compositionSubmitTimerRef.current = null
+          }
         }}
         onDragOver={handleInputDragOver}
         onDrop={handleInputDrop}
@@ -1450,6 +1518,15 @@ export function ChatBar({
             e.preventDefault()
 
             if (composingRef.current) {
+              submitAfterCompositionRef.current = true
+
+              return
+            }
+
+            if (compositionJustEndedRef.current) {
+              submitAfterCompositionRef.current = true
+              scheduleSubmitAfterComposition()
+
               return
             }
 

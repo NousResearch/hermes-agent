@@ -163,7 +163,10 @@ agent_version = "local"
 
 When `HERMES_NEMO_RELAY_PLUGINS_TOML` is set and initializes successfully, NeMo
 Relay owns exporter lifecycle through that config. The direct
-`HERMES_NEMO_RELAY_ATOF_*` fallback setup is skipped.
+`HERMES_NEMO_RELAY_ATOF_*` fallback setup is skipped. If the same
+`plugins.toml` observability config enables `atif`, the direct
+`HERMES_NEMO_RELAY_ATIF_*` fallback setup is also skipped so Hermes does not
+double-export trajectories on teardown.
 
 To enable NeMo Relay managed execution intercepts for provider and tool calls,
 include an adaptive component in the same `plugins.toml`:

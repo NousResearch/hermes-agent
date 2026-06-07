@@ -94,6 +94,7 @@ def format_runtime_footer(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    session_key: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -112,7 +113,15 @@ def format_runtime_footer(
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
                 parts.append(f"{pct}%")
         elif field == "cwd":
-            rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
+            # Try live cwd from task env overrides first, then fall back to static TERMINAL_CWD
+            live_cwd = None
+            if session_key:
+                try:
+                    from tools.terminal_tool import get_task_cwd
+                    live_cwd = get_task_cwd(session_key)
+                except Exception:
+                    pass
+            rel = _home_relative_cwd(cwd or live_cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
         # Unknown field names are silently ignored.
@@ -130,6 +139,7 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    session_key: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -145,5 +155,6 @@ def build_footer_line(
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
+        session_key=session_key,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

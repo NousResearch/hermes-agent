@@ -1040,7 +1040,18 @@ def skill_view(
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
             for found_md in search_dir.rglob(f"{name}.md"):
                 if found_md.name != "SKILL.md":
-                    _record(None, found_md)
+                    # Skip if this .md is an asset inside another skill's directory
+                    # (e.g., templates/foo.md inside a skill named "bar" should not
+                    #  be treated as a standalone "foo" skill)
+                    parent = found_md.parent
+                    is_asset = False
+                    while parent != search_dir and parent.exists():
+                        if (parent / "SKILL.md").exists():
+                            is_asset = True
+                            break
+                        parent = parent.parent
+                    if not is_asset:
+                        _record(None, found_md)
 
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]

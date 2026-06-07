@@ -840,11 +840,17 @@ def skill_manage(
     Returns JSON string with results.
     """
     if action == "create":
+        # Fallback: LLM may mistakenly pass content via file_content
+        if not content and file_content:
+            content = file_content
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
         result = _create_skill(name, content, category)
 
     elif action == "edit":
+        # Fallback: LLM may mistakenly pass content via file_content
+        if not content and file_content:
+            content = file_content
         if not content:
             return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
         result = _edit_skill(name, content)
@@ -862,6 +868,9 @@ def skill_manage(
     elif action == "write_file":
         if not file_path:
             return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
+        # Fallback: LLM may mistakenly pass file_content via content
+        if file_content is None and content:
+            file_content = content
         if file_content is None:
             return tool_error("file_content is required for 'write_file'.", success=False)
         result = _write_file(name, file_path, file_content)

@@ -104,7 +104,10 @@ def _is_stale_session_ret(
     a genuine rate limit."""
     if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
         return False
-    return (errmsg or "").lower() == "unknown error"
+    msg = (errmsg or "").strip().lower()
+    if not msg:
+        return True
+    return msg in ("unknown error", "rate limited")
 
 
 MEDIA_IMAGE = 1

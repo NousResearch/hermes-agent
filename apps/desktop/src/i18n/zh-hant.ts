@@ -208,6 +208,8 @@ export const zhHant = defineLocale({
       productDesc: '易讀的工具活動與精簡摘要。',
       technical: '技術',
       technicalDesc: '包含原始工具參數、結果與底層細節。',
+      keepToolCallsExpandedTitle: '保持工具呼叫展開',
+      keepToolCallsExpandedDesc: '預設展開工具呼叫的詳細資訊，而非折疊顯示。',
       themeTitle: '主題',
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。'
     },

@@ -214,6 +214,8 @@ export const ja = defineLocale({
       productDesc: '読みやすいツール活動と簡潔な要約を表示します。',
       technical: 'テクニカル',
       technicalDesc: '生のツール引数、結果、低レベルの詳細を含めます。',
+      keepToolCallsExpandedTitle: 'ツール呼び出しを展開したままにする',
+      keepToolCallsExpandedDesc: 'ツール呼び出しの詳細を折りたたまずにデフォルトで展開した状態で表示します。',
       themeTitle: 'テーマ',
       themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。'
     },

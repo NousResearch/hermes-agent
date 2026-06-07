@@ -291,6 +291,8 @@ export const en: Translations = {
       productDesc: 'Human-friendly tool activity with concise summaries.',
       technical: 'Technical',
       technicalDesc: 'Include raw tool args/results and low-level details.',
+      keepToolCallsExpandedTitle: 'Keep tool calls expanded',
+      keepToolCallsExpandedDesc: 'Show tool-call details expanded by default instead of collapsed.',
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.'
     },

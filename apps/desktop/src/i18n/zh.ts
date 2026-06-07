@@ -286,6 +286,8 @@ export const zh: Translations = {
       productDesc: '易读的工具活动与简洁摘要。',
       technical: '技术',
       technicalDesc: '包含原始工具参数/结果及底层细节。',
+      keepToolCallsExpandedTitle: '保持工具调用展开',
+      keepToolCallsExpandedDesc: '默认展开工具调用详情，而非折叠显示。',
       themeTitle: '主题',
       themeDesc: '仅桌面端调色板。所选模式叠加其上。'
     },

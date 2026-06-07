@@ -870,3 +870,240 @@ def test_dry_run_does_not_call_mutating_or_cleanup_helpers(tmp_path, monkeypatch
     assert result["would_delete_paths"] == []
     assert result["would_overwrite_paths"] == []
     assert (repo / "README.md").read_text(encoding="utf-8") == "dirty\n"
+
+
+
+
+def _write_guard_final(argv, payload: str) -> str:
+    final_path = Path(argv[argv.index("--final-file") + 1])
+    final_path.write_text(payload, encoding="utf-8")
+    return payload
+
+
+def _passed_guard_json() -> str:
+    return json.dumps(
+        {
+            "status": "passed",
+            "reason": "ok",
+            "terminated_by_guard": False,
+            "source_flood_detected": False,
+            "diff_flood_detected": False,
+            "json_field_flood_detected": False,
+            "review": {
+                "verdict": "passed",
+                "summary": "ok",
+                "must_fix": [],
+                "suggested_fixes": [],
+                "verification_commands": [],
+                "final_judgment": "ok",
+            },
+        }
+    )
+
+
+def test_review_autopilot_uses_existing_packet_and_guard_commands(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    commands = []
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\ncandidate\n", encoding="utf-8")
+        return json.dumps({"status": "ready_for_review", "candidate_id": "cand-1", "completion_trusted": False})
+
+    def fake_review_command(argv, *, timeout=workflow._REVIEW_TIMEOUT_SECONDS):
+        commands.append(argv)
+        if str(workflow._review_packet_script()) in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="# packet\n", stderr="")
+        if str(workflow._review_guard_script()) in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout=_write_guard_final(argv, _passed_guard_json()), stderr="")
+        raise AssertionError(f"unexpected command: {argv}")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_review_command", fake_review_command)
+
+    result = _call(workdir=str(repo), review_autopilot=True, review_autopilot_authorized=True)
+
+    assert result["status"] == "staged_called"
+    assert result["review"]["status"] == "passed"
+    assert str(workflow._review_packet_script()) in commands[0]
+    assert str(workflow._review_guard_script()) in commands[1]
+    assert "--max-total-chars" in commands[0]
+    assert "--file" in commands[0]
+    assert "README.md" in commands[0]
+    assert "--review-packet-file" in commands[1]
+    assert result["leftover_candidate"]["requires_review"] is False
+
+
+def test_review_unavailable_timeout_is_fail_closed(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\ncandidate\n", encoding="utf-8")
+        return json.dumps({"status": "ready_for_review"})
+
+    def fake_review_command(argv, *, timeout=workflow._REVIEW_TIMEOUT_SECONDS):
+        if str(workflow._review_packet_script()) in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="# packet\n", stderr="")
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_review_command", fake_review_command)
+
+    result = _call(workdir=str(repo), review_autopilot=True, review_autopilot_authorized=True)
+
+    assert result["status"] == "review_failed"
+    assert result["review"]["status"] == "unavailable"
+    assert result["review"]["reason"] == "review_timeout"
+
+
+def test_review_invalid_json_is_fail_closed(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\ncandidate\n", encoding="utf-8")
+        return json.dumps({"status": "ready_for_review"})
+
+    def fake_review_command(argv, *, timeout=workflow._REVIEW_TIMEOUT_SECONDS):
+        if str(workflow._review_packet_script()) in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="# packet\n", stderr="")
+        return subprocess.CompletedProcess(argv, 2, stdout=_write_guard_final(argv, "{not json"), stderr="")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_review_command", fake_review_command)
+
+    result = _call(workdir=str(repo), review_autopilot=True, review_autopilot_authorized=True)
+
+    assert result["status"] == "review_failed"
+    assert result["review"]["status"] == "unavailable"
+    assert result["review"]["reason"] == "invalid_guard_json"
+
+
+def test_review_missing_final_file_is_fail_closed(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\ncandidate\n", encoding="utf-8")
+        return json.dumps({"status": "ready_for_review"})
+
+    def fake_review_command(argv, *, timeout=workflow._REVIEW_TIMEOUT_SECONDS):
+        if str(workflow._review_packet_script()) in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="# packet\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout=_passed_guard_json(), stderr="")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_review_command", fake_review_command)
+
+    result = _call(workdir=str(repo), review_autopilot=True, review_autopilot_authorized=True)
+
+    assert result["status"] == "review_failed"
+    assert result["review"]["status"] == "unavailable"
+    assert result["review"]["reason"] == "missing_final_file"
+
+
+def test_review_guard_metadata_fail_closed():
+    cases = [
+        ({"status": "passed", "review": {"verdict": "passed", "must_fix": []}, "terminated_by_guard": True, "reason": "terminated"}, "terminated"),
+        ({"status": "passed", "review": {"verdict": "passed", "must_fix": []}, "process_exited_before_guard": True, "reason": "process_exited_before_guard"}, "process_exited_before_guard"),
+        ({"status": "passed", "review": {"verdict": "passed", "must_fix": []}, "source_flood_detected": True, "reason": "source_flood"}, "source_flood"),
+        ({"status": "passed", "review": {"verdict": "passed", "must_fix": []}, "diff_flood_detected": True, "reason": "diff_flood"}, "diff_flood"),
+        ({"status": "passed", "review": {"verdict": "passed", "must_fix": []}, "json_field_flood_detected": True, "reason": "json_field_flood"}, "json_field_flood"),
+        ({"status": "passed", "review": {"verdict": "passed", "must_fix": []}, "reason": "codex_bin_not_found"}, "codex_bin_not_found"),
+        ({"status": "passed", "review": {"verdict": "passed", "must_fix": []}, "reason": "provider_5xx"}, "provider_5xx"),
+    ]
+    for guard, reason in cases:
+        result = workflow._classify_review_guard_result(guard)
+        assert result["status"] == "unavailable"
+        assert result["reason"] == reason
+
+
+def test_review_pass_requires_no_must_fix(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\ncandidate\n", encoding="utf-8")
+        return json.dumps({"status": "ready_for_review"})
+
+    def fake_review_command(argv, *, timeout=workflow._REVIEW_TIMEOUT_SECONDS):
+        if str(workflow._review_packet_script()) in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="# packet\n", stderr="")
+        guard = json.loads(_passed_guard_json())
+        guard["review"]["must_fix"] = ["fix this"]
+        return subprocess.CompletedProcess(argv, 1, stdout=_write_guard_final(argv, json.dumps(guard)), stderr="")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_review_command", fake_review_command)
+
+    result = _call(workdir=str(repo), review_autopilot=True, review_autopilot_authorized=True)
+
+    assert result["status"] == "review_failed"
+    assert result["review"]["status"] == "failed"
+    assert result["review"]["reason"] == "must_fix_non_empty"
+
+
+def test_review_dirty_after_review_contaminated_stops(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\ncandidate\n", encoding="utf-8")
+        return json.dumps({"status": "ready_for_review"})
+
+    def fake_review_command(argv, *, timeout=workflow._REVIEW_TIMEOUT_SECONDS):
+        if str(workflow._review_packet_script()) in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="# packet\n", stderr="")
+        (repo / "README.md").write_text("hello\ncandidate\nreview mutation\n", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, stdout=_write_guard_final(argv, _passed_guard_json()), stderr="")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_review_command", fake_review_command)
+
+    result = _call(workdir=str(repo), review_autopilot=True, review_autopilot_authorized=True)
+
+    assert result["status"] == "review_failed"
+    assert result["review"]["status"] == "failed"
+    assert result["review"]["reason"] == "review_changed_worktree"
+    assert result["review"]["contaminated"] is True
+
+
+def test_review_packet_excludes_unknown_dirty_diff(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    (repo / "scratch.tmp").write_text("unknown dirty\n", encoding="utf-8")
+    isolated = tmp_path / "isolated"
+    commands = []
+
+    def fake_create(repo_arg, *, stage_id, git_head):
+        isolated.mkdir()
+        (isolated / "README.md").write_text("hello\n", encoding="utf-8")
+        _git(isolated, "init")
+        _git(isolated, "config", "user.email", "test@example.com")
+        _git(isolated, "config", "user.name", "Test User")
+        _git(isolated, "add", "README.md")
+        _git(isolated, "commit", "-m", "initial")
+        return {"path": str(isolated), "branch": "work/review", "source_head": git_head}
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\ncandidate\n", encoding="utf-8")
+        return json.dumps({"status": "ready_for_review"})
+
+    def fake_review_command(argv, *, timeout=workflow._REVIEW_TIMEOUT_SECONDS):
+        commands.append(argv)
+        if str(workflow._review_packet_script()) in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="# packet\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout=_write_guard_final(argv, _passed_guard_json()), stderr="")
+
+    monkeypatch.setattr(workflow, "_create_isolated_worktree", fake_create)
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_review_command", fake_review_command)
+
+    result = _call(
+        workdir=str(repo),
+        standing_authorization=True,
+        allow_isolated_worktree=True,
+        review_autopilot=True,
+        review_autopilot_authorized=True,
+    )
+
+    packet_command = commands[0]
+    assert result["status"] == "staged_called"
+    assert result["review"]["status"] == "passed"
+    assert "README.md" in packet_command
+    assert "scratch.tmp" not in packet_command
+    assert repo.joinpath("scratch.tmp").exists()

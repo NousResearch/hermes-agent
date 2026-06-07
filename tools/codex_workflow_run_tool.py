@@ -4,6 +4,8 @@ import json
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,13 @@ _SUPPORTED_MODES = {"execute", "dry_run"}
 _SUPPORTED_CONTINUE_POLICY = "stop-on-review-needed"
 _SUPPORTED_DIRTY_POLICY = "require-clean"
 _ALLOWED_VERIFY_IDS = {"diff-check", "none"}
+_REVIEW_TIMEOUT_SECONDS = 900
+_REVIEW_PACKET_LIMITS = {
+    "max_stat_chars": 4_000,
+    "max_name_chars": 4_000,
+    "max_diff_chars": 30_000,
+    "max_total_chars": 40_000,
+}
 
 
 def _json_result(payload: dict[str, Any]) -> str:
@@ -112,6 +121,24 @@ def _call_staged(normalized: dict[str, Any]) -> dict[str, Any]:
     return decoded if isinstance(decoded, dict) else {"status": "malformed", "raw": decoded}
 
 
+def _review_packet_script() -> Path:
+    return Path(__file__).resolve().parents[1] / "scripts" / "runtime" / "codex_review_packet.py"
+
+
+def _review_guard_script() -> Path:
+    return Path(__file__).resolve().parents[1] / "scripts" / "runtime" / "codex_review_guard.py"
+
+
+def _run_review_command(argv: list[str], *, timeout: int = _REVIEW_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        argv,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+    )
+
+
 def _current_dirty_paths(dirty: dict[str, Any]) -> list[str]:
     paths = dirty.get("dirty_paths")
     return list(paths) if isinstance(paths, list) else []
@@ -134,6 +161,237 @@ def _path_in_allowlist(path: str, allowlist: dict[str, list[str]]) -> bool:
     if path in allowlist.get("files", []):
         return True
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in allowlist.get("globs", []))
+
+
+def _review_prompt() -> str:
+    return (
+        "Review this Hermes candidate implementation for correctness, regressions, and missing tests. "
+        "Return only JSON matching the provided schema. Mark verdict failed if any must-fix issue remains."
+    )
+
+
+def _review_scope_files(
+    *,
+    dirty_before: dict[str, Any],
+    dirty_after: dict[str, Any],
+    allowlist: dict[str, list[str]],
+) -> list[str]:
+    before_paths = set(_current_dirty_paths(dirty_before))
+    scoped: list[str] = []
+    for path in _current_dirty_paths(dirty_after):
+        if path in before_paths:
+            continue
+        if not _path_in_allowlist(path, allowlist):
+            continue
+        scoped.append(path)
+    return sorted(scoped)
+
+
+def _review_unavailable(reason: str, **extra: Any) -> dict[str, Any]:
+    result = {
+        "status": "unavailable",
+        "verdict": "unavailable",
+        "reason": reason,
+        "passed": False,
+    }
+    result.update(extra)
+    return result
+
+
+def _review_failed(reason: str, **extra: Any) -> dict[str, Any]:
+    result = {
+        "status": "failed",
+        "verdict": "failed",
+        "reason": reason,
+        "passed": False,
+    }
+    result.update(extra)
+    return result
+
+
+def _review_has_guard_metadata(guard: dict[str, Any]) -> bool:
+    if guard.get("terminated_by_guard") or guard.get("process_exited_before_guard"):
+        return True
+    if guard.get("source_flood_detected") or guard.get("diff_flood_detected") or guard.get("json_field_flood_detected"):
+        return True
+    reason = str(guard.get("reason") or "").lower()
+    return any(
+        marker in reason
+        for marker in (
+            "timeout",
+            "flood",
+            "limit_exceeded",
+            "codex_bin_not_found",
+            "provider",
+            "auth",
+            "quota",
+            "unavailable",
+        )
+    )
+
+
+def _classify_review_guard_result(guard: Any) -> dict[str, Any]:
+    if not isinstance(guard, dict):
+        return _review_unavailable("invalid_guard_json", guard_result=guard)
+    if _review_has_guard_metadata(guard):
+        return _review_unavailable(str(guard.get("reason") or "guard_metadata_unavailable"), guard_result=guard)
+
+    status = guard.get("status")
+    review = guard.get("review")
+    if status == "passed" and isinstance(review, dict):
+        verdict = str(review.get("verdict") or "").strip().lower()
+        must_fix = review.get("must_fix")
+        if verdict == "passed" and must_fix == []:
+            return {
+                "status": "passed",
+                "verdict": "passed",
+                "reason": "ok",
+                "passed": True,
+                "review": review,
+                "guard_result": guard,
+            }
+        if isinstance(must_fix, list) and must_fix:
+            return _review_failed("must_fix_non_empty", review=review, guard_result=guard)
+        return _review_failed("review_not_strict_pass", review=review, guard_result=guard)
+
+    if status == "failed":
+        return _review_failed(str(guard.get("reason") or "verdict_failed"), review=review, guard_result=guard)
+    return _review_unavailable(str(guard.get("reason") or "review_unavailable"), review=review, guard_result=guard)
+
+
+def _run_review_autopilot(
+    *,
+    args: dict[str, Any],
+    repo: Path,
+    dirty_before_review: dict[str, Any],
+    dirty_after_staged: dict[str, Any],
+    normalized: dict[str, Any],
+    allowlist: dict[str, list[str]],
+    staged_result: dict[str, Any],
+) -> dict[str, Any]:
+    if not bool(args.get("review_autopilot")):
+        return {"status": "not_requested", "passed": False}
+    if not bool(args.get("review_autopilot_authorized")):
+        return _review_unavailable("authorization_required", authorization_required=True)
+    if dirty_after_staged.get("dirty_paths_truncated"):
+        return _review_unavailable("dirty_paths_truncated")
+
+    scope_files = _review_scope_files(
+        dirty_before=dirty_before_review,
+        dirty_after=dirty_after_staged,
+        allowlist=allowlist,
+    )
+    if not scope_files:
+        return _review_unavailable("missing_review_scope")
+
+    review_dir = Path(tempfile.mkdtemp(prefix="hermes-codex-review-"))
+    packet_path = review_dir / "review_packet.md"
+    final_path = review_dir / "final.json"
+    raw_log_path = review_dir / "raw.log"
+    packet_cmd = [
+        sys.executable,
+        str(_review_packet_script()),
+        "--workdir",
+        str(repo),
+        "--max-stat-chars",
+        str(_REVIEW_PACKET_LIMITS["max_stat_chars"]),
+        "--max-name-chars",
+        str(_REVIEW_PACKET_LIMITS["max_name_chars"]),
+        "--max-diff-chars",
+        str(_REVIEW_PACKET_LIMITS["max_diff_chars"]),
+        "--max-total-chars",
+        str(_REVIEW_PACKET_LIMITS["max_total_chars"]),
+    ]
+    for path in scope_files:
+        packet_cmd.extend(["--file", path])
+    for path in normalized.get("allowed_files", []):
+        packet_cmd.extend(["--allowed-file", path])
+    for pattern in normalized.get("allowed_globs", []):
+        packet_cmd.extend(["--allowed-glob", pattern])
+    for path in _current_dirty_paths(dirty_before_review):
+        packet_cmd.extend(["--dirty-baseline", path])
+    if staged_result.get("candidate_id"):
+        packet_cmd.extend(["--candidate-id", str(staged_result.get("candidate_id"))])
+    if staged_result.get("candidate_disposition"):
+        packet_cmd.extend(["--candidate-disposition", str(staged_result.get("candidate_disposition"))])
+    completion_trusted = staged_result.get("completion_trusted")
+    if completion_trusted is True:
+        packet_cmd.extend(["--completion-trusted", "true"])
+    elif completion_trusted is False:
+        packet_cmd.extend(["--completion-trusted", "false"])
+    else:
+        packet_cmd.extend(["--completion-trusted", "unknown"])
+
+    try:
+        packet_proc = _run_review_command(packet_cmd, timeout=60)
+    except subprocess.TimeoutExpired:
+        return _review_unavailable("review_packet_timeout", packet_command=packet_cmd, scope_files=scope_files)
+    if packet_proc.returncode != 0:
+        return _review_unavailable(
+            "review_packet_failed",
+            packet_command=packet_cmd,
+            packet_stderr=packet_proc.stderr,
+            scope_files=scope_files,
+        )
+    packet_path.write_text(packet_proc.stdout, encoding="utf-8")
+
+    guard_cmd = [
+        sys.executable,
+        str(_review_guard_script()),
+        "--workdir",
+        str(repo),
+        "--prompt",
+        _review_prompt(),
+        "--review-packet-file",
+        str(packet_path),
+        "--final-file",
+        str(final_path),
+        "--raw-log",
+        str(raw_log_path),
+        "--timeout-seconds",
+        str(int(args.get("review_timeout_seconds") or _REVIEW_TIMEOUT_SECONDS)),
+    ]
+    if isinstance(args.get("codex_review_bin"), str) and args["codex_review_bin"].strip():
+        guard_cmd.extend(["--codex-bin", args["codex_review_bin"].strip()])
+
+    try:
+        guard_proc = _run_review_command(guard_cmd, timeout=int(args.get("review_timeout_seconds") or _REVIEW_TIMEOUT_SECONDS) + 30)
+    except subprocess.TimeoutExpired:
+        return _review_unavailable("review_timeout", packet_command=packet_cmd, guard_command=guard_cmd, scope_files=scope_files)
+
+    if not final_path.exists():
+        return _review_unavailable(
+            "missing_final_file",
+            packet_command=packet_cmd,
+            guard_command=guard_cmd,
+            guard_stdout=guard_proc.stdout,
+            guard_stderr=guard_proc.stderr,
+            scope_files=scope_files,
+        )
+    try:
+        guard_json = json.loads(final_path.read_text(encoding="utf-8"))
+    except Exception:
+        return _review_unavailable(
+            "invalid_guard_json",
+            packet_command=packet_cmd,
+            guard_command=guard_cmd,
+            guard_stdout=guard_proc.stdout,
+            guard_stderr=guard_proc.stderr,
+            scope_files=scope_files,
+        )
+
+    review_result = _classify_review_guard_result(guard_json)
+    review_result.update(
+        {
+            "packet_command": packet_cmd,
+            "guard_command": guard_cmd,
+            "packet_file": str(packet_path),
+            "final_file": str(final_path),
+            "raw_log": str(raw_log_path),
+            "scope_files": scope_files,
+        }
+    )
+    return review_result
 
 
 def _checkpoint_blocked(
@@ -250,6 +508,7 @@ def _finish_after_staged(
     repo: Path,
     git_head: str | None,
     initial_dirty: dict[str, Any],
+    review_baseline_dirty: dict[str, Any] | None = None,
     normalized: dict[str, Any],
     allowlist: dict[str, list[str]],
     staged_result: dict[str, Any],
@@ -266,6 +525,44 @@ def _finish_after_staged(
         result["dirty_recovery"].update(dirty_recovery_update)
 
     post_dirty = staged._dirty_check(repo)
+    review_result = _run_review_autopilot(
+        args=args,
+        repo=repo,
+        dirty_before_review=review_baseline_dirty or initial_dirty,
+        dirty_after_staged=post_dirty,
+        normalized=normalized,
+        allowlist=allowlist,
+        staged_result=staged_result,
+    )
+    if review_result.get("status") != "not_requested":
+        result["review"] = review_result
+        if review_result.get("status") == "passed":
+            result["leftover_candidate"] = {
+                "requires_review": False,
+                "requires_hermes_verification": True,
+                "touched_files": review_result.get("scope_files", []),
+                "dirty_state_id": post_dirty.get("dirty_state_id"),
+                "candidate_id": staged_result.get("candidate_id"),
+                "candidate_disposition": staged_result.get("candidate_disposition"),
+                "completion_trusted": staged_result.get("completion_trusted", False),
+            }
+        else:
+            result["status"] = "review_failed"
+            return _json_result(result)
+
+        after_review_dirty = staged._dirty_check(repo)
+        result["review"]["post_review_dirty_check"] = after_review_dirty
+        if after_review_dirty.get("dirty_state_id") != post_dirty.get("dirty_state_id"):
+            result["status"] = "review_failed"
+            result["review"] = _review_failed(
+                "review_changed_worktree",
+                contaminated=True,
+                pre_review_dirty_state_id=post_dirty.get("dirty_state_id"),
+                post_review_dirty_state_id=after_review_dirty.get("dirty_state_id"),
+                post_review_dirty_check=after_review_dirty,
+            )
+            return _json_result(result)
+
     checkpoint_requested = bool(args.get("checkpoint_verified_diff"))
     if checkpoint_requested:
         if not bool(args.get("standing_authorization")):
@@ -304,7 +601,7 @@ def _finish_after_staged(
         result["checkpoint"] = checkpoint
         return _json_result(result)
 
-    if not post_dirty.get("is_clean"):
+    if not post_dirty.get("is_clean") and result.get("review", {}).get("status") != "passed":
         result["leftover_candidate"] = _leftover_candidate(post_dirty, staged_result)
     return _json_result(result)
 
@@ -598,7 +895,7 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
                 mode="dry_run",
                 resolved_allowlist=validated["allowlist"],
                 would_call_staged=bool(dirty.get("is_clean")),
-                would_run_review=False,
+                would_run_review=bool(args.get("review_autopilot") and args.get("review_autopilot_authorized")),
                 would_run_verification=False,
                 would_create_isolated_worktree=False,
                 would_commit=False,
@@ -679,6 +976,7 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
                 repo=repo,
                 git_head=git_head,
                 initial_dirty=dirty,
+                review_baseline_dirty=after,
                 normalized=normalized,
                 allowlist=validated["allowlist"],
                 staged_result=staged_result,
@@ -707,12 +1005,14 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
             return _json_result(result)
         isolated_args = dict(normalized)
         isolated_args["workdir"] = worktree_info["path"]
+        isolated_baseline = staged._dirty_check(Path(worktree_info["path"]))
         staged_result = _call_staged(isolated_args)
         return _finish_after_staged(
             args=args,
             repo=Path(worktree_info["path"]),
             git_head=git_head,
             initial_dirty=dirty,
+            review_baseline_dirty=isolated_baseline,
             normalized=isolated_args,
             allowlist=validated["allowlist"],
             staged_result=staged_result,
@@ -756,6 +1056,10 @@ _SCHEMA = {
             "checkpoint_verified_diff": {"type": "boolean"},
             "verification_evidence": {"type": "object"},
             "checkpoint_message": {"type": "string"},
+            "review_autopilot": {"type": "boolean"},
+            "review_autopilot_authorized": {"type": "boolean"},
+            "review_timeout_seconds": {"type": "integer"},
+            "codex_review_bin": {"type": "string"},
             "mode": {"type": "string", "enum": ["execute", "dry_run"]},
         },
         "required": ["workdir", "task"],

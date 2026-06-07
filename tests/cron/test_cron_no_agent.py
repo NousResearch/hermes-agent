@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -329,3 +330,133 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+
+# ---------------------------------------------------------------------------
+# _run_job_script: profile-scoped jobs referencing default-profile scripts
+# (issue #40801 — inverse of #32091)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def hermes_profile_env(tmp_path, monkeypatch):
+    """Simulate a profile-switched cron run.
+
+    ``HERMES_HOME`` points at a named profile dir
+    (``~/.hermes/profiles/<name>``) while the canonical scripts live in the
+    default-profile scripts dir (``~/.hermes/scripts/``) — the multi-profile
+    setup from issue #40801.
+    """
+    root = tmp_path / ".hermes"
+    (root / "scripts").mkdir(parents=True)
+    profile_home = root / "profiles" / "corpusiq"
+    (profile_home / "scripts").mkdir(parents=True)
+    (profile_home / "cron").mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    import importlib
+    import hermes_constants
+    importlib.reload(hermes_constants)
+    import cron.jobs
+    importlib.reload(cron.jobs)
+    import cron.scheduler
+    importlib.reload(cron.scheduler)
+
+    return root, profile_home
+
+
+def test_run_job_script_absolute_default_profile_script_allowed(hermes_profile_env):
+    """A profile-scoped job may reference a script by absolute path in the
+    default-profile scripts dir (the canonical/shared location)."""
+    from cron.scheduler import _run_job_script
+
+    root, _profile_home = hermes_profile_env
+    script = root / "scripts" / "audit.py"
+    script.write_text("print('default-profile audit ran')\n")
+
+    ok, output = _run_job_script(str(script))
+    assert ok is True, output
+    assert "default-profile audit ran" in output
+
+
+def test_run_job_script_relative_falls_through_to_default_profile(hermes_profile_env):
+    """A relative ``script`` that only exists in the default-profile scripts
+    dir resolves there when absent from the profile-local dir."""
+    from cron.scheduler import _run_job_script
+
+    root, _profile_home = hermes_profile_env
+    (root / "scripts" / "collector.py").write_text("print('shared collector')\n")
+
+    ok, output = _run_job_script("collector.py")
+    assert ok is True, output
+    assert "shared collector" in output
+
+
+def test_run_job_script_profile_local_takes_precedence(hermes_profile_env):
+    """When the same relative name exists in both dirs, the profile-local
+    copy wins (mirrors skill resolution: profile catalog before default)."""
+    from cron.scheduler import _run_job_script
+
+    root, profile_home = hermes_profile_env
+    (root / "scripts" / "dup.py").write_text("print('DEFAULT copy')\n")
+    (profile_home / "scripts" / "dup.py").write_text("print('PROFILE copy')\n")
+
+    ok, output = _run_job_script("dup.py")
+    assert ok is True, output
+    assert "PROFILE copy" in output
+    assert "DEFAULT copy" not in output
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink needs elevation on Windows")
+def test_run_job_script_symlink_to_default_profile_allowed(hermes_profile_env):
+    """A profile-local symlink whose realpath lands in the default-profile
+    scripts dir is accepted (the guard follows realpath but both dirs are
+    sanctioned)."""
+    from cron.scheduler import _run_job_script
+
+    root, profile_home = hermes_profile_env
+    real = root / "scripts" / "watchdog.py"
+    real.write_text("print('symlinked watchdog')\n")
+    link = profile_home / "scripts" / "watchdog.py"
+    link.symlink_to(real)
+
+    ok, output = _run_job_script("watchdog.py")
+    assert ok is True, output
+    assert "symlinked watchdog" in output
+
+
+def test_run_job_script_escape_still_blocked_in_profile_mode(hermes_profile_env):
+    """Security regression: widening to the default-profile dir must NOT
+    permit arbitrary absolute paths outside any Hermes scripts dir."""
+    from cron.scheduler import _run_job_script
+
+    ok, output = _run_job_script("/etc/passwd")
+    assert ok is False
+    assert "Blocked" in output or "outside" in output
+
+
+def test_run_job_script_default_root_via_normal_install_layout(tmp_path, monkeypatch):
+    """Cover the standard-install resolution branch of get_default_hermes_root:
+    HERMES_HOME under the platform-native home (~/.hermes/profiles/<name>),
+    so the root resolves via the cheap relative_to path rather than the Docker
+    grandparent rule. The profile-scoped job must still reach the canonical
+    default-profile script."""
+    monkeypatch.setenv("HOME", str(tmp_path))  # Path.home() → tmp_path on POSIX
+    root = tmp_path / ".hermes"
+    (root / "scripts").mkdir(parents=True)
+    profile_home = root / "profiles" / "corpusiq"
+    (profile_home / "scripts").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    import importlib
+    import hermes_constants
+    importlib.reload(hermes_constants)
+    import cron.scheduler
+    importlib.reload(cron.scheduler)
+
+    (root / "scripts" / "canonical.py").write_text("print('normal-install root')\n")
+
+    ok, output = cron.scheduler._run_job_script("canonical.py")
+    assert ok is True, output
+    assert "normal-install root" in output

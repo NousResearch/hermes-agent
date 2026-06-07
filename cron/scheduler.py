@@ -38,7 +38,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
@@ -954,6 +954,15 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+def _path_within(path: Path, directory: Path) -> bool:
+    """Return True when *path* is contained within *directory* (both resolved)."""
+    try:
+        path.relative_to(directory)
+        return True
+    except ValueError:
+        return False
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -985,17 +994,34 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
+    # A profile-scoped job runs with a profile-switched home
+    # (~/.hermes/profiles/<name>), but shared/canonical scripts commonly live
+    # in the default-profile scripts dir (~/.hermes/scripts/). Both are
+    # sanctioned Hermes directories, so accept a script resolving into either.
+    # The traversal/injection guard only needs to keep execution inside
+    # Hermes-owned scripts dirs, not inside a single profile (issue #40801,
+    # the inverse of #32091). For relative names, resolve profile-local first
+    # then fall through to default-profile — mirroring how skill resolution
+    # walks the profile catalog before the default catalog.
+    default_scripts_dir = get_default_hermes_root() / "scripts"
+    default_scripts_resolved = default_scripts_dir.resolve()
+    allowed_dirs = [scripts_dir_resolved]
+    if default_scripts_resolved != scripts_dir_resolved:
+        allowed_dirs.append(default_scripts_resolved)
+
     raw = Path(script_path).expanduser()
     if raw.is_absolute():
         path = raw.resolve()
     else:
         path = (scripts_dir / raw).resolve()
+        if not path.exists() and default_scripts_resolved != scripts_dir_resolved:
+            fallback = (default_scripts_dir / raw).resolve()
+            if fallback.exists():
+                path = fallback
 
     # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
+    # escape — scripts MUST reside within a sanctioned Hermes scripts dir.
+    if not any(_path_within(path, allowed) for allowed in allowed_dirs):
         return False, (
             f"Blocked: script path resolves outside the scripts directory "
             f"({scripts_dir_resolved}): {script_path!r}"

@@ -64,7 +64,10 @@ class TestSqliteApprovalStoreFailures:
         store.submit(ApprovalProposal(
             approval_id="appr-corrupt",
             created_at=1.0,
+            session_key="s",
             command="echo ok",
+            risk_level="medium",
+            risk_reason="corrupt-payload-test",
         ))
         # Directly corrupt the payload column.
         import sqlite3
@@ -89,8 +92,12 @@ class TestSqliteApprovalStoreFailures:
         gateway boot-up recovery) will use the index without table scan.
         """
         store = SqliteApprovalStore(db_path=tmp_path / "state.db")
-        store.submit(ApprovalProposal(approval_id="appr-p", created_at=1.0))
-        store.submit(ApprovalProposal(approval_id="appr-d", created_at=1.0))
+        _kwargs = dict(
+            session_key="s", command="echo x",
+            risk_level="medium", risk_reason="status-filter-test",
+        )
+        store.submit(ApprovalProposal(approval_id="appr-p", created_at=1.0, **_kwargs))
+        store.submit(ApprovalProposal(approval_id="appr-d", created_at=1.0, **_kwargs))
         store.deny("appr-d", denied_by="@u", now=2.0)
 
         import sqlite3

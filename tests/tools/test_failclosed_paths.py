@@ -216,46 +216,62 @@ def test_submit_failure_falls_through_to_legacy_flow_with_no_id():
 # ---------------------------------------------------------------------------
 
 
-def test_consume_with_missing_required_fields_in_payload_does_not_execute():
-    """If the persisted payload lacks required pinned fields (e.g. risk_level),
-    the Phase 3 guard ranks pinned at 999 (unknown) — but Phase 3 only
-    catches runtime>pinned. Missing pinned is currently silent via the
-    guard. This test asserts current behavior so any regression that
-    starts allowing payload corruption to silently execute is caught.
+def test_proposal_missing_pinned_fields_rejected_at_construction():
+    """Missing required pinned fields → ValueError at construction → no
+    submit → no entry → no execution. Defense in depth: even if the
+    proposal somehow reaches consume, the Phase 3 guard catches it,
+    but the primary boundary is submit-time refusal per spec.
 
-    Documenting expected behavior: payload validation should be tightened
-    in a follow-up; for now the test confirms what we DO have."""
-    store = InMemoryApprovalStore()
-    set_default_approval_store(store)
-
-    # Build a "minimal" payload missing all the pinned policy fields.
-    # ApprovalProposal defaults fill in defaults (risk_level='low') but
-    # we can simulate a sparser payload by deliberately leaving fields
-    # at their dataclass defaults; the contract requires them all
-    # present at submit time.
-    minimal = ApprovalProposal(
+    Required fields per spec: approval_id, session_key, command,
+    risk_level (low/medium/high), risk_reason, policy_decision,
+    default_decision (must be 'deny' for high).
+    """
+    base = dict(
         approval_id="appr-M",
         created_at=time.time(),
         session_key="sm",
         command="echo m",
-        # ALL pinned-policy fields LEFT AT DEFAULTS:
-        # risk_level='low', risk_reason='', policy_decision='needs_approval',
-        # requires_explicit_approval=True, default_decision='deny'.
+        risk_level="medium",
+        risk_reason="missing-field-test",
     )
-    store.submit(minimal)
-    proposal = store.get("appr-M")
-    # Document what 'minimal' looks like — we want consumer to know:
-    assert proposal.risk_level == "low"
-    assert proposal.risk_reason == ""
-    # We can still consume it (the store doesn't validate), but the
-    # caller (execution path) should distrust an empty risk_reason.
-    consumed = store.consume("appr-M", consumed_by="@u")
-    assert consumed is not None
-    # The pinned-payload signal is now "low risk with no stated reason" —
-    # the executor should be wary. This is the contract: payload integrity
-    # is the executor's responsibility to validate. The test pins what
-    # gets serialised so a future tightening (e.g. ApprovalStore.submit
-    # rejecting empty risk_reason) breaks this test and forces a review.
+
+    # Sanity: complete payload constructs fine.
+    ApprovalProposal(**base)
+
+    # Each individually-omitted required field MUST raise.
+    for missing in ("session_key", "command", "risk_reason"):
+        bad = {**base, missing: ""}
+        with pytest.raises(ValueError, match=missing):
+            ApprovalProposal(**bad)
+
+    # risk_level outside {low,medium,high}
+    with pytest.raises(ValueError, match="risk_level"):
+        ApprovalProposal(**{**base, "risk_level": "extreme"})
+
+    # High-risk MUST default to deny.
+    with pytest.raises(ValueError, match="default_decision"):
+        ApprovalProposal(**{
+            **base,
+            "risk_level": "high",
+            "default_decision": "allow",
+        })
+
+
+def test_consume_with_missing_required_fields_in_payload_cannot_be_submitted():
+    """Document submit-time refusal: an invalid ApprovalProposal never
+    reaches the store, so consume never sees it. The execution path is
+    impossible by construction."""
+    set_default_approval_store(InMemoryApprovalStore())
+    with pytest.raises(ValueError):
+        # session_key omitted → validation refuses construction.
+        ApprovalProposal(
+            approval_id="appr-bad",
+            created_at=time.time(),
+            session_key="",       # invalid
+            command="echo m",
+            risk_level="medium",
+            risk_reason="x",
+        )
 
 
 # ---------------------------------------------------------------------------

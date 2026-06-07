@@ -150,22 +150,26 @@ def test_matching_risk_levels_proceed_normally():
     assert result["choice"] == "once"
 
 
-def test_missing_pinned_risk_fails_closed():
-    """pinned risk_level missing/unknown → unknown ranks above all → fail closed."""
-    store = InMemoryApprovalStore()
-    result = _drive_with_pinned_risk_override(
-        store, pinned_risk="", runtime_risk="low",
-    )
-    # pinned rank = 999 (unknown), runtime rank = 0. runtime is NOT stricter
-    # than pinned (unknown), so no override. But the contract says missing
-    # pinned should fail closed. Test the actual behavior + document.
-    # Actually with rank logic: 0 > 999 is False, so no override happens.
-    # That means missing pinned-risk effectively means "treat as max risk" →
-    # nothing CAN be stricter → no fail-closed via this guard.
-    # That is correct only if pinning is otherwise enforced. Future
-    # commits may need a separate "pinned policy fields present" check.
-    # For now, document expected behavior:
-    assert result["choice"] == "once"
+def test_missing_pinned_risk_rejected_at_submit_time():
+    """A proposal with risk_level='' MUST be rejected at construction,
+    so nothing reaches the runtime guard at all.
+
+    Defense in depth: even if validation were somehow bypassed, the
+    Phase 3 guard ranks unknown risk at 999 (no runtime can be stricter
+    than unknown). But the primary security boundary is now submit-time
+    refusal — the spec's pinned-completeness invariant says missing
+    fields MUST prevent proposal creation.
+    """
+    from tools.approval_store import ApprovalProposal
+    with pytest.raises(ValueError, match="risk_level"):
+        ApprovalProposal(
+            approval_id="appr-no-risk",
+            created_at=time.time(),
+            session_key="s",
+            command="echo x",
+            risk_level="",          # invalid — must be low/medium/high
+            risk_reason="test",
+        )
 
 
 def test_phase3_no_downgrade_on_runtime_failure():

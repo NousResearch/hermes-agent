@@ -124,6 +124,8 @@ def test_resolve_by_id_after_expired_returns_zero():
         expires_at=now - 10,
         session_key="session-A",
         command="echo expired",
+        risk_level="medium",
+        risk_reason="expired-test",
     )
     store.submit(expired)
 

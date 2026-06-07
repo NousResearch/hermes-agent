@@ -91,6 +91,57 @@ class ApprovalProposal:
     diff_summary: Optional[str] = None
     display_text: str = ""             # exact text shown to user (or reconstruct hints)
 
+    def __post_init__(self) -> None:
+        """Validate pinned-policy completeness at construction time.
+
+        Per spec hardening: a proposal that lacks the fields the executor
+        needs to make a safety decision MUST NOT exist. Failing early —
+        before submit — surfaces malformed proposals at the call-site
+        instead of pushing the failure into the consume/execute path.
+
+        Defense in depth: the execution-thread Phase 3 guard still
+        treats unknown risk_level as max-risk (ranks at 999), so even
+        if this validation is bypassed, runtime guard catches it.
+        """
+        errors = []
+        if not self.approval_id:
+            errors.append("approval_id is required (non-empty string)")
+        if not self.created_at or self.created_at <= 0:
+            errors.append("created_at must be > 0 (epoch seconds)")
+        if not self.session_key:
+            errors.append("session_key is required (non-empty)")
+        if not self.command:
+            errors.append("command is required (non-empty)")
+        if self.risk_level not in {"low", "medium", "high"}:
+            errors.append(
+                f"risk_level must be one of low/medium/high, "
+                f"got {self.risk_level!r}"
+            )
+        if not self.risk_reason:
+            errors.append("risk_reason is required (non-empty)")
+        if self.policy_decision not in {"allow", "needs_approval", "deny"}:
+            errors.append(
+                f"policy_decision must be one of allow/needs_approval/deny, "
+                f"got {self.policy_decision!r}"
+            )
+        if self.default_decision not in {"allow", "deny"}:
+            errors.append(
+                f"default_decision must be 'allow' or 'deny', "
+                f"got {self.default_decision!r}"
+            )
+        # High-risk MUST default to deny — non-negotiable per spec.
+        if self.risk_level == "high" and self.default_decision != "deny":
+            errors.append(
+                f"high-risk proposals MUST have default_decision='deny', "
+                f"got {self.default_decision!r}"
+            )
+
+        if errors:
+            raise ValueError(
+                "ApprovalProposal validation failed:\n  - " +
+                "\n  - ".join(errors)
+            )
+
     def is_terminal(self) -> bool:
         """True once the proposal has reached any non-pending state."""
         return self.status in {"approved", "denied", "expired", "consumed"}

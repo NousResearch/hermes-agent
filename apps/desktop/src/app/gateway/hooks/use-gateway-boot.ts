@@ -199,7 +199,7 @@ export function useGatewayBoot({
 
     setDesktopBootStep({
       phase: 'renderer.boot',
-      message: 'Starting desktop connection',
+      message: translateNow('boot.steps.startingDesktopConnection'),
       progress: 6
     })
 
@@ -280,13 +280,13 @@ export function useGatewayBoot({
 
     const offExit = desktop.onBackendExit(() => {
       if ($desktopBoot.get().running || $desktopBoot.get().visible) {
-        failDesktopBoot('Hermes background process exited during startup.')
+        failDesktopBoot(translateNow('boot.errors.backgroundExitedDuringStartup'))
       }
 
       notify({
         kind: 'error',
-        title: 'Backend stopped',
-        message: 'Hermes background process exited.',
+        title: translateNow('boot.errors.backendStopped'),
+        message: translateNow('boot.errors.backgroundExited'),
         durationMs: 0
       })
     })
@@ -301,7 +301,7 @@ export function useGatewayBoot({
 
         setDesktopBootStep({
           phase: 'renderer.gateway.connect',
-          message: 'Connecting live desktop gateway',
+          message: translateNow('boot.steps.connectingGateway'),
           progress: 95
         })
         publish(conn)
@@ -332,7 +332,7 @@ export function useGatewayBoot({
 
         setDesktopBootStep({
           phase: 'renderer.config',
-          message: 'Loading Hermes settings',
+          message: translateNow('boot.steps.loadingSettings'),
           progress: 97
         })
         await callbacksRef.current.refreshHermesConfig()
@@ -343,7 +343,7 @@ export function useGatewayBoot({
 
         setDesktopBootStep({
           phase: 'renderer.sessions',
-          message: 'Loading recent sessions',
+          message: translateNow('boot.steps.loadingSessions'),
           progress: 99
         })
         await callbacksRef.current.refreshSessions()
@@ -353,7 +353,7 @@ export function useGatewayBoot({
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
           failDesktopBoot(message)
-          notifyError(err, 'Desktop boot failed')
+          notifyError(err, translateNow('boot.errors.desktopBootFailed'))
           setSessionsLoading(false)
         }
       }

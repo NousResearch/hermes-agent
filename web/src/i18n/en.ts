@@ -279,6 +279,9 @@ export const en: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      needsHomeChannel: "set a home channel first",
+      noneConfigured:
+        "No messaging platforms configured. Set one up under Channels to deliver reports.",
     },
   },
 

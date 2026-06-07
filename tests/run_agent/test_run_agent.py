@@ -2466,8 +2466,10 @@ class TestConcurrentToolExecution:
                 api_request_id="",
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
+                skip_tool_request_middleware=True,
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=agent.disabled_toolsets,
+                tool_request_middleware_trace=[],
             )
             assert result == "result"
 
@@ -2646,6 +2648,89 @@ class TestConcurrentToolExecution:
         assert post_call[1]["tool_call_id"] == "todo-1"
         assert post_call[1]["result"] == '{"ok":true}'
         assert post_call[1]["status"] == "ok"
+
+    def test_sequential_agent_level_tool_execution_middleware_wraps_inline_dispatch(self, agent, monkeypatch):
+        """Sequential built-in tool paths should expose the adaptive execution boundary."""
+        tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="todo-1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        hook_calls = []
+        seen = {}
+
+        def request_middleware(**kwargs):
+            return {
+                "args": {**kwargs["args"], "request_rewritten": True},
+                "source": "request-test",
+            }
+
+        def execution_middleware(**kwargs):
+            seen["middleware_args"] = kwargs["args"]
+            return kwargs["next_call"]({**kwargs["args"], "merge": True})
+
+        manager = SimpleNamespace(_middleware={
+            "tool_request": [request_middleware],
+            "tool_execution": [execution_middleware],
+        })
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_middleware",
+            lambda kind, **kwargs: [request_middleware(**kwargs)] if kind == "tool_request" else [],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+
+        with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert seen["middleware_args"] == {"todos": [], "request_rewritten": True}
+        mock_todo.assert_called_once_with(todos=[], merge=True, store=agent._todo_store)
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["tool_name"] == "todo"
+        assert post_call[1]["args"] == {"todos": [], "request_rewritten": True, "merge": True}
+        assert post_call[1]["middleware_trace"] == [{"source": "request-test"}]
+
+    def test_concurrent_agent_level_tool_preserves_request_middleware_trace(self, agent, monkeypatch):
+        tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="todo-1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        hook_calls = []
+
+        def request_middleware(**kwargs):
+            return {
+                "args": {**kwargs["args"], "request_rewritten": True},
+                "source": "request-test",
+            }
+
+        manager = SimpleNamespace(_middleware={"tool_request": [request_middleware], "tool_execution": []})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_middleware",
+            lambda kind, **kwargs: [request_middleware(**kwargs)] if kind == "tool_request" else [],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+
+        with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}'):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["tool_name"] == "todo"
+        assert post_call[1]["args"] == {"todos": [], "request_rewritten": True}
+        assert post_call[1]["middleware_trace"] == [{"source": "request-test"}]
 
     def test_agent_runtime_post_hook_ownership_predicate_covers_agent_tools(self, agent):
         """Sequential and concurrent agent-level paths share post-hook ownership."""
@@ -4458,6 +4543,52 @@ class TestRunConversation:
         assert mock_record_failure.call_count == 0, (
             "_record_task_failure should not be called outside kanban mode"
         )
+
+
+class TestHookPayloadSanitizesSimpleNamespace:
+    """Regression: ``_hook_jsonable`` referenced ``SimpleNamespace`` without
+    importing it, so sanitizing any hook payload that contained one raised
+    ``NameError: name 'SimpleNamespace' is not defined``.
+
+    The non-OpenAI providers (Bedrock, Codex responses, the auxiliary client,
+    and the chat-completion stream stub) build their response / message /
+    tool_call objects as ``types.SimpleNamespace`` — see
+    ``agent/bedrock_adapter.py``, ``agent/codex_responses_adapter.py``, and
+    ``agent/auxiliary_client.py``. Those raw objects are handed straight to
+    ``_api_response_payload_for_hook`` for the ``post_api_request`` hook, so the
+    crash silently killed observability hooks for every one of those providers
+    (the call sites swallow the exception with ``except Exception: pass``).
+    """
+
+    def test_hook_jsonable_normalizes_simplenamespace(self):
+        ns = SimpleNamespace(id="call_1", value=42, nested=SimpleNamespace(name="x"))
+        result = AIAgent._sanitize_hook_payload(ns)
+        assert result == {"id": "call_1", "value": 42, "nested": {"name": "x"}}
+
+    def test_api_response_payload_for_hook_normalizes_simplenamespace_tool_calls(self, agent):
+        # Shape mirrors agent/bedrock_adapter.py::normalize_converse_response and
+        # agent/codex_responses_adapter.py — raw SDK objects are SimpleNamespace.
+        tool_call = SimpleNamespace(
+            id="call_1",
+            type="function",
+            function=SimpleNamespace(name="web_search", arguments='{"q": "hi"}'),
+        )
+        assistant_message = SimpleNamespace(
+            role="assistant",
+            content="",
+            tool_calls=[tool_call],
+        )
+        response = SimpleNamespace(model="anthropic.claude-3", usage=None)
+
+        payload = agent._api_response_payload_for_hook(
+            response, assistant_message, finish_reason="tool_calls"
+        )
+
+        assert payload["model"] == "anthropic.claude-3"
+        assert payload["finish_reason"] == "tool_calls"
+        normalized_call = payload["assistant_message"]["tool_calls"][0]
+        assert normalized_call["id"] == "call_1"
+        assert normalized_call["function"]["name"] == "web_search"
 
 
 class TestRetryExhaustion:

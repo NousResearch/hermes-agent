@@ -31,7 +31,10 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_text(text: str) -> str:
-    """Normalize text for hash-based dedup: strip punctuation, collapse whitespace, lowercase."""
+    """Normalize text for hash-based dedup: NFKC + strip punctuation + collapse whitespace + lowercase."""
+    import unicodedata
+    # NFKC normalization handles full-width chars, zero-width spaces, etc.
+    text = unicodedata.normalize('NFKC', text)
     return re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', text.strip())).lower()
 
 
@@ -63,11 +66,11 @@ def _load_config() -> dict:
         "rerank": True,
         "keyword_search": False,
         # Local mode paths — local defaults overridden by mem0.json/env vars
-        "mem0_server": os.environ.get("MEM0_SERVER", ""),  # e.g. /path/to/mem0/mem0_server.py
-        "mem0_python": os.environ.get("MEM0_PYTHON", ""),  # e.g. /path/to/mem0/.venv/bin/python
+        "mem0_server": os.environ.get("MEM0_SERVER", "m/media/data/mem045MEM0_DIR/mem0_server.py"),
+        "mem0_python": os.environ.get("MEM0_PYTHON", "m/media/data/mem045MEM0_DIR/.venv/bin/python"),
         "llm_base_url": os.environ.get("LLM_BASE_URL", "http://localhost:1234/v1"),
         "llm_model": os.environ.get("LLM_MODEL", "qwen3"),
-        "embedder_model": os.environ.get("EMBEDDER_MODEL", "bge-large-zh-v1.5"),  # local path or model name
+        "embedder_model": os.environ.get("EMBEDDER_MODEL", "m/home/herocco/bge45BGE_DIR/bge-large-zh-v1.5"),
         "embedding_dims": int(os.environ.get("EMBEDDING_DIMS", "1024")),
         "qdrant_host": os.environ.get("QDRANT_HOST", "localhost"),
         "qdrant_port": int(os.environ.get("QDRANT_PORT", "6333")),
@@ -208,7 +211,7 @@ class Mem0MemoryProvider(MemoryProvider):
                         'embedder': {
                             'provider': 'huggingface',
                             'config': {
-                                'model': cfg.get("embedder_model", "bge-large-zh-v1.5")  # local path or model name
+                                'model': cfg.get("embedder_model", "m/home/herocco/bge45BGE_DIR/bge-large-zh-v1.5")
                             }
                         },
                         'vector_store': {
@@ -382,8 +385,9 @@ class Mem0MemoryProvider(MemoryProvider):
             ip_b = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b', text_b)
             if ip_a and ip_b and set(ip_a) != set(ip_b):
                 return True, 'endpoint', f'IP mismatch'
-            port_a = re.findall(r'\bport\s*(\d+)\b', text_a, re.I)
-            port_b = re.findall(r'\bport\s*(\d+)\b', text_b, re.I)
+            # Port detection: "port N", "端口N", "port has been changed to N" (allow words between)
+            port_a = re.findall(r'(?:port|端口|端口号)(?:\s.*?|\s*[是:：]?\s*)(\d+)', text_a, re.I)
+            port_b = re.findall(r'(?:port|端口|端口号)(?:\s.*?|\s*[是:：]?\s*)(\d+)', text_b, re.I)
             if port_a and port_b and set(port_a) != set(port_b):
                 return True, 'endpoint', f'Port mismatch'
             ver_a = re.findall(r'(?:v|version\s*)?(\d+\.\d+(?:\.\d+)?)', text_a, re.I)
@@ -657,8 +661,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 
                 # Get paths from config (with local defaults)
                 cfg = _load_config()
-                MEM0_SERVER = cfg.get("mem0_server", "")  # set via MEM0_SERVER env or mem0.json
-                MEM0_PYTHON = cfg.get("mem0_python", "")  # set via MEM0_PYTHON env or mem0.json
+                MEM0_SERVER = cfg.get("mem0_server", "m/media/data/mem045MEM0_DIR/mem0_server.py")
+                MEM0_PYTHON = cfg.get("mem0_python", "m/media/data/mem045MEM0_DIR/.venv/bin/python")
 
                 def run_with_retry(cmd, timeout=30, max_retries=3):
                     """Run subprocess with exponential backoff retry."""
@@ -700,8 +704,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
                 # Apply shared deduplication + conflict detection + track freezing
                 cfg = _load_config()
-                MEM0_SERVER = cfg.get("mem0_server", "")  # set via MEM0_SERVER env or mem0.json
-                MEM0_PYTHON = cfg.get("mem0_python", "")  # set via MEM0_PYTHON env or mem0.json
+                MEM0_SERVER = cfg.get("mem0_server", "m/media/data/mem045MEM0_DIR/mem0_server.py")
+                MEM0_PYTHON = cfg.get("mem0_python", "m/media/data/mem045MEM0_DIR/.venv/bin/python")
 
                 top_k_inject = 5
                 lines, kept_ids, shadow_ids = self._advanced_dedup_and_format(
@@ -785,8 +789,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 
                 # Get paths from config (with local defaults)
                 cfg = _load_config()
-                MEM0_SERVER = cfg.get("mem0_server", "")  # set via MEM0_SERVER env or mem0.json
-                MEM0_PYTHON = cfg.get("mem0_python", "")  # set via MEM0_PYTHON env or mem0.json
+                MEM0_SERVER = cfg.get("mem0_server", "m/media/data/mem045MEM0_DIR/mem0_server.py")
+                MEM0_PYTHON = cfg.get("mem0_python", "m/media/data/mem045MEM0_DIR/.venv/bin/python")
 
                 result = subprocess.run(
                     [

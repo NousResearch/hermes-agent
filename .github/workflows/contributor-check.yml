@@ -3,11 +3,6 @@ name: Contributor Attribution Check
 on:
   pull_request:
     branches: [main]
-    paths:
-      # Only run when code files change (not docs-only PRs)
-      - '*.py'
-      - '**/*.py'
-      - '.github/workflows/contributor-check.yml'
 
 permissions:
   contents: read

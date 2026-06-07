@@ -1413,24 +1413,11 @@ def _run_state_db_auto_maintenance(session_db) -> None:
         except Exception as _finalize_exc:
             logger.debug("Orphan compression finalize skipped: %s", _finalize_exc)
 
-        cfg = (_load_full_config().get("sessions") or {})
-        if not cfg.get("auto_prune", False):
-            return
-        _inactive_days = cfg.get("delete_inactive_after_days")
-        _inactive = int(_inactive_days) if _inactive_days is not None else None
-        _auto_days = cfg.get("delete_automated_inactive_after_days")
-        _auto = int(_auto_days) if _auto_days is not None else None
-        _trash_days = cfg.get("trash_grace_days")
-        _trash = int(_trash_days) if _trash_days is not None else None
-        session_db.maybe_auto_prune_and_vacuum(
-            retention_days=int(cfg.get("retention_days", 90)),
-            min_interval_hours=int(cfg.get("min_interval_hours", 24)),
-            vacuum=bool(cfg.get("vacuum_after_prune", True)),
-            sessions_dir=_hermes_home_maint / "sessions",
-            inactive_days=_inactive,
-            automated_inactive_days=_auto,
-            automated_source=str(cfg.get("automated_source", "cron")),
-            trash_grace_days=_trash,
+        # Shared entry point builds the RetentionPolicy from config and runs one
+        # idempotent pass (no-op if auto_prune is off).
+        from hermes_state import run_session_retention_maintenance
+        run_session_retention_maintenance(
+            session_db, _hermes_home_maint / "sessions"
         )
     except Exception as exc:
         logger.debug("state.db auto-maintenance skipped: %s", exc)

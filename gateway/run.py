@@ -2066,31 +2066,12 @@ class GatewayRunner:
         # a few seconds once per day is acceptable; failures are logged
         # but never raised.
         if self._session_db is not None:
-            try:
-                from hermes_cli.config import load_config as _load_full_config
-                _sess_cfg = (_load_full_config().get("sessions") or {})
-                if _sess_cfg.get("auto_prune", False):
-                    # SOTA inactivity policy when delete_inactive_after_days is
-                    # set: delete completed chats untouched for N days (from
-                    # ended_at) instead of the age-based retention_days.
-                    _inactive_days = _sess_cfg.get("delete_inactive_after_days")
-                    _inactive = int(_inactive_days) if _inactive_days is not None else None
-                    _auto_days = _sess_cfg.get("delete_automated_inactive_after_days")
-                    _auto = int(_auto_days) if _auto_days is not None else None
-                    _trash_days = _sess_cfg.get("trash_grace_days")
-                    _trash = int(_trash_days) if _trash_days is not None else None
-                    self._session_db.maybe_auto_prune_and_vacuum(
-                        retention_days=int(_sess_cfg.get("retention_days", 90)),
-                        min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
-                        vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
-                        sessions_dir=self.config.sessions_dir,
-                        inactive_days=_inactive,
-                        automated_inactive_days=_auto,
-                        automated_source=str(_sess_cfg.get("automated_source", "cron")),
-                        trash_grace_days=_trash,
-                    )
-            except Exception as exc:
-                logger.debug("state.db auto-maintenance skipped: %s", exc)
+            # Shared entry point builds the RetentionPolicy from config and runs
+            # one idempotent pass (no-op if auto_prune is off). Never raises.
+            from hermes_state import run_session_retention_maintenance
+            run_session_retention_maintenance(
+                self._session_db, self.config.sessions_dir
+            )
 
         # Opportunistic shadow-repo cleanup — deletes orphan/stale
         # checkpoint repos under ~/.hermes/checkpoints/.  Opt-in via

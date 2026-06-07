@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -28,6 +29,76 @@ from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RetentionPolicy:
+    """Immutable session-retention settings (config-as-data).
+
+    Encapsulates the auto-maintenance knobs so callers pass one object instead
+    of a long parameter list, and so the config->behaviour mapping lives in
+    exactly one place (:meth:`from_config`). Two policies:
+
+    * Age-based (legacy): delete ended sessions older than ``retention_days``
+      (from ``started_at``) — used when ``inactive_days`` is None.
+    * Inactivity-based (SOTA): delete sessions untouched for ``inactive_days``
+      (from ``ended_at``); ``automated_inactive_days`` gives ``automated_source``
+      (e.g. "cron") a shorter window; when ``trash_grace_days`` is set, deletion
+      is reversible (soft-delete to Trash, hard-purge after the grace window).
+    """
+
+    retention_days: int = 90
+    min_interval_hours: int = 24
+    vacuum_after_prune: bool = True
+    inactive_days: Optional[int] = None
+    automated_inactive_days: Optional[int] = None
+    automated_source: str = "cron"
+    trash_grace_days: Optional[int] = None
+
+    @staticmethod
+    def _opt_int(value: Any) -> Optional[int]:
+        return int(value) if value is not None else None
+
+    @classmethod
+    def from_config(cls, cfg: Optional[Dict[str, Any]]) -> "RetentionPolicy":
+        """Build a policy from a ``sessions:`` config dict — the single source
+        of truth for config key names and type coercion."""
+        cfg = cfg or {}
+        return cls(
+            retention_days=int(cfg.get("retention_days", 90)),
+            min_interval_hours=int(cfg.get("min_interval_hours", 24)),
+            vacuum_after_prune=bool(cfg.get("vacuum_after_prune", True)),
+            inactive_days=cls._opt_int(cfg.get("delete_inactive_after_days")),
+            automated_inactive_days=cls._opt_int(
+                cfg.get("delete_automated_inactive_after_days")
+            ),
+            automated_source=str(cfg.get("automated_source", "cron")),
+            trash_grace_days=cls._opt_int(cfg.get("trash_grace_days")),
+        )
+
+
+def run_session_retention_maintenance(
+    session_db: "SessionDB",
+    sessions_dir: "Path",
+) -> Dict[str, Any]:
+    """Load the ``sessions:`` config and run one idempotent retention pass.
+
+    Single entry point shared by the CLI and gateway startup paths so the
+    config->policy mapping is never duplicated. No-ops (returns ``{}``) when
+    there is no DB or ``auto_prune`` is disabled. Never raises.
+    """
+    if session_db is None:
+        return {}
+    try:
+        from hermes_cli.config import load_config
+        cfg = (load_config().get("sessions") or {})
+        if not cfg.get("auto_prune", False):
+            return {}
+        policy = RetentionPolicy.from_config(cfg)
+        return session_db.maybe_auto_prune_and_vacuum(policy, sessions_dir=sessions_dir)
+    except Exception as exc:
+        logger.debug("session retention maintenance skipped: %s", exc)
+        return {}
 
 T = TypeVar("T")
 
@@ -317,6 +388,18 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+
+-- Partial index keeps listing/ordering fast over only the non-trashed rows.
+-- (References deleted_at, so it must run after _reconcile_columns adds it.)
+CREATE INDEX IF NOT EXISTS idx_sessions_active_started
+    ON sessions(started_at DESC) WHERE deleted_at IS NULL;
+
+-- Single source of truth for "visible" (non-trashed) sessions. All listing,
+-- counting and search queries read this view, so no query can forget the
+-- soft-delete filter. By-id lookups (get_session) and restore deliberately use
+-- the base table so trashed chats stay reachable for recovery.
+CREATE VIEW IF NOT EXISTS active_sessions AS
+    SELECT * FROM sessions WHERE deleted_at IS NULL;
 """
 
 FTS_SQL = """
@@ -1646,9 +1729,9 @@ class SessionDB:
         """
         where_clauses = []
         params = []
-
-        # Hide soft-deleted (trashed) chats from the listing.
-        where_clauses.append("s.deleted_at IS NULL")
+        # Note: trashed (soft-deleted) chats are excluded via the
+        # ``active_sessions`` view used as the primary FROM below — no explicit
+        # deleted_at filter needed here.
 
         if not include_children:
             # Show root sessions and branch sessions, while still hiding
@@ -1736,7 +1819,7 @@ class SessionDB:
                 )
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
-                    SELECT s.id, s.id FROM sessions s {where_sql}
+                    SELECT s.id, s.id FROM active_sessions s {where_sql}
                     UNION ALL
                     SELECT c.root_id, child.id
                     FROM chain c
@@ -1768,7 +1851,7 @@ class SessionDB:
                         s.started_at
                     ) AS last_active,
                     COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
-                FROM sessions s
+                FROM active_sessions s
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
                 {outer_where}
                 ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
@@ -1791,7 +1874,7 @@ class SessionDB:
                         (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
                         s.started_at
                     ) AS last_active
-                FROM sessions s
+                FROM active_sessions s
                 {where_sql}
                 ORDER BY s.started_at DESC
                 LIMIT ? OFFSET ?
@@ -2931,7 +3014,6 @@ class SessionDB:
         # Build WHERE clauses dynamically
         where_clauses = ["messages_fts MATCH ?"]
         params: list = [query]
-        where_clauses.append("s.deleted_at IS NULL")  # exclude trashed chats
         if not include_inactive:
             where_clauses.append("m.active = 1")
 
@@ -2967,7 +3049,7 @@ class SessionDB:
                 s.started_at AS session_started
             FROM messages_fts
             JOIN messages m ON m.id = messages_fts.rowid
-            JOIN sessions s ON s.id = m.session_id
+            JOIN active_sessions s ON s.id = m.session_id
             WHERE {where_sql}
             {order_by_sql}
             LIMIT ? OFFSET ?
@@ -3013,7 +3095,6 @@ class SessionDB:
                 trigram_query = " ".join(parts)
                 tri_where = ["messages_fts_trigram MATCH ?"]
                 tri_params: list = [trigram_query]
-                tri_where.append("s.deleted_at IS NULL")  # exclude trashed chats
                 if not include_inactive:
                     tri_where.append("m.active = 1")
                 if source_filter is not None:
@@ -3039,7 +3120,7 @@ class SessionDB:
                         s.started_at AS session_started
                     FROM messages_fts_trigram
                     JOIN messages m ON m.id = messages_fts_trigram.rowid
-                    JOIN sessions s ON s.id = m.session_id
+                    JOIN active_sessions s ON s.id = m.session_id
                     WHERE {' AND '.join(tri_where)}
                     {order_by_sql}
                     LIMIT ? OFFSET ?
@@ -3088,7 +3169,7 @@ class SessionDB:
                            m.content, m.timestamp, m.tool_name,
                            s.source, s.model, s.started_at AS session_started
                     FROM messages m
-                    JOIN sessions s ON s.id = m.session_id
+                    JOIN active_sessions s ON s.id = m.session_id
                     WHERE {' AND '.join(like_where)}
                     ORDER BY m.timestamp DESC
                     LIMIT ? OFFSET ?
@@ -3238,7 +3319,7 @@ class SessionDB:
         """
         select_with_last_active = (
             "SELECT s.*, COALESCE(m.last_active, s.started_at) AS last_active "
-            "FROM sessions s "
+            "FROM active_sessions s "
             "LEFT JOIN ("
             "SELECT session_id, MAX(timestamp) AS last_active "
             "FROM messages GROUP BY session_id"
@@ -3248,14 +3329,13 @@ class SessionDB:
             if source:
                 cursor = self._conn.execute(
                     f"{select_with_last_active}"
-                    "WHERE s.source = ? AND s.deleted_at IS NULL "
+                    "WHERE s.source = ? "
                     "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
                     (source, limit, offset),
                 )
             else:
                 cursor = self._conn.execute(
                     f"{select_with_last_active}"
-                    "WHERE s.deleted_at IS NULL "
                     "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 )
@@ -3290,9 +3370,7 @@ class SessionDB:
         """
         where_clauses = []
         params = []
-
-        # Hide soft-deleted (trashed) chats from counts (mirror list_sessions_rich).
-        where_clauses.append("s.deleted_at IS NULL")
+        # Trashed chats are excluded via the active_sessions view used below.
 
         if exclude_children:
             # Mirror list_sessions_rich's child-exclusion clause exactly so the
@@ -3323,7 +3401,7 @@ class SessionDB:
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
         with self._lock:
-            cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
+            cursor = self._conn.execute(f"SELECT COUNT(*) FROM active_sessions s{where_sql}", params)
             return cursor.fetchone()[0]
 
     def message_count(self, session_id: str = None) -> int:
@@ -4392,6 +4470,8 @@ class SessionDB:
 
     def maybe_auto_prune_and_vacuum(
         self,
+        policy: Optional["RetentionPolicy"] = None,
+        *,
         retention_days: int = 90,
         min_interval_hours: int = 24,
         vacuum: bool = True,
@@ -4433,6 +4513,16 @@ class SessionDB:
           - ``"vacuumed"`` (bool) — true if VACUUM ran
           - ``"error"`` (str, optional) — present only on failure
         """
+        # Prefer a RetentionPolicy when given; otherwise fall back to the
+        # individual keyword args (back-compat for direct callers and tests).
+        if policy is not None:
+            retention_days = policy.retention_days
+            min_interval_hours = policy.min_interval_hours
+            vacuum = policy.vacuum_after_prune
+            inactive_days = policy.inactive_days
+            automated_inactive_days = policy.automated_inactive_days
+            automated_source = policy.automated_source
+            trash_grace_days = policy.trash_grace_days
         result: Dict[str, Any] = {"skipped": False, "pruned": 0, "vacuumed": False}
         try:
             # Skip if another process/call did maintenance recently.

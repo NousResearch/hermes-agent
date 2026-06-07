@@ -12,7 +12,7 @@ SessionDB.maybe_auto_prune_and_vacuum(inactive_days=...).
 import time
 import pytest
 
-from hermes_state import SessionDB
+from hermes_state import RetentionPolicy, SessionDB
 
 
 @pytest.fixture()
@@ -240,3 +240,58 @@ class TestSoftDeleteTrash:
         db.soft_delete_inactive_sessions(older_than_days=90)
         hits2 = db.search_messages("uniquemagicword", limit=10)
         assert all(h["session_id"] != "s1" for h in hits2)
+
+
+class TestRetentionPolicy:
+    def test_from_config_all_keys(self):
+        p = RetentionPolicy.from_config({
+            "retention_days": 60, "min_interval_hours": 12, "vacuum_after_prune": False,
+            "delete_inactive_after_days": 30, "delete_automated_inactive_after_days": 7,
+            "automated_source": "telegram", "trash_grace_days": 14,
+        })
+        assert (p.retention_days, p.min_interval_hours, p.vacuum_after_prune) == (60, 12, False)
+        assert (p.inactive_days, p.automated_inactive_days) == (30, 7)
+        assert p.automated_source == "telegram" and p.trash_grace_days == 14
+
+    def test_from_config_defaults_and_none(self):
+        for cfg in ({}, None):
+            p = RetentionPolicy.from_config(cfg)
+            assert p.retention_days == 90 and p.inactive_days is None
+            assert p.automated_source == "cron" and p.trash_grace_days is None
+
+    def test_policy_object_matches_kwargs(self, db):
+        _ended(db, "old")
+        _backdate_ended(db, "old", 100)
+        _ended(db, "fresh")
+        res = db.maybe_auto_prune_and_vacuum(RetentionPolicy(inactive_days=90), vacuum=False)
+        assert res["pruned"] == 1
+        assert db.get_session("old") is None and db.get_session("fresh") is not None
+
+
+class TestActiveSessionsView:
+    def test_view_excludes_trashed(self, db):
+        _ended(db, "keep")
+        _ended(db, "trash")
+        _backdate_ended(db, "trash", 100)
+        db.soft_delete_inactive_sessions(older_than_days=90)
+        view_ids = {r[0] for r in db._conn.execute("SELECT id FROM active_sessions")}
+        assert "keep" in view_ids and "trash" not in view_ids
+
+    def test_no_query_surfaces_trashed(self, db):
+        # One trashed chat must not leak through ANY listing/count/search path.
+        db.create_session(session_id="leaky", source="webui")
+        db.append_message("leaky", "user", "zzqq_secret_token apple")
+        db.end_session("leaky", end_reason="done")
+        _backdate_ended(db, "leaky", 100)
+        before = db.session_count()
+        db.soft_delete_inactive_sessions(older_than_days=90)
+        assert db.session_count() == before - 1
+        assert "leaky" not in {s["id"] for s in db.list_sessions_rich(limit=100)}
+        assert "leaky" not in {s["id"] for s in db.list_sessions_rich(limit=100, order_by_last_active=True)}
+        assert "leaky" not in {s["id"] for s in db.search_sessions(limit=100)}
+        assert all(h["session_id"] != "leaky"
+                   for h in db.search_messages("zzqq_secret_token", limit=10))
+        # ...yet still reachable by id and restorable.
+        assert db.get_session("leaky") is not None
+        assert db.restore_session("leaky") is True
+        assert "leaky" in {s["id"] for s in db.list_sessions_rich(limit=100)}

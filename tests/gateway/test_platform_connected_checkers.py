@@ -33,9 +33,21 @@ def test_all_builtins_have_checker_or_generic_token_path():
     # Platforms with a bespoke checker
     checker_values = {p.value for p in set(_PLATFORM_CONNECTED_CHECKERS.keys())}
 
-    # Every built-in should be in one of the two sets
+    # Platforms whose connection check is provided by a bundled platform
+    # plugin's ``is_connected`` hook (consulted by get_connected_platforms()
+    # as a registry fallback). Their enum literal stays in core for stable
+    # identification, but the checker lives in plugins/platforms/<name>/.
+    bundled_plugin_values = Platform._scan_bundled_plugin_platforms()
+
+    # Every built-in should be in one of the sets
     all_builtins = set(_BUILTIN_PLATFORM_VALUES)
-    missing = all_builtins - generic_token_values - checker_values - {"local"}
+    missing = (
+        all_builtins
+        - generic_token_values
+        - checker_values
+        - bundled_plugin_values
+        - {"local"}
+    )
 
     assert not missing, (
         f"Built-in platforms missing a connection checker: "

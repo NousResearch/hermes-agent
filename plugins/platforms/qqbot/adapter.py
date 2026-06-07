@@ -91,7 +91,7 @@ class QQCloseError(Exception):
 # Constants — imported from the shared constants module.
 # ---------------------------------------------------------------------------
 
-from gateway.platforms.qqbot.constants import (
+from .constants import (
     API_BASE,
     TOKEN_URL,
     GATEWAY_URL_PATH,
@@ -115,16 +115,16 @@ from gateway.platforms.qqbot.constants import (
     MEDIA_TYPE_VOICE,
     MEDIA_TYPE_FILE,
 )
-from gateway.platforms.qqbot.utils import (
+from .utils import (
     coerce_list as _coerce_list_impl,
     build_user_agent,
 )
-from gateway.platforms.qqbot.chunked_upload import (
+from .chunked_upload import (
     ChunkedUploader,
     UploadDailyLimitExceededError,
     UploadFileTooLargeError,
 )
-from gateway.platforms.qqbot.keyboards import (
+from .keyboards import (
     ApprovalRequest,
     InlineKeyboard,
     InteractionEvent,
@@ -2636,7 +2636,7 @@ class QQAdapter(BasePlatformAdapter):
         registered :meth:`set_interaction_callback` handler decodes
         ``button_data`` via :func:`parse_approval_button_data`.
         """
-        from gateway.platforms.qqbot.keyboards import build_approval_text
+        from .keyboards import build_approval_text
         return await self.send_with_keyboard(
             chat_id,
             build_approval_text(req),
@@ -3194,3 +3194,284 @@ class QQAdapter(BasePlatformAdapter):
             return True
         self._seen_messages[msg_id] = now
         return False
+
+
+# ---------------------------------------------------------------------------
+# Plugin registration entry point
+# ---------------------------------------------------------------------------
+#
+# QQBot migrated from a built-in adapter package (gateway/platforms/qqbot/)
+# into this bundled plugin. The hooks below replace the per-platform wiring
+# that used to be scattered across core:
+#   - adapter_factory      -> the elif in gateway/run.py::_create_adapter()
+#   - check_fn             -> the check_qq_requirements guard there
+#   - is_connected         -> the Platform.QQBOT lambda in gateway/config.py
+#   - setup_fn             -> _setup_qqbot + its _PLATFORMS entry +
+#                            _builtin_setup_fn mapping in hermes_cli/gateway.py
+#   - standalone_sender_fn -> _send_qqbot in tools/send_message_tool.py
+#   - cron_deliver_env_var -> QQBOT_HOME_CHANNEL
+#
+# Deliberately left generic in core (same as every other platform):
+#   - the Platform.QQBOT enum literal (stable repo-wide identifier)
+#   - the _apply_env_overrides QQ_*/QQBOT_* env block in gateway/config.py
+#   - the _is_user_authorized / _UPDATE_ALLOWED_PLATFORMS allowlist maps
+#   - the cron _KNOWN_DELIVERY_PLATFORMS frozenset
+# QQBot has no load_gateway_config YAML block, so no apply_yaml_config_fn.
+
+
+def _is_connected(config: PlatformConfig) -> bool:
+    """QQBot is connected when both app_id and client_secret are present.
+
+    Ports the Platform.QQBOT lambda from gateway/config.py.
+    """
+    extra = config.extra or {}
+    return bool(extra.get("app_id") and extra.get("client_secret"))
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document: bool = False,
+):
+    """Send via the QQ Bot Open Platform REST API for send_message / cron delivery.
+
+    Relocated from tools/send_message_tool.py::_send_qqbot. Uses the REST
+    endpoints (no WebSocket needed): fetch an app access token, then try the
+    channel / C2C / group message endpoints in order. QQBot is HTTP, so this
+    works out-of-process (cron running separately from the gateway).
+    """
+    try:
+        import httpx
+    except ImportError:
+        return {"error": "QQBot direct send requires httpx. Run: pip install httpx"}
+
+    extra = getattr(pconfig, "extra", None) or {}
+    appid = extra.get("app_id") or os.getenv("QQ_APP_ID", "")
+    secret = (
+        getattr(pconfig, "token", None)
+        or extra.get("client_secret")
+        or os.getenv("QQ_CLIENT_SECRET", "")
+    )
+    if not appid or not secret:
+        return {"error": "QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured."}
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            # Step 1: Get access token
+            token_resp = await client.post(
+                "https://bots.qq.com/app/getAppAccessToken",
+                json={"appId": str(appid), "clientSecret": str(secret)},
+            )
+            if token_resp.status_code != 200:
+                return {"error": f"QQBot token request failed: {token_resp.status_code}"}
+            token_data = token_resp.json()
+            access_token = token_data.get("access_token")
+            if not access_token:
+                return {"error": "QQBot: no access_token in response"}
+
+            # Step 2: Send message via REST. QQ Bot API has separate endpoints
+            # for channels, C2C, and groups. Try them in order: channel first,
+            # then fallback to C2C, then group.
+            headers = {
+                "Authorization": f"QQBot {access_token}",
+                "Content-Type": "application/json",
+            }
+            payload = {"content": message[:4000], "msg_type": 0}
+
+            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code in {200, 201}:
+                data = resp.json()
+                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                        "message_id": data.get("id")}
+
+            url_c2c = f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"
+            resp_c2c = await client.post(url_c2c, json=payload, headers=headers)
+            if resp_c2c.status_code in {200, 201}:
+                data = resp_c2c.json()
+                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                        "message_id": data.get("id")}
+
+            url_group = f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"
+            resp_group = await client.post(url_group, json=payload, headers=headers)
+            if resp_group.status_code in {200, 201}:
+                data = resp_group.json()
+                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                        "message_id": data.get("id")}
+
+            return {"error": f"QQBot send failed: channel={resp.status_code} c2c={resp_c2c.status_code} group={resp_group.status_code}"}
+    except Exception as e:
+        return {"error": f"QQBot send failed: {e}"}
+
+
+def interactive_setup() -> None:
+    """Interactive setup wizard — replaces hermes_cli/gateway.py::_setup_qqbot.
+
+    Offers QR scan-to-configure (via this package's qr_register) or manual
+    credential entry, then DM-auth policy and home-channel prompts. Lazy
+    imports keep the plugin's load surface small.
+    """
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.setup import (
+        prompt,
+        prompt_choice,
+        prompt_yes_no,
+        print_info,
+        print_success,
+        print_warning,
+    )
+    from hermes_cli.colors import color, Colors
+
+    print()
+    print(color("  ─── 🐧 QQ Bot Setup ───", Colors.CYAN))
+
+    existing_app_id = get_env_value("QQ_APP_ID")
+    existing_secret = get_env_value("QQ_CLIENT_SECRET")
+    if existing_app_id and existing_secret:
+        print()
+        print_success("QQ Bot is already configured.")
+        if not prompt_yes_no("  Reconfigure QQ Bot?", False):
+            return
+
+    print()
+    method_choices = [
+        "Scan QR code to add bot automatically (recommended)",
+        "Enter existing App ID and App Secret manually",
+    ]
+    method_idx = prompt_choice(
+        "  How would you like to set up QQ Bot?", method_choices, 0
+    )
+
+    credentials = None
+
+    if method_idx == 0:
+        try:
+            from .onboard import qr_register
+
+            credentials = qr_register()
+        except KeyboardInterrupt:
+            print()
+            print_warning("  QQ Bot setup cancelled.")
+            return
+        if not credentials:
+            print_info("  QR setup did not complete. Continuing with manual input.")
+
+    if not credentials:
+        print()
+        print_info("  Go to https://q.qq.com to register a QQ Bot application.")
+        print_info("  Note your App ID and App Secret from the application page.")
+        print()
+        app_id = prompt("  App ID", password=False)
+        if not app_id:
+            print_warning("  Skipped — QQ Bot won't work without an App ID.")
+            return
+        app_secret = prompt("  App Secret", password=True)
+        if not app_secret:
+            print_warning("  Skipped — QQ Bot won't work without an App Secret.")
+            return
+        credentials = {
+            "app_id": app_id.strip(),
+            "client_secret": app_secret.strip(),
+            "user_openid": "",
+        }
+
+    save_env_value("QQ_APP_ID", credentials["app_id"])
+    save_env_value("QQ_CLIENT_SECRET", credentials["client_secret"])
+
+    user_openid = credentials.get("user_openid", "")
+
+    print()
+    access_choices = [
+        "Use DM pairing approval (recommended)",
+        "Allow all direct messages",
+        "Only allow listed user OpenIDs",
+    ]
+    access_idx = prompt_choice(
+        "  How should direct messages be authorized?", access_choices, 0
+    )
+    if access_idx == 0:
+        save_env_value("QQ_ALLOW_ALL_USERS", "false")
+        if user_openid:
+            print()
+            if prompt_yes_no(
+                f"  Add yourself ({user_openid}) to the allow list?", True
+            ):
+                save_env_value("QQ_ALLOWED_USERS", user_openid)
+                print_success(f"  Allow list set to {user_openid}")
+            else:
+                save_env_value("QQ_ALLOWED_USERS", "")
+        else:
+            save_env_value("QQ_ALLOWED_USERS", "")
+        print_success("  DM pairing enabled.")
+        print_info(
+            "  Unknown users can request access; approve with `hermes pairing approve`."
+        )
+    elif access_idx == 1:
+        save_env_value("QQ_ALLOW_ALL_USERS", "true")
+        save_env_value("QQ_ALLOWED_USERS", "")
+        print_warning("  Open DM access enabled for QQ Bot.")
+    else:
+        default_allow = user_openid or ""
+        allowlist = prompt(
+            "  Allowed user OpenIDs (comma-separated)", default_allow, password=False
+        ).replace(" ", "")
+        save_env_value("QQ_ALLOW_ALL_USERS", "false")
+        save_env_value("QQ_ALLOWED_USERS", allowlist)
+        print_success("  Allowlist saved.")
+
+    if user_openid:
+        print()
+        if prompt_yes_no(
+            f"  Use your QQ user ID ({user_openid}) as the home channel?", True
+        ):
+            save_env_value("QQBOT_HOME_CHANNEL", user_openid)
+            print_success(f"  Home channel set to {user_openid}")
+    else:
+        print()
+        home_channel = prompt(
+            "  Home channel OpenID (for cron/notifications, or empty)", password=False
+        )
+        if home_channel:
+            save_env_value("QQBOT_HOME_CHANNEL", home_channel.strip())
+            print_success(f"  Home channel set to {home_channel.strip()}")
+
+    print()
+    print_success("🐧 QQ Bot configured!")
+    print_info(f"  App ID: {credentials['app_id']}")
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs QQAdapter from a PlatformConfig."""
+    return QQAdapter(config)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="qqbot",
+        label="QQ Bot",
+        adapter_factory=_build_adapter,
+        check_fn=check_qq_requirements,
+        is_connected=_is_connected,
+        required_env=["QQ_APP_ID", "QQ_CLIENT_SECRET"],
+        install_hint="pip install httpx aiohttp",
+        # Interactive setup wizard — replaces hermes_cli/gateway.py::_setup_qqbot
+        # (QR scan-to-configure + manual credential entry).
+        setup_fn=interactive_setup,
+        # Auth env vars for _is_user_authorized() integration.
+        allowed_users_env="QQ_ALLOWED_USERS",
+        allow_all_env="QQ_ALLOW_ALL_USERS",
+        # Cron home-channel delivery.
+        cron_deliver_env_var="QQBOT_HOME_CHANNEL",
+        # Out-of-process cron delivery via the QQ Bot REST API. QQBot is HTTP,
+        # so unlike WebSocket platforms this works without a live gateway.
+        standalone_sender_fn=_standalone_send,
+        # QQ Bot message size limit.
+        max_message_length=MAX_MESSAGE_LENGTH,
+        # Display
+        emoji="🐧",
+    )

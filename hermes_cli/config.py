@@ -5286,6 +5286,55 @@ def save_config(config: Dict[str, Any]):
                 raw_existing,
                 _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
             )
+        
+        # Preserve unknown/unrecognized fields from the raw config file that aren't
+        # in our normalized output. This prevents losing custom fields like
+        # custom_providers when save_config is called after a config upgrade
+        # or migration (fixes #40821).
+        raw_file_config: Dict[str, Any] = read_raw_config()
+        if isinstance(raw_file_config, dict):
+            # Identify which top-level keys from the raw file are NOT in the
+            # normalized output. These are likely custom/legacy fields that should
+            # be preserved to avoid silent data loss.
+            known_keys = set(normalized.keys())
+            # Fields that are intentionally normalized/removed and should NOT be re-added:
+            intentionally_removed = {
+                "provider", "base_url", "context_length", "max_turns",
+            }
+            # Special case: Only preserve custom_providers if it hasn't been migrated
+            # to the new 'providers' format. During config migration (v11→v12), 
+            # custom_providers is deliberately converted to providers dict and should
+            # be removed. If providers dict is new/populated, assume migration happened.
+            raw_custom_providers = raw_file_config.get("custom_providers")
+            raw_providers = raw_file_config.get("providers")
+            normalized_providers = normalized.get("providers")
+            
+            # If raw file had custom_providers but no providers dict, and the normalized
+            # config also has an empty/missing providers dict, then custom_providers
+            # was likely NOT migrated and should be re-added (fixes #40821).
+            should_preserve_custom_providers = (
+                raw_custom_providers
+                and not raw_providers  # No providers dict in original file
+                and (not normalized_providers or not normalized_providers)  # No migrated data
+            )
+            
+            for key in raw_file_config.keys():
+                if key == "custom_providers":
+                    if should_preserve_custom_providers and key not in known_keys:
+                        normalized[key] = raw_custom_providers
+                elif key == "fallback_providers":
+                    # Similar special case for fallback_providers → fallback_model migration
+                    raw_fallback_providers = raw_file_config.get("fallback_providers")
+                    normalized_fallback_model = normalized.get("fallback_model")
+                    should_preserve_fallback_providers = (
+                        raw_fallback_providers
+                        and not normalized_fallback_model
+                    )
+                    if should_preserve_fallback_providers and key not in known_keys:
+                        normalized[key] = raw_fallback_providers
+                elif key not in known_keys and key not in intentionally_removed:
+                    # Unknown key from the raw file — preserve it
+                    normalized[key] = raw_file_config[key]
 
         # Build optional commented-out sections for features that are off by
         # default or only relevant when explicitly configured.

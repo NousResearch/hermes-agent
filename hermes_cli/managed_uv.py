@@ -1,11 +1,18 @@
-"""Managed uv — one path, no guessing.
+"""Managed uv — one path with fallback chain.
 
-Hermes owns its own uv binary at ``$HERMES_HOME/bin/uv`` (or ``uv.exe`` on
-Windows).  Every code path that needs uv resolves it from that single location.
-If the binary is missing, ``ensure_uv()`` bootstraps it via the official
-standalone installer with ``UV_UNMANAGED_INSTALL`` / ``UV_INSTALL_DIR`` pointed
-at ``$HERMES_HOME/bin`` so the installer writes directly there — no PATH
-probing, no conda guards, no multi-location resolution chains.
+Hermes prefers its own uv binary at ``$HERMES_HOME/bin/uv`` (or ``uv.exe`` on
+Windows).  When that binary is missing, corrupted, or built for the wrong
+architecture (e.g. synced across machines via Syncthing), ``resolve_uv()``
+falls back to well-known installation locations before resorting to PATH:
+
+    1. ``$HERMES_HOME/bin/uv[.exe]``   (managed copy — preferred)
+    2. ``~/.local/bin/uv[.exe]``       (uv's official installer target)
+    3. ``~/.cargo/bin/uv[.exe]``       (cargo-installed uv)
+    4. ``shutil.which("uv")``          (PATH fallback — last resort)
+
+If nothing resolves, ``ensure_uv()`` bootstraps a fresh standalone uv into
+``$HERMES_HOME/bin`` via the official installer with ``UV_UNMANAGED_INSTALL``
+/ ``UV_INSTALL_DIR``.
 """
 
 from __future__ import annotations
@@ -40,15 +47,37 @@ def managed_uv_path() -> Path:
     return home / "bin" / "uv"
 
 
-def resolve_uv() -> Optional[str]:
-    """Return the managed uv path if it exists, else ``None``.
+def _candidate_paths() -> list[Path]:
+    """Fallback ``uv`` locations, in preference order (managed → well-known).
 
-    No side effects — pure lookup.
+    The managed copy is always first.  The remaining entries cover common
+    install methods so a corrupted managed binary doesn't leave *hermes update*
+    with no uv at all.
     """
-    p = managed_uv_path()
-    if p.is_file() and os.access(p, os.X_OK):
-        return str(p)
-    return None
+    exe = "uv.exe" if platform.system() == "Windows" else "uv"
+    home = Path(os.path.expanduser("~"))
+    return [
+        managed_uv_path(),
+        home / ".local" / "bin" / exe,
+        home / ".cargo" / "bin" / exe,
+    ]
+
+
+def resolve_uv() -> Optional[str]:
+    """Return a path to a working ``uv``, or ``None`` if none is found.
+
+    Probes the managed location first, then well-known install directories
+    (``~/.local/bin``, ``~/.cargo/bin``), and finally falls back to
+    ``shutil.which("uv")``.  Pure lookup — no install, no network, no side
+    effects.  Safe to call from hot paths.
+    """
+    for cand in _candidate_paths():
+        try:
+            if cand.is_file() and os.access(cand, os.X_OK):
+                return str(cand)
+        except OSError:
+            continue
+    return shutil.which("uv")
 
 
 class _UvResult(str):

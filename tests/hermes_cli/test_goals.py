@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -29,6 +30,21 @@ def hermes_home(tmp_path, monkeypatch):
     goals._DB_CACHE.clear()
     yield home
     goals._DB_CACHE.clear()
+
+
+def _create_compression_pair(db, parent_id: str, child_id: str) -> None:
+    db.create_session(parent_id, "test")
+    db.end_session(parent_id, "compression")
+    db.create_session(child_id, "test", parent_session_id=parent_id)
+    assert db.get_compression_tip(parent_id) == child_id
+
+
+def _state_snapshot(state):
+    return json.loads(state.to_json())
+
+
+def _sid(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -226,6 +242,146 @@ class TestGoalManager:
         mgr.resume()
         assert mgr.state.status == "active"
         assert mgr.is_active()
+
+    def test_migrate_goal_session_copies_active_goal_to_child_preserving_fields(self, hermes_home):
+        from hermes_state import SessionDB
+        from hermes_cli.goals import GoalManager, load_goal, migrate_goal_session, save_goal
+
+        db = SessionDB()
+        parent_id = _sid("migrate-active-parent")
+        child_id = _sid("migrate-active-child")
+        _create_compression_pair(db, parent_id, child_id)
+        state = GoalManager(parent_id, default_max_turns=9).set("finish migration")
+        state.turns_used = 4
+        state.last_turn_at = 123.5
+        state.last_verdict = "continue"
+        state.last_reason = "more work"
+        state.paused_reason = "old pause note"
+        state.consecutive_parse_failures = 2
+        state.subgoals = ["preserve metadata", "stay atomic"]
+        save_goal(parent_id, state)
+        expected = _state_snapshot(state)
+
+        assert migrate_goal_session(parent_id, child_id, db=db) is True
+
+        child = load_goal(child_id)
+        old = load_goal(parent_id)
+        assert child is not None
+        assert _state_snapshot(child) == expected
+        assert old is not None
+        assert old.status == "cleared"
+        assert f"migrated to {child_id}" in (old.paused_reason or "")
+
+    def test_migrate_goal_session_does_not_overwrite_existing_child_goal(self, hermes_home):
+        from hermes_state import SessionDB
+        from hermes_cli.goals import GoalManager, load_goal, migrate_goal_session
+
+        db = SessionDB()
+        parent_id = _sid("migrate-overwrite-parent")
+        child_id = _sid("migrate-overwrite-child")
+        _create_compression_pair(db, parent_id, child_id)
+        parent_state = GoalManager(parent_id).set("parent goal")
+        child_state = GoalManager(child_id).set("child goal")
+        parent_before = _state_snapshot(parent_state)
+        child_before = _state_snapshot(child_state)
+
+        assert migrate_goal_session(parent_id, child_id, db=db) is False
+
+        assert _state_snapshot(load_goal(parent_id)) == parent_before
+        assert _state_snapshot(load_goal(child_id)) == child_before
+
+    def test_migrate_goal_session_copies_paused_goal_preserving_paused_reason_and_metadata(self, hermes_home):
+        from hermes_state import SessionDB
+        from hermes_cli.goals import GoalManager, load_goal, migrate_goal_session, save_goal
+
+        db = SessionDB()
+        parent_id = _sid("migrate-paused-parent")
+        child_id = _sid("migrate-paused-child")
+        _create_compression_pair(db, parent_id, child_id)
+        state = GoalManager(parent_id, default_max_turns=7).set("paused migration")
+        state.status = "paused"
+        state.paused_reason = "waiting for user"
+        state.turns_used = 3
+        state.last_verdict = "continue"
+        state.last_reason = "blocked"
+        state.subgoals = ["do not resume automatically"]
+        save_goal(parent_id, state)
+        expected = _state_snapshot(state)
+
+        assert migrate_goal_session(parent_id, child_id, db=db) is True
+
+        child = load_goal(child_id)
+        old = load_goal(parent_id)
+        assert child is not None
+        assert _state_snapshot(child) == expected
+        assert old is not None
+        assert old.status == "cleared"
+        assert f"migrated to {child_id}" in (old.paused_reason or "")
+
+    def test_migrate_goal_session_noops_without_old_goal_same_id_terminal_old_status_and_non_compression_relation(self, hermes_home):
+        from hermes_state import SessionDB
+        from hermes_cli.goals import GoalManager, GoalState, load_goal, migrate_goal_session, save_goal
+
+        db = SessionDB()
+
+        absent_parent = _sid("migrate-absent-parent")
+        absent_child = _sid("migrate-absent-child")
+        _create_compression_pair(db, absent_parent, absent_child)
+        assert migrate_goal_session(absent_parent, absent_child, db=db) is False
+        assert load_goal(absent_child) is None
+        assert migrate_goal_session("", absent_child, db=db) is False
+        assert migrate_goal_session(absent_parent, "", db=db) is False
+        assert migrate_goal_session(absent_parent, absent_parent, db=db) is False
+
+        for status in ("done", "cleared", "migrated"):
+            parent_id = _sid(f"migrate-terminal-{status}-parent")
+            child_id = _sid(f"migrate-terminal-{status}-child")
+            _create_compression_pair(db, parent_id, child_id)
+            terminal = GoalState(goal=f"{status} goal", status=status, turns_used=5, max_turns=8)
+            save_goal(parent_id, terminal)
+            before = _state_snapshot(terminal)
+            assert migrate_goal_session(parent_id, child_id, db=db) is False
+            assert load_goal(child_id) is None
+            assert _state_snapshot(load_goal(parent_id)) == before
+
+        non_comp_parent = _sid("migrate-not-compression-parent")
+        non_comp_child = _sid("migrate-not-compression-child")
+        db.create_session(non_comp_parent, "test")
+        db.create_session(non_comp_child, "test", parent_session_id=non_comp_parent)
+        active = GoalManager(non_comp_parent).set("unsafe inherit")
+        before = _state_snapshot(active)
+        assert migrate_goal_session(non_comp_parent, non_comp_child, db=db) is False
+        assert load_goal(non_comp_child) is None
+        assert _state_snapshot(load_goal(non_comp_parent)) == before
+
+        invalid_parent = _sid("migrate-invalid-time-parent")
+        invalid_child = _sid("migrate-invalid-time-child")
+        db.create_session(invalid_parent, "test")
+        db.create_session(invalid_child, "test", parent_session_id=invalid_parent)
+        db.end_session(invalid_parent, "compression")
+        invalid = GoalManager(invalid_parent).set("invalid timing")
+        before_invalid = _state_snapshot(invalid)
+        assert migrate_goal_session(invalid_parent, invalid_child, db=db) is False
+        assert load_goal(invalid_child) is None
+        assert _state_snapshot(load_goal(invalid_parent)) == before_invalid
+
+    def test_resume_only_paused_goals_and_does_not_revive_cleared_done_or_migrated_rows(self, hermes_home):
+        from hermes_cli.goals import GoalManager, GoalState, save_goal
+
+        paused = GoalManager(_sid("resume-paused"))
+        paused.set("paused goal")
+        paused.pause(reason="user-paused")
+        assert paused.resume() is not None
+        assert paused.state.status == "active"
+
+        for status in ("cleared", "done", "migrated"):
+            session_id = _sid(f"resume-{status}")
+            save_goal(session_id, GoalState(goal=f"{status} goal", status=status, turns_used=4))
+            mgr = GoalManager(session_id)
+            assert mgr.resume() is None
+            assert mgr.state is not None
+            assert mgr.state.status == status
+            assert mgr.state.turns_used == 4
 
     def test_clear(self, hermes_home):
         from hermes_cli.goals import GoalManager

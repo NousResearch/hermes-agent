@@ -3589,6 +3589,46 @@ class TestStateMeta:
         db.set_meta("key", "v2")
         assert db.get_meta("key") == "v2"
 
+    def test_state_meta_atomic_compare_move_success(self, db):
+        db.set_meta("goal:old", "active-json")
+
+        moved = db.move_meta_if_target_absent(
+            "goal:old",
+            "goal:new",
+            source_value="cleared-json",
+        )
+
+        assert moved is True
+        assert db.get_meta("goal:new") == "active-json"
+        assert db.get_meta("goal:old") == "cleared-json"
+
+    def test_state_meta_atomic_compare_move_does_not_overwrite_existing_child_key(self, db):
+        db.set_meta("goal:old", "active-json")
+        db.set_meta("goal:new", "child-json")
+
+        moved = db.move_meta_if_target_absent(
+            "goal:old",
+            "goal:new",
+            source_value="cleared-json",
+        )
+
+        assert moved is False
+        assert db.get_meta("goal:new") == "child-json"
+        assert db.get_meta("goal:old") == "active-json"
+
+    def test_state_meta_atomic_primitive_is_goal_semantics_agnostic(self, db):
+        db.set_meta("arbitrary:source", "plain source")
+
+        moved = db.move_meta_if_target_absent(
+            "arbitrary:source",
+            "arbitrary:target",
+            source_value="plain replacement",
+        )
+
+        assert moved is True
+        assert db.get_meta("arbitrary:target") == "plain source"
+        assert db.get_meta("arbitrary:source") == "plain replacement"
+
 
 class TestVacuum:
     def test_vacuum_runs_without_error(self, db):

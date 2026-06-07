@@ -2081,7 +2081,20 @@ class SessionDB:
         input ``session_id`` if it isn't part of a compression chain (or if the
         input itself doesn't exist).
         """
+        chain = self.get_compression_chain(session_id)
+        return chain[-1] if chain else session_id
+
+    def get_compression_chain(self, session_id: str) -> List[str]:
+        """Return the verified compression-continuation chain from session_id.
+
+        The first element is always ``session_id``. Each later element is a
+        child reached using the same compression invariant as
+        :meth:`get_compression_tip`: parent ``end_reason='compression'`` and
+        child ``started_at >= parent.ended_at``. Non-compression child edges stop
+        the walk rather than being included.
+        """
         current = session_id
+        chain: List[str] = [current]
         # Bound the walk defensively — compression chains this deep are
         # pathological and shouldn't happen in practice. 100 = plenty.
         for _ in range(100):
@@ -2098,9 +2111,10 @@ class SessionDB:
                 )
                 row = cursor.fetchone()
             if row is None:
-                return current
+                return chain
             current = row["id"]
-        return current
+            chain.append(current)
+        return chain
 
     def list_sessions_rich(
         self,
@@ -4332,6 +4346,56 @@ class SessionDB:
                 (key, value),
             )
         self._execute_write(_do)
+
+    def move_meta_if_target_absent(
+        self,
+        source_key: str,
+        target_key: str,
+        *,
+        source_value: str,
+        expected_source_value: Optional[str] = None,
+    ) -> bool:
+        """Atomically copy one state_meta value to an absent target and replace source.
+
+        Returns True only when ``source_key`` exists, ``target_key`` does not,
+        and (when supplied) ``expected_source_value`` still matches the current
+        source value. The source row is not deleted; it is replaced with
+        ``source_value`` in the same ``BEGIN IMMEDIATE`` transaction that writes
+        the target row. The primitive is intentionally value-agnostic: callers
+        own any semantics encoded in the serialized values.
+        """
+        if not source_key or not target_key or source_key == target_key:
+            return False
+
+        def _do(conn):
+            source_row = conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (source_key,),
+            ).fetchone()
+            if source_row is None:
+                return False
+            current_source = (
+                source_row["value"] if isinstance(source_row, sqlite3.Row) else source_row[0]
+            )
+            if expected_source_value is not None and current_source != expected_source_value:
+                return False
+            target_row = conn.execute(
+                "SELECT 1 FROM state_meta WHERE key = ?",
+                (target_key,),
+            ).fetchone()
+            if target_row is not None:
+                return False
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?)",
+                (target_key, current_source),
+            )
+            conn.execute(
+                "UPDATE state_meta SET value = ? WHERE key = ?",
+                (source_value, source_key),
+            )
+            return True
+
+        return bool(self._execute_write(_do))
 
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.
